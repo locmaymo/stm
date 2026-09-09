@@ -1,14 +1,15 @@
 import js from '@eslint/js';
+import { globalIgnores } from 'eslint/config';
 
 export default [
+  globalIgnores([
+    '**/node_modules/**',
+    '**/dist/**',
+    '**/build/**',
+    '**/coverage/**',
+    'docs/**',
+  ]),
   {
-    ignores: [
-      '**/node_modules/**',
-      '**/dist/**',
-      '**/build/**',
-      '**/coverage/**',
-      'docs/**',
-    ],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: 'module',

@@ -1,5 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
+import { readFile, stat } from 'node:fs/promises';
+import { extname, join, relative, resolve } from 'node:path';
 import type { ApiErrorBody, HealthResponse, ManagerPorts, SetupStatus } from '../../../packages/contracts/src/index.js';
 import { getPlatformPaths, type PlatformPaths } from '../../../packages/platform/src/index.js';
 import { hashPassword, MIN_PASSWORD_LENGTH, validatePassword, verifyPassword } from './password.js';
@@ -41,6 +43,7 @@ export interface ManagerServerOptions {
   readonly managerVersion?: string;
   readonly secureCookies?: boolean;
   readonly setupCodeRequired?: boolean;
+  readonly staticRoot?: string;
   readonly logger?: (line: string) => void;
 }
 
@@ -71,6 +74,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   const logger = options.logger ?? ((line: string) => console.log(line));
   const secureCookies = options.secureCookies ?? env.STM_SECURE_COOKIES === '1';
   const setupCodeRequired = options.setupCodeRequired ?? requiresSetupCode(env);
+  const staticRoot = resolve(options.staticRoot ?? join(process.cwd(), 'apps', 'manager-panel', 'dist'));
   let persisted = await store.load();
 
   const environmentPassword = env.STM_ADMIN_PASSWORD;
@@ -98,6 +102,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       startedAt,
       secureCookies,
       setupCodeRequired,
+      staticRoot,
       logger,
     }).catch((error: unknown) => {
       if (error instanceof RequestError) {
@@ -137,9 +142,10 @@ async function handleRequest(options: {
   readonly startedAt: number;
   readonly secureCookies: boolean;
   readonly setupCodeRequired: boolean;
+  readonly staticRoot: string;
   readonly logger: (line: string) => void;
 }): Promise<void> {
-  const { request, response, store, sessions, rateLimiter, startedAt, secureCookies, setupCodeRequired } = options;
+  const { request, response, store, sessions, rateLimiter, startedAt, secureCookies, setupCodeRequired, staticRoot } = options;
   const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
   const pathname = url.pathname;
   const context: RequestContext = {
@@ -151,7 +157,7 @@ async function handleRequest(options: {
   };
 
   if (!pathname.startsWith('/api/v1/')) {
-    sendError(response, 404, 'not_found', 'Route not found');
+    await servePanel(request, response, pathname, staticRoot);
     return;
   }
   if (!context.originTrusted) {
@@ -429,6 +435,70 @@ function closeServer(server: Server): Promise<void> {
   return new Promise((resolve, reject) => {
     server.close((error) => (error ? reject(error) : resolve()));
   });
+}
+
+async function servePanel(request: IncomingMessage, response: ServerResponse, pathname: string, staticRoot: string): Promise<void> {
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    sendError(response, 405, 'method_not_allowed', 'Only GET is supported for the manager panel');
+    return;
+  }
+  let decodedPath: string;
+  try {
+    decodedPath = decodeURIComponent(pathname);
+  } catch {
+    sendError(response, 400, 'invalid_path', 'The requested path is invalid');
+    return;
+  }
+  const candidate = resolve(staticRoot, `.${decodedPath === '/' ? '/index.html' : decodedPath}`);
+  const relativeCandidate = relative(staticRoot, candidate);
+  if (relativeCandidate.startsWith('..') || relativeCandidate.includes(`..${process.platform === 'win32' ? '\\' : '/'}`)) {
+    sendError(response, 404, 'not_found', 'Route not found');
+    return;
+  }
+
+  let filePath = candidate;
+  try {
+    const details = await stat(filePath);
+    if (!details.isFile()) {
+      throw new Error('Not a file');
+    }
+  } catch {
+    filePath = join(staticRoot, 'index.html');
+    try {
+      const details = await stat(filePath);
+      if (!details.isFile()) {
+        throw new Error('Panel entry is not a file');
+      }
+    } catch {
+      sendError(response, 404, 'panel_unavailable', 'The manager panel has not been built yet');
+      return;
+    }
+  }
+
+  const body = await readFile(filePath);
+  response.statusCode = 200;
+  response.setHeader('Content-Type', contentTypeFor(filePath));
+  response.setHeader('X-Content-Type-Options', 'nosniff');
+  response.setHeader('Cache-Control', filePath.endsWith('index.html') ? 'no-cache' : 'public, max-age=31536000, immutable');
+  if (request.method === 'HEAD') {
+    response.end();
+    return;
+  }
+  response.end(body);
+}
+
+function contentTypeFor(filePath: string): string {
+  const extension = extname(filePath).toLowerCase();
+  const types: Record<string, string> = {
+    '.css': 'text/css; charset=utf-8',
+    '.html': 'text/html; charset=utf-8',
+    '.js': 'text/javascript; charset=utf-8',
+    '.json': 'application/json; charset=utf-8',
+    '.svg': 'image/svg+xml',
+    '.woff': 'font/woff',
+    '.woff2': 'font/woff2',
+  };
+  return types[extension] ?? 'application/octet-stream';
 }
 
 class RequestError extends Error {

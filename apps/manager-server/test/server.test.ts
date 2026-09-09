@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getPlatformPaths } from '../../../packages/platform/src/index.js';
@@ -10,6 +10,9 @@ import { startManagerServer, type ManagerServer } from '../src/server.js';
 async function createServer(options: { setupCodeRequired?: boolean; bootstrapPassword?: string } = {}): Promise<ManagerServer> {
   const root = await mkdtemp(join(tmpdir(), 'stm-manager-'));
   const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const staticRoot = join(root, 'panel');
+  await mkdir(staticRoot, { recursive: true });
+  await writeFile(join(staticRoot, 'index.html'), '<!doctype html><title>Manager panel</title>', 'utf8');
   const store = new StateStore({ paths, setupCode: 'setup-test-code' });
   return startManagerServer({
     host: '127.0.0.1',
@@ -19,6 +22,7 @@ async function createServer(options: { setupCodeRequired?: boolean; bootstrapPas
     setupCodeRequired: options.setupCodeRequired ?? true,
     env: options.bootstrapPassword ? { STM_ADMIN_PASSWORD: options.bootstrapPassword } : {},
     secureCookies: false,
+    staticRoot,
     logger: () => undefined,
   });
 }
@@ -45,6 +49,10 @@ test('setup, login, CSRF, health, and logout work on the manager port', async (t
   const health = await fetch(`${base}/api/v1/health`);
   assert.equal(health.status, 200);
   assert.equal((await health.json() as { manager: { port: number } }).manager.port, 7860);
+
+  const panel = await fetch(`${base}/`);
+  assert.equal(panel.status, 200);
+  assert.match(panel.headers.get('content-type') ?? '', /text\/html/);
 
   const setupStatus = await fetch(`${base}/api/v1/setup/status`);
   assert.equal(setupStatus.status, 200);
