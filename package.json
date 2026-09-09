@@ -11,7 +11,8 @@
   "scripts": {
     "encoding:gate": "node scripts/encoding-gate.mjs",
     "lint": "eslint .",
-    "test": "node --test",
+    "manager:start": "tsx apps/manager-server/src/main.ts",
+    "test": "node --import tsx --test",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "verify": "npm run encoding:gate && npm run lint && npm run typecheck && npm test"
   },
@@ -21,9 +22,11 @@
   "packageManager": "npm@11.12.1",
   "devDependencies": {
     "@eslint/js": "^9.35.0",
+    "@types/node": "^26.5.0",
     "@typescript-eslint/eslint-plugin": "^8.42.0",
     "@typescript-eslint/parser": "^8.42.0",
     "eslint": "^9.35.0",
+    "tsx": "^4.23.13",
     "typescript": "^5.9.3"
   }
 }
