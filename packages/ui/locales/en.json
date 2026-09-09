@@ -1,0 +1,40 @@
+{
+  "app": {
+    "name": "SillyTavern Manager",
+    "tagline": "Install, run, back up, and monitor SillyTavern"
+  },
+  "common": {
+    "continue": "Continue",
+    "cancel": "Cancel",
+    "close": "Close",
+    "save": "Save",
+    "delete": "Delete",
+    "refresh": "Refresh",
+    "loading": "Loading"
+  },
+  "nav": {
+    "overview": "Overview",
+    "installations": "Installations",
+    "profiles": "Profiles",
+    "backups": "Backups",
+    "metrics": "Metrics",
+    "logs": "Logs",
+    "config": "Config",
+    "settings": "Settings"
+  },
+  "setup": {
+    "title": "Set up your manager",
+    "welcome": "Welcome, {name}",
+    "telemetryNotice": "This free software collects limited usage metadata to support the project. It never sends API keys, prompts, chats, model responses, or request logs.",
+    "terms": "By continuing, you acknowledge the terms and the disclaimer.",
+    "disclaimer": "You are responsible for your SillyTavern data, credentials, providers, backups, and compliance with applicable service terms.",
+    "adminPassword": "Create an admin password"
+  },
+  "status": {
+    "manager": "Manager",
+    "sillyTavern": "SillyTavern",
+    "tunnel": "Public link",
+    "storage": "Storage",
+    "lastBackup": "Last backup"
+  }
+}

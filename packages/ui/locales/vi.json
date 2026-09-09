@@ -1,0 +1,40 @@
+{
+  "app": {
+    "name": "SillyTavern Manager",
+    "tagline": "Cài đặt, chạy, sao lưu và theo dõi SillyTavern"
+  },
+  "common": {
+    "continue": "Tiếp tục",
+    "cancel": "Hủy",
+    "close": "Đóng",
+    "save": "Lưu",
+    "delete": "Xóa",
+    "refresh": "Làm mới",
+    "loading": "Đang tải"
+  },
+  "nav": {
+    "overview": "Tổng quan",
+    "installations": "Bản cài đặt",
+    "profiles": "Profile",
+    "backups": "Sao lưu",
+    "metrics": "Số liệu",
+    "logs": "Log",
+    "config": "Cấu hình",
+    "settings": "Thiết lập"
+  },
+  "setup": {
+    "title": "Thiết lập manager",
+    "welcome": "Chào mừng, {name}",
+    "telemetryNotice": "Phần mềm miễn phí này thu thập một số số liệu sử dụng giới hạn để hỗ trợ dự án. Phần mềm không gửi API key, prompt, chat, nội dung model hoặc request log.",
+    "terms": "Khi tiếp tục, bạn xác nhận đã đọc điều khoản và tuyên bố miễn trừ trách nhiệm.",
+    "disclaimer": "Bạn chịu trách nhiệm với dữ liệu SillyTavern, credential, provider, backup và việc tuân thủ điều khoản dịch vụ liên quan.",
+    "adminPassword": "Tạo mật khẩu admin"
+  },
+  "status": {
+    "manager": "Manager",
+    "sillyTavern": "SillyTavern",
+    "tunnel": "Link công khai",
+    "storage": "Lưu trữ",
+    "lastBackup": "Backup gần nhất"
+  }
+}
