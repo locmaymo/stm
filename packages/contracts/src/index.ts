@@ -57,3 +57,65 @@ export interface ApiErrorBody {
     readonly details?: unknown;
   };
 }
+
+export type VersionSelector = 'latest' | 'release' | 'staging' | (string & {});
+
+export type VersionChannel = 'release' | 'staging';
+
+export interface VersionOption {
+  readonly selector: VersionSelector;
+  readonly label: string;
+  readonly ref: string;
+  readonly channel: VersionChannel;
+  readonly tag: string | null;
+  readonly publishedAt: string | null;
+}
+
+export type InstallationStatus =
+  | 'queued'
+  | 'downloading'
+  | 'extracting'
+  | 'installing'
+  | 'health_check'
+  | 'ready'
+  | 'failed';
+
+export interface Installation {
+  readonly id: string;
+  readonly selector: VersionSelector;
+  readonly resolvedRef: string;
+  readonly channel: VersionChannel;
+  readonly runtimePath: string;
+  readonly markerPath: string;
+  readonly status: InstallationStatus;
+  readonly progress: number;
+  readonly step: string;
+  readonly error: string | null;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly activatedAt: string | null;
+}
+
+export type JobState = 'queued' | 'running' | 'succeeded' | 'failed';
+
+export interface Job {
+  readonly id: string;
+  readonly kind: 'installation';
+  readonly state: JobState;
+  readonly progress: number;
+  readonly step: string;
+  readonly installationId: string;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly error: string | null;
+}
+
+export interface LogEntry {
+  readonly id: number;
+  readonly timestamp: string;
+  readonly source: 'manager' | 'sillytavern' | 'cloudflared' | 'installer' | 'backup';
+  readonly level: 'info' | 'warn' | 'error';
+  readonly message: string;
+}
+
+export type LogSourceFilter = LogEntry['source'] | 'all';

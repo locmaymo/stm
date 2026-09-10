@@ -1,0 +1,542 @@
+import { createWriteStream } from 'node:fs';
+import { createInflateRaw } from 'node:zlib';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { lstat, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { join, relative, resolve, sep } from 'node:path';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import { createServer as createProbeServer } from 'node:net';
+import type {
+  Installation,
+  InstallationStatus,
+  VersionChannel,
+  VersionOption,
+  VersionSelector,
+} from '../../contracts/src/index.js';
+import type { PlatformPaths } from '../../platform/src/index.js';
+
+const REPOSITORY = 'SillyTavern/SillyTavern';
+const INSTALLATIONS_FILE = 'installations.json';
+const ACTIVE_FILE = 'active-installation.json';
+const MARKER_FILE = '.stm-installation.json';
+const GITHUB_API = 'https://api.github.com';
+const MAX_ZIP_DIRECTORY_BYTES = 64 * 1024 * 1024;
+
+export interface InstallationProgress {
+  readonly status: InstallationStatus;
+  readonly progress: number;
+  readonly step: string;
+}
+
+export interface RuntimeManagerOptions {
+  readonly paths: PlatformPaths;
+  readonly fetch?: typeof globalThis.fetch;
+  readonly now?: () => Date;
+  readonly logger?: (line: string) => void;
+  readonly githubApiBaseUrl?: string;
+  readonly npmCommand?: string;
+  readonly installDependencies?: (runtimePath: string, onLine: (line: string) => void) => Promise<void>;
+  readonly healthCheck?: (runtimePath: string, onLine?: (line: string) => void) => Promise<void>;
+  readonly healthCheckTimeoutMs?: number;
+  /** Override only for tests; production health checks stay on SillyTavern's port 8000. */
+  readonly healthCheckPort?: number;
+}
+
+interface ReleasePayload {
+  readonly tag_name?: unknown;
+  readonly name?: unknown;
+  readonly published_at?: unknown;
+  readonly draft?: unknown;
+  readonly prerelease?: unknown;
+}
+
+interface ZipEntry {
+  readonly name: string;
+  readonly compressedSize: number;
+  readonly uncompressedSize: number;
+  readonly compression: number;
+  readonly localOffset: number;
+  readonly directory: boolean;
+  readonly symlink: boolean;
+}
+
+export class RuntimeManager {
+  readonly paths: PlatformPaths;
+  private readonly fetcher: typeof globalThis.fetch;
+  private readonly now: () => Date;
+  private readonly logger: (line: string) => void;
+  private readonly githubApiBaseUrl: string;
+  private readonly npmCommand: string;
+  private readonly installDependencies: (runtimePath: string, onLine: (line: string) => void) => Promise<void>;
+  private readonly healthCheck: (runtimePath: string, onLine?: (line: string) => void) => Promise<void>;
+  private readonly healthCheckTimeoutMs: number;
+  private installations: Installation[] | null = null;
+  private versionsCache: { expiresAt: number; options: VersionOption[] } | null = null;
+  private writeQueue: Promise<void> = Promise.resolve();
+  private inFlightId: string | null = null;
+
+  public constructor(options: RuntimeManagerOptions) {
+    this.paths = options.paths;
+    this.fetcher = options.fetch ?? globalThis.fetch;
+    this.now = options.now ?? (() => new Date());
+    this.logger = options.logger ?? ((line) => console.log(line));
+    this.githubApiBaseUrl = (options.githubApiBaseUrl ?? GITHUB_API).replace(/\/$/u, '');
+    this.npmCommand = options.npmCommand ?? 'npm';
+    this.installDependencies = options.installDependencies ?? ((path, log) => runNpmInstall(path, this.npmCommand, log));
+    this.healthCheckTimeoutMs = options.healthCheckTimeoutMs ?? 120_000;
+    const healthCheckPort = options.healthCheckPort ?? 8000;
+    this.healthCheck = options.healthCheck
+      ? options.healthCheck
+      : (runtimePath, onLine) => probeRuntime(runtimePath, this.healthCheckTimeoutMs, healthCheckPort, (line) => {
+        if (onLine) onLine(line); else this.logger(`[sillytavern] ${line}`);
+      });
+  }
+
+  public async listVersions(forceRefresh = false): Promise<VersionOption[]> {
+    if (!forceRefresh && this.versionsCache && this.versionsCache.expiresAt > Date.now()) {
+      return this.versionsCache.options;
+    }
+    const response = await this.fetcher(`${this.githubApiBaseUrl}/repos/${REPOSITORY}/releases?per_page=100`, {
+      headers: { accept: 'application/vnd.github+json', 'user-agent': 'sillytavern-manager' },
+    });
+    if (!response.ok) {
+      throw new RuntimeError('github_unavailable', `GitHub returned HTTP ${response.status}`);
+    }
+    const payload: unknown = await response.json();
+    if (!Array.isArray(payload)) {
+      throw new RuntimeError('github_invalid_response', 'GitHub returned an invalid release list');
+    }
+    const releases = payload
+      .filter(isReleasePayload)
+      .filter((release) => release.draft !== true && release.prerelease !== true)
+      .map((release) => ({
+        tag: typeof release.tag_name === 'string' ? release.tag_name : '',
+        name: typeof release.name === 'string' && release.name.length > 0 ? release.name : null,
+        publishedAt: typeof release.published_at === 'string' ? release.published_at : null,
+      }))
+      .filter((release) => release.tag.length > 0);
+    const latest = releases[0];
+    const options: VersionOption[] = [
+      {
+        selector: 'latest',
+        label: `${latest?.name ?? latest?.tag ?? 'Latest release'} (latest)`,
+        ref: latest?.tag ?? 'release',
+        channel: 'release',
+        tag: latest?.tag ?? null,
+        publishedAt: latest?.publishedAt ?? null,
+      },
+      { selector: 'release', label: 'Release branch', ref: 'release', channel: 'release', tag: null, publishedAt: null },
+      { selector: 'staging', label: 'Staging branch', ref: 'staging', channel: 'staging', tag: null, publishedAt: null },
+      ...releases.map((release) => ({
+        selector: release.tag,
+        label: release.name ? `${release.name} (${release.tag})` : release.tag,
+        ref: release.tag,
+        channel: 'release' as const,
+        tag: release.tag,
+        publishedAt: release.publishedAt,
+      })),
+    ];
+    this.versionsCache = { expiresAt: Date.now() + 60_000, options };
+    return options;
+  }
+
+  public async listInstallations(): Promise<Installation[]> {
+    const installations = await this.loadInstallations();
+    return installations.map((installation) => ({ ...installation }));
+  }
+
+  public async getInstallation(id: string): Promise<Installation | null> {
+    const installations = await this.loadInstallations();
+    return installations.find((installation) => installation.id === id) ?? null;
+  }
+
+  public async getActiveInstallation(): Promise<Installation | null> {
+    try {
+      const raw = await readFile(join(this.paths.state, ACTIVE_FILE), 'utf8');
+      const id = JSON.parse(raw) as unknown;
+      return typeof id === 'string' ? this.getInstallation(id) : null;
+    } catch (error: unknown) {
+      if (isFileNotFound(error)) return null;
+      throw error;
+    }
+  }
+
+  public async install(
+    selector: VersionSelector,
+    onProgress?: (progress: InstallationProgress) => void,
+  ): Promise<Installation> {
+    return this.queueInstall(selector, onProgress).promise;
+  }
+
+  public queueInstall(
+    selector: VersionSelector,
+    onProgress?: (progress: InstallationProgress) => void,
+  ): { id: string; promise: Promise<Installation> } {
+    if (this.inFlightId) throw new RuntimeError('installation_busy', 'An installation is already in progress');
+    const id = randomUUID();
+    this.inFlightId = id;
+    const promise = this.installWithId(id, selector, onProgress).finally(() => { this.inFlightId = null; });
+    return { id, promise };
+  }
+
+  private async installWithId(
+    id: string,
+    selector: VersionSelector,
+    onProgress?: (progress: InstallationProgress) => void,
+  ): Promise<Installation> {
+    const now = this.now().toISOString();
+    const initial: Installation = {
+      id, selector, resolvedRef: selector, channel: selector === 'staging' ? 'staging' : 'release',
+      runtimePath: join(this.paths.profiles, id, 'runtime'), markerPath: join(this.paths.profiles, id, 'runtime', MARKER_FILE),
+      status: 'queued', progress: 0, step: 'Waiting to start', error: null, createdAt: now, updatedAt: now, activatedAt: null,
+    };
+    await this.upsert(initial);
+    const update = async (status: InstallationStatus, progress: number, step: string, error: string | null = null): Promise<Installation> => {
+      const current = await this.getInstallation(id);
+      if (!current) throw new Error('Installation record disappeared');
+      const next: Installation = { ...current, status, progress, step, error, updatedAt: this.now().toISOString() };
+      await this.upsert(next); onProgress?.({ status, progress, step }); this.logger(`[installer:${id}] ${step}`); return next;
+    };
+
+    const stagingRoot = join(this.paths.tmp, `installation-${id}`);
+    let finalRoot: string | null = null;
+    try {
+      const resolved = await this.resolveSelector(selector);
+      await update('queued', 2, `Resolved ${resolved.ref}`);
+      const active = await this.getActiveInstallation();
+      if (active) await this.createSafetySnapshot(active);
+      await rm(stagingRoot, { recursive: true, force: true });
+      await mkdir(stagingRoot, { recursive: true });
+      const zipPath = join(stagingRoot, 'source.zip');
+      await update('downloading', 5, `Downloading ${resolved.ref}`);
+      await this.downloadZip(resolved.ref, zipPath, (progress) => onProgress?.({ status: 'downloading', progress: 5 + progress * 0.4, step: 'Downloading source archive' }));
+      await update('extracting', 48, 'Extracting source archive');
+      const extractedPath = join(stagingRoot, 'runtime');
+      await mkdir(extractedPath, { recursive: true });
+      await extractZipSafely(zipPath, extractedPath, (progress) => onProgress?.({ status: 'extracting', progress: 48 + progress * 0.2, step: 'Extracting source archive' }));
+      await update('installing', 70, 'Installing SillyTavern dependencies');
+      await this.installDependencies(extractedPath, (line) => this.logger(`[installer:${id}] ${line}`));
+      await update('health_check', 90, 'Checking the installation');
+      await this.healthCheck(extractedPath, (line) => this.logger(`[installer:${id}] ${line}`));
+      finalRoot = join(this.paths.profiles, id, 'runtime');
+      await mkdir(join(this.paths.profiles, id), { recursive: true });
+      await rm(finalRoot, { recursive: true, force: true });
+      await rename(extractedPath, finalRoot);
+      const marker = {
+        schemaVersion: 1,
+        installationId: id,
+        selector,
+        resolvedRef: resolved.ref,
+        installedAt: this.now().toISOString(),
+      } as const;
+      await writeFile(join(finalRoot, MARKER_FILE), `${JSON.stringify(marker, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+      const ready = await update('ready', 100, 'Installation ready');
+      const activated = { ...ready, resolvedRef: resolved.ref, channel: resolved.channel, runtimePath: finalRoot, markerPath: join(finalRoot, MARKER_FILE), activatedAt: this.now().toISOString(), updatedAt: this.now().toISOString() } satisfies Installation;
+      await this.upsert(activated);
+      await this.writeActiveInstallation(id);
+      this.logger(`[installer:${id}] installation ${resolved.ref} is ready`);
+      return activated;
+    } catch (error: unknown) {
+      const message = error instanceof RuntimeError ? error.message : error instanceof Error ? error.message : 'Installation failed';
+      const failed = await update('failed', 100, 'Installation failed', message);
+      if (finalRoot) await rm(finalRoot, { recursive: true, force: true });
+      this.logger(`[installer:${id}] failed: ${message}`);
+      return failed;
+    } finally {
+      await rm(stagingRoot, { recursive: true, force: true });
+    }
+  }
+
+  public async resolveSelector(selector: VersionSelector): Promise<{ ref: string; channel: VersionChannel }> {
+    if (selector === 'latest') {
+      const latest = (await this.listVersions())[0];
+      return { ref: latest?.ref ?? 'release', channel: 'release' };
+    }
+    if (selector === 'release' || selector === 'staging') return { ref: selector, channel: selector as VersionChannel };
+    if (!/^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/u.test(selector) || selector.includes('..')) {
+      throw new RuntimeError('invalid_version', 'The selected version is invalid');
+    }
+    return { ref: selector, channel: 'release' as const };
+  }
+
+  private async downloadZip(ref: string, target: string, onProgress: (progress: number) => void): Promise<void> {
+    const url = `https://github.com/${REPOSITORY}/zipball/${encodeURIComponent(ref)}`;
+    const response = await this.fetcher(url, { headers: { accept: 'application/zip', 'user-agent': 'sillytavern-manager' }, redirect: 'follow' });
+    if (!response.ok || !response.body) throw new RuntimeError('download_failed', `GitHub archive download failed (HTTP ${response.status})`);
+    const expected = Number(response.headers.get('content-length') ?? 0);
+    let received = 0;
+    const source = Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0]);
+    source.on('data', (chunk: Buffer) => { received += chunk.length; if (expected > 0) onProgress(Math.min(1, received / expected)); });
+    await pipeline(source, createWriteStream(target, { mode: 0o600 }));
+    onProgress(1);
+  }
+
+  private async createSafetySnapshot(active: Installation): Promise<void> {
+    const source = active.runtimePath;
+    try { await stat(source); } catch (error: unknown) { if (isFileNotFound(error)) return; throw error; }
+    const snapshot = join(this.paths.profiles, '.snapshots', `${active.id}-${this.now().toISOString().replace(/[:.]/gu, '-')}`);
+    for (const name of ['data', 'public', 'config.yaml', 'config.yml', 'secrets.json']) {
+      const sourcePath = join(source, name);
+      try { await stat(sourcePath); } catch (error: unknown) { if (isFileNotFound(error)) continue; throw error; }
+      await mkdir(snapshot, { recursive: true });
+      await copyPath(sourcePath, join(snapshot, name));
+    }
+    this.logger(`[installer] safety snapshot created for ${active.id}`);
+  }
+
+  private async loadInstallations(): Promise<Installation[]> {
+    if (this.installations) return this.installations;
+    try {
+      const parsed: unknown = JSON.parse(await readFile(join(this.paths.state, INSTALLATIONS_FILE), 'utf8'));
+      if (!isRecord(parsed) || parsed.schemaVersion !== 1 || !Array.isArray(parsed.installations)) throw new Error('Invalid installation state');
+      this.installations = (parsed.installations as Installation[]).map((installation) =>
+        installation.status === 'ready' || installation.status === 'failed' ? installation : {
+          ...installation, status: 'failed', step: 'Installation interrupted', error: 'The manager stopped before the installation completed', updatedAt: this.now().toISOString(),
+        });
+    } catch (error: unknown) {
+      if (!isFileNotFound(error)) throw error;
+      this.installations = [];
+    }
+    return this.installations;
+  }
+
+  private async upsert(installation: Installation): Promise<void> {
+    const operation = async () => {
+      const installations = await this.loadInstallations();
+      const index = installations.findIndex((item) => item.id === installation.id);
+      if (index < 0) installations.push(installation); else installations[index] = installation;
+      await mkdir(this.paths.state, { recursive: true });
+      const target = join(this.paths.state, INSTALLATIONS_FILE);
+      const temporary = `${target}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+      await writeFile(temporary, `${JSON.stringify({ schemaVersion: 1, installations }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+      await rename(temporary, target);
+    };
+    const previous = this.writeQueue;
+    this.writeQueue = previous.then(operation, operation);
+    await this.writeQueue;
+  }
+
+  private async writeActiveInstallation(id: string): Promise<void> {
+    await mkdir(this.paths.state, { recursive: true });
+    const target = join(this.paths.state, ACTIVE_FILE);
+    const temporary = `${target}.${randomBytes(4).toString('hex')}.tmp`;
+    await writeFile(temporary, `${JSON.stringify(id)}\n`, { encoding: 'utf8', mode: 0o600 });
+    await rename(temporary, target);
+  }
+}
+
+export class RuntimeError extends Error {
+  public readonly code: string;
+  public constructor(code: string, message: string) { super(message); this.code = code; }
+}
+
+async function probeRuntime(
+  runtimePath: string,
+  timeoutMs: number,
+  port = 8000,
+  onLine?: (line: string) => void,
+): Promise<void> {
+  let packageJson: unknown;
+  try { packageJson = JSON.parse(await readFile(join(runtimePath, 'package.json'), 'utf8')); } catch { throw new RuntimeError('health_check_failed', 'The installation does not contain a valid package.json'); }
+  if (!isRecord(packageJson) || packageJson.name !== 'sillytavern' || !isRecord(packageJson.scripts) || typeof packageJson.scripts.start !== 'string') {
+    throw new RuntimeError('health_check_failed', 'The SillyTavern start script is missing');
+  }
+  await assertPortAvailable(port);
+  // Older SillyTavern releases expect the custom data root to exist before
+  // they create cookie-secret.txt. Newer releases create it themselves, but
+  // preparing it here keeps the health check compatible across layouts.
+  const dataRoot = join(runtimePath, '.health-check-data');
+  await mkdir(dataRoot, { recursive: true });
+  const output: string[] = [];
+  const appendOutput = (chunk: string) => {
+    const lines = chunk.split(/\r?\n/u);
+    for (const line of lines) {
+      const clean = line.replace(/\u001b\[[0-?]*[ -\/]*[@-~]/gu, '').trim();
+      if (!clean) continue;
+      output.push(clean);
+      if (output.length > 80) output.shift();
+      onLine?.(clean);
+    }
+  };
+  const child = spawn(process.execPath, ['server.js', '--port', String(port), '--listen', 'false', '--dataRoot', dataRoot, '--browserLaunchEnabled', 'false'], { cwd: runtimePath, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  child.stdout?.setEncoding('utf8');
+  child.stderr?.setEncoding('utf8');
+  child.stdout?.on('data', appendOutput);
+  child.stderr?.on('data', appendOutput);
+  try {
+    await waitForHttp(`http://127.0.0.1:${port}/`, child, timeoutMs, () => output);
+  } finally {
+    await stopChild(child);
+    await rm(dataRoot, { recursive: true, force: true });
+  }
+}
+
+async function assertPortAvailable(port: number): Promise<void> {
+  await new Promise<void>((resolvePromise, reject) => {
+    const probe = createProbeServer();
+    probe.once('error', () => { probe.close(); reject(new RuntimeError('health_check_failed', `Port ${port} is already in use`)); });
+    probe.listen(port, '127.0.0.1', () => probe.close(() => resolvePromise()));
+  });
+}
+
+async function waitForHttp(url: string, child: ChildProcess, timeoutMs: number, getOutput: () => string[]): Promise<void> {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    if (child.exitCode !== null) {
+      const details = getOutput().slice(-8).join(' | ');
+      throw new RuntimeError('health_check_failed', details.length > 0 ? `SillyTavern exited during the health check: ${details}` : 'SillyTavern exited during the health check');
+    }
+    try { const response = await fetch(url); if (response.ok) return; } catch { /* startup is still in progress */ }
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
+  }
+  const details = getOutput().slice(-8).join(' | ');
+  throw new RuntimeError('health_check_failed', details.length > 0 ? `SillyTavern did not become ready in time: ${details}` : 'SillyTavern did not become ready in time');
+}
+
+async function stopChild(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null) return;
+  child.kill('SIGTERM');
+  await new Promise<void>((resolvePromise) => { const timer = setTimeout(resolvePromise, 2_000); child.once('exit', () => { clearTimeout(timer); resolvePromise(); }); });
+  if (child.exitCode === null) child.kill('SIGKILL');
+}
+
+async function runNpmInstall(runtimePath: string, npmCommand: string, onLine: (line: string) => void): Promise<void> {
+  await new Promise<void>((resolvePromise, reject) => {
+    const child = spawn(npmCommand, ['install', '--no-audit', '--no-fund', '--progress=false'], { cwd: runtimePath, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, shell: process.platform === 'win32' });
+    const consume = (stream: NodeJS.ReadableStream) => {
+      let pending = '';
+      stream.setEncoding('utf8');
+      stream.on('data', (chunk: string) => { pending += chunk; const lines = pending.split(/\r?\n/u); pending = lines.pop() ?? ''; for (const line of lines) if (line.trim()) onLine(line.replace(/\u001b\[[0-?]*[ -\/]*[@-~]/gu, '')); });
+      stream.on('end', () => { if (pending.trim()) onLine(pending.replace(/\u001b\[[0-?]*[ -\/]*[@-~]/gu, '')); });
+    };
+    consume(child.stdout); consume(child.stderr);
+    child.once('error', (error) => reject(new RuntimeError('npm_failed', `Could not start npm: ${error.message}`)));
+    child.once('close', (code) => code === 0 ? resolvePromise() : reject(new RuntimeError('npm_failed', `npm install exited with code ${code ?? 'unknown'}`)));
+  });
+}
+
+export async function extractZipSafely(zipPath: string, destination: string, onProgress?: (progress: number) => void): Promise<void> {
+  const entries = await readZipDirectory(zipPath);
+  const files = entries.filter((entry) => !entry.directory);
+  const topLevels = new Set(files.map((entry) => entry.name.split('/')[0]).filter((value): value is string => Boolean(value)));
+  const stripRoot = topLevels.size === 1 && files.every((entry) => entry.name.split('/').length > 1) ? [...topLevels][0] : null;
+  const written = new Set<string>();
+  let completed = 0;
+  for (const entry of entries) {
+    if (entry.directory) continue;
+    if (entry.symlink) throw new RuntimeError('unsafe_archive', `Symlink entry is not allowed: ${entry.name}`);
+    validateArchiveEntryName(entry.name);
+    const relativeName = stripRoot && entry.name.startsWith(`${stripRoot}/`) ? entry.name.slice(stripRoot.length + 1) : entry.name;
+    const target = safeArchivePath(destination, relativeName);
+    if (written.has(target)) throw new RuntimeError('unsafe_archive', `Duplicate archive entry: ${entry.name}`);
+    written.add(target);
+    await mkdir(resolve(target, '..'), { recursive: true });
+    await extractEntry(zipPath, entry, target);
+    completed += 1;
+    onProgress?.(files.length === 0 ? 1 : completed / files.length);
+  }
+}
+
+async function readZipDirectory(zipPath: string): Promise<ZipEntry[]> {
+  const details = await stat(zipPath);
+  const tailLength = Math.min(details.size, 65_557);
+  const handle = await open(zipPath, 'r');
+  try {
+    const tail = Buffer.alloc(tailLength);
+    await handle.read(tail, 0, tail.length, details.size - tail.length);
+    const eocdOffset = findSignature(tail, 0x06054b50);
+    if (eocdOffset < 0) throw new RuntimeError('invalid_archive', 'The downloaded file is not a ZIP archive');
+    const entryCount = tail.readUInt16LE(eocdOffset + 10);
+    const directorySize = tail.readUInt32LE(eocdOffset + 12);
+    const directoryOffset = tail.readUInt32LE(eocdOffset + 16);
+    if (directorySize > MAX_ZIP_DIRECTORY_BYTES || entryCount === 0xffff || directoryOffset === 0xffffffff) throw new RuntimeError('archive_too_large', 'ZIP64 archives are not supported for SillyTavern installations');
+    const directory = Buffer.alloc(directorySize);
+    await handle.read(directory, 0, directory.length, directoryOffset);
+    const entries: ZipEntry[] = [];
+    let offset = 0;
+    for (let index = 0; index < entryCount; index += 1) {
+      if (directory.readUInt32LE(offset) !== 0x02014b50) throw new RuntimeError('invalid_archive', 'The ZIP central directory is corrupt');
+      const flags = directory.readUInt16LE(offset + 8);
+      const compression = directory.readUInt16LE(offset + 10);
+      const compressedSize = directory.readUInt32LE(offset + 20);
+      const uncompressedSize = directory.readUInt32LE(offset + 24);
+      const nameLength = directory.readUInt16LE(offset + 28);
+      const extraLength = directory.readUInt16LE(offset + 30);
+      const commentLength = directory.readUInt16LE(offset + 32);
+      const localOffset = directory.readUInt32LE(offset + 42);
+      const nameBytes = directory.subarray(offset + 46, offset + 46 + nameLength);
+      const name = (flags & 0x800 ? nameBytes.toString('utf8') : nameBytes.toString('utf8')).replaceAll('\\', '/');
+      const externalAttributes = directory.readUInt32LE(offset + 38);
+      entries.push({ name, compressedSize, uncompressedSize, compression, localOffset, directory: name.endsWith('/') || (externalAttributes & 0x10) !== 0, symlink: (externalAttributes >>> 16 & 0xf000) === 0xa000 });
+      offset += 46 + nameLength + extraLength + commentLength;
+      if (offset > directory.length) throw new RuntimeError('invalid_archive', 'The ZIP central directory is corrupt');
+    }
+    return entries;
+  } finally { await handle.close(); }
+}
+
+async function extractEntry(zipPath: string, entry: ZipEntry, target: string): Promise<void> {
+  if (entry.compressedSize === 0) {
+    if (entry.uncompressedSize !== 0 || entry.compression !== 0) throw new RuntimeError('invalid_archive', `Archive entry size mismatch: ${entry.name}`);
+    await writeFile(target, Buffer.alloc(0), { mode: 0o600 });
+    return;
+  }
+  const handle = await open(zipPath, 'r');
+  let dataOffset: number;
+  try {
+    const local = Buffer.alloc(30);
+    await handle.read(local, 0, local.length, entry.localOffset);
+    if (local.readUInt32LE(0) !== 0x04034b50) throw new RuntimeError('invalid_archive', 'The ZIP local header is corrupt');
+    dataOffset = entry.localOffset + 30 + local.readUInt16LE(26) + local.readUInt16LE(28);
+  } finally { await handle.close(); }
+  const source = createReadStream(zipPath, { start: dataOffset, end: dataOffset + entry.compressedSize - 1 });
+  const destination = createWriteStream(target, { mode: 0o600 });
+  if (entry.compression === 0) await pipeline(source, destination);
+  else if (entry.compression === 8) await pipeline(source, createInflateRaw(), destination);
+  else throw new RuntimeError('unsupported_archive', `ZIP compression ${entry.compression} is not supported`);
+  const details = await stat(target);
+  if (details.size !== entry.uncompressedSize) throw new RuntimeError('invalid_archive', `Archive entry size mismatch: ${entry.name}`);
+}
+
+function safeArchivePath(root: string, entryName: string): string {
+  if (entryName.includes('\0')) throw new RuntimeError('unsafe_archive', 'Archive contains a NUL byte');
+  const normalized = entryName.replaceAll('\\', '/');
+  if (normalized.startsWith('/') || /^[A-Za-z]:/u.test(normalized)) throw new RuntimeError('unsafe_archive', `Absolute archive path is not allowed: ${entryName}`);
+  const pieces = normalized.split('/').filter((piece) => piece.length > 0 && piece !== '.');
+  if (pieces.includes('..')) throw new RuntimeError('unsafe_archive', `Parent archive path is not allowed: ${entryName}`);
+  const candidate = resolve(root, ...pieces);
+  const rootResolved = resolve(root);
+  const relativeCandidate = relative(rootResolved, candidate);
+  if (relativeCandidate.startsWith('..') || relativeCandidate.split(sep).includes('..')) throw new RuntimeError('unsafe_archive', `Archive path escapes destination: ${entryName}`);
+  return candidate;
+}
+
+function validateArchiveEntryName(entryName: string): void {
+  const normalized = entryName.replaceAll('\\', '/');
+  if (normalized.startsWith('/') || /^[A-Za-z]:/u.test(normalized) || normalized.split('/').includes('..')) {
+    throw new RuntimeError('unsafe_archive', `Unsafe archive path: ${entryName}`);
+  }
+}
+
+async function copyPath(source: string, destination: string): Promise<void> {
+  const details = await lstat(source);
+  if (details.isSymbolicLink()) throw new RuntimeError('snapshot_failed', 'A linked data directory needs review before switching versions');
+  if (details.isDirectory()) {
+    await mkdir(destination, { recursive: true });
+    for (const child of await readdir(source)) await copyPath(join(source, child), join(destination, child));
+    return;
+  }
+  await mkdir(resolve(destination, '..'), { recursive: true });
+  await pipeline(createReadStream(source), createWriteStream(destination, { mode: 0o600 }));
+}
+
+function findSignature(buffer: Buffer, signature: number): number {
+  for (let index = buffer.length - 4; index >= 0; index -= 1) if (buffer.readUInt32LE(index) === signature) return index;
+  return -1;
+}
+
+function isReleasePayload(value: unknown): value is ReleasePayload { return isRecord(value); }
+function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null; }
+function isFileNotFound(error: unknown): boolean { return isRecord(error) && error.code === 'ENOENT'; }

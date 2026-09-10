@@ -15,6 +15,7 @@
   "nav": {
     "overview": "Overview",
     "installations": "Installations",
+    "data": "Data",
     "profiles": "Profiles",
     "backups": "Backups",
     "metrics": "Metrics",
@@ -28,7 +29,14 @@
     "telemetryNotice": "This free software collects limited usage metadata to support the project. It never sends API keys, prompts, chats, model responses, or request logs.",
     "terms": "By continuing, you acknowledge the terms and the disclaimer.",
     "disclaimer": "You are responsible for your SillyTavern data, credentials, providers, backups, and compliance with applicable service terms.",
-    "adminPassword": "Create an admin password"
+    "adminPassword": "Create an admin password",
+    "password": "Admin password",
+    "setupCode": "Setup code",
+    "loginTitle": "Sign in to your manager",
+    "signIn": "Sign in",
+    "createAdmin": "Create admin",
+    "authError": "Could not sign in",
+    "connectionError": "Cannot reach the manager. Try again."
   },
   "status": {
     "manager": "Manager",
@@ -51,8 +59,16 @@
     "viewAll": "View all",
     "liveLogs": "Live logs",
     "logSource": "Log source",
+    "allLogs": "All logs",
+    "searchLogs": "Search logs",
+    "showCompactLogs": "Compact view",
+    "showDetailedLogs": "Detailed view",
+    "expandLogs": "Expand logs",
+    "collapseLogs": "Collapse logs",
+    "openLogs": "Open logs",
     "installer": "Installer",
     "noLogs": "No logs yet",
+    "noLogMatches": "No matching logs",
     "noProfiles": "No profiles yet",
     "noMetrics": "No usage yet",
     "noConfiguration": "No configuration loaded",
@@ -64,6 +80,10 @@
     "appearance": "Appearance",
     "sharingRequired": "Privacy-safe usage sharing",
     "metadataNotice": "Only provider, model, endpoint host, usage totals, status and timing are measured."
+    ,"installComplete": "Installation complete"
+    ,"installationHistory": "Installation history"
+    ,"noInstallations": "No installation attempts yet"
+    ,"installRequestFailed": "Could not start the installation"
   },
   "dashboard": {
     "eyebrow": "CONTROL ROOM / OVERVIEW",
@@ -131,6 +151,8 @@
     "officialRepo": "Choose a channel from the official SillyTavern repository.",
     "goToInstall": "Choose a version",
     "notInstalled": "Not installed",
+    "ready": "Ready",
+    "installFailed": "Install failed",
     "noData": "No data yet",
     "noActivity": "Usage will appear here after the first request.",
     "noEvents": "No events yet",

@@ -15,6 +15,7 @@
   "nav": {
     "overview": "Tổng quan",
     "installations": "Bản cài đặt",
+    "data": "Dữ liệu",
     "profiles": "Profile",
     "backups": "Sao lưu",
     "metrics": "Số liệu",
@@ -28,7 +29,14 @@
     "telemetryNotice": "Phần mềm miễn phí này thu thập một số số liệu sử dụng giới hạn để hỗ trợ dự án. Phần mềm không gửi API key, prompt, chat, nội dung model hoặc request log.",
     "terms": "Khi tiếp tục, bạn xác nhận đã đọc điều khoản và tuyên bố miễn trừ trách nhiệm.",
     "disclaimer": "Bạn chịu trách nhiệm với dữ liệu SillyTavern, credential, provider, backup và việc tuân thủ điều khoản dịch vụ liên quan.",
-    "adminPassword": "Tạo mật khẩu admin"
+    "adminPassword": "Tạo mật khẩu admin",
+    "password": "Mật khẩu quản trị",
+    "setupCode": "Mã thiết lập",
+    "loginTitle": "Đăng nhập trang quản trị",
+    "signIn": "Đăng nhập",
+    "createAdmin": "Tạo quản trị viên",
+    "authError": "Không thể đăng nhập",
+    "connectionError": "Không kết nối được manager. Hãy thử lại."
   },
   "status": {
     "manager": "Manager",
@@ -51,8 +59,16 @@
     "viewAll": "Xem tất cả",
     "liveLogs": "Log trực tiếp",
     "logSource": "Nguồn log",
+    "allLogs": "Tất cả log",
+    "searchLogs": "Tìm trong log",
+    "showCompactLogs": "Hiển thị gọn",
+    "showDetailedLogs": "Hiển thị chi tiết",
+    "expandLogs": "Mở rộng log",
+    "collapseLogs": "Thu gọn log",
+    "openLogs": "Mở log",
     "installer": "Trình cài đặt",
     "noLogs": "Chưa có log",
+    "noLogMatches": "Không có log phù hợp",
     "noProfiles": "Chưa có profile",
     "noMetrics": "Chưa có usage",
     "noConfiguration": "Chưa có cấu hình",
@@ -64,6 +80,10 @@
     "appearance": "Giao diện",
     "sharingRequired": "Chia sẻ usage bảo vệ riêng tư",
     "metadataNotice": "Chỉ provider, model, hostname endpoint, tổng usage, trạng thái và thời gian được đo."
+    ,"installComplete": "Cài đặt hoàn tất"
+    ,"installationHistory": "Lịch sử cài đặt"
+    ,"noInstallations": "Chưa có lần cài đặt nào"
+    ,"installRequestFailed": "Không thể bắt đầu cài đặt"
   },
   "dashboard": {
     "eyebrow": "TRUNG TÂM ĐIỀU HÀNH / TỔNG QUAN",
@@ -131,6 +151,8 @@
     "officialRepo": "Chọn một kênh từ repository SillyTavern chính thức.",
     "goToInstall": "Chọn phiên bản",
     "notInstalled": "Chưa cài",
+    "ready": "Sẵn sàng",
+    "installFailed": "Cài đặt lỗi",
     "noData": "Chưa có dữ liệu",
     "noActivity": "Số liệu sử dụng sẽ xuất hiện sau request đầu tiên.",
     "noEvents": "Chưa có sự kiện",

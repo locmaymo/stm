@@ -104,6 +104,7 @@
 .language-control button { min-width: 32px; height: 28px; padding: 0 6px; border-radius: 5px; color: var(--muted-foreground); font-size: 12px; font-weight: 600; }
 .language-control button[aria-pressed="true"] { background: var(--muted); color: var(--foreground); }
 .page-body { padding: 24px; width: 100%; min-width: 0; }
+.auth-shell { display: flex; min-height: 100dvh; align-items: center; justify-content: center; padding: 24px; }
 .core-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
 .core-grid [data-slot="card"] { min-width: 0; gap: 20px; box-shadow: none; }
 .panel-title { display: flex; align-items: center; gap: 10px; font-size: 15px; font-weight: 600; line-height: 1.5; }
@@ -118,28 +119,58 @@
 .address-list dd { min-width: 0; overflow-wrap: anywhere; text-align: right; }
 .r2-note { margin-bottom: -24px; padding: 12px 24px; border-top: 1px solid var(--border); color: var(--muted-foreground); font-size: 12px; }
 .r2-note button:hover { color: var(--foreground); text-decoration: underline; text-underline-offset: 3px; }
-.log-view { display: flex; min-height: 116px; flex: 1; padding: 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--background); }
-.log-view-expanded { min-height: 58vh; }
+.core-grid [data-tour="logs"] { grid-column: 1 / -1; height: 28rem; min-height: 0; overflow: hidden; padding-bottom: 0; }
+.core-grid [data-tour="logs"] [data-slot="card-header"] { flex-shrink: 0; }
+.log-toolbar { display: flex; flex-shrink: 0; flex-wrap: wrap; align-items: center; gap: 10px; }
+.log-density-toggle { margin-left: auto; }
+.logs-content { display: flex; min-width: 0; min-height: 0; flex: 1 1 0%; flex-direction: column; gap: 12px; overflow: hidden; padding: 0 24px 24px; }
+.log-card-placeholder { height: 10rem; margin: 0 24px 24px; border: 1px solid transparent; }
+.log-sheet { inset: 1rem; width: auto; height: calc(100dvh - 2rem); max-width: 76rem; margin: auto; overflow: hidden; border: 1px solid var(--border); border-radius: 12px; outline: none; }
+.log-sheet-header { flex-shrink: 0; flex-direction: row; align-items: center; justify-content: space-between; padding: 18px 24px 14px; border-bottom: 1px solid var(--border); }
+.logs-content-expanded { flex: 1; }
+.log-search { position: relative; display: flex; min-width: 12rem; max-width: 24rem; flex: 1; align-items: center; }
+.log-search svg { position: absolute; left: 10px; z-index: 1; width: 15px; color: var(--muted-foreground); }
+.log-search input { padding-left: 32px; }
+.log-view { min-width: 0; min-height: 0; flex: 1 1 0%; overflow: auto; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--background); scrollbar-gutter: stable; }
+.log-view::-webkit-scrollbar { width: 12px; height: 12px; }
+.log-view::-webkit-scrollbar-thumb { border: 3px solid var(--background); border-radius: 999px; background: var(--muted-foreground); }
+.log-view::-webkit-scrollbar-track, .log-view::-webkit-scrollbar-corner { background: var(--background); }
 .log-empty { color: var(--muted-foreground); font-size: 13px; }
+.log-lines { display: grid; align-content: start; gap: 4px; width: max-content; min-width: 100%; font-family: Consolas, "SFMono-Regular", monospace; font-size: 13px; line-height: 1.65; }
+.log-line { display: flex; align-items: baseline; gap: 16px; white-space: pre; }
+.log-lines time { flex: 0 0 8ch; color: var(--muted-foreground); }
+.log-source { flex: 0 0 11ch; color: var(--primary); }
+.log-message { flex: 1 0 auto; white-space: pre; }
+.data-stack { display: grid; gap: 20px; max-width: 760px; }
+.install-result { margin-top: 12px; color: var(--primary); font-size: 13px; }
+.install-error { margin-top: 12px; color: var(--destructive); font-size: 13px; overflow-wrap: anywhere; }
+.version-select-content { max-height: min(30rem, calc(100dvh - 10rem)); }
 .resource-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px; min-height: 260px; color: var(--muted-foreground); }
-.settings-stack { display: grid; gap: 20px; max-width: 760px; }
-.setting-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 0; }
 [data-slot="sheet-content"][data-mobile="true"], [data-slot="sidebar"][data-mobile="true"] { max-width: calc(100vw - 48px); }
 
-@media (min-width: 1500px) {
+@media (min-width: 1024px) {
   .core-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .core-grid [data-tour="logs"] { grid-column: 1 / -1; }
-  .core-grid [data-tour="logs"] .log-view { min-height: 180px; }
 }
 @media (max-width: 1023px) { .core-grid { grid-template-columns: 1fr; } }
 @media (max-width: 767px) {
   .site-header { padding: 0 12px; gap: 8px; }
-  .page-body { padding: 16px; }
+  .page-body { padding: 16px; padding-bottom: max(16px, env(safe-area-inset-bottom)); }
   .core-grid { gap: 16px; }
   [data-slot="button"], [data-slot="select-trigger"] { min-height: 40px; }
   [data-slot="card-header"], [data-slot="card-content"], [data-slot="card-footer"] { padding-left: 18px; padding-right: 18px; }
   .r2-note { padding-left: 18px; padding-right: 18px; }
   .site-header h1 { font-size: 14px; }
+  .log-header-button { padding-left: 9px; padding-right: 9px; }
+  .core-grid [data-tour="logs"] { height: 24rem; }
+  .logs-content { padding-left: 18px; padding-right: 18px; }
+  .log-card-placeholder { margin-left: 18px; margin-right: 18px; }
+  .log-sheet { inset: 0; width: 100%; height: 100dvh; max-width: none; border-radius: 0; border-left: 0; border-right: 0; }
+  .log-sheet-header { padding-left: 18px; padding-right: 18px; }
+  .logs-content-expanded { padding-bottom: max(18px, env(safe-area-inset-bottom)); }
+  .log-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
+  .log-toolbar [data-slot="select-trigger"] { width: 100%; min-width: 0; }
+  .log-search { grid-column: 1 / -1; grid-row: 2; min-width: 0; max-width: none; }
+  .log-density-toggle { margin-left: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }

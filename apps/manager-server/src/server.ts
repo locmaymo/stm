@@ -2,12 +2,14 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { timingSafeEqual } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import { extname, join, relative, resolve } from 'node:path';
-import type { ApiErrorBody, HealthResponse, ManagerPorts, SetupStatus } from '../../../packages/contracts/src/index.js';
+import type { ApiErrorBody, HealthResponse, Installation, Job, LogEntry, LogSourceFilter, ManagerPorts, SetupStatus, VersionSelector } from '../../../packages/contracts/src/index.js';
 import { getPlatformPaths, type PlatformPaths } from '../../../packages/platform/src/index.js';
+import { RuntimeError, RuntimeManager, type InstallationProgress } from '../../../packages/sillytavern-runtime/src/index.js';
 import { hashPassword, MIN_PASSWORD_LENGTH, validatePassword, verifyPassword } from './password.js';
 import { RateLimiter } from './rate-limit.js';
 import { parseSessionCookie, SessionStore, clearSessionCookie, sessionCookie } from './sessions.js';
 import { hashSetupCode, StateStore } from './state.js';
+import { LogBuffer } from './log-buffer.js';
 
 const MANAGER_PORT = 7860 as const;
 const SILLYTAVERN_PORT = 8000 as const;
@@ -45,12 +47,15 @@ export interface ManagerServerOptions {
   readonly setupCodeRequired?: boolean;
   readonly staticRoot?: string;
   readonly logger?: (line: string) => void;
+  readonly runtime?: RuntimeManager;
+  readonly logBuffer?: LogBuffer;
 }
 
 export interface ManagerServer {
   readonly server: Server;
   readonly store: StateStore;
   readonly sessions: SessionStore;
+  readonly runtime: RuntimeManager;
   readonly port: number;
   close(): Promise<void>;
 }
@@ -71,7 +76,10 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   );
   const sessions = options.sessions ?? new SessionStore();
   const rateLimiter = options.rateLimiter ?? new RateLimiter();
-  const logger = options.logger ?? ((line: string) => console.log(line));
+  const jobs = new JobStore(options.logBuffer);
+  const baseLogger = options.logger ?? ((line: string) => console.log(line));
+  const logger = (line: string) => { jobs.append('manager', line); baseLogger(line); };
+  const runtime = options.runtime ?? new RuntimeManager({ paths, logger: (line) => { jobs.append('installer', line); baseLogger(line); } });
   const secureCookies = options.secureCookies ?? env.STM_SECURE_COOKIES === '1';
   const setupCodeRequired = options.setupCodeRequired ?? requiresSetupCode(env);
   const staticRoot = resolve(options.staticRoot ?? join(process.cwd(), 'apps', 'manager-panel', 'dist'));
@@ -104,6 +112,8 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       setupCodeRequired,
       staticRoot,
       logger,
+      runtime,
+      jobs,
     }).catch((error: unknown) => {
       if (error instanceof RequestError) {
         sendError(response, error.statusCode, error.code, error.message);
@@ -128,6 +138,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     server,
     store,
     sessions,
+    runtime,
     port: actualPort,
     close: () => closeServer(server),
   };
@@ -144,8 +155,10 @@ async function handleRequest(options: {
   readonly setupCodeRequired: boolean;
   readonly staticRoot: string;
   readonly logger: (line: string) => void;
+  readonly runtime: RuntimeManager;
+  readonly jobs: JobStore;
 }): Promise<void> {
-  const { request, response, store, sessions, rateLimiter, startedAt, secureCookies, setupCodeRequired, staticRoot } = options;
+  const { request, response, store, sessions, rateLimiter, startedAt, secureCookies, setupCodeRequired, staticRoot, runtime, jobs } = options;
   const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
   const pathname = url.pathname;
   const context: RequestContext = {
@@ -202,6 +215,13 @@ async function handleRequest(options: {
     return;
   }
 
+  if (pathname === '/api/v1/auth/session' && method === 'GET') {
+    const session = requireSession(context, sessions);
+    if (!session) return;
+    sendJson(response, 200, { session });
+    return;
+  }
+
   if (pathname === '/api/v1/auth/logout' && method === 'POST') {
     const session = requireSession(context, sessions);
     if (!session) {
@@ -216,7 +236,7 @@ async function handleRequest(options: {
     return;
   }
 
-  const needsAuth = PROTECTED_PATHS.has(pathname) || pathname.startsWith('/api/v1/jobs/') || pathname.startsWith('/api/v1/logs');
+  const needsAuth = isProtectedPath(pathname);
   if (needsAuth) {
     const session = requireSession(context, sessions);
     if (!session) {
@@ -225,11 +245,92 @@ async function handleRequest(options: {
     if (method !== 'GET' && !requireCsrf(context, session.csrfToken)) {
       return;
     }
-    sendError(response, 501, 'not_implemented', 'This manager feature is not available in Batch 1');
+    await handleRuntimeRequest(context, runtime, jobs);
     return;
   }
 
   sendError(response, 404, 'not_found', 'Route not found');
+}
+
+async function handleRuntimeRequest(context: RequestContext, runtime: RuntimeManager, jobs: JobStore): Promise<void> {
+  const { pathname, request, response } = context;
+  const method = request.method ?? 'GET';
+  if (pathname === '/api/v1/logs' && method === 'GET') {
+    const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
+    const afterValue = Number(url.searchParams.get('after') ?? 0);
+    const sourceParam = url.searchParams.get('source') ?? 'all';
+    if (!Number.isSafeInteger(afterValue) || afterValue < 0) { sendError(response, 400, 'invalid_cursor', 'The log cursor is invalid'); return; }
+    if (!isLogSourceFilter(sourceParam)) { sendError(response, 400, 'invalid_source', 'The log source is invalid'); return; }
+    const result = jobs.logs(afterValue, sourceParam === 'all' ? null : sourceParam);
+    sendJson(response, 200, result);
+    return;
+  }
+  if (pathname === '/api/v1/versions' && method === 'GET') {
+    const versions = await runtime.listVersions();
+    sendJson(response, 200, { versions });
+    return;
+  }
+  if (pathname === '/api/v1/installations' && method === 'GET') {
+    const [installations, active] = await Promise.all([runtime.listInstallations(), runtime.getActiveInstallation()]);
+    sendJson(response, 200, { installations, activeInstallationId: active?.id ?? null });
+    return;
+  }
+  if (pathname === '/api/v1/installations' && method === 'POST') {
+    const body = await readJson(request);
+    const selector = isRecord(body) && typeof body.version === 'string' ? body.version : null;
+    if (!selector || !isVersionSelector(selector)) {
+      sendError(response, 400, 'invalid_version', 'A valid SillyTavern version must be selected');
+      return;
+    }
+    let queuedId = '';
+    let queued: { id: string; promise: Promise<Installation> };
+    try {
+      queued = runtime.queueInstall(selector as VersionSelector, (progress) => jobs.updateFromProgress(queuedId, progress));
+    } catch (error: unknown) {
+      if (error instanceof RuntimeError) { sendError(response, 409, error.code, error.message); return; }
+      throw error;
+    }
+    queuedId = queued.id;
+    const job = jobs.create(queued.id);
+    void queued.promise.then((installation) => jobs.finish(queued.id, installation.status === 'ready' ? 'succeeded' : 'failed', installation.error)).catch((error: unknown) => jobs.finish(queued.id, 'failed', error instanceof Error ? error.message : 'Installation failed'));
+    sendJson(response, 202, { installationId: queued.id, job });
+    return;
+  }
+  const installationMatch = /^\/api\/v1\/installations\/([^/]+)(?:\/(start|stop|restart))?$/u.exec(pathname);
+  if (installationMatch) {
+    const installation = await runtime.getInstallation(installationMatch[1] ?? '');
+    if (!installation) { sendError(response, 404, 'installation_not_found', 'Installation not found'); return; }
+    const action = installationMatch[2];
+    if (method === 'GET' && !action) { sendJson(response, 200, installation); return; }
+    if (action && method === 'POST') { sendError(response, 409, 'supervisor_unavailable', 'Process controls become available with the SillyTavern supervisor'); return; }
+  }
+  const jobMatch = /^\/api\/v1\/jobs\/([^/]+)$/u.exec(pathname);
+  if (jobMatch && method === 'GET') {
+    const job = jobs.get(jobMatch[1] ?? '');
+    if (!job) { sendError(response, 404, 'job_not_found', 'Job not found'); return; }
+    sendJson(response, 200, job);
+    return;
+  }
+  if (PROTECTED_PATHS.has(pathname)) {
+    sendError(response, 501, 'not_implemented', 'This manager feature is not available in Batch 3');
+    return;
+  }
+  sendError(response, 404, 'not_found', 'Route not found');
+}
+
+function isProtectedPath(pathname: string): boolean {
+  return PROTECTED_PATHS.has(pathname)
+    || pathname.startsWith('/api/v1/installations/')
+    || pathname.startsWith('/api/v1/jobs/')
+    || pathname.startsWith('/api/v1/logs');
+}
+
+function isVersionSelector(value: string): boolean {
+  return value === 'latest' || value === 'release' || value === 'staging' || /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/u.test(value);
+}
+
+function isLogSourceFilter(value: string): value is LogSourceFilter {
+  return value === 'all' || value === 'manager' || value === 'sillytavern' || value === 'cloudflared' || value === 'installer' || value === 'backup';
 }
 
 async function handlePasswordSetup(
@@ -499,6 +600,53 @@ function contentTypeFor(filePath: string): string {
     '.woff2': 'font/woff2',
   };
   return types[extension] ?? 'application/octet-stream';
+}
+
+class JobStore {
+  private readonly jobs = new Map<string, Job>();
+
+  public constructor(private readonly logBuffer = new LogBuffer()) {}
+
+  public append(source: LogEntry['source'], message: string, level: LogEntry['level'] = 'info'): void {
+    this.logBuffer.append(source, message, level);
+  }
+
+  public logs(after: number, source: LogEntry['source'] | null): { entries: LogEntry[]; nextCursor: number } {
+    return this.logBuffer.read(after, source);
+  }
+
+  public create(installationId: string): Job {
+    const now = new Date().toISOString();
+    const job: Job = {
+      id: `job-${installationId}`,
+      kind: 'installation',
+      state: 'running',
+      progress: 0,
+      step: 'Starting installation',
+      installationId,
+      createdAt: now,
+      updatedAt: now,
+      error: null,
+    };
+    this.jobs.set(job.id, job);
+    return job;
+  }
+
+  public get(id: string): Job | null { return this.jobs.get(id) ?? null; }
+
+  public updateFromProgress(installationId: string, progress: InstallationProgress): void {
+    const id = `job-${installationId}`;
+    const current = this.jobs.get(id);
+    if (!current) return;
+    this.jobs.set(id, { ...current, progress: progress.progress, step: progress.step, updatedAt: new Date().toISOString() });
+  }
+
+  public finish(installationId: string, state: 'succeeded' | 'failed', error: string | null): void {
+    const id = `job-${installationId}`;
+    const current = this.jobs.get(id);
+    if (!current) return;
+    this.jobs.set(id, { ...current, state, progress: state === 'succeeded' ? 100 : current.progress, step: state === 'succeeded' ? 'Installation ready' : 'Installation failed', error, updatedAt: new Date().toISOString() });
+  }
 }
 
 class RequestError extends Error {

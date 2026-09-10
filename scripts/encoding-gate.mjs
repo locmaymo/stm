@@ -3,7 +3,7 @@ import path from 'node:path';
 import process from 'node:process';
 
 const root = process.cwd();
-const ignoredDirectories = new Set(['.git', 'node_modules', 'dist', 'build', 'coverage']);
+const ignoredDirectories = new Set(['.git', 'node_modules', 'dist', 'build', 'coverage', '.tmp']);
 const textExtensions = new Set([
   '.css', '.editorconfig', '.gitattributes', '.html', '.js', '.json', '.mjs', '.md',
   '.ps1', '.sh', '.toml', '.ts', '.tsx', '.yaml', '.yml',
