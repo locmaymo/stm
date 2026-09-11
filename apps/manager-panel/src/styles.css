@@ -118,6 +118,15 @@
 .address-list > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .address-list dt { color: var(--muted-foreground); }
 .address-list dd { min-width: 0; overflow-wrap: anywhere; text-align: right; }
+.access-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 0; border-top: 1px solid var(--border); }
+.access-row:first-child { padding-top: 0; border-top: 0; }
+.access-row > div { display: grid; min-width: 0; gap: 2px; }
+.access-row strong { font-size: 13px; font-weight: 650; }
+.access-row span { color: var(--muted-foreground); font-size: 12px; }
+.access-security { border-top: 1px solid var(--border); padding-top: 12px; }
+.access-security summary { cursor: pointer; color: var(--muted-foreground); font-size: 12px; font-weight: 600; }
+.security-form { display: grid; gap: 12px; margin-top: 12px; }
+.security-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .r2-note { margin-bottom: -24px; padding: 12px 24px; border-top: 1px solid var(--border); color: var(--muted-foreground); font-size: 12px; }
 .r2-note button:hover { color: var(--foreground); text-decoration: underline; text-underline-offset: 3px; }
 .core-grid [data-tour="logs"] { grid-column: 1 / -1; height: 28rem; min-height: 0; overflow: hidden; padding-bottom: 0; }
@@ -193,6 +202,23 @@
 .version-select-content { max-height: min(30rem, calc(100dvh - 10rem)); }
 .resource-panel { width: 100%; max-width: 900px; margin: 0 auto; }
 .resource-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px; min-height: 260px; color: var(--muted-foreground); }
+.config-workspace { display: grid; gap: 16px; width: 100%; max-width: 980px; margin: 0 auto; }
+.config-heading { display: flex; align-items: end; justify-content: space-between; gap: 16px; padding: 4px 2px; }
+.config-heading h2 { margin: 3px 0 0; font-size: 24px; font-weight: 650; letter-spacing: -.025em; }
+.config-card { min-width: 0; box-shadow: none; }
+.config-card [data-slot="card-header"] { display: grid; gap: 4px; }
+.config-path { margin: 0; overflow: hidden; color: var(--muted-foreground); font-family: Consolas, "SFMono-Regular", monospace; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.config-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px 20px; }
+.config-toggle { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid var(--border); }
+.config-toggle span { display: grid; min-width: 0; gap: 3px; }
+.config-toggle strong { font-size: 13px; font-weight: 600; }
+.config-toggle small { color: var(--muted-foreground); font-size: 11px; line-height: 1.4; }
+.config-fixed { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid var(--border); color: var(--muted-foreground); font-size: 13px; }
+.config-fixed strong { color: var(--foreground); font-weight: 650; }
+.config-actions { align-items: center; justify-content: space-between; gap: 12px; }
+.config-restart-note { color: var(--muted-foreground); font-size: 12px; }
+.config-editor { display: block; width: 100%; min-height: 30rem; resize: vertical; padding: 14px; border: 1px solid var(--border); border-radius: 8px; outline: none; background: var(--background); color: var(--foreground); font-family: Consolas, "SFMono-Regular", monospace; font-size: 12px; line-height: 1.6; tab-size: 2; }
+.config-editor:focus { border-color: var(--primary); box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 20%, transparent); }
 .metrics-workspace { display: grid; gap: 16px; width: 100%; max-width: 1180px; margin: 0 auto; }
 .metrics-toolbar { display: flex; align-items: center; justify-content: flex-end; gap: 8px; min-height: 34px; }
 .metrics-toolbar > [data-slot="button"] { width: 34px; height: 34px; }
@@ -318,6 +344,12 @@
   .backup-row > div:last-child { width: 100%; }
   .backup-row-actions { justify-content: flex-start; }
   .r2-placeholder-grid { grid-template-columns: 1fr; }
+  .config-heading { align-items: flex-start; flex-direction: column; }
+  .config-heading h2 { font-size: 21px; }
+  .config-form-grid { grid-template-columns: 1fr; gap: 12px; }
+  .config-actions { align-items: stretch; flex-direction: column; }
+  .config-actions [data-slot="button"] { width: 100%; }
+  .config-editor { min-height: 24rem; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }

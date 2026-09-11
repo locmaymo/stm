@@ -137,6 +137,44 @@ test('R2 settings are authenticated, masked, and preserve masked credentials', a
   assert.equal(visibleText.includes('access-key-1234'), false);
 });
 
+test('config follows the active runtime and account mode gates public access', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-config-api-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const runtimePath = join(root, 'runtime');
+  await mkdir(runtimePath, { recursive: true });
+  const now = new Date().toISOString();
+  const installation: Installation = { id: 'install-1', selector: 'latest', resolvedRef: '1.18.0', channel: 'release', runtimePath, markerPath: join(runtimePath, '.stm-installation.json'), status: 'ready', progress: 100, step: 'Installation ready', error: null, createdAt: now, updatedAt: now, activatedAt: now };
+  const processState: ProcessState = { status: 'running', installationId: installation.id, profileId: 'profile-1', pid: 123, startedAt: now, error: null };
+  const fakeSupervisor = { getState: () => processState, restart: async () => processState, start: async () => processState, stop: async () => ({ ...processState, status: 'stopped' }), close: async () => undefined } as unknown as ProcessSupervisor;
+  const fakeRuntime = { listVersions: async () => [], listInstallations: async () => [installation], getActiveInstallation: async () => installation, getInstallation: async (id: string) => id === installation.id ? installation : null } as unknown as RuntimeManager;
+  const manager = await startManagerServer({ host: '127.0.0.1', port: 0, paths, env: { STM_ADMIN_PASSWORD: 'correct horse battery staple' }, secureCookies: false, runtime: fakeRuntime, supervisor: fakeSupervisor, logger: () => undefined });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const login = await fetch(`${base}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'correct horse battery staple' }) });
+  const cookie = cookieFrom(login); const csrf = (await login.json() as { session: { csrfToken: string } }).session.csrfToken;
+  const profilePayload = await (await fetch(`${base}/api/v1/profiles`, { headers: { cookie } })).json() as { profiles: Array<{ configPath: string }> };
+  const profile = profilePayload.profiles[0]; assert.ok(profile);
+  await writeFile(profile.configPath, '# current version config\nlisten: false\nport: 8000\nbasicAuthMode: true\nbasicAuthUser:\n  username: user\n  password: old-secret\n', 'utf8');
+  const visible = await fetch(`${base}/api/v1/config`, { headers: { cookie } });
+  assert.equal(visible.status, 200);
+  const visibleBody = await visible.json() as { runtimeRef: string; rawYaml: string; settings: { listen: boolean; enableUserAccounts: boolean } };
+  assert.equal(visibleBody.runtimeRef, '1.18.0');
+  assert.equal(visibleBody.settings.enableUserAccounts, false);
+  assert.match(visibleBody.rawYaml, /basicAuthUser:/u);
+  assert.equal(visibleBody.rawYaml.includes('old-secret'), false);
+  const blocked = await fetch(`${base}/api/v1/tunnel`, { method: 'PUT', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'quick' }) });
+  assert.equal(blocked.status, 409);
+  assert.equal((await blocked.json() as { error: { code: string } }).error.code, 'public_access_password_required');
+  const saved = await fetch(`${base}/api/v1/config`, { method: 'PUT', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ settings: { listen: false } }) });
+  assert.equal(saved.status, 200);
+  const savedBody = await saved.json() as { config: { rawYaml: string; settings: { listen: boolean; enableUserAccounts: boolean } } };
+  assert.equal(savedBody.config.settings.listen, false);
+  assert.equal(savedBody.config.settings.enableUserAccounts, true);
+  assert.match(savedBody.config.rawYaml, /basicAuthMode: false/u);
+  assert.match(savedBody.config.rawYaml, /basicAuthUser:/u);
+  assert.equal(savedBody.config.rawYaml.includes('old-secret'), false);
+});
+
 test('only one concurrent first-run setup can create the admin', async (t) => {
   const manager = await createServer();
   t.after(() => manager.close());

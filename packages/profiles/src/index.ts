@@ -3,6 +3,7 @@ import { lstat, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'no
 import { createReadStream, createWriteStream } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
+import { parse as parseYaml } from 'yaml';
 import type { Profile, ProfileLayout, ProfileSnapshot } from '../../contracts/src/index.js';
 import type { PlatformPaths } from '../../platform/src/index.js';
 
@@ -546,7 +547,22 @@ async function runtimeSupportsDataRoot(runtimePath: string): Promise<boolean> {
 async function writeLegacyRuntimeConfig(runtimePath: string): Promise<void> {
   const defaults = join(runtimePath, 'default', 'config.conf');
   if (!await exists(defaults)) return;
-  const payload = "const defaults = require('./default/config.conf');\nmodule.exports = { ...defaults, port: 8000, listen: false, autorun: false };\n";
+  let config: Record<string, unknown> = {};
+  try {
+    const parsed = parseYaml(await readFile(join(runtimePath, 'config.yaml'), 'utf8')) as unknown;
+    if (isRecord(parsed)) config = parsed;
+  } catch { /* the legacy default remains the fallback */ }
+  const overrides = {
+    port: 8000,
+    // Legacy runtimes do not reliably support account sessions. Keep them
+    // local-only instead of falling back to the removed Basic Auth mode.
+    listen: false,
+    autorun: false,
+    enableUserAccounts: config.enableUserAccounts === true,
+    enableCorsProxy: config.enableCorsProxy === true,
+    disableCsrfProtection: config.disableCsrfProtection === true,
+  };
+  const payload = `const defaults = require('./default/config.conf');\nmodule.exports = { ...defaults, ${JSON.stringify(overrides).slice(1, -1)} };\n`;
   await writeFile(join(runtimePath, 'config.conf'), payload, { encoding: 'utf8', mode: 0o600 });
 }
 

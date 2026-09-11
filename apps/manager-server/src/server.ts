@@ -1,9 +1,10 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { timingSafeEqual } from 'node:crypto';
-import { readFile, stat } from 'node:fs/promises';
+import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
+import { networkInterfaces } from 'node:os';
 import { extname, join, relative, resolve } from 'node:path';
-import type { ApiErrorBody, HealthResponse, Installation, Job, LogEntry, LogSourceFilter, ManagerPorts, ProfileLayout, SetupStatus, VersionSelector } from '../../../packages/contracts/src/index.js';
+import type { AccessSecurityState, ApiErrorBody, ConfigUpdateInput, HealthResponse, Installation, Job, LogEntry, LogSourceFilter, ManagerPorts, ProfileLayout, SetupStatus, VersionSelector } from '../../../packages/contracts/src/index.js';
 import { getPlatformPaths, type PlatformPaths } from '../../../packages/platform/src/index.js';
 import { RuntimeError, RuntimeManager, type InstallationProgress } from '../../../packages/sillytavern-runtime/src/index.js';
 import { hashPassword, MIN_PASSWORD_LENGTH, validatePassword, verifyPassword } from './password.js';
@@ -19,6 +20,7 @@ import { R2Error, R2Manager, type R2UpdateInput } from '../../../packages/r2/src
 import { BackupScheduler } from './r2-scheduler.js';
 import { MetricsStore } from './metrics.js';
 import { instrumentationLoaderPath } from '../../../packages/instrumentation/src/index.js';
+import { ConfigError, ConfigStore } from '../../../packages/config/src/index.js';
 
 const MANAGER_PORT = 7860 as const;
 const SILLYTAVERN_PORT = 8000 as const;
@@ -39,6 +41,8 @@ const PROTECTED_PATHS = new Set([
   '/api/v1/profiles',
   '/api/v1/backups',
   '/api/v1/config',
+  '/api/v1/access/security',
+  '/api/v1/access/password',
   '/api/v1/metrics',
   '/api/v1/tunnel',
   '/api/v1/r2',
@@ -65,6 +69,7 @@ export interface ManagerServerOptions {
   readonly backupStore?: BackupStore;
   readonly r2?: R2Manager;
   readonly metrics?: MetricsStore;
+  readonly config?: ConfigStore;
 }
 
 export interface ManagerServer {
@@ -78,6 +83,7 @@ export interface ManagerServer {
   readonly backups: BackupStore;
   readonly r2: R2Manager;
   readonly metrics: MetricsStore;
+  readonly config: ConfigStore;
   readonly port: number;
   close(): Promise<void>;
 }
@@ -106,11 +112,24 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   const backups = options.backupStore ?? new BackupStore({ paths, logger: (line) => { jobs.append('backup', line); baseLogger(line); } });
   const r2 = options.r2 ?? new R2Manager({ paths, env, logger: (line) => { jobs.append('backup', line); baseLogger(line); } });
   const metrics = options.metrics ?? new MetricsStore(paths);
+  const config = options.config ?? new ConfigStore({ logger: (line) => { jobs.append('manager', line); baseLogger(line); } });
   const supervisor = options.supervisor ?? new ProcessSupervisor({
     runtime,
     profileResolver: (installation) => profiles.getActiveForInstallation(installation.id),
     profileLifecycle: {
-      prepare: (profile, runtimePath) => profiles.prepareForRuntime(profile, runtimePath),
+      prepare: async (profile, runtimePath) => {
+        const installation = await runtime.getInstallation(profile.installationId);
+        if (installation) {
+          try {
+            if (await config.needsAccountMigration(profile, installation)) {
+              await config.update(profile, installation, { settings: { listen: false, enableUserAccounts: true } });
+            }
+          } catch (error: unknown) {
+            if (!(error instanceof ConfigError) || error.code !== 'config_missing') throw error;
+          }
+        }
+        return profiles.prepareForRuntime(profile, runtimePath);
+      },
       persist: (profile, runtimePath, runtimeLayout) => profiles.persistFromRuntime(profile, runtimePath, runtimeLayout),
       legacyHeapMb: (profile) => profiles.recommendedLegacyHeapMb(profile),
     },
@@ -118,7 +137,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     metricsFile: metrics.filePath,
     logger: (line) => { jobs.append('sillytavern', line); baseLogger(line); },
   });
-  const tunnel = options.tunnel ?? new TunnelManager({ paths, env, logger: (line) => { jobs.append('cloudflared', line); baseLogger(line); } });
+  const tunnel = options.tunnel ?? new TunnelManager({ paths, env, beforeStart: async () => { await requireTunnelPassword(config, profiles, runtime, supervisor); }, logger: (line) => { jobs.append('cloudflared', line); baseLogger(line); } });
   const scheduler = new BackupScheduler({ backups, profiles, r2, logger: (line) => { jobs.append('backup', line); baseLogger(line); } });
   scheduler.start();
   const secureCookies = options.secureCookies ?? env.STM_SECURE_COOKIES === '1';
@@ -161,6 +180,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       backups,
       r2,
       metrics,
+      config,
     }).catch((error: unknown) => {
       if (error instanceof RequestError) {
         sendError(response, error.statusCode, error.code, error.message);
@@ -172,6 +192,10 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       }
       if (error instanceof R2Error) {
         sendError(response, error.code === 'secrets_confirmation_required' || error.code === 'r2_not_configured' ? 409 : 400, error.code, error.message);
+        return;
+      }
+      if (error instanceof ConfigError) {
+        sendError(response, error.code === 'config_missing' ? 409 : 400, error.code, error.message);
         return;
       }
       logger(`[manager] request failed: ${error instanceof Error ? error.message : 'unknown error'}`);
@@ -194,6 +218,13 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     try {
       readyInstallation = await runtime.migrateLegacyInstallation?.(activeInstallation) ?? activeInstallation;
       await profiles.ensureDefault({ installationId: readyInstallation.id, runtimePath: readyInstallation.runtimePath });
+      const activeProfile = await profiles.getActive();
+      const currentConfig = activeProfile ? await config.read(activeProfile, readyInstallation) : null;
+      const accessNeedsMigration = activeProfile ? await config.needsAccountMigration(activeProfile, readyInstallation) : false;
+      if (activeProfile && currentConfig && accessNeedsMigration) {
+        await config.update(activeProfile, readyInstallation, { settings: { listen: false, enableUserAccounts: true } });
+        logger('[config] migrated access security to SillyTavern accounts; LAN access is waiting for an admin password');
+      }
       await runtime.cleanupLegacyRuntimeCopies?.(readyInstallation.id);
     } catch (error: unknown) {
       logger(`[installer] legacy runtime migration failed: ${error instanceof Error ? error.message : 'unknown error'}`);
@@ -213,6 +244,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     backups,
     r2,
     metrics,
+    config,
     close: async () => { await scheduler.close(); await tunnel.close(); await supervisor.close(); await closeServer(server); },
   };
 }
@@ -236,8 +268,9 @@ async function handleRequest(options: {
   readonly backups: BackupStore;
   readonly r2: R2Manager;
   readonly metrics: MetricsStore;
+  readonly config: ConfigStore;
 }): Promise<void> {
-  const { request, response, store, sessions, rateLimiter, startedAt, secureCookies, setupCodeRequired, staticRoot, runtime, jobs, supervisor, tunnel, profiles, backups, r2, metrics } = options;
+  const { request, response, store, sessions, rateLimiter, startedAt, secureCookies, setupCodeRequired, staticRoot, runtime, jobs, supervisor, tunnel, profiles, backups, r2, metrics, config } = options;
   const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
   const pathname = url.pathname;
   const context: RequestContext = {
@@ -324,16 +357,65 @@ async function handleRequest(options: {
     if (method !== 'GET' && !requireCsrf(context, session.csrfToken)) {
       return;
     }
-    await handleRuntimeRequest(context, runtime, jobs, supervisor, tunnel, profiles, backups, r2, metrics);
+    await handleRuntimeRequest(context, runtime, jobs, supervisor, tunnel, profiles, backups, r2, metrics, config);
     return;
   }
 
   sendError(response, 404, 'not_found', 'Route not found');
 }
 
-async function handleRuntimeRequest(context: RequestContext, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, metrics: MetricsStore): Promise<void> {
+async function handleRuntimeRequest(context: RequestContext, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, metrics: MetricsStore, config: ConfigStore): Promise<void> {
   const { pathname, request, response } = context;
   const method = request.method ?? 'GET';
+  if (pathname === '/api/v1/config/validate' && method === 'POST') {
+    const body = await readJson(request);
+    if (!isRecord(body) || typeof body.rawYaml !== 'string') { sendError(response, 400, 'invalid_input', 'A YAML document is required'); return; }
+    sendJson(response, 200, { valid: true, settings: await config.validate(body.rawYaml) });
+    return;
+  }
+  if (pathname === '/api/v1/config' && (method === 'GET' || method === 'PUT')) {
+    const profile = await profiles.getActive();
+    const installation = await runtime.getActiveInstallation();
+    if (!profile || !installation || installation.status !== 'ready') { sendError(response, 409, 'installation_required', 'Install SillyTavern before editing its configuration'); return; }
+    if (method === 'GET') { sendJson(response, 200, decorateConfig(await config.read(profile, installation))); return; }
+    const input = parseConfigUpdateInput(await readJson(request));
+    if (await configUpdateEnablesListen(input, config)) await requireAdminAccountPassword(runtime, supervisor, profiles, config);
+    const previousTunnelMode = tunnel.getState().mode;
+    const wasRunning = supervisor.getState().status === 'running';
+    const saved = await config.update(profile, installation, input);
+    await tunnel.stop();
+    const process = wasRunning ? await supervisor.restart() : supervisor.getState();
+    if (previousTunnelMode !== 'off' && process.status === 'running') {
+      try {
+        await requireTunnelPassword(config, profiles, runtime, supervisor);
+        await tunnel.restart();
+      } catch {
+        // Keep the tunnel stopped until the account has a password.
+      }
+    }
+    sendJson(response, 200, { config: decorateConfig(saved), process, tunnel: tunnel.getState() });
+    return;
+  }
+  if (pathname === '/api/v1/access/security' && method === 'GET') {
+    sendJson(response, 200, await readAccessSecurityState(runtime, supervisor, profiles, config));
+    return;
+  }
+  if (pathname === '/api/v1/access/password' && method === 'POST') {
+    const body = await readJson(request);
+    if (!isRecord(body) || typeof body.password !== 'string' || typeof body.confirmPassword !== 'string' || body.password !== body.confirmPassword) {
+      sendError(response, 400, 'password_confirmation_mismatch', 'Enter the same SillyTavern password twice');
+      return;
+    }
+    if (body.password.length < 8) { sendError(response, 400, 'invalid_password', 'The SillyTavern password must be at least 8 characters'); return; }
+    try {
+      await setSillyTavernAdminPassword(supervisor, runtime, profiles, config, body.password);
+      sendJson(response, 200, await readAccessSecurityState(runtime, supervisor, profiles, config));
+    } catch (error: unknown) {
+      if (error instanceof RequestError) { sendError(response, error.statusCode, error.code, error.message); return; }
+      throw error;
+    }
+    return;
+  }
   if (pathname === '/api/v1/r2' && method === 'GET') {
     sendJson(response, 200, { config: await r2.getConfig(), objects: await r2.listObjects().catch(() => []) });
     return;
@@ -620,6 +702,7 @@ async function handleRuntimeRequest(context: RequestContext, runtime: RuntimeMan
     const mode = isRecord(body) && (body.mode === 'off' || body.mode === 'quick' || body.mode === 'named') ? body.mode : null;
     if (!mode) { sendError(response, 400, 'invalid_tunnel_mode', 'Tunnel mode must be off, quick, or named'); return; }
     if (mode !== 'off' && supervisor.getState().status !== 'running') { sendError(response, 409, 'sillytavern_not_running', 'Start SillyTavern before enabling the tunnel'); return; }
+    if (mode !== 'off') await requireTunnelPassword(config, profiles, runtime, supervisor);
     const state = mode === 'off' ? await tunnel.stop() : await tunnel.start(mode, isRecord(body) && typeof body.token === 'string' ? body.token : undefined);
     sendJson(response, 200, state);
     return;
@@ -673,7 +756,161 @@ function isProtectedPath(pathname: string): boolean {
     || pathname.startsWith('/api/v1/process')
     || pathname.startsWith('/api/v1/profiles/')
     || pathname.startsWith('/api/v1/backups/')
-    || pathname.startsWith('/api/v1/r2/');
+    || pathname.startsWith('/api/v1/r2/')
+    || pathname.startsWith('/api/v1/config/');
+}
+
+async function requireTunnelPassword(config: ConfigStore, profiles: ProfileStore, runtime: RuntimeManager, supervisor: ProcessSupervisor): Promise<void> {
+  const state = await readAccessSecurityState(runtime, supervisor, profiles, config);
+  if (!state.accountsEnabled || !state.adminPasswordConfigured) throw new RequestError(409, 'public_access_password_required', 'Set the SillyTavern admin password before opening a public tunnel');
+}
+
+async function requireAdminAccountPassword(runtime: RuntimeManager, supervisor: ProcessSupervisor, profiles: ProfileStore, config: ConfigStore): Promise<void> {
+  const state = await readAccessSecurityState(runtime, supervisor, profiles, config);
+  if (!state.accountsEnabled || !state.adminPasswordConfigured) throw new RequestError(409, 'public_access_password_required', 'Set the SillyTavern admin password before enabling network access');
+}
+
+async function readAccessSecurityState(runtime: RuntimeManager, supervisor: ProcessSupervisor | undefined, profiles: ProfileStore, config: ConfigStore): Promise<AccessSecurityState> {
+  const profile = await profiles.getActive();
+  const installation = await runtime.getActiveInstallation();
+  if (!profile || !installation) return { accountsEnabled: false, adminHandle: 'default-user', adminPasswordConfigured: false, processReady: false };
+  const document = await config.read(profile, installation);
+  if (!document.settings.enableUserAccounts || !supervisor || supervisor.getState().status !== 'running') return { accountsEnabled: document.settings.enableUserAccounts, adminHandle: 'default-user', adminPasswordConfigured: false, processReady: supervisor?.getState().status === 'running' };
+  try {
+    const session = await createSillyTavernSession();
+    const response = await fetch('http://127.0.0.1:8000/api/users/list', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: session.cookie, 'x-csrf-token': session.token },
+      body: '{}',
+      signal: AbortSignal.timeout(2_000),
+    });
+    if (!response.ok || response.status === 204) return { accountsEnabled: true, adminHandle: 'default-user', adminPasswordConfigured: false, processReady: true, error: 'SillyTavern account details are unavailable for this version or login configuration' };
+    const users = await response.json() as Array<{ handle?: string; password?: boolean }>;
+    const admin = users.find((user) => user.handle === 'default-user') ?? users[0];
+    return { accountsEnabled: true, adminHandle: admin?.handle ?? 'default-user', adminPasswordConfigured: admin?.password === true, processReady: true };
+  } catch {
+    return { accountsEnabled: true, adminHandle: 'default-user', adminPasswordConfigured: false, processReady: false, error: 'SillyTavern account details are unavailable until SillyTavern is ready' };
+  }
+}
+
+async function setSillyTavernAdminPassword(supervisor: ProcessSupervisor, runtime: RuntimeManager, profiles: ProfileStore, config: ConfigStore, password: string): Promise<void> {
+  const state = await readAccessSecurityState(runtime, supervisor, profiles, config);
+  if (!state.accountsEnabled || !state.processReady) throw new RequestError(409, 'sillytavern_not_running', 'Start SillyTavern before setting its admin password');
+  if (state.error) throw new RequestError(409, 'sillytavern_accounts_unavailable', state.error);
+  if (state.adminPasswordConfigured) {
+    await resetSillyTavernAdminStorage(profiles, runtime, supervisor, state.adminHandle, password);
+    return;
+  }
+  const session = await createSillyTavernSession();
+  const login = await fetch('http://127.0.0.1:8000/api/users/login', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie: session.cookie, 'x-csrf-token': session.token },
+    body: JSON.stringify({ handle: state.adminHandle, password: '' }),
+    signal: AbortSignal.timeout(2_000),
+  });
+  if (!login.ok) throw new RequestError(502, 'sillytavern_auth_unavailable', 'SillyTavern rejected the initial admin session');
+  const loginCookie = mergeCookies(session.cookie, responseCookies(login));
+  const change = await fetch('http://127.0.0.1:8000/api/users/change-password', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie: loginCookie, 'x-csrf-token': session.token },
+    body: JSON.stringify({ handle: state.adminHandle, newPassword: password }),
+    signal: AbortSignal.timeout(2_000),
+  });
+  if (!change.ok) throw new RequestError(502, 'sillytavern_password_failed', 'SillyTavern could not save the admin password');
+}
+
+async function resetSillyTavernAdminStorage(profiles: ProfileStore, runtime: RuntimeManager, supervisor: ProcessSupervisor, handle: string, password: string): Promise<void> {
+  const profile = await profiles.getActive();
+  const installation = await runtime.getActiveInstallation();
+  if (!profile || !installation) throw new RequestError(409, 'profile_required', 'An active SillyTavern profile is required');
+  const storageRoots = [join(profile.dataPath, '_storage'), join(installation.runtimePath, 'data', '_storage'), join(installation.runtimePath, '_storage')];
+  let recordPath: string | null = null;
+  let record: Record<string, unknown> | null = null;
+  for (const root of storageRoots) {
+    let names: string[];
+    try { names = await readdir(root); } catch { continue; }
+    for (const name of names) {
+      const path = join(root, name);
+      try {
+        const parsed: unknown = JSON.parse(await readFile(path, 'utf8'));
+        if (!isRecord(parsed) || parsed.key !== `user:${handle}` || !isRecord(parsed.value)) continue;
+        recordPath = path;
+        record = parsed;
+        break;
+      } catch { /* ignore unrelated node-persist records */ }
+    }
+    if (recordPath && record) break;
+  }
+  if (!recordPath || !record || !isRecord(record.value)) throw new RequestError(409, 'sillytavern_account_storage_unavailable', 'The SillyTavern account storage could not be found');
+  const salt = randomBytes(16).toString('base64');
+  record.value.password = scryptSync(password.normalize(), salt, 64).toString('base64');
+  record.value.salt = salt;
+  const temporary = `${recordPath}.${randomBytes(6).toString('hex')}.tmp`;
+  await writeFile(temporary, JSON.stringify(record), { encoding: 'utf8', mode: 0o600 });
+  await rename(temporary, recordPath);
+  const restarted = await supervisor.restart();
+  if (restarted.status !== 'running') throw new RequestError(502, 'sillytavern_restart_failed', 'SillyTavern could not restart after the password change');
+}
+
+interface SillyTavernSession {
+  readonly token: string;
+  readonly cookie: string;
+}
+
+async function createSillyTavernSession(): Promise<SillyTavernSession> {
+  const response = await fetch('http://127.0.0.1:8000/csrf-token', { signal: AbortSignal.timeout(2_000) });
+  if (!response.ok) throw new RequestError(502, 'sillytavern_auth_unavailable', 'SillyTavern did not provide an authentication session');
+  const body = await response.json() as { token?: string };
+  const cookie = responseCookies(response);
+  if (!body.token || (!cookie && body.token !== 'disabled')) throw new RequestError(502, 'sillytavern_auth_unavailable', 'SillyTavern did not provide an authentication session');
+  return { token: body.token, cookie };
+}
+
+function responseCookies(response: Response): string {
+  const headers = response.headers as Headers & { getSetCookie?: () => string[] };
+  const values = headers.getSetCookie?.() ?? (response.headers.get('set-cookie') ? [response.headers.get('set-cookie') as string] : []);
+  return values.map((value) => value.split(';', 1)[0]).filter(Boolean).join('; ');
+}
+
+function mergeCookies(...values: string[]): string {
+  const cookies = new Map<string, string>();
+  for (const value of values) {
+    for (const pair of value.split(';')) {
+      const separator = pair.indexOf('=');
+      if (separator <= 0) continue;
+      cookies.set(pair.slice(0, separator).trim(), pair.trim());
+    }
+  }
+  return [...cookies.values()].join('; ');
+}
+
+async function configUpdateEnablesListen(input: ConfigUpdateInput, config: ConfigStore): Promise<boolean> {
+  if (input.settings?.listen === true) return true;
+  if (input.rawYaml !== undefined) return (await config.validate(input.rawYaml)).listen;
+  return false;
+}
+
+function parseConfigUpdateInput(value: unknown): ConfigUpdateInput {
+  if (!isRecord(value)) throw new RequestError(400, 'invalid_input', 'A configuration update is required');
+  if (typeof value.rawYaml === 'string') return { rawYaml: value.rawYaml };
+  const settings = value.settings;
+  if (!isRecord(settings)) throw new RequestError(400, 'invalid_input', 'Configuration settings are required');
+  return { settings: {
+    ...(typeof settings.listen === 'boolean' ? { listen: settings.listen } : {}),
+    ...(typeof settings.enableUserAccounts === 'boolean' ? { enableUserAccounts: settings.enableUserAccounts } : {}),
+    ...(typeof settings.sslEnabled === 'boolean' ? { sslEnabled: settings.sslEnabled } : {}),
+    ...(typeof settings.enableCorsProxy === 'boolean' ? { enableCorsProxy: settings.enableCorsProxy } : {}),
+    ...(typeof settings.disableCsrfProtection === 'boolean' ? { disableCsrfProtection: settings.disableCsrfProtection } : {}),
+    ...(isRecord(settings.listenAddress) ? { listenAddress: {
+      ...(typeof settings.listenAddress.ipv4 === 'string' ? { ipv4: settings.listenAddress.ipv4 } : {}),
+      ...(typeof settings.listenAddress.ipv6 === 'string' ? { ipv6: settings.listenAddress.ipv6 } : {}),
+    } } : {}),
+  } };
+}
+
+function decorateConfig(document: Awaited<ReturnType<ConfigStore['read']>>): Awaited<ReturnType<ConfigStore['read']>> {
+  const host = Object.values(networkInterfaces()).flatMap((entries) => entries ?? []).find((entry) => entry.family === 'IPv4' && !entry.internal)?.address;
+  return host ? { ...document, networkHost: host } : document;
 }
 
 function isVersionSelector(value: string): boolean {

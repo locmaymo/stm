@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import {
-  Archive, ArrowDown, ArrowUp, ArrowUpRight, BarChart3, Code2, Copy, Database, Download,
+  Archive, ArrowDown, ArrowUp, ArrowUpRight, BarChart3, Copy, Database, Download,
   Globe2, LayoutDashboard, Maximize2, Minimize2, Moon, Package, Plus,
   ScrollText, Search, Sun, Upload, Users as UsersIcon, X, Rows3,
-  BrainCircuit, Clock3, Ellipsis, RefreshCw,
+  BrainCircuit, Clock3, Ellipsis, RefreshCw, Settings2,
 } from 'lucide-react';
 import {
   Badge, Button, Card, CardAction, CardContent, CardFooter, CardHeader,
@@ -15,14 +15,14 @@ import {
 } from '../../../packages/ui/src/index.js';
 import { translator, type Translate } from './i18n.js';
 import { browserStorage, readPreferences, savePreferences, type Preferences } from './preferences.js';
-import type { BackupManifest, Installation, LogEntry, LogSourceFilter, MetricsSnapshot, ProcessState, Profile, R2Config, R2Object, RestorePreview, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessSecurityState, BackupManifest, ConfigDocument, ConfigUpdateInput, Installation, LogEntry, LogSourceFilter, MetricsSnapshot, ProcessState, Profile, R2Config, R2Object, RestorePreview, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
 import { formatLogMessage } from './log-format.js';
 
 const navigation = [
   { id: 'overview', icon: LayoutDashboard },
   { id: 'data', icon: Database }, { id: 'metrics', icon: BarChart3 },
-  { id: 'config', icon: Code2 },
+  { id: 'config', icon: Settings2 },
 ] as const;
 type PageId = typeof navigation[number]['id'];
 type Navigate = (page: PageId) => void;
@@ -93,6 +93,8 @@ function ConsoleApp({ csrfToken }: { csrfToken: string }) {
   const [compactLogs, setCompactLogs] = useState(false);
   const [processState, setProcessState] = useState<ProcessState>({ status: 'stopped', installationId: null, profileId: null, pid: null, startedAt: null, error: null });
   const [tunnelState, setTunnelState] = useState<TunnelState>({ mode: 'off', status: 'stopped', url: null, startedAt: null, error: null });
+  const [configDocument, setConfigDocument] = useState<ConfigDocument | null>(null);
+  const [accessSecurity, setAccessSecurity] = useState<AccessSecurityState>({ accountsEnabled: false, adminHandle: 'default-user', adminPasswordConfigured: false, processReady: false });
   const t = translator(preferences.locale);
 
   useEffect(() => {
@@ -104,15 +106,28 @@ function ConsoleApp({ csrfToken }: { csrfToken: string }) {
   }, []);
 
   useEffect(() => {
+    if (!activeInstallationId) { setConfigDocument(null); return undefined; }
+    let cancelled = false;
+    const load = async () => {
+      const response = await fetch('/api/v1/config', { credentials: 'same-origin' });
+      if (response.ok && !cancelled) setConfigDocument(await response.json() as ConfigDocument);
+    };
+    void load();
+    return () => { cancelled = true; };
+  }, [activeInstallationId]);
+
+  useEffect(() => {
     let cancelled = false;
     const refresh = async () => {
-      const [processResponse, tunnelResponse] = await Promise.all([
+      const [processResponse, tunnelResponse, securityResponse] = await Promise.all([
         fetch('/api/v1/process', { credentials: 'same-origin' }),
         fetch('/api/v1/tunnel', { credentials: 'same-origin' }),
+        fetch('/api/v1/access/security', { credentials: 'same-origin' }),
       ]);
       if (cancelled) return;
       if (processResponse.ok) setProcessState(await processResponse.json() as ProcessState);
       if (tunnelResponse.ok) setTunnelState(await tunnelResponse.json() as TunnelState);
+      if (securityResponse.ok) setAccessSecurity(await securityResponse.json() as AccessSecurityState);
     };
     void refresh();
     const timer = window.setInterval(() => { void refresh(); }, 1500);
@@ -191,6 +206,23 @@ function ConsoleApp({ csrfToken }: { csrfToken: string }) {
       if (path.includes('/process')) setProcessState(payload as ProcessState); else setTunnelState(payload as TunnelState);
     }
   };
+  const updateConfig = async (input: ConfigUpdateInput): Promise<string | null> => {
+    const response = await fetch('/api/v1/config', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify(input) });
+    const payload = await response.json() as { config?: ConfigDocument; process?: ProcessState; tunnel?: TunnelState; error?: { message?: string } };
+    if (!response.ok || !payload.config) return payload.error?.message ?? t('console.configSaveFailed');
+    setConfigDocument(payload.config);
+    if (payload.process) setProcessState(payload.process);
+    if (payload.tunnel) setTunnelState(payload.tunnel);
+    void fetch('/api/v1/access/security', { credentials: 'same-origin' }).then(async (response) => response.ok ? setAccessSecurity(await response.json() as AccessSecurityState) : undefined).catch(() => undefined);
+    return null;
+  };
+  const setAccessPassword = async (password: string, confirmPassword: string): Promise<string | null> => {
+    const response = await fetch('/api/v1/access/password', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ password, confirmPassword }) });
+    const payload = await response.json() as AccessSecurityState & { error?: { message?: string } };
+    if (!response.ok) return payload.error?.message ?? t('console.passwordSaveFailed');
+    setAccessSecurity(payload);
+    return null;
+  };
 
   return (
     <SidebarProvider style={{ '--sidebar-width': '15rem', '--sidebar-width-icon': '3.75rem' } as CSSProperties}>
@@ -208,7 +240,7 @@ function ConsoleApp({ csrfToken }: { csrfToken: string }) {
           </div>
         </header>
         <div className="page-body">
-          {page === 'overview' ? <div className="core-grid">{installation}<AccessPanel t={t} process={processState} tunnel={tunnelState} installed={Boolean(activeInstallationId)} onAction={updateRuntime} /> <DataPanel t={t} navigate={navigate} activeProfile={profiles.find((profile) => profile.id === activeProfileId) ?? null} latestBackup={backups.at(-1) ?? null} />{logs}</div> : page === 'data' ? <DataPage t={t} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : <ResourcePanel page={page} t={t} />}
+          {page === 'overview' ? <div className="core-grid">{installation}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} installed={Boolean(activeInstallationId)} onAction={updateRuntime} onConfigUpdate={updateConfig} onSetPassword={setAccessPassword} /> <DataPanel t={t} navigate={navigate} activeProfile={profiles.find((profile) => profile.id === activeProfileId) ?? null} latestBackup={backups.at(-1) ?? null} />{logs}</div> : page === 'data' ? <DataPage t={t} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} config={configDocument} onConfigUpdate={updateConfig} /> : <ResourcePanel page={page} t={t} />}
         </div>
       </SidebarInset>
     </SidebarProvider>
@@ -261,16 +293,49 @@ function InstallationPanel({ t, version, onVersionChange, versions, installation
   return <Card data-tour="installation"><PanelHeading icon={<Package />} action={<Badge variant="outline" className={active?.status === 'ready' ? '' : 'status-attention'}>{status}</Badge>}>SillyTavern</PanelHeading><CardContent className="flex-1"><label className="field-label" htmlFor="install-version">{t('dashboard.version')}</label><Select value={version} onValueChange={onVersionChange}><SelectTrigger id="install-version" className="w-full"><SelectValue /></SelectTrigger><SelectContent position="popper" align="start" className="version-select-content">{choices.map((choice) => <SelectItem key={choice.selector} value={choice.selector}>{choice.label}</SelectItem>)}</SelectContent></Select>{active && active.status !== 'ready' && active.status !== 'failed' ? <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full bg-primary transition-all" style={{ width: `${active.progress}%` }} /></div> : null}{active?.status === 'ready' ? <p className="install-result">{t('console.installComplete')} · {active.resolvedRef}</p> : null}{active?.status === 'failed' && active.error ? <p className="install-error" role="alert">{active.error}</p> : null}{requestError ? <p className="install-error" role="alert">{requestError}</p> : null}</CardContent><CardFooter>{canInstall ? <Button onClick={() => void install()}><Download />{installing ? t('common.loading') : t('dashboard.install')}</Button> : <Unavailable t={t}><Button disabled><Download />{t('dashboard.install')}</Button></Unavailable>}</CardFooter></Card>;
 }
 
-function AccessPanel({ t, process, tunnel, installed, onAction }: { t: Translate; process: ProcessState; tunnel: TunnelState; installed: boolean; onAction: (path: string, body?: unknown) => Promise<void> }) {
+function AccessPanel({ t, process, tunnel, config, security, installed, onAction, onConfigUpdate, onSetPassword }: { t: Translate; process: ProcessState; tunnel: TunnelState; config: ConfigDocument | null; security: AccessSecurityState; installed: boolean; onAction: (path: string, body?: unknown) => Promise<void>; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null> }) {
   const [busy, setBusy] = useState(false);
+  const [securityBusy, setSecurityBusy] = useState(false);
+  const [securityMessage, setSecurityMessage] = useState<string | null>(null);
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const running = process.status === 'running';
   const tunnelRunning = tunnel.status === 'running' || tunnel.status === 'starting';
+  const listen = config?.settings.listen ?? false;
+  const passwordReady = security.adminPasswordConfigured;
+  const lanLabel = listen ? t('console.lanEnabled') : t('console.lanDisabled');
   const processLabel = process.status === 'running' ? t('dashboard.running') : process.status === 'starting' || process.status === 'stopping' ? t('common.loading') : process.status === 'error' ? t('dashboard.installFailed') : t('dashboard.offline');
   const runAction = async (path: string, body?: unknown) => { setBusy(true); try { await onAction(path, body); } finally { setBusy(false); } };
   const toggleTunnel = () => void runAction('/api/v1/tunnel', { mode: tunnelRunning ? 'off' : 'quick' });
+  const updateAccess = async (settings: NonNullable<ConfigUpdateInput['settings']>) => {
+    setSecurityBusy(true); setSecurityMessage(null);
+    try { const error = await onConfigUpdate({ settings }); setSecurityMessage(error); if (!error) setPassword(''); } finally { setSecurityBusy(false); }
+  };
+  const saveSecurity = async () => { setSecurityBusy(true); setSecurityMessage(null); try { const error = await onSetPassword(password, confirmPassword); setSecurityMessage(error); if (!error) { setPassword(''); setConfirmPassword(''); } } finally { setSecurityBusy(false); } };
   const openLocal = () => { window.open('http://127.0.0.1:8000', '_blank', 'noopener,noreferrer'); };
   const copyTunnel = async () => { if (tunnel.url) await navigator.clipboard?.writeText(tunnel.url); };
-  return <Card data-tour="public-access"><PanelHeading icon={<Globe2 />} action={<Badge variant="secondary" className={running ? 'status-online' : tunnel.error ? 'status-attention' : ''}>{processLabel}</Badge>}>{t('console.publicAccess')}</PanelHeading><CardContent className="flex-1 space-y-4"><div className="flex items-center justify-between gap-4"><label htmlFor="tunnel-switch" className="text-sm">Cloudflare Quick Tunnel</label><Switch id="tunnel-switch" checked={tunnelRunning} onCheckedChange={toggleTunnel} disabled={!installed || !running || tunnel.status === 'starting' || busy} aria-label={t('console.enableTunnel')} /></div><dl className="address-list"><div><dt>{t('console.local')}</dt><dd><code>127.0.0.1:8000</code></dd></div><div><dt>{t('dashboard.publicAddress')}</dt><dd>{tunnel.url ? <code>{tunnel.url}</code> : '—'}</dd></div></dl>{busy ? <div className="operation-progress" role="status"><span>{t('common.loading')}</span><span className="progress-track"><span className="progress-indeterminate" /></span></div> : null}{process.error ? <p className="install-error" role="alert">{process.error}</p> : null}{tunnel.error ? <p className="install-error" role="alert">{tunnel.error}</p> : null}</CardContent><CardFooter className="gap-2"><Button variant="outline" onClick={openLocal} disabled={!running}><ArrowUpRight />{t('dashboard.open')}</Button><Button variant="ghost" onClick={() => void copyTunnel()} disabled={!tunnel.url}><Copy />{t('dashboard.copyLink')}</Button><Button variant="ghost" onClick={() => void runAction(running ? '/api/v1/process/stop' : '/api/v1/process/start')} disabled={!installed || process.status === 'starting' || process.status === 'stopping' || busy}>{running ? t('dashboard.stop') : t('dashboard.start')}</Button></CardFooter></Card>;
+  return <Card data-tour="public-access">
+    <PanelHeading icon={<Globe2 />} action={<Badge variant="secondary" className={running ? 'status-online' : tunnel.error ? 'status-attention' : ''}>{processLabel}</Badge>}>{t('console.publicAccess')}</PanelHeading>
+    <CardContent className="flex-1 space-y-4">
+      <div className="access-row"><div><strong>{t('console.lanAccess')}</strong><span>{listen ? (passwordReady ? lanLabel : t('console.passwordRequired')) : lanLabel}</span></div><Switch id="listen-switch" checked={listen} onCheckedChange={(checked) => void updateAccess({ listen: checked, ...(checked ? { listenAddress: { ipv4: '0.0.0.0', ipv6: '[::]' } } : {}) })} disabled={!installed || securityBusy || (listen === false && !passwordReady)} aria-label={t('console.enableLan')} /></div>
+      <dl className="address-list"><div><dt>{t('console.lanAddress')}</dt><dd><code>{config?.networkHost ?? window.location.hostname ?? 'localhost'}:8000</code></dd></div><div><dt>{t('console.local')}</dt><dd><code>127.0.0.1:8000</code></dd></div></dl>
+      <div className="access-row access-row-public"><div><strong>{t('console.quickTunnel')}</strong><span>{passwordReady ? t('console.passwordProtected') : t('console.passwordRequired')}</span></div><Switch id="tunnel-switch" checked={tunnelRunning} onCheckedChange={toggleTunnel} disabled={!installed || !running || tunnel.status === 'starting' || busy || !passwordReady} aria-label={t('console.enableTunnel')} /></div>
+      <dl className="address-list"><div><dt>{t('dashboard.publicAddress')}</dt><dd>{tunnel.url ? <code>{tunnel.url}</code> : '—'}</dd></div></dl>
+      <details className="access-security" open={!passwordReady}><summary>{t('console.passwordSettings')}</summary><div className="security-form">
+        <p className="text-xs text-muted-foreground">{t('console.sillyPasswordHelp')}</p>
+        <div className="config-fixed"><span>{t('console.adminAccount')}</span><strong>{security.adminHandle}</strong></div>
+        <label className="field-label"><span>{t('console.password')}</span><Input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="new-password" disabled={!security.processReady || !security.accountsEnabled} /></label>
+        <label className="field-label"><span>{t('console.confirmPassword')}</span><Input type="password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} autoComplete="new-password" disabled={!security.processReady || !security.accountsEnabled} /></label>
+        <div className="security-actions"><Badge variant="outline">{passwordReady ? t('console.passwordProtected') : t('console.passwordRequired')}</Badge><Button size="sm" onClick={() => void saveSecurity()} disabled={securityBusy || !security.processReady || !security.accountsEnabled || password.length < 8 || password !== confirmPassword}>{passwordReady ? t('console.changePassword') : t('console.savePassword')}</Button></div>
+      </div></details>
+      {busy || securityBusy ? <div className="operation-progress" role="status"><span>{t('common.loading')}</span><span className="progress-track"><span className="progress-indeterminate" /></span></div> : null}
+      {security.error ? <p className="install-error" role="alert">{security.error}</p> : null}
+      {securityMessage ? <p className="install-error" role="alert">{securityMessage}</p> : null}
+      {process.error ? <p className="install-error" role="alert">{process.error}</p> : null}
+      {tunnel.error ? <p className="install-error" role="alert">{tunnel.error}</p> : null}
+    </CardContent>
+    <CardFooter className="gap-2"><Button variant="outline" onClick={openLocal} disabled={!running}><ArrowUpRight />{t('dashboard.open')}</Button><Button variant="ghost" onClick={() => void copyTunnel()} disabled={!tunnel.url}><Copy />{t('dashboard.copyLink')}</Button><Button variant="ghost" onClick={() => void runAction(running ? '/api/v1/process/stop' : '/api/v1/process/start')} disabled={!installed || process.status === 'starting' || process.status === 'stopping' || busy}>{running ? t('dashboard.stop') : t('dashboard.start')}</Button></CardFooter>
+  </Card>;
 }
 
 function DataPanel({ t, navigate, activeProfile, latestBackup }: { t: Translate; navigate: Navigate; activeProfile: Profile | null; latestBackup: BackupManifest | null }) {
@@ -594,6 +659,22 @@ function MetricsTable({ t, title, rows, maxRequests }: { t: Translate; title: st
 
 function TokenSummary({ t, values }: { t: Translate; values: MetricsSnapshot['providers'][number] }) {
   return <div className="token-summary"><span title={t('console.metricInput')}><ArrowDown />{values.inputTokens.toLocaleString()}</span><span title={t('console.metricOutput')}><ArrowUp />{values.outputTokens.toLocaleString()}</span><TokenDetails t={t} values={values} /></div>;
+}
+
+function ConfigPage({ t, config, onConfigUpdate }: { t: Translate; config: ConfigDocument | null; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null> }) {
+  const [form, setForm] = useState({ listen: false, sslEnabled: false, enableCorsProxy: false, disableCsrfProtection: false });
+  const [rawYaml, setRawYaml] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  useEffect(() => {
+    if (!config) return;
+    setForm({ listen: config.settings.listen, sslEnabled: config.settings.sslEnabled, enableCorsProxy: config.settings.enableCorsProxy, disableCsrfProtection: config.settings.disableCsrfProtection });
+    setRawYaml(config.rawYaml);
+  }, [config]);
+  if (!config) return <Card className="resource-panel"><CardContent className="resource-empty"><p>{t('console.noConfiguration')}</p></CardContent></Card>;
+  const save = async (input: ConfigUpdateInput) => { setBusy(true); setMessage(null); try { const error = await onConfigUpdate(input); setMessage(error ?? t('console.configSaved')); } finally { setBusy(false); } };
+  const saveCommon = () => void save({ settings: { listen: form.listen, sslEnabled: form.sslEnabled, enableCorsProxy: form.enableCorsProxy, disableCsrfProtection: form.disableCsrfProtection } });
+  return <div className="config-workspace"><div className="config-heading"><div><span className="data-kicker">{t('console.configKicker')}</span><h2>{t('console.configTitle')}</h2></div><Badge variant="outline">{config.runtimeRef}</Badge></div><Card className="config-card"><CardHeader><h3 className="panel-title"><Settings2 />{t('console.commonSettings')}</h3><p className="config-path">{config.path}</p></CardHeader><CardContent className="config-form-grid"><label className="config-toggle"><span><strong>{t('console.listenMode')}</strong><small>{t('console.listenModeHint')}</small></span><Switch checked={form.listen} onCheckedChange={(value) => setForm((current) => ({ ...current, listen: value }))} /></label><label className="config-toggle"><span><strong>{t('console.ssl')}</strong><small>{t('console.sslHint')}</small></span><Switch checked={form.sslEnabled} onCheckedChange={(value) => setForm((current) => ({ ...current, sslEnabled: value }))} /></label><label className="config-toggle"><span><strong>{t('console.corsProxy')}</strong><small>{t('console.corsProxyHint')}</small></span><Switch checked={form.enableCorsProxy} onCheckedChange={(value) => setForm((current) => ({ ...current, enableCorsProxy: value }))} /></label><label className="config-toggle"><span><strong>{t('console.disableCsrf')}</strong><small>{t('console.disableCsrfHint')}</small></span><Switch checked={form.disableCsrfProtection} onCheckedChange={(value) => setForm((current) => ({ ...current, disableCsrfProtection: value }))} /></label><div className="config-fixed"><span>{t('console.port')}</span><strong>8000</strong></div></CardContent><CardFooter className="config-actions"><span className="config-restart-note">{t('console.restartAfterSave')}</span><Button onClick={saveCommon} disabled={busy}>{t('common.save')}</Button></CardFooter></Card><Card className="config-card"><CardHeader><h3 className="panel-title"><ScrollText />{t('console.rawYaml')}</h3></CardHeader><CardContent><textarea className="config-editor" value={rawYaml} onChange={(event) => setRawYaml(event.target.value)} spellCheck={false} aria-label={t('console.rawYaml')} /></CardContent><CardFooter className="config-actions"><span className={message?.startsWith('Could') ? 'install-error' : 'config-restart-note'} role="status">{message ?? t('console.rawYamlHint')}</span><Button variant="outline" onClick={() => void save({ rawYaml })} disabled={busy}>{t('console.applyYaml')}</Button></CardFooter></Card></div>;
 }
 
 function ResourcePanel({ page, t }: { page: Exclude<PageId, 'overview' | 'data'>; t: Translate }) {

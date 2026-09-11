@@ -13,6 +13,7 @@ export interface TunnelManagerOptions {
   readonly now?: () => Date;
   readonly binaryPath?: string;
   readonly env?: NodeJS.ProcessEnv;
+  readonly beforeStart?: () => Promise<void>;
 }
 
 export class TunnelManager {
@@ -21,6 +22,7 @@ export class TunnelManager {
   private readonly now: () => Date;
   private readonly env: NodeJS.ProcessEnv;
   private readonly configuredBinaryPath: string | undefined;
+  private readonly beforeStart: (() => Promise<void>) | undefined;
   private child: ChildProcess | null = null;
   private token: string | undefined;
   private buffer = '';
@@ -32,12 +34,14 @@ export class TunnelManager {
     this.now = options.now ?? (() => new Date());
     this.env = options.env ?? process.env;
     this.configuredBinaryPath = options.binaryPath ?? this.env.STM_CLOUDFLARED_PATH;
+    this.beforeStart = options.beforeStart;
   }
 
   public getState(): TunnelState { return { ...this.state }; }
 
   public async start(mode: Exclude<TunnelMode, 'off'> = 'quick', token?: string): Promise<TunnelState> {
     if (this.child) return this.getState();
+    try { await this.beforeStart?.(); } catch (error: unknown) { return this.fail(mode, error instanceof Error ? error.message : 'Tunnel security requirements are not met'); }
     const selectedToken = token?.trim() || this.token;
     if (mode === 'named' && !selectedToken) return this.fail(mode, 'A Named Tunnel token is required');
     if (mode === 'named') this.token = selectedToken;

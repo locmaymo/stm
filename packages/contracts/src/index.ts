@@ -233,6 +233,55 @@ export interface TunnelState {
   readonly error: string | null;
 }
 
+export interface ConfigSettings {
+  readonly listen: boolean;
+  readonly listenAddress: {
+    readonly ipv4: string;
+    readonly ipv6: string;
+  };
+  readonly whitelistMode: boolean;
+  readonly port: number;
+  readonly enableUserAccounts: boolean;
+  readonly sslEnabled: boolean;
+  readonly enableCorsProxy: boolean;
+  readonly disableCsrfProtection: boolean;
+}
+
+export interface ConfigDocument {
+  readonly schemaVersion: 1;
+  readonly installationId: string;
+  readonly runtimeRef: string;
+  readonly runtimeRevision?: string;
+  readonly path: string;
+  readonly format: 'yaml' | 'yml';
+  /** First non-loopback IPv4 address found on the manager host, for LAN setup. */
+  readonly networkHost?: string;
+  /** YAML retains Basic Auth keys; any custom Basic Auth password is masked. */
+  readonly rawYaml: string;
+  readonly settings: ConfigSettings;
+  readonly restartRequired: boolean;
+}
+
+export interface ConfigUpdateInput {
+  readonly rawYaml?: string;
+  readonly settings?: Partial<{
+    listen: boolean;
+    listenAddress: Partial<ConfigSettings['listenAddress']>;
+    enableUserAccounts: boolean;
+    sslEnabled: boolean;
+    enableCorsProxy: boolean;
+    disableCsrfProtection: boolean;
+  }>;
+}
+
+export interface AccessSecurityState {
+  readonly accountsEnabled: boolean;
+  readonly adminHandle: string;
+  readonly adminPasswordConfigured: boolean;
+  readonly processReady: boolean;
+  readonly error?: string;
+}
+
 /** The complete allowlist written by the SillyTavern fetch instrumentation. */
 export interface UsageEvent {
   readonly schemaVersion: 1;

@@ -67,7 +67,7 @@ export class ProcessSupervisor {
     this.logger(`[sillytavern] starting ${installation.resolvedRef} on 127.0.0.1:8000`);
     const args = [
       ...(this.instrumentationPath ? ['--import', this.instrumentationPath] : []),
-      'server.js', '--port', '8000', '--listen', 'false', '--browserLaunchEnabled', 'false',
+      'server.js', '--port', '8000', '--browserLaunchEnabled', 'false',
     ];
     let runtimeLayout: 'data' | 'public' = profile?.layout === 'public' ? 'public' : 'data';
     if (profile && this.profileLifecycle) runtimeLayout = await this.profileLifecycle.prepare(profile, installation.runtimePath);
@@ -169,7 +169,7 @@ async function waitForHttpReady(url: string, child: ChildProcess, timeoutMs: num
   while (Date.now() - started < timeoutMs) {
     if (child.exitCode !== null) throw new Error(`SillyTavern exited during startup (code ${child.exitCode ?? 'unknown'})`);
     try {
-      const response = await fetch(url, { signal: AbortSignal.timeout(2_000) });
+      const response = await fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(2_000) });
       if (response.ok || response.status === 401 || response.status === 302) return;
     } catch { /* startup is still in progress */ }
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
