@@ -140,6 +140,7 @@ export interface BackupManifest {
   readonly includesSecrets: boolean;
   readonly fileCount: number;
   readonly source: BackupSource;
+  readonly fingerprint?: string;
 }
 
 export interface R2Config {
@@ -149,6 +150,27 @@ export interface R2Config {
   readonly accountId: string | null;
   readonly configured: boolean;
   readonly lastUploadAt: string | null;
+  readonly accessKeyIdMasked: string | null;
+  readonly secretAccessKeyConfigured: boolean;
+  readonly includeSecrets: boolean;
+  readonly schedule: {
+    readonly localIntervalMinutes: number;
+    readonly r2IntervalHours: number;
+    readonly fullIntervalDays: number;
+  };
+  readonly retention: {
+    readonly maxBackups: number;
+    readonly retentionDays: number | null;
+  };
+  readonly lastFingerprint: string | null;
+  readonly estimatedBytes: number;
+}
+
+export interface R2Object {
+  readonly key: string;
+  readonly sizeBytes: number;
+  readonly lastModified: string | null;
+  readonly etag: string | null;
 }
 
 export interface BackupFilePreview {

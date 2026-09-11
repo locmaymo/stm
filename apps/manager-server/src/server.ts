@@ -15,6 +15,8 @@ import { ProcessSupervisor } from './supervisor.js';
 import { TunnelManager } from '../../../packages/tunnel/src/index.js';
 import { ProfileError, ProfileStore } from '../../../packages/profiles/src/index.js';
 import { BackupError, BackupStore } from '../../../packages/backup/src/index.js';
+import { R2Error, R2Manager, type R2UpdateInput } from '../../../packages/r2/src/index.js';
+import { BackupScheduler } from './r2-scheduler.js';
 
 const MANAGER_PORT = 7860 as const;
 const SILLYTAVERN_PORT = 8000 as const;
@@ -37,6 +39,7 @@ const PROTECTED_PATHS = new Set([
   '/api/v1/config',
   '/api/v1/metrics',
   '/api/v1/tunnel',
+  '/api/v1/r2',
 ]);
 
 export interface ManagerServerOptions {
@@ -58,6 +61,7 @@ export interface ManagerServerOptions {
   readonly tunnel?: TunnelManager;
   readonly profileStore?: ProfileStore;
   readonly backupStore?: BackupStore;
+  readonly r2?: R2Manager;
 }
 
 export interface ManagerServer {
@@ -69,6 +73,7 @@ export interface ManagerServer {
   readonly tunnel: TunnelManager;
   readonly profiles: ProfileStore;
   readonly backups: BackupStore;
+  readonly r2: R2Manager;
   readonly port: number;
   close(): Promise<void>;
 }
@@ -95,6 +100,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   const runtime = options.runtime ?? new RuntimeManager({ paths, logger: (line) => { jobs.append('installer', line); baseLogger(line); } });
   const profiles = options.profileStore ?? new ProfileStore({ paths, logger: (line) => { jobs.append('manager', line); baseLogger(line); } });
   const backups = options.backupStore ?? new BackupStore({ paths, logger: (line) => { jobs.append('backup', line); baseLogger(line); } });
+  const r2 = options.r2 ?? new R2Manager({ paths, env, logger: (line) => { jobs.append('backup', line); baseLogger(line); } });
   const supervisor = options.supervisor ?? new ProcessSupervisor({
     runtime,
     profileResolver: (installation) => profiles.getActiveForInstallation(installation.id),
@@ -106,6 +112,8 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     logger: (line) => { jobs.append('sillytavern', line); baseLogger(line); },
   });
   const tunnel = options.tunnel ?? new TunnelManager({ paths, env, logger: (line) => { jobs.append('cloudflared', line); baseLogger(line); } });
+  const scheduler = new BackupScheduler({ backups, profiles, r2, logger: (line) => { jobs.append('backup', line); baseLogger(line); } });
+  scheduler.start();
   const secureCookies = options.secureCookies ?? env.STM_SECURE_COOKIES === '1';
   const setupCodeRequired = options.setupCodeRequired ?? requiresSetupCode(env);
   const staticRoot = resolve(options.staticRoot ?? join(process.cwd(), 'apps', 'manager-panel', 'dist'));
@@ -144,6 +152,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       tunnel,
       profiles,
       backups,
+      r2,
     }).catch((error: unknown) => {
       if (error instanceof RequestError) {
         sendError(response, error.statusCode, error.code, error.message);
@@ -151,6 +160,10 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       }
       if (error instanceof BackupError) {
         sendError(response, error.code === 'secrets_confirmation_required' ? 409 : 400, error.code, error.message);
+        return;
+      }
+      if (error instanceof R2Error) {
+        sendError(response, error.code === 'secrets_confirmation_required' || error.code === 'r2_not_configured' ? 409 : 400, error.code, error.message);
         return;
       }
       logger(`[manager] request failed: ${error instanceof Error ? error.message : 'unknown error'}`);
@@ -190,7 +203,8 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     tunnel,
     profiles,
     backups,
-    close: async () => { await tunnel.close(); await supervisor.close(); await closeServer(server); },
+    r2,
+    close: async () => { await scheduler.close(); await tunnel.close(); await supervisor.close(); await closeServer(server); },
   };
 }
 
@@ -211,8 +225,9 @@ async function handleRequest(options: {
   readonly tunnel: TunnelManager;
   readonly profiles: ProfileStore;
   readonly backups: BackupStore;
+  readonly r2: R2Manager;
 }): Promise<void> {
-  const { request, response, store, sessions, rateLimiter, startedAt, secureCookies, setupCodeRequired, staticRoot, runtime, jobs, supervisor, tunnel, profiles, backups } = options;
+  const { request, response, store, sessions, rateLimiter, startedAt, secureCookies, setupCodeRequired, staticRoot, runtime, jobs, supervisor, tunnel, profiles, backups, r2 } = options;
   const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
   const pathname = url.pathname;
   const context: RequestContext = {
@@ -299,16 +314,70 @@ async function handleRequest(options: {
     if (method !== 'GET' && !requireCsrf(context, session.csrfToken)) {
       return;
     }
-    await handleRuntimeRequest(context, runtime, jobs, supervisor, tunnel, profiles, backups);
+    await handleRuntimeRequest(context, runtime, jobs, supervisor, tunnel, profiles, backups, r2);
     return;
   }
 
   sendError(response, 404, 'not_found', 'Route not found');
 }
 
-async function handleRuntimeRequest(context: RequestContext, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, profiles: ProfileStore, backups: BackupStore): Promise<void> {
+async function handleRuntimeRequest(context: RequestContext, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, profiles: ProfileStore, backups: BackupStore, r2: R2Manager): Promise<void> {
   const { pathname, request, response } = context;
   const method = request.method ?? 'GET';
+  if (pathname === '/api/v1/r2' && method === 'GET') {
+    sendJson(response, 200, { config: await r2.getConfig(), objects: await r2.listObjects().catch(() => []) });
+    return;
+  }
+  if (pathname === '/api/v1/r2' && method === 'PUT') {
+    const body = await readJson(request);
+    if (!isRecord(body)) { sendError(response, 400, 'invalid_input', 'A JSON object is required'); return; }
+    const input: R2UpdateInput = {
+      ...(typeof body.enabled === 'boolean' ? { enabled: body.enabled } : {}),
+      ...(typeof body.endpoint === 'string' || body.endpoint === null ? { endpoint: body.endpoint as string | null } : {}),
+      ...(typeof body.bucket === 'string' || body.bucket === null ? { bucket: body.bucket as string | null } : {}),
+      ...(typeof body.accountId === 'string' || body.accountId === null ? { accountId: body.accountId as string | null } : {}),
+      ...(typeof body.accessKeyId === 'string' || body.accessKeyId === null ? { accessKeyId: body.accessKeyId as string | null } : {}),
+      ...(typeof body.secretAccessKey === 'string' || body.secretAccessKey === null ? { secretAccessKey: body.secretAccessKey as string | null } : {}),
+      ...(typeof body.includeSecrets === 'boolean' ? { includeSecrets: body.includeSecrets } : {}),
+      ...(typeof body.localIntervalMinutes === 'number' ? { localIntervalMinutes: body.localIntervalMinutes } : {}),
+      ...(typeof body.r2IntervalHours === 'number' ? { r2IntervalHours: body.r2IntervalHours } : {}),
+      ...(typeof body.fullIntervalDays === 'number' ? { fullIntervalDays: body.fullIntervalDays } : {}),
+      ...(typeof body.maxBackups === 'number' ? { maxBackups: body.maxBackups } : {}),
+      ...(typeof body.retentionDays === 'number' || body.retentionDays === null ? { retentionDays: body.retentionDays as number | null } : {}),
+    };
+    sendJson(response, 200, { config: await r2.update(input) });
+    return;
+  }
+  if (pathname === '/api/v1/r2/test' && method === 'POST') {
+    sendJson(response, 200, await r2.testConnection());
+    return;
+  }
+  if (pathname === '/api/v1/r2/objects' && method === 'GET') {
+    sendJson(response, 200, { objects: await r2.listObjects() });
+    return;
+  }
+  if (pathname === '/api/v1/r2/objects' && method === 'DELETE') {
+    const body = await readJson(request);
+    const key = isRecord(body) && typeof body.key === 'string' ? body.key : '';
+    if (!key) { sendError(response, 400, 'invalid_object_key', 'An R2 object key is required'); return; }
+    await r2.deleteObject(key);
+    sendJson(response, 200, { ok: true });
+    return;
+  }
+  if ((pathname === '/api/v1/r2/upload' || pathname === '/api/v1/r2/sync') && method === 'POST') {
+    const profile = await profiles.getActive();
+    if (!profile) { sendError(response, 409, 'profile_required', 'Create or activate a profile before uploading to R2'); return; }
+    const body = await readJson(request);
+    const backupId = isRecord(body) && typeof body.backupId === 'string' ? body.backupId : null;
+    const allowSecrets = isRecord(body) && body.includeSecrets === true;
+    const manifest = backupId ? await backups.get(backupId) : await backups.create(profile, { ...(allowSecrets ? { includeSecrets: true } : {}), name: `${profile.name}-r2` });
+    if (!manifest || manifest.profileId !== profile.id) { sendError(response, 404, 'backup_not_found', 'Backup not found in the active profile'); return; }
+    const archivePath = await backups.getArchivePath(manifest.id);
+    if (!archivePath) { sendError(response, 410, 'backup_archive_missing', 'The backup archive is missing'); return; }
+    const upload = await r2.uploadArchive(archivePath, manifest, manifest.fingerprint ?? null, allowSecrets);
+    sendJson(response, 200, { manifest, upload });
+    return;
+  }
   if (pathname === '/api/v1/logs' && method === 'GET') {
     const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
     const afterValue = Number(url.searchParams.get('after') ?? 0);
@@ -583,7 +652,8 @@ function isProtectedPath(pathname: string): boolean {
     || pathname.startsWith('/api/v1/logs')
     || pathname.startsWith('/api/v1/process')
     || pathname.startsWith('/api/v1/profiles/')
-    || pathname.startsWith('/api/v1/backups/');
+    || pathname.startsWith('/api/v1/backups/')
+    || pathname.startsWith('/api/v1/r2/');
 }
 
 function isVersionSelector(value: string): boolean {

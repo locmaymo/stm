@@ -103,10 +103,10 @@
 .language-control { display: inline-flex; gap: 2px; padding: 3px; border: 1px solid var(--border); border-radius: 8px; }
 .language-control button { min-width: 32px; height: 28px; padding: 0 6px; border-radius: 5px; color: var(--muted-foreground); font-size: 12px; font-weight: 600; }
 .language-control button[aria-pressed="true"] { background: var(--muted); color: var(--foreground); }
-.page-body { padding: 24px; width: 100%; min-width: 0; }
+.page-body { width: 100%; max-width: 1480px; min-width: 0; margin: 0 auto; padding: 28px 32px 48px; }
 .auth-shell { display: flex; min-height: 100dvh; align-items: center; justify-content: center; padding: 24px; }
-.core-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
-.core-grid [data-slot="card"] { min-width: 0; gap: 20px; box-shadow: none; }
+.core-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.core-grid [data-slot="card"] { min-width: 0; gap: 16px; box-shadow: none; }
 .panel-title { display: flex; align-items: center; gap: 10px; font-size: 15px; font-weight: 600; line-height: 1.5; }
 .panel-title svg { width: 17px; height: 17px; color: var(--muted-foreground); flex-shrink: 0; }
 [data-slot="card-header"] { align-items: center; grid-template-rows: auto; }
@@ -142,7 +142,7 @@
 .log-lines time { flex: 0 0 8ch; color: var(--muted-foreground); }
 .log-source { flex: 0 0 11ch; color: var(--primary); }
 .log-message { flex: 1 0 auto; white-space: pre; }
-.data-workspace { display: grid; gap: 16px; width: 100%; max-width: 980px; }
+.data-workspace { display: grid; gap: 16px; width: 100%; max-width: 1180px; margin: 0 auto; }
 .data-profile-card, .backup-library-card, .r2-placeholder { min-width: 0; box-shadow: none; }
 .data-profile-bar { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .data-profile-current { display: grid; min-width: 0; gap: 2px; }
@@ -171,6 +171,11 @@
 .progress-indeterminate { display: block; width: 35%; height: 100%; border-radius: inherit; background: var(--primary); animation: progress-slide 1.1s ease-in-out infinite; }
 @keyframes progress-slide { from { transform: translateX(-120%); } to { transform: translateX(320%); } }
 .r2-placeholder-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 10px; margin-top: 12px; }
+.r2-form-grid, .r2-schedule-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.r2-schedule-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.r2-form-grid .field-label, .r2-schedule-grid .field-label { display: grid; gap: 6px; }
+.r2-toggle-row, .r2-actions, .r2-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.r2-summary { justify-content: space-between; color: var(--muted-foreground); font-size: 12px; }
 .data-stack { display: grid; gap: 20px; max-width: 760px; }
 .profile-list { display: grid; gap: 8px; }
 .profile-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; padding: 12px 0; border-top: 1px solid var(--border); }
@@ -186,6 +191,7 @@
 .install-result { margin-top: 12px; color: var(--primary); font-size: 13px; }
 .install-error { margin-top: 12px; color: var(--destructive); font-size: 13px; overflow-wrap: anywhere; }
 .version-select-content { max-height: min(30rem, calc(100dvh - 10rem)); }
+.resource-panel { width: 100%; max-width: 900px; margin: 0 auto; }
 .resource-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px; min-height: 260px; color: var(--muted-foreground); }
 [data-slot="sheet-content"][data-mobile="true"], [data-slot="sidebar"][data-mobile="true"] { max-width: calc(100vw - 48px); }
 
@@ -193,9 +199,10 @@
   .core-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 @media (max-width: 1023px) { .core-grid { grid-template-columns: 1fr; } }
+@media (max-width: 700px) { .r2-form-grid, .r2-schedule-grid { grid-template-columns: 1fr; } }
 @media (max-width: 767px) {
   .site-header { padding: 0 12px; gap: 8px; }
-  .page-body { padding: 16px; padding-bottom: max(16px, env(safe-area-inset-bottom)); }
+  .page-body { max-width: none; padding: 16px; padding-bottom: max(16px, env(safe-area-inset-bottom)); }
   .core-grid { gap: 16px; }
   [data-slot="button"], [data-slot="select-trigger"] { min-height: 40px; }
   [data-slot="card-header"], [data-slot="card-content"], [data-slot="card-footer"] { padding-left: 18px; padding-right: 18px; }

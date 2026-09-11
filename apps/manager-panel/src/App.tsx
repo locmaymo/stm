@@ -14,7 +14,7 @@ import {
 } from '../../../packages/ui/src/index.js';
 import { translator, type Translate } from './i18n.js';
 import { browserStorage, readPreferences, savePreferences, type Preferences } from './preferences.js';
-import type { BackupManifest, Installation, LogEntry, LogSourceFilter, ProcessState, Profile, RestorePreview, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { BackupManifest, Installation, LogEntry, LogSourceFilter, ProcessState, Profile, R2Config, R2Object, RestorePreview, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
 import { formatLogMessage } from './log-format.js';
 
@@ -332,12 +332,23 @@ function DataPage({ t, csrfToken, profiles, activeProfileId, backups, onProfiles
   const [restoreMode, setRestoreMode] = useState<'merge' | 'replace'>('replace');
   const [selectedBackup, setSelectedBackup] = useState<BackupManifest | null>(null);
   const [selectedPreview, setSelectedPreview] = useState<RestorePreview | null>(null);
+  const [r2Config, setR2Config] = useState<R2Config | null>(null);
+  const [r2Objects, setR2Objects] = useState<R2Object[]>([]);
+  const [r2Form, setR2Form] = useState({ endpoint: '', bucket: '', accountId: '', accessKeyId: '', secretAccessKey: '', enabled: false, includeSecrets: false, localIntervalMinutes: 60, r2IntervalHours: 24, fullIntervalDays: 7, maxBackups: 7, retentionDays: 30 });
+  const [r2Busy, setR2Busy] = useState<string | null>(null);
+  const [r2Message, setR2Message] = useState<string | null>(null);
   const busy = busyAction !== null;
   const refresh = async () => {
-    const [profileResponse, backupResponse] = await Promise.all([fetch('/api/v1/profiles', { credentials: 'same-origin' }), fetch('/api/v1/backups', { credentials: 'same-origin' })]);
+    const [profileResponse, backupResponse, r2Response] = await Promise.all([fetch('/api/v1/profiles', { credentials: 'same-origin' }), fetch('/api/v1/backups', { credentials: 'same-origin' }), fetch('/api/v1/r2', { credentials: 'same-origin' })]);
     if (profileResponse.ok) { const payload = await profileResponse.json() as { profiles: Profile[]; activeProfileId: string | null }; onProfilesChange(payload.profiles, payload.activeProfileId); }
     if (backupResponse.ok) { const payload = await backupResponse.json() as { backups: BackupManifest[] }; onBackupsChange(payload.backups); }
+    if (r2Response.ok) {
+      const payload = await r2Response.json() as { config: R2Config; objects: R2Object[] };
+      setR2Config(payload.config); setR2Objects(payload.objects);
+      setR2Form((current) => ({ ...current, endpoint: payload.config.endpoint ?? '', bucket: payload.config.bucket ?? '', accountId: payload.config.accountId ?? '', accessKeyId: payload.config.accessKeyIdMasked ? '********' : '', secretAccessKey: payload.config.secretAccessKeyConfigured ? '********' : '', enabled: payload.config.enabled, includeSecrets: payload.config.includeSecrets, localIntervalMinutes: payload.config.schedule.localIntervalMinutes, r2IntervalHours: payload.config.schedule.r2IntervalHours, fullIntervalDays: payload.config.schedule.fullIntervalDays, maxBackups: payload.config.retention.maxBackups, retentionDays: payload.config.retention.retentionDays ?? 30 }));
+    }
   };
+  useEffect(() => { void refresh(); }, []);
   const create = async () => {
     if (!name.trim()) return;
     setBusyAction(t('console.createProfile')); setError(null);
@@ -414,6 +425,33 @@ function DataPage({ t, csrfToken, profiles, activeProfileId, backups, onProfiles
       await refresh();
     } catch { setError(t('console.backupDeleteFailed')); } finally { setBusyAction(null); }
   };
+  const saveR2 = async () => {
+    setR2Busy(t('console.r2Save')); setR2Message(null);
+    try {
+      const response = await fetch('/api/v1/r2', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify(r2Form) });
+      const payload = await response.json() as { config?: R2Config; error?: { message?: string } };
+      if (!response.ok || !payload.config) { setR2Message(payload.error?.message ?? t('console.r2SaveFailed')); return; }
+      setR2Config(payload.config); setR2Message(t('console.r2Saved')); await refresh();
+    } catch { setR2Message(t('console.r2SaveFailed')); } finally { setR2Busy(null); }
+  };
+  const testR2 = async () => {
+    setR2Busy(t('console.r2Test')); setR2Message(null);
+    try {
+      const response = await fetch('/api/v1/r2/test', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      const payload = await response.json() as { error?: { message?: string } };
+      setR2Message(response.ok ? t('console.r2Tested') : payload.error?.message ?? t('console.r2TestFailed'));
+    } catch { setR2Message(t('console.r2TestFailed')); } finally { setR2Busy(null); }
+  };
+  const uploadR2 = async () => {
+    setR2Busy(t('console.r2UploadLatest')); setR2Message(null);
+    try {
+      const latest = backups[0];
+      const response = await fetch('/api/v1/r2/upload', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ ...(latest ? { backupId: latest.id } : {}), ...(r2Form.includeSecrets ? { includeSecrets: true } : {}) }) });
+      const payload = await response.json() as { error?: { message?: string } };
+      if (!response.ok) { setR2Message(payload.error?.message ?? t('console.r2UploadFailed')); return; }
+      setR2Message(t('console.r2Saved')); await refresh();
+    } catch { setR2Message(t('console.r2UploadFailed')); } finally { setR2Busy(null); }
+  };
   const activeProfile = profiles.find((profile) => profile.id === activeProfileId) ?? profiles[0] ?? null;
   return <div className="data-workspace">
     <Card className="data-profile-card"><PanelHeading icon={<UsersIcon />} action={<Badge variant="outline">{profiles.length}</Badge>}>{t('console.dataWorkspace')}</PanelHeading><CardContent>
@@ -423,7 +461,7 @@ function DataPage({ t, csrfToken, profiles, activeProfileId, backups, onProfiles
     </CardContent></Card>
     <Card className="backup-library-card"><PanelHeading icon={<Archive />} action={<div className="backup-actions"><Button size="sm" onClick={() => void createBackup()} disabled={busy || !activeProfileId}><Archive />{t('dashboard.backupNow')}</Button><label className="button-outline"><Upload />{t('console.importZip')}<input type="file" accept=".zip,application/zip" onChange={(event) => void inspectUpload(event.target.files?.[0])} /></label></div>}>{t('console.backupLibrary')}</PanelHeading>
       <CardContent className="space-y-4"><div className="backup-controls"><Input value={backupName} onChange={(event) => setBackupName(event.target.value)} placeholder={t('console.backupNameOptional')} aria-label={t('console.backupNameOptional')} /><label className="backup-option"><input type="checkbox" checked={includeSecrets} onChange={(event) => setIncludeSecrets(event.target.checked)} />{t('console.includeSecrets')}</label></div>{includeSecrets ? <p className="install-error">{t('console.secretsWarning')}</p> : null}{error ? <p className="install-error" role="alert">{error}</p> : null}{busyAction ? <div className="operation-progress" role="status"><span>{busyAction}</span><span className="progress-track"><span className="progress-indeterminate" /></span></div> : null}{backups.length === 0 ? <p className="resource-empty">{t('dashboard.noBackup')}</p> : <div className="backup-list">{backups.map((backup) => <div className="backup-row" key={backup.id}><div className="min-w-0"><strong>{backup.name}</strong><span>{backup.source === 'uploaded' ? t('console.uploadedBackup') : t('console.createdBackup')} · {new Date(backup.createdAt).toLocaleString()} · {formatBytes(backup.sizeBytes)}</span></div><div className="backup-row-actions"><Button variant="ghost" size="sm" onClick={() => { window.location.href = `/api/v1/backups/${backup.id}/download`; }}>{t('console.downloadBackup')}</Button><Button variant="ghost" size="sm" onClick={() => void renameBackup(backup)} disabled={busy}>{t('console.renameBackup')}</Button><Button variant="ghost" size="sm" onClick={() => void deleteBackup(backup)} disabled={busy}>{t('console.deleteBackup')}</Button><Button variant="outline" size="sm" onClick={() => void previewBackup(backup)} disabled={busy}>{t('console.previewBackup')}</Button></div></div>)}</div>}{selectedPreview ? <div className="backup-preview"><strong>{t('console.restorePreview')}</strong><span>{selectedBackup?.name} · {selectedPreview.fileCount} {t('console.files')} · {formatBytes(selectedPreview.totalBytes)}</span>{selectedPreview.warnings.map((warning) => <p className="install-error" key={warning}>{warning}</p>)}<div className="backup-restore-actions"><Select value={restoreMode} onValueChange={(value) => setRestoreMode(value as 'merge' | 'replace')}><SelectTrigger aria-label={t('console.restoreMode')}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="replace">{t('console.replaceRestore')}</SelectItem><SelectItem value="merge">{t('console.mergeRestore')}</SelectItem></SelectContent></Select><Button onClick={() => void restoreSelected()} disabled={busy || (selectedPreview.includesSecrets && !includeSecrets)}><Upload />{t('console.restore')}</Button></div></div> : null}</CardContent></Card>
-    <Card className="r2-placeholder"><PanelHeading icon={<Globe2 />} action={<Badge variant="outline">{t('console.comingSoon')}</Badge>}>{t('console.r2Title')}</PanelHeading><CardContent><p>{t('console.r2Placeholder')}</p><div className="r2-placeholder-grid"><Input disabled placeholder={t('console.r2Endpoint')} /><Input disabled placeholder={t('console.r2Bucket')} /><Button variant="outline" disabled>{t('console.configureR2')}</Button></div></CardContent></Card>
+    <Card className="r2-placeholder"><PanelHeading icon={<Globe2 />} action={<Badge variant="outline" className={r2Config?.configured ? 'status-online' : ''}>{r2Config?.configured ? t('console.r2Configured') : t('console.r2NotConfigured')}</Badge>}>{t('console.r2Title')}</PanelHeading><CardContent className="space-y-4"><p>{t('console.r2Placeholder')}</p><div className="r2-form-grid"><label className="field-label"><span>{t('console.r2Endpoint')}</span><Input value={r2Form.endpoint} onChange={(event) => setR2Form((current) => ({ ...current, endpoint: event.target.value }))} placeholder="https://ACCOUNT_ID.r2.cloudflarestorage.com" /></label><label className="field-label"><span>{t('console.r2Bucket')}</span><Input value={r2Form.bucket} onChange={(event) => setR2Form((current) => ({ ...current, bucket: event.target.value }))} /></label><label className="field-label"><span>{t('console.r2AccountId')}</span><Input value={r2Form.accountId} onChange={(event) => setR2Form((current) => ({ ...current, accountId: event.target.value }))} /></label><label className="field-label"><span>{t('console.r2AccessKey')}</span><Input value={r2Form.accessKeyId} onChange={(event) => setR2Form((current) => ({ ...current, accessKeyId: event.target.value }))} autoComplete="off" /></label><label className="field-label"><span>{t('console.r2SecretKey')}</span><Input type="password" value={r2Form.secretAccessKey} onChange={(event) => setR2Form((current) => ({ ...current, secretAccessKey: event.target.value }))} autoComplete="new-password" /></label></div><div className="r2-toggle-row"><label className="backup-option"><input type="checkbox" checked={r2Form.enabled} onChange={(event) => setR2Form((current) => ({ ...current, enabled: event.target.checked }))} />{t('console.r2Enabled')}</label><label className="backup-option"><input type="checkbox" checked={r2Form.includeSecrets} onChange={(event) => setR2Form((current) => ({ ...current, includeSecrets: event.target.checked }))} />{t('console.r2IncludeSecrets')}</label></div><p className="text-xs text-muted-foreground">{t('console.r2SecretsWarning')}</p><div className="r2-schedule-grid"><label className="field-label"><span>{t('console.r2LocalEvery')}</span><Input type="number" min="1" value={r2Form.localIntervalMinutes} onChange={(event) => setR2Form((current) => ({ ...current, localIntervalMinutes: Number(event.target.value) }))} /></label><label className="field-label"><span>{t('console.r2Every')}</span><Input type="number" min="1" value={r2Form.r2IntervalHours} onChange={(event) => setR2Form((current) => ({ ...current, r2IntervalHours: Number(event.target.value) }))} /></label><label className="field-label"><span>{t('console.r2FullEvery')}</span><Input type="number" min="1" value={r2Form.fullIntervalDays} onChange={(event) => setR2Form((current) => ({ ...current, fullIntervalDays: Number(event.target.value) }))} /></label><label className="field-label"><span>{t('console.r2MaxBackups')}</span><Input type="number" min="1" value={r2Form.maxBackups} onChange={(event) => setR2Form((current) => ({ ...current, maxBackups: Number(event.target.value) }))} /></label><label className="field-label"><span>{t('console.r2RetentionDays')}</span><Input type="number" min="1" value={r2Form.retentionDays} onChange={(event) => setR2Form((current) => ({ ...current, retentionDays: Number(event.target.value) }))} /></label></div>{r2Message ? <p className="text-sm" role="status">{r2Message}</p> : null}<div className="r2-actions"><Button onClick={() => void saveR2()} disabled={r2Busy !== null}>{t('console.r2Save')}</Button><Button variant="outline" onClick={() => void testR2()} disabled={r2Busy !== null || !r2Config?.configured}>{t('console.r2Test')}</Button><Button variant="ghost" onClick={() => void uploadR2()} disabled={r2Busy !== null || !r2Config?.configured}>{t('console.r2UploadLatest')}</Button></div><div className="r2-summary"><span>{t('console.r2Estimate')}: {formatBytes(r2Config?.estimatedBytes ?? 0)}</span><span>{t('console.r2Objects')}: {r2Objects.length}</span></div>{r2Busy ? <div className="operation-progress" role="status"><span>{r2Busy}</span><span className="progress-track"><span className="progress-indeterminate" /></span></div> : null}</CardContent></Card>
   </div>;
 }
 
@@ -436,5 +474,5 @@ function formatBytes(value: number): string {
 
 function ResourcePanel({ page, t }: { page: Exclude<PageId, 'overview' | 'data'>; t: Translate }) {
   const emptyMessage = { metrics: 'console.noMetrics', config: 'console.noConfiguration' } as const;
-  return <Card><CardContent className="resource-empty"><p>{t(emptyMessage[page])}</p></CardContent></Card>;
+  return <Card className="resource-panel"><CardContent className="resource-empty"><p>{t(emptyMessage[page])}</p></CardContent></Card>;
 }

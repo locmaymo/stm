@@ -90,9 +90,41 @@ export class BackupStore {
     }
   }
 
+  /** Return a cheap change fingerprint without reading user content into memory. */
+  public async fingerprint(profile: Profile): Promise<string> {
+    const root = await resolveProfileDataRoot(profile);
+    let fileCount = 0;
+    let totalBytes = 0;
+    let newestMtime = 0;
+    const visit = async (current: string): Promise<void> => {
+      if (!await exists(current)) return;
+      const details = await lstat(current);
+      if (details.isSymbolicLink()) throw new BackupError('linked_path', `Linked data path is not allowed: ${current}`);
+      newestMtime = Math.max(newestMtime, details.mtimeMs);
+      if (!details.isDirectory()) {
+        fileCount += 1;
+        totalBytes += details.size;
+        return;
+      }
+      for (const child of await readdir(current)) {
+        if (EXCLUDED_NAMES.has(child)) continue;
+        await visit(join(current, child));
+      }
+    };
+    await visit(root);
+    if (await exists(profile.configPath)) {
+      const configDetails = await lstat(profile.configPath);
+      fileCount += 1;
+      totalBytes += configDetails.size;
+      newestMtime = Math.max(newestMtime, configDetails.mtimeMs);
+    }
+    return createHash('sha256').update(`${fileCount}:${totalBytes}:${Math.floor(newestMtime)}`, 'utf8').digest('hex');
+  }
+
   public async create(profile: Profile, options: CreateBackupOptions = {}): Promise<BackupManifest> {
     const id = randomUUID();
     const createdAt = this.now().toISOString();
+    const fingerprint = await this.fingerprint(profile);
     const temporary = join(this.paths.tmp, `backup-${id}.zip.tmp`);
     const target = join(this.paths.archives, `${id}.zip`);
     await mkdir(this.paths.tmp, { recursive: true });
@@ -117,6 +149,7 @@ export class BackupStore {
         includesSecrets: options.includeSecrets === true && sources.some((source) => source.name === 'secrets.json'),
         fileCount: sources.length,
         source: 'created',
+        fingerprint,
       };
       await this.save([...await this.load(), manifest]);
       this.logger(`[backup] created ${manifest.name} (${manifest.fileCount} files)`);

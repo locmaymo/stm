@@ -112,6 +112,27 @@ test('STM_ADMIN_PASSWORD bootstraps a fresh installation without exposing the pa
   assert.equal(JSON.stringify(payload).includes('correct horse'), false);
 });
 
+test('R2 settings are authenticated, masked, and preserve masked credentials', async (t) => {
+  const manager = await createServer({ bootstrapPassword: 'correct horse battery staple' });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const login = await fetch(`${base}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'correct horse battery staple' }) });
+  const cookie = cookieFrom(login); const csrf = (await login.json() as { session: { csrfToken: string } }).session.csrfToken;
+  const saved = await fetch(`${base}/api/v1/r2`, { method: 'PUT', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ enabled: true, endpoint: 'http://127.0.0.1:9999', bucket: 'stm-test-bucket', accessKeyId: 'access-key-1234', secretAccessKey: 'secret-key-5678' }) });
+  assert.equal(saved.status, 200);
+  const savedBody = await saved.json() as { config: { configured: boolean; accessKeyIdMasked: string; secretAccessKeyConfigured: boolean } };
+  assert.equal(savedBody.config.configured, true);
+  assert.equal(savedBody.config.accessKeyIdMasked, 'ac********34');
+  assert.equal(savedBody.config.secretAccessKeyConfigured, true);
+  const preserved = await fetch(`${base}/api/v1/r2`, { method: 'PUT', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ accessKeyId: '********', secretAccessKey: '********' }) });
+  assert.equal(preserved.status, 200);
+  const visible = await fetch(`${base}/api/v1/r2`, { headers: { cookie } });
+  const visibleText = await visible.text();
+  assert.equal(visible.status, 200);
+  assert.equal(visibleText.includes('secret-key-5678'), false);
+  assert.equal(visibleText.includes('access-key-1234'), false);
+});
+
 test('only one concurrent first-run setup can create the admin', async (t) => {
   const manager = await createServer();
   t.after(() => manager.close());
