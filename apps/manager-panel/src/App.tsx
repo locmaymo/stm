@@ -14,7 +14,7 @@ import {
 } from '../../../packages/ui/src/index.js';
 import { translator, type Translate } from './i18n.js';
 import { browserStorage, readPreferences, savePreferences, type Preferences } from './preferences.js';
-import type { Installation, LogEntry, LogSourceFilter, ProcessState, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { Installation, LogEntry, LogSourceFilter, ProcessState, Profile, ProfileLayout, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
 import { formatLogMessage } from './log-format.js';
 
@@ -81,13 +81,15 @@ function ConsoleApp({ csrfToken }: { csrfToken: string }) {
   const [versions, setVersions] = useState<VersionOption[]>([]);
   const [installations, setInstallations] = useState<Installation[]>([]);
   const [activeInstallationId, setActiveInstallationId] = useState<string | null>(null);
+  const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [activeProfileId, setActiveProfileId] = useState<string | null>(null);
   const [installing, setInstalling] = useState(false);
   const [pendingInstallationId, setPendingInstallationId] = useState<string | null>(null);
   const [logSource, setLogSource] = useState<LogSourceFilter>('all');
   const [logQuery, setLogQuery] = useState('');
   const [logsExpanded, setLogsExpanded] = useState(false);
   const [compactLogs, setCompactLogs] = useState(false);
-  const [processState, setProcessState] = useState<ProcessState>({ status: 'stopped', installationId: null, pid: null, startedAt: null, error: null });
+  const [processState, setProcessState] = useState<ProcessState>({ status: 'stopped', installationId: null, profileId: null, pid: null, startedAt: null, error: null });
   const [tunnelState, setTunnelState] = useState<TunnelState>({ mode: 'off', status: 'stopped', url: null, startedAt: null, error: null });
   const t = translator(preferences.locale);
 
@@ -139,10 +141,12 @@ function ConsoleApp({ csrfToken }: { csrfToken: string }) {
     void Promise.all([
       fetch('/api/v1/versions', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<{ versions: VersionOption[] }> : null),
       fetch('/api/v1/installations', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<{ installations: Installation[]; activeInstallationId: string | null }> : null),
-    ]).then(([versionPayload, installationPayload]) => {
+      fetch('/api/v1/profiles', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<{ profiles: Profile[]; activeProfileId: string | null }> : null),
+    ]).then(([versionPayload, installationPayload, profilePayload]) => {
       if (cancelled) return;
       if (versionPayload) setVersions(versionPayload.versions);
       if (installationPayload) { setInstallations(installationPayload.installations); setActiveInstallationId(installationPayload.activeInstallationId); }
+      if (profilePayload) { setProfiles(profilePayload.profiles); setActiveProfileId(profilePayload.activeProfileId); }
     }).catch(() => undefined);
     return () => { cancelled = true; };
   }, []);
@@ -200,7 +204,7 @@ function ConsoleApp({ csrfToken }: { csrfToken: string }) {
           </div>
         </header>
         <div className="page-body">
-          {page === 'overview' ? <div className="core-grid">{installation}<AccessPanel t={t} process={processState} tunnel={tunnelState} installed={Boolean(activeInstallationId)} onAction={updateRuntime} /> <DataPanel t={t} navigate={navigate} />{logs}</div> : page === 'data' ? <DataPage t={t} /> : <ResourcePanel page={page} t={t} />}
+          {page === 'overview' ? <div className="core-grid">{installation}<AccessPanel t={t} process={processState} tunnel={tunnelState} installed={Boolean(activeInstallationId)} onAction={updateRuntime} /> <DataPanel t={t} navigate={navigate} activeProfile={profiles.find((profile) => profile.id === activeProfileId) ?? null} />{logs}</div> : page === 'data' ? <DataPage t={t} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} /> : <ResourcePanel page={page} t={t} />}
         </div>
       </SidebarInset>
     </SidebarProvider>
@@ -263,8 +267,8 @@ function AccessPanel({ t, process, tunnel, installed, onAction }: { t: Translate
   return <Card data-tour="public-access"><PanelHeading icon={<Globe2 />} action={<Badge variant="secondary" className={running ? 'status-online' : tunnel.error ? 'status-attention' : ''}>{processLabel}</Badge>}>{t('console.publicAccess')}</PanelHeading><CardContent className="flex-1 space-y-4"><div className="flex items-center justify-between gap-4"><label htmlFor="tunnel-switch" className="text-sm">Cloudflare Quick Tunnel</label><Switch id="tunnel-switch" checked={tunnelRunning} onCheckedChange={toggleTunnel} disabled={!installed || !running || tunnel.status === 'starting'} aria-label={t('console.enableTunnel')} /></div><dl className="address-list"><div><dt>{t('console.local')}</dt><dd><code>127.0.0.1:8000</code></dd></div><div><dt>{t('dashboard.publicAddress')}</dt><dd>{tunnel.url ? <code>{tunnel.url}</code> : '—'}</dd></div></dl>{process.error ? <p className="install-error" role="alert">{process.error}</p> : null}{tunnel.error ? <p className="install-error" role="alert">{tunnel.error}</p> : null}</CardContent><CardFooter className="gap-2"><Button variant="outline" onClick={openLocal} disabled={!running}><ArrowUpRight />{t('dashboard.open')}</Button><Button variant="ghost" onClick={() => void copyTunnel()} disabled={!tunnel.url}><Copy />{t('dashboard.copyLink')}</Button><Button variant="ghost" onClick={() => void onAction(running ? '/api/v1/process/stop' : '/api/v1/process/start')} disabled={!installed || process.status === 'starting' || process.status === 'stopping'}>{running ? t('dashboard.stop') : t('dashboard.start')}</Button></CardFooter></Card>;
 }
 
-function DataPanel({ t, navigate }: { t: Translate; navigate: Navigate }) {
-  return <Card data-tour="data"><PanelHeading icon={<Database />}>{t('console.data')}</PanelHeading><CardContent className="flex-1 space-y-4"><div className="flex flex-wrap items-center justify-between gap-2"><span className="text-muted-foreground">{t('console.noProfiles')}</span><Button variant="ghost" size="sm" onClick={() => navigate('data')}>{t('nav.data')}<ArrowUpRight /></Button></div><dl className="address-list"><div><dt>{t('status.lastBackup')}</dt><dd>—</dd></div></dl></CardContent><CardFooter className="flex-wrap gap-2"><Button variant="outline" onClick={() => navigate('data')}><Archive />{t('nav.data')}</Button><Button variant="ghost" onClick={() => navigate('data')}><Upload />{t('console.restore')}</Button></CardFooter><div className="r2-note"><Tooltip><TooltipTrigger asChild><button type="button" onClick={() => navigate('data')}>{t('console.r2Recommended')}</button></TooltipTrigger><TooltipContent className="max-w-xs">{t('console.r2Help')}</TooltipContent></Tooltip></div></Card>;
+function DataPanel({ t, navigate, activeProfile }: { t: Translate; navigate: Navigate; activeProfile: Profile | null }) {
+  return <Card data-tour="data"><PanelHeading icon={<Database />}>{t('console.data')}</PanelHeading><CardContent className="flex-1 space-y-4"><div className="flex flex-wrap items-center justify-between gap-2"><span className="text-muted-foreground">{activeProfile?.name ?? t('console.noProfiles')}</span><Button variant="ghost" size="sm" onClick={() => navigate('data')}>{t('nav.data')}<ArrowUpRight /></Button></div>{activeProfile ? <dl className="address-list"><div><dt>{t('console.layout')}</dt><dd>{activeProfile.layout === 'data' ? t('console.layoutData') : t('console.layoutPublic')}</dd></div></dl> : null}<dl className="address-list"><div><dt>{t('status.lastBackup')}</dt><dd>—</dd></div></dl></CardContent><CardFooter className="flex-wrap gap-2"><Button variant="outline" onClick={() => navigate('data')}><Archive />{t('nav.data')}</Button><Button variant="ghost" onClick={() => navigate('data')}><Upload />{t('console.restore')}</Button></CardFooter><div className="r2-note"><Tooltip><TooltipTrigger asChild><button type="button" onClick={() => navigate('data')}>{t('console.r2Recommended')}</button></TooltipTrigger><TooltipContent className="max-w-xs">{t('console.r2Help')}</TooltipContent></Tooltip></div></Card>;
 }
 
 function LogsPanel({ t, source, onSourceChange, entries, query, onQueryChange, compact, onToggleCompact, expanded, onToggleExpanded }: { t: Translate; source: LogSourceFilter; onSourceChange: (value: LogSourceFilter) => void; entries: LogEntry[]; query: string; onQueryChange: (value: string) => void; compact: boolean; onToggleCompact: () => void; expanded: boolean; onToggleExpanded: () => void }) {
@@ -314,8 +318,35 @@ function LogsContent({ t, source, onSourceChange, entries, query, onQueryChange,
   </div>;
 }
 
-function DataPage({ t }: { t: Translate }) {
-  return <div className="data-stack"><Card><PanelHeading icon={<UsersIcon />}>{t('nav.profiles')}</PanelHeading><CardContent className="resource-empty"><p>{t('console.noProfiles')}</p><Unavailable t={t}><Button disabled><Plus />{t('console.createProfile')}</Button></Unavailable></CardContent></Card><Card><PanelHeading icon={<Archive />}>{t('nav.backups')}</PanelHeading><CardContent className="resource-empty"><p>{t('dashboard.noBackup')}</p><Unavailable t={t}><Button disabled><Upload />{t('console.importZip')}</Button></Unavailable></CardContent><CardFooter className="border-t pt-5 text-sm text-muted-foreground">{t('console.r2Recommended')}</CardFooter></Card></div>;
+function DataPage({ t, csrfToken, profiles, activeProfileId, onProfilesChange }: { t: Translate; csrfToken: string; profiles: Profile[]; activeProfileId: string | null; onProfilesChange: (profiles: Profile[], activeProfileId: string | null) => void }) {
+  const [name, setName] = useState('');
+  const [layout, setLayout] = useState<ProfileLayout>('data');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const refresh = async () => {
+    const response = await fetch('/api/v1/profiles', { credentials: 'same-origin' });
+    if (!response.ok) return;
+    const payload = await response.json() as { profiles: Profile[]; activeProfileId: string | null };
+    onProfilesChange(payload.profiles, payload.activeProfileId);
+  };
+  const create = async () => {
+    if (!name.trim()) return;
+    setBusy(true); setError(null);
+    try {
+      const response = await fetch('/api/v1/profiles', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ name, layout }) });
+      if (!response.ok) { const payload = await response.json() as { error?: { message?: string } }; setError(payload.error?.message ?? t('console.profileCreateFailed')); return; }
+      setName(''); await refresh();
+    } catch { setError(t('console.profileCreateFailed')); } finally { setBusy(false); }
+  };
+  const activate = async (id: string) => {
+    setBusy(true); setError(null);
+    try {
+      const response = await fetch(`/api/v1/profiles/${id}/activate`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      if (!response.ok) { const payload = await response.json() as { error?: { message?: string } }; setError(payload.error?.message ?? t('console.profileActivateFailed')); return; }
+      await refresh();
+    } catch { setError(t('console.profileActivateFailed')); } finally { setBusy(false); }
+  };
+  return <div className="data-stack"><Card><PanelHeading icon={<UsersIcon />} action={<Badge variant="outline">{profiles.length}</Badge>}>{t('nav.profiles')}</PanelHeading><CardContent className="space-y-4"><div className="profile-create"><Input value={name} onChange={(event) => setName(event.target.value)} placeholder={t('console.profileName')} aria-label={t('console.profileName')} /><Select value={layout} onValueChange={(value) => setLayout(value as ProfileLayout)}><SelectTrigger aria-label={t('console.layout')}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="data">{t('console.layoutData')}</SelectItem><SelectItem value="public">{t('console.layoutPublic')}</SelectItem></SelectContent></Select><Button onClick={() => void create()} disabled={busy || !name.trim()}><Plus />{t('console.createProfile')}</Button></div>{error ? <p className="install-error" role="alert">{error}</p> : null}{profiles.length === 0 ? <p className="resource-empty">{t('console.noProfiles')}</p> : <div className="profile-list">{profiles.map((profile) => <div className="profile-row" key={profile.id}><div className="min-w-0"><strong>{profile.name}</strong><span>{profile.layout === 'data' ? t('console.layoutData') : t('console.layoutPublic')}</span></div>{profile.id === activeProfileId ? <Badge>{t('console.activeProfile')}</Badge> : <Button variant="outline" size="sm" onClick={() => void activate(profile.id)} disabled={busy}>{t('console.activateProfile')}</Button>}</div>)}</div>}</CardContent></Card><Card><PanelHeading icon={<Archive />}>{t('nav.backups')}</PanelHeading><CardContent className="resource-empty"><p>{t('dashboard.noBackup')}</p><Unavailable t={t}><Button disabled><Upload />{t('console.importZip')}</Button></Unavailable></CardContent><CardFooter className="border-t pt-5 text-sm text-muted-foreground">{t('console.r2Recommended')}</CardFooter></Card></div>;
 }
 
 function ResourcePanel({ page, t }: { page: Exclude<PageId, 'overview' | 'data'>; t: Translate }) {

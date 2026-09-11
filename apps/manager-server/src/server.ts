@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { timingSafeEqual } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import { extname, join, relative, resolve } from 'node:path';
-import type { ApiErrorBody, HealthResponse, Installation, Job, LogEntry, LogSourceFilter, ManagerPorts, SetupStatus, VersionSelector } from '../../../packages/contracts/src/index.js';
+import type { ApiErrorBody, HealthResponse, Installation, Job, LogEntry, LogSourceFilter, ManagerPorts, ProfileLayout, SetupStatus, VersionSelector } from '../../../packages/contracts/src/index.js';
 import { getPlatformPaths, type PlatformPaths } from '../../../packages/platform/src/index.js';
 import { RuntimeError, RuntimeManager, type InstallationProgress } from '../../../packages/sillytavern-runtime/src/index.js';
 import { hashPassword, MIN_PASSWORD_LENGTH, validatePassword, verifyPassword } from './password.js';
@@ -12,6 +12,7 @@ import { hashSetupCode, StateStore } from './state.js';
 import { LogBuffer } from './log-buffer.js';
 import { ProcessSupervisor } from './supervisor.js';
 import { TunnelManager } from '../../../packages/tunnel/src/index.js';
+import { ProfileError, ProfileStore } from '../../../packages/profiles/src/index.js';
 
 const MANAGER_PORT = 7860 as const;
 const SILLYTAVERN_PORT = 8000 as const;
@@ -53,6 +54,7 @@ export interface ManagerServerOptions {
   readonly logBuffer?: LogBuffer;
   readonly supervisor?: ProcessSupervisor;
   readonly tunnel?: TunnelManager;
+  readonly profileStore?: ProfileStore;
 }
 
 export interface ManagerServer {
@@ -62,6 +64,7 @@ export interface ManagerServer {
   readonly runtime: RuntimeManager;
   readonly supervisor: ProcessSupervisor;
   readonly tunnel: TunnelManager;
+  readonly profiles: ProfileStore;
   readonly port: number;
   close(): Promise<void>;
 }
@@ -86,7 +89,8 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   const jobs = new JobStore(options.logBuffer ?? new LogBuffer(paths));
   const logger = (line: string) => { jobs.append('manager', line); baseLogger(line); };
   const runtime = options.runtime ?? new RuntimeManager({ paths, logger: (line) => { jobs.append('installer', line); baseLogger(line); } });
-  const supervisor = options.supervisor ?? new ProcessSupervisor({ runtime, logger: (line) => { jobs.append('sillytavern', line); baseLogger(line); } });
+  const profiles = options.profileStore ?? new ProfileStore({ paths, logger: (line) => { jobs.append('manager', line); baseLogger(line); } });
+  const supervisor = options.supervisor ?? new ProcessSupervisor({ runtime, profileResolver: (installation) => profiles.getActiveForInstallation(installation.id), logger: (line) => { jobs.append('sillytavern', line); baseLogger(line); } });
   const tunnel = options.tunnel ?? new TunnelManager({ paths, env, logger: (line) => { jobs.append('cloudflared', line); baseLogger(line); } });
   const secureCookies = options.secureCookies ?? env.STM_SECURE_COOKIES === '1';
   const setupCodeRequired = options.setupCodeRequired ?? requiresSetupCode(env);
@@ -124,6 +128,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       jobs,
       supervisor,
       tunnel,
+      profiles,
     }).catch((error: unknown) => {
       if (error instanceof RequestError) {
         sendError(response, error.statusCode, error.code, error.message);
@@ -145,6 +150,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   const actualPort = address && typeof address !== 'string' ? address.port : port;
   const activeInstallation = await runtime.getActiveInstallation();
   if (activeInstallation?.status === 'ready') {
+    await profiles.ensureDefault({ installationId: activeInstallation.id, runtimePath: activeInstallation.runtimePath });
     void supervisor.start().catch((error: unknown) => logger(`[sillytavern] automatic startup failed: ${error instanceof Error ? error.message : 'unknown error'}`));
   }
 
@@ -156,6 +162,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     port: actualPort,
     supervisor,
     tunnel,
+    profiles,
     close: async () => { await tunnel.close(); await supervisor.close(); await closeServer(server); },
   };
 }
@@ -175,8 +182,9 @@ async function handleRequest(options: {
   readonly jobs: JobStore;
   readonly supervisor: ProcessSupervisor;
   readonly tunnel: TunnelManager;
+  readonly profiles: ProfileStore;
 }): Promise<void> {
-  const { request, response, store, sessions, rateLimiter, startedAt, secureCookies, setupCodeRequired, staticRoot, runtime, jobs, supervisor, tunnel } = options;
+  const { request, response, store, sessions, rateLimiter, startedAt, secureCookies, setupCodeRequired, staticRoot, runtime, jobs, supervisor, tunnel, profiles } = options;
   const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
   const pathname = url.pathname;
   const context: RequestContext = {
@@ -263,14 +271,14 @@ async function handleRequest(options: {
     if (method !== 'GET' && !requireCsrf(context, session.csrfToken)) {
       return;
     }
-    await handleRuntimeRequest(context, runtime, jobs, supervisor, tunnel);
+    await handleRuntimeRequest(context, runtime, jobs, supervisor, tunnel, profiles);
     return;
   }
 
   sendError(response, 404, 'not_found', 'Route not found');
 }
 
-async function handleRuntimeRequest(context: RequestContext, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager): Promise<void> {
+async function handleRuntimeRequest(context: RequestContext, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, profiles: ProfileStore): Promise<void> {
   const { pathname, request, response } = context;
   const method = request.method ?? 'GET';
   if (pathname === '/api/v1/logs' && method === 'GET') {
@@ -317,10 +325,58 @@ async function handleRuntimeRequest(context: RequestContext, runtime: RuntimeMan
     const job = jobs.create(queued.id);
     void queued.promise.then(async (installation) => {
       jobs.finish(queued.id, installation.status === 'ready' ? 'succeeded' : 'failed', installation.error);
+      if (installation.status === 'ready') await profiles.ensureDefault({ installationId: installation.id, runtimePath: installation.runtimePath });
       const process = await supervisor.start();
       if (previousTunnelMode !== 'off' && process.status === 'running') await tunnel.restart();
     }).catch(async (error: unknown) => { jobs.finish(queued.id, 'failed', error instanceof Error ? error.message : 'Installation failed'); const process = await supervisor.start(); if (previousTunnelMode !== 'off' && process.status === 'running') await tunnel.restart(); });
     sendJson(response, 202, { installationId: queued.id, job });
+    return;
+  }
+  if (pathname === '/api/v1/profiles' && method === 'GET') {
+    const activeInstallation = await runtime.getActiveInstallation();
+    if (activeInstallation?.status === 'ready') await profiles.ensureDefault({ installationId: activeInstallation.id, runtimePath: activeInstallation.runtimePath });
+    const items = await profiles.list();
+    sendJson(response, 200, { profiles: items, activeProfileId: items.find((profile) => profile.active)?.id ?? null });
+    return;
+  }
+  if (pathname === '/api/v1/profiles' && method === 'POST') {
+    const body = await readJson(request);
+    const name = isRecord(body) && typeof body.name === 'string' ? body.name : '';
+    const layout = isRecord(body) && (body.layout === 'data' || body.layout === 'public') ? body.layout as ProfileLayout : undefined;
+    const requestedInstallationId = isRecord(body) && typeof body.installationId === 'string' ? body.installationId : null;
+    const installation = requestedInstallationId ? await runtime.getInstallation(requestedInstallationId) : await runtime.getActiveInstallation();
+    if (!installation || installation.status !== 'ready') { sendError(response, 409, 'installation_required', 'Install SillyTavern before creating a profile'); return; }
+    try {
+      const profile = await profiles.create({ ...(layout ? { layout } : {}), name, installationId: installation.id, runtimePath: installation.runtimePath });
+      sendJson(response, 201, profile);
+    } catch (error: unknown) {
+      if (error instanceof ProfileError) { sendError(response, 400, error.code, error.message); return; }
+      throw error;
+    }
+    return;
+  }
+  const profileActivationMatch = /^\/api\/v1\/profiles\/([^/]+)\/activate$/u.exec(pathname);
+  if (profileActivationMatch && method === 'POST') {
+    const profile = await profiles.get(profileActivationMatch[1] ?? '');
+    if (!profile) { sendError(response, 404, 'profile_not_found', 'Profile not found'); return; }
+    const installation = await runtime.getInstallation(profile.installationId);
+    if (!installation || installation.status !== 'ready') { sendError(response, 409, 'installation_required', 'The profile installation is not ready'); return; }
+    const current = await profiles.getActive();
+    const previousTunnelMode = tunnel.getState().mode;
+    await tunnel.stop();
+    await supervisor.stop();
+    let snapshot = null;
+    try {
+      if (current && current.id !== profile.id) snapshot = await profiles.createSafetySnapshot(current);
+      await runtime.activateInstallation(installation.id);
+      const activated = await profiles.activate(profile.id);
+      const process = await supervisor.start();
+      if (previousTunnelMode !== 'off' && process.status === 'running') await tunnel.restart();
+      sendJson(response, 200, { profile: activated, process, safetySnapshot: snapshot });
+    } catch (error: unknown) {
+      if (error instanceof ProfileError) { sendError(response, 409, error.code, error.message); return; }
+      throw error;
+    }
     return;
   }
   const installationMatch = /^\/api\/v1\/installations\/([^/]+)(?:\/(start|stop|restart))?$/u.exec(pathname);

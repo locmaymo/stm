@@ -96,6 +96,29 @@ export interface Installation {
   readonly activatedAt: string | null;
 }
 
+export type ProfileLayout = 'data' | 'public';
+
+export interface Profile {
+  readonly id: string;
+  readonly name: string;
+  readonly installationId: string;
+  readonly runtimePath: string;
+  readonly configPath: string;
+  readonly dataPath: string;
+  readonly layout: ProfileLayout;
+  readonly active: boolean;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly activatedAt: string | null;
+}
+
+export interface ProfileSnapshot {
+  readonly id: string;
+  readonly profileId: string;
+  readonly createdAt: string;
+  readonly path: string;
+}
+
 export type JobState = 'queued' | 'running' | 'succeeded' | 'failed';
 
 export interface Job {
@@ -125,6 +148,7 @@ export type ProcessStatus = 'stopped' | 'starting' | 'running' | 'stopping' | 'e
 export interface ProcessState {
   readonly status: ProcessStatus;
   readonly installationId: string | null;
+  readonly profileId: string | null;
   readonly pid: number | null;
   readonly startedAt: string | null;
   readonly error: string | null;

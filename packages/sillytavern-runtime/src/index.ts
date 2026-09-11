@@ -163,6 +163,18 @@ export class RuntimeManager {
     }
   }
 
+  public async activateInstallation(id: string): Promise<Installation> {
+    const installation = await this.getInstallation(id);
+    if (!installation || installation.status !== 'ready') throw new RuntimeError('installation_not_ready', 'The selected SillyTavern installation is not ready');
+    try {
+      await stat(installation.markerPath);
+    } catch {
+      throw new RuntimeError('installation_marker_missing', 'The selected SillyTavern installation marker is missing');
+    }
+    await this.writeActiveInstallation(id);
+    return installation;
+  }
+
   public async install(
     selector: VersionSelector,
     onProgress?: (progress: InstallationProgress) => void,

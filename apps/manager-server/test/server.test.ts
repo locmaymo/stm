@@ -72,7 +72,8 @@ test('setup, login, CSRF, health, and logout work on the manager port', async (t
   const unauthenticated = await fetch(`${base}/api/v1/profiles`);
   assert.equal(unauthenticated.status, 401);
   const protectedResponse = await fetch(`${base}/api/v1/profiles`, { headers: { cookie } });
-  assert.equal(protectedResponse.status, 501);
+  assert.equal(protectedResponse.status, 200);
+  assert.deepEqual((await protectedResponse.json() as { profiles: unknown[] }).profiles, []);
 
   const csrfFailure = await fetch(`${base}/api/v1/auth/logout`, { method: 'POST', headers: { cookie } });
   assert.equal(csrfFailure.status, 403);

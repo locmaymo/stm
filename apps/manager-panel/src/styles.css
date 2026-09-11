@@ -143,6 +143,11 @@
 .log-source { flex: 0 0 11ch; color: var(--primary); }
 .log-message { flex: 1 0 auto; white-space: pre; }
 .data-stack { display: grid; gap: 20px; max-width: 760px; }
+.profile-create { display: grid; grid-template-columns: minmax(0, 1fr) 10rem auto; gap: 10px; align-items: center; }
+.profile-list { display: grid; gap: 8px; }
+.profile-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; padding: 12px 0; border-top: 1px solid var(--border); }
+.profile-row > div { display: grid; min-width: 0; gap: 2px; }
+.profile-row span { color: var(--muted-foreground); font-size: 12px; }
 .install-result { margin-top: 12px; color: var(--primary); font-size: 13px; }
 .install-error { margin-top: 12px; color: var(--destructive); font-size: 13px; overflow-wrap: anywhere; }
 .version-select-content { max-height: min(30rem, calc(100dvh - 10rem)); }
@@ -172,6 +177,7 @@
   .log-toolbar [data-slot="select-trigger"] { width: 100%; min-width: 0; }
   .log-search { grid-column: 1 / -1; grid-row: 2; min-width: 0; max-width: none; }
   .log-density-toggle { margin-left: 0; }
+  .profile-create { grid-template-columns: 1fr; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }

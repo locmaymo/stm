@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { stat } from 'node:fs/promises';
-import type { Installation, ProcessState } from '../../../packages/contracts/src/index.js';
+import type { Installation, ProcessState, Profile } from '../../../packages/contracts/src/index.js';
 import type { RuntimeManager } from '../../../packages/sillytavern-runtime/src/index.js';
 
 export interface ProcessSupervisorOptions {
@@ -8,6 +8,7 @@ export interface ProcessSupervisorOptions {
   readonly logger?: (line: string) => void;
   readonly now?: () => Date;
   readonly nodePath?: string;
+  readonly profileResolver?: (installation: Installation) => Promise<Profile | null>;
 }
 
 export class ProcessSupervisor {
@@ -15,15 +16,17 @@ export class ProcessSupervisor {
   private readonly logger: (line: string) => void;
   private readonly now: () => Date;
   private readonly nodePath: string;
+  private readonly profileResolver: ((installation: Installation) => Promise<Profile | null>) | undefined;
   private child: ChildProcess | null = null;
   private buffer = '';
-  private current: ProcessState = { status: 'stopped', installationId: null, pid: null, startedAt: null, error: null };
+  private current: ProcessState = { status: 'stopped', installationId: null, profileId: null, pid: null, startedAt: null, error: null };
 
   public constructor(options: ProcessSupervisorOptions) {
     this.runtime = options.runtime;
     this.logger = options.logger ?? ((line) => console.log(line));
     this.now = options.now ?? (() => new Date());
     this.nodePath = options.nodePath ?? process.execPath;
+    this.profileResolver = options.profileResolver;
   }
 
   public getState(): ProcessState { return { ...this.current }; }
@@ -32,15 +35,18 @@ export class ProcessSupervisor {
     if (this.child) return this.getState();
     const installation = await this.runtime.getActiveInstallation();
     if (!installation || installation.status !== 'ready') return this.fail(null, 'Install SillyTavern before starting it');
-    return this.startInstallation(installation);
+    const profile = this.profileResolver ? await this.profileResolver(installation) : null;
+    return this.startInstallation(installation, profile);
   }
 
-  public async startInstallation(installation: Installation): Promise<ProcessState> {
+  public async startInstallation(installation: Installation, profile: Profile | null = null): Promise<ProcessState> {
     if (this.child) await this.stop();
     try { await stat(installation.markerPath); } catch { return this.fail(installation.id, 'The SillyTavern installation marker is missing'); }
-    this.current = { status: 'starting', installationId: installation.id, pid: null, startedAt: null, error: null };
+    this.current = { status: 'starting', installationId: installation.id, profileId: profile?.id ?? null, pid: null, startedAt: null, error: null };
     this.logger(`[sillytavern] starting ${installation.resolvedRef} on 127.0.0.1:8000`);
-    const child = spawn(this.nodePath, ['server.js', '--port', '8000', '--listen', 'false', '--browserLaunchEnabled', 'false'], {
+    const args = ['server.js', '--port', '8000', '--listen', 'false', '--browserLaunchEnabled', 'false'];
+    if (profile?.layout === 'data') args.push('--dataRoot', profile.dataPath, '--configPath', profile.configPath);
+    const child = spawn(this.nodePath, args, {
       cwd: installation.runtimePath,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
@@ -103,7 +109,7 @@ export class ProcessSupervisor {
   }
 
   private fail(installationId: string | null, error: string): ProcessState {
-    this.current = { status: 'error', installationId, pid: null, startedAt: null, error };
+    this.current = { status: 'error', installationId, profileId: null, pid: null, startedAt: null, error };
     this.logger(`[sillytavern] ${error}`);
     return this.getState();
   }
