@@ -1,13 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getPlatformPaths } from '../../../packages/platform/src/index.js';
 import { StateStore } from '../src/state.js';
 import { startManagerServer, type ManagerServer } from '../src/server.js';
-import type { Installation, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { Installation, ProcessState, VersionOption } from '../../../packages/contracts/src/index.js';
 import type { RuntimeManager } from '../../../packages/sillytavern-runtime/src/index.js';
+import type { ProcessSupervisor } from '../src/supervisor.js';
 
 async function createServer(options: { setupCodeRequired?: boolean; bootstrapPassword?: string } = {}): Promise<ManagerServer> {
   const root = await mkdtemp(join(tmpdir(), 'stm-manager-'));
@@ -74,6 +75,9 @@ test('setup, login, CSRF, health, and logout work on the manager port', async (t
   const protectedResponse = await fetch(`${base}/api/v1/profiles`, { headers: { cookie } });
   assert.equal(protectedResponse.status, 200);
   assert.deepEqual((await protectedResponse.json() as { profiles: unknown[] }).profiles, []);
+  const missingProfileActivation = await fetch(`${base}/api/v1/profiles/missing/activate`, { method: 'POST', headers: { cookie, 'x-csrf-token': setupBody.session.csrfToken } });
+  assert.equal(missingProfileActivation.status, 404);
+  assert.equal((await missingProfileActivation.json() as { error: { code: string } }).error.code, 'profile_not_found');
 
   const csrfFailure = await fetch(`${base}/api/v1/auth/logout`, { method: 'POST', headers: { cookie } });
   assert.equal(csrfFailure.status, 403);
@@ -159,4 +163,103 @@ test('authenticated installation endpoints return versions and a pollable job', 
   assert.equal((await processStart.json() as { status: string }).status, 'error');
   const tunnelStart = await fetch(`${base}/api/v1/tunnel`, { method: 'PUT', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'quick' }) });
   assert.equal(tunnelStart.status, 409);
+});
+
+test('local backup endpoints create, preview, download, and restore a profile archive', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-backup-api-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const runtimePath = join(root, 'runtime');
+  await mkdir(runtimePath, { recursive: true });
+  const now = new Date().toISOString();
+  const installation: Installation = { id: 'install-1', selector: 'latest', resolvedRef: '1.2.3', channel: 'release', runtimePath, markerPath: join(runtimePath, '.stm-installation.json'), status: 'ready', progress: 100, step: 'Installation ready', error: null, createdAt: now, updatedAt: now, activatedAt: now };
+  const fakeRuntime = {
+    listVersions: async () => [], listInstallations: async () => [installation], getActiveInstallation: async () => installation,
+    getInstallation: async (id: string) => id === installation.id ? installation : null,
+  } as unknown as RuntimeManager;
+  const manager = await startManagerServer({ host: '127.0.0.1', port: 0, paths, env: { STM_ADMIN_PASSWORD: 'correct horse battery staple' }, secureCookies: false, runtime: fakeRuntime, logger: () => undefined });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const login = await fetch(`${base}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'correct horse battery staple' }) });
+  const cookie = cookieFrom(login); const csrf = (await login.json() as { session: { csrfToken: string } }).session.csrfToken;
+  const profilesResponse = await fetch(`${base}/api/v1/profiles`, { headers: { cookie } });
+  const profile = (await profilesResponse.json() as { profiles: Array<{ dataPath: string; configPath: string }> }).profiles[0];
+  assert.ok(profile);
+  const profileDataRoot = join(profile.dataPath, 'default-user');
+  await mkdir(profileDataRoot, { recursive: true });
+  await writeFile(join(profileDataRoot, 'settings.json'), '{"theme":"dark"}', 'utf8');
+  await writeFile(profile.configPath, 'listen: false\n', 'utf8');
+  const create = await fetch(`${base}/api/v1/backups`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({}) });
+  assert.equal(create.status, 201);
+  const manifest = await create.json() as { id: string; fileCount: number };
+  assert.equal(manifest.fileCount, 2);
+  const preview = await fetch(`${base}/api/v1/backups/${manifest.id}/preview`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf } });
+  assert.equal(preview.status, 200);
+  assert.equal((await preview.json() as { fileCount: number }).fileCount, 2);
+  const download = await fetch(`${base}/api/v1/backups/${manifest.id}/download`, { headers: { cookie } });
+  assert.equal(download.status, 200);
+  assert.match(download.headers.get('content-type') ?? '', /application\/zip/);
+  const archiveBytes = await download.arrayBuffer();
+  const importedPreview = await fetch(`${base}/api/v1/backups/import/preview`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/zip' }, body: archiveBytes });
+  assert.equal(importedPreview.status, 200);
+  const importedBody = await importedPreview.json() as { fileCount: number; backup: { id: string; source: string } };
+  assert.equal(importedBody.fileCount, 2);
+  assert.equal(importedBody.backup.source, 'uploaded');
+  const renamed = await fetch(`${base}/api/v1/backups/${importedBody.backup.id}`, { method: 'PUT', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Uploaded copy' }) });
+  assert.equal(renamed.status, 200);
+  assert.equal((await renamed.json() as { name: string }).name, 'Uploaded copy.zip');
+  const listed = await fetch(`${base}/api/v1/backups`, { headers: { cookie } });
+  assert.equal((await listed.json() as { backups: unknown[] }).backups.length, 2);
+  const removed = await fetch(`${base}/api/v1/backups/${importedBody.backup.id}`, { method: 'DELETE', headers: { cookie, 'x-csrf-token': csrf } });
+  assert.equal(removed.status, 200);
+  const restore = await fetch(`${base}/api/v1/backups/${manifest.id}/restore`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'replace' }) });
+  assert.equal(restore.status, 200);
+  assert.equal(await readFile(join(profile.dataPath, 'default-user', 'settings.json'), 'utf8'), '{"theme":"dark"}');
+});
+
+test('installing a new version rebinds the active data profile and keeps its files', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-version-profile-api-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const oldRuntime = join(root, 'old-runtime'); const newRuntime = join(root, 'new-runtime');
+  await mkdir(oldRuntime, { recursive: true }); await mkdir(newRuntime, { recursive: true });
+  const now = new Date().toISOString();
+  const oldInstallation: Installation = { id: 'install-old', selector: 'latest', resolvedRef: '1.0.0', channel: 'release', runtimePath: oldRuntime, markerPath: join(oldRuntime, '.stm-installation.json'), status: 'ready', progress: 100, step: 'Installation ready', error: null, createdAt: now, updatedAt: now, activatedAt: now };
+  const newInstallation: Installation = { ...oldInstallation, id: 'install-new', resolvedRef: '2.0.0', runtimePath: newRuntime, markerPath: join(newRuntime, '.stm-installation.json') };
+  await writeFile(newInstallation.markerPath, '{}', 'utf8');
+  let activeInstallation = oldInstallation;
+  const fakeRuntime = {
+    listVersions: async () => [], listInstallations: async () => [oldInstallation, newInstallation], getActiveInstallation: async () => activeInstallation,
+    getInstallation: async (id: string) => id === oldInstallation.id ? oldInstallation : id === newInstallation.id ? newInstallation : null,
+    queueInstall: () => ({ id: newInstallation.id, promise: Promise.resolve(newInstallation).then((installation) => { activeInstallation = installation; return installation; }) }),
+  } as unknown as RuntimeManager;
+  let processState: ProcessState = { status: 'stopped', installationId: null, profileId: null, pid: null, startedAt: null, error: null };
+  const fakeSupervisor = {
+    getState: () => processState,
+    start: async () => { processState = { ...processState, status: 'running', installationId: newInstallation.id }; return processState; },
+    stop: async () => { processState = { ...processState, status: 'stopped' }; return processState; },
+    restart: async () => processState,
+    close: async () => undefined,
+  } as unknown as ProcessSupervisor;
+  const manager = await startManagerServer({ host: '127.0.0.1', port: 0, paths, env: { STM_ADMIN_PASSWORD: 'correct horse battery staple' }, secureCookies: false, runtime: fakeRuntime, supervisor: fakeSupervisor, logger: () => undefined });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const login = await fetch(`${base}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'correct horse battery staple' }) });
+  const cookie = cookieFrom(login); const csrf = (await login.json() as { session: { csrfToken: string } }).session.csrfToken;
+  const profilesResponse = await fetch(`${base}/api/v1/profiles`, { headers: { cookie } });
+  const profile = (await profilesResponse.json() as { profiles: Array<{ id: string; dataPath: string; installationId: string }> }).profiles[0];
+  assert.ok(profile);
+  await writeFile(join(profile.dataPath, 'chat.json'), '{"message":"keep"}', 'utf8');
+  const installResponse = await fetch(`${base}/api/v1/installations`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ version: 'latest' }) });
+  assert.equal(installResponse.status, 202);
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const jobResponse = await fetch(`${base}/api/v1/jobs/${newInstallation.id}`, { headers: { cookie } });
+    if (jobResponse.ok && (await jobResponse.json() as { state: string }).state === 'succeeded') break;
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+  }
+  const afterResponse = await fetch(`${base}/api/v1/profiles`, { headers: { cookie } });
+  const afterBody = await afterResponse.text();
+  assert.equal(afterResponse.status, 200, afterBody);
+  const after = (JSON.parse(afterBody) as { profiles: Array<{ installationId: string; dataPath: string }> }).profiles[0];
+  assert.equal(after?.installationId, newInstallation.id);
+  assert.equal(after?.dataPath, profile.dataPath);
+  assert.equal(await readFile(join(profile.dataPath, 'chat.json'), 'utf8'), '{"message":"keep"}');
 });

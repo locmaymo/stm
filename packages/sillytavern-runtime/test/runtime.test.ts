@@ -1,12 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { deflateRawSync } from 'node:zlib';
 import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { createServer as createNetServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { getPlatformPaths } from '../../platform/src/index.js';
 import { RuntimeError, RuntimeManager, extractZipSafely } from '../src/index.js';
+
+const exec = promisify(execFile);
 
 function zip(entries: Array<{ name: string; body: string }>): Buffer {
   const local: Buffer[] = [];
@@ -153,6 +157,7 @@ test('health check forwards startup diagnostics when a runtime exits', async () 
   const port = await freePort();
   const archive = zip([
     { name: 'SillyTavern-legacy/package.json', body: '{"name":"sillytavern","scripts":{"start":"node server.js"}}' },
+    { name: 'SillyTavern-legacy/public/index.html', body: '<!doctype html>' },
     { name: 'SillyTavern-legacy/server.js', body: "console.error('legacy boot failed'); process.exit(1);" },
   ]);
   const lines: string[] = [];
@@ -182,4 +187,57 @@ test('only one installation job runs at a time', async () => {
   while (!release) await new Promise((resolvePromise) => setTimeout(resolvePromise, 5));
   release?.();
   await first.promise;
+});
+
+test('shared Git checkout switches refs without creating one runtime per version', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-runtime-git-'));
+  const repository = join(root, 'source');
+  await exec('git', ['init', repository]);
+  await exec('git', ['-C', repository, 'config', 'user.email', 'stm@test.local']);
+  await exec('git', ['-C', repository, 'config', 'user.name', 'STM Test']);
+  await writeFile(join(repository, 'package.json'), '{"name":"sillytavern","scripts":{"start":"node server.js"}}', 'utf8');
+  await writeFile(join(repository, 'server.js'), 'module.exports = "one";\n', 'utf8');
+  await exec('git', ['-C', repository, 'add', '.']); await exec('git', ['-C', repository, 'commit', '-m', 'one']); await exec('git', ['-C', repository, 'tag', '1.0.0']);
+  await writeFile(join(repository, 'server.js'), 'module.exports = "two";\n', 'utf8');
+  await exec('git', ['-C', repository, 'add', '.']); await exec('git', ['-C', repository, 'commit', '-m', 'two']); await exec('git', ['-C', repository, 'tag', '2.0.0']);
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: join(root, 'manager') } });
+  const runtime = new RuntimeManager({ paths, useGit: true, repositoryUrl: repository, installDependencies: async () => undefined, healthCheck: async () => undefined });
+  const first = await runtime.install('1.0.0');
+  const second = await runtime.install('2.0.0');
+  const third = await runtime.install('1.0.0');
+  assert.equal(first.runtimePath, second.runtimePath);
+  assert.equal(second.runtimePath, third.runtimePath);
+  assert.equal((await readFile(join(third.runtimePath, 'server.js'), 'utf8')).replaceAll('\r\n', '\n'), 'module.exports = "one";\n');
+  assert.equal((await runtime.listInstallations()).filter((item) => item.status === 'ready').length, 3);
+});
+
+test('migrates an older per-installation runtime onto the shared checkout', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-runtime-migrate-'));
+  const repository = join(root, 'source');
+  await exec('git', ['init', repository]);
+  await exec('git', ['-C', repository, 'config', 'user.email', 'stm@test.local']);
+  await exec('git', ['-C', repository, 'config', 'user.name', 'STM Test']);
+  await writeFile(join(repository, 'package.json'), '{"name":"sillytavern","scripts":{"start":"node server.js"}}', 'utf8');
+  await writeFile(join(repository, 'server.js'), 'module.exports = "shared";\n', 'utf8');
+  await exec('git', ['-C', repository, 'add', '.']);
+  await exec('git', ['-C', repository, 'commit', '-m', 'shared']);
+  await exec('git', ['-C', repository, 'tag', '1.0.0']);
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: join(root, 'manager') } });
+  const legacy = new RuntimeManager({
+    paths,
+    useGit: false,
+    fetch: async () => new Response(new Uint8Array(zip([
+      { name: 'SillyTavern-old/package.json', body: '{"name":"sillytavern","scripts":{"start":"node server.js"}}' },
+      { name: 'SillyTavern-old/server.js', body: 'module.exports = "legacy";\n' },
+    ]))),
+    installDependencies: async () => undefined,
+    healthCheck: async () => undefined,
+  });
+  const oldInstallation = await legacy.install('1.0.0');
+  assert.match(oldInstallation.runtimePath, /profiles[\\/]\S+[\\/]runtime/u);
+  const shared = new RuntimeManager({ paths, useGit: true, repositoryUrl: repository, installDependencies: async () => undefined, healthCheck: async () => undefined });
+  const migrated = await shared.migrateLegacyInstallation(oldInstallation);
+  assert.equal(migrated.runtimePath, join(paths.profiles, 'runtime'));
+  assert.equal((await readFile(join(migrated.runtimePath, 'server.js'), 'utf8')).replaceAll('\r\n', '\n'), 'module.exports = "shared";\n');
+  assert.equal((await shared.getActiveInstallation())?.runtimePath, migrated.runtimePath);
 });

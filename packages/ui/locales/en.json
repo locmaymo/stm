@@ -82,6 +82,18 @@
     "profileCreateFailed": "Could not create the profile",
     "profileActivateFailed": "Could not switch profile",
     "importZip": "Import ZIP",
+    "downloadBackup": "Download",
+    "previewBackup": "Preview",
+    "restorePreview": "Restore preview",
+    "restoreMode": "Restore mode",
+    "mergeRestore": "Merge",
+    "replaceRestore": "Replace",
+    "files": "files",
+    "includeSecrets": "Include secrets.json",
+    "secretsWarning": "This archive will contain provider credentials.",
+    "backupCreateFailed": "Could not create the backup",
+    "backupPreviewFailed": "Could not preview the backup",
+    "backupRestoreFailed": "Could not restore the backup",
     "r2Recommended": "R2 backup recommended",
     "r2Help": "Keep an off-machine copy in Cloudflare R2 so a failed disk or deleted workspace does not remove your backup.",
     "unavailable": "Available after SillyTavern is installed",
@@ -92,6 +104,24 @@
     ,"installationHistory": "Installation history"
     ,"noInstallations": "No installation attempts yet"
     ,"installRequestFailed": "Could not start the installation"
+    ,"dataWorkspace": "Data workspace"
+    ,"addProfile": "Add another profile"
+    ,"legacyMigrated": "Legacy public/ data was copied into the canonical data/ profile. The original files were left untouched."
+    ,"backupLibrary": "Backup library"
+    ,"backupNameOptional": "Backup name (optional)"
+    ,"createdBackup": "Created here"
+    ,"uploadedBackup": "Uploaded copy"
+    ,"renameBackup": "Rename backup"
+    ,"deleteBackup": "Delete"
+    ,"deleteBackupConfirm": "Delete this backup from the local library?"
+    ,"backupRenameFailed": "Could not rename the backup"
+    ,"backupDeleteFailed": "Could not delete the backup"
+    ,"r2Title": "Cloudflare R2"
+    ,"r2Placeholder": "Off-machine copies will be configurable here. Local backups remain available while R2 is not configured."
+    ,"r2Endpoint": "R2 endpoint"
+    ,"r2Bucket": "Bucket name"
+    ,"configureR2": "Configure R2"
+    ,"comingSoon": "Next batch"
   },
   "dashboard": {
     "eyebrow": "CONTROL ROOM / OVERVIEW",

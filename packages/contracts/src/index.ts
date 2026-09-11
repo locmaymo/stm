@@ -84,6 +84,7 @@ export interface Installation {
   readonly id: string;
   readonly selector: VersionSelector;
   readonly resolvedRef: string;
+  readonly revision?: string;
   readonly channel: VersionChannel;
   readonly runtimePath: string;
   readonly markerPath: string;
@@ -106,6 +107,8 @@ export interface Profile {
   readonly configPath: string;
   readonly dataPath: string;
   readonly layout: ProfileLayout;
+  /** Set when a legacy public/ tree was copied into the canonical data/ root. */
+  readonly legacyLayout?: ProfileLayout | null;
   readonly active: boolean;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -117,6 +120,49 @@ export interface ProfileSnapshot {
   readonly profileId: string;
   readonly createdAt: string;
   readonly path: string;
+  readonly fingerprint?: string;
+}
+
+export type RestoreMode = 'merge' | 'replace';
+
+export type BackupSource = 'created' | 'uploaded';
+
+export interface BackupManifest {
+  readonly schemaVersion: 1;
+  readonly id: string;
+  readonly name: string;
+  readonly createdAt: string;
+  readonly profileId: string;
+  readonly profileName: string;
+  readonly layout: ProfileLayout;
+  readonly sizeBytes: number;
+  readonly checksumSha256: string;
+  readonly includesSecrets: boolean;
+  readonly fileCount: number;
+  readonly source: BackupSource;
+}
+
+export interface R2Config {
+  readonly enabled: boolean;
+  readonly endpoint: string | null;
+  readonly bucket: string | null;
+  readonly accountId: string | null;
+  readonly configured: boolean;
+  readonly lastUploadAt: string | null;
+}
+
+export interface BackupFilePreview {
+  readonly name: string;
+  readonly sizeBytes: number;
+}
+
+export interface RestorePreview {
+  readonly layout: ProfileLayout;
+  readonly fileCount: number;
+  readonly totalBytes: number;
+  readonly includesSecrets: boolean;
+  readonly files: readonly BackupFilePreview[];
+  readonly warnings: readonly string[];
 }
 
 export type JobState = 'queued' | 'running' | 'succeeded' | 'failed';

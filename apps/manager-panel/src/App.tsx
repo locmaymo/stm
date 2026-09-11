@@ -14,7 +14,7 @@ import {
 } from '../../../packages/ui/src/index.js';
 import { translator, type Translate } from './i18n.js';
 import { browserStorage, readPreferences, savePreferences, type Preferences } from './preferences.js';
-import type { Installation, LogEntry, LogSourceFilter, ProcessState, Profile, ProfileLayout, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { BackupManifest, Installation, LogEntry, LogSourceFilter, ProcessState, Profile, RestorePreview, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
 import { formatLogMessage } from './log-format.js';
 
@@ -83,6 +83,7 @@ function ConsoleApp({ csrfToken }: { csrfToken: string }) {
   const [activeInstallationId, setActiveInstallationId] = useState<string | null>(null);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [activeProfileId, setActiveProfileId] = useState<string | null>(null);
+  const [backups, setBackups] = useState<BackupManifest[]>([]);
   const [installing, setInstalling] = useState(false);
   const [pendingInstallationId, setPendingInstallationId] = useState<string | null>(null);
   const [logSource, setLogSource] = useState<LogSourceFilter>('all');
@@ -142,11 +143,13 @@ function ConsoleApp({ csrfToken }: { csrfToken: string }) {
       fetch('/api/v1/versions', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<{ versions: VersionOption[] }> : null),
       fetch('/api/v1/installations', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<{ installations: Installation[]; activeInstallationId: string | null }> : null),
       fetch('/api/v1/profiles', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<{ profiles: Profile[]; activeProfileId: string | null }> : null),
-    ]).then(([versionPayload, installationPayload, profilePayload]) => {
+      fetch('/api/v1/backups', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<{ backups: BackupManifest[] }> : null),
+    ]).then(([versionPayload, installationPayload, profilePayload, backupPayload]) => {
       if (cancelled) return;
       if (versionPayload) setVersions(versionPayload.versions);
       if (installationPayload) { setInstallations(installationPayload.installations); setActiveInstallationId(installationPayload.activeInstallationId); }
       if (profilePayload) { setProfiles(profilePayload.profiles); setActiveProfileId(profilePayload.activeProfileId); }
+      if (backupPayload) setBackups(backupPayload.backups);
     }).catch(() => undefined);
     return () => { cancelled = true; };
   }, []);
@@ -204,7 +207,7 @@ function ConsoleApp({ csrfToken }: { csrfToken: string }) {
           </div>
         </header>
         <div className="page-body">
-          {page === 'overview' ? <div className="core-grid">{installation}<AccessPanel t={t} process={processState} tunnel={tunnelState} installed={Boolean(activeInstallationId)} onAction={updateRuntime} /> <DataPanel t={t} navigate={navigate} activeProfile={profiles.find((profile) => profile.id === activeProfileId) ?? null} />{logs}</div> : page === 'data' ? <DataPage t={t} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} /> : <ResourcePanel page={page} t={t} />}
+          {page === 'overview' ? <div className="core-grid">{installation}<AccessPanel t={t} process={processState} tunnel={tunnelState} installed={Boolean(activeInstallationId)} onAction={updateRuntime} /> <DataPanel t={t} navigate={navigate} activeProfile={profiles.find((profile) => profile.id === activeProfileId) ?? null} latestBackup={backups.at(-1) ?? null} />{logs}</div> : page === 'data' ? <DataPage t={t} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : <ResourcePanel page={page} t={t} />}
         </div>
       </SidebarInset>
     </SidebarProvider>
@@ -258,17 +261,19 @@ function InstallationPanel({ t, version, onVersionChange, versions, installation
 }
 
 function AccessPanel({ t, process, tunnel, installed, onAction }: { t: Translate; process: ProcessState; tunnel: TunnelState; installed: boolean; onAction: (path: string, body?: unknown) => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
   const running = process.status === 'running';
   const tunnelRunning = tunnel.status === 'running' || tunnel.status === 'starting';
   const processLabel = process.status === 'running' ? t('dashboard.running') : process.status === 'starting' || process.status === 'stopping' ? t('common.loading') : process.status === 'error' ? t('dashboard.installFailed') : t('dashboard.offline');
-  const toggleTunnel = () => void onAction('/api/v1/tunnel', { mode: tunnelRunning ? 'off' : 'quick' });
+  const runAction = async (path: string, body?: unknown) => { setBusy(true); try { await onAction(path, body); } finally { setBusy(false); } };
+  const toggleTunnel = () => void runAction('/api/v1/tunnel', { mode: tunnelRunning ? 'off' : 'quick' });
   const openLocal = () => { window.open('http://127.0.0.1:8000', '_blank', 'noopener,noreferrer'); };
   const copyTunnel = async () => { if (tunnel.url) await navigator.clipboard?.writeText(tunnel.url); };
-  return <Card data-tour="public-access"><PanelHeading icon={<Globe2 />} action={<Badge variant="secondary" className={running ? 'status-online' : tunnel.error ? 'status-attention' : ''}>{processLabel}</Badge>}>{t('console.publicAccess')}</PanelHeading><CardContent className="flex-1 space-y-4"><div className="flex items-center justify-between gap-4"><label htmlFor="tunnel-switch" className="text-sm">Cloudflare Quick Tunnel</label><Switch id="tunnel-switch" checked={tunnelRunning} onCheckedChange={toggleTunnel} disabled={!installed || !running || tunnel.status === 'starting'} aria-label={t('console.enableTunnel')} /></div><dl className="address-list"><div><dt>{t('console.local')}</dt><dd><code>127.0.0.1:8000</code></dd></div><div><dt>{t('dashboard.publicAddress')}</dt><dd>{tunnel.url ? <code>{tunnel.url}</code> : '—'}</dd></div></dl>{process.error ? <p className="install-error" role="alert">{process.error}</p> : null}{tunnel.error ? <p className="install-error" role="alert">{tunnel.error}</p> : null}</CardContent><CardFooter className="gap-2"><Button variant="outline" onClick={openLocal} disabled={!running}><ArrowUpRight />{t('dashboard.open')}</Button><Button variant="ghost" onClick={() => void copyTunnel()} disabled={!tunnel.url}><Copy />{t('dashboard.copyLink')}</Button><Button variant="ghost" onClick={() => void onAction(running ? '/api/v1/process/stop' : '/api/v1/process/start')} disabled={!installed || process.status === 'starting' || process.status === 'stopping'}>{running ? t('dashboard.stop') : t('dashboard.start')}</Button></CardFooter></Card>;
+  return <Card data-tour="public-access"><PanelHeading icon={<Globe2 />} action={<Badge variant="secondary" className={running ? 'status-online' : tunnel.error ? 'status-attention' : ''}>{processLabel}</Badge>}>{t('console.publicAccess')}</PanelHeading><CardContent className="flex-1 space-y-4"><div className="flex items-center justify-between gap-4"><label htmlFor="tunnel-switch" className="text-sm">Cloudflare Quick Tunnel</label><Switch id="tunnel-switch" checked={tunnelRunning} onCheckedChange={toggleTunnel} disabled={!installed || !running || tunnel.status === 'starting' || busy} aria-label={t('console.enableTunnel')} /></div><dl className="address-list"><div><dt>{t('console.local')}</dt><dd><code>127.0.0.1:8000</code></dd></div><div><dt>{t('dashboard.publicAddress')}</dt><dd>{tunnel.url ? <code>{tunnel.url}</code> : '—'}</dd></div></dl>{busy ? <div className="operation-progress" role="status"><span>{t('common.loading')}</span><span className="progress-track"><span className="progress-indeterminate" /></span></div> : null}{process.error ? <p className="install-error" role="alert">{process.error}</p> : null}{tunnel.error ? <p className="install-error" role="alert">{tunnel.error}</p> : null}</CardContent><CardFooter className="gap-2"><Button variant="outline" onClick={openLocal} disabled={!running}><ArrowUpRight />{t('dashboard.open')}</Button><Button variant="ghost" onClick={() => void copyTunnel()} disabled={!tunnel.url}><Copy />{t('dashboard.copyLink')}</Button><Button variant="ghost" onClick={() => void runAction(running ? '/api/v1/process/stop' : '/api/v1/process/start')} disabled={!installed || process.status === 'starting' || process.status === 'stopping' || busy}>{running ? t('dashboard.stop') : t('dashboard.start')}</Button></CardFooter></Card>;
 }
 
-function DataPanel({ t, navigate, activeProfile }: { t: Translate; navigate: Navigate; activeProfile: Profile | null }) {
-  return <Card data-tour="data"><PanelHeading icon={<Database />}>{t('console.data')}</PanelHeading><CardContent className="flex-1 space-y-4"><div className="flex flex-wrap items-center justify-between gap-2"><span className="text-muted-foreground">{activeProfile?.name ?? t('console.noProfiles')}</span><Button variant="ghost" size="sm" onClick={() => navigate('data')}>{t('nav.data')}<ArrowUpRight /></Button></div>{activeProfile ? <dl className="address-list"><div><dt>{t('console.layout')}</dt><dd>{activeProfile.layout === 'data' ? t('console.layoutData') : t('console.layoutPublic')}</dd></div></dl> : null}<dl className="address-list"><div><dt>{t('status.lastBackup')}</dt><dd>—</dd></div></dl></CardContent><CardFooter className="flex-wrap gap-2"><Button variant="outline" onClick={() => navigate('data')}><Archive />{t('nav.data')}</Button><Button variant="ghost" onClick={() => navigate('data')}><Upload />{t('console.restore')}</Button></CardFooter><div className="r2-note"><Tooltip><TooltipTrigger asChild><button type="button" onClick={() => navigate('data')}>{t('console.r2Recommended')}</button></TooltipTrigger><TooltipContent className="max-w-xs">{t('console.r2Help')}</TooltipContent></Tooltip></div></Card>;
+function DataPanel({ t, navigate, activeProfile, latestBackup }: { t: Translate; navigate: Navigate; activeProfile: Profile | null; latestBackup: BackupManifest | null }) {
+  return <Card data-tour="data"><PanelHeading icon={<Database />}>{t('console.data')}</PanelHeading><CardContent className="flex-1 space-y-4"><div className="flex flex-wrap items-center justify-between gap-2"><span className="text-muted-foreground">{activeProfile?.name ?? t('console.noProfiles')}</span><Button variant="ghost" size="sm" onClick={() => navigate('data')}>{t('nav.data')}<ArrowUpRight /></Button></div>{activeProfile ? <dl className="address-list"><div><dt>{t('console.layout')}</dt><dd>{activeProfile.layout === 'data' ? t('console.layoutData') : t('console.layoutPublic')}</dd></div></dl> : null}<dl className="address-list"><div><dt>{t('status.lastBackup')}</dt><dd>{latestBackup ? new Date(latestBackup.createdAt).toLocaleString() : t('dashboard.noBackup')}</dd></div></dl></CardContent><CardFooter className="flex-wrap gap-2"><Button variant="outline" onClick={() => navigate('data')}><Archive />{t('nav.data')}</Button><Button variant="ghost" onClick={() => navigate('data')}><Upload />{t('console.restore')}</Button></CardFooter><div className="r2-note"><Tooltip><TooltipTrigger asChild><button type="button" onClick={() => navigate('data')}>{t('console.r2Recommended')}</button></TooltipTrigger><TooltipContent className="max-w-xs">{t('console.r2Help')}</TooltipContent></Tooltip></div></Card>;
 }
 
 function LogsPanel({ t, source, onSourceChange, entries, query, onQueryChange, compact, onToggleCompact, expanded, onToggleExpanded }: { t: Translate; source: LogSourceFilter; onSourceChange: (value: LogSourceFilter) => void; entries: LogEntry[]; query: string; onQueryChange: (value: string) => void; compact: boolean; onToggleCompact: () => void; expanded: boolean; onToggleExpanded: () => void }) {
@@ -318,35 +323,115 @@ function LogsContent({ t, source, onSourceChange, entries, query, onQueryChange,
   </div>;
 }
 
-function DataPage({ t, csrfToken, profiles, activeProfileId, onProfilesChange }: { t: Translate; csrfToken: string; profiles: Profile[]; activeProfileId: string | null; onProfilesChange: (profiles: Profile[], activeProfileId: string | null) => void }) {
+function DataPage({ t, csrfToken, profiles, activeProfileId, backups, onProfilesChange, onBackupsChange }: { t: Translate; csrfToken: string; profiles: Profile[]; activeProfileId: string | null; backups: BackupManifest[]; onProfilesChange: (profiles: Profile[], activeProfileId: string | null) => void; onBackupsChange: (backups: BackupManifest[]) => void }) {
   const [name, setName] = useState('');
-  const [layout, setLayout] = useState<ProfileLayout>('data');
-  const [busy, setBusy] = useState(false);
+  const [backupName, setBackupName] = useState('');
+  const [busyAction, setBusyAction] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [includeSecrets, setIncludeSecrets] = useState(false);
+  const [restoreMode, setRestoreMode] = useState<'merge' | 'replace'>('replace');
+  const [selectedBackup, setSelectedBackup] = useState<BackupManifest | null>(null);
+  const [selectedPreview, setSelectedPreview] = useState<RestorePreview | null>(null);
+  const busy = busyAction !== null;
   const refresh = async () => {
-    const response = await fetch('/api/v1/profiles', { credentials: 'same-origin' });
-    if (!response.ok) return;
-    const payload = await response.json() as { profiles: Profile[]; activeProfileId: string | null };
-    onProfilesChange(payload.profiles, payload.activeProfileId);
+    const [profileResponse, backupResponse] = await Promise.all([fetch('/api/v1/profiles', { credentials: 'same-origin' }), fetch('/api/v1/backups', { credentials: 'same-origin' })]);
+    if (profileResponse.ok) { const payload = await profileResponse.json() as { profiles: Profile[]; activeProfileId: string | null }; onProfilesChange(payload.profiles, payload.activeProfileId); }
+    if (backupResponse.ok) { const payload = await backupResponse.json() as { backups: BackupManifest[] }; onBackupsChange(payload.backups); }
   };
   const create = async () => {
     if (!name.trim()) return;
-    setBusy(true); setError(null);
+    setBusyAction(t('console.createProfile')); setError(null);
     try {
-      const response = await fetch('/api/v1/profiles', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ name, layout }) });
+      const response = await fetch('/api/v1/profiles', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ name, layout: 'data' }) });
       if (!response.ok) { const payload = await response.json() as { error?: { message?: string } }; setError(payload.error?.message ?? t('console.profileCreateFailed')); return; }
       setName(''); await refresh();
-    } catch { setError(t('console.profileCreateFailed')); } finally { setBusy(false); }
+    } catch { setError(t('console.profileCreateFailed')); } finally { setBusyAction(null); }
   };
   const activate = async (id: string) => {
-    setBusy(true); setError(null);
+    setBusyAction(t('console.activateProfile')); setError(null);
     try {
       const response = await fetch(`/api/v1/profiles/${id}/activate`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       if (!response.ok) { const payload = await response.json() as { error?: { message?: string } }; setError(payload.error?.message ?? t('console.profileActivateFailed')); return; }
       await refresh();
-    } catch { setError(t('console.profileActivateFailed')); } finally { setBusy(false); }
+    } catch { setError(t('console.profileActivateFailed')); } finally { setBusyAction(null); }
   };
-  return <div className="data-stack"><Card><PanelHeading icon={<UsersIcon />} action={<Badge variant="outline">{profiles.length}</Badge>}>{t('nav.profiles')}</PanelHeading><CardContent className="space-y-4"><div className="profile-create"><Input value={name} onChange={(event) => setName(event.target.value)} placeholder={t('console.profileName')} aria-label={t('console.profileName')} /><Select value={layout} onValueChange={(value) => setLayout(value as ProfileLayout)}><SelectTrigger aria-label={t('console.layout')}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="data">{t('console.layoutData')}</SelectItem><SelectItem value="public">{t('console.layoutPublic')}</SelectItem></SelectContent></Select><Button onClick={() => void create()} disabled={busy || !name.trim()}><Plus />{t('console.createProfile')}</Button></div>{error ? <p className="install-error" role="alert">{error}</p> : null}{profiles.length === 0 ? <p className="resource-empty">{t('console.noProfiles')}</p> : <div className="profile-list">{profiles.map((profile) => <div className="profile-row" key={profile.id}><div className="min-w-0"><strong>{profile.name}</strong><span>{profile.layout === 'data' ? t('console.layoutData') : t('console.layoutPublic')}</span></div>{profile.id === activeProfileId ? <Badge>{t('console.activeProfile')}</Badge> : <Button variant="outline" size="sm" onClick={() => void activate(profile.id)} disabled={busy}>{t('console.activateProfile')}</Button>}</div>)}</div>}</CardContent></Card><Card><PanelHeading icon={<Archive />}>{t('nav.backups')}</PanelHeading><CardContent className="resource-empty"><p>{t('dashboard.noBackup')}</p><Unavailable t={t}><Button disabled><Upload />{t('console.importZip')}</Button></Unavailable></CardContent><CardFooter className="border-t pt-5 text-sm text-muted-foreground">{t('console.r2Recommended')}</CardFooter></Card></div>;
+  const createBackup = async () => {
+    setBusyAction(t('dashboard.backupNow')); setError(null);
+    try {
+      const response = await fetch('/api/v1/backups', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ includeSecrets, ...(backupName.trim() ? { name: backupName.trim() } : {}) }) });
+      if (!response.ok) { const payload = await response.json() as { error?: { message?: string } }; setError(payload.error?.message ?? t('console.backupCreateFailed')); return; }
+      setBackupName('');
+      await refresh();
+    } catch { setError(t('console.backupCreateFailed')); } finally { setBusyAction(null); }
+  };
+  const previewBackup = async (backup: BackupManifest) => {
+    setBusyAction(t('console.previewBackup')); setError(null);
+    try {
+      const response = await fetch(`/api/v1/backups/${backup.id}/preview`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      const payload = await response.json() as RestorePreview | { error?: { message?: string } };
+      if (!response.ok || !('files' in payload)) { setError(('error' in payload ? payload.error?.message : undefined) ?? t('console.backupPreviewFailed')); return; }
+      setSelectedBackup(backup); setSelectedPreview(payload);
+    } catch { setError(t('console.backupPreviewFailed')); } finally { setBusyAction(null); }
+  };
+  const restoreSelected = async () => {
+    if (!selectedBackup || !selectedPreview) return;
+    setBusyAction(t('console.restore')); setError(null);
+    try {
+      const response = await fetch(`/api/v1/backups/${selectedBackup.id}/restore`, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ mode: restoreMode, includeSecrets }) });
+      if (!response.ok) { const payload = await response.json() as { error?: { message?: string } }; setError(payload.error?.message ?? t('console.backupRestoreFailed')); return; }
+      setSelectedBackup(null); setSelectedPreview(null); await refresh();
+    } catch { setError(t('console.backupRestoreFailed')); } finally { setBusyAction(null); }
+  };
+  const inspectUpload = async (file: File | undefined) => {
+    if (!file) return;
+    setBusyAction(t('console.importZip')); setError(null);
+    try {
+      const response = await fetch('/api/v1/backups/import/preview', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/zip', 'x-csrf-token': csrfToken, 'x-backup-name': file.name }, body: file });
+      const payload = await response.json() as (RestorePreview & { backup?: BackupManifest }) | { error?: { message?: string } };
+      if (!response.ok || !('files' in payload)) { setError(('error' in payload ? payload.error?.message : undefined) ?? t('console.backupPreviewFailed')); return; }
+      if (!payload.backup) { setError(t('console.backupPreviewFailed')); return; }
+      setSelectedBackup(payload.backup); setSelectedPreview(payload);
+      await refresh();
+    } catch { setError(t('console.backupPreviewFailed')); } finally { setBusyAction(null); }
+  };
+  const renameBackup = async (backup: BackupManifest) => {
+    const nextName = window.prompt(t('console.renameBackup'), backup.name.replace(/\.zip$/u, ''));
+    if (!nextName?.trim()) return;
+    setBusyAction(t('console.renameBackup')); setError(null);
+    try {
+      const response = await fetch(`/api/v1/backups/${backup.id}`, { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ name: nextName }) });
+      if (!response.ok) { const payload = await response.json() as { error?: { message?: string } }; setError(payload.error?.message ?? t('console.backupRenameFailed')); return; }
+      await refresh();
+    } catch { setError(t('console.backupRenameFailed')); } finally { setBusyAction(null); }
+  };
+  const deleteBackup = async (backup: BackupManifest) => {
+    if (!window.confirm(t('console.deleteBackupConfirm'))) return;
+    setBusyAction(t('console.deleteBackup')); setError(null);
+    try {
+      const response = await fetch(`/api/v1/backups/${backup.id}`, { method: 'DELETE', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      if (!response.ok) { const payload = await response.json() as { error?: { message?: string } }; setError(payload.error?.message ?? t('console.backupDeleteFailed')); return; }
+      if (selectedBackup?.id === backup.id) { setSelectedBackup(null); setSelectedPreview(null); }
+      await refresh();
+    } catch { setError(t('console.backupDeleteFailed')); } finally { setBusyAction(null); }
+  };
+  const activeProfile = profiles.find((profile) => profile.id === activeProfileId) ?? profiles[0] ?? null;
+  return <div className="data-workspace">
+    <Card className="data-profile-card"><PanelHeading icon={<UsersIcon />} action={<Badge variant="outline">{profiles.length}</Badge>}>{t('console.dataWorkspace')}</PanelHeading><CardContent>
+      <div className="data-profile-bar"><div className="data-profile-current"><span className="data-kicker">{t('console.activeProfile')}</span><strong>{activeProfile?.name ?? t('console.noProfiles')}</strong><span>{t('console.layoutData')}</span></div>{activeProfile ? <Select value={activeProfile.id} onValueChange={(id) => void activate(id)}><SelectTrigger aria-label={t('console.activateProfile')}><SelectValue /></SelectTrigger><SelectContent>{profiles.map((profile) => <SelectItem key={profile.id} value={profile.id}>{profile.name}</SelectItem>)}</SelectContent></Select> : null}</div>
+      <details className="profile-add"><summary><Plus />{t('console.addProfile')}</summary><div className="profile-create"><Input value={name} onChange={(event) => setName(event.target.value)} placeholder={t('console.profileName')} aria-label={t('console.profileName')} /><Button onClick={() => void create()} disabled={busy || !name.trim()}><Plus />{t('console.createProfile')}</Button></div></details>
+      {activeProfile?.legacyLayout === 'public' ? <p className="data-migration-note">{t('console.legacyMigrated')}</p> : null}
+    </CardContent></Card>
+    <Card className="backup-library-card"><PanelHeading icon={<Archive />} action={<div className="backup-actions"><Button size="sm" onClick={() => void createBackup()} disabled={busy || !activeProfileId}><Archive />{t('dashboard.backupNow')}</Button><label className="button-outline"><Upload />{t('console.importZip')}<input type="file" accept=".zip,application/zip" onChange={(event) => void inspectUpload(event.target.files?.[0])} /></label></div>}>{t('console.backupLibrary')}</PanelHeading>
+      <CardContent className="space-y-4"><div className="backup-controls"><Input value={backupName} onChange={(event) => setBackupName(event.target.value)} placeholder={t('console.backupNameOptional')} aria-label={t('console.backupNameOptional')} /><label className="backup-option"><input type="checkbox" checked={includeSecrets} onChange={(event) => setIncludeSecrets(event.target.checked)} />{t('console.includeSecrets')}</label></div>{includeSecrets ? <p className="install-error">{t('console.secretsWarning')}</p> : null}{error ? <p className="install-error" role="alert">{error}</p> : null}{busyAction ? <div className="operation-progress" role="status"><span>{busyAction}</span><span className="progress-track"><span className="progress-indeterminate" /></span></div> : null}{backups.length === 0 ? <p className="resource-empty">{t('dashboard.noBackup')}</p> : <div className="backup-list">{backups.map((backup) => <div className="backup-row" key={backup.id}><div className="min-w-0"><strong>{backup.name}</strong><span>{backup.source === 'uploaded' ? t('console.uploadedBackup') : t('console.createdBackup')} · {new Date(backup.createdAt).toLocaleString()} · {formatBytes(backup.sizeBytes)}</span></div><div className="backup-row-actions"><Button variant="ghost" size="sm" onClick={() => { window.location.href = `/api/v1/backups/${backup.id}/download`; }}>{t('console.downloadBackup')}</Button><Button variant="ghost" size="sm" onClick={() => void renameBackup(backup)} disabled={busy}>{t('console.renameBackup')}</Button><Button variant="ghost" size="sm" onClick={() => void deleteBackup(backup)} disabled={busy}>{t('console.deleteBackup')}</Button><Button variant="outline" size="sm" onClick={() => void previewBackup(backup)} disabled={busy}>{t('console.previewBackup')}</Button></div></div>)}</div>}{selectedPreview ? <div className="backup-preview"><strong>{t('console.restorePreview')}</strong><span>{selectedBackup?.name} · {selectedPreview.fileCount} {t('console.files')} · {formatBytes(selectedPreview.totalBytes)}</span>{selectedPreview.warnings.map((warning) => <p className="install-error" key={warning}>{warning}</p>)}<div className="backup-restore-actions"><Select value={restoreMode} onValueChange={(value) => setRestoreMode(value as 'merge' | 'replace')}><SelectTrigger aria-label={t('console.restoreMode')}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="replace">{t('console.replaceRestore')}</SelectItem><SelectItem value="merge">{t('console.mergeRestore')}</SelectItem></SelectContent></Select><Button onClick={() => void restoreSelected()} disabled={busy || (selectedPreview.includesSecrets && !includeSecrets)}><Upload />{t('console.restore')}</Button></div></div> : null}</CardContent></Card>
+    <Card className="r2-placeholder"><PanelHeading icon={<Globe2 />} action={<Badge variant="outline">{t('console.comingSoon')}</Badge>}>{t('console.r2Title')}</PanelHeading><CardContent><p>{t('console.r2Placeholder')}</p><div className="r2-placeholder-grid"><Input disabled placeholder={t('console.r2Endpoint')} /><Input disabled placeholder={t('console.r2Bucket')} /><Button variant="outline" disabled>{t('console.configureR2')}</Button></div></CardContent></Card>
+  </div>;
+}
+
+function formatBytes(value: number): string {
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
 function ResourcePanel({ page, t }: { page: Exclude<PageId, 'overview' | 'data'>; t: Translate }) {

@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
 import { extname, join, relative, resolve } from 'node:path';
 import type { ApiErrorBody, HealthResponse, Installation, Job, LogEntry, LogSourceFilter, ManagerPorts, ProfileLayout, SetupStatus, VersionSelector } from '../../../packages/contracts/src/index.js';
 import { getPlatformPaths, type PlatformPaths } from '../../../packages/platform/src/index.js';
@@ -13,6 +14,7 @@ import { LogBuffer } from './log-buffer.js';
 import { ProcessSupervisor } from './supervisor.js';
 import { TunnelManager } from '../../../packages/tunnel/src/index.js';
 import { ProfileError, ProfileStore } from '../../../packages/profiles/src/index.js';
+import { BackupError, BackupStore } from '../../../packages/backup/src/index.js';
 
 const MANAGER_PORT = 7860 as const;
 const SILLYTAVERN_PORT = 8000 as const;
@@ -55,6 +57,7 @@ export interface ManagerServerOptions {
   readonly supervisor?: ProcessSupervisor;
   readonly tunnel?: TunnelManager;
   readonly profileStore?: ProfileStore;
+  readonly backupStore?: BackupStore;
 }
 
 export interface ManagerServer {
@@ -65,6 +68,7 @@ export interface ManagerServer {
   readonly supervisor: ProcessSupervisor;
   readonly tunnel: TunnelManager;
   readonly profiles: ProfileStore;
+  readonly backups: BackupStore;
   readonly port: number;
   close(): Promise<void>;
 }
@@ -90,7 +94,17 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   const logger = (line: string) => { jobs.append('manager', line); baseLogger(line); };
   const runtime = options.runtime ?? new RuntimeManager({ paths, logger: (line) => { jobs.append('installer', line); baseLogger(line); } });
   const profiles = options.profileStore ?? new ProfileStore({ paths, logger: (line) => { jobs.append('manager', line); baseLogger(line); } });
-  const supervisor = options.supervisor ?? new ProcessSupervisor({ runtime, profileResolver: (installation) => profiles.getActiveForInstallation(installation.id), logger: (line) => { jobs.append('sillytavern', line); baseLogger(line); } });
+  const backups = options.backupStore ?? new BackupStore({ paths, logger: (line) => { jobs.append('backup', line); baseLogger(line); } });
+  const supervisor = options.supervisor ?? new ProcessSupervisor({
+    runtime,
+    profileResolver: (installation) => profiles.getActiveForInstallation(installation.id),
+    profileLifecycle: {
+      prepare: (profile, runtimePath) => profiles.prepareForRuntime(profile, runtimePath),
+      persist: (profile, runtimePath, runtimeLayout) => profiles.persistFromRuntime(profile, runtimePath, runtimeLayout),
+      legacyHeapMb: (profile) => profiles.recommendedLegacyHeapMb(profile),
+    },
+    logger: (line) => { jobs.append('sillytavern', line); baseLogger(line); },
+  });
   const tunnel = options.tunnel ?? new TunnelManager({ paths, env, logger: (line) => { jobs.append('cloudflared', line); baseLogger(line); } });
   const secureCookies = options.secureCookies ?? env.STM_SECURE_COOKIES === '1';
   const setupCodeRequired = options.setupCodeRequired ?? requiresSetupCode(env);
@@ -129,9 +143,14 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       supervisor,
       tunnel,
       profiles,
+      backups,
     }).catch((error: unknown) => {
       if (error instanceof RequestError) {
         sendError(response, error.statusCode, error.code, error.message);
+        return;
+      }
+      if (error instanceof BackupError) {
+        sendError(response, error.code === 'secrets_confirmation_required' ? 409 : 400, error.code, error.message);
         return;
       }
       logger(`[manager] request failed: ${error instanceof Error ? error.message : 'unknown error'}`);
@@ -150,7 +169,14 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   const actualPort = address && typeof address !== 'string' ? address.port : port;
   const activeInstallation = await runtime.getActiveInstallation();
   if (activeInstallation?.status === 'ready') {
-    await profiles.ensureDefault({ installationId: activeInstallation.id, runtimePath: activeInstallation.runtimePath });
+    let readyInstallation = activeInstallation;
+    try {
+      readyInstallation = await runtime.migrateLegacyInstallation?.(activeInstallation) ?? activeInstallation;
+      await profiles.ensureDefault({ installationId: readyInstallation.id, runtimePath: readyInstallation.runtimePath });
+      await runtime.cleanupLegacyRuntimeCopies?.(readyInstallation.id);
+    } catch (error: unknown) {
+      logger(`[installer] legacy runtime migration failed: ${error instanceof Error ? error.message : 'unknown error'}`);
+    }
     void supervisor.start().catch((error: unknown) => logger(`[sillytavern] automatic startup failed: ${error instanceof Error ? error.message : 'unknown error'}`));
   }
 
@@ -163,6 +189,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     supervisor,
     tunnel,
     profiles,
+    backups,
     close: async () => { await tunnel.close(); await supervisor.close(); await closeServer(server); },
   };
 }
@@ -183,8 +210,9 @@ async function handleRequest(options: {
   readonly supervisor: ProcessSupervisor;
   readonly tunnel: TunnelManager;
   readonly profiles: ProfileStore;
+  readonly backups: BackupStore;
 }): Promise<void> {
-  const { request, response, store, sessions, rateLimiter, startedAt, secureCookies, setupCodeRequired, staticRoot, runtime, jobs, supervisor, tunnel, profiles } = options;
+  const { request, response, store, sessions, rateLimiter, startedAt, secureCookies, setupCodeRequired, staticRoot, runtime, jobs, supervisor, tunnel, profiles, backups } = options;
   const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
   const pathname = url.pathname;
   const context: RequestContext = {
@@ -271,14 +299,14 @@ async function handleRequest(options: {
     if (method !== 'GET' && !requireCsrf(context, session.csrfToken)) {
       return;
     }
-    await handleRuntimeRequest(context, runtime, jobs, supervisor, tunnel, profiles);
+    await handleRuntimeRequest(context, runtime, jobs, supervisor, tunnel, profiles, backups);
     return;
   }
 
   sendError(response, 404, 'not_found', 'Route not found');
 }
 
-async function handleRuntimeRequest(context: RequestContext, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, profiles: ProfileStore): Promise<void> {
+async function handleRuntimeRequest(context: RequestContext, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, profiles: ProfileStore, backups: BackupStore): Promise<void> {
   const { pathname, request, response } = context;
   const method = request.method ?? 'GET';
   if (pathname === '/api/v1/logs' && method === 'GET') {
@@ -308,10 +336,21 @@ async function handleRuntimeRequest(context: RequestContext, runtime: RuntimeMan
       sendError(response, 400, 'invalid_version', 'A valid SillyTavern version must be selected');
       return;
     }
-    let queuedId = '';
+    const previousProfile = await profiles.getActive();
     const previousTunnelMode = tunnel.getState().mode;
     await tunnel.stop();
     await supervisor.stop();
+    if (previousProfile) {
+      try {
+        await profiles.createSafetySnapshot(previousProfile);
+      } catch (error: unknown) {
+        const process = await supervisor.start().catch(() => supervisor.getState());
+        if (previousTunnelMode !== 'off' && process.status === 'running') await tunnel.restart().catch(() => undefined);
+        sendError(response, 500, 'profile_snapshot_failed', error instanceof Error ? error.message : 'Could not create a profile safety snapshot');
+        return;
+      }
+    }
+    let queuedId = '';
     let queued: { id: string; promise: Promise<Installation> };
     try {
       queued = runtime.queueInstall(selector as VersionSelector, (progress) => jobs.updateFromProgress(queuedId, progress));
@@ -325,7 +364,11 @@ async function handleRuntimeRequest(context: RequestContext, runtime: RuntimeMan
     const job = jobs.create(queued.id);
     void queued.promise.then(async (installation) => {
       jobs.finish(queued.id, installation.status === 'ready' ? 'succeeded' : 'failed', installation.error);
-      if (installation.status === 'ready') await profiles.ensureDefault({ installationId: installation.id, runtimePath: installation.runtimePath });
+      if (installation.status === 'ready') {
+        if (previousProfile) await profiles.rebind(previousProfile.id, installation.id, installation.runtimePath);
+        else await profiles.ensureDefault({ installationId: installation.id, runtimePath: installation.runtimePath });
+        await runtime.cleanupLegacyRuntimeCopies?.(installation.id);
+      }
       const process = await supervisor.start();
       if (previousTunnelMode !== 'off' && process.status === 'running') await tunnel.restart();
     }).catch(async (error: unknown) => { jobs.finish(queued.id, 'failed', error instanceof Error ? error.message : 'Installation failed'); const process = await supervisor.start(); if (previousTunnelMode !== 'off' && process.status === 'running') await tunnel.restart(); });
@@ -379,6 +422,90 @@ async function handleRuntimeRequest(context: RequestContext, runtime: RuntimeMan
     }
     return;
   }
+  if (pathname === '/api/v1/backups' && method === 'GET') {
+    const activeProfile = await profiles.getActive();
+    sendJson(response, 200, { backups: activeProfile ? await backups.list(activeProfile.id) : [] });
+    return;
+  }
+  if (pathname === '/api/v1/backups' && method === 'POST') {
+    const profile = await profiles.getActive();
+    if (!profile) { sendError(response, 409, 'profile_required', 'Create or activate a profile before creating a backup'); return; }
+    const body = await readJson(request);
+    const name = isRecord(body) && typeof body.name === 'string' ? body.name : undefined;
+    const includeSecrets = isRecord(body) && body.includeSecrets === true;
+    const manifest = await backups.create(profile, {
+      ...(name ? { name } : {}),
+      ...(includeSecrets ? { includeSecrets: true } : {}),
+    });
+    sendJson(response, 201, manifest);
+    return;
+  }
+  const backupImportPreview = pathname === '/api/v1/backups/import/preview';
+  const backupImportRestore = pathname === '/api/v1/backups/import/restore';
+  if ((backupImportPreview || backupImportRestore) && method === 'POST') {
+    const archivePath = await backups.saveUpload(request);
+    let retained = false;
+    try {
+      const profile = await profiles.getActive();
+      if (!profile) { sendError(response, 409, 'profile_required', 'Create or activate a profile before importing a backup'); return; }
+      const imported = await backups.importArchive(profile, archivePath, headerValue(request.headers['x-backup-name']));
+      retained = true;
+      if (backupImportPreview) { sendJson(response, 200, { ...imported.preview, backup: imported.manifest }); return; }
+      const mode = headerValue(request.headers['x-restore-mode']);
+      const allowSecrets = headerValue(request.headers['x-include-secrets']) === 'true';
+      if (mode !== 'merge' && mode !== 'replace') { sendError(response, 400, 'invalid_restore_mode', 'Restore mode must be merge or replace'); return; }
+      const libraryPath = await backups.getArchivePath(imported.manifest.id);
+      if (!libraryPath) { sendError(response, 500, 'backup_archive_missing', 'The uploaded archive could not be stored'); return; }
+      const result = await restoreWithProcess({ profile, backups, archivePath: libraryPath, mode, allowSecrets, profiles, supervisor, tunnel });
+      sendJson(response, 200, result);
+    } finally {
+      if (!retained) await backups.removeTemporary(archivePath);
+    }
+    return;
+  }
+  const backupMatch = /^\/api\/v1\/backups\/([^/]+)(?:\/(preview|restore|download))?$/u.exec(pathname);
+  if (backupMatch) {
+    const id = backupMatch[1] ?? '';
+    const manifest = await backups.get(id);
+    if (!manifest) { sendError(response, 404, 'backup_not_found', 'Backup not found'); return; }
+    const action = backupMatch[2];
+    if (!action && method === 'DELETE') {
+      await backups.remove(id);
+      sendJson(response, 200, { ok: true });
+      return;
+    }
+    if (!action && (method === 'PUT' || method === 'PATCH')) {
+      const body = await readJson(request);
+      const name = isRecord(body) && typeof body.name === 'string' ? body.name : '';
+      if (!name.trim()) { sendError(response, 400, 'invalid_backup_name', 'Backup name is required'); return; }
+      sendJson(response, 200, await backups.rename(id, name));
+      return;
+    }
+    const archivePath = await backups.getArchivePath(id);
+    if (!archivePath) { sendError(response, 410, 'backup_archive_missing', 'The backup archive is missing'); return; }
+    if (!action && method === 'GET') { sendJson(response, 200, manifest); return; }
+    if (action === 'download' && method === 'GET') {
+      const details = await stat(archivePath);
+      response.statusCode = 200;
+      response.setHeader('Content-Type', 'application/zip');
+      response.setHeader('Content-Length', details.size.toString(10));
+      response.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(manifest.name)}`);
+      createReadStream(archivePath).pipe(response);
+      return;
+    }
+    const profile = await profiles.getActive();
+    if (!profile) { sendError(response, 409, 'profile_required', 'Create or activate a profile before restoring a backup'); return; }
+    if (action === 'preview' && method === 'POST') { sendJson(response, 200, await backups.preview(archivePath, profile.layout)); return; }
+    if (action === 'restore' && method === 'POST') {
+      const body = await readJson(request);
+      const mode = isRecord(body) && (body.mode === 'merge' || body.mode === 'replace') ? body.mode : null;
+      if (!mode) { sendError(response, 400, 'invalid_restore_mode', 'Restore mode must be merge or replace'); return; }
+      const allowSecrets = isRecord(body) && body.includeSecrets === true;
+      const result = await restoreWithProcess({ profile, backups, archivePath, mode, allowSecrets, profiles, supervisor, tunnel });
+      sendJson(response, 200, result);
+      return;
+    }
+  }
   const installationMatch = /^\/api\/v1\/installations\/([^/]+)(?:\/(start|stop|restart))?$/u.exec(pathname);
   if (installationMatch) {
     const installation = await runtime.getInstallation(installationMatch[1] ?? '');
@@ -422,12 +549,41 @@ async function handleRuntimeRequest(context: RequestContext, runtime: RuntimeMan
   sendError(response, 404, 'not_found', 'Route not found');
 }
 
+async function restoreWithProcess(options: {
+  readonly profile: Awaited<ReturnType<ProfileStore['getActive']>> & {};
+  readonly backups: BackupStore;
+  readonly archivePath: string;
+  readonly mode: 'merge' | 'replace';
+  readonly allowSecrets: boolean;
+  readonly profiles: ProfileStore;
+  readonly supervisor: ProcessSupervisor;
+  readonly tunnel: TunnelManager;
+}): Promise<{ preview: Awaited<ReturnType<BackupStore['restore']>>; safetySnapshot: Awaited<ReturnType<ProfileStore['createSafetySnapshot']>>; process: ReturnType<ProcessSupervisor['getState']> }> {
+  const { profile, backups, archivePath, mode, allowSecrets, profiles, supervisor, tunnel } = options;
+  const previousTunnelMode = tunnel.getState().mode;
+  await tunnel.stop();
+  await supervisor.stop();
+  try {
+    const safetySnapshot = await profiles.createSafetySnapshot(profile);
+    const preview = await backups.restore(profile, archivePath, { mode, ...(allowSecrets ? { allowSecrets: true } : {}) });
+    const process = await supervisor.start();
+    if (previousTunnelMode !== 'off' && process.status === 'running') await tunnel.restart();
+    return { preview, safetySnapshot, process };
+  } catch (error) {
+    const process = await supervisor.start().catch(() => supervisor.getState());
+    if (previousTunnelMode !== 'off' && process.status === 'running') await tunnel.restart().catch(() => undefined);
+    throw error;
+  }
+}
+
 function isProtectedPath(pathname: string): boolean {
   return PROTECTED_PATHS.has(pathname)
     || pathname.startsWith('/api/v1/installations/')
     || pathname.startsWith('/api/v1/jobs/')
     || pathname.startsWith('/api/v1/logs')
-    || pathname.startsWith('/api/v1/process');
+    || pathname.startsWith('/api/v1/process')
+    || pathname.startsWith('/api/v1/profiles/')
+    || pathname.startsWith('/api/v1/backups/');
 }
 
 function isVersionSelector(value: string): boolean {
