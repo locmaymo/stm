@@ -14,7 +14,7 @@ import {
 } from '../../../packages/ui/src/index.js';
 import { translator, type Translate } from './i18n.js';
 import { browserStorage, readPreferences, savePreferences, type Preferences } from './preferences.js';
-import type { Installation, LogEntry, LogSourceFilter, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { Installation, LogEntry, LogSourceFilter, ProcessState, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
 import { formatLogMessage } from './log-format.js';
 
@@ -87,6 +87,8 @@ function ConsoleApp({ csrfToken }: { csrfToken: string }) {
   const [logQuery, setLogQuery] = useState('');
   const [logsExpanded, setLogsExpanded] = useState(false);
   const [compactLogs, setCompactLogs] = useState(false);
+  const [processState, setProcessState] = useState<ProcessState>({ status: 'stopped', installationId: null, pid: null, startedAt: null, error: null });
+  const [tunnelState, setTunnelState] = useState<TunnelState>({ mode: 'off', status: 'stopped', url: null, startedAt: null, error: null });
   const t = translator(preferences.locale);
 
   useEffect(() => {
@@ -95,6 +97,22 @@ function ConsoleApp({ csrfToken }: { csrfToken: string }) {
     applyMobileDefault();
     media.addEventListener('change', applyMobileDefault);
     return () => media.removeEventListener('change', applyMobileDefault);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = async () => {
+      const [processResponse, tunnelResponse] = await Promise.all([
+        fetch('/api/v1/process', { credentials: 'same-origin' }),
+        fetch('/api/v1/tunnel', { credentials: 'same-origin' }),
+      ]);
+      if (cancelled) return;
+      if (processResponse.ok) setProcessState(await processResponse.json() as ProcessState);
+      if (tunnelResponse.ok) setTunnelState(await tunnelResponse.json() as TunnelState);
+    };
+    void refresh();
+    const timer = window.setInterval(() => { void refresh(); }, 1500);
+    return () => { cancelled = true; window.clearInterval(timer); };
   }, []);
 
   useEffect(() => {
@@ -156,6 +174,15 @@ function ConsoleApp({ csrfToken }: { csrfToken: string }) {
   const logEntries = useLiveLogs(logSource);
   const installation = <InstallationPanel t={t} version={version} onVersionChange={setVersion} versions={versions} installations={installations} activeInstallationId={activeInstallationId} pendingInstallationId={pendingInstallationId} onPendingInstallationId={setPendingInstallationId} csrfToken={csrfToken} installing={installing} onInstalling={setInstalling} />;
   const logs = <LogsPanel t={t} source={logSource} onSourceChange={setLogSource} entries={logEntries} query={logQuery} onQueryChange={setLogQuery} compact={compactLogs} onToggleCompact={() => setCompactLogs((current) => !current)} expanded={logsExpanded} onToggleExpanded={() => setLogsExpanded((current) => !current)} />;
+  const updateRuntime = async (path: string, body?: unknown) => {
+    const init: RequestInit = { method: body === undefined ? 'POST' : 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken } };
+    if (body !== undefined) init.body = JSON.stringify(body);
+    const response = await fetch(path, init);
+    if (response.ok) {
+      const payload = await response.json() as ProcessState | TunnelState;
+      if (path.includes('/process')) setProcessState(payload as ProcessState); else setTunnelState(payload as TunnelState);
+    }
+  };
 
   return (
     <SidebarProvider style={{ '--sidebar-width': '15rem', '--sidebar-width-icon': '3.75rem' } as CSSProperties}>
@@ -173,7 +200,7 @@ function ConsoleApp({ csrfToken }: { csrfToken: string }) {
           </div>
         </header>
         <div className="page-body">
-          {page === 'overview' ? <div className="core-grid">{installation}<AccessPanel t={t} /><DataPanel t={t} navigate={navigate} />{logs}</div> : page === 'data' ? <DataPage t={t} /> : <ResourcePanel page={page} t={t} />}
+          {page === 'overview' ? <div className="core-grid">{installation}<AccessPanel t={t} process={processState} tunnel={tunnelState} installed={Boolean(activeInstallationId)} onAction={updateRuntime} /> <DataPanel t={t} navigate={navigate} />{logs}</div> : page === 'data' ? <DataPage t={t} /> : <ResourcePanel page={page} t={t} />}
         </div>
       </SidebarInset>
     </SidebarProvider>
@@ -226,8 +253,14 @@ function InstallationPanel({ t, version, onVersionChange, versions, installation
   return <Card data-tour="installation"><PanelHeading icon={<Package />} action={<Badge variant="outline" className={active?.status === 'ready' ? '' : 'status-attention'}>{status}</Badge>}>SillyTavern</PanelHeading><CardContent className="flex-1"><label className="field-label" htmlFor="install-version">{t('dashboard.version')}</label><Select value={version} onValueChange={onVersionChange}><SelectTrigger id="install-version" className="w-full"><SelectValue /></SelectTrigger><SelectContent position="popper" align="start" className="version-select-content">{choices.map((choice) => <SelectItem key={choice.selector} value={choice.selector}>{choice.label}</SelectItem>)}</SelectContent></Select>{active && active.status !== 'ready' && active.status !== 'failed' ? <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full bg-primary transition-all" style={{ width: `${active.progress}%` }} /></div> : null}{active?.status === 'ready' ? <p className="install-result">{t('console.installComplete')} · {active.resolvedRef}</p> : null}{active?.status === 'failed' && active.error ? <p className="install-error" role="alert">{active.error}</p> : null}{requestError ? <p className="install-error" role="alert">{requestError}</p> : null}</CardContent><CardFooter>{canInstall ? <Button onClick={() => void install()}><Download />{installing ? t('common.loading') : t('dashboard.install')}</Button> : <Unavailable t={t}><Button disabled><Download />{t('dashboard.install')}</Button></Unavailable>}</CardFooter></Card>;
 }
 
-function AccessPanel({ t }: { t: Translate }) {
-  return <Card data-tour="public-access"><PanelHeading icon={<Globe2 />} action={<Badge variant="secondary">{t('dashboard.offline')}</Badge>}>{t('console.publicAccess')}</PanelHeading><CardContent className="flex-1 space-y-4"><div className="flex items-center justify-between gap-4"><label htmlFor="tunnel-switch" className="text-sm">Cloudflare Quick Tunnel</label><Unavailable t={t}><Switch id="tunnel-switch" checked={false} disabled aria-label={t('console.enableTunnel')} /></Unavailable></div><dl className="address-list"><div><dt>{t('console.local')}</dt><dd><code>127.0.0.1:8000</code></dd></div><div><dt>{t('dashboard.publicAddress')}</dt><dd>—</dd></div></dl></CardContent><CardFooter className="gap-2"><Unavailable t={t}><Button variant="outline" disabled><ArrowUpRight />{t('dashboard.open')}</Button></Unavailable><Unavailable t={t}><Button variant="ghost" disabled><Copy />{t('dashboard.copyLink')}</Button></Unavailable></CardFooter></Card>;
+function AccessPanel({ t, process, tunnel, installed, onAction }: { t: Translate; process: ProcessState; tunnel: TunnelState; installed: boolean; onAction: (path: string, body?: unknown) => Promise<void> }) {
+  const running = process.status === 'running';
+  const tunnelRunning = tunnel.status === 'running' || tunnel.status === 'starting';
+  const processLabel = process.status === 'running' ? t('dashboard.running') : process.status === 'starting' || process.status === 'stopping' ? t('common.loading') : process.status === 'error' ? t('dashboard.installFailed') : t('dashboard.offline');
+  const toggleTunnel = () => void onAction('/api/v1/tunnel', { mode: tunnelRunning ? 'off' : 'quick' });
+  const openLocal = () => { window.open('http://127.0.0.1:8000', '_blank', 'noopener,noreferrer'); };
+  const copyTunnel = async () => { if (tunnel.url) await navigator.clipboard?.writeText(tunnel.url); };
+  return <Card data-tour="public-access"><PanelHeading icon={<Globe2 />} action={<Badge variant="secondary" className={running ? 'status-online' : tunnel.error ? 'status-attention' : ''}>{processLabel}</Badge>}>{t('console.publicAccess')}</PanelHeading><CardContent className="flex-1 space-y-4"><div className="flex items-center justify-between gap-4"><label htmlFor="tunnel-switch" className="text-sm">Cloudflare Quick Tunnel</label><Switch id="tunnel-switch" checked={tunnelRunning} onCheckedChange={toggleTunnel} disabled={!installed || !running || tunnel.status === 'starting'} aria-label={t('console.enableTunnel')} /></div><dl className="address-list"><div><dt>{t('console.local')}</dt><dd><code>127.0.0.1:8000</code></dd></div><div><dt>{t('dashboard.publicAddress')}</dt><dd>{tunnel.url ? <code>{tunnel.url}</code> : '—'}</dd></div></dl>{process.error ? <p className="install-error" role="alert">{process.error}</p> : null}{tunnel.error ? <p className="install-error" role="alert">{tunnel.error}</p> : null}</CardContent><CardFooter className="gap-2"><Button variant="outline" onClick={openLocal} disabled={!running}><ArrowUpRight />{t('dashboard.open')}</Button><Button variant="ghost" onClick={() => void copyTunnel()} disabled={!tunnel.url}><Copy />{t('dashboard.copyLink')}</Button><Button variant="ghost" onClick={() => void onAction(running ? '/api/v1/process/stop' : '/api/v1/process/start')} disabled={!installed || process.status === 'starting' || process.status === 'stopping'}>{running ? t('dashboard.stop') : t('dashboard.start')}</Button></CardFooter></Card>;
 }
 
 function DataPanel({ t, navigate }: { t: Translate; navigate: Navigate }) {

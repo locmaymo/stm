@@ -90,6 +90,8 @@
     "title": "Your instance, at a glance.",
     "subtitle": "A quiet place to run SillyTavern, keep its data safe, and see what is happening right now.",
     "running": "Running",
+    "start": "Start",
+    "stop": "Stop",
     "attention": "Needs attention",
     "offline": "Offline",
     "installSillyTavern": "Install SillyTavern",

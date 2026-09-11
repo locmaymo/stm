@@ -10,6 +10,8 @@ import { RateLimiter } from './rate-limit.js';
 import { parseSessionCookie, SessionStore, clearSessionCookie, sessionCookie } from './sessions.js';
 import { hashSetupCode, StateStore } from './state.js';
 import { LogBuffer } from './log-buffer.js';
+import { ProcessSupervisor } from './supervisor.js';
+import { TunnelManager } from '../../../packages/tunnel/src/index.js';
 
 const MANAGER_PORT = 7860 as const;
 const SILLYTAVERN_PORT = 8000 as const;
@@ -49,6 +51,8 @@ export interface ManagerServerOptions {
   readonly logger?: (line: string) => void;
   readonly runtime?: RuntimeManager;
   readonly logBuffer?: LogBuffer;
+  readonly supervisor?: ProcessSupervisor;
+  readonly tunnel?: TunnelManager;
 }
 
 export interface ManagerServer {
@@ -56,6 +60,8 @@ export interface ManagerServer {
   readonly store: StateStore;
   readonly sessions: SessionStore;
   readonly runtime: RuntimeManager;
+  readonly supervisor: ProcessSupervisor;
+  readonly tunnel: TunnelManager;
   readonly port: number;
   close(): Promise<void>;
 }
@@ -76,10 +82,12 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   );
   const sessions = options.sessions ?? new SessionStore();
   const rateLimiter = options.rateLimiter ?? new RateLimiter();
-  const jobs = new JobStore(options.logBuffer);
   const baseLogger = options.logger ?? ((line: string) => console.log(line));
+  const jobs = new JobStore(options.logBuffer ?? new LogBuffer(paths));
   const logger = (line: string) => { jobs.append('manager', line); baseLogger(line); };
   const runtime = options.runtime ?? new RuntimeManager({ paths, logger: (line) => { jobs.append('installer', line); baseLogger(line); } });
+  const supervisor = options.supervisor ?? new ProcessSupervisor({ runtime, logger: (line) => { jobs.append('sillytavern', line); baseLogger(line); } });
+  const tunnel = options.tunnel ?? new TunnelManager({ paths, env, logger: (line) => { jobs.append('cloudflared', line); baseLogger(line); } });
   const secureCookies = options.secureCookies ?? env.STM_SECURE_COOKIES === '1';
   const setupCodeRequired = options.setupCodeRequired ?? requiresSetupCode(env);
   const staticRoot = resolve(options.staticRoot ?? join(process.cwd(), 'apps', 'manager-panel', 'dist'));
@@ -114,6 +122,8 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       logger,
       runtime,
       jobs,
+      supervisor,
+      tunnel,
     }).catch((error: unknown) => {
       if (error instanceof RequestError) {
         sendError(response, error.statusCode, error.code, error.message);
@@ -133,6 +143,10 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   await listen(server, host, port);
   const address = server.address();
   const actualPort = address && typeof address !== 'string' ? address.port : port;
+  const activeInstallation = await runtime.getActiveInstallation();
+  if (activeInstallation?.status === 'ready') {
+    void supervisor.start().catch((error: unknown) => logger(`[sillytavern] automatic startup failed: ${error instanceof Error ? error.message : 'unknown error'}`));
+  }
 
   return {
     server,
@@ -140,7 +154,9 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     sessions,
     runtime,
     port: actualPort,
-    close: () => closeServer(server),
+    supervisor,
+    tunnel,
+    close: async () => { await tunnel.close(); await supervisor.close(); await closeServer(server); },
   };
 }
 
@@ -157,8 +173,10 @@ async function handleRequest(options: {
   readonly logger: (line: string) => void;
   readonly runtime: RuntimeManager;
   readonly jobs: JobStore;
+  readonly supervisor: ProcessSupervisor;
+  readonly tunnel: TunnelManager;
 }): Promise<void> {
-  const { request, response, store, sessions, rateLimiter, startedAt, secureCookies, setupCodeRequired, staticRoot, runtime, jobs } = options;
+  const { request, response, store, sessions, rateLimiter, startedAt, secureCookies, setupCodeRequired, staticRoot, runtime, jobs, supervisor, tunnel } = options;
   const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
   const pathname = url.pathname;
   const context: RequestContext = {
@@ -245,14 +263,14 @@ async function handleRequest(options: {
     if (method !== 'GET' && !requireCsrf(context, session.csrfToken)) {
       return;
     }
-    await handleRuntimeRequest(context, runtime, jobs);
+    await handleRuntimeRequest(context, runtime, jobs, supervisor, tunnel);
     return;
   }
 
   sendError(response, 404, 'not_found', 'Route not found');
 }
 
-async function handleRuntimeRequest(context: RequestContext, runtime: RuntimeManager, jobs: JobStore): Promise<void> {
+async function handleRuntimeRequest(context: RequestContext, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager): Promise<void> {
   const { pathname, request, response } = context;
   const method = request.method ?? 'GET';
   if (pathname === '/api/v1/logs' && method === 'GET') {
@@ -283,16 +301,25 @@ async function handleRuntimeRequest(context: RequestContext, runtime: RuntimeMan
       return;
     }
     let queuedId = '';
+    const previousTunnelMode = tunnel.getState().mode;
+    await tunnel.stop();
+    await supervisor.stop();
     let queued: { id: string; promise: Promise<Installation> };
     try {
       queued = runtime.queueInstall(selector as VersionSelector, (progress) => jobs.updateFromProgress(queuedId, progress));
     } catch (error: unknown) {
+      const process = await supervisor.start();
+      if (previousTunnelMode !== 'off' && process.status === 'running') await tunnel.restart();
       if (error instanceof RuntimeError) { sendError(response, 409, error.code, error.message); return; }
       throw error;
     }
     queuedId = queued.id;
     const job = jobs.create(queued.id);
-    void queued.promise.then((installation) => jobs.finish(queued.id, installation.status === 'ready' ? 'succeeded' : 'failed', installation.error)).catch((error: unknown) => jobs.finish(queued.id, 'failed', error instanceof Error ? error.message : 'Installation failed'));
+    void queued.promise.then(async (installation) => {
+      jobs.finish(queued.id, installation.status === 'ready' ? 'succeeded' : 'failed', installation.error);
+      const process = await supervisor.start();
+      if (previousTunnelMode !== 'off' && process.status === 'running') await tunnel.restart();
+    }).catch(async (error: unknown) => { jobs.finish(queued.id, 'failed', error instanceof Error ? error.message : 'Installation failed'); const process = await supervisor.start(); if (previousTunnelMode !== 'off' && process.status === 'running') await tunnel.restart(); });
     sendJson(response, 202, { installationId: queued.id, job });
     return;
   }
@@ -302,7 +329,28 @@ async function handleRuntimeRequest(context: RequestContext, runtime: RuntimeMan
     if (!installation) { sendError(response, 404, 'installation_not_found', 'Installation not found'); return; }
     const action = installationMatch[2];
     if (method === 'GET' && !action) { sendJson(response, 200, installation); return; }
-    if (action && method === 'POST') { sendError(response, 409, 'supervisor_unavailable', 'Process controls become available with the SillyTavern supervisor'); return; }
+    if (action && method === 'POST') {
+      if (action === 'start') { sendJson(response, 200, await supervisor.start()); return; }
+      await tunnel.stop();
+      const state = action === 'stop' ? await supervisor.stop() : await supervisor.restart();
+      if (action === 'restart' && state.status === 'running' && tunnel.getState().mode !== 'off') await tunnel.restart();
+      sendJson(response, 200, state);
+      return;
+    }
+  }
+  if (pathname === '/api/v1/process' && method === 'GET') { sendJson(response, 200, supervisor.getState()); return; }
+  if (pathname === '/api/v1/process/start' && method === 'POST') { sendJson(response, 200, await supervisor.start()); return; }
+  if (pathname === '/api/v1/process/stop' && method === 'POST') { await tunnel.stop(); sendJson(response, 200, await supervisor.stop()); return; }
+  if (pathname === '/api/v1/process/restart' && method === 'POST') { await tunnel.stop(); const process = await supervisor.restart(); if (tunnel.getState().mode !== 'off' && process.status === 'running') await tunnel.restart(); sendJson(response, 200, process); return; }
+  if (pathname === '/api/v1/tunnel' && method === 'GET') { sendJson(response, 200, tunnel.getState()); return; }
+  if (pathname === '/api/v1/tunnel' && method === 'PUT') {
+    const body = await readJson(request);
+    const mode = isRecord(body) && (body.mode === 'off' || body.mode === 'quick' || body.mode === 'named') ? body.mode : null;
+    if (!mode) { sendError(response, 400, 'invalid_tunnel_mode', 'Tunnel mode must be off, quick, or named'); return; }
+    if (mode !== 'off' && supervisor.getState().status !== 'running') { sendError(response, 409, 'sillytavern_not_running', 'Start SillyTavern before enabling the tunnel'); return; }
+    const state = mode === 'off' ? await tunnel.stop() : await tunnel.start(mode, isRecord(body) && typeof body.token === 'string' ? body.token : undefined);
+    sendJson(response, 200, state);
+    return;
   }
   const jobMatch = /^\/api\/v1\/jobs\/([^/]+)$/u.exec(pathname);
   if (jobMatch && method === 'GET') {
@@ -322,7 +370,8 @@ function isProtectedPath(pathname: string): boolean {
   return PROTECTED_PATHS.has(pathname)
     || pathname.startsWith('/api/v1/installations/')
     || pathname.startsWith('/api/v1/jobs/')
-    || pathname.startsWith('/api/v1/logs');
+    || pathname.startsWith('/api/v1/logs')
+    || pathname.startsWith('/api/v1/process');
 }
 
 function isVersionSelector(value: string): boolean {

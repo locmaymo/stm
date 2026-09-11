@@ -90,6 +90,8 @@
     "title": "Mọi thứ về instance, trong một góc nhìn.",
     "subtitle": "Một nơi yên tĩnh để chạy SillyTavern, giữ dữ liệu an toàn và biết ngay điều gì đang xảy ra.",
     "running": "Đang chạy",
+    "start": "Chạy",
+    "stop": "Dừng",
     "attention": "Cần chú ý",
     "offline": "Đang tắt",
     "installSillyTavern": "Cài SillyTavern",

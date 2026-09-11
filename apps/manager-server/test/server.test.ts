@@ -150,4 +150,12 @@ test('authenticated installation endpoints return versions and a pollable job', 
   assert.ok(allLogEntries.some((entry) => entry.source === 'manager'));
   const invalidLogs = await fetch(`${base}/api/v1/logs?source=unknown&after=0`, { headers: { cookie } });
   assert.equal(invalidLogs.status, 400);
+  const process = await fetch(`${base}/api/v1/process`, { headers: { cookie } });
+  assert.equal(process.status, 200);
+  assert.ok(['stopped', 'error'].includes((await process.json() as { status: string }).status));
+  const processStart = await fetch(`${base}/api/v1/process/start`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf } });
+  assert.equal(processStart.status, 200);
+  assert.equal((await processStart.json() as { status: string }).status, 'error');
+  const tunnelStart = await fetch(`${base}/api/v1/tunnel`, { method: 'PUT', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'quick' }) });
+  assert.equal(tunnelStart.status, 409);
 });

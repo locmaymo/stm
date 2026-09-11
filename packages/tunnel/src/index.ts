@@ -1,0 +1,133 @@
+import { execFile, spawn, type ChildProcess } from 'node:child_process';
+import { promisify } from 'node:util';
+import { access } from 'node:fs/promises';
+import { join } from 'node:path';
+import type { TunnelMode, TunnelState } from '../../contracts/src/index.js';
+import type { PlatformPaths } from '../../platform/src/index.js';
+
+const execFileAsync = promisify(execFile);
+
+export interface TunnelManagerOptions {
+  readonly paths: PlatformPaths;
+  readonly logger?: (line: string) => void;
+  readonly now?: () => Date;
+  readonly binaryPath?: string;
+  readonly env?: NodeJS.ProcessEnv;
+}
+
+export class TunnelManager {
+  private readonly paths: PlatformPaths;
+  private readonly logger: (line: string) => void;
+  private readonly now: () => Date;
+  private readonly env: NodeJS.ProcessEnv;
+  private readonly configuredBinaryPath: string | undefined;
+  private child: ChildProcess | null = null;
+  private token: string | undefined;
+  private buffer = '';
+  private state: TunnelState = { mode: 'off', status: 'stopped', url: null, startedAt: null, error: null };
+
+  public constructor(options: TunnelManagerOptions) {
+    this.paths = options.paths;
+    this.logger = options.logger ?? ((line) => console.log(line));
+    this.now = options.now ?? (() => new Date());
+    this.env = options.env ?? process.env;
+    this.configuredBinaryPath = options.binaryPath ?? this.env.STM_CLOUDFLARED_PATH;
+  }
+
+  public getState(): TunnelState { return { ...this.state }; }
+
+  public async start(mode: Exclude<TunnelMode, 'off'> = 'quick', token?: string): Promise<TunnelState> {
+    if (this.child) return this.getState();
+    const selectedToken = token?.trim() || this.token;
+    if (mode === 'named' && !selectedToken) return this.fail(mode, 'A Named Tunnel token is required');
+    if (mode === 'named') this.token = selectedToken;
+    const binary = await this.findBinary();
+    if (!binary) return this.fail(mode, 'cloudflared was not found. Install it or set STM_CLOUDFLARED_PATH.');
+    const args = mode === 'quick'
+      ? ['tunnel', '--no-autoupdate', '--url', 'http://127.0.0.1:8000']
+      : ['tunnel', '--no-autoupdate', 'run', '--token', selectedToken!];
+    this.state = { mode, status: 'starting', url: null, startedAt: this.now().toISOString(), error: null };
+    this.logger(`[cloudflared] starting ${mode === 'quick' ? 'Quick Tunnel' : 'Named Tunnel'} to 127.0.0.1:8000`);
+    const child = spawn(binary, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, env: this.env });
+    this.child = child;
+    const consume = (chunk: string) => {
+      this.buffer += chunk;
+      const lines = this.buffer.split(/\r?\n/u);
+      this.buffer = lines.pop() ?? '';
+      for (const line of lines) this.handleLine(line);
+    };
+    child.stdout?.setEncoding('utf8');
+    child.stderr?.setEncoding('utf8');
+    child.stdout?.on('data', consume);
+    child.stderr?.on('data', consume);
+    child.once('error', (error) => {
+      this.logger(`[cloudflared] ${error.message}`);
+      this.state = { ...this.state, status: 'error', error: 'cloudflared could not start' };
+      this.child = null;
+    });
+    child.once('close', (code) => {
+      if (this.buffer.trim()) this.handleLine(this.buffer);
+      this.buffer = '';
+      if (this.child === child) {
+        this.child = null;
+        if (this.state.status !== 'error' && this.state.status !== 'stopped') {
+          this.state = { ...this.state, status: code === 0 ? 'stopped' : 'error', error: code === 0 ? null : `cloudflared exited with code ${code ?? 'unknown'}` };
+        }
+      }
+      this.logger(`[cloudflared] stopped (${code ?? 'unknown'})`);
+    });
+    return this.getState();
+  }
+
+  public async stop(): Promise<TunnelState> {
+    const child = this.child;
+    if (!child) { this.state = { ...this.state, status: 'stopped', url: null }; return this.getState(); }
+    this.state = { ...this.state, status: 'stopped', url: null, error: null };
+    child.kill('SIGTERM');
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, 2_000);
+      child.once('close', () => { clearTimeout(timer); resolve(); });
+    });
+    if (this.child === child && child.exitCode === null) child.kill('SIGKILL');
+    this.child = null;
+    return this.getState();
+  }
+
+  public async close(): Promise<void> { await this.stop(); }
+
+  public async restart(): Promise<TunnelState> {
+    const mode = this.state.mode;
+    if (mode === 'off') return this.getState();
+    await this.stop();
+    return this.start(mode);
+  }
+
+  private handleLine(line: string): void {
+    const clean = line.replace(/\u001b\[[0-?]*[ -\/]*[@-~]/gu, '').trim();
+    if (!clean) return;
+    const url = /https:\/\/[A-Za-z0-9.-]+\.trycloudflare\.com(?:\/[^\s]*)?/u.exec(clean)?.[0];
+    if (url && this.state.mode === 'quick') this.state = { ...this.state, status: 'running', url };
+    this.logger(`[cloudflared] ${clean}`);
+  }
+
+  private async findBinary(): Promise<string | null> {
+    const candidates = [this.configuredBinaryPath, join(this.paths.bin, process.platform === 'win32' ? 'cloudflared.exe' : 'cloudflared'), process.platform === 'win32' ? 'cloudflared.exe' : 'cloudflared'];
+    for (const candidate of candidates) {
+      if (!candidate) continue;
+      if (candidate.includes('/') || candidate.includes('\\')) {
+        try { await access(candidate); return candidate; } catch { continue; }
+      }
+      try {
+        await execFileAsync(process.platform === 'win32' ? 'where.exe' : 'which', [candidate], { env: this.env });
+        return candidate;
+      } catch { continue; }
+    }
+    return null;
+  }
+
+  private fail(mode: Exclude<TunnelMode, 'off'>, error: string): TunnelState {
+    this.state = { mode, status: 'error', url: null, startedAt: null, error };
+    this.logger(`[cloudflared] ${error}`);
+    return this.getState();
+  }
+}

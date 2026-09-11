@@ -119,3 +119,24 @@ export interface LogEntry {
 }
 
 export type LogSourceFilter = LogEntry['source'] | 'all';
+
+export type ProcessStatus = 'stopped' | 'starting' | 'running' | 'stopping' | 'error';
+
+export interface ProcessState {
+  readonly status: ProcessStatus;
+  readonly installationId: string | null;
+  readonly pid: number | null;
+  readonly startedAt: string | null;
+  readonly error: string | null;
+}
+
+export type TunnelMode = 'off' | 'quick' | 'named';
+export type TunnelStatus = 'stopped' | 'starting' | 'running' | 'error';
+
+export interface TunnelState {
+  readonly mode: TunnelMode;
+  readonly status: TunnelStatus;
+  readonly url: string | null;
+  readonly startedAt: string | null;
+  readonly error: string | null;
+}

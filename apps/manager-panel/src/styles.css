@@ -112,6 +112,7 @@
 [data-slot="card-header"] { align-items: center; grid-template-rows: auto; }
 [data-slot="card-action"] { align-self: center; }
 .status-attention { color: var(--attention); background: var(--attention-background); border-color: transparent; }
+.status-online { color: var(--primary); border-color: color-mix(in srgb, var(--primary) 35%, transparent); background: color-mix(in srgb, var(--primary) 10%, transparent); }
 .field-label { display: block; margin-bottom: 9px; font-size: 13px; color: var(--muted-foreground); }
 .address-list { display: grid; gap: 12px; font-size: 13px; }
 .address-list > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
