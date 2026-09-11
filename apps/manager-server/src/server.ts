@@ -17,6 +17,8 @@ import { ProfileError, ProfileStore } from '../../../packages/profiles/src/index
 import { BackupError, BackupStore } from '../../../packages/backup/src/index.js';
 import { R2Error, R2Manager, type R2UpdateInput } from '../../../packages/r2/src/index.js';
 import { BackupScheduler } from './r2-scheduler.js';
+import { MetricsStore } from './metrics.js';
+import { instrumentationLoaderPath } from '../../../packages/instrumentation/src/index.js';
 
 const MANAGER_PORT = 7860 as const;
 const SILLYTAVERN_PORT = 8000 as const;
@@ -62,6 +64,7 @@ export interface ManagerServerOptions {
   readonly profileStore?: ProfileStore;
   readonly backupStore?: BackupStore;
   readonly r2?: R2Manager;
+  readonly metrics?: MetricsStore;
 }
 
 export interface ManagerServer {
@@ -74,6 +77,7 @@ export interface ManagerServer {
   readonly profiles: ProfileStore;
   readonly backups: BackupStore;
   readonly r2: R2Manager;
+  readonly metrics: MetricsStore;
   readonly port: number;
   close(): Promise<void>;
 }
@@ -101,6 +105,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   const profiles = options.profileStore ?? new ProfileStore({ paths, logger: (line) => { jobs.append('manager', line); baseLogger(line); } });
   const backups = options.backupStore ?? new BackupStore({ paths, logger: (line) => { jobs.append('backup', line); baseLogger(line); } });
   const r2 = options.r2 ?? new R2Manager({ paths, env, logger: (line) => { jobs.append('backup', line); baseLogger(line); } });
+  const metrics = options.metrics ?? new MetricsStore(paths);
   const supervisor = options.supervisor ?? new ProcessSupervisor({
     runtime,
     profileResolver: (installation) => profiles.getActiveForInstallation(installation.id),
@@ -109,6 +114,8 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       persist: (profile, runtimePath, runtimeLayout) => profiles.persistFromRuntime(profile, runtimePath, runtimeLayout),
       legacyHeapMb: (profile) => profiles.recommendedLegacyHeapMb(profile),
     },
+    instrumentationPath: instrumentationLoaderPath,
+    metricsFile: metrics.filePath,
     logger: (line) => { jobs.append('sillytavern', line); baseLogger(line); },
   });
   const tunnel = options.tunnel ?? new TunnelManager({ paths, env, logger: (line) => { jobs.append('cloudflared', line); baseLogger(line); } });
@@ -153,6 +160,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       profiles,
       backups,
       r2,
+      metrics,
     }).catch((error: unknown) => {
       if (error instanceof RequestError) {
         sendError(response, error.statusCode, error.code, error.message);
@@ -204,6 +212,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     profiles,
     backups,
     r2,
+    metrics,
     close: async () => { await scheduler.close(); await tunnel.close(); await supervisor.close(); await closeServer(server); },
   };
 }
@@ -226,8 +235,9 @@ async function handleRequest(options: {
   readonly profiles: ProfileStore;
   readonly backups: BackupStore;
   readonly r2: R2Manager;
+  readonly metrics: MetricsStore;
 }): Promise<void> {
-  const { request, response, store, sessions, rateLimiter, startedAt, secureCookies, setupCodeRequired, staticRoot, runtime, jobs, supervisor, tunnel, profiles, backups, r2 } = options;
+  const { request, response, store, sessions, rateLimiter, startedAt, secureCookies, setupCodeRequired, staticRoot, runtime, jobs, supervisor, tunnel, profiles, backups, r2, metrics } = options;
   const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
   const pathname = url.pathname;
   const context: RequestContext = {
@@ -314,14 +324,14 @@ async function handleRequest(options: {
     if (method !== 'GET' && !requireCsrf(context, session.csrfToken)) {
       return;
     }
-    await handleRuntimeRequest(context, runtime, jobs, supervisor, tunnel, profiles, backups, r2);
+    await handleRuntimeRequest(context, runtime, jobs, supervisor, tunnel, profiles, backups, r2, metrics);
     return;
   }
 
   sendError(response, 404, 'not_found', 'Route not found');
 }
 
-async function handleRuntimeRequest(context: RequestContext, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, profiles: ProfileStore, backups: BackupStore, r2: R2Manager): Promise<void> {
+async function handleRuntimeRequest(context: RequestContext, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, metrics: MetricsStore): Promise<void> {
   const { pathname, request, response } = context;
   const method = request.method ?? 'GET';
   if (pathname === '/api/v1/r2' && method === 'GET') {
@@ -386,6 +396,16 @@ async function handleRuntimeRequest(context: RequestContext, runtime: RuntimeMan
     if (!isLogSourceFilter(sourceParam)) { sendError(response, 400, 'invalid_source', 'The log source is invalid'); return; }
     const result = jobs.logs(afterValue, sourceParam === 'all' ? null : sourceParam);
     sendJson(response, 200, result);
+    return;
+  }
+  if (pathname === '/api/v1/metrics' && method === 'GET') {
+    const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
+    const requestedDays = Number(url.searchParams.get('days') ?? 30);
+    if (!Number.isInteger(requestedDays) || requestedDays < 1 || requestedDays > 90) {
+      sendError(response, 400, 'invalid_metrics_range', 'Metrics range must be between 1 and 90 days');
+      return;
+    }
+    sendJson(response, 200, await metrics.snapshot(new Date(), requestedDays));
     return;
   }
   if (pathname === '/api/v1/versions' && method === 'GET') {

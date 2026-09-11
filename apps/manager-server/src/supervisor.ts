@@ -15,6 +15,9 @@ export interface ProcessSupervisorOptions {
   };
   /** Test hook; production waits for HTTP on port 8000. */
   readonly readinessCheck?: (child: ChildProcess) => Promise<void>;
+  /** Runtime loader and JSONL destination for privacy-safe usage metrics. */
+  readonly instrumentationPath?: string;
+  readonly metricsFile?: string;
 }
 
 export class ProcessSupervisor {
@@ -26,6 +29,8 @@ export class ProcessSupervisor {
   private readonly profileResolver: ((installation: Installation) => Promise<Profile | null>) | undefined;
   private readonly profileLifecycle: ProcessSupervisorOptions['profileLifecycle'];
   private readonly readinessCheck: (child: ChildProcess) => Promise<void>;
+  private readonly instrumentationPath: string | undefined;
+  private readonly metricsFile: string | undefined;
   private child: ChildProcess | null = null;
   private buffer = '';
   private current: ProcessState = { status: 'stopped', installationId: null, profileId: null, pid: null, startedAt: null, error: null };
@@ -41,6 +46,8 @@ export class ProcessSupervisor {
     this.profileResolver = options.profileResolver;
     this.profileLifecycle = options.profileLifecycle;
     this.readinessCheck = options.readinessCheck ?? ((child) => waitForHttpReady('http://127.0.0.1:8000/', child, this.startupTimeoutMs));
+    this.instrumentationPath = options.instrumentationPath;
+    this.metricsFile = options.metricsFile;
   }
 
   public getState(): ProcessState { return { ...this.current }; }
@@ -58,7 +65,10 @@ export class ProcessSupervisor {
     try { await assertInstallationMarker(installation); } catch (error: unknown) { return this.fail(installation.id, error instanceof Error ? error.message : 'The SillyTavern installation marker is invalid'); }
     this.current = { status: 'starting', installationId: installation.id, profileId: profile?.id ?? null, pid: null, startedAt: null, error: null };
     this.logger(`[sillytavern] starting ${installation.resolvedRef} on 127.0.0.1:8000`);
-    const args = ['server.js', '--port', '8000', '--listen', 'false', '--browserLaunchEnabled', 'false'];
+    const args = [
+      ...(this.instrumentationPath ? ['--import', this.instrumentationPath] : []),
+      'server.js', '--port', '8000', '--listen', 'false', '--browserLaunchEnabled', 'false',
+    ];
     let runtimeLayout: 'data' | 'public' = profile?.layout === 'public' ? 'public' : 'data';
     if (profile && this.profileLifecycle) runtimeLayout = await this.profileLifecycle.prepare(profile, installation.runtimePath);
     if (runtimeLayout === 'public' && profile && this.profileLifecycle?.legacyHeapMb) {
@@ -75,6 +85,10 @@ export class ProcessSupervisor {
       cwd: installation.runtimePath,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
+      env: {
+        ...process.env,
+        ...(this.metricsFile ? { STM_METRICS_FILE: this.metricsFile } : {}),
+      },
     });
     this.child = child;
     this.current = { ...this.current, pid: child.pid ?? null, startedAt: this.now().toISOString() };

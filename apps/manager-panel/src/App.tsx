@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import {
-  Archive, ArrowUpRight, BarChart3, Code2, Copy, Database, Download,
+  Archive, ArrowDown, ArrowUp, ArrowUpRight, BarChart3, Code2, Copy, Database, Download,
   Globe2, LayoutDashboard, Maximize2, Minimize2, Moon, Package, Plus,
   ScrollText, Search, Sun, Upload, Users as UsersIcon, X, Rows3,
+  BrainCircuit, Clock3, Ellipsis, RefreshCw,
 } from 'lucide-react';
 import {
   Badge, Button, Card, CardAction, CardContent, CardFooter, CardHeader,
@@ -14,7 +15,7 @@ import {
 } from '../../../packages/ui/src/index.js';
 import { translator, type Translate } from './i18n.js';
 import { browserStorage, readPreferences, savePreferences, type Preferences } from './preferences.js';
-import type { BackupManifest, Installation, LogEntry, LogSourceFilter, ProcessState, Profile, R2Config, R2Object, RestorePreview, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { BackupManifest, Installation, LogEntry, LogSourceFilter, MetricsSnapshot, ProcessState, Profile, R2Config, R2Object, RestorePreview, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
 import { formatLogMessage } from './log-format.js';
 
@@ -207,7 +208,7 @@ function ConsoleApp({ csrfToken }: { csrfToken: string }) {
           </div>
         </header>
         <div className="page-body">
-          {page === 'overview' ? <div className="core-grid">{installation}<AccessPanel t={t} process={processState} tunnel={tunnelState} installed={Boolean(activeInstallationId)} onAction={updateRuntime} /> <DataPanel t={t} navigate={navigate} activeProfile={profiles.find((profile) => profile.id === activeProfileId) ?? null} latestBackup={backups.at(-1) ?? null} />{logs}</div> : page === 'data' ? <DataPage t={t} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : <ResourcePanel page={page} t={t} />}
+          {page === 'overview' ? <div className="core-grid">{installation}<AccessPanel t={t} process={processState} tunnel={tunnelState} installed={Boolean(activeInstallationId)} onAction={updateRuntime} /> <DataPanel t={t} navigate={navigate} activeProfile={profiles.find((profile) => profile.id === activeProfileId) ?? null} latestBackup={backups.at(-1) ?? null} />{logs}</div> : page === 'data' ? <DataPage t={t} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : <ResourcePanel page={page} t={t} />}
         </div>
       </SidebarInset>
     </SidebarProvider>
@@ -470,6 +471,129 @@ function formatBytes(value: number): string {
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
   if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
   return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+function MetricsPage({ t }: { t: Translate }) {
+  const [snapshot, setSnapshot] = useState<MetricsSnapshot | null>(null);
+  const [error, setError] = useState(false);
+  const [days, setDays] = useState(30);
+  const [refresh, setRefresh] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    const controller = new AbortController();
+    const load = async () => {
+      try {
+        const response = await fetch(`/api/v1/metrics?days=${days}`, { credentials: 'same-origin', signal: controller.signal });
+        if (!response.ok) throw new Error('metrics request failed');
+        const payload = await response.json() as MetricsSnapshot;
+        if (!cancelled) { setSnapshot(payload); setError(false); }
+      } catch { if (!cancelled) setError(true); }
+    };
+    void load();
+    const timer = window.setInterval(() => { void load(); }, 30_000);
+    return () => { cancelled = true; controller.abort(); window.clearInterval(timer); };
+  }, [days, refresh]);
+  return <div className="metrics-workspace">
+    <div className="metrics-toolbar">
+      <div className="metrics-segments" role="group" aria-label={t('console.metricsPeriod')}>
+        {([7, 30, 90] as const).map((value) => <button key={value} type="button" aria-pressed={days === value} onClick={() => { if (days !== value) { setSnapshot(null); setDays(value); } }}>{value} {t('console.metricsDays')}</button>)}
+      </div>
+      <Button variant="ghost" size="icon" aria-label={t('common.refresh')} onClick={() => setRefresh((value) => value + 1)}><RefreshCw /></Button>
+    </div>
+    {error ? <p className="text-sm text-destructive" role="alert">{t('console.metricsLoadFailed')}</p> : null}
+    {!snapshot ? <Card className="resource-panel"><CardContent className="resource-empty"><p>{t(error ? 'console.metricsLoadFailed' : 'common.loading')}</p></CardContent></Card> : <>
+    <div className="metrics-summary-grid">
+      <MetricValue icon={<BarChart3 />} label={t('console.metricRequests')} value={snapshot.totals.requests.toLocaleString()} />
+      <TokenMetricCard t={t} totals={snapshot.totals} />
+      <MetricValue icon={<Database />} label={t('console.metricCacheHit')} value={formatMetricRate(snapshot.totals.cacheHitRate)} {...(snapshot.totals.cacheObservedRequests > 0 ? { subtitle: `${snapshot.totals.cacheObservedRequests.toLocaleString()} ${t('console.metricCacheRequests')}` } : {})} />
+      <MetricValue icon={<Clock3 />} label={t('console.metricLatency')} value={metricDuration(snapshot.totals.averageLatencyMs)} />
+    </div>
+    <TrendChart t={t} daily={snapshot.daily} to={snapshot.range.to} days={days} />
+    <div className="metrics-tables">
+      <MetricsTable t={t} title={t('console.metricProviders')} rows={snapshot.providers} maxRequests={snapshot.totals.requests} />
+      <MetricsTable t={t} title={t('console.metricModels')} rows={snapshot.models} maxRequests={snapshot.totals.requests} />
+    </div>
+    </>}
+  </div>;
+}
+
+function MetricValue({ icon, label, value, subtitle }: { icon: ReactNode; label: string; value: string; subtitle?: string }) {
+  return <Card className="metric-value"><CardContent><div className="metric-value-label">{icon}<span>{label}</span></div><div className="metric-value-number"><strong>{value}</strong>{subtitle ? <small>{subtitle}</small> : null}</div></CardContent></Card>;
+}
+
+function TokenMetricCard({ t, totals }: { t: Translate; totals: MetricsSnapshot['totals'] }) {
+  const total = totals.totalTokens.toLocaleString();
+  const input = totals.inputTokens.toLocaleString();
+  const output = totals.outputTokens.toLocaleString();
+  return <Card className="metric-value metric-token-card"><CardContent>
+    <div className="metric-token-topline"><div className="metric-value-label"><Database /><span>{t('console.metricTokens')}</span></div><TokenDetails t={t} values={totals} /></div>
+    <strong className="metric-token-total" title={total}>{total}</strong>
+    <div className="token-pair"><span title={`${t('console.metricInput')}: ${input}`} aria-label={t('console.metricInput')}><ArrowDown /><b>{input}</b></span><span title={`${t('console.metricOutput')}: ${output}`} aria-label={t('console.metricOutput')}><ArrowUp /><b>{output}</b></span></div>
+  </CardContent></Card>;
+}
+
+function TokenDetails({ t, values }: { t: Translate; values: Pick<MetricsSnapshot['totals'], 'cacheReadTokens' | 'cacheWriteTokens' | 'cacheObservedRequests' | 'reasoningTokens' | 'streamRequests'> }) {
+  return <details className="token-details"><summary title={t('console.metricBreakdown')} aria-label={t('console.metricBreakdown')}><Ellipsis /></summary><dl className="token-details-grid">
+    <div><dt><ArrowDown />{t('console.metricCacheRead')}</dt><dd>{values.cacheObservedRequests === 0 ? '—' : values.cacheReadTokens.toLocaleString()}</dd></div>
+    <div><dt><ArrowUp />{t('console.metricCacheWrite')}</dt><dd>{values.cacheObservedRequests === 0 ? '—' : values.cacheWriteTokens.toLocaleString()}</dd></div>
+    <div><dt><BrainCircuit />{t('console.metricReasoning')}</dt><dd>{values.reasoningTokens.toLocaleString()}</dd></div>
+    <div><dt><ArrowUpRight />{t('console.metricStreaming')}</dt><dd>{values.streamRequests.toLocaleString()}</dd></div>
+  </dl></details>;
+}
+
+function TrendChart({ t, daily, to, days }: { t: Translate; daily: readonly MetricsSnapshot['daily'][number][]; to: string; days: number }) {
+  const [measure, setMeasure] = useState<'requests' | 'totalTokens'>('requests');
+  const [selected, setSelected] = useState<string | null>(null);
+  const byDay = new Map(daily.map((bucket) => [bucket.key, bucket]));
+  const end = new Date(to.slice(0, 10));
+  const series = Array.from({ length: days }, (_, index) => {
+    const key = new Date(end.getTime() - (days - index - 1) * 86_400_000).toISOString().slice(0, 10);
+    const bucket = byDay.get(key);
+    return { key, requests: bucket?.requests ?? 0, totalTokens: bucket?.totalTokens ?? 0 };
+  });
+  const maximum = Math.max(1, ...series.map((bucket) => bucket[measure]));
+  const scale = maximum <= 4 ? maximum : Math.ceil(maximum / 4) * 4;
+  const ticks = scale < 4 ? Array.from({ length: scale + 1 }, (_, i) => i) : [0, scale / 4, scale / 2, scale * .75, scale];
+  const width = 880; const height = 250; const pad = { top: 12, right: 24, bottom: 30, left: 52 };
+  const plotWidth = width - pad.left - pad.right; const plotHeight = height - pad.top - pad.bottom;
+  const xFor = (index: number) => pad.left + index * plotWidth / (series.length - 1);
+  const yFor = (value: number) => pad.top + plotHeight * (1 - value / scale);
+  const points = series.map((bucket, index) => `${xFor(index)},${yFor(bucket[measure])}`).join(' ');
+  const selection = series.find((bucket) => bucket.key === selected) ?? series.at(-1)!;
+  return <Card className="metrics-chart-card">
+    <CardHeader><div className="metrics-chart-heading"><h2 className="panel-title">{t('console.metricActivity')}</h2><div className="metrics-segments" role="group" aria-label={t('console.metricActivity')}>
+      <button type="button" aria-pressed={measure === 'requests'} onClick={() => setMeasure('requests')}>{t('console.metricRequests')}</button>
+      <button type="button" aria-pressed={measure === 'totalTokens'} onClick={() => setMeasure('totalTokens')}>{t('console.metricTokens')}</button>
+    </div></div></CardHeader>
+    <CardContent>
+      <div className="trend-selection" aria-live="polite"><time dateTime={selection.key}>{new Date(selection.key).toLocaleDateString(undefined, { day: 'numeric', month: 'short', timeZone: 'UTC' })}</time><strong>{selection[measure].toLocaleString()}</strong><span>{t(measure === 'requests' ? 'console.metricRequestsShort' : 'console.metricTokens')}</span></div>
+      {daily.length === 0 ? <p className="metrics-empty">{t('console.noMetrics')}</p> : <div className="metrics-chart-shell">
+        <svg className="metrics-chart-svg" viewBox={`0 0 ${width} ${height}`} role="group" aria-label={t('console.metricActivity')}>
+          {ticks.map((value) => <g key={value}><line x1={pad.left} x2={width - pad.right} y1={yFor(value)} y2={yFor(value)} className="trend-grid-line" /><text x={pad.left - 10} y={yFor(value) + 4} textAnchor="end" className="trend-axis-label">{metricCompact(value)}</text></g>)}
+          <polygon points={`${pad.left},${yFor(0)} ${points} ${width - pad.right},${yFor(0)}`} className="trend-area" />
+          <polyline points={points} className="trend-line trend-line-request" />
+          {series.map((bucket, index) => <g key={bucket.key}>
+            {bucket.key === selection.key ? <line x1={xFor(index)} x2={xFor(index)} y1={pad.top} y2={yFor(0)} className="trend-cursor" /> : null}
+            {bucket[measure] > 0 ? <circle cx={xFor(index)} cy={yFor(bucket[measure])} r="3" className="trend-point trend-point-request" /> : null}
+            {index === 0 || index === days - 1 || index % Math.ceil(days / 5) === 0 ? <text x={xFor(index)} y={height - 5} textAnchor="middle" className="trend-axis-label">{bucket.key.slice(5).replace('-', '/')}</text> : null}
+            <rect x={xFor(index) - plotWidth / (days - 1) / 2} y={pad.top} width={plotWidth / (days - 1)} height={plotHeight} fill="transparent" tabIndex={0} role="button" aria-label={`${bucket.key}: ${bucket[measure]} ${t(measure === 'requests' ? 'console.metricRequestsShort' : 'console.metricTokens')}`} onPointerEnter={() => setSelected(bucket.key)} onFocus={() => setSelected(bucket.key)} onClick={() => setSelected(bucket.key)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setSelected(bucket.key); } }} />
+          </g>)}
+        </svg>
+      </div>}
+    </CardContent>
+  </Card>;
+}
+
+function metricCompact(value: number): string { return new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(value); }
+function metricDuration(value: number): string { return value >= 1000 ? `${(value / 1000).toFixed(1)} s` : `${Math.round(value)} ms`; }
+function formatMetricRate(value: number | null): string { return value === null ? '—' : `${(value * 100).toFixed(1)}%`; }
+
+function MetricsTable({ t, title, rows, maxRequests }: { t: Translate; title: string; rows: readonly MetricsSnapshot['providers'][number][]; maxRequests: number }) {
+  return <Card className="metrics-table-card"><CardHeader><div className="metrics-chart-heading"><div className="metric-value-label"><BarChart3 /><span>{title}</span></div><span className="metrics-count">{rows.length}</span></div></CardHeader><CardContent>{rows.length === 0 ? <p className="text-sm text-muted-foreground">—</p> : <div className="metrics-table" role="table">{rows.slice(0, 8).map((row, index) => <div className="metrics-table-row" role="row" key={row.key}><div className="metrics-rank">{index + 1}</div><div className="metrics-rank-main"><div className="metrics-rank-top"><div className="metrics-rank-name"><strong title={row.key}>{row.key}</strong>{row.completionSource ? <small>{row.completionSource}</small> : null}</div><span>{maxRequests > 0 ? `${Math.round((row.requests / maxRequests) * 100)}%` : '0%'}</span></div><div className="metrics-rank-bar"><i style={{ width: `${maxRequests > 0 ? Math.max(3, (row.requests / maxRequests) * 100) : 0}%` }} /></div><div className="metrics-rank-meta"><span>{row.requests.toLocaleString()} {t('console.metricRequestsShort')}</span><TokenSummary t={t} values={row} /></div></div></div>)}</div>}</CardContent></Card>;
+}
+
+function TokenSummary({ t, values }: { t: Translate; values: MetricsSnapshot['providers'][number] }) {
+  return <div className="token-summary"><span title={t('console.metricInput')}><ArrowDown />{values.inputTokens.toLocaleString()}</span><span title={t('console.metricOutput')}><ArrowUp />{values.outputTokens.toLocaleString()}</span><TokenDetails t={t} values={values} /></div>;
 }
 
 function ResourcePanel({ page, t }: { page: Exclude<PageId, 'overview' | 'data'>; t: Translate }) {

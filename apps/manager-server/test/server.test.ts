@@ -75,6 +75,10 @@ test('setup, login, CSRF, health, and logout work on the manager port', async (t
   const protectedResponse = await fetch(`${base}/api/v1/profiles`, { headers: { cookie } });
   assert.equal(protectedResponse.status, 200);
   assert.deepEqual((await protectedResponse.json() as { profiles: unknown[] }).profiles, []);
+  await manager.metrics.append({ schemaVersion: 1, timestamp: new Date().toISOString(), provider: 'openai', model: 'gpt-test', endpointHost: 'api.openai.com', stream: false, maxTokens: 128, inputTokens: 4, outputTokens: 6, totalTokens: 10, status: 200, durationMs: 25 });
+  const metricsResponse = await fetch(`${base}/api/v1/metrics?days=7`, { headers: { cookie } });
+  assert.equal(metricsResponse.status, 200);
+  assert.equal((await metricsResponse.json() as { totals: { requests: number; totalTokens: number } }).totals.requests, 1);
   const missingProfileActivation = await fetch(`${base}/api/v1/profiles/missing/activate`, { method: 'POST', headers: { cookie, 'x-csrf-token': setupBody.session.csrfToken } });
   assert.equal(missingProfileActivation.status, 404);
   assert.equal((await missingProfileActivation.json() as { error: { code: string } }).error.code, 'profile_not_found');

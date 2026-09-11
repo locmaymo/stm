@@ -232,3 +232,60 @@ export interface TunnelState {
   readonly startedAt: string | null;
   readonly error: string | null;
 }
+
+/** The complete allowlist written by the SillyTavern fetch instrumentation. */
+export interface UsageEvent {
+  readonly schemaVersion: 1;
+  readonly timestamp: string;
+  readonly provider: string;
+  /** The completion API format observed on the route (for example google or openai). */
+  readonly completionSource?: string | null;
+  readonly model: string | null;
+  readonly endpointHost: string | null;
+  readonly stream: boolean;
+  readonly maxTokens: number | null;
+  readonly inputTokens: number | null;
+  readonly outputTokens: number | null;
+  readonly totalTokens: number | null;
+  readonly cacheReadTokens?: number | null;
+  readonly cacheWriteTokens?: number | null;
+  readonly reasoningTokens?: number | null;
+  readonly status: number | null;
+  readonly durationMs: number;
+}
+
+export interface MetricsTotals {
+  readonly requests: number;
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly totalTokens: number;
+  readonly cacheReadTokens: number;
+  readonly cacheWriteTokens: number;
+  readonly reasoningTokens: number;
+  /** Input tokens covered by a provider's cache accounting. */
+  readonly cacheEligibleInputTokens: number;
+  /** Requests that returned cache read/write metadata. */
+  readonly cacheObservedRequests: number;
+  /** cacheReadTokens / cacheEligibleInputTokens, or null when unavailable. */
+  readonly cacheHitRate: number | null;
+  readonly streamRequests: number;
+  readonly errors: number;
+  readonly errorRate: number;
+  readonly averageLatencyMs: number;
+}
+
+export interface MetricsBucket extends MetricsTotals {
+  readonly key: string;
+  readonly provider?: string;
+  readonly model?: string;
+  readonly completionSource?: string | null;
+}
+
+export interface MetricsSnapshot {
+  readonly generatedAt: string;
+  readonly range: { readonly from: string; readonly to: string };
+  readonly totals: MetricsTotals;
+  readonly daily: readonly MetricsBucket[];
+  readonly providers: readonly MetricsBucket[];
+  readonly models: readonly MetricsBucket[];
+}
