@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "../../build/release/windows-x64/resources/app",
+    "rootDir": "../..",
+    "declaration": false,
+    "sourceMap": false,
+    "noEmit": false
+  },
+  "include": [
+    "../../apps/manager-server/src/**/*.ts",
+    "../../packages/*/src/**/*.ts"
+  ]
+}

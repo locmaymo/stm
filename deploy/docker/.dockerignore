@@ -1,0 +1,9 @@
+node_modules
+dist
+apps/manager-panel/dist
+build
+coverage
+.tmp
+docs
+.git
+*.log

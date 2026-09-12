@@ -11,10 +11,12 @@
   "scripts": {
     "encoding:gate": "node scripts/encoding-gate.mjs",
     "lint": "eslint .",
-    "manager:start": "tsx apps/manager-server/src/main.ts",
+    "manager:start": "node --env-file-if-exists=.env --import tsx apps/manager-server/src/main.ts",
     "panel:dev": "vite --config apps/manager-panel/vite.config.ts",
     "panel:build": "vite build --config apps/manager-panel/vite.config.ts",
     "panel:preview": "vite preview --config apps/manager-panel/vite.config.ts",
+    "release:npm": "node scripts/build-npm-package.mjs",
+    "release:windows": "node scripts/build-windows-release.mjs",
     "test": "node --import tsx --test",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "verify": "npm run encoding:gate && npm run lint && npm run typecheck && npm test"
@@ -35,6 +37,7 @@
     "eslint": "^9.35.0",
     "node-fetch": "^3.3.2",
     "node-fetch-v2": "npm:node-fetch@^2.7.0",
+    "postject": "^1.0.0-alpha.6",
     "tailwindcss": "^4.3.3",
     "tsx": "^4.23.13",
     "typescript": "^5.9.3",

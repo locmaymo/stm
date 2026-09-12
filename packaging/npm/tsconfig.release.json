@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "../../build/npm/package",
+    "rootDir": "../..",
+    "declaration": false,
+    "sourceMap": false,
+    "noEmit": false
+  },
+  "include": [
+    "../../apps/manager-server/src/**/*.ts",
+    "../../packages/*/src/**/*.ts"
+  ]
+}

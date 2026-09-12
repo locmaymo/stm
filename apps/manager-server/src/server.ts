@@ -21,6 +21,7 @@ import { BackupScheduler } from './r2-scheduler.js';
 import { MetricsStore } from './metrics.js';
 import { instrumentationLoaderPath } from '../../../packages/instrumentation/src/index.js';
 import { ConfigError, ConfigStore } from '../../../packages/config/src/index.js';
+import { DEFAULT_TELEMETRY_ENDPOINT, DEFAULT_TELEMETRY_ENROLLMENT_ENDPOINT, TelemetryTransport } from '../../../packages/telemetry/src/index.js';
 
 const MANAGER_PORT = 7860 as const;
 const SILLYTAVERN_PORT = 8000 as const;
@@ -70,6 +71,7 @@ export interface ManagerServerOptions {
   readonly r2?: R2Manager;
   readonly metrics?: MetricsStore;
   readonly config?: ConfigStore;
+  readonly telemetry?: TelemetryTransport;
 }
 
 export interface ManagerServer {
@@ -84,6 +86,7 @@ export interface ManagerServer {
   readonly r2: R2Manager;
   readonly metrics: MetricsStore;
   readonly config: ConfigStore;
+  readonly telemetry: TelemetryTransport;
   readonly port: number;
   close(): Promise<void>;
 }
@@ -142,8 +145,27 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   scheduler.start();
   const secureCookies = options.secureCookies ?? env.STM_SECURE_COOKIES === '1';
   const setupCodeRequired = options.setupCodeRequired ?? requiresSetupCode(env);
-  const staticRoot = resolve(options.staticRoot ?? join(process.cwd(), 'apps', 'manager-panel', 'dist'));
+  const staticRoot = resolve(options.staticRoot ?? env.STM_STATIC_ROOT ?? join(process.cwd(), 'apps', 'manager-panel', 'dist'));
   let persisted = await store.load();
+  const testRuntime = process.env.NODE_ENV === 'test' || process.argv.includes('--test') || process.execArgv.includes('--test');
+  const telemetryEndpoint = env.STM_TELEMETRY_ENDPOINT ?? (testRuntime ? undefined : DEFAULT_TELEMETRY_ENDPOINT);
+  const telemetryEnrollmentEndpoint = env.STM_TELEMETRY_ENROLLMENT_ENDPOINT ?? (testRuntime ? undefined : DEFAULT_TELEMETRY_ENROLLMENT_ENDPOINT);
+  const telemetry = options.telemetry ?? new TelemetryTransport({
+    paths,
+    metricsFile: metrics.filePath,
+    installId: persisted.installId,
+    appVersion: persisted.managerVersion,
+    platform: paths.platform,
+    ...(telemetryEndpoint ? { endpoint: telemetryEndpoint } : {}),
+    ...(telemetryEnrollmentEndpoint ? { enrollmentEndpoint: telemetryEnrollmentEndpoint } : {}),
+    ...(env.STM_TELEMETRY_ENROLLMENT_TOKEN ? { enrollmentToken: env.STM_TELEMETRY_ENROLLMENT_TOKEN } : {}),
+    logger: (line) => { jobs.append('manager', line); baseLogger(line); },
+  });
+  try {
+    await telemetry.start();
+  } catch (error: unknown) {
+    logger(`[telemetry] disabled: ${error instanceof Error ? error.message : 'initialization failed'}`);
+  }
 
   const environmentPassword = env.STM_ADMIN_PASSWORD;
   if (environmentPassword && !persisted.adminPasswordHash) {
@@ -245,7 +267,8 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     r2,
     metrics,
     config,
-    close: async () => { await scheduler.close(); await tunnel.close(); await supervisor.close(); await closeServer(server); },
+    telemetry,
+    close: async () => { await telemetry.close(); await scheduler.close(); await tunnel.close(); await supervisor.close(); await closeServer(server); },
   };
 }
 

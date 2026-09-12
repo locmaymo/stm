@@ -338,3 +338,23 @@ export interface MetricsSnapshot {
   readonly providers: readonly MetricsBucket[];
   readonly models: readonly MetricsBucket[];
 }
+
+/** A privacy-filtered batch queued for the future telemetry endpoint. */
+export interface TelemetryBatch {
+  readonly schemaVersion: 1;
+  readonly installId: string;
+  readonly appVersion: string;
+  readonly platform: PlatformKind;
+  readonly sentAt: string;
+  readonly events: readonly UsageEvent[];
+}
+
+/** Transport envelope signed by the installation-specific telemetry key. */
+export interface TelemetryEnvelope {
+  readonly schemaVersion: 1;
+  readonly installId: string;
+  readonly sentAt: string;
+  readonly nonce: string;
+  readonly signature: string;
+  readonly batch: TelemetryBatch;
+}
