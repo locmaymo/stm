@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getPlatformPaths } from '../../platform/src/index.js';
@@ -85,6 +85,55 @@ test('modern user-root restore preserves config when the SillyTavern archive omi
   await sourceStore.restore(target, archive, { mode: 'replace' });
   assert.equal(await readFile(join(targetData, 'default-user', 'chats', 'こんにちは.json'), 'utf8'), '{"message":"keep"}');
   assert.equal(await readFile(targetConfig, 'utf8'), 'listen: true\n');
+});
+
+test('merge restore keeps untouched files and applies archive entries without a second byte copy', async () => {
+  const fixture = await createFixture();
+  const store = new BackupStore({ paths: fixture.paths });
+  const manifest = await store.create(fixture.profile);
+  const archive = await store.getArchivePath(manifest.id);
+  assert.ok(archive);
+  const targetRoot = join(fixture.root, 'merge-target');
+  const targetData = join(targetRoot, 'data');
+  const targetUserData = join(targetData, 'default-user');
+  await mkdir(join(targetUserData, 'chats'), { recursive: true });
+  await writeFile(join(targetUserData, 'chats', 'keep-me.json'), '{"message":"mine"}', 'utf8');
+  await writeFile(join(targetUserData, 'chats', 'こんにちは.json'), '{"message":"stale"}', 'utf8');
+  const target: Profile = { ...fixture.profile, runtimePath: targetRoot, dataPath: targetData, configPath: join(targetRoot, 'config.yaml') };
+  await store.restore(target, archive, { mode: 'merge' });
+  assert.equal(await readFile(join(targetUserData, 'chats', 'keep-me.json'), 'utf8'), '{"message":"mine"}');
+  assert.equal(await readFile(join(targetUserData, 'chats', 'こんにちは.json'), 'utf8'), '{"message":"keep"}');
+  await store.settle();
+});
+
+test('restores every entry of a large archive exactly once under parallel extraction', async () => {
+  const fixture = await createFixture();
+  const chats = join(fixture.profile.dataPath, 'chats');
+  const expected = new Map<string, string>();
+  for (let index = 0; index < 400; index += 1) {
+    const name = `chat-${index}-Ω.jsonl`;
+    const body = `{"index":${index},"filler":"${'x'.repeat(index * 7)}"}`;
+    expected.set(name, body);
+    await writeFile(join(chats, name), body, 'utf8');
+  }
+  const store = new BackupStore({ paths: fixture.paths });
+  const manifest = await store.create(fixture.profile);
+  const archive = await store.getArchivePath(manifest.id);
+  assert.ok(archive);
+  const targetRoot = join(fixture.root, 'parallel-target');
+  const targetData = join(targetRoot, 'data');
+  const target: Profile = { ...fixture.profile, runtimePath: targetRoot, dataPath: targetData, configPath: join(targetRoot, 'config.yaml') };
+  await store.restore(target, archive, { mode: 'replace' });
+  const restoredChats = join(targetData, 'default-user', 'chats');
+  for (const [name, body] of expected) assert.equal(await readFile(join(restoredChats, name), 'utf8'), body);
+
+  // A second restore exercises the clear-and-replace path, and neither run may
+  // leave staging or trash behind where SillyTavern would read it as user data.
+  await store.restore(target, archive, { mode: 'replace' });
+  for (const [name, body] of expected) assert.equal(await readFile(join(restoredChats, name), 'utf8'), body);
+  await store.settle();
+  assert.deepEqual((await readdir(targetData)).sort(), ['default-user']);
+  assert.ok(!(await readdir(join(targetData, 'default-user'))).some((name) => name.startsWith('.stm-')));
 });
 
 test('assembles chunked uploads in order without buffering the archive', async () => {
