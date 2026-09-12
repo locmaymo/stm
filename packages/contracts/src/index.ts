@@ -332,6 +332,36 @@ export interface MetricsBucket extends MetricsTotals {
   readonly completionSource?: string | null;
 }
 
+/** Host readings for the status panel. Null means the platform would not answer. */
+export interface SystemSnapshot {
+  readonly generatedAt: string;
+  readonly cpu: {
+    readonly cores: number;
+    /** Share of CPU time out of idle since the previous reading. */
+    readonly usagePercent: number | null;
+    readonly loadAverage: readonly number[];
+  };
+  readonly memory: {
+    readonly totalBytes: number;
+    readonly freeBytes: number;
+    readonly usedBytes: number;
+    readonly managerBytes: number;
+    readonly sillytavernBytes: number | null;
+  };
+  readonly storage: {
+    readonly root: string;
+    readonly totalBytes: number | null;
+    readonly freeBytes: number | null;
+    /** Everything the manager keeps, archives and profiles included. */
+    readonly managerBytes: number | null;
+    /** The active profile's user data, which is what SillyTavern reads. */
+    readonly dataBytes: number | null;
+    readonly dataFileCount: number | null;
+    /** When the directory sizes were last walked, or null before the first walk. */
+    readonly measuredAt: string | null;
+  };
+}
+
 export interface MetricsSnapshot {
   readonly generatedAt: string;
   readonly range: { readonly from: string; readonly to: string };

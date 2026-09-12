@@ -3,7 +3,7 @@ import {
   Archive, ArrowDown, ArrowUp, ArrowUpRight, BarChart3, Copy, Database, Download,
   Globe2, LayoutDashboard, Maximize2, Minimize2, Moon, Package, Plus,
   ScrollText, Search, Sun, Upload, Users as UsersIcon, X, Rows3,
-  BrainCircuit, Clock3, Ellipsis, RefreshCw, Settings2,
+  BrainCircuit, Clock3, Cpu, Ellipsis, RefreshCw, Settings2,
 } from 'lucide-react';
 import {
   Badge, Button, Card, CardAction, CardContent, CardFooter, CardHeader,
@@ -15,7 +15,7 @@ import {
 } from '../../../packages/ui/src/index.js';
 import { translator, type Translate } from './i18n.js';
 import { browserStorage, readPreferences, savePreferences, type Preferences } from './preferences.js';
-import type { AccessSecurityState, BackupManifest, ConfigDocument, ConfigUpdateInput, Installation, Job, LogEntry, LogSourceFilter, MetricsSnapshot, ProcessState, Profile, R2Config, R2Object, RestorePreview, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessSecurityState, BackupManifest, ConfigDocument, ConfigUpdateInput, Installation, Job, LogEntry, LogSourceFilter, MetricsSnapshot, ProcessState, Profile, R2Config, R2Object, RestorePreview, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
 import { formatLogMessage } from './log-format.js';
 
@@ -283,7 +283,7 @@ function ConsoleApp({ csrfToken }: { csrfToken: string }) {
           </div>
         </header>
         <div className="page-body">
-          {page === 'overview' ? <div className="core-grid">{installation}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} installed={Boolean(activeInstallationId)} onAction={updateRuntime} onConfigUpdate={updateConfig} onSetPassword={setAccessPassword} /> <DataPanel t={t} navigate={navigate} activeProfile={profiles.find((profile) => profile.id === activeProfileId) ?? null} latestBackup={backups.at(-1) ?? null} />{logs}</div> : page === 'data' ? <DataPage t={t} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} config={configDocument} onConfigUpdate={updateConfig} onChangeManagerPassword={changeManagerPassword} /> : <ResourcePanel page={page} t={t} />}
+          {page === 'overview' ? <div className="core-grid">{installation}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} installed={Boolean(activeInstallationId)} onAction={updateRuntime} onConfigUpdate={updateConfig} onSetPassword={setAccessPassword} /> <DataPanel t={t} navigate={navigate} activeProfile={profiles.find((profile) => profile.id === activeProfileId) ?? null} latestBackup={backups.at(-1) ?? null} /><SystemPanel t={t} />{logs}</div> : page === 'data' ? <DataPage t={t} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} config={configDocument} onConfigUpdate={updateConfig} onChangeManagerPassword={changeManagerPassword} /> : <ResourcePanel page={page} t={t} />}
         </div>
       </SidebarInset>
       <LogsSheet {...logProps} open={logsExpanded} onClose={() => setLogsExpanded(false)} />
@@ -735,6 +735,80 @@ function formatBytes(value: number): string {
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
   if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
   return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+function SystemPanel({ t }: { t: Translate }) {
+  const [snapshot, setSnapshot] = useState<SystemSnapshot | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async () => {
+      try {
+        const response = await fetch('/api/v1/system', { credentials: 'same-origin', signal: controller.signal });
+        if (response.ok && !controller.signal.aborted) setSnapshot(await response.json() as SystemSnapshot);
+      } catch {
+        // A dropped reading is replaced by the next one.
+      } finally {
+        if (!controller.signal.aborted) timer = setTimeout(() => void poll(), 5000);
+      }
+    };
+    void poll();
+    return () => { controller.abort(); clearTimeout(timer); };
+  }, []);
+
+  const rows: Array<{ key: string; label: string; value: string; ratio?: number }> = [];
+  if (snapshot) {
+    const { cpu, memory, storage } = snapshot;
+    rows.push({
+      key: 'cpu',
+      label: t('system.cpu'),
+      value: `${cpu.usagePercent === null ? '—' : `${cpu.usagePercent}%`} · ${cpu.cores} ${t('system.cores')}${cpu.loadAverage.length ? ` · ${t('system.load')} ${cpu.loadAverage.map((value) => value.toFixed(2)).join(' ')}` : ''}`,
+      ...(cpu.usagePercent === null ? {} : { ratio: cpu.usagePercent / 100 }),
+    });
+    rows.push({
+      key: 'memory',
+      label: t('system.memory'),
+      value: `${formatBytes(memory.usedBytes)} / ${formatBytes(memory.totalBytes)}`,
+      ratio: memory.totalBytes > 0 ? memory.usedBytes / memory.totalBytes : 0,
+    });
+    rows.push({
+      key: 'processes',
+      label: t('system.processMemory'),
+      value: `${t('system.manager')} ${formatBytes(memory.managerBytes)}${memory.sillytavernBytes === null ? '' : ` · SillyTavern ${formatBytes(memory.sillytavernBytes)}`}`,
+    });
+    if (storage.totalBytes !== null && storage.freeBytes !== null) {
+      const used = storage.totalBytes - storage.freeBytes;
+      rows.push({
+        key: 'disk',
+        label: t('system.disk'),
+        value: `${formatBytes(storage.freeBytes)} ${t('system.free')} / ${formatBytes(storage.totalBytes)}`,
+        ratio: storage.totalBytes > 0 ? used / storage.totalBytes : 0,
+      });
+    }
+    rows.push({
+      key: 'managerBytes',
+      label: t('system.managerFootprint'),
+      value: storage.managerBytes === null ? t('system.measuring') : formatBytes(storage.managerBytes),
+    });
+    rows.push({
+      key: 'dataBytes',
+      label: t('system.activeData'),
+      value: storage.dataBytes === null
+        ? t('system.measuring')
+        : `${formatBytes(storage.dataBytes)}${storage.dataFileCount === null ? '' : ` · ${storage.dataFileCount.toLocaleString()} ${t('console.files')}`}`,
+    });
+  }
+
+  return <Card data-tour="system"><PanelHeading icon={<Cpu />}>{t('system.title')}</PanelHeading><CardContent className="flex-1">
+    {snapshot ? <dl className="system-list">{rows.map((row) => <div key={row.key}>
+      <dt>{row.label}</dt>
+      <dd>
+        <span>{row.value}</span>
+        {row.ratio === undefined ? null : <span className="system-track"><span className="system-value" style={{ width: `${Math.round(Math.max(0, Math.min(1, row.ratio)) * 100)}%` }} /></span>}
+      </dd>
+    </div>)}</dl> : <p className="resource-empty">{t('common.loading')}</p>}
+    {snapshot?.storage.measuredAt ? <p className="system-note">{t('system.sizesMeasuredAt')} {new Date(snapshot.storage.measuredAt).toLocaleTimeString()}</p> : null}
+  </CardContent></Card>;
 }
 
 function MetricsPage({ t }: { t: Translate }) {

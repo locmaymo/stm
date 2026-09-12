@@ -12,6 +12,7 @@ import { RateLimiter } from './rate-limit.js';
 import { parseSessionCookie, SessionStore, clearSessionCookie, sessionCookie } from './sessions.js';
 import { hashSetupCode, StateStore } from './state.js';
 import { LOG_LIMITS, LogBuffer } from './log-buffer.js';
+import { SystemStore } from './system.js';
 import { ProcessSupervisor } from './supervisor.js';
 import { TunnelManager } from '../../../packages/tunnel/src/index.js';
 import { ProfileError, ProfileStore } from '../../../packages/profiles/src/index.js';
@@ -46,6 +47,7 @@ const PROTECTED_PATHS = new Set([
   '/api/v1/access/password',
   '/api/v1/auth/password',
   '/api/v1/metrics',
+  '/api/v1/system',
   '/api/v1/tunnel',
   '/api/v1/r2',
 ]);
@@ -144,6 +146,14 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   const tunnel = options.tunnel ?? new TunnelManager({ paths, env, beforeStart: async () => { await requireTunnelPassword(config, profiles, runtime, supervisor); }, logger: (line) => { jobs.append('cloudflared', line); baseLogger(line); } });
   const scheduler = new BackupScheduler({ backups, profiles, r2, logger: (line) => { jobs.append('backup', line); baseLogger(line); } });
   scheduler.start();
+  const system = new SystemStore({
+    paths,
+    childPid: () => supervisor.getState().pid,
+    dataRoot: async () => {
+      const profile = await profiles.getActive();
+      return profile ? profile.dataPath : null;
+    },
+  });
   const secureCookies = options.secureCookies ?? env.STM_SECURE_COOKIES === '1';
   const setupCodeRequired = options.setupCodeRequired ?? requiresSetupCode(env);
   const staticRoot = resolve(options.staticRoot ?? env.STM_STATIC_ROOT ?? join(process.cwd(), 'apps', 'manager-panel', 'dist'));
@@ -205,6 +215,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       r2,
       metrics,
       config,
+      system,
     }).catch((error: unknown) => {
       if (error instanceof RequestError) {
         sendError(response, error.statusCode, error.code, error.message);
@@ -302,8 +313,9 @@ async function handleRequest(options: {
   readonly r2: R2Manager;
   readonly metrics: MetricsStore;
   readonly config: ConfigStore;
+  readonly system: SystemStore;
 }): Promise<void> {
-  const { request, response, store, sessions, rateLimiter, startedAt, secureCookies, setupCodeRequired, staticRoot, platform, runtime, jobs, supervisor, tunnel, profiles, backups, r2, metrics, config } = options;
+  const { request, response, store, sessions, rateLimiter, startedAt, secureCookies, setupCodeRequired, staticRoot, platform, runtime, jobs, supervisor, tunnel, profiles, backups, r2, metrics, config, system } = options;
   const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
   const pathname = url.pathname;
   const context: RequestContext = {
@@ -390,14 +402,14 @@ async function handleRequest(options: {
     if (method !== 'GET' && !requireCsrf(context, session.csrfToken)) {
       return;
     }
-    await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, profiles, backups, r2, metrics, config);
+    await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, profiles, backups, r2, metrics, config, system);
     return;
   }
 
   sendError(response, 404, 'not_found', 'Route not found');
 }
 
-async function handleRuntimeRequest(context: RequestContext, store: StateStore, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, metrics: MetricsStore, config: ConfigStore): Promise<void> {
+async function handleRuntimeRequest(context: RequestContext, store: StateStore, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, metrics: MetricsStore, config: ConfigStore, system: SystemStore): Promise<void> {
   const { pathname, request, response } = context;
   const method = request.method ?? 'GET';
   if (pathname === '/api/v1/auth/password' && method === 'POST') {
@@ -809,6 +821,10 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     if (mode !== 'off') await requireTunnelPassword(config, profiles, runtime, supervisor);
     const state = mode === 'off' ? await tunnel.stop() : await tunnel.start(mode, isRecord(body) && typeof body.token === 'string' ? body.token : undefined);
     sendJson(response, 200, state);
+    return;
+  }
+  if (pathname === '/api/v1/system' && method === 'GET') {
+    sendJson(response, 200, await system.snapshot());
     return;
   }
   if (pathname === '/api/v1/jobs/active' && method === 'GET') {

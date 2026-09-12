@@ -339,5 +339,20 @@
     "actions": "Actions",
     "active": "Active",
     "ready": "Ready"
+  },
+  "system": {
+    "title": "System",
+    "cpu": "CPU",
+    "cores": "cores",
+    "load": "load",
+    "memory": "Memory",
+    "processMemory": "Process memory",
+    "manager": "Manager",
+    "disk": "Disk",
+    "free": "free",
+    "managerFootprint": "Manager storage",
+    "activeData": "Active SillyTavern data",
+    "measuring": "Measuring…",
+    "sizesMeasuredAt": "Sizes measured at"
   }
 }

@@ -182,6 +182,13 @@
 .backup-row span { color: var(--muted-foreground); font-size: 12px; }
 .backup-row-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
 .backup-option { display: inline-flex; align-items: center; gap: 8px; color: var(--muted-foreground); font-size: 12px; }
+.system-list { display: grid; gap: 12px; font-size: 13px; }
+.system-list > div { display: grid; gap: 4px; }
+.system-list dt { color: var(--muted-foreground); font-size: 12px; }
+.system-list dd { display: grid; gap: 4px; margin: 0; }
+.system-track { height: 6px; overflow: hidden; border-radius: 999px; background: var(--muted); }
+.system-value { display: block; height: 100%; border-radius: 999px; background: var(--primary); }
+.system-note { margin-top: 12px; color: var(--muted-foreground); font-size: 11px; }
 .operation-progress { display: grid; gap: 6px; color: var(--muted-foreground); font-size: 12px; }
 .operation-warning { color: var(--destructive); }
 .progress-track { display: block; height: 4px; overflow: hidden; border-radius: 999px; background: var(--muted); }
