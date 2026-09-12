@@ -11,7 +11,7 @@ import { hashPassword, MIN_PASSWORD_LENGTH, validatePassword, verifyPassword } f
 import { RateLimiter } from './rate-limit.js';
 import { parseSessionCookie, SessionStore, clearSessionCookie, sessionCookie } from './sessions.js';
 import { hashSetupCode, StateStore } from './state.js';
-import { LogBuffer } from './log-buffer.js';
+import { LOG_LIMITS, LogBuffer } from './log-buffer.js';
 import { ProcessSupervisor } from './supervisor.js';
 import { TunnelManager } from '../../../packages/tunnel/src/index.js';
 import { ProfileError, ProfileStore } from '../../../packages/profiles/src/index.js';
@@ -528,8 +528,19 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     const sourceParam = url.searchParams.get('source') ?? 'all';
     if (!Number.isSafeInteger(afterValue) || afterValue < 0) { sendError(response, 400, 'invalid_cursor', 'The log cursor is invalid'); return; }
     if (!isLogSourceFilter(sourceParam)) { sendError(response, 400, 'invalid_source', 'The log source is invalid'); return; }
-    const result = jobs.logs(afterValue, sourceParam === 'all' ? null : sourceParam);
-    sendJson(response, 200, result);
+    const source = sourceParam === 'all' ? null : sourceParam;
+    // `before` reads backwards through what is still retained, so a reader that
+    // scrolls up can pull in older lines instead of only following new ones.
+    const beforeParam = url.searchParams.get('before');
+    if (beforeParam !== null) {
+      const beforeValue = Number(beforeParam);
+      const limitValue = Number(url.searchParams.get('limit') ?? LOG_LIMITS.historyEntries);
+      if (!Number.isSafeInteger(beforeValue) || beforeValue < 0) { sendError(response, 400, 'invalid_cursor', 'The log cursor is invalid'); return; }
+      if (!Number.isSafeInteger(limitValue) || limitValue < 1) { sendError(response, 400, 'invalid_limit', 'The log limit is invalid'); return; }
+      sendJson(response, 200, jobs.logHistory(beforeValue, source, limitValue));
+      return;
+    }
+    sendJson(response, 200, jobs.logs(afterValue, source));
     return;
   }
   if (pathname === '/api/v1/metrics' && method === 'GET') {
@@ -1331,6 +1342,10 @@ class JobStore {
 
   public logs(after: number, source: LogEntry['source'] | null): { entries: LogEntry[]; nextCursor: number } {
     return this.logBuffer.read(after, source);
+  }
+
+  public logHistory(before: number, source: LogEntry['source'] | null, limit: number): { entries: LogEntry[]; hasMore: boolean } {
+    return this.logBuffer.readBefore(before, source, limit);
   }
 
   public create(installationId: string): Job {

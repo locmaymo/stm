@@ -66,6 +66,10 @@
     "expandLogs": "Mở rộng log",
     "collapseLogs": "Thu gọn log",
     "openLogs": "Mở log",
+    "loadOlderLogs": "Tải các dòng cũ hơn",
+    "loadingOlderLogs": "Đang tải dòng cũ hơn…",
+    "jumpToLatest": "Xuống dòng mới nhất",
+    "newLogLines": "Có dòng log mới bên dưới",
     "installer": "Trình cài đặt",
     "noLogs": "Chưa có log",
     "noLogMatches": "Không có log phù hợp",
@@ -125,98 +129,98 @@
     "unavailable": "Có sau khi cài SillyTavern",
     "appearance": "Giao diện",
     "sharingRequired": "Chia sẻ usage bảo vệ riêng tư",
-    "metadataNotice": "Chỉ provider, model, hostname endpoint, tổng usage, trạng thái và thời gian được đo."
-    ,"installComplete": "Cài đặt hoàn tất"
-    ,"installationHistory": "Lịch sử cài đặt"
-    ,"noInstallations": "Chưa có lần cài đặt nào"
-    ,"installRequestFailed": "Không thể bắt đầu cài đặt"
-    ,"dataWorkspace": "Không gian dữ liệu"
-    ,"addProfile": "Thêm profile khác"
-    ,"legacyMigrated": "Dữ liệu public/ cũ đã được sao chép vào profile data/ chuẩn. File gốc vẫn được giữ nguyên."
-    ,"backupLibrary": "Thư viện sao lưu"
-    ,"backupNameOptional": "Tên bản sao lưu (tuỳ chọn)"
-    ,"createdBackup": "Tạo trong manager"
-    ,"uploadedBackup": "Bản tải lên"
-    ,"renameBackup": "Đổi tên bản sao lưu"
-    ,"deleteBackup": "Xóa"
-    ,"deleteBackupConfirm": "Xóa bản sao lưu này khỏi thư viện cục bộ?"
-    ,"backupRenameFailed": "Không thể đổi tên bản sao lưu"
-    ,"backupDeleteFailed": "Không thể xóa bản sao lưu"
-    ,"r2Title": "Cloudflare R2"
-    ,"r2Endpoint": "Endpoint R2"
-    ,"r2Bucket": "Tên bucket"
-    ,"r2AccountId": "Account ID (tuỳ chọn)"
-    ,"r2AccessKey": "Access key ID"
-    ,"r2SecretKey": "Secret access key"
-    ,"r2Enabled": "Bật backup ngoài máy"
-    ,"r2IncludeSecrets": "Cho phép gửi secrets lên R2"
-    ,"r2Schedule": "Lịch sao lưu"
-    ,"r2LocalEvery": "Backup cục bộ mỗi (phút)"
-    ,"r2Every": "Đẩy lên R2 mỗi (giờ)"
-    ,"r2FullEvery": "Full backup mỗi (ngày)"
-    ,"r2MaxBackups": "Giữ lại số bản remote"
-    ,"r2RetentionDays": "Xoá bản remote sau (ngày)"
-    ,"r2Save": "Lưu cấu hình R2"
-    ,"r2Test": "Kiểm tra kết nối"
-    ,"r2UploadLatest": "Đẩy backup mới nhất"
-    ,"r2Configured": "Đã cấu hình"
-    ,"r2NotConfigured": "Chưa cấu hình"
-    ,"r2Estimate": "Dung lượng remote ước tính"
-    ,"r2Objects": "Đối tượng remote"
-    ,"r2Saved": "Đã lưu cấu hình R2"
-    ,"r2Tested": "Kết nối R2 hoạt động"
-    ,"r2SaveFailed": "Không thể lưu cấu hình R2"
-    ,"r2TestFailed": "Không thể kết nối R2"
-    ,"r2UploadFailed": "Không thể đẩy backup lên R2"
-    ,"r2SecretsWarning": "R2 không bao giờ nhận secrets trừ khi bật cả công tắc này và xác nhận khi upload."
-    ,"r2Placeholder": "Giữ một bản sao ngoài máy ở Cloudflare R2. Backup cục bộ vẫn có thể dùng khi R2 tạm ngắt."
-    ,"configureR2": "Cấu hình R2"
-    ,"comingSoon": "Batch tiếp theo"
-    ,"quickTunnel": "Cloudflare tunnel"
-    ,"lanAccess": "Mạng nội bộ"
-    ,"lanEnabled": "Thiết bị trong mạng này có thể truy cập"
-    ,"lanDisabled": "Chỉ máy này có thể truy cập"
-    ,"lanAddress": "Địa chỉ mạng nội bộ"
-    ,"enableLan": "Bật truy cập mạng nội bộ"
-    ,"passwordProtected": "Đã bảo vệ bằng mật khẩu"
-    ,"passwordRequired": "Cần mật khẩu trước khi chia sẻ"
-    ,"passwordSettings": "Thiết lập mật khẩu"
-    ,"sillyPasswordHelp": "Dùng thông tin này để mở SillyTavern. Tài khoản đăng nhập manager là riêng."
-    ,"savePassword": "Lưu mật khẩu"
-    ,"changePassword": "Đổi mật khẩu"
-    ,"adminAccount": "Tài khoản admin SillyTavern"
-    ,"confirmPassword": "Xác nhận mật khẩu"
-    ,"passwordSaveFailed": "Không thể lưu mật khẩu SillyTavern"
-    ,"passwordProtection": "Bảo vệ mật khẩu SillyTavern"
-    ,"passwordProtectionHint": "Bắt buộc trước khi mở mạng nội bộ hoặc tunnel công khai"
-    ,"passwordUnchanged": "Để trống để giữ mật khẩu hiện tại"
-    ,"username": "Tên người dùng"
-    ,"password": "Mật khẩu"
-    ,"configKicker": "CẤU HÌNH SILLYTAVERN"
-    ,"configTitle": "Thiết lập runtime"
-    ,"commonSettings": "Thiết lập phổ biến"
-    ,"listenMode": "Lắng nghe trong mạng nội bộ"
-    ,"listenModeHint": "Cho phép điện thoại và thiết bị cùng mạng kết nối qua cổng 8000."
-    ,"ssl": "HTTPS"
-    ,"sslHint": "Dùng các đường dẫn chứng chỉ đã có trong SillyTavern."
-    ,"corsProxy": "CORS proxy"
-    ,"corsProxyHint": "Bật proxy request provider của SillyTavern."
-    ,"disableCsrf": "Tắt bảo vệ CSRF"
-    ,"disableCsrfHint": "Chỉ bật khi reverse proxy tin cậy đã xử lý bảo vệ."
-    ,"port": "Cổng SillyTavern"
-    ,"restartAfterSave": "Thay đổi sẽ khởi động lại SillyTavern."
-    ,"rawYaml": "YAML thô"
-    ,"rawYamlHint": "Key lạ và comment được giữ lại khi lưu tài liệu."
-    ,"applyYaml": "Kiểm tra và áp dụng"
-    ,"configSaved": "Đã lưu cấu hình và khởi động lại SillyTavern."
-    ,"configSaveFailed": "Không thể lưu cấu hình"
-    ,"managerPasswordTitle": "Mật khẩu truy cập manager"
-    ,"managerPasswordHint": "Đổi mật khẩu dùng để mở manager. Mật khẩu được lưu trong thư mục dữ liệu và vẫn giữ nguyên sau khi khởi động lại."
-    ,"managerPassword": "Mật khẩu manager mới"
-    ,"managerPasswordSave": "Đổi mật khẩu manager"
-    ,"managerPasswordSaved": "Đã đổi mật khẩu manager"
-    ,"managerPasswordSaveFailed": "Không thể đổi mật khẩu manager"
-    ,"managerPasswordMin": "Dùng ít nhất 6 ký tự."
+    "metadataNotice": "Chỉ provider, model, hostname endpoint, tổng usage, trạng thái và thời gian được đo.",
+    "installComplete": "Cài đặt hoàn tất",
+    "installationHistory": "Lịch sử cài đặt",
+    "noInstallations": "Chưa có lần cài đặt nào",
+    "installRequestFailed": "Không thể bắt đầu cài đặt",
+    "dataWorkspace": "Không gian dữ liệu",
+    "addProfile": "Thêm profile khác",
+    "legacyMigrated": "Dữ liệu public/ cũ đã được sao chép vào profile data/ chuẩn. File gốc vẫn được giữ nguyên.",
+    "backupLibrary": "Thư viện sao lưu",
+    "backupNameOptional": "Tên bản sao lưu (tuỳ chọn)",
+    "createdBackup": "Tạo trong manager",
+    "uploadedBackup": "Bản tải lên",
+    "renameBackup": "Đổi tên bản sao lưu",
+    "deleteBackup": "Xóa",
+    "deleteBackupConfirm": "Xóa bản sao lưu này khỏi thư viện cục bộ?",
+    "backupRenameFailed": "Không thể đổi tên bản sao lưu",
+    "backupDeleteFailed": "Không thể xóa bản sao lưu",
+    "r2Title": "Cloudflare R2",
+    "r2Endpoint": "Endpoint R2",
+    "r2Bucket": "Tên bucket",
+    "r2AccountId": "Account ID (tuỳ chọn)",
+    "r2AccessKey": "Access key ID",
+    "r2SecretKey": "Secret access key",
+    "r2Enabled": "Bật backup ngoài máy",
+    "r2IncludeSecrets": "Cho phép gửi secrets lên R2",
+    "r2Schedule": "Lịch sao lưu",
+    "r2LocalEvery": "Backup cục bộ mỗi (phút)",
+    "r2Every": "Đẩy lên R2 mỗi (giờ)",
+    "r2FullEvery": "Full backup mỗi (ngày)",
+    "r2MaxBackups": "Giữ lại số bản remote",
+    "r2RetentionDays": "Xoá bản remote sau (ngày)",
+    "r2Save": "Lưu cấu hình R2",
+    "r2Test": "Kiểm tra kết nối",
+    "r2UploadLatest": "Đẩy backup mới nhất",
+    "r2Configured": "Đã cấu hình",
+    "r2NotConfigured": "Chưa cấu hình",
+    "r2Estimate": "Dung lượng remote ước tính",
+    "r2Objects": "Đối tượng remote",
+    "r2Saved": "Đã lưu cấu hình R2",
+    "r2Tested": "Kết nối R2 hoạt động",
+    "r2SaveFailed": "Không thể lưu cấu hình R2",
+    "r2TestFailed": "Không thể kết nối R2",
+    "r2UploadFailed": "Không thể đẩy backup lên R2",
+    "r2SecretsWarning": "R2 không bao giờ nhận secrets trừ khi bật cả công tắc này và xác nhận khi upload.",
+    "r2Placeholder": "Giữ một bản sao ngoài máy ở Cloudflare R2. Backup cục bộ vẫn có thể dùng khi R2 tạm ngắt.",
+    "configureR2": "Cấu hình R2",
+    "comingSoon": "Batch tiếp theo",
+    "quickTunnel": "Cloudflare tunnel",
+    "lanAccess": "Mạng nội bộ",
+    "lanEnabled": "Thiết bị trong mạng này có thể truy cập",
+    "lanDisabled": "Chỉ máy này có thể truy cập",
+    "lanAddress": "Địa chỉ mạng nội bộ",
+    "enableLan": "Bật truy cập mạng nội bộ",
+    "passwordProtected": "Đã bảo vệ bằng mật khẩu",
+    "passwordRequired": "Cần mật khẩu trước khi chia sẻ",
+    "passwordSettings": "Thiết lập mật khẩu",
+    "sillyPasswordHelp": "Dùng thông tin này để mở SillyTavern. Tài khoản đăng nhập manager là riêng.",
+    "savePassword": "Lưu mật khẩu",
+    "changePassword": "Đổi mật khẩu",
+    "adminAccount": "Tài khoản admin SillyTavern",
+    "confirmPassword": "Xác nhận mật khẩu",
+    "passwordSaveFailed": "Không thể lưu mật khẩu SillyTavern",
+    "passwordProtection": "Bảo vệ mật khẩu SillyTavern",
+    "passwordProtectionHint": "Bắt buộc trước khi mở mạng nội bộ hoặc tunnel công khai",
+    "passwordUnchanged": "Để trống để giữ mật khẩu hiện tại",
+    "username": "Tên người dùng",
+    "password": "Mật khẩu",
+    "configKicker": "CẤU HÌNH SILLYTAVERN",
+    "configTitle": "Thiết lập runtime",
+    "commonSettings": "Thiết lập phổ biến",
+    "listenMode": "Lắng nghe trong mạng nội bộ",
+    "listenModeHint": "Cho phép điện thoại và thiết bị cùng mạng kết nối qua cổng 8000.",
+    "ssl": "HTTPS",
+    "sslHint": "Dùng các đường dẫn chứng chỉ đã có trong SillyTavern.",
+    "corsProxy": "CORS proxy",
+    "corsProxyHint": "Bật proxy request provider của SillyTavern.",
+    "disableCsrf": "Tắt bảo vệ CSRF",
+    "disableCsrfHint": "Chỉ bật khi reverse proxy tin cậy đã xử lý bảo vệ.",
+    "port": "Cổng SillyTavern",
+    "restartAfterSave": "Thay đổi sẽ khởi động lại SillyTavern.",
+    "rawYaml": "YAML thô",
+    "rawYamlHint": "Key lạ và comment được giữ lại khi lưu tài liệu.",
+    "applyYaml": "Kiểm tra và áp dụng",
+    "configSaved": "Đã lưu cấu hình và khởi động lại SillyTavern.",
+    "configSaveFailed": "Không thể lưu cấu hình",
+    "managerPasswordTitle": "Mật khẩu truy cập manager",
+    "managerPasswordHint": "Đổi mật khẩu dùng để mở manager. Mật khẩu được lưu trong thư mục dữ liệu và vẫn giữ nguyên sau khi khởi động lại.",
+    "managerPassword": "Mật khẩu manager mới",
+    "managerPasswordSave": "Đổi mật khẩu manager",
+    "managerPasswordSaved": "Đã đổi mật khẩu manager",
+    "managerPasswordSaveFailed": "Không thể đổi mật khẩu manager",
+    "managerPasswordMin": "Dùng ít nhất 6 ký tự."
   },
   "dashboard": {
     "eyebrow": "TRUNG TÂM ĐIỀU HÀNH / TỔNG QUAN",
@@ -277,11 +281,11 @@
     "telemetry": "Telemetry bảo vệ riêng tư đang bật",
     "telemetryHint": "Chỉ provider, model, hostname endpoint, tổng usage và thời gian được đo.",
     "neverCollected": "API key, prompt, chat và response không bao giờ được thu thập.",
-    "viewSettings": "Xem thiết lập"
-    ,"firstRun": "BẮT ĐẦU"
-    ,"instanceLabel": "INSTANCE SILLYTAVERN"
-    ,"readyTitle": "Dành chỗ cho cuộc trò chuyện tiếp theo."
-    ,"readyBody": "Cài một kênh SillyTavern, sau đó mở cục bộ hoặc chia sẻ link tunnel với điện thoại. Manager vẫn hoạt động riêng biệt.",
+    "viewSettings": "Xem thiết lập",
+    "firstRun": "BẮT ĐẦU",
+    "instanceLabel": "INSTANCE SILLYTAVERN",
+    "readyTitle": "Dành chỗ cho cuộc trò chuyện tiếp theo.",
+    "readyBody": "Cài một kênh SillyTavern, sau đó mở cục bộ hoặc chia sẻ link tunnel với điện thoại. Manager vẫn hoạt động riêng biệt.",
     "noInstallation": "Chưa có bản cài đặt",
     "officialRepo": "Chọn một kênh từ repository SillyTavern chính thức.",
     "goToInstall": "Chọn phiên bản",
@@ -310,11 +314,11 @@
     "dataEyebrow": "DỮ LIỆU",
     "dataLead": "Snapshot cục bộ và bản sao ngoài máy.",
     "logsEyebrow": "LOG TRỰC TIẾP",
-    "logsEmpty": "Log sẽ xuất hiện khi một job manager bắt đầu."
-    ,"metricsEyebrow": "SỐ LIỆU / HÔM NAY"
-    ,"accessEyebrow": "TRUY CẬP"
-    ,"dataSafetyEyebrow": "AN TOÀN DỮ LIỆU"
-    ,"auditEyebrow": "DẤU VẾT KIỂM TRA"
+    "logsEmpty": "Log sẽ xuất hiện khi một job manager bắt đầu.",
+    "metricsEyebrow": "SỐ LIỆU / HÔM NAY",
+    "accessEyebrow": "TRUY CẬP",
+    "dataSafetyEyebrow": "AN TOÀN DỮ LIỆU",
+    "auditEyebrow": "DẤU VẾT KIỂM TRA"
   },
   "page": {
     "installationsDescription": "Chọn kênh SillyTavern và quản lý vòng đời của bản cài đặt.",

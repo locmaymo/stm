@@ -231,9 +231,10 @@ function ConsoleApp({ csrfToken }: { csrfToken: string }) {
 
   const navigate: Navigate = (next) => { window.location.hash = next; setPage(next); window.scrollTo({ top: 0 }); };
   const changePreferences = (update: Partial<Preferences>) => setPreferences((current) => ({ ...current, ...update }));
-  const logEntries = useLiveLogs(logSource);
+  const liveLogs = useLiveLogs(logSource);
   const installation = <InstallationPanel t={t} version={version} onVersionChange={setVersion} versions={versions} installations={installations} activeInstallationId={activeInstallationId} pendingInstallationId={pendingInstallationId} onPendingInstallationId={setPendingInstallationId} csrfToken={csrfToken} installing={installing} onInstalling={setInstalling} />;
-  const logs = <LogsPanel t={t} source={logSource} onSourceChange={setLogSource} entries={logEntries} query={logQuery} onQueryChange={setLogQuery} compact={compactLogs} onToggleCompact={() => setCompactLogs((current) => !current)} expanded={logsExpanded} onToggleExpanded={() => setLogsExpanded((current) => !current)} />;
+  const logProps = { t, source: logSource, onSourceChange: setLogSource, entries: liveLogs.entries, query: logQuery, onQueryChange: setLogQuery, compact: compactLogs, onToggleCompact: () => setCompactLogs((current) => !current), onLoadOlder: liveLogs.loadOlder, hasOlder: liveLogs.hasOlder, loadingOlder: liveLogs.loadingOlder };
+  const logs = <LogsPanel {...logProps} expanded={logsExpanded} onToggleExpanded={() => setLogsExpanded((current) => !current)} />;
   const updateRuntime = async (path: string, body?: unknown) => {
     const init: RequestInit = { method: body === undefined ? 'POST' : 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken } };
     if (body !== undefined) init.body = JSON.stringify(body);
@@ -274,7 +275,7 @@ function ConsoleApp({ csrfToken }: { csrfToken: string }) {
           <SidebarTrigger label={t('console.toggleNavigation')} className="size-10 shrink-0" />
           <h1>{t(`nav.${page}`)}</h1>
           <div className="ml-auto flex shrink-0 items-center gap-2">
-            {page === 'overview' ? <Button variant="outline" size="sm" className="log-header-button" onClick={() => setLogsExpanded(true)}><ScrollText />{t('console.openLogs')}</Button> : null}
+            <Button variant="outline" size="sm" className="log-header-button" onClick={() => setLogsExpanded(true)}><ScrollText />{t('console.openLogs')}</Button>
             <LanguageControl t={t} preferences={preferences} onChange={changePreferences} />
             <Button variant="ghost" size="icon" className="size-10" aria-label={preferences.theme === 'dark' ? t('console.useLight') : t('console.useDark')} onClick={() => changePreferences({ theme: preferences.theme === 'dark' ? 'light' : 'dark' })}>
               {preferences.theme === 'dark' ? <Sun /> : <Moon />}
@@ -285,6 +286,7 @@ function ConsoleApp({ csrfToken }: { csrfToken: string }) {
           {page === 'overview' ? <div className="core-grid">{installation}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} installed={Boolean(activeInstallationId)} onAction={updateRuntime} onConfigUpdate={updateConfig} onSetPassword={setAccessPassword} /> <DataPanel t={t} navigate={navigate} activeProfile={profiles.find((profile) => profile.id === activeProfileId) ?? null} latestBackup={backups.at(-1) ?? null} />{logs}</div> : page === 'data' ? <DataPage t={t} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} config={configDocument} onConfigUpdate={updateConfig} onChangeManagerPassword={changeManagerPassword} /> : <ResourcePanel page={page} t={t} />}
         </div>
       </SidebarInset>
+      <LogsSheet {...logProps} open={logsExpanded} onClose={() => setLogsExpanded(false)} />
     </SidebarProvider>
   );
 }
@@ -384,25 +386,102 @@ function DataPanel({ t, navigate, activeProfile, latestBackup }: { t: Translate;
   return <Card data-tour="data"><PanelHeading icon={<Database />}>{t('console.data')}</PanelHeading><CardContent className="flex-1 space-y-4"><div className="flex flex-wrap items-center justify-between gap-2"><span className="text-muted-foreground">{activeProfile?.name ?? t('console.noProfiles')}</span><Button variant="ghost" size="sm" onClick={() => navigate('data')}>{t('nav.data')}<ArrowUpRight /></Button></div>{activeProfile ? <dl className="address-list"><div><dt>{t('console.layout')}</dt><dd>{activeProfile.layout === 'data' ? t('console.layoutData') : t('console.layoutPublic')}</dd></div></dl> : null}<dl className="address-list"><div><dt>{t('status.lastBackup')}</dt><dd>{latestBackup ? new Date(latestBackup.createdAt).toLocaleString() : t('dashboard.noBackup')}</dd></div></dl></CardContent><CardFooter className="flex-wrap gap-2"><Button variant="outline" onClick={() => navigate('data')}><Archive />{t('nav.data')}</Button><Button variant="ghost" onClick={() => navigate('data')}><Upload />{t('console.restore')}</Button></CardFooter><div className="r2-note"><Tooltip><TooltipTrigger asChild><button type="button" onClick={() => navigate('data')}>{t('console.r2Recommended')}</button></TooltipTrigger><TooltipContent className="max-w-xs">{t('console.r2Help')}</TooltipContent></Tooltip></div></Card>;
 }
 
-function LogsPanel({ t, source, onSourceChange, entries, query, onQueryChange, compact, onToggleCompact, expanded, onToggleExpanded }: { t: Translate; source: LogSourceFilter; onSourceChange: (value: LogSourceFilter) => void; entries: LogEntry[]; query: string; onQueryChange: (value: string) => void; compact: boolean; onToggleCompact: () => void; expanded: boolean; onToggleExpanded: () => void }) {
-  const returnFocus = useRef<HTMLElement | null>(null);
-  const open = () => { returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; if (!expanded) onToggleExpanded(); };
-  const close = () => { if (expanded) onToggleExpanded(); };
-  const contentProps = { t, source, onSourceChange, entries, query, onQueryChange, compact, onToggleCompact };
-  const cardContents = expanded ? <div className="log-card-placeholder" aria-hidden="true" /> : <LogsContent {...contentProps} />;
-  return <><Card data-tour="logs" data-expanded={expanded}><PanelHeading icon={<ScrollText />} action={<Button variant="ghost" size="sm" onClick={open} aria-label={t('console.expandLogs')}><Maximize2 />{t('console.expandLogs')}</Button>}>{t('console.liveLogs')}</PanelHeading>{cardContents}</Card><Sheet open={expanded} onOpenChange={(nextOpen) => { if (!nextOpen) close(); }}><SheetContent side="bottom" className="log-sheet" showCloseButton={false} onCloseAutoFocus={(event) => { event.preventDefault(); returnFocus.current?.focus({ preventScroll: true }); }}><SheetHeader className="log-sheet-header"><SheetTitle>{t('console.liveLogs')}</SheetTitle><Button variant="ghost" size="sm" onClick={close}><Minimize2 />{t('console.collapseLogs')}</Button></SheetHeader><LogsContent {...contentProps} expanded /></SheetContent></Sheet></>;
+interface LogViewProps {
+  readonly t: Translate;
+  readonly source: LogSourceFilter;
+  readonly onSourceChange: (value: LogSourceFilter) => void;
+  readonly entries: LogEntry[];
+  readonly query: string;
+  readonly onQueryChange: (value: string) => void;
+  readonly compact: boolean;
+  readonly onToggleCompact: () => void;
+  readonly onLoadOlder: () => void;
+  readonly hasOlder: boolean;
+  readonly loadingOlder: boolean;
 }
 
-function LogsContent({ t, source, onSourceChange, entries, query, onQueryChange, compact, onToggleCompact, expanded = false }: { t: Translate; source: LogSourceFilter; onSourceChange: (value: LogSourceFilter) => void; entries: LogEntry[]; query: string; onQueryChange: (value: string) => void; compact: boolean; onToggleCompact: () => void; expanded?: boolean }) {
+function LogsPanel({ expanded, onToggleExpanded, ...contentProps }: LogViewProps & { expanded: boolean; onToggleExpanded: () => void }) {
+  const { t } = contentProps;
+  // While the sheet is open the card keeps its footprint but not its content,
+  // so the page behind does not reflow and the log is not rendered twice.
+  const cardContents = expanded ? <div className="log-card-placeholder" aria-hidden="true" /> : <LogsContent {...contentProps} />;
+  return <Card data-tour="logs" data-expanded={expanded}><PanelHeading icon={<ScrollText />} action={<Button variant="ghost" size="sm" onClick={onToggleExpanded} aria-label={t('console.expandLogs')}><Maximize2 />{t('console.expandLogs')}</Button>}>{t('console.liveLogs')}</PanelHeading>{cardContents}</Card>;
+}
+
+/**
+ * The expanded log, mounted for every page rather than only the overview, so
+ * the header button can reach it from wherever the operator happens to be.
+ */
+function LogsSheet({ open, onClose, ...contentProps }: LogViewProps & { open: boolean; onClose: () => void }) {
+  const { t } = contentProps;
+  return <Sheet open={open} onOpenChange={(nextOpen) => { if (!nextOpen) onClose(); }}>
+    <SheetContent side="bottom" className="log-sheet" showCloseButton={false}>
+      <SheetHeader className="log-sheet-header"><SheetTitle>{t('console.liveLogs')}</SheetTitle><Button variant="ghost" size="sm" onClick={onClose}><Minimize2 />{t('console.collapseLogs')}</Button></SheetHeader>
+      <LogsContent {...contentProps} expanded />
+    </SheetContent>
+  </Sheet>;
+}
+
+/** Distance from the bottom, in pixels, still treated as "following the tail". */
+const LOG_FOLLOW_SLACK = 48;
+/** Distance from the top that asks for the previous page of retained lines. */
+const LOG_BACKFILL_SLACK = 120;
+
+function LogsContent({ t, source, onSourceChange, entries, query, onQueryChange, compact, onToggleCompact, onLoadOlder, hasOlder, loadingOlder, expanded = false }: { t: Translate; source: LogSourceFilter; onSourceChange: (value: LogSourceFilter) => void; entries: LogEntry[]; query: string; onQueryChange: (value: string) => void; compact: boolean; onToggleCompact: () => void; onLoadOlder: () => void; hasOlder: boolean; loadingOlder: boolean; expanded?: boolean }) {
   const logViewportRef = useRef<HTMLDivElement | null>(null);
+  const [following, setFollowing] = useState(true);
+  const [unread, setUnread] = useState(0);
+  // Prepending history moves everything down; remember where the top was so the
+  // reader keeps looking at the same line instead of being thrown forward.
+  const anchor = useRef<{ height: number; top: number } | null>(null);
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const visibleEntries = normalizedQuery.length === 0 ? entries : entries.filter((entry) => `${entry.source} ${entry.message}`.toLocaleLowerCase().includes(normalizedQuery));
   const showSource = source === 'all';
   const latestVisibleId = visibleEntries.at(-1)?.id;
+  const oldestVisibleId = visibleEntries[0]?.id;
+
+  const scrollToLatest = () => {
+    const element = logViewportRef.current;
+    if (!element) return;
+    element.scrollTop = element.scrollHeight;
+    setFollowing(true);
+    setUnread(0);
+  };
+
+  const onScroll = () => {
+    const element = logViewportRef.current;
+    if (!element) return;
+    const atBottom = element.scrollHeight - element.scrollTop - element.clientHeight <= LOG_FOLLOW_SLACK;
+    setFollowing(atBottom);
+    if (atBottom) setUnread(0);
+    if (element.scrollTop <= LOG_BACKFILL_SLACK && hasOlder && !loadingOlder && normalizedQuery.length === 0) {
+      anchor.current = { height: element.scrollHeight, top: element.scrollTop };
+      onLoadOlder();
+    }
+  };
+
+  // Following the tail is the default, but scrolling up has to hold its place:
+  // a restore writes a line every second and would otherwise drag the reader
+  // back to the bottom mid-sentence.
   useEffect(() => {
     const element = logViewportRef.current;
-    if (element) element.scrollTop = element.scrollHeight;
-  }, [latestVisibleId, visibleEntries.length, normalizedQuery, source, compact]);
+    if (!element) return;
+    if (following) { element.scrollTop = element.scrollHeight; return; }
+    setUnread((current) => current + 1);
+  }, [latestVisibleId]);
+
+  useEffect(() => {
+    const element = logViewportRef.current;
+    if (element && following) element.scrollTop = element.scrollHeight;
+  }, [normalizedQuery, source, compact, expanded]);
+
+  useEffect(() => {
+    const element = logViewportRef.current;
+    const previous = anchor.current;
+    if (!element || !previous) return;
+    anchor.current = null;
+    element.scrollTop = previous.top + (element.scrollHeight - previous.height);
+  }, [oldestVisibleId]);
   return <div className={`logs-content ${expanded ? 'logs-content-expanded' : ''}`}>
     <div className="log-toolbar">
       <Select value={source} onValueChange={(value) => onSourceChange(value as LogSourceFilter)}>
@@ -419,14 +498,22 @@ function LogsContent({ t, source, onSourceChange, entries, query, onQueryChange,
       <div className="log-search"><Search aria-hidden="true" /><Input value={query} onChange={(event) => onQueryChange(event.target.value)} placeholder={t('console.searchLogs')} aria-label={t('console.searchLogs')} /></div>
       <Button type="button" variant="outline" size="sm" className="log-density-toggle" onClick={onToggleCompact} aria-pressed={compact} aria-label={compact ? t('console.showDetailedLogs') : t('console.showCompactLogs')}><Rows3 />{compact ? t('console.showDetailedLogs') : t('console.showCompactLogs')}</Button>
     </div>
-    <div className="log-view" ref={logViewportRef} role="log" tabIndex={0} aria-label={t('console.liveLogs')}>
-      {visibleEntries.length === 0 ? <span className="log-empty">{normalizedQuery ? t('console.noLogMatches') : t('console.noLogs')}</span> : <div className="log-lines">
-        {visibleEntries.map((entry) => <div className="log-line" key={entry.id}>
-          {compact ? null : <time dateTime={entry.timestamp}>{new Date(entry.timestamp).toLocaleTimeString(undefined, { hour12: false })}</time>}
-          {showSource ? <span className="log-source">{entry.source}</span> : null}
-          <span className="log-message">{formatLogMessage(entry.message)}</span>
-        </div>)}
-      </div>}
+    <div className="log-viewport">
+      <div className="log-view" ref={logViewportRef} onScroll={onScroll} role="log" tabIndex={0} aria-label={t('console.liveLogs')}>
+        {visibleEntries.length === 0 ? <span className="log-empty">{normalizedQuery ? t('console.noLogMatches') : t('console.noLogs')}</span> : <div className="log-lines">
+          {normalizedQuery.length === 0 && hasOlder ? <div className="log-history-hint">{loadingOlder ? t('console.loadingOlderLogs') : <button type="button" onClick={onLoadOlder}>{t('console.loadOlderLogs')}</button>}</div> : null}
+          {visibleEntries.map((entry) => <div className="log-line" key={entry.id}>
+            {compact ? null : <time dateTime={entry.timestamp}>{new Date(entry.timestamp).toLocaleTimeString(undefined, { hour12: false })}</time>}
+            {showSource ? <span className="log-source">{entry.source}</span> : null}
+            <span className="log-message">{formatLogMessage(entry.message)}</span>
+          </div>)}
+        </div>}
+      </div>
+      {following ? null : <button type="button" className="log-jump" onClick={scrollToLatest} aria-label={unread > 0 ? t('console.newLogLines') : t('console.jumpToLatest')}>
+        <ArrowDown aria-hidden="true" />
+        <span>{t('console.jumpToLatest')}</span>
+        {unread > 0 ? <span className="log-jump-dot" aria-hidden="true" /> : null}
+      </button>}
     </div>
   </div>;
 }

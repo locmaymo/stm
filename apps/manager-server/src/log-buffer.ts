@@ -6,10 +6,14 @@ import type { PlatformPaths } from '../../../packages/platform/src/index.js';
 import type { LogEntry } from '../../../packages/contracts/src/index.js';
 
 export const LOG_LIMITS = {
-  entries: 3_000,
+  // Deep enough that the whole of a long restore, and the SillyTavern start
+  // that follows it, are still scrollable afterwards. At the average line this
+  // is a few megabytes of resident memory.
+  entries: 25_000,
   messageCharacters: 4_096,
-  totalCharacters: 1_048_576,
+  totalCharacters: 8 * 1024 * 1024,
   responseEntries: 500,
+  historyEntries: 300,
 } as const;
 
 /** Recent local output only. Durable log rotation belongs to the supervisor. */
@@ -48,6 +52,23 @@ export class LogBuffer {
       streamId: this.streamId,
       entries: this.entries.filter((entry) => entry.id > after && (!source || entry.source === source)).slice(-LOG_LIMITS.responseEntries),
       nextCursor: this.nextId - 1,
+    };
+  }
+
+  /**
+   * The page of retained lines that precedes `before`, newest last.
+   *
+   * `hasMore` reports whether anything older is still held, so a reader can
+   * stop asking once it reaches the start of the buffer rather than polling a
+   * boundary it cannot cross.
+   */
+  public readBefore(before: number, source: LogEntry['source'] | null, limit: number): { streamId: string; entries: LogEntry[]; hasMore: boolean } {
+    const matching = this.entries.filter((entry) => (!source || entry.source === source) && (before <= 0 || entry.id < before));
+    const size = Math.max(1, Math.min(limit, LOG_LIMITS.historyEntries));
+    return {
+      streamId: this.streamId,
+      entries: matching.slice(-size),
+      hasMore: matching.length > size,
     };
   }
 

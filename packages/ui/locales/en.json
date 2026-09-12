@@ -66,6 +66,10 @@
     "expandLogs": "Expand logs",
     "collapseLogs": "Collapse logs",
     "openLogs": "Open logs",
+    "loadOlderLogs": "Load older lines",
+    "loadingOlderLogs": "Loading older lines…",
+    "jumpToLatest": "Jump to latest",
+    "newLogLines": "New log lines below",
     "installer": "Installer",
     "noLogs": "No logs yet",
     "noLogMatches": "No matching logs",
@@ -125,98 +129,98 @@
     "unavailable": "Available after SillyTavern is installed",
     "appearance": "Appearance",
     "sharingRequired": "Privacy-safe usage sharing",
-    "metadataNotice": "Only provider, model, endpoint host, usage totals, status and timing are measured."
-    ,"installComplete": "Installation complete"
-    ,"installationHistory": "Installation history"
-    ,"noInstallations": "No installation attempts yet"
-    ,"installRequestFailed": "Could not start the installation"
-    ,"dataWorkspace": "Data workspace"
-    ,"addProfile": "Add another profile"
-    ,"legacyMigrated": "Legacy public/ data was copied into the canonical data/ profile. The original files were left untouched."
-    ,"backupLibrary": "Backup library"
-    ,"backupNameOptional": "Backup name (optional)"
-    ,"createdBackup": "Created here"
-    ,"uploadedBackup": "Uploaded copy"
-    ,"renameBackup": "Rename backup"
-    ,"deleteBackup": "Delete"
-    ,"deleteBackupConfirm": "Delete this backup from the local library?"
-    ,"backupRenameFailed": "Could not rename the backup"
-    ,"backupDeleteFailed": "Could not delete the backup"
-    ,"r2Title": "Cloudflare R2"
-    ,"r2Endpoint": "R2 endpoint"
-    ,"r2Bucket": "Bucket name"
-    ,"r2AccountId": "Account ID (optional)"
-    ,"r2AccessKey": "Access key ID"
-    ,"r2SecretKey": "Secret access key"
-    ,"r2Enabled": "Enable off-machine backup"
-    ,"r2IncludeSecrets": "Allow secrets in R2 uploads"
-    ,"r2Schedule": "Schedule"
-    ,"r2LocalEvery": "Local snapshot every (minutes)"
-    ,"r2Every": "R2 upload every (hours)"
-    ,"r2FullEvery": "Full backup every (days)"
-    ,"r2MaxBackups": "Keep remote backups"
-    ,"r2RetentionDays": "Delete remote backups after (days)"
-    ,"r2Save": "Save R2 settings"
-    ,"r2Test": "Test connection"
-    ,"r2UploadLatest": "Upload latest backup"
-    ,"r2Configured": "Configured"
-    ,"r2NotConfigured": "Not configured"
-    ,"r2Estimate": "Estimated remote storage"
-    ,"r2Objects": "Remote objects"
-    ,"r2Saved": "R2 settings saved"
-    ,"r2Tested": "R2 connection is working"
-    ,"r2SaveFailed": "Could not save R2 settings"
-    ,"r2TestFailed": "Could not connect to R2"
-    ,"r2UploadFailed": "Could not upload the backup to R2"
-    ,"r2SecretsWarning": "R2 uploads never include secrets unless both this switch and the upload confirmation are enabled."
-    ,"r2Placeholder": "Keep an off-machine copy in Cloudflare R2. Local backups stay available if R2 is offline."
-    ,"configureR2": "Configure R2"
-    ,"comingSoon": "Next batch"
-    ,"quickTunnel": "Cloudflare tunnel"
-    ,"lanAccess": "Local network"
-    ,"lanEnabled": "Reachable from devices on this network"
-    ,"lanDisabled": "Only this machine can reach it"
-    ,"lanAddress": "LAN address"
-    ,"enableLan": "Enable local network access"
-    ,"passwordProtected": "Password protected"
-    ,"passwordRequired": "Password required before sharing"
-    ,"passwordSettings": "Password settings"
-    ,"sillyPasswordHelp": "Use these credentials to open SillyTavern. Your manager login is separate."
-    ,"savePassword": "Save password"
-    ,"changePassword": "Change password"
-    ,"adminAccount": "SillyTavern admin account"
-    ,"confirmPassword": "Confirm password"
-    ,"passwordSaveFailed": "Could not save the SillyTavern password"
-    ,"passwordProtection": "SillyTavern password protection"
-    ,"passwordProtectionHint": "Required before local network or public tunnel access"
-    ,"passwordUnchanged": "Leave blank to keep the current password"
-    ,"username": "Username"
-    ,"password": "Password"
-    ,"configKicker": "SILLYTAVERN CONFIG"
-    ,"configTitle": "Runtime settings"
-    ,"commonSettings": "Common settings"
-    ,"listenMode": "Listen on the local network"
-    ,"listenModeHint": "Allows phones and other devices on the same network to connect on port 8000."
-    ,"ssl": "HTTPS"
-    ,"sslHint": "Uses the certificate paths already configured in SillyTavern."
-    ,"corsProxy": "CORS proxy"
-    ,"corsProxyHint": "Enable SillyTavern's provider request proxy."
-    ,"disableCsrf": "Disable CSRF protection"
-    ,"disableCsrfHint": "Only use this when a trusted reverse proxy handles protection."
-    ,"port": "SillyTavern port"
-    ,"restartAfterSave": "Changes restart SillyTavern."
-    ,"rawYaml": "Raw YAML"
-    ,"rawYamlHint": "Unknown keys and comments are kept when the document is saved."
-    ,"applyYaml": "Validate and apply"
-    ,"configSaved": "Configuration saved and SillyTavern restarted."
-    ,"configSaveFailed": "Could not save the configuration"
-    ,"managerPasswordTitle": "Manager access password"
-    ,"managerPasswordHint": "Change the password used to open this manager. It is stored in the manager data directory and survives restarts."
-    ,"managerPassword": "New manager password"
-    ,"managerPasswordSave": "Change manager password"
-    ,"managerPasswordSaved": "Manager password changed"
-    ,"managerPasswordSaveFailed": "Could not change the manager password"
-    ,"managerPasswordMin": "Use at least 6 characters."
+    "metadataNotice": "Only provider, model, endpoint host, usage totals, status and timing are measured.",
+    "installComplete": "Installation complete",
+    "installationHistory": "Installation history",
+    "noInstallations": "No installation attempts yet",
+    "installRequestFailed": "Could not start the installation",
+    "dataWorkspace": "Data workspace",
+    "addProfile": "Add another profile",
+    "legacyMigrated": "Legacy public/ data was copied into the canonical data/ profile. The original files were left untouched.",
+    "backupLibrary": "Backup library",
+    "backupNameOptional": "Backup name (optional)",
+    "createdBackup": "Created here",
+    "uploadedBackup": "Uploaded copy",
+    "renameBackup": "Rename backup",
+    "deleteBackup": "Delete",
+    "deleteBackupConfirm": "Delete this backup from the local library?",
+    "backupRenameFailed": "Could not rename the backup",
+    "backupDeleteFailed": "Could not delete the backup",
+    "r2Title": "Cloudflare R2",
+    "r2Endpoint": "R2 endpoint",
+    "r2Bucket": "Bucket name",
+    "r2AccountId": "Account ID (optional)",
+    "r2AccessKey": "Access key ID",
+    "r2SecretKey": "Secret access key",
+    "r2Enabled": "Enable off-machine backup",
+    "r2IncludeSecrets": "Allow secrets in R2 uploads",
+    "r2Schedule": "Schedule",
+    "r2LocalEvery": "Local snapshot every (minutes)",
+    "r2Every": "R2 upload every (hours)",
+    "r2FullEvery": "Full backup every (days)",
+    "r2MaxBackups": "Keep remote backups",
+    "r2RetentionDays": "Delete remote backups after (days)",
+    "r2Save": "Save R2 settings",
+    "r2Test": "Test connection",
+    "r2UploadLatest": "Upload latest backup",
+    "r2Configured": "Configured",
+    "r2NotConfigured": "Not configured",
+    "r2Estimate": "Estimated remote storage",
+    "r2Objects": "Remote objects",
+    "r2Saved": "R2 settings saved",
+    "r2Tested": "R2 connection is working",
+    "r2SaveFailed": "Could not save R2 settings",
+    "r2TestFailed": "Could not connect to R2",
+    "r2UploadFailed": "Could not upload the backup to R2",
+    "r2SecretsWarning": "R2 uploads never include secrets unless both this switch and the upload confirmation are enabled.",
+    "r2Placeholder": "Keep an off-machine copy in Cloudflare R2. Local backups stay available if R2 is offline.",
+    "configureR2": "Configure R2",
+    "comingSoon": "Next batch",
+    "quickTunnel": "Cloudflare tunnel",
+    "lanAccess": "Local network",
+    "lanEnabled": "Reachable from devices on this network",
+    "lanDisabled": "Only this machine can reach it",
+    "lanAddress": "LAN address",
+    "enableLan": "Enable local network access",
+    "passwordProtected": "Password protected",
+    "passwordRequired": "Password required before sharing",
+    "passwordSettings": "Password settings",
+    "sillyPasswordHelp": "Use these credentials to open SillyTavern. Your manager login is separate.",
+    "savePassword": "Save password",
+    "changePassword": "Change password",
+    "adminAccount": "SillyTavern admin account",
+    "confirmPassword": "Confirm password",
+    "passwordSaveFailed": "Could not save the SillyTavern password",
+    "passwordProtection": "SillyTavern password protection",
+    "passwordProtectionHint": "Required before local network or public tunnel access",
+    "passwordUnchanged": "Leave blank to keep the current password",
+    "username": "Username",
+    "password": "Password",
+    "configKicker": "SILLYTAVERN CONFIG",
+    "configTitle": "Runtime settings",
+    "commonSettings": "Common settings",
+    "listenMode": "Listen on the local network",
+    "listenModeHint": "Allows phones and other devices on the same network to connect on port 8000.",
+    "ssl": "HTTPS",
+    "sslHint": "Uses the certificate paths already configured in SillyTavern.",
+    "corsProxy": "CORS proxy",
+    "corsProxyHint": "Enable SillyTavern's provider request proxy.",
+    "disableCsrf": "Disable CSRF protection",
+    "disableCsrfHint": "Only use this when a trusted reverse proxy handles protection.",
+    "port": "SillyTavern port",
+    "restartAfterSave": "Changes restart SillyTavern.",
+    "rawYaml": "Raw YAML",
+    "rawYamlHint": "Unknown keys and comments are kept when the document is saved.",
+    "applyYaml": "Validate and apply",
+    "configSaved": "Configuration saved and SillyTavern restarted.",
+    "configSaveFailed": "Could not save the configuration",
+    "managerPasswordTitle": "Manager access password",
+    "managerPasswordHint": "Change the password used to open this manager. It is stored in the manager data directory and survives restarts.",
+    "managerPassword": "New manager password",
+    "managerPasswordSave": "Change manager password",
+    "managerPasswordSaved": "Manager password changed",
+    "managerPasswordSaveFailed": "Could not change the manager password",
+    "managerPasswordMin": "Use at least 6 characters."
   },
   "dashboard": {
     "eyebrow": "CONTROL ROOM / OVERVIEW",
@@ -277,11 +281,11 @@
     "telemetry": "Privacy-safe telemetry is active",
     "telemetryHint": "Only provider, model, endpoint host, usage totals and timing are measured.",
     "neverCollected": "API keys, prompts, chats and responses are never collected.",
-    "viewSettings": "Review settings"
-    ,"firstRun": "FIRST RUN"
-    ,"instanceLabel": "SILLYTAVERN INSTANCE"
-    ,"readyTitle": "Make space for your next conversation."
-    ,"readyBody": "Install a SillyTavern channel, then open it locally or share a tunnel link with your phone. The manager stays in its own lane.",
+    "viewSettings": "Review settings",
+    "firstRun": "FIRST RUN",
+    "instanceLabel": "SILLYTAVERN INSTANCE",
+    "readyTitle": "Make space for your next conversation.",
+    "readyBody": "Install a SillyTavern channel, then open it locally or share a tunnel link with your phone. The manager stays in its own lane.",
     "noInstallation": "No installation yet",
     "officialRepo": "Choose a channel from the official SillyTavern repository.",
     "goToInstall": "Choose a version",
@@ -310,11 +314,11 @@
     "dataEyebrow": "DATA",
     "dataLead": "Local snapshots and off-machine copies.",
     "logsEyebrow": "LIVE LOGS",
-    "logsEmpty": "Logs will appear here when a manager job starts."
-    ,"metricsEyebrow": "METRICS / TODAY"
-    ,"accessEyebrow": "ACCESS"
-    ,"dataSafetyEyebrow": "DATA SAFETY"
-    ,"auditEyebrow": "AUDIT TRAIL"
+    "logsEmpty": "Logs will appear here when a manager job starts.",
+    "metricsEyebrow": "METRICS / TODAY",
+    "accessEyebrow": "ACCESS",
+    "dataSafetyEyebrow": "DATA SAFETY",
+    "auditEyebrow": "AUDIT TRAIL"
   },
   "page": {
     "installationsDescription": "Choose a SillyTavern channel and manage its lifecycle.",
