@@ -277,7 +277,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     metrics,
     config,
     telemetry,
-    close: async () => { await telemetry.close(); await scheduler.close(); await tunnel.close(); await supervisor.close(); await closeServer(server); },
+    close: async () => { await telemetry.close(); await scheduler.close(); await tunnel.close(); await supervisor.close(); await backups.settle(); await profiles.settle(); await closeServer(server); },
   };
 }
 
