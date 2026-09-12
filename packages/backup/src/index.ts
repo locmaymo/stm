@@ -71,6 +71,8 @@ export class BackupStore {
   private readonly logger: (line: string) => void;
   private manifests: BackupManifest[] | null = null;
   private writeQueue: Promise<void> = Promise.resolve();
+  private operationTail: Promise<void> = Promise.resolve();
+  private pendingOperations = 0;
 
   public constructor(options: BackupStoreOptions) {
     this.paths = options.paths;
@@ -132,6 +134,18 @@ export class BackupStore {
   }
 
   public async create(profile: Profile, options: CreateBackupOptions = {}): Promise<BackupManifest> {
+    const release = await this.acquireOperation();
+    try {
+      return await this.createUnlocked(profile, options);
+    } finally {
+      release();
+    }
+  }
+
+  /** Prevent a scheduled backup from racing a restore or another manual backup. */
+  public isOperationRunning(): boolean { return this.pendingOperations > 0; }
+
+  private async createUnlocked(profile: Profile, options: CreateBackupOptions = {}): Promise<BackupManifest> {
     const id = randomUUID();
     const createdAt = this.now().toISOString();
     const fingerprint = await this.fingerprint(profile);
@@ -231,6 +245,15 @@ export class BackupStore {
   }
 
   public async restore(profile: Profile, archivePath: string, options: RestoreOptions): Promise<RestorePreview> {
+    const release = await this.acquireOperation();
+    try {
+      return await this.restoreUnlocked(profile, archivePath, options);
+    } finally {
+      release();
+    }
+  }
+
+  private async restoreUnlocked(profile: Profile, archivePath: string, options: RestoreOptions): Promise<RestorePreview> {
     const entries = await readZipDirectory(archivePath);
     const preview = previewEntries(entries, profile.layout);
     if (preview.includesSecrets && options.allowSecrets !== true) {
@@ -269,8 +292,23 @@ export class BackupStore {
       this.logger(`[backup] restored ${preview.fileCount} files to ${profile.name}/${targetLabel} (${options.mode})`);
       return preview;
     } finally {
-      await rm(temporary, { recursive: true, force: true });
+      await removeTree(temporary);
     }
+  }
+
+  private async acquireOperation(): Promise<() => void> {
+    this.pendingOperations += 1;
+    const previous = this.operationTail;
+    let releaseQueue!: () => void;
+    this.operationTail = new Promise<void>((resolvePromise) => { releaseQueue = resolvePromise; });
+    await previous;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.pendingOperations -= 1;
+      releaseQueue();
+    };
   }
 
   /** Store an uploaded ZIP outside the archive library until preview/restore finishes. */
@@ -742,7 +780,7 @@ async function movePath(source: string, destination: string): Promise<void> {
   } catch (error: unknown) {
     if (!isCrossDeviceError(error)) throw error;
     await copyPath(source, destination);
-    await rm(source, { recursive: true, force: true });
+    await removeTree(source);
   }
 }
 
@@ -758,12 +796,12 @@ async function resolveProfileDataRoot(profile: Profile): Promise<string> {
 async function clearDataRoot(root: string, isDataRoot: boolean, includesSecrets: boolean): Promise<void> {
   if (!await exists(root)) return;
   if (!isDataRoot) {
-    await rm(root, { recursive: true, force: true });
+    await removeTree(root);
     return;
   }
   for (const child of await readdir(root)) {
     if (PRESERVED_DATA_ROOT_NAMES.has(child) || PRESERVED_EXCLUDED_NAMES.has(child) && (child !== 'secrets.json' || !includesSecrets)) continue;
-    await rm(join(root, child), { recursive: true, force: true });
+    await removeTree(join(root, child));
   }
 }
 
@@ -797,6 +835,19 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
+/** ModelScope's persistent volume can report ENOTEMPTY while a recursive delete is settling. */
+async function removeTree(path: string): Promise<void> {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    try {
+      await rm(path, { recursive: true, force: true, maxRetries: 2, retryDelay: 250 });
+      return;
+    } catch (error: unknown) {
+      if (!isRetryableRemoveError(error) || attempt === 7) throw error;
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 500 * (attempt + 1)));
+    }
+  }
+}
+
 function normalizeBackupName(value: string | undefined, profileName: string, createdAt: string): string {
   const base = (value?.trim() || `${profileName}-${createdAt.slice(0, 19).replaceAll(/[:T]/gu, '-')}`).replaceAll(/[\\/:*?"<>|]/gu, '-').slice(0, 120);
   return base.endsWith('.zip') ? base : `${base}.zip`;
@@ -817,6 +868,7 @@ function parseManifest(value: unknown): BackupManifest {
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null; }
 function isFileNotFound(error: unknown): boolean { return isRecord(error) && error.code === 'ENOENT'; }
 function isCrossDeviceError(error: unknown): boolean { return isRecord(error) && error.code === 'EXDEV'; }
+function isRetryableRemoveError(error: unknown): boolean { return isRecord(error) && ['EBUSY', 'ENOTEMPTY', 'EPERM'].includes(String(error.code)); }
 function findSignature(buffer: Buffer, signature: number): number { for (let index = buffer.length - 4; index >= 0; index -= 1) if (buffer.readUInt32LE(index) === signature) return index; return -1; }
 function validateUploadId(value: string): void {
   if (!/^[A-Za-z0-9_-]{8,64}$/u.test(value)) throw new BackupError('invalid_upload_id', 'The upload id is invalid');

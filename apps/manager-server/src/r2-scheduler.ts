@@ -40,6 +40,10 @@ export class BackupScheduler {
 
   public async tick(): Promise<void> {
     if (this.running) return;
+    if (this.backups.isOperationRunning()) {
+      this.logger('[backup] scheduled backup skipped while another backup or restore is running');
+      return;
+    }
     this.running = true;
     try {
       const profile = await this.profiles.getActive();
