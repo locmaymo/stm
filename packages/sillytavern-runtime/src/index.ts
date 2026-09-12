@@ -2,7 +2,7 @@ import { createWriteStream } from 'node:fs';
 import { createInflateRaw } from 'node:zlib';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { Readable } from 'node:stream';
@@ -356,7 +356,11 @@ export class RuntimeManager {
       await runGit(this.gitCommand, ['-C', runtimePath, 'remote', 'add', 'origin', this.repositoryUrl], onLine);
     }
     const top = await runGit(this.gitCommand, ['-C', runtimePath, 'rev-parse', '--show-toplevel'], () => undefined);
-    if (resolve(top.trim()) !== resolve(runtimePath)) throw new RuntimeError('runtime_not_managed', 'Refusing to change a checkout outside the manager runtime');
+    const [checkoutRoot, managedRoot] = await Promise.all([realpath(top.trim()), realpath(runtimePath)]);
+    const sameRoot = process.platform === 'win32'
+      ? checkoutRoot.toLowerCase() === managedRoot.toLowerCase()
+      : checkoutRoot === managedRoot;
+    if (!sameRoot) throw new RuntimeError('runtime_not_managed', 'Refusing to change a checkout outside the manager runtime');
     const moving = ref === 'release' || ref === 'staging';
     const localRef = `refs/stm/${moving ? 'heads' : 'tags'}/${ref}`;
     let revision = pinnedRevision;
