@@ -1121,10 +1121,7 @@ function constantTimeStringEqual(left: string, right: string): boolean {
 }
 
 function requiresSetupCode(env: NodeJS.ProcessEnv): boolean {
-  return env.STM_REQUIRE_SETUP_CODE === '1'
-    || env.STM_MODELSCOPE === '1'
-    || env.STM_MODELSCOPE?.toLowerCase() === 'true'
-    || Boolean(env.MODELSCOPE_HOST || env.MODELSCOPE_ENVIRONMENT);
+  return env.STM_REQUIRE_SETUP_CODE === '1';
 }
 
 function listen(server: Server, host: string, port: number): Promise<void> {

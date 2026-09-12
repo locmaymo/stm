@@ -5,7 +5,7 @@ import { detectPlatform, getPlatformPaths } from '../../../packages/platform/src
 test('platform paths follow the documented durable roots', () => {
   assert.equal(detectPlatform({ platform: 'win32', env: {} }), 'windows');
   assert.equal(detectPlatform({ platform: 'linux', env: { PREFIX: '/data/data/com.termux/files/usr' } }), 'termux');
-  assert.equal(detectPlatform({ platform: 'linux', env: { STM_MODELSCOPE: '1' } }), 'modelscope');
+  assert.equal(detectPlatform({ platform: 'linux', env: { STM_DATA_DIR: '/mnt/workspace/sillytavern-manager' } }), 'modelscope');
   assert.equal(detectPlatform({ platform: 'linux', env: { STM_DOCKER: '1' } }), 'docker');
 
   const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: 'D:/manager-test-data' } });

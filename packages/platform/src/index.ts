@@ -1,4 +1,5 @@
 import { homedir } from 'node:os';
+import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { PlatformKind } from '../../contracts/src/index.js';
 
@@ -29,7 +30,7 @@ export function detectPlatform(options: PlatformPathOptions = {}): PlatformKind 
   const env = options.env ?? process.env;
   const platform = options.platform ?? process.platform;
 
-  if (hasTruthyEnvironmentValue(env.STM_MODELSCOPE) || env.MODELSCOPE_HOST || env.MODELSCOPE_ENVIRONMENT) {
+  if (platform === 'linux' && (env.STM_DATA_DIR?.startsWith('/mnt/workspace') || existsSync('/mnt/workspace'))) {
     return 'modelscope';
   }
   if (hasTruthyEnvironmentValue(env.STM_DOCKER) || env.DOCKER_CONTAINER === 'true' || env.CONTAINER === 'docker') {
