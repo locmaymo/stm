@@ -1,0 +1,13 @@
+node_modules/
+dist/
+apps/manager-panel/dist/
+build/
+coverage/
+.cache/
+.tmp/
+docs/
+.git/
+*.log
+.env
+.env.*
+!.env.example

@@ -87,6 +87,19 @@ test('modern user-root restore preserves config when the SillyTavern archive omi
   assert.equal(await readFile(targetConfig, 'utf8'), 'listen: true\n');
 });
 
+test('assembles chunked uploads in order without buffering the archive', async () => {
+  const fixture = await createFixture();
+  const store = new BackupStore({ paths: fixture.paths });
+  const uploadId = 'chunk-upload-1234';
+  const stream = (value: string): AsyncIterable<Uint8Array> => (async function* () { yield Buffer.from(value, 'utf8'); })();
+  await store.appendUploadChunk(uploadId, 0, stream('hello '));
+  await store.appendUploadChunk(uploadId, 1, stream('world'));
+  const archive = await store.finishUpload(uploadId, 11);
+  assert.equal(await readFile(archive, 'utf8'), 'hello world');
+  await store.removeTemporary(archive);
+  await assert.rejects(() => store.finishUpload(uploadId), (error: unknown) => error instanceof BackupError && error.code === 'upload_incomplete');
+});
+
 async function writeStoredZip(path: string, name: string, content: string): Promise<void> {
   const nameBuffer = Buffer.from(name, 'utf8');
   const data = Buffer.from(content, 'utf8');

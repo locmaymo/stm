@@ -13,6 +13,7 @@ const BACKUP_STATE_FILE = 'backups.json';
 const BACKUP_SCHEMA_VERSION = 1 as const;
 const MAX_ZIP_DIRECTORY_BYTES = 64 * 1024 * 1024;
 const MAX_UPLOAD_BYTES = 8 * 1024 * 1024 * 1024;
+const MAX_UPLOAD_CHUNK_BYTES = 64 * 1024 * 1024;
 const DEFAULT_USER_HANDLE = 'default-user';
 const PRESERVED_DATA_ROOT_NAMES = new Set(['_storage', '_cache', '_uploads', '_webpack', 'cookie-secret.txt']);
 const PRESERVED_EXCLUDED_NAMES = new Set(['secrets.json', 'thumbnails', 'vectors', 'backups']);
@@ -28,11 +29,13 @@ export interface BackupStoreOptions {
 export interface CreateBackupOptions {
   readonly name?: string;
   readonly includeSecrets?: boolean;
+  readonly onProgress?: (progress: { completed: number; total: number }) => void;
 }
 
 export interface RestoreOptions {
   readonly mode: RestoreMode;
   readonly allowSecrets?: boolean;
+  readonly onProgress?: (progress: { completed: number; total: number }) => void;
 }
 
 interface PersistedBackups {
@@ -53,6 +56,12 @@ interface ZipEntry {
 interface ArchiveSource {
   readonly name: string;
   readonly path: string;
+}
+
+interface UploadState {
+  readonly schemaVersion: 1;
+  readonly nextIndex: number;
+  readonly bytes: number;
 }
 
 export class BackupStore {
@@ -125,7 +134,10 @@ export class BackupStore {
     const id = randomUUID();
     const createdAt = this.now().toISOString();
     const fingerprint = await this.fingerprint(profile);
-    const temporary = join(this.paths.tmp, `backup-${id}.zip.tmp`);
+    // Keep the temporary archive beside its final target. A container often
+    // has /tmp on a different filesystem from its persistent /data volume;
+    // writing there would make the final rename fail with EXDEV.
+    const temporary = join(this.paths.archives, `.${id}.zip.tmp`);
     const target = join(this.paths.archives, `${id}.zip`);
     await mkdir(this.paths.tmp, { recursive: true });
     await mkdir(this.paths.archives, { recursive: true });
@@ -133,7 +145,12 @@ export class BackupStore {
     try {
       const sources = await collectSources(profile, options.includeSecrets === true);
       writer = new ZipWriter(temporary);
-      for (const source of sources) await writer.addFile(source.name, source.path);
+      let completed = 0;
+      for (const source of sources) {
+        await writer.addFile(source.name, source.path);
+        completed += 1;
+        options.onProgress?.({ completed, total: sources.length });
+      }
       const archive = await writer.finish();
       await rename(temporary, target);
       const manifest: BackupManifest = {
@@ -169,7 +186,7 @@ export class BackupStore {
     const details = await stat(archivePath);
     const target = join(this.paths.archives, `${id}.zip`);
     await mkdir(this.paths.archives, { recursive: true });
-    await rename(archivePath, target);
+    await moveArchive(archivePath, target);
     const manifest: BackupManifest = {
       schemaVersion: BACKUP_SCHEMA_VERSION,
       id,
@@ -221,7 +238,7 @@ export class BackupStore {
     const temporary = join(this.paths.tmp, `restore-${randomUUID()}`);
     await mkdir(temporary, { recursive: true });
     try {
-      await extractEntries(archivePath, entries, temporary);
+      await extractEntries(archivePath, entries, temporary, options.onProgress);
       const configName = entries.some((entry) => entry.name === 'config.yml') ? 'config.yml' : 'config.yaml';
       const hasConfig = entries.some((entry) => entry.name === 'config.yaml' || entry.name === 'config.yml');
       const dataDestination = await resolveProfileDataRoot(profile);
@@ -270,11 +287,108 @@ export class BackupStore {
     }
   }
 
+  /**
+   * Append one bounded upload chunk. ModelScope's proxy rejects large single
+   * request bodies, so the panel sends a ZIP as a sequence of chunks. State is
+   * persisted beside the part file so a manager restart cannot silently join
+   * chunks in the wrong order.
+   */
+  public async appendUploadChunk(uploadId: string, index: number, stream: AsyncIterable<Uint8Array>): Promise<{ index: number; bytes: number; totalBytes: number }> {
+    validateUploadId(uploadId);
+    if (!Number.isSafeInteger(index) || index < 0) throw new BackupError('invalid_upload_chunk', 'The upload chunk index is invalid');
+    const partPath = this.uploadPartPath(uploadId);
+    const statePath = this.uploadStatePath(uploadId);
+    const current = await this.readUploadState(statePath);
+    if (current && index < current.nextIndex) {
+      // A proxy may reset after the server committed the chunk but before the
+      // browser received the response. Treat that retry as idempotent.
+      return { index, bytes: 0, totalBytes: current.bytes };
+    }
+    if (index === 0) {
+      if (current && current.nextIndex !== 0) throw new BackupError('upload_already_started', 'The upload has already started');
+      await rm(partPath, { force: true });
+    } else if (!current || current.nextIndex !== index) {
+      throw new BackupError('invalid_upload_chunk', `Expected upload chunk ${current?.nextIndex ?? 0}`);
+    }
+
+    let chunkBytes = 0;
+    const limiter = new Transform({
+      transform: (chunk: Buffer, _encoding, callback) => {
+        chunkBytes += chunk.length;
+        if (chunkBytes > MAX_UPLOAD_CHUNK_BYTES) {
+          callback(new BackupError('upload_chunk_too_large', 'The upload chunk is too large'));
+          return;
+        }
+        callback(null, chunk);
+      },
+    });
+    try {
+      await mkdir(this.paths.tmp, { recursive: true });
+      await pipeline(Readable.from(stream), limiter, createWriteStream(partPath, { flags: index === 0 ? 'w' : 'a', mode: 0o600 }));
+      const totalBytes = (await stat(partPath)).size;
+      if (totalBytes > MAX_UPLOAD_BYTES) throw new BackupError('upload_too_large', 'The uploaded ZIP is too large');
+      await this.writeUploadState(statePath, { schemaVersion: 1, nextIndex: index + 1, bytes: totalBytes });
+      return { index, bytes: chunkBytes, totalBytes };
+    } catch (error) {
+      await this.removeUpload(uploadId);
+      throw error;
+    }
+  }
+
+  /** Finish a chunked upload and return its temporary archive path. */
+  public async finishUpload(uploadId: string, expectedBytes?: number): Promise<string> {
+    validateUploadId(uploadId);
+    const partPath = this.uploadPartPath(uploadId);
+    const statePath = this.uploadStatePath(uploadId);
+    const state = await this.readUploadState(statePath);
+    if (!state || state.nextIndex < 1) throw new BackupError('upload_incomplete', 'No upload chunks were received');
+    const details = await stat(partPath).catch(() => null);
+    if (!details) throw new BackupError('upload_incomplete', 'The uploaded archive is missing');
+    if (expectedBytes !== undefined && (!Number.isSafeInteger(expectedBytes) || expectedBytes !== details.size)) {
+      throw new BackupError('upload_incomplete', `The upload is incomplete: received ${details.size} bytes`);
+    }
+    await rm(statePath, { force: true });
+    return partPath;
+  }
+
+  /** Remove an interrupted chunked upload. */
+  public async removeUpload(uploadId: string): Promise<void> {
+    validateUploadId(uploadId);
+    await Promise.all([
+      rm(this.uploadPartPath(uploadId), { force: true }),
+      rm(this.uploadStatePath(uploadId), { force: true }),
+    ]);
+  }
+
   public async removeTemporary(path: string): Promise<void> {
     const root = resolve(this.paths.tmp);
     const candidate = resolve(path);
     if (!candidate.startsWith(`${root}\\`) && !candidate.startsWith(`${root}/`)) throw new BackupError('invalid_temporary_path', 'The temporary archive path is invalid');
     await rm(candidate, { force: true, recursive: true });
+  }
+
+  private uploadPartPath(uploadId: string): string { return join(this.paths.tmp, `upload-${uploadId}.zip.part`); }
+
+  private uploadStatePath(uploadId: string): string { return join(this.paths.tmp, `upload-${uploadId}.json`); }
+
+  private async readUploadState(path: string): Promise<UploadState | null> {
+    try {
+      const parsed: unknown = JSON.parse(await readFile(path, 'utf8'));
+      if (!isRecord(parsed)) throw new Error('invalid upload state');
+      const nextIndex = parsed.nextIndex;
+      const bytes = parsed.bytes;
+      if (parsed.schemaVersion !== 1 || !Number.isSafeInteger(nextIndex) || (nextIndex as number) < 0 || !Number.isSafeInteger(bytes) || (bytes as number) < 0) throw new Error('invalid upload state');
+      return { schemaVersion: 1, nextIndex: nextIndex as number, bytes: bytes as number };
+    } catch (error: unknown) {
+      if (isFileNotFound(error)) return null;
+      throw new BackupError('invalid_upload_state', 'The upload state is invalid; start the upload again');
+    }
+  }
+
+  private async writeUploadState(path: string, state: UploadState): Promise<void> {
+    const temporary = `${path}.${randomUUID()}.tmp`;
+    await writeFile(temporary, `${JSON.stringify(state)}\n`, { encoding: 'utf8', mode: 0o600 });
+    await rename(temporary, path);
   }
 
   private async load(): Promise<BackupManifest[]> {
@@ -468,8 +582,10 @@ function previewEntries(entries: ZipEntry[], fallbackLayout: ProfileLayout): Res
   return { layout: fallbackLayout, fileCount: files.length, totalBytes, includesSecrets, files, warnings };
 }
 
-async function extractEntries(zipPath: string, entries: ZipEntry[], destination: string): Promise<void> {
+async function extractEntries(zipPath: string, entries: ZipEntry[], destination: string, onProgress?: (progress: { completed: number; total: number }) => void): Promise<void> {
   const written = new Set<string>();
+  const files = entries.filter((entry) => !entry.directory);
+  let completed = 0;
   for (const entry of entries) {
     if (entry.directory) continue;
     validateArchiveEntryName(entry.name);
@@ -478,6 +594,8 @@ async function extractEntries(zipPath: string, entries: ZipEntry[], destination:
     written.add(target);
     await mkdir(resolve(target, '..'), { recursive: true });
     await extractEntry(zipPath, entry, target);
+    completed += 1;
+    onProgress?.({ completed, total: files.length });
   }
 }
 
@@ -636,6 +754,19 @@ function parseManifest(value: unknown): BackupManifest {
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null; }
 function isFileNotFound(error: unknown): boolean { return isRecord(error) && error.code === 'ENOENT'; }
 function findSignature(buffer: Buffer, signature: number): number { for (let index = buffer.length - 4; index >= 0; index -= 1) if (buffer.readUInt32LE(index) === signature) return index; return -1; }
+function validateUploadId(value: string): void {
+  if (!/^[A-Za-z0-9_-]{8,64}$/u.test(value)) throw new BackupError('invalid_upload_id', 'The upload id is invalid');
+}
+
+async function moveArchive(source: string, target: string): Promise<void> {
+  try {
+    await rename(source, target);
+  } catch (error: unknown) {
+    if (!isRecord(error) || error.code !== 'EXDEV') throw error;
+    await pipeline(createReadStream(source), createWriteStream(target, { mode: 0o600 }));
+    await rm(source, { force: true });
+  }
+}
 
 const CRC_TABLE = Array.from({ length: 256 }, (_, index) => {
   let value = index;

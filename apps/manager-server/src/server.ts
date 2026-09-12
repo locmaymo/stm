@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
 import { readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { networkInterfaces } from 'node:os';
@@ -230,6 +230,13 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       }
     });
   });
+  // Backups and SillyTavern streaming can last longer than Node's defaults.
+  // Chunked uploads keep individual requests small, while these settings avoid
+  // killing a slow Studio connection mid-request or mid-stream.
+  server.requestTimeout = 0;
+  server.timeout = 0;
+  server.headersTimeout = 120_000;
+  server.keepAliveTimeout = 120_000;
   const defaultHost = paths.platform === 'docker' || paths.platform === 'modelscope' ? '0.0.0.0' : '127.0.0.1';
   const host = options.host ?? env.STM_HOST ?? defaultHost;
   const port = options.port ?? MANAGER_PORT;
@@ -649,11 +656,49 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     const body = await readJson(request);
     const name = isRecord(body) && typeof body.name === 'string' ? body.name : undefined;
     const includeSecrets = isRecord(body) && body.includeSecrets === true;
-    const manifest = await backups.create(profile, {
+    const job = jobs.createOperation('backup', 'Preparing backup');
+    void backups.create(profile, {
       ...(name ? { name } : {}),
       ...(includeSecrets ? { includeSecrets: true } : {}),
-    });
-    sendJson(response, 201, manifest);
+      onProgress: ({ completed, total }) => jobs.updateOperation(job.id, total > 0 ? (completed / total) * 90 : 50, `Compressing files (${completed}/${total})`),
+    }).then((manifest) => { jobs.updateOperation(job.id, 95, 'Saving backup library'); jobs.finishOperation(job.id, 'succeeded', null); return manifest; })
+      .catch((error: unknown) => jobs.finishOperation(job.id, 'failed', error instanceof Error ? error.message : 'Backup failed'));
+    sendJson(response, 202, { jobId: job.id, job });
+    return;
+  }
+  if (pathname === '/api/v1/backups/import/chunk' && method === 'POST') {
+    const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
+    const uploadId = url.searchParams.get('uploadId') ?? '';
+    const index = Number(url.searchParams.get('index') ?? '');
+    const chunk = await backups.appendUploadChunk(uploadId, index, request);
+    sendJson(response, 200, { ok: true, ...chunk });
+    return;
+  }
+  if (pathname === '/api/v1/backups/import/chunk' && method === 'DELETE') {
+    const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
+    const uploadId = url.searchParams.get('uploadId') ?? '';
+    await backups.removeUpload(uploadId);
+    sendJson(response, 200, { ok: true });
+    return;
+  }
+  if (pathname === '/api/v1/backups/import/finish' && method === 'POST') {
+    const body = await readJson(request);
+    if (!isRecord(body) || typeof body.uploadId !== 'string' || typeof body.name !== 'string') {
+      sendError(response, 400, 'invalid_upload', 'Upload id and file name are required');
+      return;
+    }
+    const expectedBytes = typeof body.expectedBytes === 'number' ? body.expectedBytes : undefined;
+    const archivePath = await backups.finishUpload(body.uploadId, expectedBytes);
+    let retained = false;
+    try {
+      const profile = await profiles.getActive();
+      if (!profile) { sendError(response, 409, 'profile_required', 'Create or activate a profile before importing a backup'); return; }
+      const imported = await backups.importArchive(profile, archivePath, body.name);
+      retained = true;
+      sendJson(response, 200, { ...imported.preview, backup: imported.manifest });
+    } finally {
+      if (!retained) await backups.removeTemporary(archivePath);
+    }
     return;
   }
   const backupImportPreview = pathname === '/api/v1/backups/import/preview';
@@ -717,8 +762,11 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       const mode = isRecord(body) && (body.mode === 'merge' || body.mode === 'replace') ? body.mode : null;
       if (!mode) { sendError(response, 400, 'invalid_restore_mode', 'Restore mode must be merge or replace'); return; }
       const allowSecrets = isRecord(body) && body.includeSecrets === true;
-      const result = await restoreWithProcess({ profile, backups, archivePath, mode, allowSecrets, profiles, supervisor, tunnel });
-      sendJson(response, 200, result);
+      const job = jobs.createOperation('restore', 'Preparing restore');
+      void restoreWithProcess({ profile, backups, archivePath, mode, allowSecrets, profiles, supervisor, tunnel, onProgress: (progress, step) => jobs.updateOperation(job.id, progress, step) })
+        .then(() => jobs.finishOperation(job.id, 'succeeded', null))
+        .catch((error: unknown) => jobs.finishOperation(job.id, 'failed', error instanceof Error ? error.message : 'Restore failed'));
+      sendJson(response, 202, { jobId: job.id, job });
       return;
     }
   }
@@ -775,16 +823,29 @@ async function restoreWithProcess(options: {
   readonly profiles: ProfileStore;
   readonly supervisor: ProcessSupervisor;
   readonly tunnel: TunnelManager;
+  readonly onProgress?: (progress: number, step: string) => void;
 }): Promise<{ preview: Awaited<ReturnType<BackupStore['restore']>>; safetySnapshot: Awaited<ReturnType<ProfileStore['createSafetySnapshot']>>; process: ReturnType<ProcessSupervisor['getState']> }> {
-  const { profile, backups, archivePath, mode, allowSecrets, profiles, supervisor, tunnel } = options;
+  const { profile, backups, archivePath, mode, allowSecrets, profiles, supervisor, tunnel, onProgress } = options;
   const previousTunnelMode = tunnel.getState().mode;
+  onProgress?.(5, 'Stopping SillyTavern');
   await tunnel.stop();
   await supervisor.stop();
   try {
+    onProgress?.(15, 'Creating safety snapshot');
     const safetySnapshot = await profiles.createSafetySnapshot(profile);
-    const preview = await backups.restore(profile, archivePath, { mode, ...(allowSecrets ? { allowSecrets: true } : {}) });
+    onProgress?.(25, 'Restoring data');
+    const preview = await backups.restore(profile, archivePath, {
+      mode,
+      ...(allowSecrets ? { allowSecrets: true } : {}),
+      onProgress: ({ completed, total }) => onProgress?.(25 + (total > 0 ? (completed / total) * 60 : 60), `Restoring files (${completed}/${total})`),
+    });
+    onProgress?.(88, 'Starting SillyTavern');
     const process = await supervisor.start();
-    if (previousTunnelMode !== 'off' && process.status === 'running') await tunnel.restart();
+    if (previousTunnelMode !== 'off' && process.status === 'running') {
+      onProgress?.(95, 'Starting public tunnel');
+      await tunnel.restart();
+    }
+    onProgress?.(100, 'Restore complete');
     return { preview, safetySnapshot, process };
   } catch (error) {
     const process = await supervisor.start().catch(() => supervisor.getState());
@@ -1270,6 +1331,23 @@ class JobStore {
     return job;
   }
 
+  public createOperation(kind: 'backup' | 'restore', step: string): Job {
+    const now = new Date().toISOString();
+    const job: Job = {
+      id: `job-${randomUUID()}`,
+      kind,
+      state: 'running',
+      progress: 0,
+      step,
+      installationId: null,
+      createdAt: now,
+      updatedAt: now,
+      error: null,
+    };
+    this.jobs.set(job.id, job);
+    return job;
+  }
+
   public get(id: string): Job | null { return this.jobs.get(id) ?? null; }
 
   public updateFromProgress(installationId: string, progress: InstallationProgress): void {
@@ -1284,6 +1362,18 @@ class JobStore {
     const current = this.jobs.get(id);
     if (!current) return;
     this.jobs.set(id, { ...current, state, progress: state === 'succeeded' ? 100 : current.progress, step: state === 'succeeded' ? 'Installation ready' : 'Installation failed', error, updatedAt: new Date().toISOString() });
+  }
+
+  public updateOperation(id: string, progress: number, step: string): void {
+    const current = this.jobs.get(id);
+    if (!current) return;
+    this.jobs.set(id, { ...current, progress: Math.max(0, Math.min(100, Math.round(progress))), step, updatedAt: new Date().toISOString() });
+  }
+
+  public finishOperation(id: string, state: 'succeeded' | 'failed', error: string | null): void {
+    const current = this.jobs.get(id);
+    if (!current) return;
+    this.jobs.set(id, { ...current, state, progress: state === 'succeeded' ? 100 : current.progress, step: state === 'succeeded' ? 'Completed' : 'Failed', error, updatedAt: new Date().toISOString() });
   }
 }
 

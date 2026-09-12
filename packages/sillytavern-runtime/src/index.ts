@@ -4,6 +4,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -369,7 +370,17 @@ export class RuntimeManager {
     if (!revision && !moving) revision = await runGit(this.gitCommand, ['-C', runtimePath, 'rev-parse', '--verify', `${localRef}^{commit}`], () => undefined).then((value) => value.trim()).catch(() => undefined);
     if (!revision) {
       onLine(`Fetching ${ref}`);
-      await runGit(this.gitCommand, ['-C', runtimePath, 'fetch', '--depth=1', '--no-tags', 'origin', `+refs/${moving ? 'heads' : 'tags'}/${ref}:${localRef}`], onLine);
+      const fetchArgs = ['-C', runtimePath, 'fetch', '--depth=1', '--no-tags', 'origin', `+refs/${moving ? 'heads' : 'tags'}/${ref}:${localRef}`] as const;
+      try {
+        await runGit(this.gitCommand, fetchArgs, onLine);
+      } catch (error: unknown) {
+        // Persistent Studio filesystems can leave an interrupted packfile
+        // behind after a sleep or SIGTERM. Remove only Git's temporary pack
+        // files and retry once before reporting the installation as failed.
+        onLine('Git fetch failed; cleaning temporary pack files and retrying');
+        await removeTemporaryGitPacks(runtimePath);
+        await runGit(this.gitCommand, fetchArgs, onLine).catch(() => { throw error; });
+      }
       revision = (await runGit(this.gitCommand, ['-C', runtimePath, 'rev-parse', '--verify', `${localRef}^{commit}`], () => undefined)).trim();
     } else onLine(`Using cached source ${ref}`);
     if (!/^[a-f0-9]{40,64}$/u.test(revision)) throw new RuntimeError('invalid_revision', 'Git returned an invalid revision');
@@ -461,7 +472,7 @@ async function probeRuntime(
   }
   await assertPortAvailable(port);
   const supportsDataRoot = (await readFile(join(runtimePath, 'server.js'), 'utf8')).includes('dataRoot');
-  const dataRoot = supportsDataRoot ? join(runtimePath, '.health-check-data') : null;
+  const dataRoot = supportsDataRoot ? join(tmpdir(), 'sillytavern-manager-health', randomUUID()) : null;
   if (dataRoot) await mkdir(dataRoot, { recursive: true });
   else if (!await pathExists(join(runtimePath, 'public', 'index.html'))) throw new RuntimeError('health_check_failed', 'Legacy SillyTavern runtime is missing public/index.html');
   const output: string[] = [];
@@ -519,9 +530,29 @@ async function stopChild(child: ChildProcess): Promise<void> {
   if (child.exitCode === null) child.kill('SIGKILL');
 }
 
+async function removeTemporaryGitPacks(runtimePath: string): Promise<void> {
+  const packDirectory = join(runtimePath, '.git', 'objects', 'pack');
+  let names: string[];
+  try { names = await readdir(packDirectory); } catch { return; }
+  await Promise.all(names.filter((name) => name.includes('tmp_pack') || name.endsWith('.tmp')).map((name) => rm(join(packDirectory, name), { force: true })));
+}
+
 async function runNpmInstall(runtimePath: string, npmCommand: string, onLine: (line: string) => void): Promise<void> {
+  const cacheDirectory = join(tmpdir(), 'sillytavern-manager-npm-cache');
+  await mkdir(cacheDirectory, { recursive: true });
   await new Promise<void>((resolvePromise, reject) => {
-    const child = spawn(npmCommand, ['install', '--no-audit', '--no-fund', '--progress=false'], { cwd: runtimePath, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, shell: process.platform === 'win32' });
+    const child = spawn(npmCommand, ['install', '--omit=dev', '--no-audit', '--no-fund', '--prefer-offline', '--progress=false'], {
+      cwd: runtimePath,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+      shell: process.platform === 'win32',
+      env: {
+        ...process.env,
+        npm_config_cache: cacheDirectory,
+        npm_config_update_notifier: 'false',
+        TMPDIR: cacheDirectory,
+      },
+    });
     const consume = (stream: NodeJS.ReadableStream) => {
       let pending = '';
       stream.setEncoding('utf8');

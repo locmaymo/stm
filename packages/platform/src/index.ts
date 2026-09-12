@@ -1,5 +1,6 @@
 import { homedir } from 'node:os';
 import { existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { PlatformKind } from '../../contracts/src/index.js';
 
@@ -72,6 +73,11 @@ export function getPlatformPaths(options: PlatformPathOptions = {}): PlatformPat
   const env = options.env ?? process.env;
   const platform = detectPlatform(options);
   const root = defaultRoot(platform, options, env);
+  const scratchRoot = env.STM_TMP_DIR
+    ? resolve(env.STM_TMP_DIR)
+    : platform === 'modelscope' || platform === 'docker'
+      ? join(tmpdir(), 'sillytavern-manager')
+      : join(root, 'tmp');
   return {
     platform,
     root,
@@ -81,7 +87,7 @@ export function getPlatformPaths(options: PlatformPathOptions = {}): PlatformPat
     logs: join(root, 'logs'),
     metrics: join(root, 'metrics'),
     outbox: join(root, 'outbox'),
-    tmp: join(root, 'tmp'),
+    tmp: scratchRoot,
     bin: join(root, 'bin'),
   };
 }

@@ -293,8 +293,21 @@ test('local backup endpoints create, preview, download, and restore a profile ar
   await writeFile(join(profileDataRoot, 'settings.json'), '{"theme":"dark"}', 'utf8');
   await writeFile(profile.configPath, 'listen: false\n', 'utf8');
   const create = await fetch(`${base}/api/v1/backups`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({}) });
-  assert.equal(create.status, 201);
-  const manifest = await create.json() as { id: string; fileCount: number };
+  assert.equal(create.status, 202);
+  const createJob = await create.json() as { jobId: string };
+  let manifest: { id: string; fileCount: number } | null = null;
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const jobResponse = await fetch(`${base}/api/v1/jobs/${createJob.jobId}`, { headers: { cookie } });
+    const job = await jobResponse.json() as { state: string; error?: string };
+    if (job.state === 'succeeded') {
+      const backupsResponse = await fetch(`${base}/api/v1/backups`, { headers: { cookie } });
+      manifest = (await backupsResponse.json() as { backups: Array<{ id: string; fileCount: number }> }).backups[0] ?? null;
+      break;
+    }
+    if (job.state === 'failed') throw new Error(job.error ?? 'backup job failed');
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 20));
+  }
+  assert.ok(manifest);
   assert.equal(manifest.fileCount, 2);
   const preview = await fetch(`${base}/api/v1/backups/${manifest.id}/preview`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf } });
   assert.equal(preview.status, 200);
@@ -308,6 +321,19 @@ test('local backup endpoints create, preview, download, and restore a profile ar
   const importedBody = await importedPreview.json() as { fileCount: number; backup: { id: string; source: string } };
   assert.equal(importedBody.fileCount, 2);
   assert.equal(importedBody.backup.source, 'uploaded');
+  const chunkUploadId = 'server-chunk-upload-1';
+  const bytes = new Uint8Array(archiveBytes);
+  const split = Math.max(1, Math.ceil(bytes.length / 2));
+  for (let index = 0; index < 2; index += 1) {
+    const chunk = await fetch(`${base}/api/v1/backups/import/chunk?uploadId=${chunkUploadId}&index=${index}`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/octet-stream' }, body: bytes.slice(index * split, Math.min(bytes.length, (index + 1) * split)) });
+    assert.equal(chunk.status, 200);
+  }
+  const finishedUpload = await fetch(`${base}/api/v1/backups/import/finish`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ uploadId: chunkUploadId, name: 'chunked-upload.zip', expectedBytes: bytes.length }) });
+  assert.equal(finishedUpload.status, 200);
+  const chunkedBody = await finishedUpload.json() as { backup: { id: string; source: string } };
+  assert.equal(chunkedBody.backup.source, 'uploaded');
+  const removedChunked = await fetch(`${base}/api/v1/backups/${chunkedBody.backup.id}`, { method: 'DELETE', headers: { cookie, 'x-csrf-token': csrf } });
+  assert.equal(removedChunked.status, 200);
   const renamed = await fetch(`${base}/api/v1/backups/${importedBody.backup.id}`, { method: 'PUT', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Uploaded copy' }) });
   assert.equal(renamed.status, 200);
   assert.equal((await renamed.json() as { name: string }).name, 'Uploaded copy.zip');
@@ -316,7 +342,15 @@ test('local backup endpoints create, preview, download, and restore a profile ar
   const removed = await fetch(`${base}/api/v1/backups/${importedBody.backup.id}`, { method: 'DELETE', headers: { cookie, 'x-csrf-token': csrf } });
   assert.equal(removed.status, 200);
   const restore = await fetch(`${base}/api/v1/backups/${manifest.id}/restore`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'replace' }) });
-  assert.equal(restore.status, 200);
+  assert.equal(restore.status, 202);
+  const restoreJob = await restore.json() as { jobId: string };
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const jobResponse = await fetch(`${base}/api/v1/jobs/${restoreJob.jobId}`, { headers: { cookie } });
+    const job = await jobResponse.json() as { state: string; error?: string };
+    if (job.state === 'succeeded') break;
+    if (job.state === 'failed') throw new Error(job.error ?? 'restore job failed');
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 20));
+  }
   assert.equal(await readFile(join(profile.dataPath, 'default-user', 'settings.json'), 'utf8'), '{"theme":"dark"}');
 });
 

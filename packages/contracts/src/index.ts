@@ -189,13 +189,15 @@ export interface RestorePreview {
 
 export type JobState = 'queued' | 'running' | 'succeeded' | 'failed';
 
+export type JobKind = 'installation' | 'backup' | 'restore';
+
 export interface Job {
   readonly id: string;
-  readonly kind: 'installation';
+  readonly kind: JobKind;
   readonly state: JobState;
   readonly progress: number;
   readonly step: string;
-  readonly installationId: string;
+  readonly installationId: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly error: string | null;
