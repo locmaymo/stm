@@ -10,9 +10,10 @@ import type { Installation, ProcessState, VersionOption } from '../../../package
 import type { RuntimeManager } from '../../../packages/sillytavern-runtime/src/index.js';
 import type { ProcessSupervisor } from '../src/supervisor.js';
 
-async function createServer(options: { setupCodeRequired?: boolean; bootstrapPassword?: string } = {}): Promise<ManagerServer> {
+async function createServer(options: { setupCodeRequired?: boolean; bootstrapPassword?: string; platform?: 'linux' | 'modelscope' } = {}): Promise<ManagerServer> {
   const root = await mkdtemp(join(tmpdir(), 'stm-manager-'));
-  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const basePaths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const paths = options.platform === 'modelscope' ? { ...basePaths, platform: 'modelscope' as const } : basePaths;
   const staticRoot = join(root, 'panel');
   await mkdir(staticRoot, { recursive: true });
   await writeFile(join(staticRoot, 'index.html'), '<!doctype html><title>Manager panel</title>', 'utf8');
@@ -29,6 +30,17 @@ async function createServer(options: { setupCodeRequired?: boolean; bootstrapPas
     logger: () => undefined,
   });
 }
+
+test('ModelScope proxy origins are accepted while unrelated origins remain blocked', async (t) => {
+  const manager = await createServer({ platform: 'modelscope', bootstrapPassword: 'correct horse battery staple' });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const proxied = await fetch(`${base}/api/v1/health`, { headers: { origin: 'https://www.modelscope.ai' } });
+  assert.equal(proxied.status, 200);
+  const unrelated = await fetch(`${base}/api/v1/health`, { headers: { origin: 'https://evil.example' } });
+  assert.equal(unrelated.status, 403);
+  assert.equal((await unrelated.json() as { error: { code: string } }).error.code, 'origin_rejected');
+});
 
 function serverUrl(manager: ManagerServer): string {
   const address = manager.server.address();
@@ -114,6 +126,33 @@ test('STM_ADMIN_PASSWORD bootstraps a fresh installation without exposing the pa
   assert.equal(login.status, 200);
   const payload = await login.json() as Record<string, unknown>;
   assert.equal(JSON.stringify(payload).includes('correct horse'), false);
+});
+
+test('a fresh manager without an environment secret accepts first-run password setup', async (t) => {
+  const manager = await createServer({ setupCodeRequired: false });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const setup = await fetch(`${base}/api/v1/setup/password`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ password: '123456', termsAccepted: true, telemetryAccepted: true }),
+  });
+  assert.equal(setup.status, 201);
+});
+
+test('authenticated admins can change the manager password without losing persistence', async (t) => {
+  const manager = await createServer({ bootstrapPassword: '123456' });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const login = await fetch(`${base}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: '123456' }) });
+  const cookie = cookieFrom(login);
+  const csrf = (await login.json() as { session: { csrfToken: string } }).session.csrfToken;
+  const changed = await fetch(`${base}/api/v1/auth/password`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ password: '654321', confirmPassword: '654321' }) });
+  assert.equal(changed.status, 200);
+  const oldLogin = await fetch(`${base}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: '123456' }) });
+  assert.equal(oldLogin.status, 401);
+  const newLogin = await fetch(`${base}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: '654321' }) });
+  assert.equal(newLogin.status, 200);
 });
 
 test('R2 settings are authenticated, masked, and preserve masked credentials', async (t) => {

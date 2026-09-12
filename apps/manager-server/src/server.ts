@@ -44,6 +44,7 @@ const PROTECTED_PATHS = new Set([
   '/api/v1/config',
   '/api/v1/access/security',
   '/api/v1/access/password',
+  '/api/v1/auth/password',
   '/api/v1/metrics',
   '/api/v1/tunnel',
   '/api/v1/r2',
@@ -193,6 +194,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       secureCookies,
       setupCodeRequired,
       staticRoot,
+      platform: paths.platform,
       logger,
       runtime,
       jobs,
@@ -282,6 +284,7 @@ async function handleRequest(options: {
   readonly secureCookies: boolean;
   readonly setupCodeRequired: boolean;
   readonly staticRoot: string;
+  readonly platform: PlatformPaths['platform'];
   readonly logger: (line: string) => void;
   readonly runtime: RuntimeManager;
   readonly jobs: JobStore;
@@ -293,14 +296,14 @@ async function handleRequest(options: {
   readonly metrics: MetricsStore;
   readonly config: ConfigStore;
 }): Promise<void> {
-  const { request, response, store, sessions, rateLimiter, startedAt, secureCookies, setupCodeRequired, staticRoot, runtime, jobs, supervisor, tunnel, profiles, backups, r2, metrics, config } = options;
+  const { request, response, store, sessions, rateLimiter, startedAt, secureCookies, setupCodeRequired, staticRoot, platform, runtime, jobs, supervisor, tunnel, profiles, backups, r2, metrics, config } = options;
   const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
   const pathname = url.pathname;
   const context: RequestContext = {
     request,
     response,
     pathname,
-    originTrusted: isTrustedOrigin(request),
+    originTrusted: isTrustedOrigin(request, platform),
     sessionToken: parseSessionCookie(headerValue(request.headers.cookie), COOKIE_NAME),
   };
 
@@ -380,16 +383,35 @@ async function handleRequest(options: {
     if (method !== 'GET' && !requireCsrf(context, session.csrfToken)) {
       return;
     }
-    await handleRuntimeRequest(context, runtime, jobs, supervisor, tunnel, profiles, backups, r2, metrics, config);
+    await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, profiles, backups, r2, metrics, config);
     return;
   }
 
   sendError(response, 404, 'not_found', 'Route not found');
 }
 
-async function handleRuntimeRequest(context: RequestContext, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, metrics: MetricsStore, config: ConfigStore): Promise<void> {
+async function handleRuntimeRequest(context: RequestContext, store: StateStore, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, metrics: MetricsStore, config: ConfigStore): Promise<void> {
   const { pathname, request, response } = context;
   const method = request.method ?? 'GET';
+  if (pathname === '/api/v1/auth/password' && method === 'POST') {
+    const body = await readJson(request);
+    if (!isRecord(body) || typeof body.password !== 'string' || typeof body.confirmPassword !== 'string' || body.password !== body.confirmPassword) {
+      sendError(response, 400, 'password_confirmation_mismatch', 'Enter the same manager password twice');
+      return;
+    }
+    const passwordError = validatePassword(body.password);
+    if (passwordError) {
+      sendError(response, 400, 'invalid_password', passwordError);
+      return;
+    }
+    const changed = await store.changeAdminPassword(hashPassword(body.password));
+    if (!changed) {
+      sendError(response, 409, 'setup_required', 'Create the manager admin password before changing it');
+      return;
+    }
+    sendJson(response, 200, { ok: true });
+    return;
+  }
   if (pathname === '/api/v1/config/validate' && method === 'POST') {
     const body = await readJson(request);
     if (!isRecord(body) || typeof body.rawYaml !== 'string') { sendError(response, 400, 'invalid_input', 'A YAML document is required'); return; }
@@ -1051,7 +1073,7 @@ function checkRateLimit(context: RequestContext, rateLimiter: RateLimiter): bool
   return true;
 }
 
-function isTrustedOrigin(request: IncomingMessage): boolean {
+function isTrustedOrigin(request: IncomingMessage, platform: PlatformPaths['platform']): boolean {
   const origin = headerValue(request.headers.origin);
   if (!origin) {
     return true;
@@ -1062,10 +1084,15 @@ function isTrustedOrigin(request: IncomingMessage): boolean {
   try {
     const parsed = new URL(origin);
     const host = headerValue(request.headers.host);
-    return Boolean(host && parsed.host === host);
+    if (host && parsed.host === host) return true;
+    return platform === 'modelscope' && isModelScopeOrigin(parsed.hostname);
   } catch {
     return false;
   }
+}
+
+function isModelScopeOrigin(hostname: string): boolean {
+  return hostname === 'modelscope.ai' || hostname.endsWith('.modelscope.ai');
 }
 
 async function readJson(request: IncomingMessage): Promise<unknown> {

@@ -6,7 +6,7 @@ const SCRYPT_PARALLELIZATION = 1;
 const KEY_LENGTH = 32;
 const SALT_LENGTH = 16;
 
-export const MIN_PASSWORD_LENGTH = 12;
+export const MIN_PASSWORD_LENGTH = 6;
 
 export function validatePassword(password: unknown): string | null {
   if (typeof password !== 'string') {

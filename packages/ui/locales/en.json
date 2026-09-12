@@ -210,6 +210,13 @@
     ,"applyYaml": "Validate and apply"
     ,"configSaved": "Configuration saved and SillyTavern restarted."
     ,"configSaveFailed": "Could not save the configuration"
+    ,"managerPasswordTitle": "Manager access password"
+    ,"managerPasswordHint": "Change the password used to open this manager. It is stored in the manager data directory and survives restarts."
+    ,"managerPassword": "New manager password"
+    ,"managerPasswordSave": "Change manager password"
+    ,"managerPasswordSaved": "Manager password changed"
+    ,"managerPasswordSaveFailed": "Could not change the manager password"
+    ,"managerPasswordMin": "Use at least 6 characters."
   },
   "dashboard": {
     "eyebrow": "CONTROL ROOM / OVERVIEW",

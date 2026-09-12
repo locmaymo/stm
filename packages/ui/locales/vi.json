@@ -210,6 +210,13 @@
     ,"applyYaml": "Kiểm tra và áp dụng"
     ,"configSaved": "Đã lưu cấu hình và khởi động lại SillyTavern."
     ,"configSaveFailed": "Không thể lưu cấu hình"
+    ,"managerPasswordTitle": "Mật khẩu truy cập manager"
+    ,"managerPasswordHint": "Đổi mật khẩu dùng để mở manager. Mật khẩu được lưu trong thư mục dữ liệu và vẫn giữ nguyên sau khi khởi động lại."
+    ,"managerPassword": "Mật khẩu manager mới"
+    ,"managerPasswordSave": "Đổi mật khẩu manager"
+    ,"managerPasswordSaved": "Đã đổi mật khẩu manager"
+    ,"managerPasswordSaveFailed": "Không thể đổi mật khẩu manager"
+    ,"managerPasswordMin": "Dùng ít nhất 6 ký tự."
   },
   "dashboard": {
     "eyebrow": "TRUNG TÂM ĐIỀU HÀNH / TỔNG QUAN",

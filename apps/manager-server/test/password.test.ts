@@ -12,7 +12,8 @@ test('password hashes verify without storing the clear text', () => {
 });
 
 test('password policy rejects short and non-string values', () => {
-  assert.equal(validatePassword('short'), 'Password must be at least 12 characters');
+  assert.equal(validatePassword('short'), 'Password must be at least 6 characters');
+  assert.equal(validatePassword('123456'), null);
   assert.equal(validatePassword(undefined), 'Password is required');
   assert.equal(validatePassword('a'.repeat(257)), 'Password is too long');
   assert.equal(validatePassword('long enough password'), null);

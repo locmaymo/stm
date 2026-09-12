@@ -130,6 +130,28 @@ export class StateStore {
     return this.saveAdminPassword(passwordHash);
   }
 
+  public async changeAdminPassword(passwordHash: string): Promise<boolean> {
+    let changed = false;
+    const operation = async (): Promise<void> => {
+      const state = await this.load();
+      if (!state.adminPasswordHash) {
+        return;
+      }
+      const updated: PersistedManagerState = {
+        ...state,
+        adminPasswordHash: passwordHash,
+        updatedAt: this.now().toISOString(),
+      };
+      await this.write(updated);
+      this.state = updated;
+      changed = true;
+    };
+    const previous = this.adminWriteQueue;
+    this.adminWriteQueue = previous.then(operation, operation);
+    await this.adminWriteQueue;
+    return changed;
+  }
+
   public async clearSetupCode(): Promise<void> {
     const state = await this.load();
     const updated: PersistedManagerState = {
