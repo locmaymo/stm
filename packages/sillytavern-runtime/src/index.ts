@@ -1,7 +1,7 @@
 import { createWriteStream } from 'node:fs';
 import { createInflateRaw } from 'node:zlib';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -25,6 +25,7 @@ const MARKER_FILE = '.stm-installation.json';
 const GITHUB_API = 'https://api.github.com';
 const MAX_ZIP_DIRECTORY_BYTES = 64 * 1024 * 1024;
 const GIT_REPOSITORY = `https://github.com/${REPOSITORY}.git`;
+const DEPENDENCY_MARKER = '.stm-dependencies.json';
 
 export interface InstallationProgress {
   readonly status: InstallationStatus;
@@ -190,7 +191,7 @@ export class RuntimeManager {
     await mkdir(runtimePath, { recursive: true });
     await rm(markerPath, { force: true });
     const revision = await this.prepareGitCheckout(runtimePath, installation.resolvedRef, this.logger, installation.revision);
-    await this.installDependencies(runtimePath, this.logger);
+    await this.installDependenciesIfNeeded(runtimePath, this.logger);
     await this.healthCheck(runtimePath, this.logger);
     const migrated = {
       ...installation,
@@ -228,7 +229,7 @@ export class RuntimeManager {
     if (this.useGit && resolve(installation.runtimePath) === resolve(this.runtimePathFor(id))) {
       await rm(installation.markerPath, { force: true });
       await this.prepareGitCheckout(installation.runtimePath, installation.resolvedRef, this.logger, installation.revision);
-      await this.installDependencies(installation.runtimePath, this.logger);
+      await this.installDependenciesIfNeeded(installation.runtimePath, this.logger);
       await this.healthCheck(installation.runtimePath, this.logger);
       await this.writeMarker(installation);
     } else await assertInstallationMarker(installation);
@@ -306,7 +307,7 @@ export class RuntimeManager {
         await extractZipSafely(zipPath, extractedPath, (progress) => onProgress?.({ status: 'extracting', progress: 48 + progress * 0.2, step: 'Extracting source archive' }));
       }
       await update('installing', 70, 'Installing SillyTavern dependencies');
-      await this.installDependencies(extractedPath, (line) => this.logger(`[installer:${id}] ${line}`));
+      await this.installDependenciesIfNeeded(extractedPath, (line) => this.logger(`[installer:${id}] ${line}`));
       await update('health_check', 90, 'Checking the installation');
       await this.healthCheck(extractedPath, (line) => this.logger(`[installer:${id}] ${line}`));
       if (!this.useGit) {
@@ -340,6 +341,25 @@ export class RuntimeManager {
 
   private runtimePathFor(id: string): string {
     return this.useGit ? join(this.paths.profiles, 'runtime') : join(this.paths.profiles, id, 'runtime');
+  }
+
+  private async installDependenciesIfNeeded(runtimePath: string, onLine: (line: string) => void): Promise<void> {
+    const fingerprint = await dependencyFingerprint(runtimePath);
+    const markerPath = join(runtimePath, 'node_modules', DEPENDENCY_MARKER);
+    if (await pathExists(join(runtimePath, 'node_modules'))) {
+      try {
+        const marker = JSON.parse(await readFile(markerPath, 'utf8')) as unknown;
+        if (isRecord(marker) && marker.schemaVersion === 1 && marker.fingerprint === fingerprint) {
+          onLine('Using cached SillyTavern dependencies');
+          return;
+        }
+      } catch { /* missing or stale marker: install below */ }
+    }
+    await this.installDependencies(runtimePath, onLine);
+    await mkdir(join(runtimePath, 'node_modules'), { recursive: true });
+    const temporary = `${markerPath}.${randomBytes(4).toString('hex')}.tmp`;
+    await writeFile(temporary, `${JSON.stringify({ schemaVersion: 1, fingerprint })}\n`, { encoding: 'utf8', mode: 0o600 });
+    await rename(temporary, markerPath);
   }
 
   private async writeMarker(installation: Installation): Promise<void> {
@@ -693,6 +713,19 @@ function findSignature(buffer: Buffer, signature: number): number {
 function isReleasePayload(value: unknown): value is ReleasePayload { return isRecord(value); }
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null; }
 function isFileNotFound(error: unknown): boolean { return isRecord(error) && error.code === 'ENOENT'; }
+
+async function dependencyFingerprint(runtimePath: string): Promise<string> {
+  const hash = createHash('sha256');
+  for (const name of ['package.json', 'package-lock.json']) {
+    try {
+      hash.update(name, 'utf8');
+      hash.update(await readFile(join(runtimePath, name)));
+    } catch (error: unknown) {
+      if (!isFileNotFound(error)) throw error;
+    }
+  }
+  return hash.digest('hex');
+}
 
 async function pathExists(path: string): Promise<boolean> {
   try { await stat(path); return true; } catch (error: unknown) { return isFileNotFound(error) ? false : Promise.reject(error); }

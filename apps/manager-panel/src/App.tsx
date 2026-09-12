@@ -32,6 +32,43 @@ function pageFromHash(): PageId {
   return navigation.find(({ id }) => id === hash)?.id ?? 'overview';
 }
 
+const UPLOAD_CHUNK_BYTES = 4 * 1024 * 1024;
+const UPLOAD_RETRIES = 3;
+
+function apiErrorFromText(text: string, status: number, fallback: string): string {
+  try {
+    const payload = JSON.parse(text) as { error?: { message?: string }; Message?: string };
+    return payload.error?.message ?? payload.Message ?? `${fallback} (HTTP ${status})`;
+  } catch {
+    const looksLikeHtml = /<!doctype\s+html|<html[\s>]/iu.test(text);
+    return looksLikeHtml
+      ? `${fallback} (the Studio proxy returned an HTML error page; try again)`
+      : `${fallback} (HTTP ${status})`;
+  }
+}
+
+async function uploadChunkWithRetry(url: string, body: Blob, headers: HeadersInit): Promise<void> {
+  let lastError = 'Upload request failed';
+  for (let attempt = 0; attempt <= UPLOAD_RETRIES; attempt += 1) {
+    let response: Response;
+    try {
+      response = await fetch(url, { method: 'POST', credentials: 'same-origin', headers, body });
+    } catch (error: unknown) {
+      lastError = error instanceof Error ? error.message : lastError;
+      if (attempt === UPLOAD_RETRIES) throw new Error(lastError);
+      await new Promise((resolvePromise) => window.setTimeout(resolvePromise, 500 * (attempt + 1)));
+      continue;
+    }
+    if (response.ok) return;
+    const text = await response.text();
+    lastError = apiErrorFromText(text, response.status, 'Upload request failed');
+    const retryable = response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500;
+    if (!retryable || attempt === UPLOAD_RETRIES) throw new Error(lastError);
+    await new Promise((resolvePromise) => window.setTimeout(resolvePromise, 500 * (attempt + 1)));
+  }
+  throw new Error(lastError);
+}
+
 export function App() {
   return <AuthGate />;
 }
@@ -484,21 +521,23 @@ function DataPage({ t, csrfToken, profiles, activeProfileId, backups, onProfiles
     if (!file) return;
     setBusyAction(t('console.importZip')); setOperationProgress({ percent: 0, step: t('console.importZip') }); setError(null);
     const uploadId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const chunkSize = 16 * 1024 * 1024;
     try {
       let index = 0;
-      for (let offset = 0; offset < file.size; offset += chunkSize) {
-        const end = Math.min(file.size, offset + chunkSize);
-        const response = await fetch(`/api/v1/backups/import/chunk?uploadId=${encodeURIComponent(uploadId)}&index=${index}`, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/octet-stream', 'x-csrf-token': csrfToken }, body: file.slice(offset, end) });
-        if (!response.ok) {
-          const payload = await response.json() as { error?: { message?: string } };
-          throw new Error(payload.error?.message ?? t('console.backupPreviewFailed'));
-        }
+      for (let offset = 0; offset < file.size; offset += UPLOAD_CHUNK_BYTES) {
+        const end = Math.min(file.size, offset + UPLOAD_CHUNK_BYTES);
+        await uploadChunkWithRetry(
+          `/api/v1/backups/import/chunk?uploadId=${encodeURIComponent(uploadId)}&index=${index}`,
+          file.slice(offset, end),
+          { 'content-type': 'application/octet-stream', 'x-csrf-token': csrfToken, accept: 'application/json' },
+        );
         index += 1;
-        setOperationProgress({ percent: Math.round((end / Math.max(file.size, 1)) * 100), step: `Uploading chunk ${index}` });
+        setOperationProgress({ percent: Math.round((end / Math.max(file.size, 1)) * 100), step: `Uploading ${formatBytes(end)} / ${formatBytes(file.size)}` });
       }
       const response = await fetch('/api/v1/backups/import/finish', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ uploadId, name: file.name, expectedBytes: file.size }) });
-      const payload = await response.json() as (RestorePreview & { backup?: BackupManifest }) | { error?: { message?: string } };
+      const text = await response.text();
+      let payload: (RestorePreview & { backup?: BackupManifest }) | { error?: { message?: string } };
+      try { payload = JSON.parse(text) as (RestorePreview & { backup?: BackupManifest }) | { error?: { message?: string } }; }
+      catch { throw new Error(apiErrorFromText(text, response.status, t('console.backupPreviewFailed'))); }
       if (!response.ok || !('files' in payload)) { setError(('error' in payload ? payload.error?.message : undefined) ?? t('console.backupPreviewFailed')); return; }
       if (!payload.backup) { setError(t('console.backupPreviewFailed')); return; }
       setSelectedBackup(payload.backup); setSelectedPreview(payload);
