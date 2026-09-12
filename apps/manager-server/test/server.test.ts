@@ -37,6 +37,8 @@ test('ModelScope proxy origins are accepted while unrelated origins remain block
   const base = serverUrl(manager);
   const proxied = await fetch(`${base}/api/v1/health`, { headers: { origin: 'https://www.modelscope.ai' } });
   assert.equal(proxied.status, 200);
+  const studioFrame = await fetch(`${base}/api/v1/health`, { headers: { origin: 'https://locmay-stm.ms.fun' } });
+  assert.equal(studioFrame.status, 200);
   const unrelated = await fetch(`${base}/api/v1/health`, { headers: { origin: 'https://evil.example' } });
   assert.equal(unrelated.status, 403);
   assert.equal((await unrelated.json() as { error: { code: string } }).error.code, 'origin_rejected');

@@ -1092,7 +1092,10 @@ function isTrustedOrigin(request: IncomingMessage, platform: PlatformPaths['plat
 }
 
 function isModelScopeOrigin(hostname: string): boolean {
-  return hostname === 'modelscope.ai' || hostname.endsWith('.modelscope.ai');
+  return hostname === 'modelscope.ai'
+    || hostname.endsWith('.modelscope.ai')
+    || hostname === 'ms.fun'
+    || hostname.endsWith('.ms.fun');
 }
 
 async function readJson(request: IncomingMessage): Promise<unknown> {
