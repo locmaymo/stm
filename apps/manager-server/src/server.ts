@@ -841,11 +841,14 @@ async function restoreWithProcess(options: {
     // A safety copy has to exist before the restore overwrites anything, but it
     // does not have to be a second copy of every file. Writing one compressed
     // archive is a single large sequential write; copying the tree file by file
-    // measured 639 seconds on a ModelScope volume for the same data.
+    // measured 639 seconds on a ModelScope volume for the same data. It only
+    // needs to carry secrets when the restore is going to overwrite them, and
+    // an unchanged profile can reuse the backup it already has.
     onProgress?.(15, 'Creating safety snapshot');
-    const safetySnapshot = await backups.create(profile, {
+    const incoming = await backups.preview(archivePath, profile.layout);
+    const safetySnapshot = await backups.createSafetyCopy(profile, {
       name: `${profile.name}-prerestore`,
-      includeSecrets: true,
+      includeSecrets: incoming.includesSecrets && allowSecrets,
       onProgress: ({ completed, total }) => onProgress?.(15 + (total > 0 ? (completed / total) * 10 : 0), `Backing up current data (${completed}/${total})`),
     });
     onProgress?.(25, 'Restoring data');

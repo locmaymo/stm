@@ -157,6 +157,34 @@ export class BackupStore {
   /** Prevent a scheduled backup from racing a restore or another manual backup. */
   public isOperationRunning(): boolean { return this.pendingOperations > 0; }
 
+  /**
+   * Guarantee a recoverable copy of the profile without necessarily writing one.
+   *
+   * A restore has to be undoable, but if the newest backup still matches the
+   * profile byte for byte then it already is that copy, and reading every file
+   * again to produce an identical archive is pure cost - on a hosted volume it
+   * is minutes of it. Comparing fingerprints is one metadata pass instead.
+   */
+  public async createSafetyCopy(profile: Profile, options: CreateBackupOptions = {}): Promise<BackupManifest> {
+    const release = await this.acquireOperation();
+    try {
+      const fingerprint = await this.fingerprint(profile);
+      const candidate = (await this.load())
+        .filter((manifest) => manifest.profileId === profile.id
+          && manifest.source === 'created'
+          && manifest.fingerprint === fingerprint
+          && (manifest.includesSecrets || options.includeSecrets !== true))
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
+      if (candidate && await this.getArchivePath(candidate.id)) {
+        this.logger(`[backup] reusing ${candidate.name} as the safety copy; the profile has not changed since it was written`);
+        return candidate;
+      }
+      return await this.createUnlocked(profile, options);
+    } finally {
+      release();
+    }
+  }
+
   private async createUnlocked(profile: Profile, options: CreateBackupOptions = {}): Promise<BackupManifest> {
     const id = randomUUID();
     const createdAt = this.now().toISOString();

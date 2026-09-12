@@ -166,6 +166,26 @@ test('replace writes in place, drops files the backup lacks, and keeps secrets i
   assert.deepEqual((await readdir(targetData)).sort(), ['default-user']);
 });
 
+test('a safety copy reuses an unchanged profile’s newest backup instead of writing another', async () => {
+  const fixture = await createFixture();
+  const store = new BackupStore({ paths: fixture.paths });
+  const first = await store.createSafetyCopy(fixture.profile, { name: 'Default-prerestore' });
+  const reused = await store.createSafetyCopy(fixture.profile, { name: 'Default-prerestore' });
+  assert.equal(reused.id, first.id);
+  assert.equal((await store.list(fixture.profile.id)).length, 1);
+
+  // A copy that must carry secrets cannot reuse one that excluded them.
+  const withSecrets = await store.createSafetyCopy(fixture.profile, { name: 'Default-prerestore', includeSecrets: true });
+  assert.notEqual(withSecrets.id, first.id);
+  assert.equal(withSecrets.includesSecrets, true);
+
+  // Changing the profile has to produce a new copy.
+  await writeFile(join(fixture.profile.dataPath, 'chats', 'new.json'), '{"message":"added"}', 'utf8');
+  const afterChange = await store.createSafetyCopy(fixture.profile, { name: 'Default-prerestore' });
+  assert.notEqual(afterChange.id, first.id);
+  assert.notEqual(afterChange.id, withSecrets.id);
+});
+
 test('assembles chunked uploads in order without buffering the archive', async () => {
   const fixture = await createFixture();
   const store = new BackupStore({ paths: fixture.paths });
