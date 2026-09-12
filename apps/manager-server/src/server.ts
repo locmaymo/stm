@@ -814,6 +814,14 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
   sendError(response, 404, 'not_found', 'Route not found');
 }
 
+/** Each apply-phase step gets its own percentage so a slow phase still shows the bar moving. */
+const RESTORE_STEP_PROGRESS: Record<string, number> = {
+  'Applying restored data': 85,
+  'Clearing existing data': 86,
+  'Moving restored data into place': 87,
+  'Finalizing restored data': 88,
+};
+
 async function restoreWithProcess(options: {
   readonly profile: Awaited<ReturnType<ProfileStore['getActive']>> & {};
   readonly backups: BackupStore;
@@ -838,9 +846,9 @@ async function restoreWithProcess(options: {
       mode,
       ...(allowSecrets ? { allowSecrets: true } : {}),
       onProgress: ({ completed, total }) => onProgress?.(25 + (total > 0 ? (completed / total) * 60 : 60), `Restoring files (${completed}/${total})`),
-      onStatus: (step) => onProgress?.(step === 'Finalizing restored data' ? 87 : 86, step),
+      onStatus: (step) => onProgress?.(RESTORE_STEP_PROGRESS[step] ?? 86, step),
     });
-    onProgress?.(88, 'Starting SillyTavern');
+    onProgress?.(90, 'Starting SillyTavern');
     const process = await supervisor.start();
     if (previousTunnelMode !== 'off' && process.status === 'running') {
       onProgress?.(95, 'Starting public tunnel');

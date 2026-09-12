@@ -261,6 +261,7 @@ export class ProfileStore {
    * rejected so a snapshot cannot unexpectedly read outside the workspace.
    */
   public async createSafetySnapshot(profile: Profile): Promise<ProfileSnapshot> {
+    const startedAt = Date.now();
     const fingerprint = await fingerprintProfile(profile);
     const previous = await this.findMatchingSnapshot(profile.id, fingerprint);
     if (previous) {
@@ -286,7 +287,7 @@ export class ProfileStore {
     const manifest = { schemaVersion: 1, profileId: profile.id, layout: profile.layout, createdAt, fingerprint };
     await writeFile(join(destination, 'snapshot.json'), `${JSON.stringify(manifest, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
     await this.pruneSafetySnapshots(profile.id);
-    this.logger(`[profiles] safety snapshot created for ${profile.name}`);
+    this.logger(`[profiles] safety snapshot created for ${profile.name} in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
     return { id, profileId: profile.id, createdAt, path: destination, fingerprint };
   }
 

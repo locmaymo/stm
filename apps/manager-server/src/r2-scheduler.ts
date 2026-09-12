@@ -22,6 +22,7 @@ export class BackupScheduler {
   private readonly tickIntervalMs: number;
   private timer: NodeJS.Timeout | null = null;
   private running = false;
+  private reportedBusy = false;
 
   public constructor(options: BackupSchedulerOptions) {
     this.backups = options.backups;
@@ -41,9 +42,15 @@ export class BackupScheduler {
   public async tick(): Promise<void> {
     if (this.running) return;
     if (this.backups.isOperationRunning()) {
-      this.logger('[backup] scheduled backup skipped while another backup or restore is running');
+      // A restore can hold the lock for many minutes. Saying so once is
+      // useful; saying it every minute buries the lines that matter.
+      if (!this.reportedBusy) {
+        this.reportedBusy = true;
+        this.logger('[backup] scheduled backup paused while another backup or restore is running');
+      }
       return;
     }
+    this.reportedBusy = false;
     this.running = true;
     try {
       const profile = await this.profiles.getActive();

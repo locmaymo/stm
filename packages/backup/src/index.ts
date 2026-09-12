@@ -280,7 +280,7 @@ export class BackupStore {
     await this.sweepAbandonedStaging(stagingRoot);
     await mkdir(temporary, { recursive: true });
     try {
-      await extractEntries(archivePath, entries, temporary, options.onProgress);
+      await this.timed(`extracted ${preview.fileCount} files`, () => extractEntries(archivePath, entries, temporary, options.onProgress));
       const configName = entries.some((entry) => entry.name === 'config.yml') ? 'config.yml' : 'config.yaml';
       const hasConfig = entries.some((entry) => entry.name === 'config.yaml' || entry.name === 'config.yml');
       const archiveDataRoot = hasDefaultUserWrapper(entries) ? join(temporary, DEFAULT_USER_HANDLE) : temporary;
@@ -288,12 +288,15 @@ export class BackupStore {
       this.logger(`[backup] applying restored data to ${profile.name}`);
       if (options.mode === 'replace') {
         options.onStatus?.('Clearing existing data');
-        await clearDataRoot(dataDestination, dataDestination === resolve(profile.dataPath), preview.includesSecrets, (path) => this.discard(path, stagingRoot));
-        if (hasConfig) await rm(profile.configPath, { force: true });
+        await this.timed('cleared existing data', async () => {
+          await clearDataRoot(dataDestination, dataDestination === resolve(profile.dataPath), preview.includesSecrets, (path) => this.discard(path, stagingRoot));
+          if (hasConfig) await rm(profile.configPath, { force: true });
+        });
       }
       await mkdir(dataDestination, { recursive: true });
       const excludedDataFiles = new Set([configName, 'secrets.json']);
-      await moveDataFiles(archiveDataRoot, dataDestination, excludedDataFiles, options.mode === 'merge');
+      options.onStatus?.('Moving restored data into place');
+      await this.timed('moved restored data into place', () => moveDataFiles(archiveDataRoot, dataDestination, excludedDataFiles, options.mode === 'merge'));
       const configSource = join(temporary, configName);
       // Staging is discarded either way, so both modes can take the bytes by
       // rename instead of copying the file a second time.
@@ -330,7 +333,10 @@ export class BackupStore {
       await rename(path, trash);
     } catch (error: unknown) {
       if (!isCrossDeviceError(error) && !isRetryableRemoveError(error)) throw error;
-      await removeTree(path);
+      // Deleting in place is what this method exists to avoid, so say so
+      // rather than letting the operator watch a frozen progress bar.
+      this.logger(`[backup] could not set ${path} aside (${isRecord(error) ? String(error.code) : 'unknown'}); deleting it in place, which is slow on a network volume`);
+      await this.timed('deleted existing data in place', () => removeTree(path));
       return;
     }
     this.trackCleanup(trash);
@@ -345,6 +351,22 @@ export class BackupStore {
   /** Wait for background deletions. Tests and shutdown need a quiet filesystem. */
   public async settle(): Promise<void> {
     await this.cleanupTail;
+  }
+
+  /**
+   * Run a restore phase and log how long it took.
+   *
+   * A hosted volume's speed varies by an order of magnitude between runs, so
+   * the only way to know which phase to work on next is to measure each one on
+   * the machine that is actually slow.
+   */
+  private async timed<T>(label: string, operation: () => Promise<T>): Promise<T> {
+    const startedAt = Date.now();
+    try {
+      return await operation();
+    } finally {
+      this.logger(`[backup] ${label} in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
+    }
   }
 
   /** Remove staging and trash directories a previous run could not finish. */
