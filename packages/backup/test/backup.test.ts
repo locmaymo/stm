@@ -136,6 +136,36 @@ test('restores every entry of a large archive exactly once under parallel extrac
   assert.ok(!(await readdir(join(targetData, 'default-user'))).some((name) => name.startsWith('.stm-')));
 });
 
+test('replace writes in place, drops files the backup lacks, and keeps secrets it does not carry', async () => {
+  const fixture = await createFixture();
+  const store = new BackupStore({ paths: fixture.paths });
+  const manifest = await store.create(fixture.profile);
+  assert.equal(manifest.includesSecrets, false);
+  const archive = await store.getArchivePath(manifest.id);
+  assert.ok(archive);
+
+  const targetRoot = join(fixture.root, 'replace-target');
+  const targetData = join(targetRoot, 'data');
+  const targetUserData = join(targetData, 'default-user');
+  await mkdir(join(targetUserData, 'chats'), { recursive: true });
+  await mkdir(join(targetUserData, 'thumbnails'), { recursive: true });
+  await writeFile(join(targetUserData, 'chats', 'こんにちは.json'), '{"message":"stale"}', 'utf8');
+  await writeFile(join(targetUserData, 'chats', 'gone.json'), '{"message":"not in backup"}', 'utf8');
+  await writeFile(join(targetUserData, 'secrets.json'), '{"api_key":"mine"}', 'utf8');
+  await writeFile(join(targetUserData, 'thumbnails', 'cached.png'), 'cache', 'utf8');
+  const target: Profile = { ...fixture.profile, runtimePath: targetRoot, dataPath: targetData, configPath: join(targetRoot, 'config.yaml') };
+
+  await store.restore(target, archive, { mode: 'replace' });
+  await store.settle();
+
+  assert.equal(await readFile(join(targetUserData, 'chats', 'こんにちは.json'), 'utf8'), '{"message":"keep"}');
+  await assert.rejects(() => readFile(join(targetUserData, 'chats', 'gone.json'), 'utf8'));
+  // The archive carried no secrets, so the profile's own must survive.
+  assert.equal(await readFile(join(targetUserData, 'secrets.json'), 'utf8'), '{"api_key":"mine"}');
+  // Nothing may be staged beside the user directory any more.
+  assert.deepEqual((await readdir(targetData)).sort(), ['default-user']);
+});
+
 test('assembles chunked uploads in order without buffering the archive', async () => {
   const fixture = await createFixture();
   const store = new BackupStore({ paths: fixture.paths });

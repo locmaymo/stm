@@ -265,6 +265,21 @@ export class BackupStore {
     }
   }
 
+  /**
+   * Write the archive straight into the profile.
+   *
+   * An earlier version extracted into a staging directory and then renamed the
+   * result into place, on the assumption that rename is a metadata operation.
+   * On a ModelScope studio it is not: renaming a directory of 9,000 files on
+   * /mnt/workspace measured 757 seconds, the same order as copying it. Staging
+   * therefore cost a second full pass over the data and bought nothing, so
+   * entries now go to their final path on the first and only pass.
+   *
+   * A replace no longer clears the profile first either. Most of the paths in
+   * the archive are paths the profile already has, and overwriting them is one
+   * operation where deleting and rewriting is two. Only the files the archive
+   * does not mention have to be removed, and that set is normally small.
+   */
   private async restoreUnlocked(profile: Profile, archivePath: string, options: RestoreOptions): Promise<RestorePreview> {
     const entries = await readZipDirectory(archivePath);
     const preview = previewEntries(entries, profile.layout);
@@ -272,74 +287,33 @@ export class BackupStore {
       throw new BackupError('secrets_confirmation_required', 'This archive contains secrets.json; confirm that secrets may be restored');
     }
     const dataDestination = await resolveProfileDataRoot(profile);
-    // Keep staging on the profile volume. ModelScope's /tmp is a different
-    // filesystem, which turns rename into a full byte copy after extraction.
-    const stagingRoot = resolve(dataDestination, '..');
-    const temporary = join(stagingRoot, `${STAGING_PREFIX}${randomUUID()}`);
-    await mkdir(stagingRoot, { recursive: true });
-    await this.sweepAbandonedStaging(stagingRoot);
-    await mkdir(temporary, { recursive: true });
-    try {
-      await this.timed(`extracted ${preview.fileCount} files`, () => extractEntries(archivePath, entries, temporary, options.onProgress));
-      const configName = entries.some((entry) => entry.name === 'config.yml') ? 'config.yml' : 'config.yaml';
-      const hasConfig = entries.some((entry) => entry.name === 'config.yaml' || entry.name === 'config.yml');
-      const archiveDataRoot = hasDefaultUserWrapper(entries) ? join(temporary, DEFAULT_USER_HANDLE) : temporary;
-      options.onStatus?.('Applying restored data');
-      this.logger(`[backup] applying restored data to ${profile.name}`);
-      if (options.mode === 'replace') {
-        options.onStatus?.('Clearing existing data');
-        await this.timed('cleared existing data', async () => {
-          await clearDataRoot(dataDestination, dataDestination === resolve(profile.dataPath), preview.includesSecrets, (path) => this.discard(path, stagingRoot));
-          if (hasConfig) await rm(profile.configPath, { force: true });
-        });
-      }
-      await mkdir(dataDestination, { recursive: true });
-      const excludedDataFiles = new Set([configName, 'secrets.json']);
-      options.onStatus?.('Moving restored data into place');
-      await this.timed('moved restored data into place', () => moveDataFiles(archiveDataRoot, dataDestination, excludedDataFiles, options.mode === 'merge'));
-      const configSource = join(temporary, configName);
-      // Staging is discarded either way, so both modes can take the bytes by
-      // rename instead of copying the file a second time.
-      if (hasConfig && await exists(configSource)) await movePath(configSource, profile.configPath);
-      if (preview.includesSecrets && options.allowSecrets === true) {
-        const secretsSource = join(archiveDataRoot, 'secrets.json');
-        if (await exists(secretsSource)) await movePath(secretsSource, join(dataDestination, 'secrets.json'));
-      }
-      options.onStatus?.('Finalizing restored data');
-      this.logger(`[backup] finalized restored data for ${profile.name}`);
-      const targetLabel = profile.layout === 'data' ? relative(resolve(profile.dataPath), dataDestination).replaceAll('\\', '/') || '.' : 'public/';
-      this.logger(`[backup] restored ${preview.fileCount} files to ${profile.name}/${targetLabel} (${options.mode})`);
-      return preview;
-    } finally {
-      await this.discard(temporary, stagingRoot);
+    const restoreSecrets = preview.includesSecrets && options.allowSecrets === true;
+    const plan = planEntries(entries, {
+      dataDestination,
+      configPath: resolve(profile.configPath),
+      restoreSecrets,
+    });
+    const keep = new Set(plan.map((item) => item.target));
+    // Read the profile's current contents before writing, so a replace knows
+    // which of its files the archive is not going to overwrite.
+    const obsolete = options.mode === 'replace'
+      ? await this.timed('listed files the backup does not contain', () => collectObsolete(dataDestination, dataDestination === resolve(profile.dataPath), keep, restoreSecrets))
+      : [];
+    await mkdir(dataDestination, { recursive: true });
+    // Staging directories from older versions are pure waste now; sweep any the
+    // upgrade left behind rather than leaving them to confuse SillyTavern.
+    await this.sweepAbandonedStaging(resolve(dataDestination, '..'));
+    options.onStatus?.('Restoring files');
+    this.logger(`[backup] restoring ${plan.length} files into ${dataDestination}`);
+    await this.timed(`wrote ${plan.length} files`, () => extractPlan(archivePath, plan, options.onProgress));
+    if (obsolete.length > 0) {
+      options.onStatus?.('Removing files the backup does not contain');
+      await this.timed(`removed ${obsolete.length} files the backup does not contain`, () => removeAll(obsolete));
     }
-  }
-
-  /**
-   * Take a tree out of the way now and delete it in the background.
-   *
-   * Deleting 11,000 files on a network volume costs as much as writing them.
-   * The operator is waiting for SillyTavern to come back, not for the old
-   * copy to be gone, so only the rename is on the critical path. Anything the
-   * process does not finish is swept by the next restore.
-   */
-  private async discard(path: string, trashRoot: string): Promise<void> {
-    if (!await exists(path)) return;
-    // The trash sits beside the user data directory rather than inside it, so
-    // SillyTavern never sees a half-deleted tree among its own folders, and it
-    // stays on the same volume so the rename cannot turn into a byte copy.
-    const trash = join(trashRoot, `${TRASH_PREFIX}${randomUUID()}`);
-    try {
-      await rename(path, trash);
-    } catch (error: unknown) {
-      if (!isCrossDeviceError(error) && !isRetryableRemoveError(error)) throw error;
-      // Deleting in place is what this method exists to avoid, so say so
-      // rather than letting the operator watch a frozen progress bar.
-      this.logger(`[backup] could not set ${path} aside (${isRecord(error) ? String(error.code) : 'unknown'}); deleting it in place, which is slow on a network volume`);
-      await this.timed('deleted existing data in place', () => removeTree(path));
-      return;
-    }
-    this.trackCleanup(trash);
+    options.onStatus?.('Finalizing restored data');
+    const targetLabel = profile.layout === 'data' ? relative(resolve(profile.dataPath), dataDestination).replaceAll('\\', '/') || '.' : 'public/';
+    this.logger(`[backup] restored ${preview.fileCount} files to ${profile.name}/${targetLabel} (${options.mode})`);
+    return preview;
   }
 
   private trackCleanup(path: string): void {
@@ -717,21 +691,56 @@ function previewEntries(entries: ZipEntry[], fallbackLayout: ProfileLayout): Res
   return { layout: fallbackLayout, fileCount: files.length, totalBytes, includesSecrets, files, warnings };
 }
 
-async function extractEntries(zipPath: string, entries: ZipEntry[], destination: string, onProgress?: (progress: { completed: number; total: number }) => void): Promise<void> {
-  // Validate and resolve every path up front so the parallel phase below only
-  // does I/O, and a hostile archive is rejected before anything is written.
-  const written = new Set<string>();
-  const planned: Array<{ entry: ZipEntry; target: string }> = [];
-  const parents = new Set<string>();
+interface PlannedEntry {
+  readonly entry: ZipEntry;
+  readonly target: string;
+}
+
+interface PlanOptions {
+  readonly dataDestination: string;
+  readonly configPath: string;
+  readonly restoreSecrets: boolean;
+}
+
+/**
+ * Resolve every archive entry to its final path.
+ *
+ * Doing this before any I/O means a hostile archive is rejected before a single
+ * byte is written, and the write phase below is pure I/O it can run in parallel.
+ *
+ * Two archive layouts reach here. SillyTavern's own export holds the contents
+ * of the user directory at the archive root, optionally beside a manager
+ * `config.yaml`. Ours may wrap everything in `default-user/`, and because that
+ * wrapper requires every entry to sit under it, such an archive never carries a
+ * config at the root.
+ */
+function planEntries(entries: ZipEntry[], options: PlanOptions): PlannedEntry[] {
+  const prefix = hasDefaultUserWrapper(entries) ? `${DEFAULT_USER_HANDLE}/` : '';
+  const planned: PlannedEntry[] = [];
+  const taken = new Set<string>();
   for (const entry of entries) {
     if (entry.directory) continue;
     validateArchiveEntryName(entry.name);
-    const target = safePath(destination, entry.name);
-    if (written.has(target)) throw new BackupError('unsafe_archive', `Duplicate archive entry: ${entry.name}`);
-    written.add(target);
-    parents.add(resolve(target, '..'));
+    const name = entry.name.replaceAll('\\', '/');
+    if (prefix && !name.startsWith(prefix)) continue;
+    const relative = prefix ? name.slice(prefix.length) : name;
+    if (!relative) continue;
+    let target: string;
+    if (!prefix && (relative === 'config.yaml' || relative === 'config.yml')) target = options.configPath;
+    else if (relative === 'secrets.json') {
+      if (!options.restoreSecrets) continue;
+      target = join(options.dataDestination, 'secrets.json');
+    } else target = safePath(options.dataDestination, relative);
+    if (taken.has(target)) throw new BackupError('unsafe_archive', `Duplicate archive entry: ${entry.name}`);
+    taken.add(target);
     planned.push({ entry, target });
   }
+  return planned;
+}
+
+async function extractPlan(zipPath: string, planned: readonly PlannedEntry[], onProgress?: (progress: { completed: number; total: number }) => void): Promise<void> {
+  const parents = new Set<string>();
+  for (const item of planned) parents.add(resolve(item.target, '..'));
   const total = planned.length;
   const concurrency = Math.max(1, Math.min(ioConcurrency(), total));
   await runPooled([...parents], concurrency, async (parent) => { await mkdir(parent, { recursive: true }); });
@@ -852,70 +861,6 @@ function safePath(root: string, name: string): string {
   return candidate;
 }
 
-/**
- * Move extracted files into place without copying their bytes a second time.
- *
- * A replace restore has an empty destination, so whole top-level directories
- * move with one rename each. A merge restore has to descend far enough to keep
- * the files the archive does not mention, and then renames the leaves - which
- * is still far cheaper than reading and rewriting every byte.
- */
-async function moveDataFiles(sourceRoot: string, destinationRoot: string, excluded: Set<string>, merge: boolean): Promise<void> {
-  const children = (await readdir(sourceRoot)).filter((child) => !excluded.has(child));
-  if (!merge) {
-    for (const child of children) await movePath(join(sourceRoot, child), join(destinationRoot, child));
-    return;
-  }
-  const directories: string[] = [];
-  const files: Array<{ source: string; destination: string }> = [];
-  const plan = async (source: string, destination: string): Promise<void> => {
-    const details = await lstat(source);
-    if (details.isSymbolicLink()) throw new BackupError('unsafe_archive', `Symlink is not allowed: ${source}`);
-    if (!details.isDirectory()) { files.push({ source, destination }); return; }
-    if (!await isDirectory(destination)) { files.push({ source, destination }); return; }
-    directories.push(destination);
-    for (const child of await readdir(source)) await plan(join(source, child), join(destination, child));
-  };
-  for (const child of children) await plan(join(sourceRoot, child), join(destinationRoot, child));
-  const concurrency = ioConcurrency();
-  await runPooled(directories, concurrency, async (directory) => { await mkdir(directory, { recursive: true }); });
-  await runPooled(files, concurrency, async (item) => { await movePath(item.source, item.destination); });
-}
-
-async function isDirectory(path: string): Promise<boolean> {
-  try {
-    return (await lstat(path)).isDirectory();
-  } catch (error: unknown) {
-    if (isFileNotFound(error)) return false;
-    throw error;
-  }
-}
-
-async function movePath(source: string, destination: string): Promise<void> {
-  await mkdir(resolve(destination, '..'), { recursive: true });
-  try {
-    await rename(source, destination);
-    return;
-  } catch (error: unknown) {
-    if (isCrossDeviceError(error)) {
-      await copyPath(source, destination);
-      await removeTree(source);
-      return;
-    }
-    // A merge can land a directory where a file used to be, or the reverse.
-    // The archive wins, so clear the obstruction and retry once.
-    if (!isReplaceConflictError(error)) throw error;
-  }
-  await removeTree(destination);
-  try {
-    await rename(source, destination);
-  } catch (error: unknown) {
-    if (!isCrossDeviceError(error)) throw error;
-    await copyPath(source, destination);
-    await removeTree(source);
-  }
-}
-
 async function resolveProfileDataRoot(profile: Profile): Promise<string> {
   if (profile.layout !== 'data') return resolve(profile.dataPath);
   const defaultUserRoot = join(resolve(profile.dataPath), DEFAULT_USER_HANDLE);
@@ -925,38 +870,54 @@ async function resolveProfileDataRoot(profile: Profile): Promise<string> {
   return defaultUserRoot;
 }
 
-async function clearDataRoot(root: string, isDataRoot: boolean, includesSecrets: boolean, discard: (path: string) => Promise<void>): Promise<void> {
-  if (!await exists(root)) return;
-  if (!isDataRoot) {
-    await discard(root);
-    return;
-  }
-  for (const child of await readdir(root)) {
-    if (PRESERVED_DATA_ROOT_NAMES.has(child) || PRESERVED_EXCLUDED_NAMES.has(child) && (child !== 'secrets.json' || !includesSecrets)) continue;
-    if (child.startsWith(STAGING_PREFIX) || child.startsWith(TRASH_PREFIX)) continue;
-    await discard(join(root, child));
-  }
+/**
+ * List the profile's files that the archive is not going to overwrite.
+ *
+ * This is what a replace has to delete. Generated trees and the manager's own
+ * files are left alone, and `secrets.json` survives unless the archive carries
+ * one of its own - losing provider credentials to a restore that never
+ * contained them would be a poor trade.
+ */
+async function collectObsolete(root: string, isDataRoot: boolean, keep: ReadonlySet<string>, restoreSecrets: boolean): Promise<string[]> {
+  const obsolete: string[] = [];
+  const limiter = createIoLimiter(ioConcurrency());
+  const visit = async (current: string, depth: number): Promise<void> => {
+    let children;
+    try {
+      children = await limiter.run(() => readdir(current, { withFileTypes: true }));
+    } catch (error: unknown) {
+      if (isFileNotFound(error)) return;
+      throw error;
+    }
+    await Promise.all(children.map(async (child) => {
+      if (depth === 0 && isPreservedAtRoot(child.name, isDataRoot, restoreSecrets)) return;
+      const full = join(current, child.name);
+      if (child.isSymbolicLink()) return;
+      if (child.isDirectory()) {
+        await visit(full, depth + 1);
+        return;
+      }
+      if (!keep.has(full)) obsolete.push(full);
+    }));
+  };
+  await visit(root, 0);
+  return obsolete;
+}
+
+function isPreservedAtRoot(name: string, isDataRoot: boolean, restoreSecrets: boolean): boolean {
+  if (name === 'secrets.json') return !restoreSecrets;
+  if (name.startsWith(STAGING_PREFIX) || name.startsWith(TRASH_PREFIX)) return true;
+  if (!isDataRoot) return false;
+  return PRESERVED_DATA_ROOT_NAMES.has(name) || PRESERVED_EXCLUDED_NAMES.has(name);
+}
+
+async function removeAll(paths: readonly string[]): Promise<void> {
+  await runPooled(paths, ioConcurrency(), async (path) => { await rm(path, { force: true }); });
 }
 
 function hasDefaultUserWrapper(entries: ZipEntry[]): boolean {
   const files = entries.filter((entry) => !entry.directory).map((entry) => entry.name);
   return files.length > 0 && files.every((name) => name.startsWith(`${DEFAULT_USER_HANDLE}/`));
-}
-
-async function copyPath(source: string, destination: string): Promise<void> {
-  const details = await lstat(source);
-  if (details.isSymbolicLink()) throw new BackupError('unsafe_archive', `Symlink is not allowed: ${source}`);
-  if (details.isDirectory()) {
-    await mkdir(destination, { recursive: true });
-    for (const child of await readdir(source)) await copyPath(join(source, child), join(destination, child));
-    return;
-  }
-  await copyFile(source, destination);
-}
-
-async function copyFile(source: string, destination: string): Promise<void> {
-  await mkdir(resolve(destination, '..'), { recursive: true });
-  await pipeline(createReadStream(source), createWriteStream(destination, { mode: 0o600 }));
 }
 
 async function exists(path: string): Promise<boolean> {
@@ -1000,9 +961,7 @@ function parseManifest(value: unknown): BackupManifest {
 
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null; }
 function isFileNotFound(error: unknown): boolean { return isRecord(error) && error.code === 'ENOENT'; }
-function isCrossDeviceError(error: unknown): boolean { return isRecord(error) && error.code === 'EXDEV'; }
 function isRetryableRemoveError(error: unknown): boolean { return isRecord(error) && ['EBUSY', 'ENOTEMPTY', 'EPERM'].includes(String(error.code)); }
-function isReplaceConflictError(error: unknown): boolean { return isRecord(error) && ['EISDIR', 'ENOTDIR', 'ENOTEMPTY', 'EEXIST', 'EPERM', 'EACCES'].includes(String(error.code)); }
 function findSignature(buffer: Buffer, signature: number): number { for (let index = buffer.length - 4; index >= 0; index -= 1) if (buffer.readUInt32LE(index) === signature) return index; return -1; }
 function validateUploadId(value: string): void {
   if (!/^[A-Za-z0-9_-]{8,64}$/u.test(value)) throw new BackupError('invalid_upload_id', 'The upload id is invalid');

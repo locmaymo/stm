@@ -717,7 +717,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       if (mode !== 'merge' && mode !== 'replace') { sendError(response, 400, 'invalid_restore_mode', 'Restore mode must be merge or replace'); return; }
       const libraryPath = await backups.getArchivePath(imported.manifest.id);
       if (!libraryPath) { sendError(response, 500, 'backup_archive_missing', 'The uploaded archive could not be stored'); return; }
-      const result = await restoreWithProcess({ profile, backups, archivePath: libraryPath, mode, allowSecrets, profiles, supervisor, tunnel });
+      const result = await restoreWithProcess({ profile, backups, archivePath: libraryPath, mode, allowSecrets, supervisor, tunnel });
       sendJson(response, 200, result);
     } finally {
       if (!retained) await backups.removeTemporary(archivePath);
@@ -763,7 +763,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       if (!mode) { sendError(response, 400, 'invalid_restore_mode', 'Restore mode must be merge or replace'); return; }
       const allowSecrets = isRecord(body) && body.includeSecrets === true;
       const job = jobs.createOperation('restore', 'Preparing restore');
-      void restoreWithProcess({ profile, backups, archivePath, mode, allowSecrets, profiles, supervisor, tunnel, onProgress: (progress, step) => jobs.updateOperation(job.id, progress, step) })
+      void restoreWithProcess({ profile, backups, archivePath, mode, allowSecrets, supervisor, tunnel, onProgress: (progress, step) => jobs.updateOperation(job.id, progress, step) })
         .then(() => jobs.finishOperation(job.id, 'succeeded', null))
         .catch((error: unknown) => jobs.finishOperation(job.id, 'failed', error instanceof Error ? error.message : 'Restore failed'));
       sendJson(response, 202, { jobId: job.id, job });
@@ -828,19 +828,26 @@ async function restoreWithProcess(options: {
   readonly archivePath: string;
   readonly mode: 'merge' | 'replace';
   readonly allowSecrets: boolean;
-  readonly profiles: ProfileStore;
   readonly supervisor: ProcessSupervisor;
   readonly tunnel: TunnelManager;
   readonly onProgress?: (progress: number, step: string) => void;
-}): Promise<{ preview: Awaited<ReturnType<BackupStore['restore']>>; safetySnapshot: Awaited<ReturnType<ProfileStore['createSafetySnapshot']>>; process: ReturnType<ProcessSupervisor['getState']> }> {
-  const { profile, backups, archivePath, mode, allowSecrets, profiles, supervisor, tunnel, onProgress } = options;
+}): Promise<{ preview: Awaited<ReturnType<BackupStore['restore']>>; safetySnapshot: Awaited<ReturnType<BackupStore['create']>>; process: ReturnType<ProcessSupervisor['getState']> }> {
+  const { profile, backups, archivePath, mode, allowSecrets, supervisor, tunnel, onProgress } = options;
   const previousTunnelMode = tunnel.getState().mode;
   onProgress?.(5, 'Stopping SillyTavern');
   await tunnel.stop();
   await supervisor.stop();
   try {
+    // A safety copy has to exist before the restore overwrites anything, but it
+    // does not have to be a second copy of every file. Writing one compressed
+    // archive is a single large sequential write; copying the tree file by file
+    // measured 639 seconds on a ModelScope volume for the same data.
     onProgress?.(15, 'Creating safety snapshot');
-    const safetySnapshot = await profiles.createSafetySnapshot(profile);
+    const safetySnapshot = await backups.create(profile, {
+      name: `${profile.name}-prerestore`,
+      includeSecrets: true,
+      onProgress: ({ completed, total }) => onProgress?.(15 + (total > 0 ? (completed / total) * 10 : 0), `Backing up current data (${completed}/${total})`),
+    });
     onProgress?.(25, 'Restoring data');
     const preview = await backups.restore(profile, archivePath, {
       mode,
