@@ -5,6 +5,7 @@ import { Transform, Readable } from 'node:stream';
 import { finished } from 'node:stream/promises';
 import { pipeline } from 'node:stream/promises';
 import { lstat, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import type { FileHandle } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
 import type { BackupFilePreview, BackupManifest, BackupSource, Profile, ProfileLayout, RestoreMode, RestorePreview } from '../../contracts/src/index.js';
 import type { PlatformPaths } from '../../platform/src/index.js';
@@ -248,12 +249,21 @@ export class BackupStore {
         if (hasConfig) await rm(profile.configPath, { force: true });
       }
       await mkdir(dataDestination, { recursive: true });
-      await copyDataFiles(archiveDataRoot, dataDestination, new Set([configName, 'secrets.json']));
+      const excludedDataFiles = new Set([configName, 'secrets.json']);
+      if (options.mode === 'replace') await moveDataFiles(archiveDataRoot, dataDestination, excludedDataFiles);
+      else await copyDataFiles(archiveDataRoot, dataDestination, excludedDataFiles);
       const configSource = join(temporary, configName);
-      if (hasConfig && await exists(configSource)) await copyFile(configSource, profile.configPath);
+      if (hasConfig && await exists(configSource)) {
+        if (options.mode === 'replace') await movePath(configSource, profile.configPath);
+        else await copyFile(configSource, profile.configPath);
+      }
       if (preview.includesSecrets && options.allowSecrets === true) {
         const secretsSource = join(archiveDataRoot, 'secrets.json');
-        if (await exists(secretsSource)) await copyFile(secretsSource, join(dataDestination, 'secrets.json'));
+        if (await exists(secretsSource)) {
+          const secretsDestination = join(dataDestination, 'secrets.json');
+          if (options.mode === 'replace') await movePath(secretsSource, secretsDestination);
+          else await copyFile(secretsSource, secretsDestination);
+        }
       }
       const targetLabel = profile.layout === 'data' ? relative(resolve(profile.dataPath), dataDestination).replaceAll('\\', '/') || '.' : 'public/';
       this.logger(`[backup] restored ${preview.fileCount} files to ${profile.name}/${targetLabel} (${options.mode})`);
@@ -585,43 +595,77 @@ function previewEntries(entries: ZipEntry[], fallbackLayout: ProfileLayout): Res
 async function extractEntries(zipPath: string, entries: ZipEntry[], destination: string, onProgress?: (progress: { completed: number; total: number }) => void): Promise<void> {
   const written = new Set<string>();
   const files = entries.filter((entry) => !entry.directory);
+  const createdDirectories = new Set<string>();
+  const archive = await open(zipPath, 'r');
   let completed = 0;
-  for (const entry of entries) {
-    if (entry.directory) continue;
-    validateArchiveEntryName(entry.name);
-    const target = safePath(destination, entry.name);
-    if (written.has(target)) throw new BackupError('unsafe_archive', `Duplicate archive entry: ${entry.name}`);
-    written.add(target);
-    await mkdir(resolve(target, '..'), { recursive: true });
-    await extractEntry(zipPath, entry, target);
-    completed += 1;
-    onProgress?.({ completed, total: files.length });
+  try {
+    for (const entry of entries) {
+      if (entry.directory) continue;
+      validateArchiveEntryName(entry.name);
+      const target = safePath(destination, entry.name);
+      if (written.has(target)) throw new BackupError('unsafe_archive', `Duplicate archive entry: ${entry.name}`);
+      written.add(target);
+      const parent = resolve(target, '..');
+      if (!createdDirectories.has(parent)) {
+        await mkdir(parent, { recursive: true });
+        createdDirectories.add(parent);
+      }
+      await extractEntry(archive, entry, target);
+      completed += 1;
+      // Updating the in-memory job for every tiny preset makes a remote
+      // filesystem restore slower without giving the operator more useful
+      // information. Keep the visible counter responsive while batching the
+      // progress updates like the SillyTavern backup tool does.
+      if (completed === files.length || completed % 25 === 0) onProgress?.({ completed, total: files.length });
+    }
+  } finally {
+    await archive.close();
   }
 }
 
-async function extractEntry(zipPath: string, entry: ZipEntry, target: string): Promise<void> {
-  const handle = await open(zipPath, 'r');
-  let dataOffset: number;
-  try {
-    const local = Buffer.alloc(30);
-    await handle.read(local, 0, local.length, entry.localOffset);
-    if (local.readUInt32LE(0) !== 0x04034b50) throw new BackupError('invalid_archive', 'The ZIP local header is corrupt');
-    dataOffset = entry.localOffset + 30 + local.readUInt16LE(26) + local.readUInt16LE(28);
-  } finally {
-    await handle.close();
-  }
+async function extractEntry(archive: FileHandle, entry: ZipEntry, target: string): Promise<void> {
+  const local = Buffer.alloc(30);
+  await readAt(archive, local, entry.localOffset);
+  if (local.readUInt32LE(0) !== 0x04034b50) throw new BackupError('invalid_archive', 'The ZIP local header is corrupt');
+  const dataOffset = entry.localOffset + 30 + local.readUInt16LE(26) + local.readUInt16LE(28);
   if (entry.compressedSize === 0) {
     if (entry.uncompressedSize !== 0) throw new BackupError('invalid_archive', `Archive entry size mismatch: ${entry.name}`);
     await writeFile(target, Buffer.alloc(0), { mode: 0o600 });
     return;
   }
-  const source = createReadStream(zipPath, { start: dataOffset, end: dataOffset + entry.compressedSize - 1 });
+  const source = createReadStream(null as unknown as string, { fd: archive.fd, autoClose: false, start: dataOffset, end: dataOffset + entry.compressedSize - 1 });
   const destination = createWriteStream(target, { mode: 0o600 });
-  if (entry.compression === 0) await pipeline(source, destination);
-  else if (entry.compression === 8) await pipeline(source, createInflateRaw(), destination);
-  else throw new BackupError('unsupported_archive', `ZIP compression ${entry.compression} is not supported`);
-  const details = await stat(target);
-  if (details.size !== entry.uncompressedSize) throw new BackupError('invalid_archive', `Archive entry size mismatch: ${entry.name}`);
+  const counter = new ByteCounter();
+  if (entry.compression === 0) await pipeline(source, counter, destination);
+  else if (entry.compression === 8) await pipeline(source, createInflateRaw(), counter, destination);
+  else {
+    source.destroy();
+    destination.destroy();
+    throw new BackupError('unsupported_archive', `ZIP compression ${entry.compression} is not supported`);
+  }
+  if (counter.bytes !== entry.uncompressedSize) throw new BackupError('invalid_archive', `Archive entry size mismatch: ${entry.name}`);
+}
+
+class ByteCounter extends Transform {
+  public bytes = 0;
+
+  public constructor() {
+    super({
+      transform: (chunk: Buffer, _encoding, callback) => {
+        this.bytes += chunk.length;
+        callback(null, chunk);
+      },
+    });
+  }
+}
+
+async function readAt(archive: FileHandle, buffer: Buffer, position: number): Promise<void> {
+  let offset = 0;
+  while (offset < buffer.length) {
+    const result = await archive.read(buffer, offset, buffer.length - offset, position + offset);
+    if (result.bytesRead === 0) throw new BackupError('invalid_archive', 'The ZIP local header is truncated');
+    offset += result.bytesRead;
+  }
 }
 
 async function readZipDirectory(zipPath: string): Promise<ZipEntry[]> {
@@ -680,6 +724,25 @@ async function copyDataFiles(sourceRoot: string, destinationRoot: string, exclud
   for (const child of await readdir(sourceRoot)) {
     if (excluded.has(child)) continue;
     await copyPath(join(sourceRoot, child), join(destinationRoot, child));
+  }
+}
+
+/** Move extracted files into place without copying their bytes a second time. */
+async function moveDataFiles(sourceRoot: string, destinationRoot: string, excluded: Set<string>): Promise<void> {
+  for (const child of await readdir(sourceRoot)) {
+    if (excluded.has(child)) continue;
+    await movePath(join(sourceRoot, child), join(destinationRoot, child));
+  }
+}
+
+async function movePath(source: string, destination: string): Promise<void> {
+  await mkdir(resolve(destination, '..'), { recursive: true });
+  try {
+    await rename(source, destination);
+  } catch (error: unknown) {
+    if (!isCrossDeviceError(error)) throw error;
+    await copyPath(source, destination);
+    await rm(source, { recursive: true, force: true });
   }
 }
 
@@ -753,6 +816,7 @@ function parseManifest(value: unknown): BackupManifest {
 
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null; }
 function isFileNotFound(error: unknown): boolean { return isRecord(error) && error.code === 'ENOENT'; }
+function isCrossDeviceError(error: unknown): boolean { return isRecord(error) && error.code === 'EXDEV'; }
 function findSignature(buffer: Buffer, signature: number): number { for (let index = buffer.length - 4; index >= 0; index -= 1) if (buffer.readUInt32LE(index) === signature) return index; return -1; }
 function validateUploadId(value: string): void {
   if (!/^[A-Za-z0-9_-]{8,64}$/u.test(value)) throw new BackupError('invalid_upload_id', 'The upload id is invalid');
