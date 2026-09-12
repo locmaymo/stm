@@ -112,6 +112,7 @@
     "profileCreateFailed": "Could not create the profile",
     "profileActivateFailed": "Could not switch profile",
     "importZip": "Import ZIP",
+    "uploadKeepTabOpen": "Keep this tab open. Reloading or leaving cancels the upload; a restore already running continues on the server.",
     "downloadBackup": "Download",
     "previewBackup": "Preview",
     "restorePreview": "Restore preview",

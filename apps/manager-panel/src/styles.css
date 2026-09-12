@@ -183,6 +183,7 @@
 .backup-row-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
 .backup-option { display: inline-flex; align-items: center; gap: 8px; color: var(--muted-foreground); font-size: 12px; }
 .operation-progress { display: grid; gap: 6px; color: var(--muted-foreground); font-size: 12px; }
+.operation-warning { color: var(--destructive); }
 .progress-track { display: block; height: 4px; overflow: hidden; border-radius: 999px; background: var(--muted); }
 .progress-value { display: block; height: 100%; border-radius: inherit; background: var(--primary); transition: width .2s ease; }
 .progress-indeterminate { display: block; width: 35%; height: 100%; border-radius: inherit; background: var(--primary); animation: progress-slide 1.1s ease-in-out infinite; }

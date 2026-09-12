@@ -811,6 +811,10 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     sendJson(response, 200, state);
     return;
   }
+  if (pathname === '/api/v1/jobs/active' && method === 'GET') {
+    sendJson(response, 200, { job: jobs.activeOperation() });
+    return;
+  }
   const jobMatch = /^\/api\/v1\/jobs\/([^/]+)$/u.exec(pathname);
   if (jobMatch && method === 'GET') {
     const job = jobs.get(jobMatch[1] ?? '');
@@ -1383,6 +1387,22 @@ class JobStore {
   }
 
   public get(id: string): Job | null { return this.jobs.get(id) ?? null; }
+
+  /**
+   * The backup or restore a reloading panel should reattach to.
+   *
+   * A restore runs for minutes in the server, not the browser, so a reload
+   * must not look like nothing is happening - the operator would start it
+   * again on top of the one already running.
+   */
+  public activeOperation(): Job | null {
+    let newest: Job | null = null;
+    for (const job of this.jobs.values()) {
+      if (job.state !== 'running' || (job.kind !== 'backup' && job.kind !== 'restore')) continue;
+      if (!newest || job.createdAt > newest.createdAt) newest = job;
+    }
+    return newest;
+  }
 
   public updateFromProgress(installationId: string, progress: InstallationProgress): void {
     const id = `job-${installationId}`;

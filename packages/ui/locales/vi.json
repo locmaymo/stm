@@ -112,6 +112,7 @@
     "profileCreateFailed": "Không thể tạo profile",
     "profileActivateFailed": "Không thể chuyển profile",
     "importZip": "Nhập ZIP",
+    "uploadKeepTabOpen": "Giữ nguyên tab này. Tải lại hoặc rời đi sẽ huỷ lượt tải lên; việc khôi phục đang chạy thì vẫn tiếp tục trên máy chủ.",
     "downloadBackup": "Tải xuống",
     "previewBackup": "Xem trước",
     "restorePreview": "Xem trước khôi phục",

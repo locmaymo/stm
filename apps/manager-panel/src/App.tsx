@@ -528,6 +528,7 @@ function DataPage({ t, csrfToken, profiles, activeProfileId, backups, onProfiles
   const [selectedBackup, setSelectedBackup] = useState<BackupManifest | null>(null);
   const [selectedPreview, setSelectedPreview] = useState<RestorePreview | null>(null);
   const [operationProgress, setOperationProgress] = useState<{ percent: number; step: string } | null>(null);
+  const [uploading, setUploading] = useState(false);
   const [r2Config, setR2Config] = useState<R2Config | null>(null);
   const [r2Objects, setR2Objects] = useState<R2Object[]>([]);
   const [r2Form, setR2Form] = useState({ endpoint: '', bucket: '', accountId: '', accessKeyId: '', secretAccessKey: '', enabled: false, includeSecrets: false, localIntervalMinutes: 60, r2IntervalHours: 24, fullIntervalDays: 7, maxBackups: 7, retentionDays: 30 });
@@ -545,6 +546,41 @@ function DataPage({ t, csrfToken, profiles, activeProfileId, backups, onProfiles
     }
   };
   useEffect(() => { void refresh(); }, []);
+
+  // A restore runs in the server for minutes. Reloading the page must show the
+  // one already in flight rather than an idle screen the operator would be
+  // tempted to start a second restore from.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch('/api/v1/jobs/active', { credentials: 'same-origin' });
+        if (!response.ok) return;
+        const payload = await response.json() as { job: Job | null };
+        if (cancelled || !payload.job) return;
+        const running = payload.job;
+        setBusyAction(running.kind === 'restore' ? t('console.restore') : t('dashboard.backupNow'));
+        setOperationProgress({ percent: running.progress, step: running.step });
+        await waitForOperation(running.id, (job) => { if (!cancelled) setOperationProgress({ percent: job.progress, step: job.step }); });
+        if (!cancelled) await refresh();
+      } catch (error: unknown) {
+        if (!cancelled) setError(error instanceof Error ? error.message : t('console.backupRestoreFailed'));
+      } finally {
+        if (!cancelled) { setBusyAction(null); setOperationProgress(null); }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Chunks are held in the browser until the last one lands, so a reload or a
+  // navigation away throws the whole upload out. Warn before that happens.
+  useEffect(() => {
+    if (!uploading) return undefined;
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [uploading]);
+
   const create = async () => {
     if (!name.trim()) return;
     setBusyAction(t('console.createProfile')); setError(null);
@@ -606,7 +642,7 @@ function DataPage({ t, csrfToken, profiles, activeProfileId, backups, onProfiles
   };
   const inspectUpload = async (file: File | undefined) => {
     if (!file) return;
-    setBusyAction(t('console.importZip')); setOperationProgress({ percent: 0, step: t('console.importZip') }); setError(null);
+    setBusyAction(t('console.importZip')); setOperationProgress({ percent: 0, step: t('console.importZip') }); setError(null); setUploading(true);
     const uploadId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     try {
       let index = 0;
@@ -632,7 +668,7 @@ function DataPage({ t, csrfToken, profiles, activeProfileId, backups, onProfiles
     } catch (error: unknown) {
       await fetch(`/api/v1/backups/import/chunk?uploadId=${encodeURIComponent(uploadId)}`, { method: 'DELETE', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } }).catch(() => undefined);
       setError(error instanceof Error ? error.message : t('console.backupPreviewFailed'));
-    } finally { setBusyAction(null); setOperationProgress(null); }
+    } finally { setBusyAction(null); setOperationProgress(null); setUploading(false); }
   };
   const renameBackup = async (backup: BackupManifest) => {
     const nextName = window.prompt(t('console.renameBackup'), backup.name.replace(/\.zip$/u, ''));
@@ -689,7 +725,7 @@ function DataPage({ t, csrfToken, profiles, activeProfileId, backups, onProfiles
       {activeProfile?.legacyLayout === 'public' ? <p className="data-migration-note">{t('console.legacyMigrated')}</p> : null}
     </CardContent></Card>
     <Card className="backup-library-card"><PanelHeading icon={<Archive />} action={<div className="backup-actions"><Button size="sm" onClick={() => void createBackup()} disabled={busy || !activeProfileId}><Archive />{t('dashboard.backupNow')}</Button><label className="button-outline"><Upload />{t('console.importZip')}<input type="file" accept=".zip,application/zip" onChange={(event) => void inspectUpload(event.target.files?.[0])} /></label></div>}>{t('console.backupLibrary')}</PanelHeading>
-      <CardContent className="space-y-4"><div className="backup-controls"><Input value={backupName} onChange={(event) => setBackupName(event.target.value)} placeholder={t('console.backupNameOptional')} aria-label={t('console.backupNameOptional')} /><label className="backup-option"><input type="checkbox" checked={includeSecrets} onChange={(event) => setIncludeSecrets(event.target.checked)} />{t('console.includeSecrets')}</label></div>{includeSecrets ? <p className="install-error">{t('console.secretsWarning')}</p> : null}{error ? <p className="install-error" role="alert">{error}</p> : null}{busyAction ? <div className="operation-progress" role="status"><span>{busyAction}</span>{operationProgress ? <><span>{operationProgress.step} · {operationProgress.percent}%</span><span className="progress-track"><span className="progress-value" style={{ width: `${operationProgress.percent}%` }} /></span></> : <span className="progress-track"><span className="progress-indeterminate" /></span>}</div> : null}{backups.length === 0 ? <p className="resource-empty">{t('dashboard.noBackup')}</p> : <div className="backup-list">{backups.map((backup) => <div className="backup-row" key={backup.id}><div className="min-w-0"><strong>{backup.name}</strong><span>{backup.source === 'uploaded' ? t('console.uploadedBackup') : t('console.createdBackup')} · {new Date(backup.createdAt).toLocaleString()} · {formatBytes(backup.sizeBytes)}</span></div><div className="backup-row-actions"><Button variant="ghost" size="sm" onClick={() => { window.location.href = `/api/v1/backups/${backup.id}/download`; }}>{t('console.downloadBackup')}</Button><Button variant="ghost" size="sm" onClick={() => void renameBackup(backup)} disabled={busy}>{t('console.renameBackup')}</Button><Button variant="ghost" size="sm" onClick={() => void deleteBackup(backup)} disabled={busy}>{t('console.deleteBackup')}</Button><Button variant="outline" size="sm" onClick={() => void previewBackup(backup)} disabled={busy}>{t('console.previewBackup')}</Button></div></div>)}</div>}{selectedPreview ? <div className="backup-preview"><strong>{t('console.restorePreview')}</strong><span>{selectedBackup?.name} · {selectedPreview.fileCount} {t('console.files')} · {formatBytes(selectedPreview.totalBytes)}</span>{selectedPreview.warnings.map((warning) => <p className="install-error" key={warning}>{warning}</p>)}<div className="backup-restore-actions"><Select value={restoreMode} onValueChange={(value) => setRestoreMode(value as 'merge' | 'replace')}><SelectTrigger aria-label={t('console.restoreMode')}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="replace">{t('console.replaceRestore')}</SelectItem><SelectItem value="merge">{t('console.mergeRestore')}</SelectItem></SelectContent></Select><Button onClick={() => void restoreSelected()} disabled={busy || (selectedPreview.includesSecrets && !includeSecrets)}><Upload />{t('console.restore')}</Button></div></div> : null}</CardContent></Card>
+      <CardContent className="space-y-4"><div className="backup-controls"><Input value={backupName} onChange={(event) => setBackupName(event.target.value)} placeholder={t('console.backupNameOptional')} aria-label={t('console.backupNameOptional')} /><label className="backup-option"><input type="checkbox" checked={includeSecrets} onChange={(event) => setIncludeSecrets(event.target.checked)} />{t('console.includeSecrets')}</label></div>{includeSecrets ? <p className="install-error">{t('console.secretsWarning')}</p> : null}{error ? <p className="install-error" role="alert">{error}</p> : null}{busyAction ? <div className="operation-progress" role="status"><span>{busyAction}</span>{operationProgress ? <><span>{operationProgress.step} · {operationProgress.percent}%</span><span className="progress-track"><span className="progress-value" style={{ width: `${operationProgress.percent}%` }} /></span></> : <span className="progress-track"><span className="progress-indeterminate" /></span>}{uploading ? <span className="operation-warning">{t('console.uploadKeepTabOpen')}</span> : null}</div> : null}{backups.length === 0 ? <p className="resource-empty">{t('dashboard.noBackup')}</p> : <div className="backup-list">{backups.map((backup) => <div className="backup-row" key={backup.id}><div className="min-w-0"><strong>{backup.name}</strong><span>{backup.source === 'uploaded' ? t('console.uploadedBackup') : t('console.createdBackup')} · {new Date(backup.createdAt).toLocaleString()} · {formatBytes(backup.sizeBytes)}</span></div><div className="backup-row-actions"><Button variant="ghost" size="sm" onClick={() => { window.location.href = `/api/v1/backups/${backup.id}/download`; }}>{t('console.downloadBackup')}</Button><Button variant="ghost" size="sm" onClick={() => void renameBackup(backup)} disabled={busy}>{t('console.renameBackup')}</Button><Button variant="ghost" size="sm" onClick={() => void deleteBackup(backup)} disabled={busy}>{t('console.deleteBackup')}</Button><Button variant="outline" size="sm" onClick={() => void previewBackup(backup)} disabled={busy}>{t('console.previewBackup')}</Button></div></div>)}</div>}{selectedPreview ? <div className="backup-preview"><strong>{t('console.restorePreview')}</strong><span>{selectedBackup?.name} · {selectedPreview.fileCount} {t('console.files')} · {formatBytes(selectedPreview.totalBytes)}</span>{selectedPreview.warnings.map((warning) => <p className="install-error" key={warning}>{warning}</p>)}<div className="backup-restore-actions"><Select value={restoreMode} onValueChange={(value) => setRestoreMode(value as 'merge' | 'replace')}><SelectTrigger aria-label={t('console.restoreMode')}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="replace">{t('console.replaceRestore')}</SelectItem><SelectItem value="merge">{t('console.mergeRestore')}</SelectItem></SelectContent></Select><Button onClick={() => void restoreSelected()} disabled={busy || (selectedPreview.includesSecrets && !includeSecrets)}><Upload />{t('console.restore')}</Button></div></div> : null}</CardContent></Card>
     <Card className="r2-placeholder"><PanelHeading icon={<Globe2 />} action={<Badge variant="outline" className={r2Config?.configured ? 'status-online' : ''}>{r2Config?.configured ? t('console.r2Configured') : t('console.r2NotConfigured')}</Badge>}>{t('console.r2Title')}</PanelHeading><CardContent className="space-y-4"><p>{t('console.r2Placeholder')}</p><div className="r2-form-grid"><label className="field-label"><span>{t('console.r2Endpoint')}</span><Input value={r2Form.endpoint} onChange={(event) => setR2Form((current) => ({ ...current, endpoint: event.target.value }))} placeholder="https://ACCOUNT_ID.r2.cloudflarestorage.com" /></label><label className="field-label"><span>{t('console.r2Bucket')}</span><Input value={r2Form.bucket} onChange={(event) => setR2Form((current) => ({ ...current, bucket: event.target.value }))} /></label><label className="field-label"><span>{t('console.r2AccountId')}</span><Input value={r2Form.accountId} onChange={(event) => setR2Form((current) => ({ ...current, accountId: event.target.value }))} /></label><label className="field-label"><span>{t('console.r2AccessKey')}</span><Input value={r2Form.accessKeyId} onChange={(event) => setR2Form((current) => ({ ...current, accessKeyId: event.target.value }))} autoComplete="off" /></label><label className="field-label"><span>{t('console.r2SecretKey')}</span><Input type="password" value={r2Form.secretAccessKey} onChange={(event) => setR2Form((current) => ({ ...current, secretAccessKey: event.target.value }))} autoComplete="new-password" /></label></div><div className="r2-toggle-row"><label className="backup-option"><input type="checkbox" checked={r2Form.enabled} onChange={(event) => setR2Form((current) => ({ ...current, enabled: event.target.checked }))} />{t('console.r2Enabled')}</label><label className="backup-option"><input type="checkbox" checked={r2Form.includeSecrets} onChange={(event) => setR2Form((current) => ({ ...current, includeSecrets: event.target.checked }))} />{t('console.r2IncludeSecrets')}</label></div><p className="text-xs text-muted-foreground">{t('console.r2SecretsWarning')}</p><div className="r2-schedule-grid"><label className="field-label"><span>{t('console.r2LocalEvery')}</span><Input type="number" min="1" value={r2Form.localIntervalMinutes} onChange={(event) => setR2Form((current) => ({ ...current, localIntervalMinutes: Number(event.target.value) }))} /></label><label className="field-label"><span>{t('console.r2Every')}</span><Input type="number" min="1" value={r2Form.r2IntervalHours} onChange={(event) => setR2Form((current) => ({ ...current, r2IntervalHours: Number(event.target.value) }))} /></label><label className="field-label"><span>{t('console.r2FullEvery')}</span><Input type="number" min="1" value={r2Form.fullIntervalDays} onChange={(event) => setR2Form((current) => ({ ...current, fullIntervalDays: Number(event.target.value) }))} /></label><label className="field-label"><span>{t('console.r2MaxBackups')}</span><Input type="number" min="1" value={r2Form.maxBackups} onChange={(event) => setR2Form((current) => ({ ...current, maxBackups: Number(event.target.value) }))} /></label><label className="field-label"><span>{t('console.r2RetentionDays')}</span><Input type="number" min="1" value={r2Form.retentionDays} onChange={(event) => setR2Form((current) => ({ ...current, retentionDays: Number(event.target.value) }))} /></label></div>{r2Message ? <p className="text-sm" role="status">{r2Message}</p> : null}<div className="r2-actions"><Button onClick={() => void saveR2()} disabled={r2Busy !== null}>{t('console.r2Save')}</Button><Button variant="outline" onClick={() => void testR2()} disabled={r2Busy !== null || !r2Config?.configured}>{t('console.r2Test')}</Button><Button variant="ghost" onClick={() => void uploadR2()} disabled={r2Busy !== null || !r2Config?.configured}>{t('console.r2UploadLatest')}</Button></div><div className="r2-summary"><span>{t('console.r2Estimate')}: {formatBytes(r2Config?.estimatedBytes ?? 0)}</span><span>{t('console.r2Objects')}: {r2Objects.length}</span></div>{r2Busy ? <div className="operation-progress" role="status"><span>{r2Busy}</span><span className="progress-track"><span className="progress-indeterminate" /></span></div> : null}</CardContent></Card>
   </div>;
 }
