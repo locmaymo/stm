@@ -93,7 +93,9 @@ export class RuntimeManager {
     this.githubApiBaseUrl = (options.githubApiBaseUrl ?? GITHUB_API).replace(/\/$/u, '');
     this.npmCommand = options.npmCommand ?? 'npm';
     this.installDependencies = options.installDependencies ?? ((path, log) => runNpmInstall(path, this.npmCommand, log));
-    this.healthCheckTimeoutMs = options.healthCheckTimeoutMs ?? 120_000;
+    // SillyTavern performs content seeding and frontend compilation on its first
+    // launch. Two minutes is too short for a free ModelScope/low-CPU workspace.
+    this.healthCheckTimeoutMs = options.healthCheckTimeoutMs ?? 300_000;
     this.useGit = options.useGit ?? options.fetch === undefined;
     this.gitCommand = options.gitCommand ?? 'git';
     this.repositoryUrl = options.repositoryUrl ?? GIT_REPOSITORY;

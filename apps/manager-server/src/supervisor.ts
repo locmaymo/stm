@@ -8,6 +8,7 @@ export interface ProcessSupervisorOptions {
   readonly now?: () => Date;
   readonly nodePath?: string;
   readonly profileResolver?: (installation: Installation) => Promise<Profile | null>;
+  readonly startupTimeoutMs?: number;
   readonly profileLifecycle?: {
     readonly prepare: (profile: Profile, runtimePath: string) => Promise<'data' | 'public'>;
     readonly persist: (profile: Profile, runtimePath: string, runtimeLayout: 'data' | 'public') => Promise<void>;
@@ -42,7 +43,9 @@ export class ProcessSupervisor {
     this.logger = options.logger ?? ((line) => console.log(line));
     this.now = options.now ?? (() => new Date());
     this.nodePath = options.nodePath ?? process.execPath;
-    this.startupTimeoutMs = 120_000;
+    // The first real launch can compile SillyTavern's frontend before port 8000
+    // is available, especially on free-tier workspaces.
+    this.startupTimeoutMs = options.startupTimeoutMs ?? 300_000;
     this.profileResolver = options.profileResolver;
     this.profileLifecycle = options.profileLifecycle;
     this.readinessCheck = options.readinessCheck ?? ((child) => waitForHttpReady('http://127.0.0.1:8000/', child, this.startupTimeoutMs));
