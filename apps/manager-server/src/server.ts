@@ -146,6 +146,10 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   const tunnel = options.tunnel ?? new TunnelManager({ paths, env, beforeStart: async () => { await requireTunnelPassword(config, profiles, runtime, supervisor); }, logger: (line) => { jobs.append('cloudflared', line); baseLogger(line); } });
   const scheduler = new BackupScheduler({ backups, profiles, r2, logger: (line) => { jobs.append('backup', line); baseLogger(line); } });
   scheduler.start();
+  // Uploads interrupted by a closed tab leave gigabyte part files whose id no
+  // longer exists anywhere. A day is long enough for a slow connection to
+  // finish one and short enough that the volume does not fill up with them.
+  void backups.sweepStaleUploads(24 * 60 * 60 * 1000).catch(() => undefined);
   const system = new SystemStore({
     paths,
     childPid: () => supervisor.getState().pid,

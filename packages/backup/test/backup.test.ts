@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getPlatformPaths } from '../../platform/src/index.js';
@@ -197,6 +197,23 @@ test('reserving the operation slot holds off a scheduled backup before the work 
   // Releasing twice must not let the count fall below zero and re-open the gap.
   release();
   assert.equal(store.isOperationRunning(), false);
+});
+
+test('abandoned upload parts are swept by age while a fresh one is left alone', async () => {
+  const fixture = await createFixture();
+  const store = new BackupStore({ paths: fixture.paths });
+  const stream = (value: string): AsyncIterable<Uint8Array> => (async function* () { yield Buffer.from(value, 'utf8'); })();
+  await store.appendUploadChunk('abandoned-upload-1', 0, stream('half a file'));
+  await store.appendUploadChunk('recent-upload-22', 0, stream('still going'));
+  const abandoned = join(fixture.paths.tmp, 'upload-abandoned-upload-1.zip.part');
+  const recent = join(fixture.paths.tmp, 'upload-recent-upload-22.zip.part');
+  const old = new Date(Date.now() - 48 * 60 * 60 * 1000);
+  await utimes(abandoned, old, old);
+  await utimes(join(fixture.paths.tmp, 'upload-abandoned-upload-1.json'), old, old);
+
+  assert.equal(await store.sweepStaleUploads(24 * 60 * 60 * 1000), 2);
+  await assert.rejects(() => readFile(abandoned, 'utf8'));
+  assert.equal(await readFile(recent, 'utf8'), 'still going');
 });
 
 test('assembles chunked uploads in order without buffering the archive', async () => {

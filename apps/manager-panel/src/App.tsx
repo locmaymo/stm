@@ -656,6 +656,10 @@ function DataPage({ t, csrfToken, profiles, activeProfileId, backups, onProfiles
         index += 1;
         setOperationProgress({ percent: Math.round((end / Math.max(file.size, 1)) * 100), step: `Uploading ${formatBytes(end)} / ${formatBytes(file.size)}` });
       }
+      // Every chunk is on the server now, so it owns the rest of the work and
+      // leaving the page no longer loses anything.
+      setUploading(false);
+      setOperationProgress({ percent: 100, step: t('console.importFinishing') });
       const response = await fetch('/api/v1/backups/import/finish', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ uploadId, name: file.name, expectedBytes: file.size }) });
       const text = await response.text();
       let payload: (RestorePreview & { backup?: BackupManifest }) | { error?: { message?: string } };

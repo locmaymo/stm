@@ -506,6 +506,39 @@ export class BackupStore {
     return partPath;
   }
 
+  /**
+   * Drop chunked uploads nothing is going to finish.
+   *
+   * Chunks live on the server, not in the browser, so closing the tab mid
+   * upload leaves a part file behind and takes the only copy of its upload id
+   * with it. Those parts are gigabytes each, so they are swept by age at
+   * startup rather than waiting for a tmp directory to be cleared.
+   */
+  public async sweepStaleUploads(maxAgeMs: number): Promise<number> {
+    let names: string[];
+    try {
+      names = await readdir(this.paths.tmp);
+    } catch (error: unknown) {
+      if (isFileNotFound(error)) return 0;
+      throw error;
+    }
+    const cutoff = this.now().getTime() - maxAgeMs;
+    let removed = 0;
+    for (const name of names) {
+      if (!name.startsWith('upload-') || (!name.endsWith('.zip.part') && !name.endsWith('.json'))) continue;
+      const path = join(this.paths.tmp, name);
+      try {
+        if ((await stat(path)).mtimeMs > cutoff) continue;
+        await rm(path, { force: true });
+        removed += 1;
+      } catch {
+        // A file that vanished under us needed no sweeping.
+      }
+    }
+    if (removed > 0) this.logger(`[backup] removed ${removed} abandoned upload file(s)`);
+    return removed;
+  }
+
   /** Remove an interrupted chunked upload. */
   public async removeUpload(uploadId: string): Promise<void> {
     validateUploadId(uploadId);
