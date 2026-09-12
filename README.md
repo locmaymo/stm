@@ -1,152 +1,206 @@
 # SillyTavern Manager
 
-[Tiếng Việt](README.vi.md)
+[Read this guide in Vietnamese](README.vi.md)
 
-SillyTavern Manager is a small cross-platform control panel for installing, running, accessing, backing up, and monitoring [SillyTavern](https://github.com/SillyTavern/SillyTavern).
+SillyTavern Manager is a cross-platform control panel for installing, running, accessing, backing up, and monitoring [SillyTavern](https://github.com/SillyTavern/SillyTavern). It keeps the manager on port <code>7860</code> and SillyTavern on port <code>8000</code>. A Cloudflare Tunnel, when enabled, points only to SillyTavern; it never exposes the manager panel.
 
-The manager stays on port `7860`. SillyTavern stays on port `8000`. A Cloudflare Tunnel, when enabled, points only to SillyTavern and never exposes the manager panel.
+## Choose your platform
 
-## What it provides
+| Platform | Start here |
+| --- | --- | --- |
+| Windows | [Download the portable ZIP](#windows-download-and-run) |
+| Android / Termux | [Copy the Termux commands](#android-termux-copy-and-paste-setup) |
+| macOS | [Install from source](#macos-source-install) |
+| Linux / VPS | [Run the Unix launcher](#linux-and-vps) |
+| Docker / hosted studio | [Deploy the Docker image](#docker-and-vps) |
 
-- Install the latest SillyTavern release or select a release, `release`, or `staging` ref.
-- Switch versions through one shared Git checkout instead of storing a complete runtime for every version.
-- Keep a default data profile and optionally create more profiles.
-- Support current `data/` storage and older `public/` runtimes without silently rewriting imported data.
-- Start, stop, restart, and monitor SillyTavern from the browser.
-- Read bounded, searchable live logs for the manager, SillyTavern, installer, backup, and tunnel.
-- Create local ZIP backups, preview and restore them with replace or merge mode, and optionally sync to Cloudflare R2.
-- Enable local-network access or a public tunnel through SillyTavern's account system.
-- Show request, provider, model, latency, streaming, input/output, cache, and reasoning-token metrics.
-- Work on Windows, Linux/VPS, Termux, Docker, and hosted platforms from the same codebase.
+The first visit opens a setup screen where you create the one manager administrator password. After that, choose a SillyTavern version and press **Install**. The manager reports **Ready** only after SillyTavern is listening on port <code>8000</code>.
 
 ## Windows: download and run
 
-Download the portable ZIP from the GitHub Releases page, extract it to a folder, and double-click `SillyTavernManager.exe`.
+This is the easiest option for most Windows users.
 
-The bundle includes the manager server, panel assets, production dependencies, and a Node.js runtime. Node.js does not need to be installed separately. The first run opens:
+1. Open the [latest GitHub Release](https://github.com/locmaymo/stm/releases/latest).
+2. Download <code>SillyTavernManager-windows-x64-vX.Y.Z.zip</code> and its <code>.sha256</code> checksum file.
+3. Extract the ZIP to a normal folder, such as <code>Downloads\SillyTavernManager</code>.
+4. Double-click <code>SillyTavernManager.exe</code>.
+5. Open <code>http://127.0.0.1:7860</code> if the browser does not open automatically.
 
-```text
-http://127.0.0.1:7860
-```
+The portable bundle already contains Node.js, the manager server, the panel, and production dependencies. Nothing needs to be installed with a terminal. Keep the application folder separate from the data folder:
 
-On the first visit, create the manager password. The manager data directory is:
-
-```text
+~~~text
 %LOCALAPPDATA%\SillyTavernManager
-```
+~~~
 
-This directory contains the manager state, profiles, backups, logs, metrics, and telemetry outbox. It is separate from the application folder, so replacing the application folder does not remove user data.
+The data folder contains profiles, backups, logs, metrics, and the telemetry outbox. Replacing the application ZIP does not remove it. Windows releases include a checksum so you can verify the download before extracting it.
 
-Windows releases include a `.sha256` file. Verify the ZIP before extracting it when distributing the file outside GitHub.
+## Android: Termux copy-and-paste setup
+
+Install [Termux from F-Droid](https://f-droid.org/packages/com.termux/) or another trusted source. Do not use the old Play Store build. Open Termux and paste these commands one block at a time:
+
+~~~bash
+pkg update -y
+pkg upgrade -y
+pkg install -y git nodejs-lts
+git clone https://github.com/locmaymo/stm.git
+cd stm
+npm ci
+npm start
+~~~
+
+Leave that Termux session running while SillyTavern is in use. Open the manager on the phone at <code>http://127.0.0.1:7860</code>; SillyTavern itself is at <code>http://127.0.0.1:8000</code>. The manager can create a public tunnel when you need to open SillyTavern from an iPhone or another network.
+
+For a later start, use:
+
+~~~bash
+cd stm
+npm start
+~~~
+
+For an update, stop the running manager first, then run:
+
+~~~bash
+cd stm
+git pull --ff-only
+npm ci
+npm start
+~~~
+
+Termux data is stored outside the repository at:
+
+~~~text
+$PREFIX/var/sillytavern-manager
+~~~
+
+That directory survives <code>git pull</code> and application updates. Cloudflared is optional; local access continues to work when a tunnel is not installed or is offline.
+
+## macOS: source install
+
+The current macOS path uses the same Node.js launcher as Linux. Install Homebrew and Node.js 22 or newer, then copy these commands into Terminal:
+
+~~~bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+brew install git node
+git clone https://github.com/locmaymo/stm.git
+cd stm
+npm ci
+node deploy/linux/launcher.mjs
+~~~
+
+Open <code>http://127.0.0.1:7860</code>. SillyTavern remains at <code>http://127.0.0.1:8000</code>. Stop the process with <code>Ctrl+C</code>. To start it again later:
+
+~~~bash
+cd stm
+node deploy/linux/launcher.mjs
+~~~
+
+The current macOS source launcher stores data under <code>~/.local/share/sillytavern-manager</code>. The repository is the same codebase used by the Windows, Termux, Linux, Docker, and hosted builds.
+
+## Linux and VPS
+
+Install Node.js 22 or newer, then run:
+
+~~~bash
+git clone https://github.com/locmaymo/stm.git
+cd stm
+npm ci
+node deploy/linux/launcher.mjs
+~~~
+
+Linux data is stored under <code>$XDG_DATA_HOME/sillytavern-manager</code> or <code>~/.local/share/sillytavern-manager</code>. Keep port <code>7860</code> behind the VPS firewall or platform access control; expose SillyTavern through its configured tunnel instead of publishing the manager panel.
 
 ## Docker and VPS
 
 Build the image from the repository:
 
-```bash
+~~~bash
+git clone https://github.com/locmaymo/stm.git
+cd stm
 docker build -f deploy/docker/Dockerfile -t sillytavern-manager .
-```
+~~~
 
 Run it with durable storage:
 
-```bash
+~~~bash
 docker run --rm \
   -p 7860:7860 \
   -v sillytavern-manager-data:/data \
   -e STM_ADMIN_PASSWORD='choose-a-long-password' \
   sillytavern-manager
-```
+~~~
 
-Open the manager at `http://127.0.0.1:7860`. SillyTavern remains on the container's internal port `8000`; the manager can start a tunnel that targets that port.
+Open the manager at <code>http://127.0.0.1:7860</code>. SillyTavern stays on the container's internal port <code>8000</code>; a configured tunnel points only to that port.
 
-For a hosted container platform, deploy `deploy/docker/Dockerfile`, expose port `7860`, and set `STM_ADMIN_PASSWORD` through a Studio secret. Persistent files belong under `/mnt/workspace`. Do not put the admin password in a Dockerfile or commit it to Git.
+For a hosted container platform, expose port <code>7860</code>, provide <code>STM_ADMIN_PASSWORD</code> through its secret settings, and mount durable storage at <code>/data</code>. Never put the admin password in a Dockerfile or commit it to Git.
 
-## Linux and Termux
+## npm (technical users)
 
-The source launcher requires Node.js 22 or newer:
+On a machine with Node.js 22 or newer, use the published package when it is available:
 
-```bash
-npm ci
-node deploy/linux/launcher.mjs
-```
-
-For Termux:
-
-```bash
-npm ci
-node deploy/termux/launcher.mjs
-```
-
-Linux data is stored under `$XDG_DATA_HOME/sillytavern-manager` or `~/.local/share/sillytavern-manager`. Termux data is stored under `$PREFIX/var/sillytavern-manager`. Cloudflared is optional; local manager and SillyTavern access continue to work when it is unavailable.
-
-## npm for technical users
-
-The npm package is intended for machines that already have Node.js 22 or newer:
-
-```bash
+~~~bash
 npx sillytavern-manager
-```
+~~~
 
-or:
+Or install it globally:
 
-```bash
+~~~bash
 npm install --global sillytavern-manager
 sillytavern-manager
-```
+~~~
 
-The manager still uses port `7860`, and the data directory follows the platform rules above. Windows users should prefer the portable ZIP because it includes Node.js and does not require a global Node installation.
+Windows users should prefer the portable ZIP because it includes Node.js. The package and the source launcher use the same ports and data-directory rules.
 
 ## First setup
 
-1. Open the manager panel on port `7860`.
-2. Set the one manager administrator password.
-3. Choose a SillyTavern version. `latest` is selected by default.
-4. Press **Install** and wait until the job reaches **Ready** and SillyTavern answers on port `8000`.
-5. Open the local link, or enable local-network access or a tunnel in the access card.
-6. Set the SillyTavern account password before enabling a LAN address or public tunnel.
+1. Open the manager at port <code>7860</code>.
+2. Create the manager administrator password.
+3. Choose a SillyTavern version; <code>latest</code> is selected by default.
+4. Press **Install** and wait for **Ready**. Ready means SillyTavern answered on port <code>8000</code>.
+5. Open the local link, or enable local-network access or a public tunnel in the access card.
+6. Set a SillyTavern account password before enabling LAN or a public tunnel.
 
-The manager administrator password and the SillyTavern account password are separate. The manager never forwards the manager panel through the public tunnel.
+The manager password and the SillyTavern account password are separate. The public tunnel never forwards the manager panel.
 
 ## Backup and restore
 
-Local backup is always available. The archive is a streaming ZIP compatible with SillyTavern exports. The default backup excludes `secrets.json`, thumbnails, vectors, generated backups, `.git`, `node_modules`, and operating-system metadata. Including secrets is an explicit action with a warning.
+Local backup is always available. The archive is a streaming ZIP compatible with SillyTavern exports. By default it excludes <code>secrets.json</code>, thumbnails, vectors, generated backups, <code>.git</code>, <code>node_modules</code>, and operating-system metadata. Including secrets is an explicit action with a warning.
 
-Restore previews the archive before writing. Replace mode is the default and merge mode is available when needed. A safety snapshot is created before a replace or profile switch. Cloudflare R2 is optional and recommended for protection against a disk failure, a deleted hosted workspace, or a lost machine.
+Restore previews the archive before writing. Replace is the default mode; merge is available when needed. A safety snapshot is created before a replace or profile switch. Cloudflare R2 is optional and recommended for protection against a failed disk, a deleted hosted workspace, or a lost machine.
 
 ## Telemetry and privacy
 
-Telemetry is part of this free project. The manager sends only an allowlisted summary such as platform, application version, provider, model, endpoint hostname, streaming flag, token usage, cache usage, reasoning-token usage, status, and duration.
+Telemetry is part of this free project. The manager sends only an allowlisted summary such as platform, application version, provider, model, endpoint hostname, streaming flag, max tokens, input/output/total tokens, cache usage, reasoning-token usage, status, and duration.
 
-It does **not** send API keys, authorization headers, prompts, chats, model responses, request bodies, response bodies, request logs, file names, file paths, IP addresses, or URL query strings. Events are written to a local outbox first and delivered asynchronously. A failed receiver never blocks SillyTavern.
+It does **not** send API keys, authorization headers, prompts, chats, model responses, request bodies, response bodies, request logs, file names, file paths, IP addresses, or URL query strings. Events are written to a local outbox first and sent asynchronously; a receiver outage does not block SillyTavern.
 
 ## Updating
 
-When a new manager release is published, close the old manager, extract the new Windows ZIP into a new folder, and run the new executable. The application bundle is replaceable; `%LOCALAPPDATA%\SillyTavernManager` is not touched. The old folder remains available for rollback.
+When a new manager release is published, stop the old manager, extract the new Windows ZIP into a new folder, and run the new executable. On Termux, macOS, or Linux, stop the process, run <code>git pull --ff-only</code>, run <code>npm ci</code>, and start the launcher again. The platform data directory is preserved, so profiles, backups, logs, metrics, and settings remain available. Keep the old Windows folder for rollback.
 
-Release builds are generated from version tags. GitHub Actions runs the verification suite, creates the Windows ZIP and checksum, builds the Docker image, and creates the npm tarball. An in-panel updater can be added later; it must verify the release checksum and replace only the application bundle.
+Release builds are generated from version tags. GitHub Actions verifies the project, creates the Windows ZIP and checksum, builds the Docker image, and creates the npm tarball.
 
 ## Development
 
 Requirements: Node.js 22+, npm 11+, and PowerShell 7+ for Windows packaging.
 
-```bash
+~~~bash
 npm ci
 npm run panel:dev
 npm run manager:start
-```
+~~~
 
 Run the repository checks before opening a pull request:
 
-```bash
+~~~bash
 npm run verify
-```
+~~~
 
 Build release artifacts locally on Windows:
 
-```powershell
+~~~powershell
 pwsh packaging/windows/package-release.ps1
 npm run release:npm
-```
+~~~
 
 ## License
 

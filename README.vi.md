@@ -1,142 +1,207 @@
 # SillyTavern Manager
 
-[English](README.md)
+[Xem hướng dẫn bằng tiếng Anh](README.md)
 
-SillyTavern Manager là bảng điều khiển đa nền tảng giúp cài đặt, chạy, mở truy cập, sao lưu và theo dõi [SillyTavern](https://github.com/SillyTavern/SillyTavern) mà không cần dùng terminal sau khi cài đặt.
+SillyTavern Manager là bảng điều khiển đa nền tảng để cài đặt, chạy, mở truy cập, sao lưu và theo dõi [SillyTavern](https://github.com/SillyTavern/SillyTavern). Manager chạy ở cổng <code>7860</code>, còn SillyTavern chạy ở cổng <code>8000</code>. Cloudflare Tunnel, nếu bật, chỉ trỏ tới SillyTavern và không bao giờ công khai bảng quản trị.
 
-Manager chạy ở cổng `7860`. SillyTavern chạy ở cổng `8000`. Cloudflare Tunnel, nếu bật, chỉ trỏ tới SillyTavern và không công khai bảng quản trị.
+## Chọn nền tảng
 
-## Tính năng
+| Nền tảng | Bắt đầu tại đây |
+| --- | --- | --- |
+| Windows | [Tải ZIP portable](#windows-tải-và-chạy) |
+| Android / Termux | [Copy các lệnh Termux](#android-cài-termux-bằng-copy-paste) |
+| macOS | [Cài từ source](#macos-cài-từ-source) |
+| Linux / VPS | [Chạy launcher Unix](#linux-và-vps) |
+| Docker / studio cloud | [Deploy Docker image](#docker-và-vps) |
 
-- Cài bản SillyTavern mới nhất hoặc chọn release, `release`, `staging`.
-- Chuyển phiên bản bằng một Git checkout dùng chung để tránh lưu nhiều runtime trùng lặp.
-- Có profile dữ liệu mặc định và cho phép tạo thêm profile.
-- Hỗ trợ chuẩn mới `data/` và runtime cũ dùng `public/`.
-- Start, stop, restart và theo dõi SillyTavern trong trình duyệt.
-- Xem log realtime có giới hạn, tìm kiếm và lọc.
-- Sao lưu ZIP local, xem trước và restore theo chế độ replace hoặc merge, cùng tùy chọn Cloudflare R2.
-- Bật truy cập mạng nội bộ hoặc tunnel công khai qua hệ thống tài khoản SillyTavern.
-- Theo dõi request, provider, model, latency, streaming, input/output, cache và reasoning token.
-- Chạy trên Windows, Linux/VPS, Termux, Docker và các nền tảng cloud.
+Lần đầu mở, bạn tạo một mật khẩu quản trị manager. Sau đó chọn phiên bản SillyTavern và bấm **Cài đặt**. Manager chỉ báo **Ready** sau khi SillyTavern thực sự lắng nghe ở cổng <code>8000</code>.
 
 ## Windows: tải và chạy
 
-Tải ZIP từ GitHub Releases, giải nén và bấm `SillyTavernManager.exe`. Không cần cài Node.js riêng. Trang quản trị mở tại:
+Đây là cách dễ nhất cho hầu hết người dùng Windows.
 
-```text
-http://127.0.0.1:7860
-```
+1. Mở [GitHub Release mới nhất](https://github.com/locmaymo/stm/releases/latest).
+2. Tải <code>SillyTavernManager-windows-x64-vX.Y.Z.zip</code> cùng file checksum <code>.sha256</code>.
+3. Giải nén ZIP vào thư mục bình thường, ví dụ <code>Downloads\SillyTavernManager</code>.
+4. Bấm đúp <code>SillyTavernManager.exe</code>.
+5. Nếu trình duyệt không tự mở, truy cập <code>http://127.0.0.1:7860</code>.
 
-Lần đầu truy cập, hãy tạo mật khẩu quản trị. Dữ liệu manager được lưu tại:
+ZIP portable đã gồm Node.js, server manager, giao diện và dependency production. Bạn không cần cài gì bằng terminal. Thư mục ứng dụng và thư mục dữ liệu được tách riêng:
 
-```text
+~~~text
 %LOCALAPPDATA%\SillyTavernManager
-```
+~~~
 
-Thư mục này chứa state, profile, backup, log, metrics và telemetry outbox. Nó tách khỏi thư mục ứng dụng, nên cập nhật bundle không xóa dữ liệu.
+Thư mục dữ liệu chứa profile, backup, log, metrics và telemetry outbox. Thay ZIP ứng dụng không xóa thư mục này. Bản phát hành Windows có checksum để bạn kiểm tra file trước khi giải nén.
+
+## Android: cài Termux bằng copy-paste
+
+Cài [Termux từ F-Droid](https://f-droid.org/packages/com.termux/) hoặc nguồn đáng tin cậy khác. Không dùng bản Termux cũ trên Play Store. Mở Termux và dán từng khối lệnh sau:
+
+~~~bash
+pkg update -y
+pkg upgrade -y
+pkg install -y git nodejs-lts
+git clone https://github.com/locmaymo/stm.git
+cd stm
+npm ci
+npm start
+~~~
+
+Giữ phiên Termux này chạy trong lúc dùng SillyTavern. Mở manager trên điện thoại tại <code>http://127.0.0.1:7860</code>; SillyTavern ở <code>http://127.0.0.1:8000</code>. Khi cần dùng iPhone hoặc mạng khác truy cập, bạn có thể tạo public tunnel trong manager.
+
+Lần sau khởi động lại:
+
+~~~bash
+cd "$HOME/stm"
+npm start
+~~~
+
+Cập nhật sau khi đã dừng manager:
+
+~~~bash
+cd "$HOME/stm"
+git pull --ff-only
+npm ci
+npm start
+~~~
+
+Dữ liệu Termux nằm ngoài repository tại:
+
+~~~text
+$PREFIX/var/sillytavern-manager
+~~~
+
+Thư mục này vẫn còn sau <code>git pull</code> và cập nhật ứng dụng. Cloudflared là tùy chọn; truy cập local vẫn hoạt động khi tunnel chưa cài hoặc đang offline.
+
+## macOS: cài từ source
+
+macOS hiện dùng launcher Node.js giống Linux. Cài Homebrew và Node.js 22 trở lên, sau đó copy các lệnh này vào Terminal:
+
+~~~bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+brew install git node
+git clone https://github.com/locmaymo/stm.git
+cd stm
+npm ci
+node deploy/linux/launcher.mjs
+~~~
+
+Mở <code>http://127.0.0.1:7860</code>. SillyTavern vẫn ở <code>http://127.0.0.1:8000</code>. Dừng bằng <code>Ctrl+C</code>. Lần sau chạy lại:
+
+~~~bash
+cd "$HOME/stm"
+node deploy/linux/launcher.mjs
+~~~
+
+Launcher source trên macOS hiện lưu dữ liệu tại <code>~/.local/share/sillytavern-manager</code>. Đây là cùng một codebase với bản Windows, Termux, Linux, Docker và các nền tảng cloud.
+
+## Linux và VPS
+
+Cài Node.js 22 trở lên rồi chạy:
+
+~~~bash
+git clone https://github.com/locmaymo/stm.git
+cd stm
+npm ci
+node deploy/linux/launcher.mjs
+~~~
+
+Linux lưu dữ liệu tại <code>$XDG_DATA_HOME/sillytavern-manager</code> hoặc <code>~/.local/share/sillytavern-manager</code>. Hãy đặt cổng <code>7860</code> sau firewall hoặc access control của VPS; dùng tunnel đã cấu hình để mở SillyTavern thay vì public manager.
 
 ## Docker và VPS
 
-Build image:
+Clone repository rồi build image:
 
-```bash
+~~~bash
+git clone https://github.com/locmaymo/stm.git
+cd stm
 docker build -f deploy/docker/Dockerfile -t sillytavern-manager .
-```
+~~~
 
 Chạy với volume persistent:
 
-```bash
+~~~bash
 docker run --rm \
   -p 7860:7860 \
   -v sillytavern-manager-data:/data \
   -e STM_ADMIN_PASSWORD='chon-mat-khau-dai' \
   sillytavern-manager
-```
+~~~
 
-Mở manager tại `http://127.0.0.1:7860`. SillyTavern vẫn chạy ở cổng nội bộ `8000`.
+Mở manager tại <code>http://127.0.0.1:7860</code>. SillyTavern vẫn chạy ở cổng nội bộ <code>8000</code>; tunnel chỉ trỏ tới cổng đó.
 
-Trên nền tảng container cloud, deploy `deploy/docker/Dockerfile`, mở cổng `7860`, đặt `STM_ADMIN_PASSWORD` bằng Studio secret và giữ dữ liệu persistent tại `/mnt/workspace`. Không đưa mật khẩu vào Dockerfile hoặc Git.
+Trên nền tảng cloud có container, mở cổng <code>7860</code>, đặt <code>STM_ADMIN_PASSWORD</code> bằng phần secret của nền tảng và mount lưu trữ persistent tại <code>/data</code>. Không đưa mật khẩu vào Dockerfile hoặc Git.
 
-## Linux và Termux
+## npm (người dùng kỹ thuật)
 
-Linux cần Node.js 22+:
+Máy có Node.js 22 trở lên có thể dùng package đã publish khi package sẵn sàng:
 
-```bash
-npm ci
-node deploy/linux/launcher.mjs
-```
-
-Termux:
-
-```bash
-npm ci
-node deploy/termux/launcher.mjs
-```
-
-Linux lưu dữ liệu tại `$XDG_DATA_HOME/sillytavern-manager` hoặc `~/.local/share/sillytavern-manager`. Termux lưu tại `$PREFIX/var/sillytavern-manager`.
-
-## npm cho người dùng kỹ thuật
-
-Máy đã có Node.js 22+ có thể chạy:
-
-```bash
+~~~bash
 npx sillytavern-manager
-```
+~~~
 
-Hoặc:
+Hoặc cài global:
 
-```bash
+~~~bash
 npm install --global sillytavern-manager
 sillytavern-manager
-```
+~~~
 
-Người dùng Windows nên dùng ZIP portable vì ZIP đã có sẵn Node.js.
+Người dùng Windows nên chọn ZIP portable vì ZIP đã có Node.js. Package và launcher source dùng cùng cổng và quy tắc thư mục dữ liệu.
 
 ## Thiết lập lần đầu
 
-1. Mở manager ở cổng `7860`.
-2. Đặt mật khẩu quản trị manager.
-3. Chọn phiên bản SillyTavern; mặc định là `latest`.
-4. Bấm **Cài đặt** và chờ trạng thái **Ready**, đồng thời SillyTavern phải trả lời ở cổng `8000`.
-5. Mở link local hoặc bật mạng nội bộ/tunnel trong thẻ truy cập.
-6. Đặt mật khẩu tài khoản SillyTavern trước khi bật LAN hoặc tunnel công khai.
+1. Mở manager ở cổng <code>7860</code>.
+2. Tạo mật khẩu quản trị manager.
+3. Chọn phiên bản SillyTavern; mặc định là <code>latest</code>.
+4. Bấm **Cài đặt** và chờ **Ready**. Ready nghĩa là SillyTavern đã trả lời ở cổng <code>8000</code>.
+5. Mở link local, hoặc bật truy cập mạng nội bộ / public tunnel trong thẻ truy cập.
+6. Đặt mật khẩu tài khoản SillyTavern trước khi bật LAN hoặc public tunnel.
 
-Mật khẩu manager và mật khẩu tài khoản SillyTavern là hai mật khẩu khác nhau. Tunnel công khai không bao giờ chuyển tiếp bảng quản trị manager.
+Mật khẩu manager và mật khẩu tài khoản SillyTavern là hai mật khẩu khác nhau. Public tunnel không chuyển tiếp bảng quản trị manager.
 
 ## Sao lưu và khôi phục
 
-Sao lưu local luôn hoạt động. Archive là ZIP streaming tương thích với export của SillyTavern. Mặc định loại `secrets.json`, thumbnail, vector, backup sinh tự động, `.git`, `node_modules` và metadata hệ điều hành. Việc đưa secrets vào backup phải được bật rõ ràng.
+Backup local luôn hoạt động. Archive là ZIP streaming tương thích với export của SillyTavern. Mặc định loại <code>secrets.json</code>, thumbnail, vector, backup sinh tự động, <code>.git</code>, <code>node_modules</code> và metadata hệ điều hành. Đưa secrets vào backup là thao tác explicit kèm cảnh báo.
 
-Restore cho xem trước trước khi ghi dữ liệu. Replace là mặc định, merge là tùy chọn. Manager tạo safety snapshot trước khi replace hoặc chuyển profile. Cloudflare R2 được khuyến nghị để tránh mất dữ liệu khi hỏng ổ đĩa, mất máy hoặc workspace cloud bị xóa.
+Restore cho xem trước trước khi ghi. Replace là chế độ mặc định, merge là tùy chọn. Manager tạo safety snapshot trước khi replace hoặc chuyển profile. Cloudflare R2 được khuyến nghị để bảo vệ dữ liệu khi hỏng ổ đĩa, mất máy hoặc workspace cloud bị xóa.
 
 ## Telemetry và quyền riêng tư
 
-Telemetry là một phần của dự án miễn phí này. Manager chỉ gửi thông tin tổng hợp như nền tảng, phiên bản, provider, model, hostname endpoint, streaming, token, cache, reasoning token, status và duration.
+Telemetry là một phần của dự án miễn phí này. Manager chỉ gửi summary trong allowlist như nền tảng, phiên bản ứng dụng, provider, model, hostname endpoint, streaming, max tokens, input/output/total tokens, cache, reasoning token, status và duration.
 
-Không gửi API key, authorization header, prompt, chat, model response, request body, response body, request log, tên file, đường dẫn, IP hoặc query string. Event được ghi vào outbox local trước và gửi bất đồng bộ; server nhận lỗi không làm SillyTavern bị chặn.
+Không gửi API key, authorization header, prompt, chat, model response, request body, response body, request log, tên file, đường dẫn file, IP hoặc query string. Event được ghi vào outbox local trước rồi gửi bất đồng bộ; server nhận bị lỗi không chặn SillyTavern.
 
 ## Cập nhật
 
-Khi có bản manager mới, đóng bản cũ, giải nén ZIP mới vào thư mục khác và chạy executable mới. Dữ liệu tại `%LOCALAPPDATA%\SillyTavernManager` không bị đụng tới. Thư mục cũ vẫn có thể dùng để rollback.
+Khi có bản manager mới, dừng bản cũ, giải nén ZIP Windows mới vào thư mục khác rồi chạy executable mới. Trên Termux, macOS hoặc Linux, dừng process, chạy <code>git pull --ff-only</code>, chạy <code>npm ci</code> rồi khởi động launcher. Thư mục dữ liệu nền tảng được giữ nguyên nên profile, backup, log, metrics và settings vẫn còn. Giữ thư mục Windows cũ để rollback.
+
+Release được tạo từ version tag. GitHub Actions chạy kiểm tra, tạo ZIP Windows và checksum, build Docker image và tạo npm tarball.
 
 ## Phát triển
 
-Yêu cầu: Node.js 22+, npm 11+, PowerShell 7+ khi build Windows.
+Yêu cầu: Node.js 22+, npm 11+ và PowerShell 7+ khi đóng gói Windows.
 
-```bash
+~~~bash
 npm ci
 npm run panel:dev
 npm run manager:start
+~~~
+
+Chạy kiểm tra trước khi tạo pull request:
+
+~~~bash
 npm run verify
-```
+~~~
 
-Build artifact Windows:
+Build artifact Windows trên máy local:
 
-```powershell
+~~~powershell
 pwsh packaging/windows/package-release.ps1
 npm run release:npm
-```
+~~~
 
 ## License
 
-Xem `THIRD_PARTY_NOTICES.md` để biết thông báo license của các UI component được sử dụng.
+Xem license của repository và [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) để biết các thông báo license của UI component được sử dụng.
