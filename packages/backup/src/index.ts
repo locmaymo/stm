@@ -37,6 +37,7 @@ export interface RestoreOptions {
   readonly mode: RestoreMode;
   readonly allowSecrets?: boolean;
   readonly onProgress?: (progress: { completed: number; total: number }) => void;
+  readonly onStatus?: (step: string) => void;
 }
 
 interface PersistedBackups {
@@ -259,15 +260,21 @@ export class BackupStore {
     if (preview.includesSecrets && options.allowSecrets !== true) {
       throw new BackupError('secrets_confirmation_required', 'This archive contains secrets.json; confirm that secrets may be restored');
     }
-    const temporary = join(this.paths.tmp, `restore-${randomUUID()}`);
+    const dataDestination = await resolveProfileDataRoot(profile);
+    // Keep staging on the profile volume. ModelScope's /tmp is a different
+    // filesystem, which turns rename into a full byte copy after extraction.
+    const temporary = join(resolve(dataDestination, '..'), `.stm-restore-${randomUUID()}`);
+    await mkdir(resolve(dataDestination, '..'), { recursive: true });
     await mkdir(temporary, { recursive: true });
     try {
       await extractEntries(archivePath, entries, temporary, options.onProgress);
       const configName = entries.some((entry) => entry.name === 'config.yml') ? 'config.yml' : 'config.yaml';
       const hasConfig = entries.some((entry) => entry.name === 'config.yaml' || entry.name === 'config.yml');
-      const dataDestination = await resolveProfileDataRoot(profile);
       const archiveDataRoot = hasDefaultUserWrapper(entries) ? join(temporary, DEFAULT_USER_HANDLE) : temporary;
+      options.onStatus?.('Applying restored data');
+      this.logger(`[backup] applying restored data to ${profile.name}`);
       if (options.mode === 'replace') {
+        options.onStatus?.('Clearing existing data');
         await clearDataRoot(dataDestination, dataDestination === resolve(profile.dataPath), preview.includesSecrets);
         if (hasConfig) await rm(profile.configPath, { force: true });
       }
@@ -288,6 +295,8 @@ export class BackupStore {
           else await copyFile(secretsSource, secretsDestination);
         }
       }
+      options.onStatus?.('Finalizing restored data');
+      this.logger(`[backup] finalized restored data for ${profile.name}`);
       const targetLabel = profile.layout === 'data' ? relative(resolve(profile.dataPath), dataDestination).replaceAll('\\', '/') || '.' : 'public/';
       this.logger(`[backup] restored ${preview.fileCount} files to ${profile.name}/${targetLabel} (${options.mode})`);
       return preview;

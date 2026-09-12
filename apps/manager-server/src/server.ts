@@ -838,6 +838,7 @@ async function restoreWithProcess(options: {
       mode,
       ...(allowSecrets ? { allowSecrets: true } : {}),
       onProgress: ({ completed, total }) => onProgress?.(25 + (total > 0 ? (completed / total) * 60 : 60), `Restoring files (${completed}/${total})`),
+      onStatus: (step) => onProgress?.(step === 'Finalizing restored data' ? 87 : 86, step),
     });
     onProgress?.(88, 'Starting SillyTavern');
     const process = await supervisor.start();
