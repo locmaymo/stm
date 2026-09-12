@@ -158,6 +158,24 @@ export class BackupStore {
   public isOperationRunning(): boolean { return this.pendingOperations > 0; }
 
   /**
+   * Claim the operation slot before the work that needs it starts.
+   *
+   * A restore stops SillyTavern, reads the archive and only then asks for a
+   * safety copy. The scheduler ticks every minute, and in that gap it saw an
+   * idle store and started a full backup - which the restore then queued
+   * behind. Reserving first closes the gap; the returned function releases it.
+   */
+  public reserve(): () => void {
+    this.pendingOperations += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.pendingOperations -= 1;
+    };
+  }
+
+  /**
    * Guarantee a recoverable copy of the profile without necessarily writing one.
    *
    * A restore has to be undoable, but if the newest backup still matches the

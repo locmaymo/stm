@@ -865,6 +865,10 @@ async function restoreWithProcess(options: {
 }): Promise<{ preview: Awaited<ReturnType<BackupStore['restore']>>; safetySnapshot: Awaited<ReturnType<BackupStore['create']>>; process: ReturnType<ProcessSupervisor['getState']> }> {
   const { profile, backups, archivePath, mode, allowSecrets, supervisor, tunnel, onProgress } = options;
   const previousTunnelMode = tunnel.getState().mode;
+  // Claim the backup store before stopping anything. Otherwise the scheduler's
+  // next tick sees an idle store and starts a full backup that the restore then
+  // has to wait out.
+  const releaseOperationSlot = backups.reserve();
   onProgress?.(5, 'Stopping SillyTavern');
   await tunnel.stop();
   await supervisor.stop();
@@ -901,6 +905,8 @@ async function restoreWithProcess(options: {
     const process = await supervisor.start().catch(() => supervisor.getState());
     if (previousTunnelMode !== 'off' && process.status === 'running') await tunnel.restart().catch(() => undefined);
     throw error;
+  } finally {
+    releaseOperationSlot();
   }
 }
 

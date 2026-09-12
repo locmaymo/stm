@@ -186,6 +186,19 @@ test('a safety copy reuses an unchanged profile’s newest backup instead of wri
   assert.notEqual(afterChange.id, withSecrets.id);
 });
 
+test('reserving the operation slot holds off a scheduled backup before the work starts', async () => {
+  const fixture = await createFixture();
+  const store = new BackupStore({ paths: fixture.paths });
+  assert.equal(store.isOperationRunning(), false);
+  const release = store.reserve();
+  assert.equal(store.isOperationRunning(), true);
+  release();
+  assert.equal(store.isOperationRunning(), false);
+  // Releasing twice must not let the count fall below zero and re-open the gap.
+  release();
+  assert.equal(store.isOperationRunning(), false);
+});
+
 test('assembles chunked uploads in order without buffering the archive', async () => {
   const fixture = await createFixture();
   const store = new BackupStore({ paths: fixture.paths });

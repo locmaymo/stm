@@ -118,10 +118,14 @@ export class ProcessSupervisor {
       }
       this.logger(`[sillytavern] stopped (${code ?? 'unknown'})`);
     });
+    const spawnedAt = Date.now();
     try {
       await this.readinessCheck(child);
       this.current = { ...this.current, status: 'running' };
-      this.logger('[sillytavern] ready on 127.0.0.1:8000');
+      // Most of this is SillyTavern loading its dependency tree, which on a
+      // hosted volume is thousands of small reads rather than any real work.
+      // Saying how long it took makes that visible instead of inferred.
+      this.logger(`[sillytavern] ready on 127.0.0.1:8000 after ${((Date.now() - spawnedAt) / 1000).toFixed(1)}s`);
       return this.getState();
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'SillyTavern did not become ready';
