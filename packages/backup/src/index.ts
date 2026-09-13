@@ -27,6 +27,8 @@ const DEFAULT_USER_HANDLE = 'default-user';
 const PRESERVED_DATA_ROOT_NAMES = new Set(['_storage', '_cache', '_uploads', '_webpack', 'cookie-secret.txt']);
 const RECOGNIZED_DATA_NAMES = new Set(['settings.json', 'characters', 'chats', 'worlds', 'groups', 'movingUI']);
 const OVERWRITE_ATTEMPTS = 4;
+const DEFAULT_LOCAL_RETENTION = 1;
+const MAX_LOCAL_RETENTION = 50;
 const STAGING_PREFIX = '.stm-restore-';
 const TRASH_PREFIX = '.stm-trash-';
 
@@ -243,12 +245,39 @@ export class BackupStore {
       };
       await this.save([...await this.load(), manifest]);
       this.logger(`[backup] created ${manifest.name} (${manifest.fileCount} files)`);
+      await this.pruneCreated(profile.id);
       return { ...manifest };
     } catch (error) {
       await writer?.abort();
       await rm(temporary, { force: true });
       throw error;
     }
+  }
+
+  /**
+   * Drop the archives this manager wrote that a newer one supersedes.
+   *
+   * The scheduler writes one whenever the data changes and a restore writes
+   * another before it touches anything, and nothing removed them - a profile of
+   * a couple of gigabytes turned into tens of them inside a day. One is what
+   * the job needs: it is the undo for the next restore and the copy an
+   * unchanged profile reuses instead of writing a second one. Archives the
+   * operator uploaded are their own files and are never swept.
+   */
+  public async pruneCreated(profileId: string): Promise<number> {
+    const manifests = await this.load();
+    const superseded = manifests
+      .filter((manifest) => manifest.profileId === profileId && manifest.source === 'created')
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .slice(localRetention());
+    if (superseded.length === 0) return 0;
+    const removed = new Set(superseded.map((manifest) => manifest.id));
+    // Leave the library first: an interrupted sweep should leave a stray file,
+    // never an entry pointing at an archive that is no longer there.
+    await this.save(manifests.filter((manifest) => !removed.has(manifest.id)));
+    await runPooled(superseded, ioConcurrency(), async (manifest) => { await rm(join(this.paths.archives, `${manifest.id}.zip`), { force: true }); });
+    this.logger(`[backup] removed ${superseded.length} superseded backup(s)`);
+    return superseded.length;
   }
 
   /** Move an uploaded archive into the active profile's durable library. */
@@ -1055,6 +1084,13 @@ function parseManifest(value: unknown): BackupManifest {
   if (!isRecord(value) || value.schemaVersion !== BACKUP_SCHEMA_VERSION || typeof value.id !== 'string' || typeof value.name !== 'string' || typeof value.createdAt !== 'string' || typeof value.profileId !== 'string' || typeof value.profileName !== 'string' || (value.layout !== 'data' && value.layout !== 'public') || typeof value.sizeBytes !== 'number' || typeof value.checksumSha256 !== 'string' || typeof value.fileCount !== 'number') throw new Error('Invalid backup manifest');
   const source: BackupSource = value.source === 'uploaded' ? 'uploaded' : 'created';
   return { ...value, source } as unknown as BackupManifest;
+}
+
+/** How many manager-written archives a profile keeps. One, unless asked otherwise. */
+function localRetention(env: NodeJS.ProcessEnv = process.env): number {
+  const configured = Number(env.STM_LOCAL_BACKUPS);
+  if (Number.isSafeInteger(configured) && configured >= 1 && configured <= MAX_LOCAL_RETENTION) return configured;
+  return DEFAULT_LOCAL_RETENTION;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null; }

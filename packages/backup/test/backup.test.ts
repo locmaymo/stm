@@ -198,6 +198,23 @@ test('a safety copy reuses an unchanged profile’s newest backup instead of wri
   assert.notEqual(afterChange.id, first.id);
 });
 
+test('a new backup supersedes the manager’s older ones but never an uploaded archive', async () => {
+  const fixture = await createFixture();
+  const store = new BackupStore({ paths: fixture.paths });
+  const uploaded = join(fixture.root, 'uploaded.zip');
+  await writeStoredZip(uploaded, 'chats/imported.json', '{"message":"imported"}');
+  const kept = await store.importArchive(fixture.profile, uploaded, 'from-my-laptop.zip');
+
+  const first = await store.create(fixture.profile, { name: 'Default-scheduled' });
+  await writeFile(join(fixture.profile.dataPath, 'chats', 'new.json'), '{"message":"added"}', 'utf8');
+  const second = await store.create(fixture.profile, { name: 'Default-prerestore' });
+
+  const remaining = await store.list(fixture.profile.id);
+  assert.deepEqual(remaining.map((manifest) => manifest.id).sort(), [kept.manifest.id, second.id].sort());
+  assert.equal(await store.getArchivePath(first.id), null);
+  assert.ok(await store.getArchivePath(kept.manifest.id));
+});
+
 test('reserving the operation slot holds off a scheduled backup before the work starts', async () => {
   const fixture = await createFixture();
   const store = new BackupStore({ paths: fixture.paths });

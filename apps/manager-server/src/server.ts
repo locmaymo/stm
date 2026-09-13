@@ -150,6 +150,9 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   // longer exists anywhere. A day is long enough for a slow connection to
   // finish one and short enough that the volume does not fill up with them.
   void backups.sweepStaleUploads(24 * 60 * 60 * 1000).catch(() => undefined);
+  // Archives written before retention existed are still on the volume, and the
+  // scheduler only prunes once it next writes one.
+  void profiles.getActive().then((profile) => profile && backups.pruneCreated(profile.id)).catch(() => undefined);
   const system = new SystemStore({
     paths,
     childPid: () => supervisor.getState().pid,
