@@ -13,6 +13,7 @@ import { parseSessionCookie, SessionStore, clearSessionCookie, sessionCookie } f
 import { hashSetupCode, StateStore } from './state.js';
 import { LOG_LIMITS, LogBuffer } from './log-buffer.js';
 import { SystemStore } from './system.js';
+import { panelStaticRoot } from './bootstrap.js';
 import { ProcessSupervisor } from './supervisor.js';
 import { TunnelManager } from '../../../packages/tunnel/src/index.js';
 import { ProfileError, ProfileStore } from '../../../packages/profiles/src/index.js';
@@ -173,7 +174,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   });
   const secureCookies = options.secureCookies ?? env.STM_SECURE_COOKIES === '1';
   const setupCodeRequired = options.setupCodeRequired ?? requiresSetupCode(env);
-  const staticRoot = resolve(options.staticRoot ?? env.STM_STATIC_ROOT ?? join(process.cwd(), 'apps', 'manager-panel', 'dist'));
+  const staticRoot = options.staticRoot ? resolve(options.staticRoot) : panelStaticRoot(env);
   let persisted = await store.load();
   const testRuntime = process.env.NODE_ENV === 'test' || process.argv.includes('--test') || process.execArgv.includes('--test');
   const telemetryEndpoint = env.STM_TELEMETRY_ENDPOINT ?? (testRuntime ? undefined : DEFAULT_TELEMETRY_ENDPOINT);

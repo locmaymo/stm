@@ -28,13 +28,17 @@ test('process supervisor starts the marker-verified active runtime and captures 
   assert.ok(lines.some((line) => line.includes('ready')));
 });
 
-test('tunnel manager reports a clear missing-cloudflared capability', async () => {
+test('a tunnel that cannot get cloudflared says so instead of starting', async () => {
   const root = await mkdtemp(join(tmpdir(), 'stm-tunnel-'));
   const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
-  const tunnel = new TunnelManager({ paths, binaryPath: join(root, 'missing-cloudflared'), env: { PATH: root } });
+  // cloudflared is downloaded when it is missing, so the only way left to be
+  // without it is for that download to fail. The fetch is injected because a
+  // test must never reach the network.
+  const fetchImpl = (async () => { throw new Error('the host is offline'); }) as unknown as typeof globalThis.fetch;
+  const tunnel = new TunnelManager({ paths, binaryPath: join(root, 'missing-cloudflared'), env: { PATH: root }, fetchImpl });
   const state = await tunnel.start('quick');
   assert.equal(state.status, 'error');
-  assert.match(state.error ?? '', /cloudflared was not found/u);
+  assert.match(state.error ?? '', /the host is offline/u);
 });
 
 test('data-layout profiles are passed to SillyTavern without changing the runtime path', async () => {

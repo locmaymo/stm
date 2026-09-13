@@ -1,7 +1,11 @@
 import { startManagerServer } from './server.js';
+import { ensurePanelBuilt, openInBrowser } from './bootstrap.js';
+
+await ensurePanelBuilt();
 
 const manager = await startManagerServer();
-console.log(`[manager] listening on http://127.0.0.1:${manager.port}`);
+const url = `http://127.0.0.1:${manager.port}`;
+console.log(`[manager] listening on ${url}`);
 
 /**
  * Report a fault instead of letting it end the process in silence.
@@ -23,6 +27,8 @@ const reportFault = (kind: string, error: unknown): void => {
 
 process.on('uncaughtException', (error: unknown) => { reportFault('uncaught exception', error); });
 process.on('unhandledRejection', (reason: unknown) => { reportFault('unhandled rejection', reason); });
+
+await openInBrowser(url, { logger: manager.logger });
 
 const shutdown = async (signal: string): Promise<void> => {
   console.log(`[manager] received ${signal}; shutting down`);
