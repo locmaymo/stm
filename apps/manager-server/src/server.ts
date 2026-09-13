@@ -80,6 +80,8 @@ export interface ManagerServerOptions {
 
 export interface ManagerServer {
   readonly server: Server;
+  /** Writes a line to the manager log, so a fault can say what it was. */
+  readonly logger: (line: string) => void;
   readonly store: StateStore;
   readonly sessions: SessionStore;
   readonly runtime: RuntimeManager;
@@ -287,6 +289,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
 
   return {
     server,
+    logger,
     store,
     sessions,
     runtime,
@@ -626,7 +629,15 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       }
       const process = await supervisor.start();
       if (previousTunnelMode !== 'off' && process.status === 'running') await tunnel.restart();
-    }).catch(async (error: unknown) => { jobs.finish(queued.id, 'failed', error instanceof Error ? error.message : 'Installation failed'); const process = await supervisor.start(); if (previousTunnelMode !== 'off' && process.status === 'running') await tunnel.restart(); });
+    }).catch(async (error: unknown) => {
+      jobs.finish(queued.id, 'failed', error instanceof Error ? error.message : 'Installation failed');
+      // Putting SillyTavern back is best effort: this path only runs because
+      // something already failed, and a second failure inside it rejected with
+      // nobody listening - which ends the manager process and takes the console
+      // down with it, leaving no way to install a different version.
+      const restarted = await supervisor.start().catch(() => supervisor.getState());
+      if (previousTunnelMode !== 'off' && restarted.status === 'running') await tunnel.restart().catch(() => undefined);
+    });
     sendJson(response, 202, { installationId: queued.id, job });
     return;
   }
