@@ -496,9 +496,14 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     if (await configUpdateEnablesListen(input, config)) await requireAdminAccountPassword(runtime, supervisor, profiles, config);
     const previousTunnelMode = tunnel.getState().mode;
     const wasRunning = supervisor.getState().status === 'running';
-    const saved = await config.update(profile, installation, input);
     await tunnel.stop('configChange');
-    const process = wasRunning ? await supervisor.restart('configChange') : supervisor.getState();
+    // Stop before writing. A runtime old enough to keep its own copy of the
+    // config has that copy synchronized back into the profile when it stops,
+    // so a config written first is overwritten by the restart that was meant
+    // to apply it - which is why nothing the panel saved ever took effect.
+    if (wasRunning) await supervisor.stop('configChange');
+    const saved = await config.update(profile, installation, input);
+    const process = wasRunning ? await supervisor.start() : supervisor.getState();
     if (previousTunnelMode !== 'off' && process.status === 'running') {
       try {
         await requireTunnelPassword(config, profiles, runtime, supervisor);
@@ -1032,10 +1037,15 @@ async function setSillyTavernAdminPassword(supervisor: ProcessSupervisor, runtim
     const profile = await profiles.getActive();
     const installation = await runtime.getActiveInstallation();
     if (!profile || !installation) throw new RequestError(409, 'profile_required', 'An active SillyTavern profile is required');
+    // Stop first, for the same reason the configuration route does: stopping a
+    // legacy runtime copies its own config back over the profile's, so a
+    // password written before the restart is wiped by that restart.
+    const wasRunning = supervisor.getState().status === 'running';
+    if (wasRunning) await supervisor.stop('passwordChange');
     await config.setBasicAuthPassword(profile, installation, password);
-    // Basic Auth is read at startup, so the new password only applies once the
-    // process has been through it. Nothing is running before the first start.
-    if (supervisor.getState().status === 'running') await supervisor.restart('passwordChange');
+    // Basic Auth is read at startup, so the password only applies once the
+    // process has been through it.
+    if (wasRunning) await supervisor.start();
     return;
   }
   if (!state.accountsEnabled || !state.processReady) throw new RequestError(409, 'sillytavern_not_running', 'Start SillyTavern before setting its admin password');

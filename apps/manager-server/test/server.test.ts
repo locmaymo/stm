@@ -565,3 +565,68 @@ test('no launcher token means no shutdown route at all', async (t) => {
   const response = await fetch(`${serverUrl(manager)}/api/v1/shutdown`, { method: 'POST', headers: { 'x-stm-shutdown-token': 'anything' } });
   assert.equal(response.status, 404);
 });
+
+test('a legacy runtime that rewrites the profile config on stop does not lose the password', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-legacy-order-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const runtimePath = join(root, 'runtime');
+  // No src/users.js and no default/config.yaml: a pre-1.12 runtime.
+  await mkdir(runtimePath, { recursive: true });
+  const now = new Date().toISOString();
+  const installation: Installation = { id: 'install-1', selector: '1.10.10', resolvedRef: '1.10.10', channel: 'release', runtimePath, markerPath: join(runtimePath, '.stm-installation.json'), status: 'ready', progress: 100, step: 'Installation ready', error: null, createdAt: now, updatedAt: now, activatedAt: now };
+  const fakeRuntime = { listVersions: async () => [], listInstallations: async () => [installation], getActiveInstallation: async () => installation, getInstallation: async (id: string) => id === installation.id ? installation : null } as unknown as RuntimeManager;
+
+  let processState: ProcessState = { status: 'running', installationId: installation.id, profileId: 'profile-1', pid: 555, startedAt: now, error: null };
+  let profileConfigPath = '';
+  const runtimeConfigPath = join(runtimePath, 'config.yaml');
+  const fakeSupervisor = {
+    getState: () => processState,
+    start: async () => {
+      // Starting copies the profile's config into the runtime, the way
+      // preparing a legacy runtime does.
+      if (profileConfigPath) await writeFile(runtimeConfigPath, await readFile(profileConfigPath, 'utf8'), 'utf8');
+      processState = { ...processState, status: 'running' };
+      return processState;
+    },
+    stop: async () => {
+      // And stopping copies the runtime's own config back over the profile's,
+      // which is what used to overwrite a password written before the restart.
+      try { await writeFile(profileConfigPath, await readFile(runtimeConfigPath, 'utf8'), 'utf8'); } catch { /* nothing written yet */ }
+      processState = { ...processState, status: 'stopped' };
+      return processState;
+    },
+    restart: async () => processState,
+    close: async () => undefined,
+  } as unknown as ProcessSupervisor;
+
+  const manager = await startManagerServer({ host: '127.0.0.1', port: 0, paths, env: { STM_ADMIN_PASSWORD: 'correct horse battery staple' }, secureCookies: false, runtime: fakeRuntime, supervisor: fakeSupervisor, logger: () => undefined });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const login = await fetch(`${base}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'correct horse battery staple' }) });
+  const cookie = cookieFrom(login);
+  const csrf = (await login.json() as { session: { csrfToken: string } }).session.csrfToken;
+  const profile = (await (await fetch(`${base}/api/v1/profiles`, { headers: { cookie } })).json() as { profiles: Array<{ configPath: string }> }).profiles[0];
+  assert.ok(profile);
+  profileConfigPath = profile.configPath;
+  const startingConfig = 'listen: false\nport: 8000\nbasicAuthMode: false\nbasicAuthUser:\n  username: user\n  password: password\n';
+  await writeFile(profileConfigPath, startingConfig, 'utf8');
+  await writeFile(runtimeConfigPath, startingConfig, 'utf8');
+
+  const saved = await fetch(`${base}/api/v1/access/password`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ password: 'a-real-secret', confirmPassword: 'a-real-secret' }) });
+  assert.equal(saved.status, 200);
+  assert.equal((await saved.json() as { adminPasswordConfigured: boolean }).adminPasswordConfigured, true);
+  for (const path of [profileConfigPath, runtimeConfigPath]) {
+    const raw = await readFile(path, 'utf8');
+    assert.match(raw, /password: a-real-secret/u, `the password survived in ${path}`);
+    assert.match(raw, /basicAuthMode: true/u);
+  }
+
+  // And the same for an ordinary settings save, which took the same route.
+  const listen = await fetch(`${base}/api/v1/config`, { method: 'PUT', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ settings: { listen: true } }) });
+  assert.equal(listen.status, 200);
+  const runtimeRaw = await readFile(runtimeConfigPath, 'utf8');
+  assert.match(runtimeRaw, /listen: true/u);
+  // Without this the runtime refuses to start at all.
+  assert.match(runtimeRaw, /basicAuthMode: true/u);
+  assert.match(runtimeRaw, /password: a-real-secret/u);
+});
