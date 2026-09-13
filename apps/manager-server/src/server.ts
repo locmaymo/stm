@@ -4,7 +4,7 @@ import { readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import { extname, join, relative, resolve } from 'node:path';
-import { logEvent, logLineText, type AccessSecurityState, type ApiErrorBody, type ConfigUpdateInput, type HealthResponse, type Installation, type Job, type JobState, type LogEntry, type LogEvent, type LogLine, type LogSink, type LogSourceFilter, type ManagerPorts, type ProfileLayout, type SetupStatus, type VersionSelector } from '../../../packages/contracts/src/index.js';
+import { logEvent, logLineText, type ApiErrorBody, type ConfigUpdateInput, type HealthResponse, type Installation, type Job, type JobState, type LogEntry, type LogEvent, type LogLine, type LogSink, type LogSourceFilter, type ManagerPorts, type ProfileLayout, type SetupStatus, type VersionSelector } from '../../../packages/contracts/src/index.js';
 import { getPlatformPaths, type PlatformPaths } from '../../../packages/platform/src/index.js';
 import { RuntimeError, RuntimeManager, type InstallationProgress } from '../../../packages/sillytavern-runtime/src/index.js';
 import { hashPassword, MIN_PASSWORD_LENGTH, validatePassword, verifyPassword } from './password.js';
@@ -15,6 +15,7 @@ import { LOG_LIMITS, LogBuffer } from './log-buffer.js';
 import { SystemStore } from './system.js';
 import { panelStaticRoot } from './bootstrap.js';
 import { ProcessSupervisor } from './supervisor.js';
+import { AccessGateway, ACCESS_GATEWAY_PORT } from './gateway.js';
 import { TunnelManager } from '../../../packages/tunnel/src/index.js';
 import { ProfileError, ProfileStore } from '../../../packages/profiles/src/index.js';
 import { BackupError, BackupStore } from '../../../packages/backup/src/index.js';
@@ -38,6 +39,8 @@ const NOTICE = {
   disclaimer: 'You are responsible for your SillyTavern data, credentials, providers, backups, and compliance with applicable service terms.',
 } as const;
 
+const ACCESS_PASSWORD_MIN_LENGTH = 8;
+
 const PROTECTED_PATHS = new Set([
   '/api/v1/versions',
   '/api/v1/installations',
@@ -46,6 +49,7 @@ const PROTECTED_PATHS = new Set([
   '/api/v1/config',
   '/api/v1/access/security',
   '/api/v1/access/password',
+  '/api/v1/access/network',
   '/api/v1/auth/password',
   '/api/v1/metrics',
   '/api/v1/system',
@@ -71,6 +75,9 @@ export interface ManagerServerOptions {
   readonly logBuffer?: LogBuffer;
   readonly supervisor?: ProcessSupervisor;
   readonly tunnel?: TunnelManager;
+  readonly gateway?: AccessGateway;
+  /** Overridable so tests can bind an ephemeral port instead of 8001. */
+  readonly accessPort?: number;
   readonly profileStore?: ProfileStore;
   readonly backupStore?: BackupStore;
   readonly r2?: R2Manager;
@@ -96,6 +103,7 @@ export interface ManagerServer {
   readonly runtime: RuntimeManager;
   readonly supervisor: ProcessSupervisor;
   readonly tunnel: TunnelManager;
+  readonly gateway: AccessGateway;
   readonly profiles: ProfileStore;
   readonly backups: BackupStore;
   readonly r2: R2Manager;
@@ -131,6 +139,8 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   const r2 = options.r2 ?? new R2Manager({ paths, env, logger: (line) => { jobs.append('backup', line); baseLogger(line); } });
   const metrics = options.metrics ?? new MetricsStore(paths);
   const config = options.config ?? new ConfigStore({ logger: (line) => { jobs.append('manager', line); baseLogger(line); } });
+  const accessPort = options.accessPort ?? (Number(env.STM_ACCESS_PORT ?? '') || ACCESS_GATEWAY_PORT);
+  const gateway = options.gateway ?? new AccessGateway({ port: accessPort, targetPort: SILLYTAVERN_PORT, logger: (line) => { jobs.append('manager', line); baseLogger(line); } });
   const supervisor = options.supervisor ?? new ProcessSupervisor({
     runtime,
     profileResolver: (installation) => profiles.getActiveForInstallation(installation.id),
@@ -140,9 +150,10 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
         if (installation) {
           try {
             // The runtime about to be started may be older or newer than the
-            // one this config was written for, and the two refuse opposite
-            // things. Settle that before anything copies it into the runtime.
-            await config.reconcileForRuntime(profile, installation);
+            // one this config was written for, and an older one refuses to
+            // start at all if `listen` was left on for a newer one. Settle
+            // that before anything copies the config into the runtime.
+            await config.applyManagedDefaults(profile, installation);
           } catch (error: unknown) {
             if (!(error instanceof ConfigError) || error.code !== 'config_missing') throw error;
           }
@@ -160,7 +171,16 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     metricsFile: metrics.filePath,
     logger: (line) => { jobs.append('sillytavern', line); baseLogger(line); },
   });
-  const tunnel = options.tunnel ?? new TunnelManager({ paths, env, beforeStart: async () => { await requireTunnelPassword(config, profiles, runtime, supervisor); }, logger: (line) => { jobs.append('cloudflared', line); baseLogger(line); } });
+  const tunnel = options.tunnel ?? new TunnelManager({
+    paths,
+    env,
+    targetUrl: `http://127.0.0.1:${accessPort}`,
+    beforeStart: async () => {
+      if (!gateway.getState().passwordConfigured) throw new Error('Set the SillyTavern password before opening a public tunnel');
+      if (gateway.getState().status !== 'running') await gateway.start();
+    },
+    logger: (line) => { jobs.append('cloudflared', line); baseLogger(line); },
+  });
   const scheduler = new BackupScheduler({ backups, profiles, r2, logger: (line) => { jobs.append('backup', line); baseLogger(line); } });
   scheduler.start();
   // Uploads interrupted by a closed tab leave gigabyte part files whose id no
@@ -241,6 +261,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       jobs,
       supervisor,
       tunnel,
+      gateway,
       profiles,
       backups,
       r2,
@@ -287,6 +308,10 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   await listen(server, host, port);
   const address = server.address();
   const actualPort = address && typeof address !== 'string' ? address.port : port;
+  // The door opens with the manager rather than with SillyTavern, so its
+  // address is the same one every time and a saved bookmark keeps working.
+  gateway.setPassword(persisted.accessPasswordHash);
+  await gateway.start(persisted.accessLanEnabled);
   const activeInstallation = await runtime.getActiveInstallation();
   if (activeInstallation?.status === 'ready') {
     let readyInstallation = activeInstallation;
@@ -297,9 +322,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       // Reading it first turns a missing config into the handled error below
       // rather than a fault during startup.
       const currentConfig = activeProfile ? await config.read(activeProfile, readyInstallation) : null;
-      if (activeProfile && currentConfig && await config.reconcileForRuntime(activeProfile, readyInstallation) === 'accounts') {
-        logger(logEvent('config.accountsMigrated', '[config] migrated access security to SillyTavern accounts; LAN access is waiting for an admin password'));
-      }
+      if (activeProfile && currentConfig) await config.applyManagedDefaults(activeProfile, readyInstallation);
       await runtime.cleanupLegacyRuntimeCopies?.(readyInstallation.id);
     } catch (error: unknown) {
       logger(logEvent('installer.legacyMigrationFailed', `[installer] legacy runtime migration failed: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
@@ -316,13 +339,14 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     port: actualPort,
     supervisor,
     tunnel,
+    gateway,
     profiles,
     backups,
     r2,
     metrics,
     config,
     telemetry,
-    close: async () => { await telemetry.close(); await scheduler.close(); await tunnel.close(); await supervisor.close(); await backups.settle(); await profiles.settle(); await closeServer(server); },
+    close: async () => { await telemetry.close(); await scheduler.close(); await tunnel.close(); await gateway.close(); await supervisor.close(); await backups.settle(); await profiles.settle(); await closeServer(server); },
   };
 }
 
@@ -342,6 +366,7 @@ async function handleRequest(options: {
   readonly jobs: JobStore;
   readonly supervisor: ProcessSupervisor;
   readonly tunnel: TunnelManager;
+  readonly gateway: AccessGateway;
   readonly profiles: ProfileStore;
   readonly backups: BackupStore;
   readonly r2: R2Manager;
@@ -351,7 +376,7 @@ async function handleRequest(options: {
   readonly shutdownToken: string | null;
   readonly onShutdownRequest: (() => void) | undefined;
 }): Promise<void> {
-  const { request, response, store, sessions, rateLimiter, startedAt, secureCookies, setupCodeRequired, staticRoot, platform, runtime, jobs, supervisor, tunnel, profiles, backups, r2, metrics, config, system, shutdownToken, onShutdownRequest } = options;
+  const { request, response, store, sessions, rateLimiter, startedAt, secureCookies, setupCodeRequired, staticRoot, platform, runtime, jobs, supervisor, tunnel, gateway, profiles, backups, r2, metrics, config, system, shutdownToken, onShutdownRequest } = options;
   const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
   const pathname = url.pathname;
   const context: RequestContext = {
@@ -452,14 +477,14 @@ async function handleRequest(options: {
     if (method !== 'GET' && !requireCsrf(context, session.csrfToken)) {
       return;
     }
-    await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, profiles, backups, r2, metrics, config, system);
+    await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, gateway, profiles, backups, r2, metrics, config, system);
     return;
   }
 
   sendError(response, 404, 'not_found', 'Route not found');
 }
 
-async function handleRuntimeRequest(context: RequestContext, store: StateStore, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, metrics: MetricsStore, config: ConfigStore, system: SystemStore): Promise<void> {
+async function handleRuntimeRequest(context: RequestContext, store: StateStore, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, gateway: AccessGateway, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, metrics: MetricsStore, config: ConfigStore, system: SystemStore): Promise<void> {
   const { pathname, request, response } = context;
   const method = request.method ?? 'GET';
   if (pathname === '/api/v1/auth/password' && method === 'POST') {
@@ -493,7 +518,6 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     if (!profile || !installation || installation.status !== 'ready') { sendError(response, 409, 'installation_required', 'Install SillyTavern before editing its configuration'); return; }
     if (method === 'GET') { sendJson(response, 200, decorateConfig(await config.read(profile, installation))); return; }
     const input = parseConfigUpdateInput(await readJson(request));
-    if (await configUpdateEnablesListen(input, config)) await requireAdminAccountPassword(runtime, supervisor, profiles, config);
     const previousTunnelMode = tunnel.getState().mode;
     const wasRunning = supervisor.getState().status === 'running';
     await tunnel.stop('configChange');
@@ -504,19 +528,12 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     if (wasRunning) await supervisor.stop('configChange');
     const saved = await config.update(profile, installation, input);
     const process = wasRunning ? await supervisor.start() : supervisor.getState();
-    if (previousTunnelMode !== 'off' && process.status === 'running') {
-      try {
-        await requireTunnelPassword(config, profiles, runtime, supervisor);
-        await tunnel.restart();
-      } catch {
-        // Keep the tunnel stopped until the account has a password.
-      }
-    }
+    if (previousTunnelMode !== 'off' && process.status === 'running') await tunnel.restart().catch(() => undefined);
     sendJson(response, 200, { config: decorateConfig(saved), process, tunnel: tunnel.getState() });
     return;
   }
   if (pathname === '/api/v1/access/security' && method === 'GET') {
-    sendJson(response, 200, await readAccessSecurityState(runtime, supervisor, profiles, config));
+    sendJson(response, 200, gateway.getState());
     return;
   }
   if (pathname === '/api/v1/access/password' && method === 'POST') {
@@ -525,14 +542,26 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       sendError(response, 400, 'password_confirmation_mismatch', 'Enter the same SillyTavern password twice');
       return;
     }
-    if (body.password.length < 8) { sendError(response, 400, 'invalid_password', 'The SillyTavern password must be at least 8 characters'); return; }
-    try {
-      await setSillyTavernAdminPassword(supervisor, runtime, profiles, config, body.password);
-      sendJson(response, 200, await readAccessSecurityState(runtime, supervisor, profiles, config));
-    } catch (error: unknown) {
-      if (error instanceof RequestError) { sendError(response, error.statusCode, error.code, error.message); return; }
-      throw error;
+    if (body.password.length < ACCESS_PASSWORD_MIN_LENGTH) { sendError(response, 400, 'invalid_password', `The SillyTavern password must be at least ${ACCESS_PASSWORD_MIN_LENGTH} characters`); return; }
+    const passwordHash = hashPassword(body.password);
+    await store.setAccessPassword(passwordHash);
+    // Whoever was already inside is signed out, so a password changed because
+    // it was shared too widely takes effect immediately rather than at the
+    // next restart.
+    gateway.setPassword(passwordHash);
+    if (gateway.getState().status !== 'running') await gateway.start();
+    sendJson(response, 200, gateway.getState());
+    return;
+  }
+  if (pathname === '/api/v1/access/network' && method === 'PUT') {
+    const body = await readJson(request);
+    if (!isRecord(body) || typeof body.lan !== 'boolean') { sendError(response, 400, 'invalid_input', 'Local network access must be on or off'); return; }
+    if (body.lan && !gateway.getState().passwordConfigured) {
+      sendError(response, 409, 'public_access_password_required', 'Set the SillyTavern password before enabling network access');
+      return;
     }
+    await store.setAccessLan(body.lan);
+    sendJson(response, 200, await gateway.setLan(body.lan));
     return;
   }
   if (pathname === '/api/v1/r2' && method === 'GET') {
@@ -876,7 +905,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     const mode = isRecord(body) && (body.mode === 'off' || body.mode === 'quick' || body.mode === 'named') ? body.mode : null;
     if (!mode) { sendError(response, 400, 'invalid_tunnel_mode', 'Tunnel mode must be off, quick, or named'); return; }
     if (mode !== 'off' && supervisor.getState().status !== 'running') { sendError(response, 409, 'sillytavern_not_running', 'Start SillyTavern before enabling the tunnel'); return; }
-    if (mode !== 'off') await requireTunnelPassword(config, profiles, runtime, supervisor);
+    if (mode !== 'off' && !gateway.getState().passwordConfigured) { sendError(response, 409, 'public_access_password_required', 'Set the SillyTavern password before opening a public tunnel'); return; }
     const state = mode === 'off' ? await tunnel.stop() : await tunnel.start(mode, isRecord(body) && typeof body.token === 'string' ? body.token : undefined);
     sendJson(response, 200, state);
     return;
@@ -990,174 +1019,15 @@ function isProtectedPath(pathname: string): boolean {
     || pathname.startsWith('/api/v1/config/');
 }
 
-async function requireTunnelPassword(config: ConfigStore, profiles: ProfileStore, runtime: RuntimeManager, supervisor: ProcessSupervisor): Promise<void> {
-  const state = await readAccessSecurityState(runtime, supervisor, profiles, config);
-  if (!state.adminPasswordConfigured) throw new RequestError(409, 'public_access_password_required', 'Set the SillyTavern password before opening a public tunnel');
-}
-
-async function requireAdminAccountPassword(runtime: RuntimeManager, supervisor: ProcessSupervisor, profiles: ProfileStore, config: ConfigStore): Promise<void> {
-  const state = await readAccessSecurityState(runtime, supervisor, profiles, config);
-  if (!state.adminPasswordConfigured) throw new RequestError(409, 'public_access_password_required', 'Set the SillyTavern password before enabling network access');
-}
-
-async function readAccessSecurityState(runtime: RuntimeManager, supervisor: ProcessSupervisor | undefined, profiles: ProfileStore, config: ConfigStore): Promise<AccessSecurityState> {
-  const profile = await profiles.getActive();
-  const installation = await runtime.getActiveInstallation();
-  if (!profile || !installation) return { mode: 'accounts', accountsEnabled: false, adminHandle: 'default-user', adminPasswordConfigured: false, processReady: false };
-  const document = await config.read(profile, installation);
-  // A version without accounts keeps its password in the config file, so it can
-  // be read and written whether or not SillyTavern happens to be up. Asking the
-  // running process was the only reason those versions reported "account
-  // details are unavailable" forever and could never be shared.
-  if (document.accessMode === 'basicAuth') {
-    const basic = await config.readBasicAuth(profile, installation);
-    return { mode: 'basicAuth', accountsEnabled: false, adminHandle: basic.username, adminPasswordConfigured: basic.enabled && basic.passwordConfigured, processReady: true };
-  }
-  if (!document.settings.enableUserAccounts || !supervisor || supervisor.getState().status !== 'running') return { mode: 'accounts', accountsEnabled: document.settings.enableUserAccounts, adminHandle: 'default-user', adminPasswordConfigured: false, processReady: supervisor?.getState().status === 'running' };
-  try {
-    const session = await createSillyTavernSession();
-    const response = await fetch('http://127.0.0.1:8000/api/users/list', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', cookie: session.cookie, 'x-csrf-token': session.token },
-      body: '{}',
-      signal: AbortSignal.timeout(2_000),
-    });
-    if (!response.ok || response.status === 204) return { mode: 'accounts', accountsEnabled: true, adminHandle: 'default-user', adminPasswordConfigured: false, processReady: true, error: 'SillyTavern account details are unavailable for this version or login configuration' };
-    const users = await response.json() as Array<{ handle?: string; password?: boolean }>;
-    const admin = users.find((user) => user.handle === 'default-user') ?? users[0];
-    return { mode: 'accounts', accountsEnabled: true, adminHandle: admin?.handle ?? 'default-user', adminPasswordConfigured: admin?.password === true, processReady: true };
-  } catch {
-    return { mode: 'accounts', accountsEnabled: true, adminHandle: 'default-user', adminPasswordConfigured: false, processReady: false, error: 'SillyTavern account details are unavailable until SillyTavern is ready' };
-  }
-}
-
-async function setSillyTavernAdminPassword(supervisor: ProcessSupervisor, runtime: RuntimeManager, profiles: ProfileStore, config: ConfigStore, password: string): Promise<void> {
-  const state = await readAccessSecurityState(runtime, supervisor, profiles, config);
-  if (state.mode === 'basicAuth') {
-    const profile = await profiles.getActive();
-    const installation = await runtime.getActiveInstallation();
-    if (!profile || !installation) throw new RequestError(409, 'profile_required', 'An active SillyTavern profile is required');
-    // Stop first, for the same reason the configuration route does: stopping a
-    // legacy runtime copies its own config back over the profile's, so a
-    // password written before the restart is wiped by that restart.
-    const wasRunning = supervisor.getState().status === 'running';
-    if (wasRunning) await supervisor.stop('passwordChange');
-    await config.setBasicAuthPassword(profile, installation, password);
-    // Basic Auth is read at startup, so the password only applies once the
-    // process has been through it.
-    if (wasRunning) await supervisor.start();
-    return;
-  }
-  if (!state.accountsEnabled || !state.processReady) throw new RequestError(409, 'sillytavern_not_running', 'Start SillyTavern before setting its admin password');
-  if (state.error) throw new RequestError(409, 'sillytavern_accounts_unavailable', state.error);
-  if (state.adminPasswordConfigured) {
-    await resetSillyTavernAdminStorage(profiles, runtime, supervisor, state.adminHandle, password);
-    return;
-  }
-  const session = await createSillyTavernSession();
-  const login = await fetch('http://127.0.0.1:8000/api/users/login', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', cookie: session.cookie, 'x-csrf-token': session.token },
-    body: JSON.stringify({ handle: state.adminHandle, password: '' }),
-    signal: AbortSignal.timeout(2_000),
-  });
-  if (!login.ok) throw new RequestError(502, 'sillytavern_auth_unavailable', 'SillyTavern rejected the initial admin session');
-  const loginCookie = mergeCookies(session.cookie, responseCookies(login));
-  const change = await fetch('http://127.0.0.1:8000/api/users/change-password', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', cookie: loginCookie, 'x-csrf-token': session.token },
-    body: JSON.stringify({ handle: state.adminHandle, newPassword: password }),
-    signal: AbortSignal.timeout(2_000),
-  });
-  if (!change.ok) throw new RequestError(502, 'sillytavern_password_failed', 'SillyTavern could not save the admin password');
-}
-
-async function resetSillyTavernAdminStorage(profiles: ProfileStore, runtime: RuntimeManager, supervisor: ProcessSupervisor, handle: string, password: string): Promise<void> {
-  const profile = await profiles.getActive();
-  const installation = await runtime.getActiveInstallation();
-  if (!profile || !installation) throw new RequestError(409, 'profile_required', 'An active SillyTavern profile is required');
-  const storageRoots = [join(profile.dataPath, '_storage'), join(installation.runtimePath, 'data', '_storage'), join(installation.runtimePath, '_storage')];
-  let recordPath: string | null = null;
-  let record: Record<string, unknown> | null = null;
-  for (const root of storageRoots) {
-    let names: string[];
-    try { names = await readdir(root); } catch { continue; }
-    for (const name of names) {
-      const path = join(root, name);
-      try {
-        const parsed: unknown = JSON.parse(await readFile(path, 'utf8'));
-        if (!isRecord(parsed) || parsed.key !== `user:${handle}` || !isRecord(parsed.value)) continue;
-        recordPath = path;
-        record = parsed;
-        break;
-      } catch { /* ignore unrelated node-persist records */ }
-    }
-    if (recordPath && record) break;
-  }
-  if (!recordPath || !record || !isRecord(record.value)) throw new RequestError(409, 'sillytavern_account_storage_unavailable', 'The SillyTavern account storage could not be found');
-  const salt = randomBytes(16).toString('base64');
-  record.value.password = scryptSync(password.normalize(), salt, 64).toString('base64');
-  record.value.salt = salt;
-  const temporary = `${recordPath}.${randomBytes(6).toString('hex')}.tmp`;
-  await writeFile(temporary, JSON.stringify(record), { encoding: 'utf8', mode: 0o600 });
-  await rename(temporary, recordPath);
-  const restarted = await supervisor.restart('passwordChange');
-  if (restarted.status !== 'running') throw new RequestError(502, 'sillytavern_restart_failed', 'SillyTavern could not restart after the password change');
-}
-
-interface SillyTavernSession {
-  readonly token: string;
-  readonly cookie: string;
-}
-
-async function createSillyTavernSession(): Promise<SillyTavernSession> {
-  const response = await fetch('http://127.0.0.1:8000/csrf-token', { signal: AbortSignal.timeout(2_000) });
-  if (!response.ok) throw new RequestError(502, 'sillytavern_auth_unavailable', 'SillyTavern did not provide an authentication session');
-  const body = await response.json() as { token?: string };
-  const cookie = responseCookies(response);
-  if (!body.token || (!cookie && body.token !== 'disabled')) throw new RequestError(502, 'sillytavern_auth_unavailable', 'SillyTavern did not provide an authentication session');
-  return { token: body.token, cookie };
-}
-
-function responseCookies(response: Response): string {
-  const headers = response.headers as Headers & { getSetCookie?: () => string[] };
-  const values = headers.getSetCookie?.() ?? (response.headers.get('set-cookie') ? [response.headers.get('set-cookie') as string] : []);
-  return values.map((value) => value.split(';', 1)[0]).filter(Boolean).join('; ');
-}
-
-function mergeCookies(...values: string[]): string {
-  const cookies = new Map<string, string>();
-  for (const value of values) {
-    for (const pair of value.split(';')) {
-      const separator = pair.indexOf('=');
-      if (separator <= 0) continue;
-      cookies.set(pair.slice(0, separator).trim(), pair.trim());
-    }
-  }
-  return [...cookies.values()].join('; ');
-}
-
-async function configUpdateEnablesListen(input: ConfigUpdateInput, config: ConfigStore): Promise<boolean> {
-  if (input.settings?.listen === true) return true;
-  if (input.rawYaml !== undefined) return (await config.validate(input.rawYaml)).listen;
-  return false;
-}
-
 function parseConfigUpdateInput(value: unknown): ConfigUpdateInput {
   if (!isRecord(value)) throw new RequestError(400, 'invalid_input', 'A configuration update is required');
   if (typeof value.rawYaml === 'string') return { rawYaml: value.rawYaml };
   const settings = value.settings;
   if (!isRecord(settings)) throw new RequestError(400, 'invalid_input', 'Configuration settings are required');
   return { settings: {
-    ...(typeof settings.listen === 'boolean' ? { listen: settings.listen } : {}),
-    ...(typeof settings.enableUserAccounts === 'boolean' ? { enableUserAccounts: settings.enableUserAccounts } : {}),
     ...(typeof settings.sslEnabled === 'boolean' ? { sslEnabled: settings.sslEnabled } : {}),
     ...(typeof settings.enableCorsProxy === 'boolean' ? { enableCorsProxy: settings.enableCorsProxy } : {}),
     ...(typeof settings.disableCsrfProtection === 'boolean' ? { disableCsrfProtection: settings.disableCsrfProtection } : {}),
-    ...(isRecord(settings.listenAddress) ? { listenAddress: {
-      ...(typeof settings.listenAddress.ipv4 === 'string' ? { ipv4: settings.listenAddress.ipv4 } : {}),
-      ...(typeof settings.listenAddress.ipv6 === 'string' ? { ipv6: settings.listenAddress.ipv6 } : {}),
-    } } : {}),
   } };
 }
 
@@ -1585,6 +1455,7 @@ class RequestError extends Error {
 }
 
 export const managerPorts: ManagerPorts = {
+  access: ACCESS_GATEWAY_PORT,
   manager: MANAGER_PORT,
   sillyTavern: SILLYTAVERN_PORT,
 };

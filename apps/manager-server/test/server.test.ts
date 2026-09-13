@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { getPlatformPaths } from '../../../packages/platform/src/index.js';
 import { StateStore } from '../src/state.js';
 import { startManagerServer, type ManagerServer } from '../src/server.js';
-import type { Installation, ProcessState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, Installation, ProcessState, VersionOption } from '../../../packages/contracts/src/index.js';
 import type { RuntimeManager } from '../../../packages/sillytavern-runtime/src/index.js';
 import type { ProcessSupervisor } from '../src/supervisor.js';
 
@@ -26,6 +26,7 @@ async function createServer(options: { setupCodeRequired?: boolean; bootstrapPas
     setupCodeRequired: options.setupCodeRequired ?? true,
     env: options.bootstrapPassword ? { STM_ADMIN_PASSWORD: options.bootstrapPassword } : {},
     secureCookies: false,
+    accessPort: 0,
     staticRoot,
     logger: () => undefined,
   });
@@ -178,7 +179,7 @@ test('R2 settings are authenticated, masked, and preserve masked credentials', a
   assert.equal(visibleText.includes('access-key-1234'), false);
 });
 
-test('config follows the active runtime and account mode gates public access', async (t) => {
+test('config follows the active runtime, and sharing waits for an access password', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'stm-config-api-'));
   const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
   const runtimePath = join(root, 'runtime');
@@ -190,7 +191,8 @@ test('config follows the active runtime and account mode gates public access', a
   const processState: ProcessState = { status: 'running', installationId: installation.id, profileId: 'profile-1', pid: 123, startedAt: now, error: null };
   const fakeSupervisor = { getState: () => processState, restart: async () => processState, start: async () => processState, stop: async () => ({ ...processState, status: 'stopped' }), close: async () => undefined } as unknown as ProcessSupervisor;
   const fakeRuntime = { listVersions: async () => [], listInstallations: async () => [installation], getActiveInstallation: async () => installation, getInstallation: async (id: string) => id === installation.id ? installation : null } as unknown as RuntimeManager;
-  const manager = await startManagerServer({ host: '127.0.0.1', port: 0, paths, env: { STM_ADMIN_PASSWORD: 'correct horse battery staple' }, secureCookies: false, runtime: fakeRuntime, supervisor: fakeSupervisor, logger: () => undefined });
+  const manager = await startManagerServer({ host: '127.0.0.1', port: 0, paths, env: { STM_ADMIN_PASSWORD: 'correct horse battery staple' }, secureCookies: false,
+    accessPort: 0, runtime: fakeRuntime, supervisor: fakeSupervisor, logger: () => undefined });
   t.after(() => manager.close());
   const base = serverUrl(manager);
   const login = await fetch(`${base}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'correct horse battery staple' }) });
@@ -205,15 +207,17 @@ test('config follows the active runtime and account mode gates public access', a
   assert.equal(visibleBody.settings.enableUserAccounts, false);
   assert.match(visibleBody.rawYaml, /basicAuthUser:/u);
   assert.equal(visibleBody.rawYaml.includes('old-secret'), false);
+  // Nothing may be published until there is a password on the door in front
+  // of it, whichever SillyTavern version is installed.
   const blocked = await fetch(`${base}/api/v1/tunnel`, { method: 'PUT', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'quick' }) });
   assert.equal(blocked.status, 409);
   assert.equal((await blocked.json() as { error: { code: string } }).error.code, 'public_access_password_required');
-  const saved = await fetch(`${base}/api/v1/config`, { method: 'PUT', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ settings: { listen: false } }) });
+  const saved = await fetch(`${base}/api/v1/config`, { method: 'PUT', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ settings: { enableCorsProxy: true } }) });
   assert.equal(saved.status, 200);
-  const savedBody = await saved.json() as { config: { rawYaml: string; settings: { listen: boolean; enableUserAccounts: boolean } } };
-  assert.equal(savedBody.config.settings.listen, false);
-  assert.equal(savedBody.config.settings.enableUserAccounts, true);
-  assert.match(savedBody.config.rawYaml, /basicAuthMode: false/u);
+  const savedBody = await saved.json() as { config: { rawYaml: string; settings: { listen: boolean; basicAuthMode: boolean; enableCorsProxy: boolean } } };
+  assert.equal(savedBody.config.settings.enableCorsProxy, true);
+  assert.equal(savedBody.config.settings.listen, false, 'SillyTavern stays on the loopback address');
+  assert.equal(savedBody.config.settings.basicAuthMode, false, 'and its own half-usable protection stays off');
   assert.match(savedBody.config.rawYaml, /basicAuthUser:/u);
   assert.equal(savedBody.config.rawYaml.includes('old-secret'), false);
 });
@@ -243,7 +247,8 @@ test('authenticated installation endpoints return versions and a pollable job', 
     getInstallation: async (id: string) => id === installation.id ? installation : null,
     queueInstall: () => ({ id: 'install-2', promise: Promise.resolve(installation) }),
   } as unknown as RuntimeManager;
-  const manager = await startManagerServer({ host: '127.0.0.1', port: 0, paths, env: { STM_ADMIN_PASSWORD: 'correct horse battery staple' }, secureCookies: false, runtime: fakeRuntime, logger: () => undefined });
+  const manager = await startManagerServer({ host: '127.0.0.1', port: 0, paths, env: { STM_ADMIN_PASSWORD: 'correct horse battery staple' }, secureCookies: false,
+    accessPort: 0, runtime: fakeRuntime, logger: () => undefined });
   t.after(() => manager.close());
   const base = serverUrl(manager);
   const login = await fetch(`${base}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'correct horse battery staple' }) });
@@ -282,7 +287,8 @@ test('local backup endpoints create, preview, download, and restore a profile ar
     listVersions: async () => [], listInstallations: async () => [installation], getActiveInstallation: async () => installation,
     getInstallation: async (id: string) => id === installation.id ? installation : null,
   } as unknown as RuntimeManager;
-  const manager = await startManagerServer({ host: '127.0.0.1', port: 0, paths, env: { STM_ADMIN_PASSWORD: 'correct horse battery staple' }, secureCookies: false, runtime: fakeRuntime, logger: () => undefined });
+  const manager = await startManagerServer({ host: '127.0.0.1', port: 0, paths, env: { STM_ADMIN_PASSWORD: 'correct horse battery staple' }, secureCookies: false,
+    accessPort: 0, runtime: fakeRuntime, logger: () => undefined });
   t.after(() => manager.close());
   const base = serverUrl(manager);
   const login = await fetch(`${base}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'correct horse battery staple' }) });
@@ -379,7 +385,8 @@ test('installing a new version rebinds the active data profile and keeps its fil
     restart: async () => processState,
     close: async () => undefined,
   } as unknown as ProcessSupervisor;
-  const manager = await startManagerServer({ host: '127.0.0.1', port: 0, paths, env: { STM_ADMIN_PASSWORD: 'correct horse battery staple' }, secureCookies: false, runtime: fakeRuntime, supervisor: fakeSupervisor, logger: () => undefined });
+  const manager = await startManagerServer({ host: '127.0.0.1', port: 0, paths, env: { STM_ADMIN_PASSWORD: 'correct horse battery staple' }, secureCookies: false,
+    accessPort: 0, runtime: fakeRuntime, supervisor: fakeSupervisor, logger: () => undefined });
   t.after(() => manager.close());
   const base = serverUrl(manager);
   const login = await fetch(`${base}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'correct horse battery staple' }) });
@@ -426,7 +433,8 @@ test('a failed install that also fails to restart leaves the manager serving', a
     restart: async () => { throw new Error('the runtime will not start'); },
     close: async () => undefined,
   } as unknown as ProcessSupervisor;
-  const manager = await startManagerServer({ host: '127.0.0.1', port: 0, paths, env: { STM_ADMIN_PASSWORD: 'correct horse battery staple' }, secureCookies: false, runtime: fakeRuntime, supervisor: fakeSupervisor, logger: () => undefined });
+  const manager = await startManagerServer({ host: '127.0.0.1', port: 0, paths, env: { STM_ADMIN_PASSWORD: 'correct horse battery staple' }, secureCookies: false,
+    accessPort: 0, runtime: fakeRuntime, supervisor: fakeSupervisor, logger: () => undefined });
   t.after(() => manager.close());
   const base = serverUrl(manager);
   const login = await fetch(`${base}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'correct horse battery staple' }) });
@@ -447,18 +455,19 @@ test('a failed install that also fails to restart leaves the manager serving', a
   assert.equal(versions.status, 200);
 });
 
-test('a SillyTavern without user accounts can still be given a password and shared', async (t) => {
-  const root = await mkdtemp(join(tmpdir(), 'stm-legacy-access-'));
+test('one password opens SillyTavern on any version, and nothing is shared before it is set', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-access-'));
   const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
   const runtimePath = join(root, 'runtime');
-  // No src/users.js and no default/config.yaml: this is a pre-1.12 runtime.
+  // No src/users.js and no default/config.yaml: a pre-1.12 runtime, the case
+  // that used to have no way to set a password at all.
   await mkdir(runtimePath, { recursive: true });
   const now = new Date().toISOString();
   const installation: Installation = { id: 'install-1', selector: '1.11.0', resolvedRef: '1.11.0', channel: 'release', runtimePath, markerPath: join(runtimePath, '.stm-installation.json'), status: 'ready', progress: 100, step: 'Installation ready', error: null, createdAt: now, updatedAt: now, activatedAt: now };
   const processState: ProcessState = { status: 'running', installationId: installation.id, profileId: 'profile-1', pid: 321, startedAt: now, error: null };
   const fakeSupervisor = { getState: () => processState, restart: async () => processState, start: async () => processState, stop: async () => ({ ...processState, status: 'stopped' }), close: async () => undefined } as unknown as ProcessSupervisor;
   const fakeRuntime = { listVersions: async () => [], listInstallations: async () => [installation], getActiveInstallation: async () => installation, getInstallation: async (id: string) => id === installation.id ? installation : null } as unknown as RuntimeManager;
-  const manager = await startManagerServer({ host: '127.0.0.1', port: 0, paths, env: { STM_ADMIN_PASSWORD: 'correct horse battery staple' }, secureCookies: false, runtime: fakeRuntime, supervisor: fakeSupervisor, logger: () => undefined });
+  const manager = await startManagerServer({ host: '127.0.0.1', port: 0, paths, env: { STM_ADMIN_PASSWORD: 'correct horse battery staple' }, secureCookies: false, accessPort: 0, runtime: fakeRuntime, supervisor: fakeSupervisor, logger: () => undefined });
   t.after(() => manager.close());
   const base = serverUrl(manager);
   const login = await fetch(`${base}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'correct horse battery staple' }) });
@@ -467,19 +476,35 @@ test('a SillyTavern without user accounts can still be given a password and shar
   const profilePayload = await (await fetch(`${base}/api/v1/profiles`, { headers: { cookie } })).json() as { profiles: Array<{ configPath: string }> };
   const profile = profilePayload.profiles[0];
   assert.ok(profile);
-  await writeFile(profile.configPath, 'listen: false\nport: 8000\nbasicAuthMode: false\nbasicAuthUser:\n  username: user\n  password: password\n', 'utf8');
+  await writeFile(profile.configPath, 'listen: false\nport: 8000\n', 'utf8');
 
-  const before = await (await fetch(`${base}/api/v1/access/security`, { headers: { cookie } })).json() as { mode: string; adminPasswordConfigured: boolean; error?: string };
-  assert.equal(before.mode, 'basicAuth');
-  assert.equal(before.adminPasswordConfigured, false);
-  assert.equal(before.error, undefined, 'nothing is waiting on SillyTavern here, so there is nothing to report');
+  const before = await (await fetch(`${base}/api/v1/access/security`, { headers: { cookie } })).json() as AccessGatewayState;
+  assert.equal(before.passwordConfigured, false);
+  assert.equal(before.status, 'running', 'the door is up even on a version that has no password of its own');
+  assert.equal(before.lan, false);
+
+  // Neither way of sharing opens while the door has no password.
+  for (const request of [
+    fetch(`${base}/api/v1/tunnel`, { method: 'PUT', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'quick' }) }),
+    fetch(`${base}/api/v1/access/network`, { method: 'PUT', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ lan: true }) }),
+  ]) {
+    const response = await request;
+    assert.equal(response.status, 409);
+    assert.equal((await response.json() as { error: { code: string } }).error.code, 'public_access_password_required');
+  }
 
   const saved = await fetch(`${base}/api/v1/access/password`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ password: 'a-real-secret', confirmPassword: 'a-real-secret' }) });
   assert.equal(saved.status, 200);
-  assert.equal((await saved.json() as { adminPasswordConfigured: boolean }).adminPasswordConfigured, true);
-  assert.match(await readFile(profile.configPath, 'utf8'), /basicAuthMode: true/u);
+  assert.equal((await saved.json() as AccessGatewayState).passwordConfigured, true);
+  // The password belongs to the manager, so it never lands in SillyTavern's
+  // own configuration where a restore or a version switch could carry it off.
+  assert.equal((await readFile(profile.configPath, 'utf8')).includes('a-real-secret'), false);
 
-  // The tunnel refuses to open without a password; Basic Auth is one.
+  const opened = await fetch(`${base}/api/v1/access/network`, { method: 'PUT', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ lan: true }) });
+  assert.equal(opened.status, 200);
+  const state = await opened.json() as AccessGatewayState;
+  assert.equal(state.lan, true);
+  assert.equal(state.host, '0.0.0.0');
   const allowed = await fetch(`${base}/api/v1/tunnel`, { method: 'PUT', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'quick' }) });
   assert.notEqual(allowed.status, 409);
 });
@@ -492,7 +517,8 @@ test('a running backup can be stopped, and a finished one cannot', async (t) => 
   const now = new Date().toISOString();
   const installation: Installation = { id: 'install-1', selector: 'latest', resolvedRef: '1.2.3', channel: 'release', runtimePath, markerPath: join(runtimePath, '.stm-installation.json'), status: 'ready', progress: 100, step: 'Installation ready', error: null, createdAt: now, updatedAt: now, activatedAt: now };
   const fakeRuntime = { listVersions: async () => [], listInstallations: async () => [installation], getActiveInstallation: async () => installation, getInstallation: async (id: string) => id === installation.id ? installation : null } as unknown as RuntimeManager;
-  const manager = await startManagerServer({ host: '127.0.0.1', port: 0, paths, env: { STM_ADMIN_PASSWORD: 'correct horse battery staple' }, secureCookies: false, runtime: fakeRuntime, logger: () => undefined });
+  const manager = await startManagerServer({ host: '127.0.0.1', port: 0, paths, env: { STM_ADMIN_PASSWORD: 'correct horse battery staple' }, secureCookies: false,
+    accessPort: 0, runtime: fakeRuntime, logger: () => undefined });
   t.after(() => manager.close());
   const base = serverUrl(manager);
   const login = await fetch(`${base}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'correct horse battery staple' }) });
@@ -540,6 +566,7 @@ test('the launcher shutdown route exists only for the launcher that started the 
     paths,
     env: { STM_ADMIN_PASSWORD: 'correct horse battery staple', STM_SHUTDOWN_TOKEN: 'launcher-secret' },
     secureCookies: false,
+    accessPort: 0,
     logger: () => undefined,
     onShutdownRequest: () => { asked += 1; },
   });
@@ -566,11 +593,10 @@ test('no launcher token means no shutdown route at all', async (t) => {
   assert.equal(response.status, 404);
 });
 
-test('a legacy runtime that rewrites the profile config on stop does not lose the password', async (t) => {
+test('a legacy runtime that rewrites the profile config on stop does not lose the save', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'stm-legacy-order-'));
   const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
   const runtimePath = join(root, 'runtime');
-  // No src/users.js and no default/config.yaml: a pre-1.12 runtime.
   await mkdir(runtimePath, { recursive: true });
   const now = new Date().toISOString();
   const installation: Installation = { id: 'install-1', selector: '1.10.10', resolvedRef: '1.10.10', channel: 'release', runtimePath, markerPath: join(runtimePath, '.stm-installation.json'), status: 'ready', progress: 100, step: 'Installation ready', error: null, createdAt: now, updatedAt: now, activatedAt: now };
@@ -590,7 +616,7 @@ test('a legacy runtime that rewrites the profile config on stop does not lose th
     },
     stop: async () => {
       // And stopping copies the runtime's own config back over the profile's,
-      // which is what used to overwrite a password written before the restart.
+      // which is what used to overwrite anything written before the restart.
       try { await writeFile(profileConfigPath, await readFile(runtimeConfigPath, 'utf8'), 'utf8'); } catch { /* nothing written yet */ }
       processState = { ...processState, status: 'stopped' };
       return processState;
@@ -599,7 +625,7 @@ test('a legacy runtime that rewrites the profile config on stop does not lose th
     close: async () => undefined,
   } as unknown as ProcessSupervisor;
 
-  const manager = await startManagerServer({ host: '127.0.0.1', port: 0, paths, env: { STM_ADMIN_PASSWORD: 'correct horse battery staple' }, secureCookies: false, runtime: fakeRuntime, supervisor: fakeSupervisor, logger: () => undefined });
+  const manager = await startManagerServer({ host: '127.0.0.1', port: 0, paths, env: { STM_ADMIN_PASSWORD: 'correct horse battery staple' }, secureCookies: false, accessPort: 0, runtime: fakeRuntime, supervisor: fakeSupervisor, logger: () => undefined });
   t.after(() => manager.close());
   const base = serverUrl(manager);
   const login = await fetch(`${base}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'correct horse battery staple' }) });
@@ -608,25 +634,13 @@ test('a legacy runtime that rewrites the profile config on stop does not lose th
   const profile = (await (await fetch(`${base}/api/v1/profiles`, { headers: { cookie } })).json() as { profiles: Array<{ configPath: string }> }).profiles[0];
   assert.ok(profile);
   profileConfigPath = profile.configPath;
-  const startingConfig = 'listen: false\nport: 8000\nbasicAuthMode: false\nbasicAuthUser:\n  username: user\n  password: password\n';
+  const startingConfig = 'listen: false\nport: 8000\nenableCorsProxy: false\n';
   await writeFile(profileConfigPath, startingConfig, 'utf8');
   await writeFile(runtimeConfigPath, startingConfig, 'utf8');
 
-  const saved = await fetch(`${base}/api/v1/access/password`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ password: 'a-real-secret', confirmPassword: 'a-real-secret' }) });
+  const saved = await fetch(`${base}/api/v1/config`, { method: 'PUT', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ settings: { enableCorsProxy: true } }) });
   assert.equal(saved.status, 200);
-  assert.equal((await saved.json() as { adminPasswordConfigured: boolean }).adminPasswordConfigured, true);
   for (const path of [profileConfigPath, runtimeConfigPath]) {
-    const raw = await readFile(path, 'utf8');
-    assert.match(raw, /password: a-real-secret/u, `the password survived in ${path}`);
-    assert.match(raw, /basicAuthMode: true/u);
+    assert.match(await readFile(path, 'utf8'), /enableCorsProxy: true/u, `the save survived in ${path}`);
   }
-
-  // And the same for an ordinary settings save, which took the same route.
-  const listen = await fetch(`${base}/api/v1/config`, { method: 'PUT', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ settings: { listen: true } }) });
-  assert.equal(listen.status, 200);
-  const runtimeRaw = await readFile(runtimeConfigPath, 'utf8');
-  assert.match(runtimeRaw, /listen: true/u);
-  // Without this the runtime refuses to start at all.
-  assert.match(runtimeRaw, /basicAuthMode: true/u);
-  assert.match(runtimeRaw, /password: a-real-secret/u);
 });

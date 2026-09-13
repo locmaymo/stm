@@ -3,6 +3,8 @@ export type PlatformKind = 'windows' | 'linux' | 'termux' | 'docker' | 'modelsco
 export interface ManagerPorts {
   readonly manager: 7860;
   readonly sillyTavern: 8000;
+  /** Where the guarded door to SillyTavern listens; see AccessGatewayState. */
+  readonly access: 8001;
 }
 
 export interface ManagerState {
@@ -336,8 +338,6 @@ export interface ConfigDocument {
   readonly networkHost?: string;
   /** YAML retains Basic Auth keys; any custom Basic Auth password is masked. */
   readonly rawYaml: string;
-  /** Which password mechanism this runtime version actually has. */
-  readonly accessMode: AccessMode;
   readonly settings: ConfigSettings;
   readonly restartRequired: boolean;
 }
@@ -345,33 +345,33 @@ export interface ConfigDocument {
 export interface ConfigUpdateInput {
   readonly rawYaml?: string;
   readonly settings?: Partial<{
-    listen: boolean;
-    listenAddress: Partial<ConfigSettings['listenAddress']>;
-    enableUserAccounts: boolean;
     sslEnabled: boolean;
     enableCorsProxy: boolean;
     disableCsrfProtection: boolean;
   }>;
 }
 
-/**
- * How the installed SillyTavern asks for a password.
- *
- * Versions before user accounts existed have no account to give a password to,
- * and the manager used to leave them with no way to set one at all - which also
- * meant no LAN access and no tunnel, because both refuse to open without one.
- * Those versions do have Basic Auth, so that is what the manager drives there.
- */
-export type AccessMode = 'accounts' | 'basicAuth';
+export type AccessGatewayStatus = 'stopped' | 'running' | 'error';
 
-export interface AccessSecurityState {
-  readonly mode: AccessMode;
-  readonly accountsEnabled: boolean;
-  /** The account handle, or the Basic Auth username in `basicAuth` mode. */
-  readonly adminHandle: string;
-  readonly adminPasswordConfigured: boolean;
-  readonly processReady: boolean;
-  readonly error?: string;
+/**
+ * The guarded door in front of SillyTavern.
+ *
+ * SillyTavern stays bound to the loopback address on every version, and this is
+ * the listener that anything else reaches: it asks for a password once, keeps a
+ * session, and passes the rest through. It replaces both of the mechanisms
+ * SillyTavern itself offers - Basic Auth, a browser dialog with no way to sign
+ * out and nothing the manager can present, and user accounts, which only exist
+ * from 1.12 on and so left every older version with no password at all.
+ */
+export interface AccessGatewayState {
+  readonly status: AccessGatewayStatus;
+  /** The bound address, or null while it is not listening. */
+  readonly host: string | null;
+  readonly port: number;
+  /** Whether it is reachable from the local network rather than this machine. */
+  readonly lan: boolean;
+  readonly passwordConfigured: boolean;
+  readonly error: string | null;
 }
 
 /** The complete allowlist written by the SillyTavern fetch instrumentation. */

@@ -30,6 +30,12 @@ function cloudflaredAsset(platform: NodeJS.Platform = process.platform, architec
 
 export interface TunnelManagerOptions {
   readonly paths: PlatformPaths;
+  /**
+   * What cloudflared publishes. This is the access gateway, never SillyTavern
+   * itself: a tunnel points at whatever answers, and SillyTavern answers with
+   * no password of its own.
+   */
+  readonly targetUrl?: string;
   readonly logger?: LogSink;
   readonly now?: () => Date;
   readonly binaryPath?: string;
@@ -45,6 +51,7 @@ export class TunnelManager {
   private readonly now: () => Date;
   private readonly env: NodeJS.ProcessEnv;
   private readonly configuredBinaryPath: string | undefined;
+  private readonly targetUrl: string;
   private readonly beforeStart: (() => Promise<void>) | undefined;
   private readonly fetchImpl: typeof globalThis.fetch;
   private child: ChildProcess | null = null;
@@ -60,6 +67,7 @@ export class TunnelManager {
     this.now = options.now ?? (() => new Date());
     this.env = options.env ?? process.env;
     this.configuredBinaryPath = options.binaryPath ?? this.env.STM_CLOUDFLARED_PATH;
+    this.targetUrl = options.targetUrl ?? 'http://127.0.0.1:8001';
     this.beforeStart = options.beforeStart;
     this.fetchImpl = options.fetchImpl ?? ((...args) => globalThis.fetch(...args));
   }
@@ -79,12 +87,13 @@ export class TunnelManager {
       return this.fail(mode, error instanceof Error ? error.message : 'cloudflared is unavailable');
     }
     const args = mode === 'quick'
-      ? ['tunnel', '--no-autoupdate', '--url', 'http://127.0.0.1:8000']
+      ? ['tunnel', '--no-autoupdate', '--url', this.targetUrl]
       : ['tunnel', '--no-autoupdate', 'run', '--token', selectedToken!];
     this.state = { mode, status: 'starting', url: null, startedAt: this.now().toISOString(), error: null };
+    const target = this.targetUrl.replace(/^https?:\/\//u, '');
     this.logger(mode === 'quick'
-      ? logEvent('cloudflared.startingQuick', '[cloudflared] starting Quick Tunnel to 127.0.0.1:8000')
-      : logEvent('cloudflared.startingNamed', '[cloudflared] starting Named Tunnel to 127.0.0.1:8000'));
+      ? logEvent('cloudflared.startingQuick', `[cloudflared] starting Quick Tunnel to ${target}`, { target })
+      : logEvent('cloudflared.startingNamed', `[cloudflared] starting Named Tunnel to ${target}`, { target }));
     const child = spawn(binary, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, env: this.env });
     this.child = child;
     const consume = (chunk: string) => {
