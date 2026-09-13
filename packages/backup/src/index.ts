@@ -165,6 +165,24 @@ export class BackupStore {
   public isOperationRunning(): boolean { return this.pendingOperations > 0; }
 
   /**
+   * Run something that rewrites the profile with the backup slot held.
+   *
+   * Preparing a legacy runtime rewrites the user directory, and persisting one
+   * back deletes and rebuilds it outright. A scheduled backup reading that tree
+   * at the same time watched its own file list evaporate under it. Taking the
+   * slot backups and restores take means the two cannot overlap in either
+   * order, rather than only when the backup happens to start second.
+   */
+  public async runExclusive<T>(operation: () => Promise<T>): Promise<T> {
+    const release = await this.acquireOperation();
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  }
+
+  /**
    * Claim the operation slot before the work that needs it starts.
    *
    * A restore stops SillyTavern, reads the archive and only then asks for a
@@ -223,11 +241,13 @@ export class BackupStore {
       const sources = await collectSources(profile);
       writer = new ZipWriter(temporary);
       let completed = 0;
+      const skipped: string[] = [];
       for (const source of sources) {
-        await writer.addFile(source.name, source.path);
+        if (!await writer.addFile(source.name, source.path)) skipped.push(source.name);
         completed += 1;
         options.onProgress?.({ completed, total: sources.length });
       }
+      if (skipped.length > 0) this.logger(`[backup] skipped ${skipped.length} file(s) removed while the backup was running, starting with ${skipped[0]}`);
       const archive = await writer.finish();
       await rename(temporary, target);
       const manifest: BackupManifest = {
@@ -240,7 +260,7 @@ export class BackupStore {
         layout: profile.layout,
         sizeBytes: archive.sizeBytes,
         checksumSha256: archive.checksumSha256,
-        fileCount: sources.length,
+        fileCount: sources.length - skipped.length,
         source: 'created',
         fingerprint,
       };
@@ -648,9 +668,36 @@ class ZipWriter {
     this.output = createWriteStream(path, { mode: 0o600 });
   }
 
-  public async addFile(name: string, path: string): Promise<void> {
+  /**
+   * Add one file, or report that there is no longer a file there to add.
+   *
+   * The list of sources comes from a walk that finished before this runs, and
+   * the profile does not hold still: a legacy runtime shutting down deletes and
+   * rebuilds the whole user directory, and SillyTavern deletes a character the
+   * moment the operator does. Opening the file before the entry's header is
+   * written means a name that no longer resolves is skipped with the archive
+   * still well formed - writing the header first left one describing bytes that
+   * never arrived.
+   */
+  public async addFile(name: string, path: string): Promise<boolean> {
     const nameBuffer = Buffer.from(name, 'utf8');
     if (nameBuffer.length > 0xffff) throw new BackupError('invalid_filename', `Archive filename is too long: ${name}`);
+    let handle: FileHandle;
+    try {
+      handle = await open(path, 'r');
+    } catch (error: unknown) {
+      if (isFileNotFound(error)) return false;
+      throw error;
+    }
+    try {
+      await this.writeEntry(nameBuffer, handle);
+    } finally {
+      await handle.close().catch(() => undefined);
+    }
+    return true;
+  }
+
+  private async writeEntry(nameBuffer: Buffer, handle: FileHandle): Promise<void> {
     const offset = this.offset;
     const local = Buffer.alloc(30 + nameBuffer.length);
     local.writeUInt32LE(0x04034b50, 0);
@@ -674,8 +721,14 @@ class ZipWriter {
       },
     });
     const crcTransformState = { crc: 0, size: 0 };
-    const source = createReadStream(path);
-    const compressed = source.pipe(crcTransform).pipe(createDeflateRaw());
+    const source = handle.createReadStream({ autoClose: false });
+    const deflate = createDeflateRaw();
+    const compressed = source.pipe(crcTransform).pipe(deflate);
+    // pipe does not forward errors. A read that fails would emit on the source
+    // with nobody listening, and an unhandled error event ends the process -
+    // which is how a file removed mid-backup took the whole manager down.
+    source.once('error', (error: Error) => deflate.destroy(error));
+    crcTransform.once('error', (error: Error) => deflate.destroy(error));
     try {
       for await (const chunk of compressed) await this.write(Buffer.from(chunk));
     } catch (error) {
@@ -1143,7 +1196,12 @@ async function moveArchive(source: string, target: string): Promise<void> {
 
 function onceDrain(stream: NodeJS.WritableStream): Promise<void> {
   return new Promise((resolvePromise, reject) => {
-    stream.once('drain', resolvePromise);
-    stream.once('error', reject);
+    // Take both listeners off on the first event. Leaving the error listener
+    // behind on every backpressure wait accumulated one per pause, which is
+    // what made a long backup warn about eleven error listeners on one stream.
+    function onDrain(): void { stream.removeListener('error', onError); resolvePromise(); }
+    function onError(error: Error): void { stream.removeListener('drain', onDrain); reject(error); }
+    stream.once('drain', onDrain);
+    stream.once('error', onError);
   });
 }

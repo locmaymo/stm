@@ -137,9 +137,13 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
             if (!(error instanceof ConfigError) || error.code !== 'config_missing') throw error;
           }
         }
-        return profiles.prepareForRuntime(profile, runtimePath);
+        // Preparing a legacy runtime rewrites the whole user directory, so no
+        // backup may be reading it while this runs.
+        return backups.runExclusive(() => profiles.prepareForRuntime(profile, runtimePath));
       },
-      persist: (profile, runtimePath, runtimeLayout) => profiles.persistFromRuntime(profile, runtimePath, runtimeLayout),
+      // Persisting one back deletes that directory and rebuilds it, which is
+      // even less survivable for a backup walking it.
+      persist: (profile, runtimePath, runtimeLayout) => backups.runExclusive(() => profiles.persistFromRuntime(profile, runtimePath, runtimeLayout)),
       legacyHeapMb: (profile) => profiles.recommendedLegacyHeapMb(profile),
     },
     instrumentationPath: instrumentationLoaderPath,

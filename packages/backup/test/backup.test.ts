@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chmod, mkdtemp, mkdir, readFile, readdir, utimes, writeFile } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
+import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getPlatformPaths } from '../../platform/src/index.js';
@@ -211,6 +212,56 @@ test('a read-only file does not take the archive handle down with it', async () 
 
   await store.restore(fixture.profile, archive, { mode: 'merge' });
   for (const [name, body] of expected) assert.equal(await readFile(join(chats, name), 'utf8'), body);
+});
+
+test('a file removed while the backup runs is skipped and the archive stays readable', async () => {
+  const fixture = await createFixture();
+  const chats = join(fixture.profile.dataPath, 'chats');
+  for (let index = 0; index < 8; index += 1) await writeFile(join(chats, `chat-${index}.jsonl`), `{"index":${index}}`, 'utf8');
+  const store = new BackupStore({ paths: fixture.paths });
+
+  // A legacy runtime shutting down deletes the whole user directory, and a
+  // character the operator removes goes the same way: the walk listed a file
+  // that is gone by the time the archive reaches it.
+  const doomed = ['chat-6.jsonl', 'chat-7.jsonl'].map((name) => join(chats, name));
+  const manifest = await store.create(fixture.profile, {
+    onProgress: ({ completed }) => { if (completed === 1) for (const path of doomed) rmSync(path, { force: true }); },
+  });
+
+  const archive = await store.getArchivePath(manifest.id);
+  assert.ok(archive);
+  // A skipped file must leave no trace: the count is what the archive holds and
+  // the central directory still describes every byte in it.
+  const preview = await store.preview(archive, fixture.profile.layout);
+  assert.equal(preview.fileCount, manifest.fileCount);
+  assert.equal(preview.fileCount, 10);
+  assert.ok(!preview.files.some((file) => file.name.endsWith('chat-7.jsonl')));
+
+  // And the archive has to be restorable, which a header describing bytes that
+  // never arrived would not be.
+  const targetRoot = join(fixture.root, 'skip-target');
+  const target: Profile = { ...fixture.profile, runtimePath: targetRoot, dataPath: join(targetRoot, 'data'), configPath: join(targetRoot, 'config.yaml') };
+  await store.restore(target, archive, { mode: 'replace' });
+  assert.equal(await readFile(join(targetRoot, 'data', 'default-user', 'chats', 'chat-0.jsonl'), 'utf8'), '{"index":0}');
+});
+
+test('a long backup does not accumulate error listeners on its output', async () => {
+  const fixture = await createFixture();
+  const chats = join(fixture.profile.dataPath, 'chats');
+  // Incompressible content, so the writes actually reach backpressure - which
+  // is the only path that waited on a drain.
+  for (let index = 0; index < 40; index += 1) await writeFile(join(chats, `chat-${index}.jsonl`), randomBytes(128 * 1024).toString('base64'), 'utf8');
+  const warnings: string[] = [];
+  const record = (warning: Error): void => { warnings.push(warning.name); };
+  process.on('warning', record);
+  try {
+    const store = new BackupStore({ paths: fixture.paths });
+    await store.create(fixture.profile);
+    await new Promise((resolvePromise) => setImmediate(resolvePromise));
+  } finally {
+    process.removeListener('warning', record);
+  }
+  assert.deepEqual(warnings.filter((name) => name === 'MaxListenersExceededWarning'), []);
 });
 
 test('a safety copy reuses an unchanged profile’s newest backup instead of writing another', async () => {
