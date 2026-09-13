@@ -336,14 +336,11 @@ export interface SystemSnapshot {
     readonly cores: number;
     /** Share of CPU time out of idle since the previous reading. */
     readonly usagePercent: number | null;
-    readonly loadAverage: readonly number[];
   };
   readonly memory: {
     readonly totalBytes: number;
     readonly freeBytes: number;
     readonly usedBytes: number;
-    readonly managerBytes: number;
-    readonly sillytavernBytes: number | null;
   };
   readonly storage: {
     readonly root: string;
@@ -356,6 +353,8 @@ export interface SystemSnapshot {
     readonly dataFileCount: number | null;
     /** When the directory sizes were last walked, or null before the first walk. */
     readonly measuredAt: string | null;
+    /** True while a walk is in flight, so the panel can say so. */
+    readonly measuring: boolean;
   };
 }
 

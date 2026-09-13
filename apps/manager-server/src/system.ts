@@ -1,6 +1,5 @@
-import { cpus, freemem, loadavg, totalmem } from 'node:os';
-import { readFile, readdir, statfs } from 'node:fs/promises';
-import { lstat } from 'node:fs/promises';
+import { cpus, freemem, totalmem } from 'node:os';
+import { lstat, readdir, statfs } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { SystemSnapshot } from '../../../packages/contracts/src/index.js';
 import { createIoLimiter, ioConcurrency } from '../../../packages/platform/src/index.js';
@@ -31,8 +30,6 @@ interface MeasuredSize {
 export interface SystemStoreOptions {
   readonly paths: PlatformPaths;
   readonly now?: () => Date;
-  /** The running SillyTavern process, when there is one. */
-  readonly childPid?: () => number | null;
   /** The active profile's user-data directory, when a profile is active. */
   readonly dataRoot?: () => Promise<string | null>;
 }
@@ -40,7 +37,6 @@ export interface SystemStoreOptions {
 export class SystemStore {
   private readonly paths: PlatformPaths;
   private readonly now: () => Date;
-  private readonly childPid: () => number | null;
   private readonly dataRoot: () => Promise<string | null>;
   private lastCpu: CpuSample | null = null;
   private managerSize: MeasuredSize | null = null;
@@ -50,12 +46,11 @@ export class SystemStore {
   public constructor(options: SystemStoreOptions) {
     this.paths = options.paths;
     this.now = options.now ?? (() => new Date());
-    this.childPid = options.childPid ?? (() => null);
     this.dataRoot = options.dataRoot ?? (async () => null);
   }
 
   public async snapshot(): Promise<SystemSnapshot> {
-    const [storage, sillytavernRssBytes] = await Promise.all([this.readStorage(), this.readChildRss()]);
+    const storage = await this.readStorage();
     const totalBytes = totalmem();
     const freeBytes = freemem();
     this.scheduleSizeRefresh();
@@ -64,14 +59,11 @@ export class SystemStore {
       cpu: {
         cores: cpus().length,
         usagePercent: this.readCpuUsage(),
-        loadAverage: loadavg().map((value) => Math.round(value * 100) / 100),
       },
       memory: {
         totalBytes,
         freeBytes,
         usedBytes: totalBytes - freeBytes,
-        managerBytes: process.memoryUsage.rss(),
-        sillytavernBytes: sillytavernRssBytes,
       },
       storage: {
         root: this.paths.root,
@@ -80,6 +72,7 @@ export class SystemStore {
         dataBytes: this.dataSize?.bytes ?? null,
         dataFileCount: this.dataSize?.fileCount ?? null,
         measuredAt: this.dataSize?.measuredAt ?? this.managerSize?.measuredAt ?? null,
+        measuring: this.measuring,
       },
     };
   }
@@ -116,23 +109,20 @@ export class SystemStore {
     }
   }
 
-  /** Resident memory of the SillyTavern child, read from procfs where there is one. */
-  private async readChildRss(): Promise<number | null> {
-    const pid = this.childPid();
-    if (pid === null || process.platform !== 'linux') return null;
-    try {
-      const statm = await readFile(`/proc/${pid}/statm`, 'utf8');
-      const pages = Number(statm.split(' ')[1]);
-      return Number.isSafeInteger(pages) ? pages * 4096 : null;
-    } catch {
-      return null;
-    }
+  /**
+   * Take the sizes again now instead of waiting out the interval.
+   *
+   * The interval is long because a walk is expensive, but an operator who has
+   * just deleted a backup wants to see it gone, not in five minutes.
+   */
+  public remeasure(): void {
+    this.scheduleSizeRefresh(true);
   }
 
-  private scheduleSizeRefresh(): void {
+  private scheduleSizeRefresh(force = false): void {
     if (this.measuring) return;
     const measuredAt = this.dataSize?.measuredAt ?? this.managerSize?.measuredAt;
-    if (measuredAt && this.now().getTime() - Date.parse(measuredAt) < SIZE_TTL_MS) return;
+    if (!force && measuredAt && this.now().getTime() - Date.parse(measuredAt) < SIZE_TTL_MS) return;
     this.measuring = true;
     void (async () => {
       try {

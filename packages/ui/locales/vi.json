@@ -341,15 +341,13 @@
     "title": "Hệ thống",
     "cpu": "CPU",
     "cores": "nhân",
-    "load": "tải",
-    "memory": "Bộ nhớ",
-    "processMemory": "Bộ nhớ tiến trình",
-    "manager": "Manager",
+    "memory": "RAM",
     "disk": "Ổ đĩa",
     "free": "trống",
     "managerFootprint": "Dung lượng Manager dùng",
     "activeData": "Dữ liệu SillyTavern đang dùng",
     "measuring": "Đang đo…",
-    "sizesMeasuredAt": "Đo dung lượng lúc"
+    "sizesMeasuredAt": "Đo dung lượng lúc",
+    "remeasure": "Đo lại"
   }
 }

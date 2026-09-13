@@ -283,7 +283,7 @@ function ConsoleApp({ csrfToken }: { csrfToken: string }) {
           </div>
         </header>
         <div className="page-body">
-          {page === 'overview' ? <div className="core-grid">{installation}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} installed={Boolean(activeInstallationId)} onAction={updateRuntime} onConfigUpdate={updateConfig} onSetPassword={setAccessPassword} /> <DataPanel t={t} navigate={navigate} activeProfile={profiles.find((profile) => profile.id === activeProfileId) ?? null} latestBackup={backups.at(-1) ?? null} /><SystemPanel t={t} />{logs}</div> : page === 'data' ? <DataPage t={t} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} config={configDocument} onConfigUpdate={updateConfig} onChangeManagerPassword={changeManagerPassword} /> : <ResourcePanel page={page} t={t} />}
+          {page === 'overview' ? <div className="core-grid">{installation}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} installed={Boolean(activeInstallationId)} onAction={updateRuntime} onConfigUpdate={updateConfig} onSetPassword={setAccessPassword} /> <DataPanel t={t} navigate={navigate} activeProfile={profiles.find((profile) => profile.id === activeProfileId) ?? null} latestBackup={backups.at(-1) ?? null} /><SystemPanel t={t} csrfToken={csrfToken ?? ''} />{logs}</div> : page === 'data' ? <DataPage t={t} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} config={configDocument} onConfigUpdate={updateConfig} onChangeManagerPassword={changeManagerPassword} /> : <ResourcePanel page={page} t={t} />}
         </div>
       </SidebarInset>
       <LogsSheet {...logProps} open={logsExpanded} onClose={() => setLogsExpanded(false)} />
@@ -740,8 +740,16 @@ function formatBytes(value: number): string {
   return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
-function SystemPanel({ t }: { t: Translate }) {
+function SystemPanel({ t, csrfToken }: { t: Translate; csrfToken: string }) {
   const [snapshot, setSnapshot] = useState<SystemSnapshot | null>(null);
+  const remeasure = async () => {
+    try {
+      const response = await fetch('/api/v1/system/measure', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      if (response.ok) setSnapshot(await response.json() as SystemSnapshot);
+    } catch {
+      // The next poll reports the sizes whether or not this request landed.
+    }
+  };
   useEffect(() => {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -765,7 +773,7 @@ function SystemPanel({ t }: { t: Translate }) {
     rows.push({
       key: 'cpu',
       label: t('system.cpu'),
-      value: `${cpu.usagePercent === null ? '—' : `${cpu.usagePercent}%`} · ${cpu.cores} ${t('system.cores')}${cpu.loadAverage.length ? ` · ${t('system.load')} ${cpu.loadAverage.map((value) => value.toFixed(2)).join(' ')}` : ''}`,
+      value: `${cpu.usagePercent === null ? '—' : `${cpu.usagePercent}%`} · ${cpu.cores} ${t('system.cores')}`,
       ...(cpu.usagePercent === null ? {} : { ratio: cpu.usagePercent / 100 }),
     });
     rows.push({
@@ -773,11 +781,6 @@ function SystemPanel({ t }: { t: Translate }) {
       label: t('system.memory'),
       value: `${formatBytes(memory.usedBytes)} / ${formatBytes(memory.totalBytes)}`,
       ratio: memory.totalBytes > 0 ? memory.usedBytes / memory.totalBytes : 0,
-    });
-    rows.push({
-      key: 'processes',
-      label: t('system.processMemory'),
-      value: `${t('system.manager')} ${formatBytes(memory.managerBytes)}${memory.sillytavernBytes === null ? '' : ` · SillyTavern ${formatBytes(memory.sillytavernBytes)}`}`,
     });
     if (storage.totalBytes !== null && storage.freeBytes !== null) {
       const used = storage.totalBytes - storage.freeBytes;
@@ -810,7 +813,10 @@ function SystemPanel({ t }: { t: Translate }) {
         {row.ratio === undefined ? null : <span className="system-track"><span className="system-value" style={{ width: `${Math.round(Math.max(0, Math.min(1, row.ratio)) * 100)}%` }} /></span>}
       </dd>
     </div>)}</dl> : <p className="resource-empty">{t('common.loading')}</p>}
-    {snapshot?.storage.measuredAt ? <p className="system-note">{t('system.sizesMeasuredAt')} {new Date(snapshot.storage.measuredAt).toLocaleTimeString()}</p> : null}
+    {snapshot ? <p className="system-note">
+      {snapshot.storage.measuredAt ? <span>{t('system.sizesMeasuredAt')} {new Date(snapshot.storage.measuredAt).toLocaleTimeString()}</span> : <span />}
+      <Button variant="ghost" size="sm" onClick={() => void remeasure()} disabled={snapshot.storage.measuring}><RefreshCw />{snapshot.storage.measuring ? t('system.measuring') : t('system.remeasure')}</Button>
+    </p> : null}
   </CardContent></Card>;
 }
 

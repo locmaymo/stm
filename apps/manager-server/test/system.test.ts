@@ -20,14 +20,14 @@ test('the system snapshot reports the host and measures directory sizes in the b
   // Generated trees are not the operator's data and must not be counted.
   await writeFile(join(dataRoot, 'node_modules', 'ignored.bin'), 'x'.repeat(9_000), 'utf8');
   const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
-  const store = new SystemStore({ paths, childPid: () => null, dataRoot: async () => dataRoot });
+  const store = new SystemStore({ paths, dataRoot: async () => dataRoot });
 
   const first = await store.snapshot();
   assert.ok(first.cpu.cores >= 1);
   // One reading of a counter since boot cannot describe the present.
   assert.equal(first.cpu.usagePercent, null);
   assert.equal(first.memory.usedBytes, first.memory.totalBytes - first.memory.freeBytes);
-  assert.ok(first.memory.managerBytes > 0);
+  assert.equal(first.memory.usedBytes >= 0, true);
   assert.equal(first.storage.root, paths.root);
   assert.equal(first.storage.dataBytes, null);
 
@@ -38,4 +38,12 @@ test('the system snapshot reports the host and measures directory sizes in the b
   assert.ok((second.storage.managerBytes ?? 0) >= 800);
   assert.ok(second.storage.measuredAt !== null);
   assert.ok(second.cpu.usagePercent === null || (second.cpu.usagePercent >= 0 && second.cpu.usagePercent <= 100));
+
+  // Asking again must not wait out the interval the background walk uses.
+  await writeFile(join(dataRoot, 'chats', 'three.jsonl'), 'x'.repeat(200), 'utf8');
+  store.remeasure();
+  await settle();
+  const third = await store.snapshot();
+  assert.equal(third.storage.dataBytes, 1000);
+  assert.equal(third.storage.dataFileCount, 3);
 });

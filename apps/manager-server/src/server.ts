@@ -48,6 +48,7 @@ const PROTECTED_PATHS = new Set([
   '/api/v1/auth/password',
   '/api/v1/metrics',
   '/api/v1/system',
+  '/api/v1/system/measure',
   '/api/v1/tunnel',
   '/api/v1/r2',
 ]);
@@ -155,7 +156,6 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   void profiles.getActive().then((profile) => profile && backups.pruneCreated(profile.id)).catch(() => undefined);
   const system = new SystemStore({
     paths,
-    childPid: () => supervisor.getState().pid,
     dataRoot: async () => {
       const profile = await profiles.getActive();
       return profile ? profile.dataPath : null;
@@ -826,6 +826,11 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
   }
   if (pathname === '/api/v1/system' && method === 'GET') {
     sendJson(response, 200, await system.snapshot());
+    return;
+  }
+  if (pathname === '/api/v1/system/measure' && method === 'POST') {
+    system.remeasure();
+    sendJson(response, 202, await system.snapshot());
     return;
   }
   if (pathname === '/api/v1/jobs/active' && method === 'GET') {
