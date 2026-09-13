@@ -4,10 +4,22 @@ import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getPlatformPaths } from '../../../packages/platform/src/index.js';
+import type { SystemSnapshot } from '../../../packages/contracts/src/index.js';
 import { SystemStore } from '../src/system.js';
 
-async function settle(): Promise<void> {
-  for (let attempt = 0; attempt < 50; attempt += 1) await new Promise((resolve) => setImmediate(resolve));
+/**
+ * Wait for the background walk to report the size it is expected to find.
+ *
+ * The walk does real file I/O, so counting event-loop turns is a guess that
+ * comes up short whenever the machine is busy.
+ */
+async function measured(store: SystemStore, dataBytes: number): Promise<SystemSnapshot> {
+  for (let attempt = 0; attempt < 400; attempt += 1) {
+    const snapshot = await store.snapshot();
+    if (!snapshot.storage.measuring && snapshot.storage.dataBytes === dataBytes) return snapshot;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`the sizes were never measured as ${dataBytes} bytes`);
 }
 
 test('the system snapshot reports the host and measures directory sizes in the background', async () => {
@@ -31,9 +43,7 @@ test('the system snapshot reports the host and measures directory sizes in the b
   assert.equal(first.storage.root, paths.root);
   assert.equal(first.storage.dataBytes, null);
 
-  await settle();
-  const second = await store.snapshot();
-  assert.equal(second.storage.dataBytes, 800);
+  const second = await measured(store, 800);
   assert.equal(second.storage.dataFileCount, 2);
   assert.ok((second.storage.managerBytes ?? 0) >= 800);
   assert.ok(second.storage.measuredAt !== null);
@@ -42,8 +52,6 @@ test('the system snapshot reports the host and measures directory sizes in the b
   // Asking again must not wait out the interval the background walk uses.
   await writeFile(join(dataRoot, 'chats', 'three.jsonl'), 'x'.repeat(200), 'utf8');
   store.remeasure();
-  await settle();
-  const third = await store.snapshot();
-  assert.equal(third.storage.dataBytes, 1000);
+  const third = await measured(store, 1000);
   assert.equal(third.storage.dataFileCount, 3);
 });

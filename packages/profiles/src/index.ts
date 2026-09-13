@@ -3,16 +3,13 @@ import { chmod, copyFile, lstat, mkdir, readFile, readdir, rename, rm, stat, wri
 import { constants as fsConstants } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { parse as parseYaml } from 'yaml';
-import type { Profile, ProfileLayout, ProfileSnapshot } from '../../contracts/src/index.js';
+import type { Profile, ProfileLayout } from '../../contracts/src/index.js';
 import { createIoLimiter, ioConcurrency, runPooled } from '../../platform/src/index.js';
 import type { IoLimiter, PlatformPaths } from '../../platform/src/index.js';
 
 const PROFILE_STATE_FILE = 'profiles.json';
 const PROFILE_SCHEMA_VERSION = 1 as const;
 const DEFAULT_USER_HANDLE = 'default-user';
-const MAX_SAFETY_SNAPSHOTS_PER_PROFILE = 3;
-const DISCARDED_SNAPSHOT_PREFIX = '.stm-discarded-';
-const SAFETY_EXCLUDED_NAMES = new Set(['backups', 'thumbnails', 'vectors', '_webpack', '_cache', '_storage', '_uploads', 'node_modules', '.git', '.DS_Store', 'Thumbs.db']);
 const LEGACY_RUNTIME_STATIC_NAMES = new Set(['assets', 'css', 'favicon.ico', 'i18n.json', 'img', 'index.html', 'jsconfig.json', 'lib', 'robots.txt', 'script.js', 'scripts', 'sounds', 'st-launcher.ico', 'style.css', 'webfonts']);
 
 export interface ProfileStoreOptions {
@@ -27,8 +24,6 @@ export interface ProfileCreateInput {
   readonly runtimePath: string;
   readonly layout?: ProfileLayout;
 }
-
-export type { ProfileSnapshot } from '../../contracts/src/index.js';
 
 interface PersistedProfiles {
   readonly schemaVersion: 1;
@@ -197,7 +192,6 @@ export class ProfileStore {
     const target = profiles.find((profile) => profile.id === id);
     if (!target) throw new ProfileError('profile_not_found', 'Profile not found');
     if (target.layout === 'data') return { ...target };
-    await this.snapshotLegacyProfile(target);
     const migrated = await this.migrateTreeToData(target);
     const now = this.now().toISOString();
     const next = profiles.map((profile) => profile.id === id ? {
@@ -257,91 +251,20 @@ export class ProfileStore {
   }
 
   /**
-   * Copy only the selected profile roots before a switch. Symlinks are
-   * rejected so a snapshot cannot unexpectedly read outside the workspace.
-   */
-  public async createSafetySnapshot(profile: Profile): Promise<ProfileSnapshot> {
-    const startedAt = Date.now();
-    const fingerprint = await fingerprintProfile(profile);
-    const previous = await this.findMatchingSnapshot(profile.id, fingerprint);
-    if (previous) {
-      this.logger(`[profiles] reused safety snapshot for ${profile.name}`);
-      return previous;
-    }
-    const id = randomUUID();
-    const createdAt = this.now().toISOString();
-    const destination = join(this.paths.profiles, '.snapshots', `profile-${profile.id}-${createdAt.replace(/[:.]/gu, '-')}`);
-    await mkdir(destination, { recursive: true });
-    // The snapshot keeps secrets.json, so close the directory once here rather
-    // than forcing a mode on every one of the thousands of files inside it.
-    await chmod(destination, 0o700).catch(() => undefined);
-    const dataSecrets = profile.layout === 'data' ? join(profile.dataPath, 'default-user', 'secrets.json') : join(profile.runtimePath, 'secrets.json');
-    const runtimeSecrets = join(profile.runtimePath, 'secrets.json');
-    const secretsPath = await exists(dataSecrets) ? dataSecrets : runtimeSecrets;
-    for (const [name, source] of [['data', profile.dataPath], ['config.yaml', profile.configPath], ['secrets.json', secretsPath]] as const) {
-      if (await exists(source)) {
-        if (name === 'data') await copySafetyTree(source, join(destination, name));
-        else await copyPath(source, join(destination, name));
-      }
-    }
-    const manifest = { schemaVersion: 1, profileId: profile.id, layout: profile.layout, createdAt, fingerprint };
-    await writeFile(join(destination, 'snapshot.json'), `${JSON.stringify(manifest, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-    await this.pruneSafetySnapshots(profile.id);
-    this.logger(`[profiles] safety snapshot created for ${profile.name} in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
-    return { id, profileId: profile.id, createdAt, path: destination, fingerprint };
-  }
-
-  /** Remove old profile snapshots while retaining the newest recovery points. */
-  public async pruneSafetySnapshots(profileId?: string): Promise<void> {
-    const root = join(this.paths.profiles, '.snapshots');
-    if (!await exists(root)) return;
-    const names = (await readdir(root)).filter((name) => name.startsWith('profile-') && (!profileId || name.startsWith(`profile-${profileId}-`)));
-    const groups = new Map<string, Array<{ name: string; createdAt: string }>>();
-    for (const name of names) {
-      const manifestPath = join(root, name, 'snapshot.json');
-      try {
-        const value: unknown = JSON.parse(await readFile(manifestPath, 'utf8'));
-        if (isRecord(value) && typeof value.createdAt === 'string') {
-          const group = name.split('-').slice(0, 6).join('-');
-          const records = groups.get(group) ?? [];
-          records.push({ name, createdAt: value.createdAt });
-          groups.set(group, records);
-        }
-      } catch { /* an incomplete snapshot is retained for manual review */ }
-    }
-    for (const records of groups.values()) {
-      records.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
-      for (const record of records.slice(MAX_SAFETY_SNAPSHOTS_PER_PROFILE)) {
-        await this.discardSnapshot(join(root, record.name));
-        this.logger(`[profiles] pruned old safety snapshot ${record.name}`);
-      }
-    }
-    await this.sweepDiscardedSnapshots(root);
-  }
-
-  /**
-   * Take an old snapshot out of the way now and delete it in the background.
+   * Delete the safety snapshots an older version left behind.
    *
-   * Deleting thousands of files costs as much as writing them on a hosted
-   * volume, and a restore is waiting on this. Only the rename has to happen
-   * before the caller continues; the next prune sweeps anything left behind.
+   * Those were plain copies of the profile tree: three kept per profile, one
+   * more per legacy migration that no prune ever looked at, and one per
+   * interrupted run that was kept indefinitely for review. They cost gigabytes
+   * to say what a single compressed archive in the backup library says, so
+   * nothing writes them any more and what is on disk is pure cost.
    */
-  private async discardSnapshot(path: string): Promise<void> {
-    const trash = join(resolve(path, '..'), `${DISCARDED_SNAPSHOT_PREFIX}${randomUUID()}`);
-    try {
-      await rename(path, trash);
-    } catch (error: unknown) {
-      if (isFileNotFound(error)) return;
-      await rm(path, { recursive: true, force: true });
-      return;
-    }
-    this.trackCleanup(trash);
-  }
-
-  private async sweepDiscardedSnapshots(root: string): Promise<void> {
-    let names: string[];
-    try { names = await readdir(root); } catch (error: unknown) { if (isFileNotFound(error)) return; throw error; }
-    for (const name of names) if (name.startsWith(DISCARDED_SNAPSHOT_PREFIX)) this.trackCleanup(join(root, name));
+  public async removeLegacySnapshots(): Promise<boolean> {
+    const root = join(this.paths.profiles, '.snapshots');
+    if (!await exists(root)) return false;
+    this.logger('[profiles] removing the safety snapshot copies the backup library replaced');
+    this.trackCleanup(root);
+    return true;
   }
 
   private trackCleanup(path: string): void {
@@ -355,26 +278,10 @@ export class ProfileStore {
     await this.cleanupTail;
   }
 
-  private async findMatchingSnapshot(profileId: string, fingerprint: string): Promise<ProfileSnapshot | null> {
-    const root = join(this.paths.profiles, '.snapshots');
-    if (!await exists(root)) return null;
-    const names = (await readdir(root)).filter((name) => name.startsWith(`profile-${profileId}-`));
-    for (const name of names) {
-      const path = join(root, name);
-      try {
-        const value: unknown = JSON.parse(await readFile(join(path, 'snapshot.json'), 'utf8'));
-        if (!isRecord(value) || value.fingerprint !== fingerprint || typeof value.createdAt !== 'string') continue;
-        return { id: name, profileId, createdAt: value.createdAt, path, fingerprint };
-      } catch { /* incomplete snapshots are ignored for deduplication */ }
-    }
-    return null;
-  }
-
   private async migrateRuntimePublic(profile: Profile, runtimePath: string): Promise<Profile> {
     const yamlPath = join(runtimePath, 'config.yaml');
     const legacyConfigPath = await exists(yamlPath) ? yamlPath : join(runtimePath, 'config.yml');
     const legacy: Profile = { ...profile, layout: 'public', dataPath: join(runtimePath, 'public'), configPath: legacyConfigPath };
-    await this.snapshotLegacyProfile(legacy);
     const migrated = await this.migrateTreeToData(legacy);
     const now = this.now().toISOString();
     const profiles = await this.load();
@@ -404,17 +311,6 @@ export class ProfileStore {
     }
     if (await exists(profile.configPath) && resolve(profile.configPath) !== resolve(configPath)) await copyPath(profile.configPath, configPath);
     return { dataPath: resolve(dataPath), configPath: resolve(configPath) };
-  }
-
-  private async snapshotLegacyProfile(profile: Profile): Promise<void> {
-    const destination = join(this.paths.profiles, '.snapshots', `legacy-${profile.id}-${this.now().toISOString().replace(/[:.]/gu, '-')}`);
-    if (await exists(profile.dataPath) || await exists(profile.configPath)) {
-      await mkdir(destination, { recursive: true });
-      if (await exists(profile.dataPath)) await copySafetyTree(profile.dataPath, join(destination, 'public'));
-      if (await exists(profile.configPath)) await copyPath(profile.configPath, join(destination, 'config.yaml'));
-      await writeFile(join(destination, 'snapshot.json'), `${JSON.stringify({ schemaVersion: 1, profileId: profile.id, layout: 'public', createdAt: this.now().toISOString() }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-      this.logger(`[profiles] legacy safety snapshot created for ${profile.name}`);
-    }
   }
 
   private async load(): Promise<Profile[]> {
@@ -472,10 +368,6 @@ async function copyPath(source: string, destination: string): Promise<void> {
   await copyTree(source, destination, null, 'A linked profile path needs review before switching profiles');
 }
 
-async function copySafetyTree(source: string, destination: string): Promise<void> {
-  await copyTree(source, destination, SAFETY_EXCLUDED_NAMES, 'A linked profile path needs review before snapshotting');
-}
-
 /**
  * Copy a tree by planning it first, then running the file copies in parallel.
  *
@@ -514,54 +406,6 @@ async function copyTree(source: string, destination: string, excluded: Set<strin
  */
 async function copySnapshotFile(source: string, destination: string): Promise<void> {
   await copyFile(source, destination, fsConstants.COPYFILE_FICLONE);
-}
-
-async function fingerprintProfile(profile: Profile): Promise<string> {
-  const hash = createHash('sha256');
-  await fingerprintTree(profile.dataPath, hash, 'data', createIoLimiter(ioConcurrency()));
-  await fingerprintFile(profile.configPath, hash, 'config');
-  const secrets = profile.layout === 'data' ? join(profile.dataPath, DEFAULT_USER_HANDLE, 'secrets.json') : join(profile.runtimePath, 'secrets.json');
-  await fingerprintFile(secrets, hash, 'secrets');
-  return hash.digest('hex');
-}
-
-/**
- * Hash a tree's shape without reading file contents.
- *
- * The `lstat` calls run in parallel because a profile holds thousands of files
- * and this runs before every snapshot, but the results are folded into the hash
- * in sorted order so the fingerprint stays stable.
- */
-async function fingerprintTree(root: string, hash: ReturnType<typeof createHash>, prefix: string, limiter: IoLimiter): Promise<void> {
-  let details;
-  try { details = await limiter.run(() => lstat(root)); } catch (error: unknown) { if (isFileNotFound(error)) { hash.update(`${prefix}:missing\n`); return; } throw error; }
-  if (details.isSymbolicLink()) throw new ProfileError('snapshot_failed', 'A linked profile path needs review before snapshotting');
-  if (!details.isDirectory()) { hash.update(`${prefix}:file:${details.size}:${details.mtimeMs}\n`); return; }
-  const children = (await limiter.run(() => readdir(root))).filter((child) => !SAFETY_EXCLUDED_NAMES.has(child)).sort((left, right) => left.localeCompare(right));
-  // Stat the whole directory at once, then fold the results into the hash in
-  // sorted order so the fingerprint does not depend on completion order.
-  const stats = await Promise.all(children.map(async (child) => {
-    try { return await limiter.run(() => lstat(join(root, child))); } catch (error: unknown) { if (isFileNotFound(error)) return null; throw error; }
-  }));
-  for (const [index, child] of children.entries()) {
-    const childPrefix = `${prefix}/${child}`;
-    const childDetails = stats[index];
-    if (!childDetails) { hash.update(`${childPrefix}:missing\n`); continue; }
-    if (childDetails.isSymbolicLink()) throw new ProfileError('snapshot_failed', 'A linked profile path needs review before snapshotting');
-    if (childDetails.isDirectory()) await fingerprintTree(join(root, child), hash, childPrefix, limiter);
-    else hash.update(`${childPrefix}:file:${childDetails.size}:${childDetails.mtimeMs}\n`);
-  }
-}
-
-async function fingerprintFile(path: string, hash: ReturnType<typeof createHash>, label: string): Promise<void> {
-  try {
-    const details = await lstat(path);
-    if (details.isSymbolicLink()) throw new ProfileError('snapshot_failed', 'A linked profile path needs review before snapshotting');
-    hash.update(`${label}:${details.size}:${details.mtimeMs}\n`);
-  } catch (error: unknown) {
-    if (isFileNotFound(error)) hash.update(`${label}:missing\n`);
-    else throw error;
-  }
 }
 
 async function syncCanonicalToLegacy(source: string, runtimePath: string): Promise<void> {

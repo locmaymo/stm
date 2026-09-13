@@ -154,6 +154,10 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   // Archives written before retention existed are still on the volume, and the
   // scheduler only prunes once it next writes one.
   void profiles.getActive().then((profile) => profile && backups.pruneCreated(profile.id)).catch(() => undefined);
+  // Profile snapshots were uncompressed copies of the same recovery point the
+  // backup library holds compressed. Nothing writes them now; take back the
+  // space the old ones are still using.
+  void profiles.removeLegacySnapshots().catch(() => undefined);
   const system = new SystemStore({
     paths,
     dataRoot: async () => {
@@ -593,7 +597,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     await supervisor.stop();
     if (previousProfile) {
       try {
-        await profiles.createSafetySnapshot(previousProfile);
+        await backups.createSafetyCopy(previousProfile, { name: `${previousProfile.name}-preswitch` });
       } catch (error: unknown) {
         const process = await supervisor.start().catch(() => supervisor.getState());
         if (previousTunnelMode !== 'off' && process.status === 'running') await tunnel.restart().catch(() => undefined);
@@ -659,9 +663,9 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     const previousTunnelMode = tunnel.getState().mode;
     await tunnel.stop();
     await supervisor.stop();
-    let snapshot = null;
+    let snapshot: Awaited<ReturnType<BackupStore['create']>> | null = null;
     try {
-      if (current && current.id !== profile.id) snapshot = await profiles.createSafetySnapshot(current);
+      if (current && current.id !== profile.id) snapshot = await backups.createSafetyCopy(current, { name: `${current.name}-preswitch` });
       await runtime.activateInstallation(installation.id);
       const activated = await profiles.activate(profile.id);
       const process = await supervisor.start();

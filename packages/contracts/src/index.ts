@@ -115,14 +115,6 @@ export interface Profile {
   readonly activatedAt: string | null;
 }
 
-export interface ProfileSnapshot {
-  readonly id: string;
-  readonly profileId: string;
-  readonly createdAt: string;
-  readonly path: string;
-  readonly fingerprint?: string;
-}
-
 export type RestoreMode = 'merge' | 'replace';
 
 export type BackupSource = 'created' | 'uploaded';

@@ -37,18 +37,16 @@ test('copies legacy public layout into the canonical data profile', async () => 
   assert.equal(await readFile(join(runtimePath, 'public', 'chat.json'), 'utf8'), '{}');
 });
 
-test('activation creates a safety snapshot before switching profile data', async () => {
+test('activation switches the active profile and leaves each profile’s data alone', async () => {
   const root = await mkdtemp(join(tmpdir(), 'stm-profile-snapshot-'));
   const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
   const store = new ProfileStore({ paths });
   const first = await store.create({ name: 'First', installationId: 'install-1', runtimePath: join(root, 'runtime') }, true);
   await writeFile(join(first.dataPath, 'chat.json'), '{"hello":"world"}', 'utf8');
   const second = await store.create({ name: 'Second', installationId: 'install-1', runtimePath: join(root, 'runtime') });
-  const snapshot = await store.createSafetySnapshot(first);
-  assert.equal(snapshot.profileId, first.id);
-  assert.equal(await readFile(join(snapshot.path, 'data', 'chat.json'), 'utf8'), '{"hello":"world"}');
   await store.activate(second.id);
   assert.equal((await store.getActive())?.id, second.id);
+  assert.equal(await readFile(join(first.dataPath, 'chat.json'), 'utf8'), '{"hello":"world"}');
 });
 
 test('duplicate profile names are rejected', async () => {
@@ -110,22 +108,21 @@ test('bridges canonical data to an older runtime that only uses public/', async 
   assert.equal(await readFile(join(profile.dataPath, 'default-user', 'chat.json'), 'utf8'), '{"version":3}');
 });
 
-test('reuses identical safety snapshots and retains only three changed copies', async () => {
+test('the profile snapshot copies an older version wrote are reclaimed', async () => {
   const root = await mkdtemp(join(tmpdir(), 'stm-profile-snapshot-retention-'));
   const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
   const store = new ProfileStore({ paths });
-  const profile = await store.create({ name: 'Default', installationId: 'install-1', runtimePath: join(root, 'runtime') }, true);
-  const chat = join(profile.dataPath, 'default-user', 'chat.json');
-  await mkdir(join(profile.dataPath, 'default-user'), { recursive: true });
-  await writeFile(chat, '{"version":0}', 'utf8');
-  const first = await store.createSafetySnapshot(profile);
-  const duplicate = await store.createSafetySnapshot(profile);
-  assert.equal(duplicate.path, first.path);
-  for (let version = 1; version <= 4; version += 1) {
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 3));
-    await writeFile(chat, `{"version":${version}}`, 'utf8');
-    await store.createSafetySnapshot(profile);
+  const snapshots = join(paths.profiles, '.snapshots');
+  // A complete copy, the legacy one no prune ever looked at, and the partial
+  // one an interrupted run left behind and kept indefinitely.
+  for (const name of ['profile-abc-2026-09-13T03-40-08-227Z', 'legacy-abc-2026-09-13T03-12-28-067Z', 'profile-abc-2026-09-13T04-29-45-615Z']) {
+    await mkdir(join(snapshots, name, 'data'), { recursive: true });
+    await writeFile(join(snapshots, name, 'data', 'chat.json'), '{"version":0}', 'utf8');
   }
-  const snapshots = (await readdir(join(paths.profiles, '.snapshots'))).filter((name) => name.startsWith(`profile-${profile.id}-`));
-  assert.equal(snapshots.length, 3);
+
+  assert.equal(await store.removeLegacySnapshots(), true);
+  await store.settle();
+  await assert.rejects(() => readdir(snapshots));
+  // Nothing is left to reclaim on the next start.
+  assert.equal(await store.removeLegacySnapshots(), false);
 });
