@@ -227,7 +227,11 @@
     "basicAuthUser": "Basic Auth username",
     "accountsUnavailable": "SillyTavern did not report its account details for this version or login configuration.",
     "stopping": "Stopping…",
-    "restoreStoppedPartway": "The restore was stopped partway, so this profile holds part of the old data and part of the new. Restore the -prerestore backup in the list to put it back as it was."
+    "restoreStoppedPartway": "The restore was stopped partway, so this profile holds part of the old data and part of the new. Restore the -prerestore backup in the list to put it back as it was.",
+    "showQr": "Show QR code",
+    "hideQr": "Hide QR code",
+    "scanToOpen": "Scan to open on a phone",
+    "openInNewTab": "Opens in a new tab"
   },
   "dashboard": {
     "eyebrow": "CONTROL ROOM / OVERVIEW",

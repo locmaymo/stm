@@ -3,7 +3,7 @@ import {
   Archive, ArrowDown, ArrowUp, ArrowUpRight, BarChart3, Copy, Database, Download,
   Globe2, LayoutDashboard, Maximize2, Minimize2, Moon, Package, Plus,
   ScrollText, Search, Sun, Upload, Users as UsersIcon, X, Rows3,
-  BrainCircuit, CircleStop, Clock3, Cpu, Ellipsis, RefreshCw, Settings2,
+  BrainCircuit, CircleStop, Clock3, Cpu, Ellipsis, Play, QrCode as QrCodeIcon, RefreshCw, Settings2, Square,
 } from 'lucide-react';
 import {
   Badge, Button, Card, CardAction, CardContent, CardFooter, CardHeader,
@@ -18,6 +18,7 @@ import { browserStorage, readPreferences, savePreferences, type Preferences } fr
 import type { AccessSecurityState, BackupManifest, ConfigDocument, ConfigUpdateInput, Installation, Job, LogEntry, LogSourceFilter, MetricsSnapshot, ProcessState, Profile, R2Config, R2Object, RestorePreview, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
 import { translateLogEntry, translateStep } from './log-format.js';
+import { QrCode } from './qr-code.js';
 
 const navigation = [
   { id: 'overview', icon: LayoutDashboard },
@@ -32,6 +33,7 @@ function pageFromHash(): PageId {
   return navigation.find(({ id }) => id === hash)?.id ?? 'overview';
 }
 
+const LOCAL_URL = 'http://127.0.0.1:8000';
 const UPLOAD_CHUNK_BYTES = 4 * 1024 * 1024;
 const UPLOAD_RETRIES = 3;
 const UPLOAD_RATE_WINDOW_MS = 10_000;
@@ -245,9 +247,6 @@ function ConsoleApp({ csrfToken }: { csrfToken: string }) {
   const navigate: Navigate = (next) => { window.location.hash = next; setPage(next); window.scrollTo({ top: 0 }); };
   const changePreferences = (update: Partial<Preferences>) => setPreferences((current) => ({ ...current, ...update }));
   const liveLogs = useLiveLogs(logSource);
-  const installation = <InstallationPanel t={t} catalog={catalog} version={version} onVersionChange={setVersion} versions={versions} installations={installations} activeInstallationId={activeInstallationId} pendingInstallationId={pendingInstallationId} onPendingInstallationId={setPendingInstallationId} csrfToken={csrfToken} installing={installing} onInstalling={setInstalling} />;
-  const logProps = { t, catalog, source: logSource, onSourceChange: setLogSource, entries: liveLogs.entries, query: logQuery, onQueryChange: setLogQuery, compact: compactLogs, onToggleCompact: () => setCompactLogs((current) => !current), onLoadOlder: liveLogs.loadOlder, hasOlder: liveLogs.hasOlder, loadingOlder: liveLogs.loadingOlder };
-  const logs = <LogsPanel {...logProps} expanded={logsExpanded} onToggleExpanded={() => setLogsExpanded((current) => !current)} />;
   const updateRuntime = async (path: string, body?: unknown) => {
     const init: RequestInit = { method: body === undefined ? 'POST' : 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken } };
     if (body !== undefined) init.body = JSON.stringify(body);
@@ -257,6 +256,9 @@ function ConsoleApp({ csrfToken }: { csrfToken: string }) {
       if (path.includes('/process')) setProcessState(payload as ProcessState); else setTunnelState(payload as TunnelState);
     }
   };
+  const installation = <InstallationPanel t={t} catalog={catalog} process={processState} onAction={updateRuntime} version={version} onVersionChange={setVersion} versions={versions} installations={installations} activeInstallationId={activeInstallationId} pendingInstallationId={pendingInstallationId} onPendingInstallationId={setPendingInstallationId} csrfToken={csrfToken} installing={installing} onInstalling={setInstalling} />;
+  const logProps = { t, catalog, source: logSource, onSourceChange: setLogSource, entries: liveLogs.entries, query: logQuery, onQueryChange: setLogQuery, compact: compactLogs, onToggleCompact: () => setCompactLogs((current) => !current), onLoadOlder: liveLogs.loadOlder, hasOlder: liveLogs.hasOlder, loadingOlder: liveLogs.loadingOlder };
+  const logs = <LogsPanel {...logProps} expanded={logsExpanded} onToggleExpanded={() => setLogsExpanded((current) => !current)} />;
   const updateConfig = async (input: ConfigUpdateInput): Promise<string | null> => {
     const response = await fetch('/api/v1/config', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify(input) });
     const payload = await response.json() as { config?: ConfigDocument; process?: ProcessState; tunnel?: TunnelState; error?: { message?: string } };
@@ -329,9 +331,19 @@ function Unavailable({ t, children }: { t: Translate; children: ReactNode }) {
   return <Tooltip><TooltipTrigger asChild><span tabIndex={0} className="inline-flex rounded-md" aria-label={t('console.unavailable')}>{children}</span></TooltipTrigger><TooltipContent>{t('console.unavailable')}</TooltipContent></Tooltip>;
 }
 
-function InstallationPanel({ t, catalog, version, onVersionChange, versions, installations, activeInstallationId, pendingInstallationId, onPendingInstallationId, csrfToken, installing, onInstalling }: { t: Translate; catalog: Record<string, unknown>; version: string; onVersionChange: (value: string) => void; versions: VersionOption[]; installations: Installation[]; activeInstallationId: string | null; pendingInstallationId: string | null; onPendingInstallationId: (value: string | null) => void; csrfToken: string | null; installing: boolean; onInstalling: (value: boolean) => void }) {
+function InstallationPanel({ t, catalog, process, onAction, version, onVersionChange, versions, installations, activeInstallationId, pendingInstallationId, onPendingInstallationId, csrfToken, installing, onInstalling }: { t: Translate; catalog: Record<string, unknown>; process: ProcessState; onAction: (path: string, body?: unknown) => Promise<void>; version: string; onVersionChange: (value: string) => void; versions: VersionOption[]; installations: Installation[]; activeInstallationId: string | null; pendingInstallationId: string | null; onPendingInstallationId: (value: string | null) => void; csrfToken: string | null; installing: boolean; onInstalling: (value: boolean) => void }) {
   const [requestError, setRequestError] = useState<string | null>(null);
+  const [runBusy, setRunBusy] = useState(false);
   const active = installations.find((item) => item.id === pendingInstallationId) ?? installations.find((item) => item.id === activeInstallationId) ?? installations.at(-1);
+  const running = process.status === 'running';
+  const installed = Boolean(activeInstallationId);
+  // One control that reads as what it will do, rather than a Start and a Stop
+  // sitting side by side with one of them always inert.
+  const toggleRun = async () => {
+    setRunBusy(true);
+    try { await onAction(running ? '/api/v1/process/stop' : '/api/v1/process/start'); } finally { setRunBusy(false); }
+  };
+  const runPending = runBusy || process.status === 'starting' || process.status === 'stopping';
   const status = active?.status === 'ready' ? t('dashboard.ready') : active?.status === 'failed' ? t('dashboard.installFailed') : active ? `${translateStep(active.step, catalog, active.stepCode, active.stepParams)} · ${Math.round(active.progress)}%` : t('dashboard.notInstalled');
   const canInstall = Boolean(csrfToken) && !installing;
   const install = async () => {
@@ -347,7 +359,7 @@ function InstallationPanel({ t, catalog, version, onVersionChange, versions, ins
     } catch { setRequestError(t('console.installRequestFailed')); onInstalling(false); }
   };
   const choices = versions.length > 0 ? versions : [{ selector: 'latest', label: `${t('dashboard.latest')} (latest)`, ref: 'latest', channel: 'release', tag: null, publishedAt: null }, { selector: 'release', label: 'release', ref: 'release', channel: 'release', tag: null, publishedAt: null }, { selector: 'staging', label: 'staging', ref: 'staging', channel: 'staging', tag: null, publishedAt: null }] satisfies VersionOption[];
-  return <Card data-tour="installation"><PanelHeading icon={<Package />} action={<Badge variant="outline" className={active?.status === 'ready' ? '' : 'status-attention'}>{status}</Badge>}>SillyTavern</PanelHeading><CardContent className="flex-1"><label className="field-label" htmlFor="install-version">{t('dashboard.version')}</label><Select value={version} onValueChange={onVersionChange}><SelectTrigger id="install-version" className="w-full"><SelectValue /></SelectTrigger><SelectContent position="popper" align="start" className="version-select-content">{choices.map((choice) => <SelectItem key={choice.selector} value={choice.selector}>{choice.label}</SelectItem>)}</SelectContent></Select>{active && active.status !== 'ready' && active.status !== 'failed' ? <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full bg-primary transition-all" style={{ width: `${active.progress}%` }} /></div> : null}{active?.status === 'ready' ? <p className="install-result">{t('console.installComplete')} · {active.resolvedRef}</p> : null}{active?.status === 'failed' && active.error ? <p className="install-error" role="alert">{active.error}</p> : null}{requestError ? <p className="install-error" role="alert">{requestError}</p> : null}</CardContent><CardFooter>{canInstall ? <Button onClick={() => void install()}><Download />{installing ? t('common.loading') : t('dashboard.install')}</Button> : <Unavailable t={t}><Button disabled><Download />{t('dashboard.install')}</Button></Unavailable>}</CardFooter></Card>;
+  return <Card data-tour="installation"><PanelHeading icon={<Package />} action={<Badge variant="outline" className={active?.status === 'ready' ? '' : 'status-attention'}>{status}</Badge>}>SillyTavern</PanelHeading><CardContent className="flex-1"><label className="field-label" htmlFor="install-version">{t('dashboard.version')}</label><Select value={version} onValueChange={onVersionChange}><SelectTrigger id="install-version" className="w-full"><SelectValue /></SelectTrigger><SelectContent position="popper" align="start" className="version-select-content">{choices.map((choice) => <SelectItem key={choice.selector} value={choice.selector}>{choice.label}</SelectItem>)}</SelectContent></Select>{active && active.status !== 'ready' && active.status !== 'failed' ? <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full bg-primary transition-all" style={{ width: `${active.progress}%` }} /></div> : null}{active?.status === 'ready' ? <p className="install-result">{t('console.installComplete')} · {active.resolvedRef}</p> : null}{active?.status === 'failed' && active.error ? <p className="install-error" role="alert">{active.error}</p> : null}{requestError ? <p className="install-error" role="alert">{requestError}</p> : null}</CardContent><CardFooter className="gap-2">{canInstall ? <Button variant="outline" onClick={() => void install()}><Download />{installing ? t('common.loading') : t('dashboard.install')}</Button> : <Unavailable t={t}><Button variant="outline" disabled><Download />{t('dashboard.install')}</Button></Unavailable>}<Button className={running ? 'run-toggle run-toggle-stop' : 'run-toggle run-toggle-start'} onClick={() => void toggleRun()} disabled={!installed || runPending} aria-label={running ? t('dashboard.stop') : t('dashboard.start')}>{running ? <Square /> : <Play />}{runPending ? t('common.loading') : running ? t('dashboard.stop') : t('dashboard.start')}</Button></CardFooter></Card>;
 }
 
 function AccessPanel({ t, process, tunnel, config, security, installed, onAction, onConfigUpdate, onSetPassword }: { t: Translate; process: ProcessState; tunnel: TunnelState; config: ConfigDocument | null; security: AccessSecurityState; installed: boolean; onAction: (path: string, body?: unknown) => Promise<void>; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null> }) {
@@ -393,15 +405,22 @@ function AccessPanel({ t, process, tunnel, config, security, installed, onAction
     try { const error = await onConfigUpdate({ settings }); setSecurityMessage(error); if (!error) setPassword(''); } finally { setSecurityBusy(false); }
   };
   const saveSecurity = async () => { setSecurityBusy(true); setSecurityMessage(null); try { const error = await onSetPassword(password, confirmPassword); setSecurityMessage(error); if (!error) { setPassword(''); setConfirmPassword(''); } } finally { setSecurityBusy(false); } };
-  const openLocal = () => { window.open('http://127.0.0.1:8000', '_blank', 'noopener,noreferrer'); };
+  const openLocal = () => { window.open(LOCAL_URL, '_blank', 'noopener,noreferrer'); };
   const copyTunnel = async () => { if (tunnel.url) await navigator.clipboard?.writeText(tunnel.url); };
+  const lanUrl = `http://${config?.networkHost ?? window.location.hostname}:8000`;
+  // The address another device can actually reach, best first. Nobody needs a
+  // code for 127.0.0.1 - the only device that can open it is this one.
+  const shareUrl = tunnel.url ?? (listen ? lanUrl : null);
+  const shareLabel = tunnel.url ? t('dashboard.publicAddress') : t('console.lanAddress');
+  const [qrOpen, setQrOpen] = useState(false);
   return <Card data-tour="public-access">
     <PanelHeading icon={<Globe2 />} action={<Badge variant="secondary" className={running ? 'status-online' : tunnel.error ? 'status-attention' : ''}>{processLabel}</Badge>}>{t('console.publicAccess')}</PanelHeading>
     <CardContent className="flex-1 space-y-4">
       <div className="access-row"><div><strong>{t('console.lanAccess')}</strong><span>{listen ? (passwordReady ? lanLabel : t('console.passwordRequired')) : lanLabel}</span></div><Switch id="listen-switch" checked={listen} onCheckedChange={(checked) => void updateAccess({ listen: checked, ...(checked ? { listenAddress: { ipv4: '0.0.0.0', ipv6: '[::]' } } : {}) })} disabled={!installed || securityBusy || (listen === false && !passwordReady)} aria-label={t('console.enableLan')} /></div>
-      <dl className="address-list"><div><dt>{t('console.lanAddress')}</dt><dd><code>{config?.networkHost ?? window.location.hostname ?? 'localhost'}:8000</code></dd></div><div><dt>{t('console.local')}</dt><dd><code>127.0.0.1:8000</code></dd></div></dl>
+      <dl className="address-list"><div><dt>{t('console.lanAddress')}</dt><dd><AddressLink t={t} href={lanUrl}>{`${config?.networkHost ?? window.location.hostname ?? 'localhost'}:8000`}</AddressLink></dd></div><div><dt>{t('console.local')}</dt><dd><AddressLink t={t} href={LOCAL_URL}>127.0.0.1:8000</AddressLink></dd></div></dl>
       <div className="access-row access-row-public"><div><strong>{t('console.quickTunnel')}</strong><span>{passwordReady ? t('console.passwordProtected') : t('console.passwordRequired')}</span></div><Switch id="tunnel-switch" checked={tunnelRunning} onCheckedChange={toggleTunnel} disabled={!installed || !running || tunnel.status === 'starting' || busy || !passwordReady} aria-label={t('console.enableTunnel')} /></div>
-      <dl className="address-list"><div><dt>{t('dashboard.publicAddress')}</dt><dd>{tunnel.url ? <code>{tunnel.url}</code> : '—'}</dd></div></dl>
+      <dl className="address-list"><div><dt>{t('dashboard.publicAddress')}</dt><dd>{tunnel.url ? <AddressLink t={t} href={tunnel.url}>{tunnel.url}</AddressLink> : '—'}</dd></div></dl>
+      {shareUrl ? <div className="access-qr"><Button variant="ghost" size="sm" onClick={() => setQrOpen((open) => !open)} aria-expanded={qrOpen}><QrCodeIcon />{qrOpen ? t('console.hideQr') : t('console.showQr')}</Button>{qrOpen ? <figure><QrCode value={shareUrl} label={`${shareLabel}: ${shareUrl}`} /><figcaption>{t('console.scanToOpen')} · {shareLabel}</figcaption></figure> : null}</div> : null}
       <details className="access-security" open={passwordFormOpen} onToggle={(event) => setPasswordFormOpen(event.currentTarget.open)}><summary>{t('console.passwordSettings')}</summary><div className="security-form">
         <p className="text-xs text-muted-foreground">{t(basicAuth ? 'console.basicAuthHelp' : 'console.sillyPasswordHelp')}</p>
         <div className="config-fixed"><span>{t(basicAuth ? 'console.basicAuthUser' : 'console.adminAccount')}</span><strong>{security.adminHandle}</strong></div>
@@ -415,8 +434,13 @@ function AccessPanel({ t, process, tunnel, config, security, installed, onAction
       {process.error ? <p className="install-error" role="alert">{process.error}</p> : null}
       {tunnel.error ? <p className="install-error" role="alert">{tunnel.error}</p> : null}
     </CardContent>
-    <CardFooter className="gap-2"><Button variant="outline" onClick={openLocal} disabled={!running}><ArrowUpRight />{t('dashboard.open')}</Button><Button variant="ghost" onClick={() => void copyTunnel()} disabled={!tunnel.url}><Copy />{t('dashboard.copyLink')}</Button><Button variant="ghost" onClick={() => void runAction(running ? '/api/v1/process/stop' : '/api/v1/process/start')} disabled={!installed || process.status === 'starting' || process.status === 'stopping' || busy}>{running ? t('dashboard.stop') : t('dashboard.start')}</Button></CardFooter>
+    <CardFooter className="gap-2"><Button variant="outline" onClick={openLocal} disabled={!running}><ArrowUpRight />{t('dashboard.open')}</Button><Button variant="ghost" onClick={() => void copyTunnel()} disabled={!tunnel.url}><Copy />{t('dashboard.copyLink')}</Button></CardFooter>
   </Card>;
+}
+
+/** An address that opens in its own tab rather than sitting there as text. */
+function AddressLink({ t, href, children }: { t: Translate; href: string; children: ReactNode }) {
+  return <a className="address-link" href={href} target="_blank" rel="noopener noreferrer" title={t('console.openInNewTab')}><code>{children}</code><ArrowUpRight aria-hidden="true" /></a>;
 }
 
 function DataPanel({ t, navigate, activeProfile, latestBackup }: { t: Translate; navigate: Navigate; activeProfile: Profile | null; latestBackup: BackupManifest | null }) {

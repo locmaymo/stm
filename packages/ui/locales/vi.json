@@ -227,7 +227,11 @@
     "basicAuthUser": "Tên đăng nhập Basic Auth",
     "accountsUnavailable": "SillyTavern không báo cáo thông tin tài khoản cho phiên bản hoặc cấu hình đăng nhập này.",
     "stopping": "Đang dừng…",
-    "restoreStoppedPartway": "Khôi phục đã bị dừng giữa chừng, nên hồ sơ này đang có một phần dữ liệu cũ và một phần dữ liệu mới. Hãy khôi phục bản sao lưu -prerestore trong danh sách để đưa nó về như trước."
+    "restoreStoppedPartway": "Khôi phục đã bị dừng giữa chừng, nên hồ sơ này đang có một phần dữ liệu cũ và một phần dữ liệu mới. Hãy khôi phục bản sao lưu -prerestore trong danh sách để đưa nó về như trước.",
+    "showQr": "Hiện mã QR",
+    "hideQr": "Ẩn mã QR",
+    "scanToOpen": "Quét để mở trên điện thoại",
+    "openInNewTab": "Mở trong tab mới"
   },
   "dashboard": {
     "eyebrow": "TRUNG TÂM ĐIỀU HÀNH / TỔNG QUAN",

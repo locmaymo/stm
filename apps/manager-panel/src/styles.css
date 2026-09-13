@@ -54,6 +54,8 @@
   --destructive: #c43c3c;
   --attention: #8a5613;
   --attention-background: #fff5dd;
+  --run-start: #1a7f4f;
+  --run-stop: #b33a3a;
   --header-height: 3.75rem;
 }
 
@@ -72,6 +74,8 @@
   --destructive: #ed7878;
   --attention: #e6bc74;
   --attention-background: #392f20;
+  --run-start: #2a9d62;
+  --run-stop: #c9504f;
 }
 
 @layer base {
@@ -118,6 +122,22 @@
 .address-list > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .address-list dt { color: var(--muted-foreground); }
 .address-list dd { min-width: 0; overflow-wrap: anywhere; text-align: right; }
+.address-link { display: inline-flex; align-items: center; gap: 4px; color: inherit; text-decoration: none; border-radius: 4px; }
+.address-link:hover code, .address-link:focus-visible code { text-decoration: underline; }
+.address-link svg { width: 13px; height: 13px; flex-shrink: 0; color: var(--muted-foreground); }
+.access-qr { display: grid; justify-items: start; gap: 10px; }
+.access-qr figure { display: grid; justify-items: center; gap: 8px; margin: 0; }
+.access-qr figcaption { color: var(--muted-foreground); font-size: 12px; text-align: center; }
+.qr-code { border-radius: 8px; }
+.qr-quiet-zone { fill: #fff; }
+.qr-modules { fill: #000; }
+/* The run control carries its meaning in its colour, so it keeps that colour
+   in both themes rather than following the surrounding foreground. */
+.run-toggle { color: #fff; }
+.run-toggle-start { background: var(--run-start); }
+.run-toggle-start:hover:not(:disabled) { background: color-mix(in srgb, var(--run-start) 85%, #000); }
+.run-toggle-stop { background: var(--run-stop); }
+.run-toggle-stop:hover:not(:disabled) { background: color-mix(in srgb, var(--run-stop) 85%, #000); }
 .access-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 0; border-top: 1px solid var(--border); }
 .access-row:first-child { padding-top: 0; border-top: 0; }
 .access-row > div { display: grid; min-width: 0; gap: 2px; }
