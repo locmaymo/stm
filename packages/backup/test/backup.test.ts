@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chmod, mkdtemp, mkdir, readFile, readdir, utimes, writeFile } from 'node:fs/promises';
+import { randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getPlatformPaths } from '../../platform/src/index.js';
@@ -182,6 +183,34 @@ test('a restore overwrites a read-only file instead of failing the run', async (
 
   await store.restore(fixture.profile, archive, { mode: 'merge' });
   assert.equal(await readFile(target, 'utf8'), '{"message":"keep"}');
+});
+
+test('a read-only file does not take the archive handle down with it', async () => {
+  const fixture = await createFixture();
+  const chats = join(fixture.profile.dataPath, 'chats');
+  const expected = new Map<string, string>();
+  for (let index = 0; index < 60; index += 1) {
+    const name = `chat-${index}.jsonl`;
+    // Incompressible and large enough that the read is still in flight when
+    // the write fails - which is the order the descriptor is lost in.
+    const body = randomBytes(96 * 1024).toString('base64');
+    expected.set(name, body);
+    await writeFile(join(chats, name), body, 'utf8');
+  }
+  const store = new BackupStore({ paths: fixture.paths });
+  const manifest = await store.create(fixture.profile);
+  const archive = await store.getArchivePath(manifest.id);
+  assert.ok(archive);
+
+  // Every worker should meet an unwritable file early, so a worker that lost
+  // its descriptor to the first one would fail on everything it had left.
+  for (const name of [...expected.keys()].slice(0, 24)) {
+    await writeFile(join(chats, name), '{"message":"stale"}', 'utf8');
+    await chmod(join(chats, name), 0o444);
+  }
+
+  await store.restore(fixture.profile, archive, { mode: 'merge' });
+  for (const [name, body] of expected) assert.equal(await readFile(join(chats, name), 'utf8'), body);
 });
 
 test('a safety copy reuses an unchanged profile’s newest backup instead of writing another', async () => {

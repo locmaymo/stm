@@ -27,6 +27,7 @@ const DEFAULT_USER_HANDLE = 'default-user';
 const PRESERVED_DATA_ROOT_NAMES = new Set(['_storage', '_cache', '_uploads', '_webpack', 'cookie-secret.txt']);
 const RECOGNIZED_DATA_NAMES = new Set(['settings.json', 'characters', 'chats', 'worlds', 'groups', 'movingUI']);
 const OVERWRITE_ATTEMPTS = 4;
+const READ_CHUNK_BYTES = 64 * 1024;
 const DEFAULT_LOCAL_RETENTION = 1;
 const MAX_LOCAL_RETENTION = 50;
 const STAGING_PREFIX = '.stm-restore-';
@@ -857,7 +858,7 @@ async function extractPlan(zipPath: string, planned: readonly PlannedEntry[], on
       if (completed === total || completed % 25 === 0) onProgress?.({ completed, total });
     });
   } finally {
-    await Promise.all(handles.map((handle) => handle.close()));
+    await Promise.all(handles.map((handle) => handle.close().catch(() => undefined)));
   }
 }
 
@@ -894,7 +895,7 @@ async function writeEntry(archive: FileHandle, entry: ZipEntry, target: string):
     await writeFile(target, Buffer.alloc(0), { mode: 0o600 });
     return;
   }
-  const source = createReadStream(null as unknown as string, { fd: archive.fd, autoClose: false, start: dataOffset, end: dataOffset + entry.compressedSize - 1 });
+  const source = readEntry(archive, dataOffset, entry.compressedSize, entry.name);
   const destination = createWriteStream(target, { mode: 0o600 });
   const counter = new ByteCounter();
   if (entry.compression === 0) await pipeline(source, counter, destination);
@@ -905,6 +906,34 @@ async function writeEntry(archive: FileHandle, entry: ZipEntry, target: string):
     throw new BackupError('unsupported_archive', `ZIP compression ${entry.compression} is not supported`);
   }
   if (counter.bytes !== entry.uncompressedSize) throw new BackupError('invalid_archive', `Archive entry size mismatch: ${entry.name}`);
+}
+
+/**
+ * Read one entry's bytes through positional reads on the shared archive handle.
+ *
+ * Handing that descriptor to a read stream makes it the stream's to close.
+ * Destroying such a stream closes the descriptor even when it was created with
+ * autoClose false, and a pipeline destroys its source whenever the destination
+ * fails to open - so one unwritable file cost the worker its archive handle and
+ * every entry after it failed with EBADF. Reading by position never transfers
+ * ownership, and the workers do not disturb each other's offset either.
+ */
+function readEntry(archive: FileHandle, start: number, length: number, name: string): Readable {
+  let position = start;
+  let remaining = length;
+  return new Readable({
+    highWaterMark: READ_CHUNK_BYTES,
+    read(size: number) {
+      if (remaining === 0) { this.push(null); return; }
+      const buffer = Buffer.allocUnsafe(Math.min(size || READ_CHUNK_BYTES, remaining, READ_CHUNK_BYTES));
+      archive.read(buffer, 0, buffer.length, position).then(({ bytesRead }) => {
+        if (bytesRead === 0) { this.destroy(new BackupError('invalid_archive', `Archive entry is truncated: ${name}`)); return; }
+        position += bytesRead;
+        remaining -= bytesRead;
+        this.push(buffer.subarray(0, bytesRead));
+      }, (error: unknown) => { this.destroy(error instanceof Error ? error : new Error('Archive read failed')); });
+    },
+  });
 }
 
 class ByteCounter extends Transform {
