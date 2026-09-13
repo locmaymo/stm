@@ -2,7 +2,7 @@
 
 [Xem hướng dẫn bằng tiếng Anh](README.md)
 
-SillyTavern Manager là bảng điều khiển đa nền tảng để cài đặt, chạy, mở truy cập, sao lưu và theo dõi [SillyTavern](https://github.com/SillyTavern/SillyTavern). Manager chạy ở cổng <code>7860</code>, còn SillyTavern chạy ở cổng <code>8000</code>. Cloudflare Tunnel, nếu bật, chỉ trỏ tới SillyTavern và không bao giờ công khai bảng quản trị.
+SillyTavern Manager là bảng điều khiển đa nền tảng để cài đặt, chạy, mở truy cập, sao lưu và theo dõi [SillyTavern](https://github.com/SillyTavern/SillyTavern). Manager chạy ở cổng <code>7860</code>, còn SillyTavern chạy ở cổng <code>8000</code> và chỉ máy này mới vào được. Thiết bị khác trong mạng, hoặc Cloudflare Tunnel, vào SillyTavern qua cổng truy cập <code>8001</code> của manager, và cổng đó hỏi một mật khẩu trước. Tunnel không bao giờ công khai bảng quản trị.
 
 ## Chọn nền tảng
 
@@ -161,9 +161,9 @@ Người dùng Windows nên chọn ZIP portable vì ZIP đã có Node.js. Packag
 3. Chọn phiên bản SillyTavern; mặc định là <code>latest</code>.
 4. Bấm **Cài đặt** và chờ **Ready**. Ready nghĩa là SillyTavern đã trả lời ở cổng <code>8000</code>.
 5. Mở link local, hoặc bật truy cập mạng nội bộ / public tunnel trong thẻ truy cập.
-6. Đặt mật khẩu tài khoản SillyTavern trước khi bật LAN hoặc public tunnel.
+6. Đặt mật khẩu SillyTavern trước khi bật LAN hoặc public tunnel.
 
-Mật khẩu manager và mật khẩu tài khoản SillyTavern là hai mật khẩu khác nhau. Public tunnel không chuyển tiếp bảng quản trị manager.
+Mật khẩu manager và mật khẩu SillyTavern là hai mật khẩu khác nhau. Mật khẩu SillyTavern được hỏi ở trang đăng nhập do chính manager phục vụ, nên nó hoạt động giống nhau trên mọi phiên bản SillyTavern, cũ hay mới; đổi mật khẩu sẽ đăng xuất mọi thiết bị đang ở trong. Public tunnel không chuyển tiếp bảng quản trị manager.
 
 ## Sao lưu và khôi phục
 

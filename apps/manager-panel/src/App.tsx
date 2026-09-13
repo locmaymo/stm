@@ -397,7 +397,10 @@ function AccessPanel({ t, process, tunnel, config, security, installed, onAction
     try { setSecurityMessage(await onSetLan(next)); } finally { setSecurityBusy(false); }
   };
   const saveSecurity = async () => { setSecurityBusy(true); setSecurityMessage(null); try { const error = await onSetPassword(password, confirmPassword); setSecurityMessage(error); if (!error) { setPassword(''); setConfirmPassword(''); } } finally { setSecurityBusy(false); } };
-  const localHost = `127.0.0.1:${security.port}`;
+  // This machine reaches SillyTavern directly, because the loopback address is
+  // already a boundary. Everything else goes through the gateway and its
+  // password: the LAN address and the tunnel both point there.
+  const localHost = '127.0.0.1:8000';
   const lanHost = `${config?.networkHost ?? window.location.hostname ?? 'localhost'}:${security.port}`;
   const localUrl = `http://${localHost}`;
   const lanUrl = `http://${lanHost}`;
