@@ -98,6 +98,10 @@ function AuthGate() {
     return () => { cancelled = true; };
   }, []);
   if (mode === 'ready' && csrfToken) return <ConsoleApp csrfToken={csrfToken} />;
+  // Until the session check answers there is nothing to ask for. Falling
+  // through to the form showed a flash of the login screen on every reload of
+  // an already signed-in console.
+  if (mode === 'checking') return <div className="auth-shell" role="status" aria-busy="true" />;
   const submit = async () => {
     setBusy(true); setError(null);
     try {
@@ -110,7 +114,7 @@ function AuthGate() {
       setCsrfToken(payload.session.csrfToken); setMode('ready');
     } catch { setError(t('setup.connectionError')); } finally { setBusy(false); }
   };
-  return <div className="auth-shell"><Card className="w-full max-w-md"><CardHeader><h1 className="text-xl font-semibold">{mode === 'setup' ? t('setup.title') : t('setup.loginTitle')}</h1></CardHeader><CardContent><form className="space-y-4" onSubmit={(event) => { event.preventDefault(); void submit(); }}><div><label className="field-label" htmlFor="admin-password">{t('setup.password')}</label><Input id="admin-password" type="password" autoComplete={mode === 'setup' ? 'new-password' : 'current-password'} value={password} onChange={(event) => setPassword(event.target.value)} minLength={6} required /></div>{mode === 'setup' && setupCodeRequired ? <div><label className="field-label" htmlFor="setup-code">{t('setup.setupCode')}</label><Input id="setup-code" value={setupCode} onChange={(event) => setSetupCode(event.target.value)} required /></div> : null}{mode === 'setup' ? <><p className="text-sm text-muted-foreground">{t('setup.telemetryNotice')}</p><label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={accepted} onChange={(event) => setAccepted(event.target.checked)} required className="mt-1" /><span>{t('setup.terms')}</span></label></> : null}{error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}<Button type="submit" className="w-full" disabled={busy || mode === 'checking' || (mode === 'setup' && !accepted)}>{busy || mode === 'checking' ? t('common.loading') : mode === 'setup' ? t('setup.createAdmin') : t('setup.signIn')}</Button></form></CardContent></Card></div>;
+  return <div className="auth-shell"><Card className="w-full max-w-md"><CardHeader><h1 className="text-xl font-semibold">{mode === 'setup' ? t('setup.title') : t('setup.loginTitle')}</h1></CardHeader><CardContent><form className="space-y-4" onSubmit={(event) => { event.preventDefault(); void submit(); }}><div><label className="field-label" htmlFor="admin-password">{t('setup.password')}</label><Input id="admin-password" type="password" autoComplete={mode === 'setup' ? 'new-password' : 'current-password'} value={password} onChange={(event) => setPassword(event.target.value)} minLength={6} required /></div>{mode === 'setup' && setupCodeRequired ? <div><label className="field-label" htmlFor="setup-code">{t('setup.setupCode')}</label><Input id="setup-code" value={setupCode} onChange={(event) => setSetupCode(event.target.value)} required /></div> : null}{mode === 'setup' ? <><p className="text-sm text-muted-foreground">{t('setup.telemetryNotice')}</p><label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={accepted} onChange={(event) => setAccepted(event.target.checked)} required className="mt-1" /><span>{t('setup.terms')}</span></label></> : null}{error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}<Button type="submit" className="w-full" disabled={busy || (mode === 'setup' && !accepted)}>{busy ? t('common.loading') : mode === 'setup' ? t('setup.createAdmin') : t('setup.signIn')}</Button></form></CardContent></Card></div>;
 }
 
 function ConsoleApp({ csrfToken }: { csrfToken: string }) {
@@ -347,7 +351,25 @@ function AccessPanel({ t, process, tunnel, config, security, installed, onAction
   const running = process.status === 'running';
   const tunnelRunning = tunnel.status === 'running' || tunnel.status === 'starting';
   const listen = config?.settings.listen ?? false;
-  const passwordReady = security.adminPasswordConfigured;
+  // The server cannot read the SillyTavern account while SillyTavern is
+  // restarting, and reports "no password" for "I do not know". Restores and
+  // version installs restart it constantly, so keep the last reading that was
+  // actually knowable instead of flipping to "password required" each time.
+  const [knownPasswordReady, setKnownPasswordReady] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (security.processReady && !security.error) setKnownPasswordReady(security.adminPasswordConfigured);
+  }, [security.processReady, security.error, security.adminPasswordConfigured]);
+  const passwordReady = knownPasswordReady ?? security.adminPasswordConfigured;
+  // And open the form once, on the first knowable reading that there is no
+  // password. Binding `open` to the reading reopened it on every restart and
+  // shut it again under whoever was typing in it.
+  const [passwordFormOpen, setPasswordFormOpen] = useState(false);
+  const prompted = useRef(false);
+  useEffect(() => {
+    if (prompted.current || knownPasswordReady === null) return;
+    prompted.current = true;
+    if (!knownPasswordReady) setPasswordFormOpen(true);
+  }, [knownPasswordReady]);
   const lanLabel = listen ? t('console.lanEnabled') : t('console.lanDisabled');
   const processLabel = process.status === 'running' ? t('dashboard.running') : process.status === 'starting' || process.status === 'stopping' ? t('common.loading') : process.status === 'error' ? t('dashboard.installFailed') : t('dashboard.offline');
   const runAction = async (path: string, body?: unknown) => { setBusy(true); try { await onAction(path, body); } finally { setBusy(false); } };
@@ -366,7 +388,7 @@ function AccessPanel({ t, process, tunnel, config, security, installed, onAction
       <dl className="address-list"><div><dt>{t('console.lanAddress')}</dt><dd><code>{config?.networkHost ?? window.location.hostname ?? 'localhost'}:8000</code></dd></div><div><dt>{t('console.local')}</dt><dd><code>127.0.0.1:8000</code></dd></div></dl>
       <div className="access-row access-row-public"><div><strong>{t('console.quickTunnel')}</strong><span>{passwordReady ? t('console.passwordProtected') : t('console.passwordRequired')}</span></div><Switch id="tunnel-switch" checked={tunnelRunning} onCheckedChange={toggleTunnel} disabled={!installed || !running || tunnel.status === 'starting' || busy || !passwordReady} aria-label={t('console.enableTunnel')} /></div>
       <dl className="address-list"><div><dt>{t('dashboard.publicAddress')}</dt><dd>{tunnel.url ? <code>{tunnel.url}</code> : '—'}</dd></div></dl>
-      <details className="access-security" open={!passwordReady}><summary>{t('console.passwordSettings')}</summary><div className="security-form">
+      <details className="access-security" open={passwordFormOpen} onToggle={(event) => setPasswordFormOpen(event.currentTarget.open)}><summary>{t('console.passwordSettings')}</summary><div className="security-form">
         <p className="text-xs text-muted-foreground">{t('console.sillyPasswordHelp')}</p>
         <div className="config-fixed"><span>{t('console.adminAccount')}</span><strong>{security.adminHandle}</strong></div>
         <label className="field-label"><span>{t('console.password')}</span><Input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="new-password" disabled={!security.processReady || !security.accountsEnabled} /></label>
