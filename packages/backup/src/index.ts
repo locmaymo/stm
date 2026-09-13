@@ -17,9 +17,14 @@ const MAX_ZIP_DIRECTORY_BYTES = 64 * 1024 * 1024;
 const MAX_UPLOAD_BYTES = 8 * 1024 * 1024 * 1024;
 const MAX_UPLOAD_CHUNK_BYTES = 64 * 1024 * 1024;
 const DEFAULT_USER_HANDLE = 'default-user';
+/**
+ * Names SillyTavern owns inside the user directory rather than the operator.
+ *
+ * A backup carries the whole user directory, so these are the only things a
+ * replace leaves alone: deleting a running instance's upload scratch or its
+ * cookie secret breaks the process rather than restoring anything.
+ */
 const PRESERVED_DATA_ROOT_NAMES = new Set(['_storage', '_cache', '_uploads', '_webpack', 'cookie-secret.txt']);
-const PRESERVED_EXCLUDED_NAMES = new Set(['secrets.json', 'thumbnails', 'vectors', 'backups']);
-const EXCLUDED_NAMES = new Set(['secrets.json', 'thumbnails', 'vectors', 'backups', '.git', 'node_modules', '.DS_Store', 'Thumbs.db']);
 const RECOGNIZED_DATA_NAMES = new Set(['settings.json', 'characters', 'chats', 'worlds', 'groups', 'movingUI']);
 const OVERWRITE_ATTEMPTS = 4;
 const STAGING_PREFIX = '.stm-restore-';
@@ -33,13 +38,11 @@ export interface BackupStoreOptions {
 
 export interface CreateBackupOptions {
   readonly name?: string;
-  readonly includeSecrets?: boolean;
   readonly onProgress?: (progress: { completed: number; total: number }) => void;
 }
 
 export interface RestoreOptions {
   readonly mode: RestoreMode;
-  readonly allowSecrets?: boolean;
   readonly onProgress?: (progress: { completed: number; total: number }) => void;
   readonly onStatus?: (step: string) => void;
 }
@@ -133,7 +136,7 @@ export class BackupStore {
         totalBytes += details.size;
         return;
       }
-      const children = (await limiter.run(() => readdir(current))).filter((child) => !EXCLUDED_NAMES.has(child));
+      const children = await limiter.run(() => readdir(current));
       await Promise.all(children.map((child) => visit(join(current, child))));
     };
     await visit(root);
@@ -189,10 +192,7 @@ export class BackupStore {
     try {
       const fingerprint = await this.fingerprint(profile);
       const candidate = (await this.load())
-        .filter((manifest) => manifest.profileId === profile.id
-          && manifest.source === 'created'
-          && manifest.fingerprint === fingerprint
-          && (manifest.includesSecrets || options.includeSecrets !== true))
+        .filter((manifest) => manifest.profileId === profile.id && manifest.source === 'created' && manifest.fingerprint === fingerprint)
         .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
       if (candidate && await this.getArchivePath(candidate.id)) {
         this.logger(`[backup] reusing ${candidate.name} as the safety copy; the profile has not changed since it was written`);
@@ -217,7 +217,7 @@ export class BackupStore {
     await mkdir(this.paths.archives, { recursive: true });
     let writer: ZipWriter | null = null;
     try {
-      const sources = await collectSources(profile, options.includeSecrets === true);
+      const sources = await collectSources(profile);
       writer = new ZipWriter(temporary);
       let completed = 0;
       for (const source of sources) {
@@ -237,7 +237,6 @@ export class BackupStore {
         layout: profile.layout,
         sizeBytes: archive.sizeBytes,
         checksumSha256: archive.checksumSha256,
-        includesSecrets: options.includeSecrets === true && sources.some((source) => source.name === 'secrets.json'),
         fileCount: sources.length,
         source: 'created',
         fingerprint,
@@ -271,7 +270,6 @@ export class BackupStore {
       layout: profile.layout,
       sizeBytes: details.size,
       checksumSha256: await checksumFile(target),
-      includesSecrets: preview.includesSecrets,
       fileCount: preview.fileCount,
       source: 'uploaded',
     };
@@ -330,21 +328,13 @@ export class BackupStore {
   private async restoreUnlocked(profile: Profile, archivePath: string, options: RestoreOptions): Promise<RestorePreview> {
     const entries = await readZipDirectory(archivePath);
     const preview = previewEntries(entries, profile.layout);
-    if (preview.includesSecrets && options.allowSecrets !== true) {
-      throw new BackupError('secrets_confirmation_required', 'This archive contains secrets.json; confirm that secrets may be restored');
-    }
     const dataDestination = await resolveProfileDataRoot(profile);
-    const restoreSecrets = preview.includesSecrets && options.allowSecrets === true;
-    const plan = planEntries(entries, {
-      dataDestination,
-      configPath: resolve(profile.configPath),
-      restoreSecrets,
-    });
+    const plan = planEntries(entries, { dataDestination, configPath: resolve(profile.configPath) });
     const keep = new Set(plan.map((item) => item.target));
     // Read the profile's current contents before writing, so a replace knows
     // which of its files the archive is not going to overwrite.
     const obsolete = options.mode === 'replace'
-      ? await this.timed('listed files the backup does not contain', () => collectObsolete(dataDestination, dataDestination === resolve(profile.dataPath), keep, restoreSecrets))
+      ? await this.timed('listed files the backup does not contain', () => collectObsolete(dataDestination, dataDestination === resolve(profile.dataPath), keep))
       : [];
     await mkdir(dataDestination, { recursive: true });
     // Staging directories from older versions are pure waste now; sweep any the
@@ -725,7 +715,15 @@ class ZipWriter {
   }
 }
 
-async function collectSources(profile: Profile, includeSecrets: boolean): Promise<ArchiveSource[]> {
+/**
+ * Every file in the user directory, plus the manager's config.
+ *
+ * SillyTavern's own export copies the user directory whole, and so does this.
+ * Leaving anything out - caches, credentials, a cloned extension's git objects -
+ * makes a restore produce something that is not what was backed up, and the
+ * operator running their own instance wants their data back intact.
+ */
+async function collectSources(profile: Profile): Promise<ArchiveSource[]> {
   const dataRoot = await resolveProfileDataRoot(profile);
   const sources = await collectTree(dataRoot, dataRoot);
   const names = new Set(sources.map((source) => source.name));
@@ -733,8 +731,6 @@ async function collectSources(profile: Profile, includeSecrets: boolean): Promis
     const configName = profile.configPath.toLowerCase().endsWith('.yml') ? 'config.yml' : 'config.yaml';
     if (!names.has(configName)) sources.push({ name: configName, path: profile.configPath });
   }
-  const secretsPath = join(dataRoot, 'secrets.json');
-  if (includeSecrets && await exists(secretsPath)) sources.push({ name: 'secrets.json', path: secretsPath });
   return sources;
 }
 
@@ -745,7 +741,6 @@ async function collectTree(root: string, current: string): Promise<ArchiveSource
   if (!details.isDirectory()) return [{ name: relative(root, current).replaceAll('\\', '/'), path: current }];
   const result: ArchiveSource[] = [];
   for (const child of await readdir(current)) {
-    if (EXCLUDED_NAMES.has(child)) continue;
     result.push(...await collectTree(root, join(current, child)));
   }
   return result;
@@ -754,7 +749,6 @@ async function collectTree(root: string, current: string): Promise<ArchiveSource
 function previewEntries(entries: ZipEntry[], fallbackLayout: ProfileLayout): RestorePreview {
   const files: BackupFilePreview[] = [];
   const topNames = new Set<string>();
-  let includesSecrets = false;
   let totalBytes = 0;
   for (const entry of entries) {
     validateArchiveEntryName(entry.name);
@@ -763,12 +757,10 @@ function previewEntries(entries: ZipEntry[], fallbackLayout: ProfileLayout): Res
     files.push({ name: entry.name, sizeBytes: entry.uncompressedSize });
     totalBytes += entry.uncompressedSize;
     topNames.add(entry.name.split('/')[0] ?? '');
-    if (entry.name === 'secrets.json' || entry.name === `${DEFAULT_USER_HANDLE}/secrets.json`) includesSecrets = true;
   }
   const hasRecognized = [...topNames].some((name) => RECOGNIZED_DATA_NAMES.has(name));
-  const warnings = includesSecrets ? ['This archive contains secrets.json. Restoring it can expose provider credentials.'] : [];
-  if (!hasRecognized && files.length > 0) warnings.push('The archive does not contain common SillyTavern data markers; review the preview before restoring.');
-  return { layout: fallbackLayout, fileCount: files.length, totalBytes, includesSecrets, files, warnings };
+  const warnings = !hasRecognized && files.length > 0 ? ['The archive does not contain common SillyTavern data markers; review the preview before restoring.'] : [];
+  return { layout: fallbackLayout, fileCount: files.length, totalBytes, files, warnings };
 }
 
 interface PlannedEntry {
@@ -779,7 +771,6 @@ interface PlannedEntry {
 interface PlanOptions {
   readonly dataDestination: string;
   readonly configPath: string;
-  readonly restoreSecrets: boolean;
 }
 
 /**
@@ -805,12 +796,9 @@ function planEntries(entries: ZipEntry[], options: PlanOptions): PlannedEntry[] 
     if (prefix && !name.startsWith(prefix)) continue;
     const relative = prefix ? name.slice(prefix.length) : name;
     if (!relative) continue;
-    let target: string;
-    if (!prefix && (relative === 'config.yaml' || relative === 'config.yml')) target = options.configPath;
-    else if (relative === 'secrets.json') {
-      if (!options.restoreSecrets) continue;
-      target = join(options.dataDestination, 'secrets.json');
-    } else target = safePath(options.dataDestination, relative);
+    const target = !prefix && (relative === 'config.yaml' || relative === 'config.yml')
+      ? options.configPath
+      : safePath(options.dataDestination, relative);
     if (taken.has(target)) throw new BackupError('unsafe_archive', `Duplicate archive entry: ${entry.name}`);
     taken.add(target);
     planned.push({ entry, target });
@@ -976,12 +964,12 @@ async function resolveProfileDataRoot(profile: Profile): Promise<string> {
 /**
  * List the profile's files that the archive is not going to overwrite.
  *
- * This is what a replace has to delete. Generated trees and the manager's own
- * files are left alone, and `secrets.json` survives unless the archive carries
- * one of its own - losing provider credentials to a restore that never
- * contained them would be a poor trade.
+ * This is what a replace has to delete, so that the profile ends up holding
+ * exactly what the backup held. Only the directories SillyTavern keeps for its
+ * own running state are exempt; use merge when the archive is meant to be laid
+ * over the current data rather than to become it.
  */
-async function collectObsolete(root: string, isDataRoot: boolean, keep: ReadonlySet<string>, restoreSecrets: boolean): Promise<string[]> {
+async function collectObsolete(root: string, isDataRoot: boolean, keep: ReadonlySet<string>): Promise<string[]> {
   const obsolete: string[] = [];
   const limiter = createIoLimiter(ioConcurrency());
   const visit = async (current: string, depth: number): Promise<void> => {
@@ -993,7 +981,7 @@ async function collectObsolete(root: string, isDataRoot: boolean, keep: Readonly
       throw error;
     }
     await Promise.all(children.map(async (child) => {
-      if (depth === 0 && isPreservedAtRoot(child.name, isDataRoot, restoreSecrets)) return;
+      if (depth === 0 && isPreservedAtRoot(child.name, isDataRoot)) return;
       const full = join(current, child.name);
       if (child.isSymbolicLink()) return;
       if (child.isDirectory()) {
@@ -1007,11 +995,9 @@ async function collectObsolete(root: string, isDataRoot: boolean, keep: Readonly
   return obsolete;
 }
 
-function isPreservedAtRoot(name: string, isDataRoot: boolean, restoreSecrets: boolean): boolean {
-  if (name === 'secrets.json') return !restoreSecrets;
+function isPreservedAtRoot(name: string, isDataRoot: boolean): boolean {
   if (name.startsWith(STAGING_PREFIX) || name.startsWith(TRASH_PREFIX)) return true;
-  if (!isDataRoot) return false;
-  return PRESERVED_DATA_ROOT_NAMES.has(name) || PRESERVED_EXCLUDED_NAMES.has(name);
+  return isDataRoot && PRESERVED_DATA_ROOT_NAMES.has(name);
 }
 
 async function removeAll(paths: readonly string[]): Promise<void> {
@@ -1066,7 +1052,7 @@ async function checksumFile(path: string): Promise<string> {
 }
 
 function parseManifest(value: unknown): BackupManifest {
-  if (!isRecord(value) || value.schemaVersion !== BACKUP_SCHEMA_VERSION || typeof value.id !== 'string' || typeof value.name !== 'string' || typeof value.createdAt !== 'string' || typeof value.profileId !== 'string' || typeof value.profileName !== 'string' || (value.layout !== 'data' && value.layout !== 'public') || typeof value.sizeBytes !== 'number' || typeof value.checksumSha256 !== 'string' || typeof value.includesSecrets !== 'boolean' || typeof value.fileCount !== 'number') throw new Error('Invalid backup manifest');
+  if (!isRecord(value) || value.schemaVersion !== BACKUP_SCHEMA_VERSION || typeof value.id !== 'string' || typeof value.name !== 'string' || typeof value.createdAt !== 'string' || typeof value.profileId !== 'string' || typeof value.profileName !== 'string' || (value.layout !== 'data' && value.layout !== 'public') || typeof value.sizeBytes !== 'number' || typeof value.checksumSha256 !== 'string' || typeof value.fileCount !== 'number') throw new Error('Invalid backup manifest');
   const source: BackupSource = value.source === 'uploaded' ? 'uploaded' : 'created';
   return { ...value, source } as unknown as BackupManifest;
 }

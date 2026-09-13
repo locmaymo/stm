@@ -137,7 +137,6 @@ export interface BackupManifest {
   readonly layout: ProfileLayout;
   readonly sizeBytes: number;
   readonly checksumSha256: string;
-  readonly includesSecrets: boolean;
   readonly fileCount: number;
   readonly source: BackupSource;
   readonly fingerprint?: string;
@@ -152,7 +151,6 @@ export interface R2Config {
   readonly lastUploadAt: string | null;
   readonly accessKeyIdMasked: string | null;
   readonly secretAccessKeyConfigured: boolean;
-  readonly includeSecrets: boolean;
   readonly schedule: {
     readonly localIntervalMinutes: number;
     readonly r2IntervalHours: number;
@@ -182,7 +180,6 @@ export interface RestorePreview {
   readonly layout: ProfileLayout;
   readonly fileCount: number;
   readonly totalBytes: number;
-  readonly includesSecrets: boolean;
   readonly files: readonly BackupFilePreview[];
   readonly warnings: readonly string[];
 }

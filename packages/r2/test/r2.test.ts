@@ -8,7 +8,7 @@ import type { BackupManifest } from '../../contracts/src/index.js';
 import { R2Manager } from '../src/index.js';
 
 function manifest(): BackupManifest {
-  return { schemaVersion: 1, id: 'backup-1', name: 'Default-2026.zip', createdAt: '2026-09-11T00:00:00.000Z', profileId: 'profile-1', profileName: 'Default', layout: 'data', sizeBytes: 0, checksumSha256: 'abc', includesSecrets: false, fileCount: 1, source: 'created', fingerprint: 'fingerprint-1' };
+  return { schemaVersion: 1, id: 'backup-1', name: 'Default-2026.zip', createdAt: '2026-09-11T00:00:00.000Z', profileId: 'profile-1', profileName: 'Default', layout: 'data', sizeBytes: 0, checksumSha256: 'abc', fileCount: 1, source: 'created', fingerprint: 'fingerprint-1' };
 }
 
 test('R2 config masks credentials and preserves ******** updates', async () => {

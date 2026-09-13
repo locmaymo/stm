@@ -20,7 +20,6 @@ interface StoredR2Config {
   readonly accountId: string | null;
   readonly accessKeyId: string | null;
   readonly secretAccessKey: string | null;
-  readonly includeSecrets: boolean;
   readonly localIntervalMinutes: number;
   readonly r2IntervalHours: number;
   readonly fullIntervalDays: number;
@@ -46,7 +45,6 @@ export interface R2UpdateInput {
   readonly accountId?: string | null;
   readonly accessKeyId?: string | null;
   readonly secretAccessKey?: string | null;
-  readonly includeSecrets?: boolean;
   readonly localIntervalMinutes?: number;
   readonly r2IntervalHours?: number;
   readonly fullIntervalDays?: number;
@@ -127,7 +125,6 @@ export class R2Manager {
       ...(input.accountId !== undefined ? { accountId: normalizeNullable(input.accountId) } : {}),
       ...(input.accessKeyId !== undefined ? { accessKeyId: preserveSecret(input.accessKeyId, current.accessKeyId) } : {}),
       ...(input.secretAccessKey !== undefined ? { secretAccessKey: preserveSecret(input.secretAccessKey, current.secretAccessKey) } : {}),
-      ...(input.includeSecrets !== undefined ? { includeSecrets: input.includeSecrets } : {}),
       ...(input.localIntervalMinutes !== undefined ? { localIntervalMinutes: integerInRange(input.localIntervalMinutes, 1, 7 * 24 * 60, 'local interval') } : {}),
       ...(input.r2IntervalHours !== undefined ? { r2IntervalHours: integerInRange(input.r2IntervalHours, 1, 30 * 24, 'R2 interval') } : {}),
       ...(input.fullIntervalDays !== undefined ? { fullIntervalDays: integerInRange(input.fullIntervalDays, 1, 365, 'full backup interval') } : {}),
@@ -152,11 +149,8 @@ export class R2Manager {
     return objects.map(toPublicObject);
   }
 
-  public async uploadArchive(archivePath: string, manifest: BackupManifest, fingerprint: string | null = null, allowSecrets = false): Promise<R2UploadResult> {
+  public async uploadArchive(archivePath: string, manifest: BackupManifest, fingerprint: string | null = null): Promise<R2UploadResult> {
     const config = await this.load();
-    if (manifest.includesSecrets && (!allowSecrets || !config.includeSecrets)) {
-      throw new R2Error('secrets_confirmation_required', 'R2 upload of secrets.json requires explicit confirmation and R2 permission');
-    }
     const details = await stat(archivePath);
     const client = this.client(config);
     const key = `${this.prefix()}${manifest.id}.zip`;
@@ -225,7 +219,6 @@ export class R2Manager {
       lastUploadAt: config.lastUploadAt,
       accessKeyIdMasked: config.accessKeyId ? maskSecret(config.accessKeyId) : null,
       secretAccessKeyConfigured: Boolean(config.secretAccessKey),
-      includeSecrets: config.includeSecrets,
       schedule: {
         localIntervalMinutes: config.localIntervalMinutes,
         r2IntervalHours: config.r2IntervalHours,
@@ -253,7 +246,6 @@ export class R2Manager {
         accountId: nullableEnvironment(this.env.STM_R2_ACCOUNT_ID),
         accessKeyId: nullableEnvironment(this.env.STM_R2_ACCESS_KEY_ID),
         secretAccessKey: nullableEnvironment(this.env.STM_R2_SECRET_ACCESS_KEY),
-        includeSecrets: false,
         localIntervalMinutes: 60,
         r2IntervalHours: 24,
         fullIntervalDays: 7,
@@ -452,7 +444,7 @@ function parseStoredConfig(value: unknown): StoredR2Config {
 }
 
 function defaultStoredConfig(): StoredR2Config {
-  return { schemaVersion: R2_SCHEMA_VERSION, enabled: false, endpoint: null, bucket: null, accountId: null, accessKeyId: null, secretAccessKey: null, includeSecrets: false, localIntervalMinutes: 60, r2IntervalHours: 24, fullIntervalDays: 7, maxBackups: 7, retentionDays: 30, lastUploadAt: null, lastFingerprint: null, estimatedBytes: 0 };
+  return { schemaVersion: R2_SCHEMA_VERSION, enabled: false, endpoint: null, bucket: null, accountId: null, accessKeyId: null, secretAccessKey: null, localIntervalMinutes: 60, r2IntervalHours: 24, fullIntervalDays: 7, maxBackups: 7, retentionDays: 30, lastUploadAt: null, lastFingerprint: null, estimatedBytes: 0 };
 }
 
 function normalizeNullable(value: string | null): string | null {

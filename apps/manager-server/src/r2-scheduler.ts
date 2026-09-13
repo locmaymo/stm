@@ -74,7 +74,7 @@ export class BackupScheduler {
         const candidate = localManifest ?? latest;
         if (candidate) {
           const archivePath = await this.backups.getArchivePath(candidate.id);
-          if (archivePath) await this.r2.uploadArchive(archivePath, candidate, fingerprint, false);
+          if (archivePath) await this.r2.uploadArchive(archivePath, candidate, fingerprint);
         }
       }
     } catch (error: unknown) {

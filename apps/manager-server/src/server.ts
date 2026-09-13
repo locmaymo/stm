@@ -226,11 +226,11 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
         return;
       }
       if (error instanceof BackupError) {
-        sendError(response, error.code === 'secrets_confirmation_required' ? 409 : 400, error.code, error.message);
+        sendError(response, 400, error.code, error.message);
         return;
       }
       if (error instanceof R2Error) {
-        sendError(response, error.code === 'secrets_confirmation_required' || error.code === 'r2_not_configured' ? 409 : 400, error.code, error.message);
+        sendError(response, error.code === 'r2_not_configured' ? 409 : 400, error.code, error.message);
         return;
       }
       if (error instanceof ConfigError) {
@@ -498,7 +498,6 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       ...(typeof body.accountId === 'string' || body.accountId === null ? { accountId: body.accountId as string | null } : {}),
       ...(typeof body.accessKeyId === 'string' || body.accessKeyId === null ? { accessKeyId: body.accessKeyId as string | null } : {}),
       ...(typeof body.secretAccessKey === 'string' || body.secretAccessKey === null ? { secretAccessKey: body.secretAccessKey as string | null } : {}),
-      ...(typeof body.includeSecrets === 'boolean' ? { includeSecrets: body.includeSecrets } : {}),
       ...(typeof body.localIntervalMinutes === 'number' ? { localIntervalMinutes: body.localIntervalMinutes } : {}),
       ...(typeof body.r2IntervalHours === 'number' ? { r2IntervalHours: body.r2IntervalHours } : {}),
       ...(typeof body.fullIntervalDays === 'number' ? { fullIntervalDays: body.fullIntervalDays } : {}),
@@ -529,12 +528,11 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     if (!profile) { sendError(response, 409, 'profile_required', 'Create or activate a profile before uploading to R2'); return; }
     const body = await readJson(request);
     const backupId = isRecord(body) && typeof body.backupId === 'string' ? body.backupId : null;
-    const allowSecrets = isRecord(body) && body.includeSecrets === true;
-    const manifest = backupId ? await backups.get(backupId) : await backups.create(profile, { ...(allowSecrets ? { includeSecrets: true } : {}), name: `${profile.name}-r2` });
+    const manifest = backupId ? await backups.get(backupId) : await backups.create(profile, { name: `${profile.name}-r2` });
     if (!manifest || manifest.profileId !== profile.id) { sendError(response, 404, 'backup_not_found', 'Backup not found in the active profile'); return; }
     const archivePath = await backups.getArchivePath(manifest.id);
     if (!archivePath) { sendError(response, 410, 'backup_archive_missing', 'The backup archive is missing'); return; }
-    const upload = await r2.uploadArchive(archivePath, manifest, manifest.fingerprint ?? null, allowSecrets);
+    const upload = await r2.uploadArchive(archivePath, manifest, manifest.fingerprint ?? null);
     sendJson(response, 200, { manifest, upload });
     return;
   }
@@ -682,11 +680,9 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     if (!profile) { sendError(response, 409, 'profile_required', 'Create or activate a profile before creating a backup'); return; }
     const body = await readJson(request);
     const name = isRecord(body) && typeof body.name === 'string' ? body.name : undefined;
-    const includeSecrets = isRecord(body) && body.includeSecrets === true;
     const job = jobs.createOperation('backup', 'Preparing backup');
     void backups.create(profile, {
       ...(name ? { name } : {}),
-      ...(includeSecrets ? { includeSecrets: true } : {}),
       onProgress: ({ completed, total }) => jobs.updateOperation(job.id, total > 0 ? (completed / total) * 90 : 50, `Compressing files (${completed}/${total})`),
     }).then((manifest) => { jobs.updateOperation(job.id, 95, 'Saving backup library'); jobs.finishOperation(job.id, 'succeeded', null); return manifest; })
       .catch((error: unknown) => jobs.finishOperation(job.id, 'failed', error instanceof Error ? error.message : 'Backup failed'));
@@ -740,11 +736,10 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       retained = true;
       if (backupImportPreview) { sendJson(response, 200, { ...imported.preview, backup: imported.manifest }); return; }
       const mode = headerValue(request.headers['x-restore-mode']);
-      const allowSecrets = headerValue(request.headers['x-include-secrets']) === 'true';
       if (mode !== 'merge' && mode !== 'replace') { sendError(response, 400, 'invalid_restore_mode', 'Restore mode must be merge or replace'); return; }
       const libraryPath = await backups.getArchivePath(imported.manifest.id);
       if (!libraryPath) { sendError(response, 500, 'backup_archive_missing', 'The uploaded archive could not be stored'); return; }
-      const result = await restoreWithProcess({ profile, backups, archivePath: libraryPath, mode, allowSecrets, supervisor, tunnel });
+      const result = await restoreWithProcess({ profile, backups, archivePath: libraryPath, mode, supervisor, tunnel });
       sendJson(response, 200, result);
     } finally {
       if (!retained) await backups.removeTemporary(archivePath);
@@ -788,9 +783,8 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       const body = await readJson(request);
       const mode = isRecord(body) && (body.mode === 'merge' || body.mode === 'replace') ? body.mode : null;
       if (!mode) { sendError(response, 400, 'invalid_restore_mode', 'Restore mode must be merge or replace'); return; }
-      const allowSecrets = isRecord(body) && body.includeSecrets === true;
       const job = jobs.createOperation('restore', 'Preparing restore');
-      void restoreWithProcess({ profile, backups, archivePath, mode, allowSecrets, supervisor, tunnel, onProgress: (progress, step) => jobs.updateOperation(job.id, progress, step) })
+      void restoreWithProcess({ profile, backups, archivePath, mode, supervisor, tunnel, onProgress: (progress, step) => jobs.updateOperation(job.id, progress, step) })
         .then(() => jobs.finishOperation(job.id, 'succeeded', null))
         .catch((error: unknown) => jobs.finishOperation(job.id, 'failed', error instanceof Error ? error.message : 'Restore failed'));
       sendJson(response, 202, { jobId: job.id, job });
@@ -862,12 +856,11 @@ async function restoreWithProcess(options: {
   readonly backups: BackupStore;
   readonly archivePath: string;
   readonly mode: 'merge' | 'replace';
-  readonly allowSecrets: boolean;
   readonly supervisor: ProcessSupervisor;
   readonly tunnel: TunnelManager;
   readonly onProgress?: (progress: number, step: string) => void;
 }): Promise<{ preview: Awaited<ReturnType<BackupStore['restore']>>; safetySnapshot: Awaited<ReturnType<BackupStore['create']>>; process: ReturnType<ProcessSupervisor['getState']> }> {
-  const { profile, backups, archivePath, mode, allowSecrets, supervisor, tunnel, onProgress } = options;
+  const { profile, backups, archivePath, mode, supervisor, tunnel, onProgress } = options;
   const previousTunnelMode = tunnel.getState().mode;
   // Claim the backup store before stopping anything. Otherwise the scheduler's
   // next tick sees an idle store and starts a full backup that the restore then
@@ -881,19 +874,15 @@ async function restoreWithProcess(options: {
     // does not have to be a second copy of every file. Writing one compressed
     // archive is a single large sequential write; copying the tree file by file
     // measured 639 seconds on a ModelScope volume for the same data. It only
-    // needs to carry secrets when the restore is going to overwrite them, and
-    // an unchanged profile can reuse the backup it already has.
+    // An unchanged profile can reuse the backup it already has.
     onProgress?.(15, 'Creating safety snapshot');
-    const incoming = await backups.preview(archivePath, profile.layout);
     const safetySnapshot = await backups.createSafetyCopy(profile, {
       name: `${profile.name}-prerestore`,
-      includeSecrets: incoming.includesSecrets && allowSecrets,
       onProgress: ({ completed, total }) => onProgress?.(15 + (total > 0 ? (completed / total) * 10 : 0), `Backing up current data (${completed}/${total})`),
     });
     onProgress?.(25, 'Restoring data');
     const preview = await backups.restore(profile, archivePath, {
       mode,
-      ...(allowSecrets ? { allowSecrets: true } : {}),
       onProgress: ({ completed, total }) => onProgress?.(25 + (total > 0 ? (completed / total) * 60 : 60), `Restoring files (${completed}/${total})`),
       onStatus: (step) => onProgress?.(RESTORE_STEP_PROGRESS[step] ?? 86, step),
     });

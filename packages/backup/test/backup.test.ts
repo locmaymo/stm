@@ -27,24 +27,24 @@ async function createFixture() {
   return { root, paths, profile };
 }
 
-test('creates a SillyTavern-compatible streaming ZIP with safe defaults', async () => {
+test('a backup carries the whole user directory, config included', async () => {
   const fixture = await createFixture();
   const store = new BackupStore({ paths: fixture.paths });
   const manifest = await store.create(fixture.profile);
-  assert.equal(manifest.includesSecrets, false);
-  assert.equal(manifest.fileCount, 2);
+  assert.equal(manifest.fileCount, 4);
   const archive = await store.getArchivePath(manifest.id);
   assert.ok(archive);
   const preview = await store.preview(archive, fixture.profile.layout);
-  assert.deepEqual(preview.files.map((file) => file.name).sort(), ['chats/こんにちは.json', 'config.yaml']);
-  assert.equal(preview.includesSecrets, false);
+  // Nothing is held back - not credentials, not a dependency tree an
+  // extension brought with it.
+  assert.deepEqual(preview.files.map((file) => file.name).sort(), ['chats/こんにちは.json', 'config.yaml', 'node_modules/ignored.txt', 'secrets.json']);
   assert.equal(preview.warnings.length, 0);
 });
 
-test('restore creates merge/replace behavior and requires explicit secrets confirmation', async () => {
+test('a replace restores every file the archive holds, credentials included', async () => {
   const fixture = await createFixture();
   const sourceStore = new BackupStore({ paths: fixture.paths });
-  const manifest = await sourceStore.create(fixture.profile, { includeSecrets: true });
+  const manifest = await sourceStore.create(fixture.profile);
   const archive = await sourceStore.getArchivePath(manifest.id);
   assert.ok(archive);
   const targetRoot = join(fixture.root, 'target-runtime');
@@ -53,8 +53,7 @@ test('restore creates merge/replace behavior and requires explicit secrets confi
   await mkdir(targetData, { recursive: true });
   await writeFile(join(targetData, 'old.txt'), 'old', 'utf8');
   const target: Profile = { ...fixture.profile, runtimePath: targetRoot, dataPath: targetData, configPath: targetConfig };
-  await assert.rejects(() => sourceStore.restore(target, archive, { mode: 'merge' }), (error: unknown) => error instanceof BackupError && error.code === 'secrets_confirmation_required');
-  await sourceStore.restore(target, archive, { mode: 'replace', allowSecrets: true });
+  await sourceStore.restore(target, archive, { mode: 'replace' });
   const targetUserData = join(targetData, 'default-user');
   assert.equal(await readFile(join(targetUserData, 'chats', 'こんにちは.json'), 'utf8'), '{"message":"keep"}');
   await assert.rejects(() => readFile(join(targetUserData, 'old.txt'), 'utf8'));
@@ -136,11 +135,10 @@ test('restores every entry of a large archive exactly once under parallel extrac
   assert.ok(!(await readdir(join(targetData, 'default-user'))).some((name) => name.startsWith('.stm-')));
 });
 
-test('replace writes in place, drops files the backup lacks, and keeps secrets it does not carry', async () => {
+test('replace writes in place and drops the files the backup does not hold', async () => {
   const fixture = await createFixture();
   const store = new BackupStore({ paths: fixture.paths });
   const manifest = await store.create(fixture.profile);
-  assert.equal(manifest.includesSecrets, false);
   const archive = await store.getArchivePath(manifest.id);
   assert.ok(archive);
 
@@ -160,8 +158,10 @@ test('replace writes in place, drops files the backup lacks, and keeps secrets i
 
   assert.equal(await readFile(join(targetUserData, 'chats', 'こんにちは.json'), 'utf8'), '{"message":"keep"}');
   await assert.rejects(() => readFile(join(targetUserData, 'chats', 'gone.json'), 'utf8'));
-  // The archive carried no secrets, so the profile's own must survive.
-  assert.equal(await readFile(join(targetUserData, 'secrets.json'), 'utf8'), '{"api_key":"mine"}');
+  // A replace is the archive's contents, so its secrets.json wins and the
+  // cache the archive never held is gone.
+  assert.equal(await readFile(join(targetUserData, 'secrets.json'), 'utf8'), '{"api_key":"secret"}');
+  await assert.rejects(() => readFile(join(targetUserData, 'thumbnails', 'cached.png'), 'utf8'));
   // Nothing may be staged beside the user directory any more.
   assert.deepEqual((await readdir(targetData)).sort(), ['default-user']);
 });
@@ -192,16 +192,10 @@ test('a safety copy reuses an unchanged profile’s newest backup instead of wri
   assert.equal(reused.id, first.id);
   assert.equal((await store.list(fixture.profile.id)).length, 1);
 
-  // A copy that must carry secrets cannot reuse one that excluded them.
-  const withSecrets = await store.createSafetyCopy(fixture.profile, { name: 'Default-prerestore', includeSecrets: true });
-  assert.notEqual(withSecrets.id, first.id);
-  assert.equal(withSecrets.includesSecrets, true);
-
   // Changing the profile has to produce a new copy.
   await writeFile(join(fixture.profile.dataPath, 'chats', 'new.json'), '{"message":"added"}', 'utf8');
   const afterChange = await store.createSafetyCopy(fixture.profile, { name: 'Default-prerestore' });
   assert.notEqual(afterChange.id, first.id);
-  assert.notEqual(afterChange.id, withSecrets.id);
 });
 
 test('reserving the operation slot holds off a scheduled backup before the work starts', async () => {
