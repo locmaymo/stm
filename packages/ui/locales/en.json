@@ -218,7 +218,10 @@
     "managerPasswordSave": "Change manager password",
     "managerPasswordSaved": "Manager password changed",
     "managerPasswordSaveFailed": "Could not change the manager password",
-    "managerPasswordMin": "Use at least 6 characters."
+    "managerPasswordMin": "Use at least 6 characters.",
+    "uploading": "Uploading",
+    "uploadRemaining": "left",
+    "uploadEstimating": "estimating time left…"
   },
   "dashboard": {
     "eyebrow": "CONTROL ROOM / OVERVIEW",

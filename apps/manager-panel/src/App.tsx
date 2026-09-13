@@ -34,6 +34,7 @@ function pageFromHash(): PageId {
 
 const UPLOAD_CHUNK_BYTES = 4 * 1024 * 1024;
 const UPLOAD_RETRIES = 3;
+const UPLOAD_RATE_WINDOW_MS = 10_000;
 
 function apiErrorFromText(text: string, status: number, fallback: string): string {
   try {
@@ -645,6 +646,10 @@ function DataPage({ t, csrfToken, profiles, activeProfileId, backups, onProfiles
     const uploadId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     try {
       let index = 0;
+      // Rate over the last few seconds rather than over the whole upload, so a
+      // connection that has just slowed down says so instead of averaging the
+      // slowdown away against the minutes that went before it.
+      const samples: Array<{ at: number; bytes: number }> = [{ at: Date.now(), bytes: 0 }];
       for (let offset = 0; offset < file.size; offset += UPLOAD_CHUNK_BYTES) {
         const end = Math.min(file.size, offset + UPLOAD_CHUNK_BYTES);
         await uploadChunkWithRetry(
@@ -653,7 +658,17 @@ function DataPage({ t, csrfToken, profiles, activeProfileId, backups, onProfiles
           { 'content-type': 'application/octet-stream', 'x-csrf-token': csrfToken, accept: 'application/json' },
         );
         index += 1;
-        setOperationProgress({ percent: Math.round((end / Math.max(file.size, 1)) * 100), step: `Uploading ${formatBytes(end)} / ${formatBytes(file.size)}` });
+        const at = Date.now();
+        samples.push({ at, bytes: end });
+        while (samples.length > 2 && at - (samples[0]?.at ?? at) > UPLOAD_RATE_WINDOW_MS) samples.shift();
+        const oldest = samples[0] ?? { at, bytes: 0 };
+        const elapsedMs = at - oldest.at;
+        const bytesPerSecond = elapsedMs > 0 ? ((end - oldest.bytes) / elapsedMs) * 1000 : 0;
+        const remaining = bytesPerSecond > 0 ? `${formatDuration((file.size - end) / bytesPerSecond)} ${t('console.uploadRemaining')}` : t('console.uploadEstimating');
+        setOperationProgress({
+          percent: Math.round((end / Math.max(file.size, 1)) * 100),
+          step: `${t('console.uploading')} ${formatBytes(end)} / ${formatBytes(file.size)} · ${formatBytes(Math.round(bytesPerSecond))}/s · ${remaining}`,
+        });
       }
       // Every chunk is on the server now, so it owns the rest of the work and
       // leaving the page no longer loses anything.
@@ -738,6 +753,14 @@ function formatBytes(value: number): string {
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
   if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
   return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+function formatDuration(seconds: number): string {
+  const total = Math.max(0, Math.round(seconds));
+  if (total < 60) return `${total}s`;
+  const minutes = Math.floor(total / 60);
+  if (minutes < 60) return `${minutes}m ${String(total % 60).padStart(2, '0')}s`;
+  return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`;
 }
 
 function SystemPanel({ t, csrfToken }: { t: Translate; csrfToken: string }) {

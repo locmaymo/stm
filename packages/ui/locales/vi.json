@@ -218,7 +218,10 @@
     "managerPasswordSave": "Đổi mật khẩu manager",
     "managerPasswordSaved": "Đã đổi mật khẩu manager",
     "managerPasswordSaveFailed": "Không thể đổi mật khẩu manager",
-    "managerPasswordMin": "Dùng ít nhất 6 ký tự."
+    "managerPasswordMin": "Dùng ít nhất 6 ký tự.",
+    "uploading": "Đang tải lên",
+    "uploadRemaining": "còn lại",
+    "uploadEstimating": "đang tính thời gian còn lại…"
   },
   "dashboard": {
     "eyebrow": "TRUNG TÂM ĐIỀU HÀNH / TỔNG QUAN",
