@@ -182,7 +182,9 @@ test('config follows the active runtime and account mode gates public access', a
   const root = await mkdtemp(join(tmpdir(), 'stm-config-api-'));
   const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
   const runtimePath = join(root, 'runtime');
-  await mkdir(runtimePath, { recursive: true });
+  await mkdir(join(runtimePath, 'src'), { recursive: true });
+  // 1.18 has user accounts, and the store tells versions apart by this file.
+  await writeFile(join(runtimePath, 'src', 'users.js'), 'export const users = true;', 'utf8');
   const now = new Date().toISOString();
   const installation: Installation = { id: 'install-1', selector: 'latest', resolvedRef: '1.18.0', channel: 'release', runtimePath, markerPath: join(runtimePath, '.stm-installation.json'), status: 'ready', progress: 100, step: 'Installation ready', error: null, createdAt: now, updatedAt: now, activatedAt: now };
   const processState: ProcessState = { status: 'running', installationId: installation.id, profileId: 'profile-1', pid: 123, startedAt: now, error: null };
@@ -443,4 +445,41 @@ test('a failed install that also fails to restart leaves the manager serving', a
   assert.equal(health.status, 200);
   const versions = await fetch(`${base}/api/v1/installations`, { headers: { cookie } });
   assert.equal(versions.status, 200);
+});
+
+test('a SillyTavern without user accounts can still be given a password and shared', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-legacy-access-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const runtimePath = join(root, 'runtime');
+  // No src/users.js and no default/config.yaml: this is a pre-1.12 runtime.
+  await mkdir(runtimePath, { recursive: true });
+  const now = new Date().toISOString();
+  const installation: Installation = { id: 'install-1', selector: '1.11.0', resolvedRef: '1.11.0', channel: 'release', runtimePath, markerPath: join(runtimePath, '.stm-installation.json'), status: 'ready', progress: 100, step: 'Installation ready', error: null, createdAt: now, updatedAt: now, activatedAt: now };
+  const processState: ProcessState = { status: 'running', installationId: installation.id, profileId: 'profile-1', pid: 321, startedAt: now, error: null };
+  const fakeSupervisor = { getState: () => processState, restart: async () => processState, start: async () => processState, stop: async () => ({ ...processState, status: 'stopped' }), close: async () => undefined } as unknown as ProcessSupervisor;
+  const fakeRuntime = { listVersions: async () => [], listInstallations: async () => [installation], getActiveInstallation: async () => installation, getInstallation: async (id: string) => id === installation.id ? installation : null } as unknown as RuntimeManager;
+  const manager = await startManagerServer({ host: '127.0.0.1', port: 0, paths, env: { STM_ADMIN_PASSWORD: 'correct horse battery staple' }, secureCookies: false, runtime: fakeRuntime, supervisor: fakeSupervisor, logger: () => undefined });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const login = await fetch(`${base}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'correct horse battery staple' }) });
+  const cookie = cookieFrom(login);
+  const csrf = (await login.json() as { session: { csrfToken: string } }).session.csrfToken;
+  const profilePayload = await (await fetch(`${base}/api/v1/profiles`, { headers: { cookie } })).json() as { profiles: Array<{ configPath: string }> };
+  const profile = profilePayload.profiles[0];
+  assert.ok(profile);
+  await writeFile(profile.configPath, 'listen: false\nport: 8000\nbasicAuthMode: false\nbasicAuthUser:\n  username: user\n  password: password\n', 'utf8');
+
+  const before = await (await fetch(`${base}/api/v1/access/security`, { headers: { cookie } })).json() as { mode: string; adminPasswordConfigured: boolean; error?: string };
+  assert.equal(before.mode, 'basicAuth');
+  assert.equal(before.adminPasswordConfigured, false);
+  assert.equal(before.error, undefined, 'nothing is waiting on SillyTavern here, so there is nothing to report');
+
+  const saved = await fetch(`${base}/api/v1/access/password`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ password: 'a-real-secret', confirmPassword: 'a-real-secret' }) });
+  assert.equal(saved.status, 200);
+  assert.equal((await saved.json() as { adminPasswordConfigured: boolean }).adminPasswordConfigured, true);
+  assert.match(await readFile(profile.configPath, 'utf8'), /basicAuthMode: true/u);
+
+  // The tunnel refuses to open without a password; Basic Auth is one.
+  const allowed = await fetch(`${base}/api/v1/tunnel`, { method: 'PUT', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'quick' }) });
+  assert.notEqual(allowed.status, 409);
 });

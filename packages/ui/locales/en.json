@@ -221,7 +221,10 @@
     "managerPasswordMin": "Use at least 6 characters.",
     "uploading": "Uploading",
     "uploadRemaining": "left",
-    "uploadEstimating": "estimating time left…"
+    "uploadEstimating": "estimating time left…",
+    "basicAuthHelp": "This SillyTavern version has no user accounts, so the manager protects it with Basic Auth. Your browser will ask for this username and password. Your manager login is separate.",
+    "basicAuthUser": "Basic Auth username",
+    "accountsUnavailable": "SillyTavern did not report its account details for this version or login configuration."
   },
   "dashboard": {
     "eyebrow": "CONTROL ROOM / OVERVIEW",
@@ -356,7 +359,8 @@
     },
     "config": {
       "updated": "Updated {path}",
-      "accountsMigrated": "Moved access security to SillyTavern accounts; local network access is waiting for an admin password"
+      "accountsMigrated": "Moved access security to SillyTavern accounts; local network access is waiting for an admin password",
+      "basicAuthPasswordSet": "Set the Basic Auth password in {path}"
     },
     "sillytavern": {
       "starting": "Starting {ref} on 127.0.0.1:8000",

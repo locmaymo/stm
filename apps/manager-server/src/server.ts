@@ -947,20 +947,28 @@ function isProtectedPath(pathname: string): boolean {
 
 async function requireTunnelPassword(config: ConfigStore, profiles: ProfileStore, runtime: RuntimeManager, supervisor: ProcessSupervisor): Promise<void> {
   const state = await readAccessSecurityState(runtime, supervisor, profiles, config);
-  if (!state.accountsEnabled || !state.adminPasswordConfigured) throw new RequestError(409, 'public_access_password_required', 'Set the SillyTavern admin password before opening a public tunnel');
+  if (!state.adminPasswordConfigured) throw new RequestError(409, 'public_access_password_required', 'Set the SillyTavern password before opening a public tunnel');
 }
 
 async function requireAdminAccountPassword(runtime: RuntimeManager, supervisor: ProcessSupervisor, profiles: ProfileStore, config: ConfigStore): Promise<void> {
   const state = await readAccessSecurityState(runtime, supervisor, profiles, config);
-  if (!state.accountsEnabled || !state.adminPasswordConfigured) throw new RequestError(409, 'public_access_password_required', 'Set the SillyTavern admin password before enabling network access');
+  if (!state.adminPasswordConfigured) throw new RequestError(409, 'public_access_password_required', 'Set the SillyTavern password before enabling network access');
 }
 
 async function readAccessSecurityState(runtime: RuntimeManager, supervisor: ProcessSupervisor | undefined, profiles: ProfileStore, config: ConfigStore): Promise<AccessSecurityState> {
   const profile = await profiles.getActive();
   const installation = await runtime.getActiveInstallation();
-  if (!profile || !installation) return { accountsEnabled: false, adminHandle: 'default-user', adminPasswordConfigured: false, processReady: false };
+  if (!profile || !installation) return { mode: 'accounts', accountsEnabled: false, adminHandle: 'default-user', adminPasswordConfigured: false, processReady: false };
   const document = await config.read(profile, installation);
-  if (!document.settings.enableUserAccounts || !supervisor || supervisor.getState().status !== 'running') return { accountsEnabled: document.settings.enableUserAccounts, adminHandle: 'default-user', adminPasswordConfigured: false, processReady: supervisor?.getState().status === 'running' };
+  // A version without accounts keeps its password in the config file, so it can
+  // be read and written whether or not SillyTavern happens to be up. Asking the
+  // running process was the only reason those versions reported "account
+  // details are unavailable" forever and could never be shared.
+  if (document.accessMode === 'basicAuth') {
+    const basic = await config.readBasicAuth(profile, installation);
+    return { mode: 'basicAuth', accountsEnabled: false, adminHandle: basic.username, adminPasswordConfigured: basic.enabled && basic.passwordConfigured, processReady: true };
+  }
+  if (!document.settings.enableUserAccounts || !supervisor || supervisor.getState().status !== 'running') return { mode: 'accounts', accountsEnabled: document.settings.enableUserAccounts, adminHandle: 'default-user', adminPasswordConfigured: false, processReady: supervisor?.getState().status === 'running' };
   try {
     const session = await createSillyTavernSession();
     const response = await fetch('http://127.0.0.1:8000/api/users/list', {
@@ -969,17 +977,27 @@ async function readAccessSecurityState(runtime: RuntimeManager, supervisor: Proc
       body: '{}',
       signal: AbortSignal.timeout(2_000),
     });
-    if (!response.ok || response.status === 204) return { accountsEnabled: true, adminHandle: 'default-user', adminPasswordConfigured: false, processReady: true, error: 'SillyTavern account details are unavailable for this version or login configuration' };
+    if (!response.ok || response.status === 204) return { mode: 'accounts', accountsEnabled: true, adminHandle: 'default-user', adminPasswordConfigured: false, processReady: true, error: 'SillyTavern account details are unavailable for this version or login configuration' };
     const users = await response.json() as Array<{ handle?: string; password?: boolean }>;
     const admin = users.find((user) => user.handle === 'default-user') ?? users[0];
-    return { accountsEnabled: true, adminHandle: admin?.handle ?? 'default-user', adminPasswordConfigured: admin?.password === true, processReady: true };
+    return { mode: 'accounts', accountsEnabled: true, adminHandle: admin?.handle ?? 'default-user', adminPasswordConfigured: admin?.password === true, processReady: true };
   } catch {
-    return { accountsEnabled: true, adminHandle: 'default-user', adminPasswordConfigured: false, processReady: false, error: 'SillyTavern account details are unavailable until SillyTavern is ready' };
+    return { mode: 'accounts', accountsEnabled: true, adminHandle: 'default-user', adminPasswordConfigured: false, processReady: false, error: 'SillyTavern account details are unavailable until SillyTavern is ready' };
   }
 }
 
 async function setSillyTavernAdminPassword(supervisor: ProcessSupervisor, runtime: RuntimeManager, profiles: ProfileStore, config: ConfigStore, password: string): Promise<void> {
   const state = await readAccessSecurityState(runtime, supervisor, profiles, config);
+  if (state.mode === 'basicAuth') {
+    const profile = await profiles.getActive();
+    const installation = await runtime.getActiveInstallation();
+    if (!profile || !installation) throw new RequestError(409, 'profile_required', 'An active SillyTavern profile is required');
+    await config.setBasicAuthPassword(profile, installation, password);
+    // Basic Auth is read at startup, so the new password only applies once the
+    // process has been through it. Nothing is running before the first start.
+    if (supervisor.getState().status === 'running') await supervisor.restart('passwordChange');
+    return;
+  }
   if (!state.accountsEnabled || !state.processReady) throw new RequestError(409, 'sillytavern_not_running', 'Start SillyTavern before setting its admin password');
   if (state.error) throw new RequestError(409, 'sillytavern_accounts_unavailable', state.error);
   if (state.adminPasswordConfigured) {

@@ -2,11 +2,20 @@ import { randomUUID } from 'node:crypto';
 import { copyFile, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { parseDocument, type Document, type YAMLMap } from 'yaml';
-import { logEvent, logLineText, type ConfigDocument, type ConfigSettings, type ConfigUpdateInput, type Installation, type LogSink, type Profile } from '../../contracts/src/index.js';
+import { logEvent, logLineText, type AccessMode, type ConfigDocument, type ConfigSettings, type ConfigUpdateInput, type Installation, type LogSink, type Profile } from '../../contracts/src/index.js';
 
 const CONFIG_SCHEMA_VERSION = 1 as const;
 const REDACTED_PASSWORD = '********';
 const DEFAULT_BASIC_AUTH_USER = { username: 'user', password: 'password' } as const;
+/**
+ * Files that only exist in a SillyTavern that has user accounts.
+ *
+ * Accounts arrived in 1.12. Before that there is no account to hold a password,
+ * `enableUserAccounts` is an unknown key, and /api/users/list does not exist -
+ * which is what left older versions with no way to set a password at all, and
+ * so with no LAN address and no tunnel either.
+ */
+const ACCOUNT_RUNTIME_MARKERS = ['src/users.js', 'src/endpoints/users-admin.js'] as const;
 
 export class ConfigError extends Error {
   public readonly code: 'config_missing' | 'invalid_yaml' | 'invalid_config' | 'invalid_security';
@@ -34,11 +43,60 @@ export class ConfigStore {
     const path = await resolveConfigPath(profile, installation.runtimePath);
     const raw = await readConfig(path);
     const document = parseYaml(raw);
-    return toConfigDocument(document, raw, path, profile, installation);
+    return toConfigDocument(document, raw, path, installation, await this.accessMode(installation));
   }
 
-  /** Returns whether active Basic Auth must be disabled or account mode enabled. */
+  /** Whether this installed version has user accounts, or only Basic Auth. */
+  public async accessMode(installation: Installation): Promise<AccessMode> {
+    for (const marker of ACCOUNT_RUNTIME_MARKERS) {
+      try { await stat(join(installation.runtimePath, ...marker.split('/'))); return 'accounts'; } catch { /* try the next marker */ }
+    }
+    // A shipped default template naming the key is the same evidence, and it
+    // survives a layout change that moves the files above.
+    try {
+      if ((await readFile(join(installation.runtimePath, 'default', 'config.yaml'), 'utf8')).includes('enableUserAccounts')) return 'accounts';
+    } catch { /* older versions ship no default template */ }
+    return 'basicAuth';
+  }
+
+  /** What the panel needs to report Basic Auth, without reading the password out. */
+  public async readBasicAuth(profile: Profile, installation: Installation): Promise<{ username: string; passwordConfigured: boolean; enabled: boolean }> {
+    const document = parseYaml(await readConfig(await resolveConfigPath(profile, installation.runtimePath)));
+    const username = getPath(document, ['basicAuthUser', 'username']);
+    const password = getPath(document, ['basicAuthUser', 'password']);
+    return {
+      username: typeof username === 'string' && username ? username : DEFAULT_BASIC_AUTH_USER.username,
+      passwordConfigured: typeof password === 'string' && password.length > 0 && password !== DEFAULT_BASIC_AUTH_USER.password,
+      enabled: getPath(document, ['basicAuthMode']) === true,
+    };
+  }
+
+  /**
+   * Give a version without user accounts the only password it understands.
+   *
+   * Basic Auth is checked by the HTTP layer before anything else, so it guards
+   * a LAN address or a tunnel exactly as an account password would.
+   */
+  public async setBasicAuthPassword(profile: Profile, installation: Installation, password: string): Promise<ConfigDocument> {
+    const path = await resolveConfigPath(profile, installation.runtimePath);
+    const document = parseYaml(await readConfig(path));
+    if (getPath(document, ['basicAuthUser', 'username']) === undefined) setPath(document, ['basicAuthUser', 'username'], DEFAULT_BASIC_AUTH_USER.username);
+    setPath(document, ['basicAuthUser', 'password'], password);
+    setPath(document, ['basicAuthMode'], true);
+    const nextRaw = String(document);
+    await atomicWriteYaml(path, nextRaw);
+    this.logger(logEvent('config.basicAuthPasswordSet', '[config] set the Basic Auth password in ' + path, { path }));
+    return toConfigDocument(parseYaml(nextRaw), nextRaw, path, installation, 'basicAuth');
+  }
+
+  /**
+   * Returns whether active Basic Auth must be disabled or account mode enabled.
+   *
+   * Never for a version without accounts: there is nothing to migrate to, and
+   * answering yes rewrote that config on every single start.
+   */
   public async needsAccountMigration(profile: Profile, installation: Installation): Promise<boolean> {
+    if (await this.accessMode(installation) === 'basicAuth') return false;
     const path = await resolveConfigPath(profile, installation.runtimePath);
     const document = parseYaml(await readConfig(path));
     return getPath(document, ['basicAuthMode']) === true
@@ -59,10 +117,13 @@ export class ConfigStore {
       setPath(document, ['basicAuthUser', 'password'], getPath(previousDocument, ['basicAuthUser', 'password']) ?? DEFAULT_BASIC_AUTH_USER.password);
     }
     applySettings(document, input.settings);
-    // Disable Basic Auth while retaining its YAML keys. SillyTavern restores
-    // missing defaults at startup, so removing them causes repeated rewrites.
-    setPath(document, ['enableUserAccounts'], true);
-    setPath(document, ['basicAuthMode'], false);
+    const mode = await this.accessMode(installation);
+    if (mode === 'accounts') {
+      // Disable Basic Auth while retaining its YAML keys. SillyTavern restores
+      // missing defaults at startup, so removing them causes repeated rewrites.
+      setPath(document, ['enableUserAccounts'], true);
+      setPath(document, ['basicAuthMode'], false);
+    }
     for (const key of ['username', 'password'] as const) {
       if (getPath(document, ['basicAuthUser', key]) === undefined) {
         setPath(document, ['basicAuthUser', key], DEFAULT_BASIC_AUTH_USER[key]);
@@ -79,7 +140,7 @@ export class ConfigStore {
     await atomicWriteYaml(path, nextRaw);
     this.logger(logEvent('config.updated', `[config] updated ${path}`, { path }));
     const savedDocument = parseYaml(nextRaw);
-    return toConfigDocument(savedDocument, nextRaw, path, profile, installation);
+    return toConfigDocument(savedDocument, nextRaw, path, installation, mode);
   }
 }
 
@@ -119,7 +180,7 @@ function parseYaml(raw: string): Document.Parsed {
   }
 }
 
-function toConfigDocument(document: Document.Parsed, raw: string, path: string, profile: Profile, installation: Installation): ConfigDocument {
+function toConfigDocument(document: Document.Parsed, raw: string, path: string, installation: Installation, accessMode: AccessMode): ConfigDocument {
   const redacted = parseYaml(raw);
   const password = getPath(redacted, ['basicAuthUser', 'password']);
   if (typeof password === 'string' && password && password !== DEFAULT_BASIC_AUTH_USER.password) {
@@ -134,6 +195,7 @@ function toConfigDocument(document: Document.Parsed, raw: string, path: string, 
     path,
     format: path.toLowerCase().endsWith('.yml') ? 'yml' : 'yaml',
     rawYaml: String(redacted),
+    accessMode,
     settings,
     restartRequired: true,
   };
@@ -158,6 +220,7 @@ function extractSettings(document: Document.Parsed): ConfigSettings {
     whitelistMode: getBoolean(['whitelistMode'], true),
     port: typeof portValue === 'number' ? portValue : 8000,
     enableUserAccounts: getBoolean(['enableUserAccounts'], false),
+    basicAuthMode: getBoolean(['basicAuthMode'], false),
     sslEnabled: getBoolean(['ssl', 'enabled'], false),
     enableCorsProxy: getBoolean(['enableCorsProxy'], false),
     disableCsrfProtection: getBoolean(['disableCsrfProtection'], false),

@@ -7,12 +7,18 @@ import { parse as parseYaml } from 'yaml';
 import type { Installation, Profile } from '../../contracts/src/index.js';
 import { ConfigStore } from '../src/index.js';
 
-async function fixture(): Promise<{ store: ConfigStore; profile: Profile; installation: Installation; configPath: string }> {
+async function fixture(accounts = true): Promise<{ store: ConfigStore; profile: Profile; installation: Installation; configPath: string }> {
   const root = await mkdtemp(join(tmpdir(), 'stm-config-'));
   const runtimePath = join(root, 'runtime');
   const configPath = join(root, 'profile', 'config.yaml');
   await mkdir(runtimePath, { recursive: true });
   await mkdir(join(root, 'profile'), { recursive: true });
+  // Versions from 1.12 on carry the accounts implementation; older ones do not,
+  // and that file is what the store reads to tell them apart.
+  if (accounts) {
+    await mkdir(join(runtimePath, 'src'), { recursive: true });
+    await writeFile(join(runtimePath, 'src', 'users.js'), 'export const users = true;\n', 'utf8');
+  }
   await writeFile(configPath, '# keep this comment\nlisten: false\nport: 8000\nbasicAuthMode: false\nbasicAuthUser:\n  username: user\n  password: old-secret\nssl:\n  enabled: false\n', 'utf8');
   const now = new Date().toISOString();
   const installation: Installation = { id: 'install-1', selector: 'latest', resolvedRef: '1.18.0', channel: 'release', runtimePath, markerPath: join(runtimePath, '.stm-installation.json'), status: 'ready', progress: 100, step: 'ready', error: null, createdAt: now, updatedAt: now, activatedAt: now };
@@ -85,4 +91,38 @@ test('disabled Basic Auth defaults do not reset a configured LAN on every restar
   const { store, profile, installation, configPath } = await fixture();
   await writeFile(configPath, 'listen: true\nport: 8000\nenableUserAccounts: true\nbasicAuthMode: false\nbasicAuthUser:\n  username: user\n  password: password\n', 'utf8');
   assert.equal(await store.needsAccountMigration(profile, installation), false);
+});
+
+test('a version without user accounts is driven through Basic Auth instead', async () => {
+  const { store, profile, installation, configPath } = await fixture(false);
+  const document = await store.read(profile, installation);
+  assert.equal(document.accessMode, 'basicAuth');
+  // Nothing to migrate to, so the config is left alone on every start.
+  assert.equal(await store.needsAccountMigration(profile, installation), false);
+
+  const saved = await store.setBasicAuthPassword(profile, installation, 'a-real-secret');
+  assert.equal(saved.settings.basicAuthMode, true);
+  assert.equal(saved.rawYaml.includes('a-real-secret'), false, 'the saved password is masked in the document sent to the panel');
+  const raw = await readFile(configPath, 'utf8');
+  assert.equal(parseYaml(raw).basicAuthUser.password, 'a-real-secret');
+  assert.equal(parseYaml(raw).basicAuthMode, true);
+
+  const basic = await store.readBasicAuth(profile, installation);
+  assert.deepEqual(basic, { username: 'user', passwordConfigured: true, enabled: true });
+});
+
+test('an untouched Basic Auth password does not count as protection', async () => {
+  const { store, profile, installation, configPath } = await fixture(false);
+  await writeFile(configPath, 'listen: false\nport: 8000\nbasicAuthMode: true\nbasicAuthUser:\n  username: user\n  password: password\n', 'utf8');
+  assert.deepEqual(await store.readBasicAuth(profile, installation), { username: 'user', passwordConfigured: false, enabled: true });
+});
+
+test('a version without accounts keeps Basic Auth through an unrelated settings save', async () => {
+  const { store, profile, installation, configPath } = await fixture(false);
+  await store.setBasicAuthPassword(profile, installation, 'a-real-secret');
+  await store.update(profile, installation, { settings: { listen: true } });
+  const raw = parseYaml(await readFile(configPath, 'utf8'));
+  assert.equal(raw.basicAuthMode, true, 'saving other settings must not switch off the only password this version has');
+  assert.equal(raw.basicAuthUser.password, 'a-real-secret');
+  assert.equal(raw.enableUserAccounts, undefined, 'a key this version does not understand is not invented for it');
 });

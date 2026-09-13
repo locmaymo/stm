@@ -136,7 +136,7 @@ function ConsoleApp({ csrfToken }: { csrfToken: string }) {
   const [processState, setProcessState] = useState<ProcessState>({ status: 'stopped', installationId: null, profileId: null, pid: null, startedAt: null, error: null });
   const [tunnelState, setTunnelState] = useState<TunnelState>({ mode: 'off', status: 'stopped', url: null, startedAt: null, error: null });
   const [configDocument, setConfigDocument] = useState<ConfigDocument | null>(null);
-  const [accessSecurity, setAccessSecurity] = useState<AccessSecurityState>({ accountsEnabled: false, adminHandle: 'default-user', adminPasswordConfigured: false, processReady: false });
+  const [accessSecurity, setAccessSecurity] = useState<AccessSecurityState>({ mode: 'accounts', accountsEnabled: false, adminHandle: 'default-user', adminPasswordConfigured: false, processReady: false });
   const t = translator(preferences.locale);
   const catalog = logCatalog(preferences.locale);
 
@@ -352,6 +352,11 @@ function AccessPanel({ t, process, tunnel, config, security, installed, onAction
   const running = process.status === 'running';
   const tunnelRunning = tunnel.status === 'running' || tunnel.status === 'starting';
   const listen = config?.settings.listen ?? false;
+  // A version with user accounts can only be asked about its password while it
+  // is up. A version without them keeps the password in its config file, which
+  // is readable and writable whether or not anything is running.
+  const basicAuth = security.mode === 'basicAuth';
+  const canSetPassword = basicAuth || (security.accountsEnabled && security.processReady);
   // The server cannot read the SillyTavern account while SillyTavern is
   // restarting, and reports "no password" for "I do not know". Restores and
   // version installs restart it constantly, so keep the last reading that was
@@ -360,6 +365,7 @@ function AccessPanel({ t, process, tunnel, config, security, installed, onAction
   useEffect(() => {
     if (security.processReady && !security.error) setKnownPasswordReady(security.adminPasswordConfigured);
   }, [security.processReady, security.error, security.adminPasswordConfigured]);
+
   const passwordReady = knownPasswordReady ?? security.adminPasswordConfigured;
   // And open the form once, on the first knowable reading that there is no
   // password. Binding `open` to the reading reopened it on every restart and
@@ -390,14 +396,14 @@ function AccessPanel({ t, process, tunnel, config, security, installed, onAction
       <div className="access-row access-row-public"><div><strong>{t('console.quickTunnel')}</strong><span>{passwordReady ? t('console.passwordProtected') : t('console.passwordRequired')}</span></div><Switch id="tunnel-switch" checked={tunnelRunning} onCheckedChange={toggleTunnel} disabled={!installed || !running || tunnel.status === 'starting' || busy || !passwordReady} aria-label={t('console.enableTunnel')} /></div>
       <dl className="address-list"><div><dt>{t('dashboard.publicAddress')}</dt><dd>{tunnel.url ? <code>{tunnel.url}</code> : '—'}</dd></div></dl>
       <details className="access-security" open={passwordFormOpen} onToggle={(event) => setPasswordFormOpen(event.currentTarget.open)}><summary>{t('console.passwordSettings')}</summary><div className="security-form">
-        <p className="text-xs text-muted-foreground">{t('console.sillyPasswordHelp')}</p>
-        <div className="config-fixed"><span>{t('console.adminAccount')}</span><strong>{security.adminHandle}</strong></div>
-        <label className="field-label"><span>{t('console.password')}</span><Input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="new-password" disabled={!security.processReady || !security.accountsEnabled} /></label>
-        <label className="field-label"><span>{t('console.confirmPassword')}</span><Input type="password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} autoComplete="new-password" disabled={!security.processReady || !security.accountsEnabled} /></label>
-        <div className="security-actions"><Badge variant="outline">{passwordReady ? t('console.passwordProtected') : t('console.passwordRequired')}</Badge><Button size="sm" onClick={() => void saveSecurity()} disabled={securityBusy || !security.processReady || !security.accountsEnabled || password.length < 8 || password !== confirmPassword}>{passwordReady ? t('console.changePassword') : t('console.savePassword')}</Button></div>
+        <p className="text-xs text-muted-foreground">{t(basicAuth ? 'console.basicAuthHelp' : 'console.sillyPasswordHelp')}</p>
+        <div className="config-fixed"><span>{t(basicAuth ? 'console.basicAuthUser' : 'console.adminAccount')}</span><strong>{security.adminHandle}</strong></div>
+        <label className="field-label"><span>{t('console.password')}</span><Input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="new-password" disabled={!canSetPassword} /></label>
+        <label className="field-label"><span>{t('console.confirmPassword')}</span><Input type="password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} autoComplete="new-password" disabled={!canSetPassword} /></label>
+        <div className="security-actions"><Badge variant="outline">{passwordReady ? t('console.passwordProtected') : t('console.passwordRequired')}</Badge><Button size="sm" onClick={() => void saveSecurity()} disabled={securityBusy || !canSetPassword || password.length < 8 || password !== confirmPassword}>{passwordReady ? t('console.changePassword') : t('console.savePassword')}</Button></div>
       </div></details>
       {busy || securityBusy ? <div className="operation-progress" role="status"><span>{t('common.loading')}</span><span className="progress-track"><span className="progress-indeterminate" /></span></div> : null}
-      {security.error ? <p className="install-error" role="alert">{security.error}</p> : null}
+      {security.error && security.processReady ? <p className="install-error" role="alert">{t('console.accountsUnavailable')}</p> : null}
       {securityMessage ? <p className="install-error" role="alert">{securityMessage}</p> : null}
       {process.error ? <p className="install-error" role="alert">{process.error}</p> : null}
       {tunnel.error ? <p className="install-error" role="alert">{tunnel.error}</p> : null}

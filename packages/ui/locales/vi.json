@@ -221,7 +221,10 @@
     "managerPasswordMin": "Dùng ít nhất 6 ký tự.",
     "uploading": "Đang tải lên",
     "uploadRemaining": "còn lại",
-    "uploadEstimating": "đang tính thời gian còn lại…"
+    "uploadEstimating": "đang tính thời gian còn lại…",
+    "basicAuthHelp": "Phiên bản SillyTavern này không có tài khoản người dùng, nên trình quản lý bảo vệ nó bằng Basic Auth. Trình duyệt sẽ hỏi tên đăng nhập và mật khẩu này. Mật khẩu đăng nhập trình quản lý là riêng biệt.",
+    "basicAuthUser": "Tên đăng nhập Basic Auth",
+    "accountsUnavailable": "SillyTavern không báo cáo thông tin tài khoản cho phiên bản hoặc cấu hình đăng nhập này."
   },
   "dashboard": {
     "eyebrow": "TRUNG TÂM ĐIỀU HÀNH / TỔNG QUAN",
@@ -356,7 +359,8 @@
     },
     "config": {
       "updated": "Đã cập nhật {path}",
-      "accountsMigrated": "Đã chuyển bảo mật truy cập sang tài khoản SillyTavern; truy cập mạng nội bộ đang chờ mật khẩu quản trị"
+      "accountsMigrated": "Đã chuyển bảo mật truy cập sang tài khoản SillyTavern; truy cập mạng nội bộ đang chờ mật khẩu quản trị",
+      "basicAuthPasswordSet": "Đã đặt mật khẩu Basic Auth trong {path}"
     },
     "sillytavern": {
       "starting": "Đang khởi động {ref} trên 127.0.0.1:8000",

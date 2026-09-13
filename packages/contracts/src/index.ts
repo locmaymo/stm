@@ -319,6 +319,7 @@ export interface ConfigSettings {
   readonly whitelistMode: boolean;
   readonly port: number;
   readonly enableUserAccounts: boolean;
+  readonly basicAuthMode: boolean;
   readonly sslEnabled: boolean;
   readonly enableCorsProxy: boolean;
   readonly disableCsrfProtection: boolean;
@@ -335,6 +336,8 @@ export interface ConfigDocument {
   readonly networkHost?: string;
   /** YAML retains Basic Auth keys; any custom Basic Auth password is masked. */
   readonly rawYaml: string;
+  /** Which password mechanism this runtime version actually has. */
+  readonly accessMode: AccessMode;
   readonly settings: ConfigSettings;
   readonly restartRequired: boolean;
 }
@@ -351,8 +354,20 @@ export interface ConfigUpdateInput {
   }>;
 }
 
+/**
+ * How the installed SillyTavern asks for a password.
+ *
+ * Versions before user accounts existed have no account to give a password to,
+ * and the manager used to leave them with no way to set one at all - which also
+ * meant no LAN access and no tunnel, because both refuse to open without one.
+ * Those versions do have Basic Auth, so that is what the manager drives there.
+ */
+export type AccessMode = 'accounts' | 'basicAuth';
+
 export interface AccessSecurityState {
+  readonly mode: AccessMode;
   readonly accountsEnabled: boolean;
+  /** The account handle, or the Basic Auth username in `basicAuth` mode. */
   readonly adminHandle: string;
   readonly adminPasswordConfigured: boolean;
   readonly processReady: boolean;
