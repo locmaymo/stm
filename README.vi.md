@@ -26,6 +26,10 @@ Lần đầu mở, bạn tạo một mật khẩu quản trị manager. Sau đó
 4. Bấm đúp <code>SillyTavernManager.exe</code>.
 5. Nếu trình duyệt không tự mở, truy cập <code>http://127.0.0.1:7860</code>.
 
+Một cửa sổ console sẽ mở ra và ở nguyên đó. Cửa sổ đó chính là trình quản lý: nó hiển thị địa chỉ truy cập, nơi lưu dữ liệu của bạn, và mọi việc trình quản lý cùng SillyTavern đang làm. Để dừng tất cả, bấm <kbd>Q</kbd> hoặc <kbd>Ctrl</kbd>+<kbd>C</kbd> trong cửa sổ đó, hoặc đóng nó. SillyTavern và Cloudflare tunnel sẽ được tắt cùng, nên không còn cổng nào bị chiếm và bạn không phải đi tìm tiến trình trong Task Manager. Bấm <kbd>O</kbd> để mở lại console trong trình duyệt.
+
+Nếu trình quản lý không khởi động được, cửa sổ sẽ giữ nguyên lý do trên màn hình và chờ bạn bấm <kbd>Enter</kbd> thay vì tự đóng. Nếu bạn mở bản thứ hai trong khi một bản đang chạy, nó sẽ báo cho bạn biết và mở bản đang chạy.
+
 ZIP portable đã gồm Node.js, server manager, giao diện và dependency production. Bạn không cần cài gì bằng terminal. Thư mục ứng dụng và thư mục dữ liệu được tách riêng:
 
 ~~~text

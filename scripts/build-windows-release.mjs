@@ -28,11 +28,13 @@ await cp(join(repositoryRoot, 'packaging', 'windows', 'runtime-package.json'), j
 run('npm', ['install', '--omit=dev', '--ignore-scripts', '--no-package-lock', '--prefix', appRoot]);
 await cp(process.execPath, join(runtimeRoot, 'node.exe'));
 await cp(join(repositoryRoot, 'THIRD_PARTY_NOTICES.md'), join(releaseRoot, 'THIRD_PARTY_NOTICES.md'));
+// Sorts first in Explorer, so it is the file someone sees before the exe.
+await cp(join(repositoryRoot, 'packaging', 'windows', 'FIRST-RUN.txt'), join(releaseRoot, 'Read me first.txt'));
 const packageJson = JSON.parse(await readFile(join(repositoryRoot, 'package.json'), 'utf8'));
 await writeFile(join(resourcesRoot, 'release.json'), `${JSON.stringify({ version: packageJson.version, platform: 'windows-x64', dataLocation: '%LOCALAPPDATA%\\SillyTavernManager' }, null, 2)}\n`, 'utf8');
 
 const seaConfig = join(repositoryRoot, 'build', 'release', 'sea-config.json');
-await writeFile(seaConfig, `${JSON.stringify({ main: join(repositoryRoot, 'packaging', 'windows', 'launcher.mjs'), output: blob, disableExperimentalSEAWarning: true, useSnapshot: false, useCodeCache: false }, null, 2)}\n`, 'utf8');
+await writeFile(seaConfig, `${JSON.stringify({ main: join(repositoryRoot, 'packaging', 'windows', 'launcher.cjs'), output: blob, disableExperimentalSEAWarning: true, useSnapshot: false, useCodeCache: false }, null, 2)}\n`, 'utf8');
 run(process.execPath, ['--experimental-sea-config', seaConfig]);
 await cp(process.execPath, executable);
 const sentinelFuse = readFileSync(executable, 'latin1').match(/NODE_SEA_FUSE_[A-Za-z0-9-]+/u)?.[0];

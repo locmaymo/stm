@@ -77,6 +77,14 @@ export interface ManagerServerOptions {
   readonly metrics?: MetricsStore;
   readonly config?: ConfigStore;
   readonly telemetry?: TelemetryTransport;
+  /**
+   * Called when a launcher that knows STM_SHUTDOWN_TOKEN asks to shut down.
+   *
+   * Windows has no SIGTERM, so a launcher closing its window can only kill this
+   * process - which leaves SillyTavern and cloudflared running with nothing
+   * owning them. This gives it a way to ask instead.
+   */
+  readonly onShutdownRequest?: () => void;
 }
 
 export interface ManagerServer {
@@ -213,6 +221,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     logger(logEvent('setup.setupCode', `[setup] one-time setup code: ${store.getSetupCodeForTests()}`, { code: store.getSetupCodeForTests() }));
   }
 
+  const shutdownToken = env.STM_SHUTDOWN_TOKEN?.trim() || null;
   const startedAt = Date.now();
   const server = createServer((request, response) => {
     void handleRequest({
@@ -237,6 +246,8 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       metrics,
       config,
       system,
+      shutdownToken,
+      onShutdownRequest: options.onShutdownRequest,
     }).catch((error: unknown) => {
       if (error instanceof RequestError) {
         sendError(response, error.statusCode, error.code, error.message);
@@ -336,8 +347,10 @@ async function handleRequest(options: {
   readonly metrics: MetricsStore;
   readonly config: ConfigStore;
   readonly system: SystemStore;
+  readonly shutdownToken: string | null;
+  readonly onShutdownRequest: (() => void) | undefined;
 }): Promise<void> {
-  const { request, response, store, sessions, rateLimiter, startedAt, secureCookies, setupCodeRequired, staticRoot, platform, runtime, jobs, supervisor, tunnel, profiles, backups, r2, metrics, config, system } = options;
+  const { request, response, store, sessions, rateLimiter, startedAt, secureCookies, setupCodeRequired, staticRoot, platform, runtime, jobs, supervisor, tunnel, profiles, backups, r2, metrics, config, system, shutdownToken, onShutdownRequest } = options;
   const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
   const pathname = url.pathname;
   const context: RequestContext = {
@@ -368,6 +381,20 @@ async function handleRequest(options: {
       storage: { durable: store.paths.platform !== 'unknown' },
     };
     sendJson(response, 200, health);
+    return;
+  }
+
+  if (pathname === '/api/v1/shutdown' && method === 'POST') {
+    // Absent unless a launcher started this process and shared a secret with
+    // it, so the panel's own origin cannot reach it and neither can anything
+    // else on the machine that has not been told the token.
+    const supplied = headerValue(request.headers['x-stm-shutdown-token']);
+    if (!shutdownToken || !supplied || !constantTimeStringEqual(supplied, shutdownToken)) {
+      sendError(response, 404, 'not_found', 'Route not found');
+      return;
+    }
+    sendJson(response, 202, { ok: true });
+    onShutdownRequest?.();
     return;
   }
 

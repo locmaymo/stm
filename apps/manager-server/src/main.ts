@@ -3,7 +3,23 @@ import { ensurePanelBuilt, openInBrowser } from './bootstrap.js';
 
 await ensurePanelBuilt();
 
-const manager = await startManagerServer();
+/**
+ * Stop everything this process owns, then leave.
+ *
+ * Declared before the server starts because the launcher can ask for a
+ * shutdown as soon as the first request lands, which is earlier than the
+ * signal handlers at the bottom of this file are installed.
+ */
+let closing = false;
+const shutdown = async (reason: string): Promise<void> => {
+  if (closing) return;
+  closing = true;
+  console.log(`[manager] shutting down (${reason})`);
+  await manager.close();
+  process.exit(0);
+};
+
+const manager = await startManagerServer({ onShutdownRequest: () => { void shutdown('the launcher asked'); } });
 const url = `http://127.0.0.1:${manager.port}`;
 console.log(`[manager] listening on ${url}`);
 
@@ -30,14 +46,5 @@ process.on('unhandledRejection', (reason: unknown) => { reportFault('unhandled r
 
 await openInBrowser(url, { logger: manager.logger });
 
-const shutdown = async (signal: string): Promise<void> => {
-  console.log(`[manager] received ${signal}; shutting down`);
-  await manager.close();
-};
-
-process.once('SIGINT', () => {
-  void shutdown('SIGINT').finally(() => process.exit(0));
-});
-process.once('SIGTERM', () => {
-  void shutdown('SIGTERM').finally(() => process.exit(0));
-});
+process.once('SIGINT', () => { void shutdown('SIGINT'); });
+process.once('SIGTERM', () => { void shutdown('SIGTERM'); });

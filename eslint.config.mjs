@@ -23,4 +23,22 @@ export default [
     },
   },
   js.configs.recommended,
+  {
+    // The Windows launcher has to be CommonJS: Node runs a single-executable
+    // entry point as CommonJS, so an ES module entry never gets as far as
+    // running at all.
+    files: ['**/*.cjs'],
+    languageOptions: {
+      sourceType: 'commonjs',
+      globals: {
+        AbortSignal: 'readonly',
+        __dirname: 'readonly',
+        clearTimeout: 'readonly',
+        fetch: 'readonly',
+        module: 'writable',
+        require: 'readonly',
+        setTimeout: 'readonly',
+      },
+    },
+  },
 ];

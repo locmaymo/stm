@@ -529,3 +529,39 @@ test('a running backup can be stopped, and a finished one cannot', async (t) => 
   const missing = await fetch(`${base}/api/v1/jobs/job-nothing/cancel`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf } });
   assert.equal(missing.status, 404);
 });
+
+test('the launcher shutdown route exists only for the launcher that started the manager', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-shutdown-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  let asked = 0;
+  const manager = await startManagerServer({
+    host: '127.0.0.1',
+    port: 0,
+    paths,
+    env: { STM_ADMIN_PASSWORD: 'correct horse battery staple', STM_SHUTDOWN_TOKEN: 'launcher-secret' },
+    secureCookies: false,
+    logger: () => undefined,
+    onShutdownRequest: () => { asked += 1; },
+  });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+
+  // Nothing on the machine that has not been told the token can reach it, and
+  // it is not even visible as a route to anything that has not.
+  const anonymous = await fetch(`${base}/api/v1/shutdown`, { method: 'POST' });
+  assert.equal(anonymous.status, 404);
+  const wrong = await fetch(`${base}/api/v1/shutdown`, { method: 'POST', headers: { 'x-stm-shutdown-token': 'guess' } });
+  assert.equal(wrong.status, 404);
+  assert.equal(asked, 0);
+
+  const right = await fetch(`${base}/api/v1/shutdown`, { method: 'POST', headers: { 'x-stm-shutdown-token': 'launcher-secret' } });
+  assert.equal(right.status, 202);
+  assert.equal(asked, 1);
+});
+
+test('no launcher token means no shutdown route at all', async (t) => {
+  const manager = await createServer({ bootstrapPassword: 'correct horse battery staple' });
+  t.after(() => manager.close());
+  const response = await fetch(`${serverUrl(manager)}/api/v1/shutdown`, { method: 'POST', headers: { 'x-stm-shutdown-token': 'anything' } });
+  assert.equal(response.status, 404);
+});

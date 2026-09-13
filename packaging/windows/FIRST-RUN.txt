@@ -1,0 +1,56 @@
+SillyTavern Manager for Windows
+===============================
+
+Running it
+----------
+
+Double-click SillyTavernManager.exe.
+
+A console window opens and stays open. That window IS the manager: it prints
+the address, the folder your data is in, and everything the manager and
+SillyTavern are doing. Your browser opens the console at:
+
+    http://127.0.0.1:7860
+
+The first run installs SillyTavern itself, which takes a few minutes on a slow
+disk. The window says what it is doing while it works.
+
+Stopping it
+-----------
+
+Press Q or Ctrl+C in the console window, or just close the window.
+
+Either way the manager shuts SillyTavern and the Cloudflare tunnel down with
+it, so nothing is left holding port 8000 and there is no process to hunt for in
+Task Manager.
+
+Keys while it is running
+------------------------
+
+    Q         stop everything and close
+    O         open the console in your browser again
+    Ctrl+C    same as Q
+
+Where your data lives
+---------------------
+
+    %LOCALAPPDATA%\SillyTavernManager
+
+Characters, chats, profiles, backups, logs and settings are all in there, and
+it is deliberately not inside this folder. To update, extract the new release
+into a new folder and run it: your data is untouched. Keep the old folder if
+you want to be able to go back.
+
+If something goes wrong
+-----------------------
+
+The console window does not close on an error - it keeps the reason on screen
+and waits for you to press Enter. Whatever it printed is what to report.
+
+If it says port 7860 is already in use, a copy of the manager is probably
+already running. Look for another console window like this one, or run:
+
+    netstat -ano | findstr :7860
+
+The last number on each line is the process id, which you can look up on the
+Details tab of Task Manager.

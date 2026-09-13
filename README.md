@@ -26,6 +26,10 @@ This is the easiest option for most Windows users.
 4. Double-click <code>SillyTavernManager.exe</code>.
 5. Open <code>http://127.0.0.1:7860</code> if the browser does not open automatically.
 
+A console window opens and stays open. That window is the manager: it shows the address, where your data is kept, and what the manager and SillyTavern are doing. To stop everything, press <kbd>Q</kbd> or <kbd>Ctrl</kbd>+<kbd>C</kbd> in it, or close it. SillyTavern and the Cloudflare tunnel are shut down with it, so no port is left held and there is no process to hunt for in Task Manager. Press <kbd>O</kbd> to open the console in your browser again.
+
+If the manager fails to start, the window keeps the reason on screen and waits for <kbd>Enter</kbd> rather than closing. Starting a second copy while one is already running says so and opens the running one instead.
+
 The portable bundle already contains Node.js, the manager server, the panel, and production dependencies. Nothing needs to be installed with a terminal. Keep the application folder separate from the data folder:
 
 ~~~text

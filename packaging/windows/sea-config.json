@@ -1,5 +1,5 @@
 {
-  "main": "packaging/windows/launcher.mjs",
+  "main": "packaging/windows/launcher.cjs",
   "output": "build/sillytavern-manager.blob",
   "disableExperimentalSEAWarning": true,
   "useSnapshot": false,
