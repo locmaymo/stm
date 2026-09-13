@@ -364,7 +364,17 @@
       "legacyHeap": "Using a {heap} MiB heap for the legacy public/ runtime",
       "spawnFailed": "{reason}",
       "failed": "{reason}",
-      "autoStartFailed": "Automatic startup failed: {reason}"
+      "autoStartFailed": "Automatic startup failed: {reason}",
+      "stoppedRequested": "Stopped: you asked it to stop",
+      "stoppedRestart": "Stopped: restarting it",
+      "stoppedInstall": "Stopped: installing a different SillyTavern version",
+      "stoppedRestore": "Stopped: restoring a backup",
+      "stoppedProfileSwitch": "Stopped: switching profile",
+      "stoppedConfigChange": "Stopped: applying a configuration change",
+      "stoppedPasswordChange": "Stopped: applying the new SillyTavern password",
+      "stoppedShutdown": "Stopped: the manager is shutting down",
+      "stoppedStartupFailed": "Stopped: it did not finish starting",
+      "exited": "Exited on its own ({detail})"
     },
     "installer": {
       "ready": "Installation {ref} is ready",
@@ -428,7 +438,17 @@
       "downloading": "Downloading {file}",
       "installed": "Installed to {path}",
       "spawnFailed": "{reason}",
-      "failed": "{reason}"
+      "failed": "{reason}",
+      "stoppedRequested": "Stopped: you asked it to stop",
+      "stoppedRestart": "Stopped: restarting it",
+      "stoppedInstall": "Stopped: installing a different SillyTavern version",
+      "stoppedRestore": "Stopped: restoring a backup",
+      "stoppedProfileSwitch": "Stopped: switching profile",
+      "stoppedConfigChange": "Stopped: applying a configuration change",
+      "stoppedPasswordChange": "Stopped: applying the new SillyTavern password",
+      "stoppedShutdown": "Stopped: the manager is shutting down",
+      "stoppedStartupFailed": "Stopped: it did not finish starting",
+      "exited": "Exited on its own ({detail})"
     },
     "r2": {
       "uploaded": "Uploaded {name} ({bytes} bytes)"

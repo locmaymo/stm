@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getPlatformPaths } from '../../../packages/platform/src/index.js';
-import { logLineText, type Installation, type Profile } from '../../../packages/contracts/src/index.js';
+import { isLogEvent, logLineText, type Installation, type LogLine, type Profile } from '../../../packages/contracts/src/index.js';
 import { ProcessSupervisor } from '../src/supervisor.js';
 import { TunnelManager } from '../../../packages/tunnel/src/index.js';
 
@@ -86,4 +86,40 @@ test('large legacy profiles receive an expanded Node heap', async () => {
   while (!lines.some((line) => line.includes('using 8192 MiB heap')) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
   await supervisor.stop();
   assert.ok(lines.some((line) => line.includes('using 8192 MiB heap')));
+});
+
+test('a stop the manager asked for says what asked for it', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-stop-reason-'));
+  const runtimePath = join(root, 'runtime');
+  await mkdir(runtimePath, { recursive: true });
+  const markerPath = join(runtimePath, '.stm-installation.json');
+  await writeFile(markerPath, JSON.stringify({ installationId: 'install-1', resolvedRef: '1.0.0' }), 'utf8');
+  await writeFile(join(runtimePath, 'server.js'), 'setInterval(() => {}, 1000);', 'utf8');
+  const installation: Installation = { id: 'install-1', selector: 'latest', resolvedRef: '1.0.0', channel: 'release', runtimePath, markerPath, status: 'ready', progress: 100, step: 'Installation ready', error: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), activatedAt: new Date().toISOString() };
+  const events: LogLine[] = [];
+  const supervisor = new ProcessSupervisor({ runtime: { getActiveInstallation: async () => installation } as never, readinessCheck: async () => undefined, logger: (line) => events.push(line) });
+  await supervisor.start();
+  await supervisor.stop('restore');
+  const stopped = events.filter(isLogEvent).find((event) => event.code.startsWith('sillytavern.stopped'));
+  assert.equal(stopped?.code, 'sillytavern.stoppedRestore');
+  assert.equal(supervisor.getState().error, null);
+});
+
+test('a process nobody asked to stop reports that it exited on its own', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-crash-'));
+  const runtimePath = join(root, 'runtime');
+  await mkdir(runtimePath, { recursive: true });
+  const markerPath = join(runtimePath, '.stm-installation.json');
+  await writeFile(markerPath, JSON.stringify({ installationId: 'install-1', resolvedRef: '1.0.0' }), 'utf8');
+  await writeFile(join(runtimePath, 'server.js'), 'process.exit(3);', 'utf8');
+  const installation: Installation = { id: 'install-1', selector: 'latest', resolvedRef: '1.0.0', channel: 'release', runtimePath, markerPath, status: 'ready', progress: 100, step: 'Installation ready', error: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), activatedAt: new Date().toISOString() };
+  const events: LogLine[] = [];
+  const supervisor = new ProcessSupervisor({ runtime: { getActiveInstallation: async () => installation } as never, readinessCheck: async () => undefined, logger: (line) => events.push(line) });
+  await supervisor.start();
+  const deadline = Date.now() + 5_000;
+  while (!events.filter(isLogEvent).some((event) => event.code === 'sillytavern.exited') && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+  const exited = events.filter(isLogEvent).find((event) => event.code === 'sillytavern.exited');
+  assert.equal(exited?.params?.detail, 'exit code 3');
+  assert.match(supervisor.getState().error ?? '', /exited on its own/u);
+  await supervisor.close();
 });

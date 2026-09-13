@@ -469,8 +469,8 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     const previousTunnelMode = tunnel.getState().mode;
     const wasRunning = supervisor.getState().status === 'running';
     const saved = await config.update(profile, installation, input);
-    await tunnel.stop();
-    const process = wasRunning ? await supervisor.restart() : supervisor.getState();
+    await tunnel.stop('configChange');
+    const process = wasRunning ? await supervisor.restart('configChange') : supervisor.getState();
     if (previousTunnelMode !== 'off' && process.status === 'running') {
       try {
         await requireTunnelPassword(config, profiles, runtime, supervisor);
@@ -604,8 +604,8 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     }
     const previousProfile = await profiles.getActive();
     const previousTunnelMode = tunnel.getState().mode;
-    await tunnel.stop();
-    await supervisor.stop();
+    await tunnel.stop('install');
+    await supervisor.stop('install');
     if (previousProfile) {
       try {
         await backups.createSafetyCopy(previousProfile, { name: `${previousProfile.name}-preswitch` });
@@ -680,8 +680,8 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     if (!installation || installation.status !== 'ready') { sendError(response, 409, 'installation_required', 'The profile installation is not ready'); return; }
     const current = await profiles.getActive();
     const previousTunnelMode = tunnel.getState().mode;
-    await tunnel.stop();
-    await supervisor.stop();
+    await tunnel.stop('profileSwitch');
+    await supervisor.stop('profileSwitch');
     let snapshot: Awaited<ReturnType<BackupStore['create']>> | null = null;
     try {
       if (current && current.id !== profile.id) snapshot = await backups.createSafetyCopy(current, { name: `${current.name}-preswitch` });
@@ -825,7 +825,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     if (method === 'GET' && !action) { sendJson(response, 200, installation); return; }
     if (action && method === 'POST') {
       if (action === 'start') { sendJson(response, 200, await supervisor.start()); return; }
-      await tunnel.stop();
+      await tunnel.stop(action === 'stop' ? 'requested' : 'restart');
       const state = action === 'stop' ? await supervisor.stop() : await supervisor.restart();
       if (action === 'restart' && state.status === 'running' && tunnel.getState().mode !== 'off') await tunnel.restart();
       sendJson(response, 200, state);
@@ -834,8 +834,8 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
   }
   if (pathname === '/api/v1/process' && method === 'GET') { sendJson(response, 200, supervisor.getState()); return; }
   if (pathname === '/api/v1/process/start' && method === 'POST') { sendJson(response, 200, await supervisor.start()); return; }
-  if (pathname === '/api/v1/process/stop' && method === 'POST') { await tunnel.stop(); sendJson(response, 200, await supervisor.stop()); return; }
-  if (pathname === '/api/v1/process/restart' && method === 'POST') { await tunnel.stop(); const process = await supervisor.restart(); if (tunnel.getState().mode !== 'off' && process.status === 'running') await tunnel.restart(); sendJson(response, 200, process); return; }
+  if (pathname === '/api/v1/process/stop' && method === 'POST') { await tunnel.stop('requested'); sendJson(response, 200, await supervisor.stop('requested')); return; }
+  if (pathname === '/api/v1/process/restart' && method === 'POST') { await tunnel.stop('restart'); const process = await supervisor.restart(); if (tunnel.getState().mode !== 'off' && process.status === 'running') await tunnel.restart(); sendJson(response, 200, process); return; }
   if (pathname === '/api/v1/tunnel' && method === 'GET') { sendJson(response, 200, tunnel.getState()); return; }
   if (pathname === '/api/v1/tunnel' && method === 'PUT') {
     const body = await readJson(request);
@@ -897,8 +897,8 @@ async function restoreWithProcess(options: {
   // has to wait out.
   const releaseOperationSlot = backups.reserve();
   onProgress?.(5, logEvent('job.stoppingSillyTavern', 'Stopping SillyTavern'));
-  await tunnel.stop();
-  await supervisor.stop();
+  await tunnel.stop('restore');
+  await supervisor.stop('restore');
   try {
     // A safety copy has to exist before the restore overwrites anything, but it
     // does not have to be a second copy of every file. Writing one compressed
@@ -1033,7 +1033,7 @@ async function resetSillyTavernAdminStorage(profiles: ProfileStore, runtime: Run
   const temporary = `${recordPath}.${randomBytes(6).toString('hex')}.tmp`;
   await writeFile(temporary, JSON.stringify(record), { encoding: 'utf8', mode: 0o600 });
   await rename(temporary, recordPath);
-  const restarted = await supervisor.restart();
+  const restarted = await supervisor.restart('passwordChange');
   if (restarted.status !== 'running') throw new RequestError(502, 'sillytavern_restart_failed', 'SillyTavern could not restart after the password change');
 }
 

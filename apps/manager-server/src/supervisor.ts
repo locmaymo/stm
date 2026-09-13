@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { logEvent, logLineText, type Installation, type LogSink, type ProcessState, type Profile } from '../../../packages/contracts/src/index.js';
+import { describeExit, logEvent, logLineText, STOP_REASON_TEXT, stopReasonCode, type Installation, type LogSink, type ProcessState, type Profile, type StopReason } from '../../../packages/contracts/src/index.js';
 import { assertInstallationMarker, type RuntimeManager } from '../../../packages/sillytavern-runtime/src/index.js';
 
 export interface ProcessSupervisorOptions {
@@ -37,6 +37,8 @@ export class ProcessSupervisor {
   private current: ProcessState = { status: 'stopped', installationId: null, profileId: null, pid: null, startedAt: null, error: null };
   private activeProfile: Profile | null = null;
   private activeRuntimeLayout: 'data' | 'public' = 'data';
+  /** Set while a stop this manager asked for is in flight, so the exit can say so. */
+  private stopReason: StopReason | null = null;
 
   public constructor(options: ProcessSupervisorOptions) {
     this.runtime = options.runtime;
@@ -64,7 +66,7 @@ export class ProcessSupervisor {
   }
 
   public async startInstallation(installation: Installation, profile: Profile | null = null): Promise<ProcessState> {
-    if (this.child) await this.stop();
+    if (this.child) await this.stop('restart');
     try { await assertInstallationMarker(installation); } catch (error: unknown) { return this.fail(installation.id, error instanceof Error ? error.message : 'The SillyTavern installation marker is invalid'); }
     this.current = { status: 'starting', installationId: installation.id, profileId: profile?.id ?? null, pid: null, startedAt: null, error: null };
     this.logger(logEvent('sillytavern.starting', `[sillytavern] starting ${installation.resolvedRef} on 127.0.0.1:8000`, { ref: installation.resolvedRef }));
@@ -109,14 +111,22 @@ export class ProcessSupervisor {
       this.current = { ...this.current, status: 'error', error: error.message };
       this.logger(logEvent('sillytavern.spawnFailed', `[sillytavern] ${error.message}`, { reason: error.message }));
     });
-    child.once('close', (code) => {
+    child.once('close', (code, signal) => {
       if (this.buffer.trim()) this.handleLine(this.buffer);
       this.buffer = '';
+      const reason = this.stopReason;
+      this.stopReason = null;
+      const exit = describeExit(code, signal);
       if (this.child === child) {
         this.child = null;
-        this.current = { ...this.current, status: code === 0 ? 'stopped' : 'error', pid: null, error: code === 0 ? null : `SillyTavern exited with code ${code ?? 'unknown'}` };
+        this.current = { ...this.current, status: reason || code === 0 ? 'stopped' : 'error', pid: null, error: reason || code === 0 ? null : `SillyTavern exited on its own (${exit})` };
       }
-      this.logger(`[sillytavern] stopped (${code ?? 'unknown'})`);
+      // "stopped (unknown)" was the same line for a crash, a version switch and
+      // the Stop button, which left nothing to act on. A stop this manager
+      // asked for names what asked for it; anything else says it was not us.
+      this.logger(reason
+        ? logEvent(`sillytavern.${stopReasonCode(reason)}`, `[sillytavern] stopped: ${STOP_REASON_TEXT[reason]}`)
+        : logEvent('sillytavern.exited', `[sillytavern] exited on its own (${exit})`, { detail: exit }));
     });
     const spawnedAt = Date.now();
     try {
@@ -129,14 +139,15 @@ export class ProcessSupervisor {
       return this.getState();
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'SillyTavern did not become ready';
-      await this.stop();
+      await this.stop('startupFailed');
       return this.fail(installation.id, message);
     }
   }
 
-  public async stop(): Promise<ProcessState> {
+  public async stop(reason: StopReason = 'requested'): Promise<ProcessState> {
     const child = this.child;
     if (!child) { this.current = { ...this.current, status: 'stopped', pid: null }; return this.getState(); }
+    this.stopReason = reason;
     this.current = { ...this.current, status: 'stopping' };
     child.kill('SIGTERM');
     await new Promise<void>((resolve) => {
@@ -153,11 +164,11 @@ export class ProcessSupervisor {
     return this.getState();
   }
 
-  public async restart(): Promise<ProcessState> { await this.stop(); return this.start(); }
+  public async restart(reason: StopReason = 'restart'): Promise<ProcessState> { await this.stop(reason); return this.start(); }
 
   public async startActive(): Promise<ProcessState> { return this.start(); }
 
-  public async close(): Promise<void> { await this.stop(); }
+  public async close(): Promise<void> { await this.stop('shutdown'); }
 
   private handleLine(line: string): void {
     const clean = line.replace(/\u001b\[[0-?]*[ -\/]*[@-~]/gu, '').trim();

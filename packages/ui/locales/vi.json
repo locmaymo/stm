@@ -364,7 +364,17 @@
       "legacyHeap": "Dùng heap {heap} MiB cho bản chạy public/ cũ",
       "spawnFailed": "{reason}",
       "failed": "{reason}",
-      "autoStartFailed": "Khởi động tự động thất bại: {reason}"
+      "autoStartFailed": "Khởi động tự động thất bại: {reason}",
+      "stoppedRequested": "Đã dừng: bạn yêu cầu dừng",
+      "stoppedRestart": "Đã dừng: đang khởi động lại",
+      "stoppedInstall": "Đã dừng: đang cài một phiên bản SillyTavern khác",
+      "stoppedRestore": "Đã dừng: đang khôi phục bản sao lưu",
+      "stoppedProfileSwitch": "Đã dừng: đang đổi hồ sơ",
+      "stoppedConfigChange": "Đã dừng: đang áp dụng thay đổi cấu hình",
+      "stoppedPasswordChange": "Đã dừng: đang áp dụng mật khẩu SillyTavern mới",
+      "stoppedShutdown": "Đã dừng: trình quản lý đang tắt",
+      "stoppedStartupFailed": "Đã dừng: khởi động không hoàn tất",
+      "exited": "Tự thoát ({detail})"
     },
     "installer": {
       "ready": "Bản cài {ref} đã sẵn sàng",
@@ -428,7 +438,17 @@
       "downloading": "Đang tải {file}",
       "installed": "Đã cài vào {path}",
       "spawnFailed": "{reason}",
-      "failed": "{reason}"
+      "failed": "{reason}",
+      "stoppedRequested": "Đã dừng: bạn yêu cầu dừng",
+      "stoppedRestart": "Đã dừng: đang khởi động lại",
+      "stoppedInstall": "Đã dừng: đang cài một phiên bản SillyTavern khác",
+      "stoppedRestore": "Đã dừng: đang khôi phục bản sao lưu",
+      "stoppedProfileSwitch": "Đã dừng: đang đổi hồ sơ",
+      "stoppedConfigChange": "Đã dừng: đang áp dụng thay đổi cấu hình",
+      "stoppedPasswordChange": "Đã dừng: đang áp dụng mật khẩu SillyTavern mới",
+      "stoppedShutdown": "Đã dừng: trình quản lý đang tắt",
+      "stoppedStartupFailed": "Đã dừng: khởi động không hoàn tất",
+      "exited": "Tự thoát ({detail})"
     },
     "r2": {
       "uploaded": "Đã tải {name} lên ({bytes} byte)"

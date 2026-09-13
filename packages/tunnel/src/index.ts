@@ -7,7 +7,7 @@ import { Readable } from 'node:stream';
 import type { ReadableStream } from 'node:stream/web';
 import { pipeline } from 'node:stream/promises';
 import { join } from 'node:path';
-import { logEvent, logLineText, type LogSink, type TunnelMode, type TunnelState } from '../../contracts/src/index.js';
+import { describeExit, logEvent, logLineText, STOP_REASON_TEXT, stopReasonCode, type LogSink, type StopReason, type TunnelMode, type TunnelState } from '../../contracts/src/index.js';
 import type { PlatformPaths } from '../../platform/src/index.js';
 
 const execFileAsync = promisify(execFile);
@@ -51,6 +51,8 @@ export class TunnelManager {
   private token: string | undefined;
   private buffer = '';
   private state: TunnelState = { mode: 'off', status: 'stopped', url: null, startedAt: null, error: null };
+  /** Set while a stop this manager asked for is in flight, so the exit can say so. */
+  private stopReason: StopReason | null = null;
 
   public constructor(options: TunnelManagerOptions) {
     this.paths = options.paths;
@@ -100,23 +102,29 @@ export class TunnelManager {
       this.state = { ...this.state, status: 'error', error: 'cloudflared could not start' };
       this.child = null;
     });
-    child.once('close', (code) => {
+    child.once('close', (code, signal) => {
       if (this.buffer.trim()) this.handleLine(this.buffer);
       this.buffer = '';
+      const reason = this.stopReason;
+      this.stopReason = null;
+      const exit = describeExit(code, signal);
       if (this.child === child) {
         this.child = null;
         if (this.state.status !== 'error' && this.state.status !== 'stopped') {
-          this.state = { ...this.state, status: code === 0 ? 'stopped' : 'error', error: code === 0 ? null : `cloudflared exited with code ${code ?? 'unknown'}` };
+          this.state = { ...this.state, status: reason || code === 0 ? 'stopped' : 'error', error: reason || code === 0 ? null : `cloudflared exited on its own (${exit})` };
         }
       }
-      this.logger(`[cloudflared] stopped (${code ?? 'unknown'})`);
+      this.logger(reason
+        ? logEvent(`cloudflared.${stopReasonCode(reason)}`, `[cloudflared] stopped: ${STOP_REASON_TEXT[reason]}`)
+        : logEvent('cloudflared.exited', `[cloudflared] exited on its own (${exit})`, { detail: exit }));
     });
     return this.getState();
   }
 
-  public async stop(): Promise<TunnelState> {
+  public async stop(reason: StopReason = 'requested'): Promise<TunnelState> {
     const child = this.child;
     if (!child) { this.state = { ...this.state, status: 'stopped', url: null }; return this.getState(); }
+    this.stopReason = reason;
     this.state = { ...this.state, status: 'stopped', url: null, error: null };
     child.kill('SIGTERM');
     await new Promise<void>((resolve) => {
@@ -128,12 +136,12 @@ export class TunnelManager {
     return this.getState();
   }
 
-  public async close(): Promise<void> { await this.stop(); }
+  public async close(): Promise<void> { await this.stop('shutdown'); }
 
-  public async restart(): Promise<TunnelState> {
+  public async restart(reason: StopReason = 'restart'): Promise<TunnelState> {
     const mode = this.state.mode;
     if (mode === 'off') return this.getState();
-    await this.stop();
+    await this.stop(reason);
     return this.start(mode);
   }
 

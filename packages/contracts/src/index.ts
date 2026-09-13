@@ -257,6 +257,48 @@ export interface ProcessState {
   readonly error: string | null;
 }
 
+/**
+ * Why the manager asked a process it owns to stop.
+ *
+ * A stop looks identical from the outside whether the operator pressed Stop,
+ * a restore needed the data held still, or a different version was being
+ * installed - the exit code is null in every one of those cases. Recording the
+ * reason at the point the stop is requested is the only place that knows.
+ */
+export type StopReason =
+  | 'requested'
+  | 'restart'
+  | 'install'
+  | 'restore'
+  | 'profileSwitch'
+  | 'configChange'
+  | 'passwordChange'
+  | 'shutdown'
+  | 'startupFailed';
+
+export const STOP_REASON_TEXT: Readonly<Record<StopReason, string>> = {
+  requested: 'you asked it to stop',
+  restart: 'restarting it',
+  install: 'installing a different SillyTavern version',
+  restore: 'restoring a backup',
+  profileSwitch: 'switching profile',
+  configChange: 'applying a configuration change',
+  passwordChange: 'applying the new SillyTavern password',
+  shutdown: 'the manager is shutting down',
+  startupFailed: 'it did not finish starting',
+};
+
+/** The catalog key for a stop reason, for example `stoppedRequested`. */
+export function stopReasonCode(reason: StopReason): string {
+  return `stopped${reason.charAt(0).toUpperCase()}${reason.slice(1)}`;
+}
+
+/** How a process that nobody asked to stop went away. */
+export function describeExit(code: number | null, signal: string | null): string {
+  if (signal) return `signal ${signal}`;
+  return code === null ? 'no exit code' : `exit code ${code}`;
+}
+
 export type TunnelMode = 'off' | 'quick' | 'named';
 export type TunnelStatus = 'stopped' | 'starting' | 'running' | 'error';
 
