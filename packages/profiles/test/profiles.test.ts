@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getPlatformPaths } from '../../platform/src/index.js';
@@ -125,4 +125,60 @@ test('the profile snapshot copies an older version wrote are reclaimed', async (
   await assert.rejects(() => readdir(snapshots));
   // Nothing is left to reclaim on the next start.
   assert.equal(await store.removeLegacySnapshots(), false);
+});
+
+test('a legacy runtime leaves no second copy of the data behind it', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-profile-legacy-copies-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const store = new ProfileStore({ paths });
+  const profile = await store.create({ name: 'Default', installationId: 'install-1', runtimePath: join(root, 'runtime') }, true);
+  const runtimePath = join(root, 'legacy-runtime');
+  const publicRoot = join(runtimePath, 'public');
+  await mkdir(join(publicRoot, 'characters'), { recursive: true });
+  await mkdir(join(runtimePath, 'backups', '_migration', '2026-09-13', 'chats'), { recursive: true });
+  await writeFile(join(publicRoot, 'characters', 'card.png'), 'card', 'utf8');
+  await writeFile(join(runtimePath, 'backups', 'chat-backup.jsonl'), '{"line":1}', 'utf8');
+  // SillyTavern's own copy of the tree it migrated, which must not be carried in.
+  await writeFile(join(runtimePath, 'backups', '_migration', '2026-09-13', 'chats', 'copy.jsonl'), '{"line":1}', 'utf8');
+  // A static file of the runtime's own, which is not the operator's data.
+  await mkdir(join(publicRoot, 'scripts'), { recursive: true });
+  await writeFile(join(publicRoot, 'scripts', 'script.js'), 'run();', 'utf8');
+
+  await store.persistFromRuntime(profile, runtimePath, 'public');
+  const userData = join(profile.dataPath, 'default-user');
+  assert.equal(await readFile(join(userData, 'characters', 'card.png'), 'utf8'), 'card');
+  assert.equal(await readFile(join(userData, 'backups', 'chat-backup.jsonl'), 'utf8'), '{"line":1}');
+  await assert.rejects(() => readdir(join(userData, 'backups', '_migration')));
+
+  // The runtime keeps its own files and nothing of the operator's, so a modern
+  // release starting here has no legacy tree to migrate and copy again.
+  await store.settle();
+  assert.deepEqual((await readdir(publicRoot)).sort(), ['scripts']);
+  await assert.rejects(() => readdir(join(runtimePath, 'backups')));
+});
+
+test('a migration copy is reclaimed once the migration it protected has finished', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-profile-migration-copy-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const store = new ProfileStore({ paths });
+  const profile = await store.create({ name: 'Default', installationId: 'install-1', runtimePath: join(root, 'runtime') }, true);
+  const runtimePath = join(root, 'modern-runtime');
+  const migration = join(runtimePath, 'backups', '_migration', '2026-09-13');
+  await mkdir(migration, { recursive: true });
+  await writeFile(join(migration, 'copy.jsonl'), '{"line":1}', 'utf8');
+  // A data-root runtime, which is what makes the copy reclaimable at all.
+  await mkdir(join(runtimePath, 'public', 'scripts'), { recursive: true });
+  await writeFile(join(runtimePath, 'server.js'), 'const dataRoot = true;', 'utf8');
+  await writeFile(join(runtimePath, 'package.json'), JSON.stringify({ version: '1.16.0' }), 'utf8');
+
+  // A tree still waiting to be migrated keeps its safety net.
+  await mkdir(join(runtimePath, 'public', 'characters'), { recursive: true });
+  await store.prepareForRuntime(profile, runtimePath);
+  await store.settle();
+  assert.ok(await readdir(migration));
+
+  await rm(join(runtimePath, 'public', 'characters'), { recursive: true, force: true });
+  await store.prepareForRuntime(profile, runtimePath);
+  await store.settle();
+  await assert.rejects(() => readdir(migration));
 });

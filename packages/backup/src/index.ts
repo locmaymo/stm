@@ -580,6 +580,32 @@ export class BackupStore {
     return removed;
   }
 
+  /**
+   * Drop archives in the library that nothing points at.
+   *
+   * A backup writes `.<id>.zip.tmp` and renames it into place, and an import
+   * moves the upload in before recording it. Both have an error path that
+   * cleans up, but a process that is killed has no error path - and nothing
+   * ever looked afterwards. One partial archive here was 1.2 GB.
+   *
+   * Only safe at startup, before any backup of its own can be in flight.
+   */
+  public async sweepOrphanArchives(): Promise<number> {
+    let names: string[];
+    try {
+      names = await readdir(this.paths.archives);
+    } catch (error: unknown) {
+      if (isFileNotFound(error)) return 0;
+      throw error;
+    }
+    const known = new Set((await this.load()).map((manifest) => `${manifest.id}.zip`));
+    const orphans = names.filter((name) => (name.startsWith('.') && name.endsWith('.zip.tmp')) || (name.endsWith('.zip') && !known.has(name)));
+    if (orphans.length === 0) return 0;
+    await runPooled(orphans, ioConcurrency(), async (name) => { await rm(join(this.paths.archives, name), { force: true }); });
+    this.logger(`[backup] removed ${orphans.length} archive(s) an interrupted backup left behind`);
+    return orphans.length;
+  }
+
   /** Remove an interrupted chunked upload. */
   public async removeUpload(uploadId: string): Promise<void> {
     validateUploadId(uploadId);

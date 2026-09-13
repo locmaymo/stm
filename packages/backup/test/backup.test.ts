@@ -350,3 +350,20 @@ async function writeStoredZip(path: string, name: string, content: string): Prom
   const end = Buffer.alloc(22); end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(1, 8); end.writeUInt16LE(1, 10); end.writeUInt32LE(central.length, 12); end.writeUInt32LE(local.length + data.length, 16);
   await writeFile(path, Buffer.concat([local, data, central, end]));
 }
+
+test('archives nothing points at are reclaimed, and the ones in the library are kept', async () => {
+  const fixture = await createFixture();
+  const store = new BackupStore({ paths: fixture.paths });
+  const kept = await store.create(fixture.profile);
+
+  // A backup killed mid-write leaves its partial, and an import killed between
+  // moving the upload in and recording it leaves the whole archive.
+  await writeFile(join(fixture.paths.archives, '.aborted-backup.zip.tmp'), 'partial', 'utf8');
+  await writeFile(join(fixture.paths.archives, 'f1757ca2-56b3-4c62-998b-1a1d2693d7c5.zip'), 'unreferenced', 'utf8');
+
+  assert.equal(await store.sweepOrphanArchives(), 2);
+  assert.deepEqual(await readdir(fixture.paths.archives), [`${kept.id}.zip`]);
+  assert.ok(await store.getArchivePath(kept.id));
+  // Nothing left to reclaim on the next start.
+  assert.equal(await store.sweepOrphanArchives(), 0);
+});

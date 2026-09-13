@@ -10,6 +10,7 @@ import type { IoLimiter, PlatformPaths } from '../../platform/src/index.js';
 const PROFILE_STATE_FILE = 'profiles.json';
 const PROFILE_SCHEMA_VERSION = 1 as const;
 const DEFAULT_USER_HANDLE = 'default-user';
+const MIGRATION_COPY_NAMES = new Set(['_migration']);
 const LEGACY_RUNTIME_STATIC_NAMES = new Set(['assets', 'css', 'favicon.ico', 'i18n.json', 'img', 'index.html', 'jsconfig.json', 'lib', 'robots.txt', 'script.js', 'scripts', 'sounds', 'st-launcher.ico', 'style.css', 'webfonts']);
 
 export interface ProfileStoreOptions {
@@ -212,13 +213,35 @@ export class ProfileStore {
   /** Prepare canonical data for an older runtime that only understands public/. */
   public async prepareForRuntime(profile: Profile, runtimePath: string): Promise<ProfileLayout> {
     if (profile.layout === 'public') return 'public';
-    if (await runtimeSupportsDataRoot(runtimePath)) return 'data';
+    if (await runtimeSupportsDataRoot(runtimePath)) {
+      await this.reclaimMigrationCopy(runtimePath);
+      return 'data';
+    }
     const source = await resolveUserData(profile.dataPath);
     await syncCanonicalToLegacy(source, runtimePath);
     if (await exists(profile.configPath)) await copyPath(profile.configPath, join(runtimePath, 'config.yaml'));
     await writeLegacyRuntimeConfig(runtimePath);
     this.logger(`[profiles] synchronized ${profile.name} to legacy public/ runtime`);
     return 'public';
+  }
+
+  /**
+   * Reclaim the copy SillyTavern made before migrating a legacy tree.
+   *
+   * It is only removed once that migration has demonstrably finished - public/
+   * holds nothing but the runtime's own static files again - so a migration that
+   * was interrupted keeps the safety net it made for itself.
+   */
+  private async reclaimMigrationCopy(runtimePath: string): Promise<void> {
+    const migration = join(runtimePath, 'backups', '_migration');
+    if (!await exists(migration)) return;
+    const publicRoot = join(runtimePath, 'public');
+    const unmigrated = await exists(publicRoot)
+      ? (await readdir(publicRoot)).filter((child) => !LEGACY_RUNTIME_STATIC_NAMES.has(child))
+      : [];
+    if (unmigrated.length > 0) return;
+    this.logger('[profiles] reclaiming the SillyTavern migration copy left in the runtime');
+    this.trackCleanup(migration);
   }
 
   /** Persist changes made by an older runtime back into canonical data/. */
@@ -230,6 +253,9 @@ export class ProfileStore {
     await syncLegacyToCanonical(runtimePath, destination);
     const runtimeConfig = join(runtimePath, 'config.yaml');
     if (await exists(runtimeConfig)) await copyPath(runtimeConfig, profile.configPath);
+    // Everything is in the profile now, so the runtime's copy is waste. A run
+    // that never got here keeps its copy, which is what the next start needs.
+    await clearLegacyRuntimeData(runtimePath);
     this.logger(`[profiles] synchronized legacy public/ changes back to ${profile.name}`);
   }
 
@@ -364,8 +390,8 @@ function parseProfile(value: unknown): Profile {
   return value as unknown as Profile;
 }
 
-async function copyPath(source: string, destination: string): Promise<void> {
-  await copyTree(source, destination, null, 'A linked profile path needs review before switching profiles');
+async function copyPath(source: string, destination: string, excluded: Set<string> | null = null): Promise<void> {
+  await copyTree(source, destination, excluded, 'A linked profile path needs review before switching profiles');
 }
 
 /**
@@ -408,14 +434,29 @@ async function copySnapshotFile(source: string, destination: string): Promise<vo
   await copyFile(source, destination, fsConstants.COPYFILE_FICLONE);
 }
 
+/**
+ * Remove the user data a legacy runtime was given, leaving its own static files.
+ *
+ * The copy is redundant the moment it has been read back, and leaving it costs
+ * far more than its own size: a modern release starting in the same directory
+ * treats that tree as data to migrate and copies all of it into
+ * backups/_migration first, which was 3.5 GB on one profile here.
+ */
+async function clearLegacyRuntimeData(runtimePath: string): Promise<void> {
+  const publicRoot = join(runtimePath, 'public');
+  if (await exists(publicRoot)) {
+    for (const child of await readdir(publicRoot)) {
+      if (!LEGACY_RUNTIME_STATIC_NAMES.has(child)) await rm(join(publicRoot, child), { recursive: true, force: true });
+    }
+    await rm(join(publicRoot, 'scripts', 'extensions', 'third-party'), { recursive: true, force: true });
+  }
+  for (const child of ['backups', 'thumbnails', 'vectors']) await rm(join(runtimePath, child), { recursive: true, force: true });
+}
+
 async function syncCanonicalToLegacy(source: string, runtimePath: string): Promise<void> {
   const publicRoot = join(runtimePath, 'public');
   await mkdir(publicRoot, { recursive: true });
-  for (const child of await readdir(publicRoot)) {
-    if (!LEGACY_RUNTIME_STATIC_NAMES.has(child)) await rm(join(publicRoot, child), { recursive: true, force: true });
-  }
-  for (const child of ['backups', 'thumbnails', 'vectors']) await rm(join(runtimePath, child), { recursive: true, force: true });
-  await rm(join(publicRoot, 'scripts', 'extensions', 'third-party'), { recursive: true, force: true });
+  await clearLegacyRuntimeData(runtimePath);
   if (!await exists(source)) return;
   for (const child of await readdir(source)) {
     if (child === 'secrets.json') continue;
@@ -443,7 +484,11 @@ async function syncLegacyToCanonical(runtimePath: string, destination: string): 
   if (await exists(runtimeSecrets)) await copyPath(runtimeSecrets, join(destination, 'secrets.json'));
   for (const child of ['backups', 'thumbnails', 'vectors']) {
     const rootPath = join(runtimePath, child);
-    if (await exists(rootPath)) await copyPath(rootPath, join(destination, child));
+    if (!await exists(rootPath)) continue;
+    // SillyTavern's migration copy duplicates the very tree being copied here,
+    // so carrying it in would double the profile and put the double in every
+    // archive after it.
+    await copyPath(rootPath, join(destination, child), child === 'backups' ? MIGRATION_COPY_NAMES : null);
   }
 }
 
