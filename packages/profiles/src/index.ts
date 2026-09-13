@@ -516,9 +516,22 @@ async function runtimeSupportsDataRoot(runtimePath: string): Promise<boolean> {
   try { return (await readFile(join(runtimePath, 'server.js'), 'utf8')).includes('dataRoot'); } catch { return false; }
 }
 
+/** The first line of the config.conf this manager writes, and nothing else. */
+const MANAGER_LEGACY_CONF_MARKER = "require('./default/config.conf')";
+
 async function writeLegacyRuntimeConfig(runtimePath: string): Promise<void> {
   const defaults = join(runtimePath, 'default', 'config.conf');
-  if (!await exists(defaults)) return;
+  if (!await exists(defaults)) {
+    // This runtime reads config.yaml. A config.conf left by an older checkout
+    // makes its post-install stop merging defaults - "Both config.conf and
+    // config.yaml exist. Please delete config.conf manually." - so take back
+    // the file this manager wrote. A file it did not write is left alone.
+    const ours = join(runtimePath, 'config.conf');
+    try {
+      if ((await readFile(ours, 'utf8')).includes(MANAGER_LEGACY_CONF_MARKER)) await rm(ours, { force: true });
+    } catch { /* nothing of ours to take back */ }
+    return;
+  }
   let config: Record<string, unknown> = {};
   try {
     const parsed = parseYaml(await readFile(join(runtimePath, 'config.yaml'), 'utf8')) as unknown;

@@ -139,9 +139,10 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
         const installation = await runtime.getInstallation(profile.installationId);
         if (installation) {
           try {
-            if (await config.needsAccountMigration(profile, installation)) {
-              await config.update(profile, installation, { settings: { listen: false, enableUserAccounts: true } });
-            }
+            // The runtime about to be started may be older or newer than the
+            // one this config was written for, and the two refuse opposite
+            // things. Settle that before anything copies it into the runtime.
+            await config.reconcileForRuntime(profile, installation);
           } catch (error: unknown) {
             if (!(error instanceof ConfigError) || error.code !== 'config_missing') throw error;
           }
@@ -293,10 +294,10 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       readyInstallation = await runtime.migrateLegacyInstallation?.(activeInstallation) ?? activeInstallation;
       await profiles.ensureDefault({ installationId: readyInstallation.id, runtimePath: readyInstallation.runtimePath });
       const activeProfile = await profiles.getActive();
+      // Reading it first turns a missing config into the handled error below
+      // rather than a fault during startup.
       const currentConfig = activeProfile ? await config.read(activeProfile, readyInstallation) : null;
-      const accessNeedsMigration = activeProfile ? await config.needsAccountMigration(activeProfile, readyInstallation) : false;
-      if (activeProfile && currentConfig && accessNeedsMigration) {
-        await config.update(activeProfile, readyInstallation, { settings: { listen: false, enableUserAccounts: true } });
+      if (activeProfile && currentConfig && await config.reconcileForRuntime(activeProfile, readyInstallation) === 'accounts') {
         logger(logEvent('config.accountsMigrated', '[config] migrated access security to SillyTavern accounts; LAN access is waiting for an admin password'));
       }
       await runtime.cleanupLegacyRuntimeCopies?.(readyInstallation.id);

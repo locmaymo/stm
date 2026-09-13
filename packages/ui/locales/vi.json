@@ -367,7 +367,8 @@
     "config": {
       "updated": "Đã cập nhật {path}",
       "accountsMigrated": "Đã chuyển bảo mật truy cập sang tài khoản SillyTavern; truy cập mạng nội bộ đang chờ mật khẩu quản trị",
-      "basicAuthPasswordSet": "Đã đặt mật khẩu Basic Auth trong {path}"
+      "basicAuthPasswordSet": "Đã đặt mật khẩu Basic Auth trong {path}",
+      "legacySecured": "Đã chỉnh {path} để phiên bản SillyTavern này khởi động được"
     },
     "sillytavern": {
       "starting": "Đang khởi động {ref} trên 127.0.0.1:8000",

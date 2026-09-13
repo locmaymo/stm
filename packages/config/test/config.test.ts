@@ -126,3 +126,58 @@ test('a version without accounts keeps Basic Auth through an unrelated settings 
   assert.equal(raw.basicAuthUser.password, 'a-real-secret');
   assert.equal(raw.enableUserAccounts, undefined, 'a key this version does not understand is not invented for it');
 });
+
+test('downgrading to a version without accounts leaves a config it can start from', async () => {
+  // What the panel writes for a version with user accounts: the network is
+  // open because an account password guards it, so whitelisting is off. On
+  // 1.10 that exact combination makes the server print "unsecurely open to
+  // the public" and exit 1 before it ever listens.
+  const { store, profile, installation, configPath } = await fixture(false);
+  await writeFile(configPath, 'listen: true\nport: 8000\nwhitelistMode: false\nbasicAuthMode: false\nenableUserAccounts: true\nbasicAuthUser:\n  username: user\n  password: password\n', 'utf8');
+
+  assert.equal(await store.reconcileForRuntime(profile, installation), 'basicAuth');
+  const raw = parseYaml(await readFile(configPath, 'utf8'));
+  assert.equal(raw.listen, false, 'with no password to open the port with, it is closed rather than left unstartable');
+  assert.equal(raw.basicAuthMode, false);
+  // Nothing left to fix, so a second start rewrites nothing.
+  assert.equal(await store.reconcileForRuntime(profile, installation), null);
+});
+
+test('a legacy version with a password keeps the network open instead of losing it', async () => {
+  const { store, profile, installation, configPath } = await fixture(false);
+  await writeFile(configPath, 'listen: true\nport: 8000\nwhitelistMode: false\nbasicAuthMode: false\nbasicAuthUser:\n  username: user\n  password: a-real-secret\n', 'utf8');
+
+  assert.equal(await store.reconcileForRuntime(profile, installation), 'basicAuth');
+  const raw = parseYaml(await readFile(configPath, 'utf8'));
+  assert.equal(raw.listen, true, 'there is a password, so the port it guards stays open');
+  assert.equal(raw.basicAuthMode, true);
+});
+
+test('a legacy runtime is not left opening its own browser window', async () => {
+  const { store, profile, installation, configPath } = await fixture(false);
+  await writeFile(configPath, 'listen: false\nport: 8000\nautorun: true\nbrowserLaunch:\n  enabled: true\n', 'utf8');
+  assert.equal(await store.reconcileForRuntime(profile, installation), 'basicAuth');
+  const raw = parseYaml(await readFile(configPath, 'utf8'));
+  assert.equal(raw.autorun, false);
+  assert.equal(raw.browserLaunch.enabled, false);
+});
+
+test('enabling the network on a legacy version turns on the only guard it has', async () => {
+  const { store, profile, installation, configPath } = await fixture(false);
+  await store.setBasicAuthPassword(profile, installation, 'a-real-secret');
+  await store.update(profile, installation, { settings: { listen: true } });
+  const raw = parseYaml(await readFile(configPath, 'utf8'));
+  assert.equal(raw.listen, true);
+  assert.equal(raw.basicAuthMode, true, 'otherwise the runtime refuses to start at all');
+});
+
+test('a version with accounts still migrates towards accounts', async () => {
+  const { store, profile, installation, configPath } = await fixture();
+  await writeFile(configPath, 'listen: true\nport: 8000\nbasicAuthMode: true\nbasicAuthUser:\n  username: user\n  password: a-real-secret\n', 'utf8');
+  assert.equal(await store.reconcileForRuntime(profile, installation), 'accounts');
+  const raw = parseYaml(await readFile(configPath, 'utf8'));
+  assert.equal(raw.enableUserAccounts, true);
+  assert.equal(raw.basicAuthMode, false);
+  assert.equal(raw.listen, false, 'the new account has no password yet, so the network waits for one');
+  assert.equal(await store.reconcileForRuntime(profile, installation), null);
+});

@@ -367,7 +367,8 @@
     "config": {
       "updated": "Updated {path}",
       "accountsMigrated": "Moved access security to SillyTavern accounts; local network access is waiting for an admin password",
-      "basicAuthPasswordSet": "Set the Basic Auth password in {path}"
+      "basicAuthPasswordSet": "Set the Basic Auth password in {path}",
+      "legacySecured": "Adjusted {path} so this SillyTavern version will start"
     },
     "sillytavern": {
       "starting": "Starting {ref} on 127.0.0.1:8000",

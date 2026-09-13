@@ -59,6 +59,56 @@ export class ConfigStore {
     return 'basicAuth';
   }
 
+  /**
+   * Make the profile config something this runtime version will start from.
+   *
+   * The two versions want opposite things from the same file, so switching
+   * between them has to rewrite it. Returns which shape it moved the config
+   * into, or null when it was already right.
+   */
+  public async reconcileForRuntime(profile: Profile, installation: Installation): Promise<AccessMode | null> {
+    if (await this.accessMode(installation) === 'accounts') {
+      if (!await this.needsAccountMigration(profile, installation)) return null;
+      await this.update(profile, installation, { settings: { listen: false, enableUserAccounts: true } });
+      return 'accounts';
+    }
+    return await this.secureLegacyConfig(profile, installation) ? 'basicAuth' : null;
+  }
+
+  /**
+   * Leave an older runtime with a configuration it will actually start from.
+   *
+   * SillyTavern before 1.12 exits immediately when `listen` is on and neither
+   * whitelisting nor Basic Auth is - and that is the exact shape of a config
+   * written for a version with user accounts, where `listen` is safe because
+   * an account password guards it. Installing an older version on top of that
+   * config produced a runtime that printed "unsecurely open to the public" and
+   * exited with code 1 on every start, which reads as the version being broken.
+   */
+  private async secureLegacyConfig(profile: Profile, installation: Installation): Promise<boolean> {
+    const path = await resolveConfigPath(profile, installation.runtimePath);
+    const document = parseYaml(await readConfig(path));
+    let changed = false;
+    if (getPath(document, ['listen']) === true && getPath(document, ['basicAuthMode']) !== true && getPath(document, ['whitelistMode']) !== true) {
+      // Keep the network open when there is a real password to open it with,
+      // and close it when there is not. Never start it unprotected.
+      const password = getPath(document, ['basicAuthUser', 'password']);
+      if (typeof password === 'string' && password && password !== DEFAULT_BASIC_AUTH_USER.password) setPath(document, ['basicAuthMode'], true);
+      else setPath(document, ['listen'], false);
+      changed = true;
+    }
+    // The manager opens the console itself. These are the keys the older
+    // versions read instead of --browserLaunchEnabled, which they ignore.
+    for (const key of [['autorun'], ['browserLaunch', 'enabled']]) {
+      if (getPath(document, key) === true) { setPath(document, key, false); changed = true; }
+    }
+    if (!changed) return false;
+    const nextRaw = String(document);
+    await atomicWriteYaml(path, nextRaw);
+    this.logger(logEvent('config.legacySecured', `[config] adjusted ${path} so this SillyTavern version will start`, { path }));
+    return true;
+  }
+
   /** What the panel needs to report Basic Auth, without reading the password out. */
   public async readBasicAuth(profile: Profile, installation: Installation): Promise<{ username: string; passwordConfigured: boolean; enabled: boolean }> {
     const document = parseYaml(await readConfig(await resolveConfigPath(profile, installation.runtimePath)));
@@ -132,6 +182,10 @@ export class ConfigStore {
     const settings = extractSettings(document);
     if (settings.listen) {
       setPath(document, ['whitelistMode'], false);
+      // Without accounts, Basic Auth is the only thing guarding the port, and
+      // a version that has no accounts refuses to start without one of them.
+      // The API will not enable listen until a password exists.
+      if (mode === 'basicAuth') setPath(document, ['basicAuthMode'], true);
     }
     if (settings.port !== 8000) {
       throw new ConfigError('invalid_config', 'SillyTavern must keep port 8000 when managed by SillyTavern Manager');
