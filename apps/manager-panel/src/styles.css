@@ -190,6 +190,7 @@
 .system-value { display: block; height: 100%; border-radius: 999px; background: var(--primary); }
 .system-note { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 12px; color: var(--muted-foreground); font-size: 11px; }
 .operation-progress { display: grid; gap: 6px; color: var(--muted-foreground); font-size: 12px; }
+.operation-headline { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
 .operation-warning { color: var(--destructive); }
 .progress-track { display: block; height: 4px; overflow: hidden; border-radius: 999px; background: var(--muted); }
 .progress-value { display: block; height: 100%; border-radius: inherit; background: var(--primary); transition: width .2s ease; }

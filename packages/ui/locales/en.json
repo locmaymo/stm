@@ -10,7 +10,8 @@
     "save": "Save",
     "delete": "Delete",
     "refresh": "Refresh",
-    "loading": "Loading"
+    "loading": "Loading",
+    "stop": "Stop"
   },
   "nav": {
     "overview": "Overview",
@@ -224,7 +225,9 @@
     "uploadEstimating": "estimating time left…",
     "basicAuthHelp": "This SillyTavern version has no user accounts, so the manager protects it with Basic Auth. Your browser will ask for this username and password. Your manager login is separate.",
     "basicAuthUser": "Basic Auth username",
-    "accountsUnavailable": "SillyTavern did not report its account details for this version or login configuration."
+    "accountsUnavailable": "SillyTavern did not report its account details for this version or login configuration.",
+    "stopping": "Stopping…",
+    "restoreStoppedPartway": "The restore was stopped partway, so this profile holds part of the old data and part of the new. Restore the -prerestore backup in the list to put it back as it was."
   },
   "dashboard": {
     "eyebrow": "CONTROL ROOM / OVERVIEW",
@@ -471,7 +474,9 @@
       "startingTunnel": "Starting the public tunnel",
       "restoreComplete": "Restore complete",
       "completed": "Completed",
-      "failed": "Failed"
+      "failed": "Failed",
+      "stopping": "Stopping",
+      "stopped": "Stopped"
     },
     "restore": {
       "restoringFiles": "Restoring files",

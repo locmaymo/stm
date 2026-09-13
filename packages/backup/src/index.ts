@@ -42,12 +42,16 @@ export interface BackupStoreOptions {
 export interface CreateBackupOptions {
   readonly name?: string;
   readonly onProgress?: (progress: { completed: number; total: number }) => void;
+  /** Aborted when the operator stops the operation from the panel. */
+  readonly signal?: AbortSignal;
 }
 
 export interface RestoreOptions {
   readonly mode: RestoreMode;
   readonly onProgress?: (progress: { completed: number; total: number }) => void;
   readonly onStatus?: (step: LogEvent) => void;
+  /** Aborted when the operator stops the operation from the panel. */
+  readonly signal?: AbortSignal;
 }
 
 interface PersistedBackups {
@@ -243,6 +247,7 @@ export class BackupStore {
       let completed = 0;
       const skipped: string[] = [];
       for (const source of sources) {
+        throwIfStopped(options.signal);
         if (!await writer.addFile(source.name, source.path)) skipped.push(source.name);
         completed += 1;
         options.onProgress?.({ completed, total: sources.length });
@@ -376,6 +381,7 @@ export class BackupStore {
    * does not mention have to be removed, and that set is normally small.
    */
   private async restoreUnlocked(profile: Profile, archivePath: string, options: RestoreOptions): Promise<RestorePreview> {
+    throwIfStopped(options.signal);
     const entries = await readZipDirectory(archivePath);
     const preview = previewEntries(entries, profile.layout);
     const dataDestination = await resolveProfileDataRoot(profile);
@@ -392,7 +398,7 @@ export class BackupStore {
     await this.sweepAbandonedStaging(resolve(dataDestination, '..'));
     options.onStatus?.(logEvent('restore.restoringFiles', 'Restoring files'));
     this.logger(logEvent('backup.restoring', `[backup] restoring ${plan.length} files into ${dataDestination}`, { count: plan.length, path: dataDestination }));
-    await this.timed(logEvent('backup.phaseWroteFiles', `wrote ${plan.length} files`, { count: plan.length }), () => extractPlan(archivePath, plan, options.onProgress));
+    await this.timed(logEvent('backup.phaseWroteFiles', `wrote ${plan.length} files`, { count: plan.length }), () => extractPlan(archivePath, plan, options.onProgress, options.signal));
     if (obsolete.length > 0) {
       options.onStatus?.(logEvent('restore.removingObsolete', 'Removing files the backup does not contain'));
       await this.timed(logEvent('backup.phaseRemovedObsolete', `removed ${obsolete.length} files the backup does not contain`, { count: obsolete.length }), () => removeAll(obsolete));
@@ -677,6 +683,18 @@ export class BackupStore {
   }
 }
 
+/**
+ * Stop between files rather than mid-file.
+ *
+ * A restore writes entries straight into the profile, so stopping leaves it
+ * part old and part new - which is exactly what the pre-restore snapshot the
+ * caller takes is for. Stopping between whole files at least means no file is
+ * left truncated.
+ */
+function throwIfStopped(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new BackupError('operation_canceled', 'The operation was stopped');
+}
+
 export class BackupError extends Error {
   public readonly code: string;
   public constructor(code: string, message: string) {
@@ -916,7 +934,7 @@ function planEntries(entries: ZipEntry[], options: PlanOptions): PlannedEntry[] 
   return planned;
 }
 
-async function extractPlan(zipPath: string, planned: readonly PlannedEntry[], onProgress?: (progress: { completed: number; total: number }) => void): Promise<void> {
+async function extractPlan(zipPath: string, planned: readonly PlannedEntry[], onProgress?: (progress: { completed: number; total: number }) => void, signal?: AbortSignal): Promise<void> {
   const parents = new Set<string>();
   for (const item of planned) parents.add(resolve(item.target, '..'));
   const total = planned.length;
@@ -929,6 +947,7 @@ async function extractPlan(zipPath: string, planned: readonly PlannedEntry[], on
   let completed = 0;
   try {
     await runPooled(planned, concurrency, async (item, slot) => {
+      throwIfStopped(signal);
       await extractEntry(handles[slot]!, item.entry, item.target);
       completed += 1;
       // Updating the in-memory job for every tiny preset makes a remote

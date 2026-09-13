@@ -4,7 +4,7 @@ import { readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import { extname, join, relative, resolve } from 'node:path';
-import { logEvent, logLineText, type AccessSecurityState, type ApiErrorBody, type ConfigUpdateInput, type HealthResponse, type Installation, type Job, type LogEntry, type LogEvent, type LogLine, type LogSink, type LogSourceFilter, type ManagerPorts, type ProfileLayout, type SetupStatus, type VersionSelector } from '../../../packages/contracts/src/index.js';
+import { logEvent, logLineText, type AccessSecurityState, type ApiErrorBody, type ConfigUpdateInput, type HealthResponse, type Installation, type Job, type JobState, type LogEntry, type LogEvent, type LogLine, type LogSink, type LogSourceFilter, type ManagerPorts, type ProfileLayout, type SetupStatus, type VersionSelector } from '../../../packages/contracts/src/index.js';
 import { getPlatformPaths, type PlatformPaths } from '../../../packages/platform/src/index.js';
 import { RuntimeError, RuntimeManager, type InstallationProgress } from '../../../packages/sillytavern-runtime/src/index.js';
 import { hashPassword, MIN_PASSWORD_LENGTH, validatePassword, verifyPassword } from './password.js';
@@ -706,9 +706,10 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     if (!profile) { sendError(response, 409, 'profile_required', 'Create or activate a profile before creating a backup'); return; }
     const body = await readJson(request);
     const name = isRecord(body) && typeof body.name === 'string' ? body.name : undefined;
-    const job = jobs.createOperation('backup', logEvent('job.preparingBackup', 'Preparing backup'));
+    const { job, signal } = jobs.createOperation('backup', logEvent('job.preparingBackup', 'Preparing backup'));
     void backups.create(profile, {
       ...(name ? { name } : {}),
+      signal,
       onProgress: ({ completed, total }) => jobs.updateOperation(job.id, total > 0 ? (completed / total) * 90 : 50, logEvent('job.compressingFiles', `Compressing files (${completed}/${total})`, { completed, total })),
     }).then((manifest) => { jobs.updateOperation(job.id, 95, logEvent('job.savingLibrary', 'Saving backup library')); jobs.finishOperation(job.id, 'succeeded', null); return manifest; })
       .catch((error: unknown) => jobs.finishOperation(job.id, 'failed', error instanceof Error ? error.message : 'Backup failed'));
@@ -809,8 +810,8 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       const body = await readJson(request);
       const mode = isRecord(body) && (body.mode === 'merge' || body.mode === 'replace') ? body.mode : null;
       if (!mode) { sendError(response, 400, 'invalid_restore_mode', 'Restore mode must be merge or replace'); return; }
-      const job = jobs.createOperation('restore', logEvent('job.preparingRestore', 'Preparing restore'));
-      void restoreWithProcess({ profile, backups, archivePath, mode, supervisor, tunnel, onProgress: (progress, step) => jobs.updateOperation(job.id, progress, step) })
+      const { job, signal } = jobs.createOperation('restore', logEvent('job.preparingRestore', 'Preparing restore'));
+      void restoreWithProcess({ profile, backups, archivePath, mode, supervisor, tunnel, signal, onProgress: (progress, step) => jobs.updateOperation(job.id, progress, step) })
         .then(() => jobs.finishOperation(job.id, 'succeeded', null))
         .catch((error: unknown) => jobs.finishOperation(job.id, 'failed', error instanceof Error ? error.message : 'Restore failed'));
       sendJson(response, 202, { jobId: job.id, job });
@@ -860,6 +861,14 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     sendJson(response, 200, { job: jobs.activeOperation() });
     return;
   }
+  const jobCancelMatch = /^\/api\/v1\/jobs\/([^/]+)\/cancel$/u.exec(pathname);
+  if (jobCancelMatch && method === 'POST') {
+    const id = jobCancelMatch[1] ?? '';
+    if (!jobs.get(id)) { sendError(response, 404, 'job_not_found', 'Job not found'); return; }
+    if (!jobs.cancel(id)) { sendError(response, 409, 'job_not_running', 'That job has already finished'); return; }
+    sendJson(response, 200, jobs.get(id));
+    return;
+  }
   const jobMatch = /^\/api\/v1\/jobs\/([^/]+)$/u.exec(pathname);
   if (jobMatch && method === 'GET') {
     const job = jobs.get(jobMatch[1] ?? '');
@@ -888,9 +897,10 @@ async function restoreWithProcess(options: {
   readonly mode: 'merge' | 'replace';
   readonly supervisor: ProcessSupervisor;
   readonly tunnel: TunnelManager;
+  readonly signal?: AbortSignal;
   readonly onProgress?: (progress: number, step: LogEvent) => void;
 }): Promise<{ preview: Awaited<ReturnType<BackupStore['restore']>>; safetySnapshot: Awaited<ReturnType<BackupStore['create']>>; process: ReturnType<ProcessSupervisor['getState']> }> {
-  const { profile, backups, archivePath, mode, supervisor, tunnel, onProgress } = options;
+  const { profile, backups, archivePath, mode, supervisor, tunnel, signal, onProgress } = options;
   const previousTunnelMode = tunnel.getState().mode;
   // Claim the backup store before stopping anything. Otherwise the scheduler's
   // next tick sees an idle store and starts a full backup that the restore then
@@ -908,11 +918,13 @@ async function restoreWithProcess(options: {
     onProgress?.(15, logEvent('job.creatingSafetySnapshot', 'Creating safety snapshot'));
     const safetySnapshot = await backups.createSafetyCopy(profile, {
       name: `${profile.name}-prerestore`,
+      ...(signal ? { signal } : {}),
       onProgress: ({ completed, total }) => onProgress?.(15 + (total > 0 ? (completed / total) * 10 : 0), logEvent('job.backingUpCurrentData', `Backing up current data (${completed}/${total})`, { completed, total })),
     });
     onProgress?.(25, logEvent('job.restoringData', 'Restoring data'));
     const preview = await backups.restore(profile, archivePath, {
       mode,
+      ...(signal ? { signal } : {}),
       onProgress: ({ completed, total }) => onProgress?.(25 + (total > 0 ? (completed / total) * 60 : 60), logEvent('job.restoringFiles', `Restoring files (${completed}/${total})`, { completed, total })),
       onStatus: (step) => onProgress?.(RESTORE_STEP_PROGRESS[step.code] ?? 86, step),
     });
@@ -1400,6 +1412,7 @@ function contentTypeFor(filePath: string): string {
 
 class JobStore {
   private readonly jobs = new Map<string, Job>();
+  private readonly controllers = new Map<string, AbortController>();
 
   public constructor(private readonly logBuffer = new LogBuffer()) {}
 
@@ -1433,7 +1446,14 @@ class JobStore {
     return job;
   }
 
-  public createOperation(kind: 'backup' | 'restore', step: LogEvent): Job {
+  /**
+   * Start an operation the operator can stop.
+   *
+   * A restore or a large upload runs for minutes in the server, and until now
+   * the only way out of one started by mistake was to kill the manager. The
+   * returned signal is what the work watches.
+   */
+  public createOperation(kind: 'backup' | 'restore', step: LogEvent): { job: Job; signal: AbortSignal } {
     const now = new Date().toISOString();
     const job: Job = {
       id: `job-${randomUUID()}`,
@@ -1449,8 +1469,22 @@ class JobStore {
       error: null,
     };
     this.jobs.set(job.id, job);
-    return job;
+    const controller = new AbortController();
+    this.controllers.set(job.id, controller);
+    return { job, signal: controller.signal };
   }
+
+  /** Ask a running operation to stop. False when there is nothing to stop. */
+  public cancel(id: string): boolean {
+    const current = this.jobs.get(id);
+    const controller = this.controllers.get(id);
+    if (!current || !controller || current.state !== 'running') return false;
+    controller.abort();
+    this.jobs.set(id, { ...current, step: 'Stopping', stepCode: 'job.stopping', updatedAt: new Date().toISOString() });
+    return true;
+  }
+
+  public wasCanceled(id: string): boolean { return this.controllers.get(id)?.signal.aborted === true; }
 
   public get(id: string): Job | null { return this.jobs.get(id) ?? null; }
 
@@ -1493,7 +1527,11 @@ class JobStore {
   public finishOperation(id: string, state: 'succeeded' | 'failed', error: string | null): void {
     const current = this.jobs.get(id);
     if (!current) return;
-    this.jobs.set(id, { ...current, state, progress: state === 'succeeded' ? 100 : current.progress, step: state === 'succeeded' ? 'Completed' : 'Failed', stepCode: state === 'succeeded' ? 'job.completed' : 'job.failed', error, updatedAt: new Date().toISOString() });
+    const settled: JobState = state === 'failed' && this.wasCanceled(id) ? 'canceled' : state;
+    const step = settled === 'succeeded' ? 'Completed' : settled === 'canceled' ? 'Stopped' : 'Failed';
+    const stepCode = settled === 'succeeded' ? 'job.completed' : settled === 'canceled' ? 'job.stopped' : 'job.failed';
+    this.controllers.delete(id);
+    this.jobs.set(id, { ...current, state: settled, progress: settled === 'succeeded' ? 100 : current.progress, step, stepCode, error: settled === 'canceled' ? null : error, updatedAt: new Date().toISOString() });
   }
 }
 

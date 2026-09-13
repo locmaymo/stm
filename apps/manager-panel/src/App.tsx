@@ -3,7 +3,7 @@ import {
   Archive, ArrowDown, ArrowUp, ArrowUpRight, BarChart3, Copy, Database, Download,
   Globe2, LayoutDashboard, Maximize2, Minimize2, Moon, Package, Plus,
   ScrollText, Search, Sun, Upload, Users as UsersIcon, X, Rows3,
-  BrainCircuit, Clock3, Cpu, Ellipsis, RefreshCw, Settings2,
+  BrainCircuit, CircleStop, Clock3, Cpu, Ellipsis, RefreshCw, Settings2,
 } from 'lucide-react';
 import {
   Badge, Button, Card, CardAction, CardContent, CardFooter, CardHeader,
@@ -48,13 +48,20 @@ function apiErrorFromText(text: string, status: number, fallback: string): strin
   }
 }
 
-async function uploadChunkWithRetry(url: string, body: Blob, headers: HeadersInit): Promise<void> {
+/** Thrown when the operator stops the work themselves, which is not an error. */
+class StoppedError extends Error {
+  public constructor() { super('stopped'); this.name = 'StoppedError'; }
+}
+
+async function uploadChunkWithRetry(url: string, body: Blob, headers: HeadersInit, signal?: AbortSignal): Promise<void> {
   let lastError = 'Upload request failed';
   for (let attempt = 0; attempt <= UPLOAD_RETRIES; attempt += 1) {
+    if (signal?.aborted) throw new StoppedError();
     let response: Response;
     try {
-      response = await fetch(url, { method: 'POST', credentials: 'same-origin', headers, body });
+      response = await fetch(url, { method: 'POST', credentials: 'same-origin', headers, body, ...(signal ? { signal } : {}) });
     } catch (error: unknown) {
+      if (signal?.aborted) throw new StoppedError();
       lastError = error instanceof Error ? error.message : lastError;
       if (attempt === UPLOAD_RETRIES) throw new Error(lastError);
       await new Promise((resolvePromise) => window.setTimeout(resolvePromise, 500 * (attempt + 1)));
@@ -559,6 +566,10 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
   const [selectedPreview, setSelectedPreview] = useState<RestorePreview | null>(null);
   const [operationProgress, setOperationProgress] = useState<{ percent: number; step: string } | null>(null);
   const [uploading, setUploading] = useState(false);
+  // What the Stop button acts on: a server job by id, or the upload in flight.
+  const [runningJobId, setRunningJobId] = useState<string | null>(null);
+  const [stopping, setStopping] = useState(false);
+  const uploadAbort = useRef<AbortController | null>(null);
   const [r2Config, setR2Config] = useState<R2Config | null>(null);
   const [r2Objects, setR2Objects] = useState<R2Object[]>([]);
   const [r2Form, setR2Form] = useState({ endpoint: '', bucket: '', accountId: '', accessKeyId: '', secretAccessKey: '', enabled: false, localIntervalMinutes: 60, r2IntervalHours: 24, fullIntervalDays: 7, maxBackups: 7, retentionDays: 30 });
@@ -592,16 +603,37 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
         const running = payload.job;
         setBusyAction(running.kind === 'restore' ? t('console.restore') : t('dashboard.backupNow'));
         setOperationProgress({ percent: running.progress, step: jobStep(running) });
+        setRunningJobId(running.id);
         await waitForOperation(running.id, (job) => { if (!cancelled) setOperationProgress({ percent: job.progress, step: jobStep(job) }); });
         if (!cancelled) await refresh();
       } catch (error: unknown) {
         if (!cancelled) setError(error instanceof Error ? error.message : t('console.backupRestoreFailed'));
       } finally {
-        if (!cancelled) { setBusyAction(null); setOperationProgress(null); }
+        if (!cancelled) { setBusyAction(null); setOperationProgress(null); setRunningJobId(null); }
       }
     })();
     return () => { cancelled = true; };
   }, []);
+
+  /**
+   * Stop whatever is running now.
+   *
+   * An upload is stopped in the browser, because that is where the bytes still
+   * are. A backup or restore is stopped in the server, which is where the work
+   * is; it stops between whole files and the pre-restore snapshot is the way
+   * back from a restore that got part of the way through.
+   */
+  const stopOperation = async () => {
+    setStopping(true);
+    try {
+      uploadAbort.current?.abort();
+      if (runningJobId) await fetch(`/api/v1/jobs/${encodeURIComponent(runningJobId)}/cancel`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+    } catch {
+      // The poll below reports what actually happened either way.
+    } finally {
+      setStopping(false);
+    }
+  };
 
   // Chunks are held in the browser until the last one lands, so a reload or a
   // navigation away throws the whole upload out. Warn before that happens.
@@ -635,10 +667,14 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
       const response = await fetch('/api/v1/backups', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ ...(backupName.trim() ? { name: backupName.trim() } : {}) }) });
       const payload = await response.json() as { jobId?: string; error?: { message?: string } };
       if (!response.ok || !payload.jobId) { setError(payload.error?.message ?? t('console.backupCreateFailed')); return; }
+      setRunningJobId(payload.jobId);
       await waitForOperation(payload.jobId, (job) => setOperationProgress({ percent: job.progress, step: jobStep(job) }));
       setBackupName('');
       await refresh();
-    } catch (error: unknown) { setError(error instanceof Error ? error.message : t('console.backupCreateFailed')); } finally { setBusyAction(null); setOperationProgress(null); }
+    } catch (error: unknown) {
+      if (error instanceof StoppedError) { setError(null); await refresh(); }
+      else setError(error instanceof Error ? error.message : t('console.backupCreateFailed'));
+    } finally { setBusyAction(null); setOperationProgress(null); setRunningJobId(null); }
   };
   const waitForOperation = async (jobId: string, onUpdate: (job: Job) => void): Promise<void> => {
     for (;;) {
@@ -647,6 +683,7 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
       const job = await response.json() as Job;
       onUpdate(job);
       if (job.state === 'succeeded') return;
+      if (job.state === 'canceled') throw new StoppedError();
       if (job.state === 'failed') throw new Error(job.error ?? t('console.backupRestoreFailed'));
       await new Promise((resolvePromise) => window.setTimeout(resolvePromise, 700));
     }
@@ -667,13 +704,21 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
       const response = await fetch(`/api/v1/backups/${selectedBackup.id}/restore`, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ mode: restoreMode }) });
       const payload = await response.json() as { jobId?: string; error?: { message?: string } };
       if (!response.ok || !payload.jobId) { setError(payload.error?.message ?? t('console.backupRestoreFailed')); return; }
+      setRunningJobId(payload.jobId);
       await waitForOperation(payload.jobId, (job) => setOperationProgress({ percent: job.progress, step: jobStep(job) }));
       setSelectedBackup(null); setSelectedPreview(null); await refresh();
-    } catch (error: unknown) { setError(error instanceof Error ? error.message : t('console.backupRestoreFailed')); } finally { setBusyAction(null); setOperationProgress(null); }
+    } catch (error: unknown) {
+      // A restore that was stopped part of the way through left the profile
+      // part old and part new. Say so, and say where the way back is.
+      if (error instanceof StoppedError) { setError(t('console.restoreStoppedPartway')); await refresh(); }
+      else setError(error instanceof Error ? error.message : t('console.backupRestoreFailed'));
+    } finally { setBusyAction(null); setOperationProgress(null); setRunningJobId(null); }
   };
   const inspectUpload = async (file: File | undefined) => {
     if (!file) return;
     setBusyAction(t('console.importZip')); setOperationProgress({ percent: 0, step: t('console.importZip') }); setError(null); setUploading(true);
+    const controller = new AbortController();
+    uploadAbort.current = controller;
     const uploadId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     try {
       let index = 0;
@@ -687,6 +732,7 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
           `/api/v1/backups/import/chunk?uploadId=${encodeURIComponent(uploadId)}&index=${index}`,
           file.slice(offset, end),
           { 'content-type': 'application/octet-stream', 'x-csrf-token': csrfToken, accept: 'application/json' },
+          controller.signal,
         );
         index += 1;
         const at = Date.now();
@@ -715,9 +761,11 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
       setSelectedBackup(payload.backup); setSelectedPreview(payload);
       await refresh();
     } catch (error: unknown) {
+      // The part file on the server is worth nothing without the rest of it,
+      // whether the upload failed or the operator stopped it.
       await fetch(`/api/v1/backups/import/chunk?uploadId=${encodeURIComponent(uploadId)}`, { method: 'DELETE', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } }).catch(() => undefined);
-      setError(error instanceof Error ? error.message : t('console.backupPreviewFailed'));
-    } finally { setBusyAction(null); setOperationProgress(null); setUploading(false); }
+      setError(error instanceof StoppedError ? null : error instanceof Error ? error.message : t('console.backupPreviewFailed'));
+    } finally { uploadAbort.current = null; setBusyAction(null); setOperationProgress(null); setUploading(false); }
   };
   const renameBackup = async (backup: BackupManifest) => {
     const nextName = window.prompt(t('console.renameBackup'), backup.name.replace(/\.zip$/u, ''));
@@ -774,7 +822,7 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
       {activeProfile?.legacyLayout === 'public' ? <p className="data-migration-note">{t('console.legacyMigrated')}</p> : null}
     </CardContent></Card>
     <Card className="backup-library-card"><PanelHeading icon={<Archive />} action={<div className="backup-actions"><Button size="sm" onClick={() => void createBackup()} disabled={busy || !activeProfileId}><Archive />{t('dashboard.backupNow')}</Button><label className="button-outline"><Upload />{t('console.importZip')}<input type="file" accept=".zip,application/zip" onChange={(event) => void inspectUpload(event.target.files?.[0])} /></label></div>}>{t('console.backupLibrary')}</PanelHeading>
-      <CardContent className="space-y-4"><div className="backup-controls"><Input value={backupName} onChange={(event) => setBackupName(event.target.value)} placeholder={t('console.backupNameOptional')} aria-label={t('console.backupNameOptional')} /></div>{error ? <p className="install-error" role="alert">{error}</p> : null}{busyAction ? <div className="operation-progress" role="status"><span>{busyAction}</span>{operationProgress ? <><span>{operationProgress.step} · {operationProgress.percent}%</span><span className="progress-track"><span className="progress-value" style={{ width: `${operationProgress.percent}%` }} /></span></> : <span className="progress-track"><span className="progress-indeterminate" /></span>}{uploading ? <span className="operation-warning">{t('console.uploadKeepTabOpen')}</span> : null}</div> : null}{backups.length === 0 ? <p className="resource-empty">{t('dashboard.noBackup')}</p> : <div className="backup-list">{backups.map((backup) => <div className="backup-row" key={backup.id}><div className="min-w-0"><strong>{backup.name}</strong><span>{backup.source === 'uploaded' ? t('console.uploadedBackup') : t('console.createdBackup')} · {new Date(backup.createdAt).toLocaleString()} · {formatBytes(backup.sizeBytes)}</span></div><div className="backup-row-actions"><Button variant="ghost" size="sm" onClick={() => { window.location.href = `/api/v1/backups/${backup.id}/download`; }}>{t('console.downloadBackup')}</Button><Button variant="ghost" size="sm" onClick={() => void renameBackup(backup)} disabled={busy}>{t('console.renameBackup')}</Button><Button variant="ghost" size="sm" onClick={() => void deleteBackup(backup)} disabled={busy}>{t('console.deleteBackup')}</Button><Button variant="outline" size="sm" onClick={() => void previewBackup(backup)} disabled={busy}>{t('console.previewBackup')}</Button></div></div>)}</div>}{selectedPreview ? <div className="backup-preview"><strong>{t('console.restorePreview')}</strong><span>{selectedBackup?.name} · {selectedPreview.fileCount} {t('console.files')} · {formatBytes(selectedPreview.totalBytes)}</span>{selectedPreview.warnings.map((warning) => <p className="text-xs text-muted-foreground" key={warning}>{warning}</p>)}<div className="backup-restore-actions"><Select value={restoreMode} onValueChange={(value) => setRestoreMode(value as 'merge' | 'replace')}><SelectTrigger aria-label={t('console.restoreMode')}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="replace">{t('console.replaceRestore')}</SelectItem><SelectItem value="merge">{t('console.mergeRestore')}</SelectItem></SelectContent></Select><Button onClick={() => void restoreSelected()} disabled={busy}><Upload />{t('console.restore')}</Button></div></div> : null}</CardContent></Card>
+      <CardContent className="space-y-4"><div className="backup-controls"><Input value={backupName} onChange={(event) => setBackupName(event.target.value)} placeholder={t('console.backupNameOptional')} aria-label={t('console.backupNameOptional')} /></div>{error ? <p className="install-error" role="alert">{error}</p> : null}{busyAction ? <div className="operation-progress" role="status"><span className="operation-headline">{busyAction}{uploading || runningJobId ? <Button variant="outline" size="sm" onClick={() => void stopOperation()} disabled={stopping}><CircleStop />{stopping ? t('console.stopping') : t('common.stop')}</Button> : null}</span>{operationProgress ? <><span>{operationProgress.step} · {operationProgress.percent}%</span><span className="progress-track"><span className="progress-value" style={{ width: `${operationProgress.percent}%` }} /></span></> : <span className="progress-track"><span className="progress-indeterminate" /></span>}{uploading ? <span className="operation-warning">{t('console.uploadKeepTabOpen')}</span> : null}</div> : null}{backups.length === 0 ? <p className="resource-empty">{t('dashboard.noBackup')}</p> : <div className="backup-list">{backups.map((backup) => <div className="backup-row" key={backup.id}><div className="min-w-0"><strong>{backup.name}</strong><span>{backup.source === 'uploaded' ? t('console.uploadedBackup') : t('console.createdBackup')} · {new Date(backup.createdAt).toLocaleString()} · {formatBytes(backup.sizeBytes)}</span></div><div className="backup-row-actions"><Button variant="ghost" size="sm" onClick={() => { window.location.href = `/api/v1/backups/${backup.id}/download`; }}>{t('console.downloadBackup')}</Button><Button variant="ghost" size="sm" onClick={() => void renameBackup(backup)} disabled={busy}>{t('console.renameBackup')}</Button><Button variant="ghost" size="sm" onClick={() => void deleteBackup(backup)} disabled={busy}>{t('console.deleteBackup')}</Button><Button variant="outline" size="sm" onClick={() => void previewBackup(backup)} disabled={busy}>{t('console.previewBackup')}</Button></div></div>)}</div>}{selectedPreview ? <div className="backup-preview"><strong>{t('console.restorePreview')}</strong><span>{selectedBackup?.name} · {selectedPreview.fileCount} {t('console.files')} · {formatBytes(selectedPreview.totalBytes)}</span>{selectedPreview.warnings.map((warning) => <p className="text-xs text-muted-foreground" key={warning}>{warning}</p>)}<div className="backup-restore-actions"><Select value={restoreMode} onValueChange={(value) => setRestoreMode(value as 'merge' | 'replace')}><SelectTrigger aria-label={t('console.restoreMode')}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="replace">{t('console.replaceRestore')}</SelectItem><SelectItem value="merge">{t('console.mergeRestore')}</SelectItem></SelectContent></Select><Button onClick={() => void restoreSelected()} disabled={busy}><Upload />{t('console.restore')}</Button></div></div> : null}</CardContent></Card>
     <Card className="r2-placeholder"><PanelHeading icon={<Globe2 />} action={<Badge variant="outline" className={r2Config?.configured ? 'status-online' : ''}>{r2Config?.configured ? t('console.r2Configured') : t('console.r2NotConfigured')}</Badge>}>{t('console.r2Title')}</PanelHeading><CardContent className="space-y-4"><p>{t('console.r2Placeholder')}</p><div className="r2-form-grid"><label className="field-label"><span>{t('console.r2Endpoint')}</span><Input value={r2Form.endpoint} onChange={(event) => setR2Form((current) => ({ ...current, endpoint: event.target.value }))} placeholder="https://ACCOUNT_ID.r2.cloudflarestorage.com" /></label><label className="field-label"><span>{t('console.r2Bucket')}</span><Input value={r2Form.bucket} onChange={(event) => setR2Form((current) => ({ ...current, bucket: event.target.value }))} /></label><label className="field-label"><span>{t('console.r2AccountId')}</span><Input value={r2Form.accountId} onChange={(event) => setR2Form((current) => ({ ...current, accountId: event.target.value }))} /></label><label className="field-label"><span>{t('console.r2AccessKey')}</span><Input value={r2Form.accessKeyId} onChange={(event) => setR2Form((current) => ({ ...current, accessKeyId: event.target.value }))} autoComplete="off" /></label><label className="field-label"><span>{t('console.r2SecretKey')}</span><Input type="password" value={r2Form.secretAccessKey} onChange={(event) => setR2Form((current) => ({ ...current, secretAccessKey: event.target.value }))} autoComplete="new-password" /></label></div><div className="r2-toggle-row"><label className="backup-option"><input type="checkbox" checked={r2Form.enabled} onChange={(event) => setR2Form((current) => ({ ...current, enabled: event.target.checked }))} />{t('console.r2Enabled')}</label></div><div className="r2-schedule-grid"><label className="field-label"><span>{t('console.r2LocalEvery')}</span><Input type="number" min="1" value={r2Form.localIntervalMinutes} onChange={(event) => setR2Form((current) => ({ ...current, localIntervalMinutes: Number(event.target.value) }))} /></label><label className="field-label"><span>{t('console.r2Every')}</span><Input type="number" min="1" value={r2Form.r2IntervalHours} onChange={(event) => setR2Form((current) => ({ ...current, r2IntervalHours: Number(event.target.value) }))} /></label><label className="field-label"><span>{t('console.r2FullEvery')}</span><Input type="number" min="1" value={r2Form.fullIntervalDays} onChange={(event) => setR2Form((current) => ({ ...current, fullIntervalDays: Number(event.target.value) }))} /></label><label className="field-label"><span>{t('console.r2MaxBackups')}</span><Input type="number" min="1" value={r2Form.maxBackups} onChange={(event) => setR2Form((current) => ({ ...current, maxBackups: Number(event.target.value) }))} /></label><label className="field-label"><span>{t('console.r2RetentionDays')}</span><Input type="number" min="1" value={r2Form.retentionDays} onChange={(event) => setR2Form((current) => ({ ...current, retentionDays: Number(event.target.value) }))} /></label></div>{r2Message ? <p className="text-sm" role="status">{r2Message}</p> : null}<div className="r2-actions"><Button onClick={() => void saveR2()} disabled={r2Busy !== null}>{t('console.r2Save')}</Button><Button variant="outline" onClick={() => void testR2()} disabled={r2Busy !== null || !r2Config?.configured}>{t('console.r2Test')}</Button><Button variant="ghost" onClick={() => void uploadR2()} disabled={r2Busy !== null || !r2Config?.configured}>{t('console.r2UploadLatest')}</Button></div><div className="r2-summary"><span>{t('console.r2Estimate')}: {formatBytes(r2Config?.estimatedBytes ?? 0)}</span><span>{t('console.r2Objects')}: {r2Objects.length}</span></div>{r2Busy ? <div className="operation-progress" role="status"><span>{r2Busy}</span><span className="progress-track"><span className="progress-indeterminate" /></span></div> : null}</CardContent></Card>
   </div>;
 }

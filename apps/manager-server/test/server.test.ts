@@ -483,3 +483,49 @@ test('a SillyTavern without user accounts can still be given a password and shar
   const allowed = await fetch(`${base}/api/v1/tunnel`, { method: 'PUT', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'quick' }) });
   assert.notEqual(allowed.status, 409);
 });
+
+test('a running backup can be stopped, and a finished one cannot', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-stop-job-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const runtimePath = join(root, 'runtime');
+  await mkdir(runtimePath, { recursive: true });
+  const now = new Date().toISOString();
+  const installation: Installation = { id: 'install-1', selector: 'latest', resolvedRef: '1.2.3', channel: 'release', runtimePath, markerPath: join(runtimePath, '.stm-installation.json'), status: 'ready', progress: 100, step: 'Installation ready', error: null, createdAt: now, updatedAt: now, activatedAt: now };
+  const fakeRuntime = { listVersions: async () => [], listInstallations: async () => [installation], getActiveInstallation: async () => installation, getInstallation: async (id: string) => id === installation.id ? installation : null } as unknown as RuntimeManager;
+  const manager = await startManagerServer({ host: '127.0.0.1', port: 0, paths, env: { STM_ADMIN_PASSWORD: 'correct horse battery staple' }, secureCookies: false, runtime: fakeRuntime, logger: () => undefined });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const login = await fetch(`${base}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'correct horse battery staple' }) });
+  const cookie = cookieFrom(login);
+  const csrf = (await login.json() as { session: { csrfToken: string } }).session.csrfToken;
+  const profile = (await (await fetch(`${base}/api/v1/profiles`, { headers: { cookie } })).json() as { profiles: Array<{ dataPath: string }> }).profiles[0];
+  assert.ok(profile);
+  // Enough files that the stop lands while the archive is still being written.
+  const dataRoot = join(profile.dataPath, 'default-user');
+  await mkdir(dataRoot, { recursive: true });
+  for (let index = 0; index < 600; index += 1) {
+    await writeFile(join(dataRoot, `note-${index}.json`), JSON.stringify({ index, filler: 'x'.repeat(8192) }), 'utf8');
+  }
+
+  const started = await fetch(`${base}/api/v1/backups`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: '{}' });
+  assert.equal(started.status, 202);
+  const { jobId } = await started.json() as { jobId: string };
+  const stopped = await fetch(`${base}/api/v1/jobs/${jobId}/cancel`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf } });
+  assert.equal(stopped.status, 200);
+
+  const deadline = Date.now() + 15_000;
+  let job = await (await fetch(`${base}/api/v1/jobs/${jobId}`, { headers: { cookie } })).json() as { state: string; error: string | null };
+  while (job.state === 'running' && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    job = await (await fetch(`${base}/api/v1/jobs/${jobId}`, { headers: { cookie } })).json() as { state: string; error: string | null };
+  }
+  assert.equal(job.state, 'canceled');
+  assert.equal(job.error, null, 'the operator stopping the work is not an error to report');
+  // A stopped backup leaves no half-written entry in the library.
+  assert.deepEqual((await (await fetch(`${base}/api/v1/backups`, { headers: { cookie } })).json() as { backups: unknown[] }).backups, []);
+
+  const again = await fetch(`${base}/api/v1/jobs/${jobId}/cancel`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf } });
+  assert.equal(again.status, 409);
+  const missing = await fetch(`${base}/api/v1/jobs/job-nothing/cancel`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf } });
+  assert.equal(missing.status, 404);
+});

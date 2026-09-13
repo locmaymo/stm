@@ -10,7 +10,8 @@
     "save": "Lưu",
     "delete": "Xóa",
     "refresh": "Làm mới",
-    "loading": "Đang tải"
+    "loading": "Đang tải",
+    "stop": "Dừng"
   },
   "nav": {
     "overview": "Tổng quan",
@@ -224,7 +225,9 @@
     "uploadEstimating": "đang tính thời gian còn lại…",
     "basicAuthHelp": "Phiên bản SillyTavern này không có tài khoản người dùng, nên trình quản lý bảo vệ nó bằng Basic Auth. Trình duyệt sẽ hỏi tên đăng nhập và mật khẩu này. Mật khẩu đăng nhập trình quản lý là riêng biệt.",
     "basicAuthUser": "Tên đăng nhập Basic Auth",
-    "accountsUnavailable": "SillyTavern không báo cáo thông tin tài khoản cho phiên bản hoặc cấu hình đăng nhập này."
+    "accountsUnavailable": "SillyTavern không báo cáo thông tin tài khoản cho phiên bản hoặc cấu hình đăng nhập này.",
+    "stopping": "Đang dừng…",
+    "restoreStoppedPartway": "Khôi phục đã bị dừng giữa chừng, nên hồ sơ này đang có một phần dữ liệu cũ và một phần dữ liệu mới. Hãy khôi phục bản sao lưu -prerestore trong danh sách để đưa nó về như trước."
   },
   "dashboard": {
     "eyebrow": "TRUNG TÂM ĐIỀU HÀNH / TỔNG QUAN",
@@ -471,7 +474,9 @@
       "startingTunnel": "Đang khởi động đường dẫn công khai",
       "restoreComplete": "Khôi phục hoàn tất",
       "completed": "Hoàn tất",
-      "failed": "Thất bại"
+      "failed": "Thất bại",
+      "stopping": "Đang dừng",
+      "stopped": "Đã dừng"
     },
     "restore": {
       "restoringFiles": "Đang khôi phục tệp",

@@ -179,7 +179,7 @@ export interface RestorePreview {
   readonly warnings: readonly string[];
 }
 
-export type JobState = 'queued' | 'running' | 'succeeded' | 'failed';
+export type JobState = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled';
 
 export type JobKind = 'installation' | 'backup' | 'restore';
 
