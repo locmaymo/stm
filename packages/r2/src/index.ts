@@ -3,7 +3,7 @@ import { createReadStream } from 'node:fs';
 import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import { join } from 'node:path';
-import type { BackupManifest, R2Config, R2Object } from '../../contracts/src/index.js';
+import { logEvent, logLineText, type BackupManifest, type LogSink, type R2Config, type R2Object } from '../../contracts/src/index.js';
 import type { PlatformPaths } from '../../platform/src/index.js';
 
 const R2_STATE_FILE = 'r2-config.json';
@@ -34,7 +34,7 @@ export interface R2ManagerOptions {
   readonly paths: PlatformPaths;
   readonly env?: NodeJS.ProcessEnv;
   readonly now?: () => Date;
-  readonly logger?: (line: string) => void;
+  readonly logger?: LogSink;
   readonly fetchImpl?: typeof fetch;
 }
 
@@ -98,7 +98,7 @@ export class R2Manager {
   readonly paths: PlatformPaths;
   private readonly env: NodeJS.ProcessEnv;
   private readonly now: () => Date;
-  private readonly logger: (line: string) => void;
+  private readonly logger: LogSink;
   private readonly fetchImpl: typeof fetch;
   private configState: StoredR2Config | null = null;
   private writeQueue: Promise<void> = Promise.resolve();
@@ -107,7 +107,7 @@ export class R2Manager {
     this.paths = options.paths;
     this.env = options.env ?? process.env;
     this.now = options.now ?? (() => new Date());
-    this.logger = options.logger ?? ((line) => console.log(line));
+    this.logger = options.logger ?? ((line) => console.log(logLineText(line)));
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
@@ -161,7 +161,7 @@ export class R2Manager {
     const usage = await this.applyRetention(config, client);
     const uploadedAt = this.now().toISOString();
     await this.save({ ...config, lastUploadAt: uploadedAt, lastFingerprint: fingerprint, estimatedBytes: usage.totalBytes });
-    this.logger(`[r2] uploaded ${manifest.name} (${details.size} bytes)`);
+    this.logger(logEvent('r2.uploaded', `[r2] uploaded ${manifest.name} (${details.size} bytes)`, { name: manifest.name, bytes: details.size }));
     const objects = usage.objects;
     const object = objects.find((item) => item.key === key) ?? { key, sizeBytes: details.size, lastModified: uploadedAt, etag: null };
     const manifestObject = objects.find((item) => item.key === manifestKey) ?? { key: manifestKey, sizeBytes: manifestBody.byteLength, lastModified: uploadedAt, etag: null };

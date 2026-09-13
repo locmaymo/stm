@@ -1,10 +1,10 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import type { Installation, ProcessState, Profile } from '../../../packages/contracts/src/index.js';
+import { logEvent, logLineText, type Installation, type LogSink, type ProcessState, type Profile } from '../../../packages/contracts/src/index.js';
 import { assertInstallationMarker, type RuntimeManager } from '../../../packages/sillytavern-runtime/src/index.js';
 
 export interface ProcessSupervisorOptions {
   readonly runtime: RuntimeManager;
-  readonly logger?: (line: string) => void;
+  readonly logger?: LogSink;
   readonly now?: () => Date;
   readonly nodePath?: string;
   readonly profileResolver?: (installation: Installation) => Promise<Profile | null>;
@@ -23,7 +23,7 @@ export interface ProcessSupervisorOptions {
 
 export class ProcessSupervisor {
   private readonly runtime: RuntimeManager;
-  private readonly logger: (line: string) => void;
+  private readonly logger: LogSink;
   private readonly now: () => Date;
   private readonly nodePath: string;
   private readonly startupTimeoutMs: number;
@@ -40,7 +40,7 @@ export class ProcessSupervisor {
 
   public constructor(options: ProcessSupervisorOptions) {
     this.runtime = options.runtime;
-    this.logger = options.logger ?? ((line) => console.log(line));
+    this.logger = options.logger ?? ((line) => console.log(logLineText(line)));
     this.now = options.now ?? (() => new Date());
     this.nodePath = options.nodePath ?? process.execPath;
     // The first real launch can compile SillyTavern's frontend before port 8000
@@ -67,7 +67,7 @@ export class ProcessSupervisor {
     if (this.child) await this.stop();
     try { await assertInstallationMarker(installation); } catch (error: unknown) { return this.fail(installation.id, error instanceof Error ? error.message : 'The SillyTavern installation marker is invalid'); }
     this.current = { status: 'starting', installationId: installation.id, profileId: profile?.id ?? null, pid: null, startedAt: null, error: null };
-    this.logger(`[sillytavern] starting ${installation.resolvedRef} on 127.0.0.1:8000`);
+    this.logger(logEvent('sillytavern.starting', `[sillytavern] starting ${installation.resolvedRef} on 127.0.0.1:8000`, { ref: installation.resolvedRef }));
     const args = [
       ...(this.instrumentationPath ? ['--import', this.instrumentationPath] : []),
       'server.js', '--port', '8000', '--browserLaunchEnabled', 'false',
@@ -78,7 +78,7 @@ export class ProcessSupervisor {
       const heapMb = await this.profileLifecycle.legacyHeapMb(profile, installation.runtimePath);
       if (heapMb) {
         args.unshift(`--max-old-space-size=${heapMb}`);
-        this.logger(`[sillytavern] using ${heapMb} MiB heap for the legacy public/ runtime`);
+        this.logger(logEvent('sillytavern.legacyHeap', `[sillytavern] using ${heapMb} MiB heap for the legacy public/ runtime`, { heap: heapMb }));
       }
     }
     if (profile?.layout === 'data' && runtimeLayout === 'data') args.push('--dataRoot', profile.dataPath, '--configPath', profile.configPath);
@@ -107,7 +107,7 @@ export class ProcessSupervisor {
     child.stderr?.on('data', consume);
     child.once('error', (error) => {
       this.current = { ...this.current, status: 'error', error: error.message };
-      this.logger(`[sillytavern] ${error.message}`);
+      this.logger(logEvent('sillytavern.spawnFailed', `[sillytavern] ${error.message}`, { reason: error.message }));
     });
     child.once('close', (code) => {
       if (this.buffer.trim()) this.handleLine(this.buffer);
@@ -125,7 +125,7 @@ export class ProcessSupervisor {
       // Most of this is SillyTavern loading its dependency tree, which on a
       // hosted volume is thousands of small reads rather than any real work.
       // Saying how long it took makes that visible instead of inferred.
-      this.logger(`[sillytavern] ready on 127.0.0.1:8000 after ${((Date.now() - spawnedAt) / 1000).toFixed(1)}s`);
+      this.logger(logEvent('sillytavern.ready', `[sillytavern] ready on 127.0.0.1:8000 after ${((Date.now() - spawnedAt) / 1000).toFixed(1)}s`, { seconds: ((Date.now() - spawnedAt) / 1000).toFixed(1) }));
       return this.getState();
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'SillyTavern did not become ready';
@@ -145,7 +145,7 @@ export class ProcessSupervisor {
     });
     if (this.child === child && child.exitCode === null) child.kill('SIGKILL');
     if (this.activeProfile && this.profileLifecycle) {
-      await this.profileLifecycle.persist(this.activeProfile, this.activeProfile.runtimePath, this.activeRuntimeLayout).catch((error: unknown) => this.logger(`[profiles] legacy sync failed: ${error instanceof Error ? error.message : 'unknown error'}`));
+      await this.profileLifecycle.persist(this.activeProfile, this.activeProfile.runtimePath, this.activeRuntimeLayout).catch((error: unknown) => { const reason = error instanceof Error ? error.message : 'unknown error'; this.logger(logEvent('profiles.legacySyncFailed', `[profiles] legacy sync failed: ${reason}`, { reason })); });
     }
     this.child = null;
     this.activeProfile = null;
@@ -166,7 +166,7 @@ export class ProcessSupervisor {
 
   private fail(installationId: string | null, error: string): ProcessState {
     this.current = { status: 'error', installationId, profileId: null, pid: null, startedAt: null, error };
-    this.logger(`[sillytavern] ${error}`);
+    this.logger(logEvent('sillytavern.failed', `[sillytavern] ${error}`, { reason: error }));
     return this.getState();
   }
 }

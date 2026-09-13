@@ -4,7 +4,7 @@ import { readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import { extname, join, relative, resolve } from 'node:path';
-import type { AccessSecurityState, ApiErrorBody, ConfigUpdateInput, HealthResponse, Installation, Job, LogEntry, LogSourceFilter, ManagerPorts, ProfileLayout, SetupStatus, VersionSelector } from '../../../packages/contracts/src/index.js';
+import { logEvent, logLineText, type AccessSecurityState, type ApiErrorBody, type ConfigUpdateInput, type HealthResponse, type Installation, type Job, type LogEntry, type LogEvent, type LogLine, type LogSink, type LogSourceFilter, type ManagerPorts, type ProfileLayout, type SetupStatus, type VersionSelector } from '../../../packages/contracts/src/index.js';
 import { getPlatformPaths, type PlatformPaths } from '../../../packages/platform/src/index.js';
 import { RuntimeError, RuntimeManager, type InstallationProgress } from '../../../packages/sillytavern-runtime/src/index.js';
 import { hashPassword, MIN_PASSWORD_LENGTH, validatePassword, verifyPassword } from './password.js';
@@ -66,7 +66,7 @@ export interface ManagerServerOptions {
   readonly secureCookies?: boolean;
   readonly setupCodeRequired?: boolean;
   readonly staticRoot?: string;
-  readonly logger?: (line: string) => void;
+  readonly logger?: LogSink;
   readonly runtime?: RuntimeManager;
   readonly logBuffer?: LogBuffer;
   readonly supervisor?: ProcessSupervisor;
@@ -82,7 +82,7 @@ export interface ManagerServerOptions {
 export interface ManagerServer {
   readonly server: Server;
   /** Writes a line to the manager log, so a fault can say what it was. */
-  readonly logger: (line: string) => void;
+  readonly logger: LogSink;
   readonly store: StateStore;
   readonly sessions: SessionStore;
   readonly runtime: RuntimeManager;
@@ -114,9 +114,9 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   );
   const sessions = options.sessions ?? new SessionStore();
   const rateLimiter = options.rateLimiter ?? new RateLimiter();
-  const baseLogger = options.logger ?? ((line: string) => console.log(line));
+  const baseLogger: LogSink = options.logger ?? ((line) => console.log(logLineText(line)));
   const jobs = new JobStore(options.logBuffer ?? new LogBuffer(paths));
-  const logger = (line: string) => { jobs.append('manager', line); baseLogger(line); };
+  const logger: LogSink = (line) => { jobs.append('manager', line); baseLogger(line); };
   const runtime = options.runtime ?? new RuntimeManager({ paths, logger: (line) => { jobs.append('installer', line); baseLogger(line); } });
   const profiles = options.profileStore ?? new ProfileStore({ paths, logger: (line) => { jobs.append('manager', line); baseLogger(line); } });
   const backups = options.backupStore ?? new BackupStore({ paths, logger: (line) => { jobs.append('backup', line); baseLogger(line); } });
@@ -191,12 +191,12 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     ...(telemetryEndpoint ? { endpoint: telemetryEndpoint } : {}),
     ...(telemetryEnrollmentEndpoint ? { enrollmentEndpoint: telemetryEnrollmentEndpoint } : {}),
     ...(env.STM_TELEMETRY_ENROLLMENT_TOKEN ? { enrollmentToken: env.STM_TELEMETRY_ENROLLMENT_TOKEN } : {}),
-    logger: (line) => { jobs.append('manager', line); baseLogger(line); },
+    logger: (line) => console.log(line),
   });
   try {
     await telemetry.start();
   } catch (error: unknown) {
-    logger(`[telemetry] disabled: ${error instanceof Error ? error.message : 'initialization failed'}`);
+    console.log(`[telemetry] disabled: ${error instanceof Error ? error.message : 'initialization failed'}`);
   }
 
   const environmentPassword = env.STM_ADMIN_PASSWORD;
@@ -207,10 +207,10 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     }
     await store.bootstrapAdminPassword(hashPassword(environmentPassword));
     persisted = await store.getPersisted();
-    logger('[setup] admin password bootstrapped from STM_ADMIN_PASSWORD');
+    logger(logEvent('setup.passwordBootstrapped', '[setup] admin password bootstrapped from STM_ADMIN_PASSWORD'));
   }
   if (!persisted.adminPasswordHash && persisted.setupCodeHash) {
-    logger(`[setup] one-time setup code: ${store.getSetupCodeForTests()}`);
+    logger(logEvent('setup.setupCode', `[setup] one-time setup code: ${store.getSetupCodeForTests()}`, { code: store.getSetupCodeForTests() }));
   }
 
   const startedAt = Date.now();
@@ -254,7 +254,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
         sendError(response, error.code === 'config_missing' ? 409 : 400, error.code, error.message);
         return;
       }
-      logger(`[manager] request failed: ${error instanceof Error ? error.message : 'unknown error'}`);
+      logger(logEvent('manager.requestFailed', `[manager] request failed: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
       if (!response.headersSent) {
         sendError(response, 500, 'internal_error', 'The manager could not complete the request');
       } else {
@@ -286,13 +286,13 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       const accessNeedsMigration = activeProfile ? await config.needsAccountMigration(activeProfile, readyInstallation) : false;
       if (activeProfile && currentConfig && accessNeedsMigration) {
         await config.update(activeProfile, readyInstallation, { settings: { listen: false, enableUserAccounts: true } });
-        logger('[config] migrated access security to SillyTavern accounts; LAN access is waiting for an admin password');
+        logger(logEvent('config.accountsMigrated', '[config] migrated access security to SillyTavern accounts; LAN access is waiting for an admin password'));
       }
       await runtime.cleanupLegacyRuntimeCopies?.(readyInstallation.id);
     } catch (error: unknown) {
-      logger(`[installer] legacy runtime migration failed: ${error instanceof Error ? error.message : 'unknown error'}`);
+      logger(logEvent('installer.legacyMigrationFailed', `[installer] legacy runtime migration failed: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
     }
-    void supervisor.start().catch((error: unknown) => logger(`[sillytavern] automatic startup failed: ${error instanceof Error ? error.message : 'unknown error'}`));
+    void supervisor.start().catch((error: unknown) => logger(logEvent('sillytavern.autoStartFailed', `[sillytavern] automatic startup failed: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' })));
   }
 
   return {
@@ -325,7 +325,7 @@ async function handleRequest(options: {
   readonly setupCodeRequired: boolean;
   readonly staticRoot: string;
   readonly platform: PlatformPaths['platform'];
-  readonly logger: (line: string) => void;
+  readonly logger: LogSink;
   readonly runtime: RuntimeManager;
   readonly jobs: JobStore;
   readonly supervisor: ProcessSupervisor;
@@ -706,11 +706,11 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     if (!profile) { sendError(response, 409, 'profile_required', 'Create or activate a profile before creating a backup'); return; }
     const body = await readJson(request);
     const name = isRecord(body) && typeof body.name === 'string' ? body.name : undefined;
-    const job = jobs.createOperation('backup', 'Preparing backup');
+    const job = jobs.createOperation('backup', logEvent('job.preparingBackup', 'Preparing backup'));
     void backups.create(profile, {
       ...(name ? { name } : {}),
-      onProgress: ({ completed, total }) => jobs.updateOperation(job.id, total > 0 ? (completed / total) * 90 : 50, `Compressing files (${completed}/${total})`),
-    }).then((manifest) => { jobs.updateOperation(job.id, 95, 'Saving backup library'); jobs.finishOperation(job.id, 'succeeded', null); return manifest; })
+      onProgress: ({ completed, total }) => jobs.updateOperation(job.id, total > 0 ? (completed / total) * 90 : 50, logEvent('job.compressingFiles', `Compressing files (${completed}/${total})`, { completed, total })),
+    }).then((manifest) => { jobs.updateOperation(job.id, 95, logEvent('job.savingLibrary', 'Saving backup library')); jobs.finishOperation(job.id, 'succeeded', null); return manifest; })
       .catch((error: unknown) => jobs.finishOperation(job.id, 'failed', error instanceof Error ? error.message : 'Backup failed'));
     sendJson(response, 202, { jobId: job.id, job });
     return;
@@ -809,7 +809,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       const body = await readJson(request);
       const mode = isRecord(body) && (body.mode === 'merge' || body.mode === 'replace') ? body.mode : null;
       if (!mode) { sendError(response, 400, 'invalid_restore_mode', 'Restore mode must be merge or replace'); return; }
-      const job = jobs.createOperation('restore', 'Preparing restore');
+      const job = jobs.createOperation('restore', logEvent('job.preparingRestore', 'Preparing restore'));
       void restoreWithProcess({ profile, backups, archivePath, mode, supervisor, tunnel, onProgress: (progress, step) => jobs.updateOperation(job.id, progress, step) })
         .then(() => jobs.finishOperation(job.id, 'succeeded', null))
         .catch((error: unknown) => jobs.finishOperation(job.id, 'failed', error instanceof Error ? error.message : 'Restore failed'));
@@ -876,10 +876,9 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
 
 /** Each apply-phase step gets its own percentage so a slow phase still shows the bar moving. */
 const RESTORE_STEP_PROGRESS: Record<string, number> = {
-  'Applying restored data': 85,
-  'Clearing existing data': 86,
-  'Moving restored data into place': 87,
-  'Finalizing restored data': 88,
+  'restore.restoringFiles': 85,
+  'restore.removingObsolete': 87,
+  'restore.finalizing': 88,
 };
 
 async function restoreWithProcess(options: {
@@ -889,7 +888,7 @@ async function restoreWithProcess(options: {
   readonly mode: 'merge' | 'replace';
   readonly supervisor: ProcessSupervisor;
   readonly tunnel: TunnelManager;
-  readonly onProgress?: (progress: number, step: string) => void;
+  readonly onProgress?: (progress: number, step: LogEvent) => void;
 }): Promise<{ preview: Awaited<ReturnType<BackupStore['restore']>>; safetySnapshot: Awaited<ReturnType<BackupStore['create']>>; process: ReturnType<ProcessSupervisor['getState']> }> {
   const { profile, backups, archivePath, mode, supervisor, tunnel, onProgress } = options;
   const previousTunnelMode = tunnel.getState().mode;
@@ -897,7 +896,7 @@ async function restoreWithProcess(options: {
   // next tick sees an idle store and starts a full backup that the restore then
   // has to wait out.
   const releaseOperationSlot = backups.reserve();
-  onProgress?.(5, 'Stopping SillyTavern');
+  onProgress?.(5, logEvent('job.stoppingSillyTavern', 'Stopping SillyTavern'));
   await tunnel.stop();
   await supervisor.stop();
   try {
@@ -906,24 +905,24 @@ async function restoreWithProcess(options: {
     // archive is a single large sequential write; copying the tree file by file
     // measured 639 seconds on a ModelScope volume for the same data. It only
     // An unchanged profile can reuse the backup it already has.
-    onProgress?.(15, 'Creating safety snapshot');
+    onProgress?.(15, logEvent('job.creatingSafetySnapshot', 'Creating safety snapshot'));
     const safetySnapshot = await backups.createSafetyCopy(profile, {
       name: `${profile.name}-prerestore`,
-      onProgress: ({ completed, total }) => onProgress?.(15 + (total > 0 ? (completed / total) * 10 : 0), `Backing up current data (${completed}/${total})`),
+      onProgress: ({ completed, total }) => onProgress?.(15 + (total > 0 ? (completed / total) * 10 : 0), logEvent('job.backingUpCurrentData', `Backing up current data (${completed}/${total})`, { completed, total })),
     });
-    onProgress?.(25, 'Restoring data');
+    onProgress?.(25, logEvent('job.restoringData', 'Restoring data'));
     const preview = await backups.restore(profile, archivePath, {
       mode,
-      onProgress: ({ completed, total }) => onProgress?.(25 + (total > 0 ? (completed / total) * 60 : 60), `Restoring files (${completed}/${total})`),
-      onStatus: (step) => onProgress?.(RESTORE_STEP_PROGRESS[step] ?? 86, step),
+      onProgress: ({ completed, total }) => onProgress?.(25 + (total > 0 ? (completed / total) * 60 : 60), logEvent('job.restoringFiles', `Restoring files (${completed}/${total})`, { completed, total })),
+      onStatus: (step) => onProgress?.(RESTORE_STEP_PROGRESS[step.code] ?? 86, step),
     });
-    onProgress?.(90, 'Starting SillyTavern');
+    onProgress?.(90, logEvent('job.startingSillyTavern', 'Starting SillyTavern'));
     const process = await supervisor.start();
     if (previousTunnelMode !== 'off' && process.status === 'running') {
-      onProgress?.(95, 'Starting public tunnel');
+      onProgress?.(95, logEvent('job.startingTunnel', 'Starting public tunnel'));
       await tunnel.restart();
     }
-    onProgress?.(100, 'Restore complete');
+    onProgress?.(100, logEvent('job.restoreComplete', 'Restore complete'));
     return { preview, safetySnapshot, process };
   } catch (error) {
     const process = await supervisor.start().catch(() => supervisor.getState());
@@ -1386,8 +1385,8 @@ class JobStore {
 
   public constructor(private readonly logBuffer = new LogBuffer()) {}
 
-  public append(source: LogEntry['source'], message: string, level: LogEntry['level'] = 'info'): void {
-    this.logBuffer.append(source, message, level);
+  public append(source: LogEntry['source'], line: LogLine, level: LogEntry['level'] = 'info'): void {
+    this.logBuffer.append(source, line, level);
   }
 
   public logs(after: number, source: LogEntry['source'] | null): { entries: LogEntry[]; nextCursor: number } {
@@ -1406,6 +1405,7 @@ class JobStore {
       state: 'running',
       progress: 0,
       step: 'Starting installation',
+      stepCode: 'install.starting',
       installationId,
       createdAt: now,
       updatedAt: now,
@@ -1415,14 +1415,16 @@ class JobStore {
     return job;
   }
 
-  public createOperation(kind: 'backup' | 'restore', step: string): Job {
+  public createOperation(kind: 'backup' | 'restore', step: LogEvent): Job {
     const now = new Date().toISOString();
     const job: Job = {
       id: `job-${randomUUID()}`,
       kind,
       state: 'running',
       progress: 0,
-      step,
+      step: step.message,
+      stepCode: step.code,
+      ...(step.params ? { stepParams: step.params } : {}),
       installationId: null,
       createdAt: now,
       updatedAt: now,
@@ -1454,26 +1456,26 @@ class JobStore {
     const id = `job-${installationId}`;
     const current = this.jobs.get(id);
     if (!current) return;
-    this.jobs.set(id, { ...current, progress: progress.progress, step: progress.step, updatedAt: new Date().toISOString() });
+    this.jobs.set(id, { ...current, progress: progress.progress, step: progress.step.message, stepCode: progress.step.code, ...(progress.step.params ? { stepParams: progress.step.params } : {}), updatedAt: new Date().toISOString() });
   }
 
   public finish(installationId: string, state: 'succeeded' | 'failed', error: string | null): void {
     const id = `job-${installationId}`;
     const current = this.jobs.get(id);
     if (!current) return;
-    this.jobs.set(id, { ...current, state, progress: state === 'succeeded' ? 100 : current.progress, step: state === 'succeeded' ? 'Installation ready' : 'Installation failed', error, updatedAt: new Date().toISOString() });
+    this.jobs.set(id, { ...current, state, progress: state === 'succeeded' ? 100 : current.progress, step: state === 'succeeded' ? 'Installation ready' : 'Installation failed', stepCode: state === 'succeeded' ? 'install.ready' : 'install.failed', error, updatedAt: new Date().toISOString() });
   }
 
-  public updateOperation(id: string, progress: number, step: string): void {
+  public updateOperation(id: string, progress: number, step: LogEvent): void {
     const current = this.jobs.get(id);
     if (!current) return;
-    this.jobs.set(id, { ...current, progress: Math.max(0, Math.min(100, Math.round(progress))), step, updatedAt: new Date().toISOString() });
+    this.jobs.set(id, { ...current, progress: Math.max(0, Math.min(100, Math.round(progress))), step: step.message, stepCode: step.code, ...(step.params ? { stepParams: step.params } : {}), updatedAt: new Date().toISOString() });
   }
 
   public finishOperation(id: string, state: 'succeeded' | 'failed', error: string | null): void {
     const current = this.jobs.get(id);
     if (!current) return;
-    this.jobs.set(id, { ...current, state, progress: state === 'succeeded' ? 100 : current.progress, step: state === 'succeeded' ? 'Completed' : 'Failed', error, updatedAt: new Date().toISOString() });
+    this.jobs.set(id, { ...current, state, progress: state === 'succeeded' ? 100 : current.progress, step: state === 'succeeded' ? 'Completed' : 'Failed', stepCode: state === 'succeeded' ? 'job.completed' : 'job.failed', error, updatedAt: new Date().toISOString() });
   }
 }
 

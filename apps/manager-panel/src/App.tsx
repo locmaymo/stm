@@ -13,11 +13,11 @@ import {
   SidebarTrigger, Sheet, SheetContent, SheetHeader, SheetTitle, Switch, Tooltip,
   TooltipContent, TooltipTrigger, useSidebar,
 } from '../../../packages/ui/src/index.js';
-import { translator, type Translate } from './i18n.js';
+import { logCatalog, translator, type Translate } from './i18n.js';
 import { browserStorage, readPreferences, savePreferences, type Preferences } from './preferences.js';
 import type { AccessSecurityState, BackupManifest, ConfigDocument, ConfigUpdateInput, Installation, Job, LogEntry, LogSourceFilter, MetricsSnapshot, ProcessState, Profile, R2Config, R2Object, RestorePreview, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
-import { formatLogMessage } from './log-format.js';
+import { translateLogEntry, translateStep } from './log-format.js';
 
 const navigation = [
   { id: 'overview', icon: LayoutDashboard },
@@ -138,6 +138,7 @@ function ConsoleApp({ csrfToken }: { csrfToken: string }) {
   const [configDocument, setConfigDocument] = useState<ConfigDocument | null>(null);
   const [accessSecurity, setAccessSecurity] = useState<AccessSecurityState>({ accountsEnabled: false, adminHandle: 'default-user', adminPasswordConfigured: false, processReady: false });
   const t = translator(preferences.locale);
+  const catalog = logCatalog(preferences.locale);
 
   useEffect(() => {
     const media = window.matchMedia('(max-width: 767px)');
@@ -237,8 +238,8 @@ function ConsoleApp({ csrfToken }: { csrfToken: string }) {
   const navigate: Navigate = (next) => { window.location.hash = next; setPage(next); window.scrollTo({ top: 0 }); };
   const changePreferences = (update: Partial<Preferences>) => setPreferences((current) => ({ ...current, ...update }));
   const liveLogs = useLiveLogs(logSource);
-  const installation = <InstallationPanel t={t} version={version} onVersionChange={setVersion} versions={versions} installations={installations} activeInstallationId={activeInstallationId} pendingInstallationId={pendingInstallationId} onPendingInstallationId={setPendingInstallationId} csrfToken={csrfToken} installing={installing} onInstalling={setInstalling} />;
-  const logProps = { t, source: logSource, onSourceChange: setLogSource, entries: liveLogs.entries, query: logQuery, onQueryChange: setLogQuery, compact: compactLogs, onToggleCompact: () => setCompactLogs((current) => !current), onLoadOlder: liveLogs.loadOlder, hasOlder: liveLogs.hasOlder, loadingOlder: liveLogs.loadingOlder };
+  const installation = <InstallationPanel t={t} catalog={catalog} version={version} onVersionChange={setVersion} versions={versions} installations={installations} activeInstallationId={activeInstallationId} pendingInstallationId={pendingInstallationId} onPendingInstallationId={setPendingInstallationId} csrfToken={csrfToken} installing={installing} onInstalling={setInstalling} />;
+  const logProps = { t, catalog, source: logSource, onSourceChange: setLogSource, entries: liveLogs.entries, query: logQuery, onQueryChange: setLogQuery, compact: compactLogs, onToggleCompact: () => setCompactLogs((current) => !current), onLoadOlder: liveLogs.loadOlder, hasOlder: liveLogs.hasOlder, loadingOlder: liveLogs.loadingOlder };
   const logs = <LogsPanel {...logProps} expanded={logsExpanded} onToggleExpanded={() => setLogsExpanded((current) => !current)} />;
   const updateRuntime = async (path: string, body?: unknown) => {
     const init: RequestInit = { method: body === undefined ? 'POST' : 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken } };
@@ -288,7 +289,7 @@ function ConsoleApp({ csrfToken }: { csrfToken: string }) {
           </div>
         </header>
         <div className="page-body">
-          {page === 'overview' ? <div className="core-grid">{installation}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} installed={Boolean(activeInstallationId)} onAction={updateRuntime} onConfigUpdate={updateConfig} onSetPassword={setAccessPassword} /> <DataPanel t={t} navigate={navigate} activeProfile={profiles.find((profile) => profile.id === activeProfileId) ?? null} latestBackup={backups.at(-1) ?? null} /><SystemPanel t={t} csrfToken={csrfToken ?? ''} />{logs}</div> : page === 'data' ? <DataPage t={t} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} config={configDocument} onConfigUpdate={updateConfig} onChangeManagerPassword={changeManagerPassword} /> : <ResourcePanel page={page} t={t} />}
+          {page === 'overview' ? <div className="core-grid">{installation}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} installed={Boolean(activeInstallationId)} onAction={updateRuntime} onConfigUpdate={updateConfig} onSetPassword={setAccessPassword} /> <DataPanel t={t} navigate={navigate} activeProfile={profiles.find((profile) => profile.id === activeProfileId) ?? null} latestBackup={backups.at(-1) ?? null} /><SystemPanel t={t} csrfToken={csrfToken ?? ''} />{logs}</div> : page === 'data' ? <DataPage t={t} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} config={configDocument} onConfigUpdate={updateConfig} onChangeManagerPassword={changeManagerPassword} /> : <ResourcePanel page={page} t={t} />}
         </div>
       </SidebarInset>
       <LogsSheet {...logProps} open={logsExpanded} onClose={() => setLogsExpanded(false)} />
@@ -321,10 +322,10 @@ function Unavailable({ t, children }: { t: Translate; children: ReactNode }) {
   return <Tooltip><TooltipTrigger asChild><span tabIndex={0} className="inline-flex rounded-md" aria-label={t('console.unavailable')}>{children}</span></TooltipTrigger><TooltipContent>{t('console.unavailable')}</TooltipContent></Tooltip>;
 }
 
-function InstallationPanel({ t, version, onVersionChange, versions, installations, activeInstallationId, pendingInstallationId, onPendingInstallationId, csrfToken, installing, onInstalling }: { t: Translate; version: string; onVersionChange: (value: string) => void; versions: VersionOption[]; installations: Installation[]; activeInstallationId: string | null; pendingInstallationId: string | null; onPendingInstallationId: (value: string | null) => void; csrfToken: string | null; installing: boolean; onInstalling: (value: boolean) => void }) {
+function InstallationPanel({ t, catalog, version, onVersionChange, versions, installations, activeInstallationId, pendingInstallationId, onPendingInstallationId, csrfToken, installing, onInstalling }: { t: Translate; catalog: Record<string, unknown>; version: string; onVersionChange: (value: string) => void; versions: VersionOption[]; installations: Installation[]; activeInstallationId: string | null; pendingInstallationId: string | null; onPendingInstallationId: (value: string | null) => void; csrfToken: string | null; installing: boolean; onInstalling: (value: boolean) => void }) {
   const [requestError, setRequestError] = useState<string | null>(null);
   const active = installations.find((item) => item.id === pendingInstallationId) ?? installations.find((item) => item.id === activeInstallationId) ?? installations.at(-1);
-  const status = active?.status === 'ready' ? t('dashboard.ready') : active?.status === 'failed' ? t('dashboard.installFailed') : active ? `${active.step} · ${Math.round(active.progress)}%` : t('dashboard.notInstalled');
+  const status = active?.status === 'ready' ? t('dashboard.ready') : active?.status === 'failed' ? t('dashboard.installFailed') : active ? `${translateStep(active.step, catalog, active.stepCode, active.stepParams)} · ${Math.round(active.progress)}%` : t('dashboard.notInstalled');
   const canInstall = Boolean(csrfToken) && !installing;
   const install = async () => {
     if (!csrfToken) return;
@@ -411,6 +412,7 @@ function DataPanel({ t, navigate, activeProfile, latestBackup }: { t: Translate;
 
 interface LogViewProps {
   readonly t: Translate;
+  readonly catalog: Record<string, unknown>;
   readonly source: LogSourceFilter;
   readonly onSourceChange: (value: LogSourceFilter) => void;
   readonly entries: LogEntry[];
@@ -450,7 +452,7 @@ const LOG_FOLLOW_SLACK = 48;
 /** Distance from the top that asks for the previous page of retained lines. */
 const LOG_BACKFILL_SLACK = 120;
 
-function LogsContent({ t, source, onSourceChange, entries, query, onQueryChange, compact, onToggleCompact, onLoadOlder, hasOlder, loadingOlder, expanded = false }: { t: Translate; source: LogSourceFilter; onSourceChange: (value: LogSourceFilter) => void; entries: LogEntry[]; query: string; onQueryChange: (value: string) => void; compact: boolean; onToggleCompact: () => void; onLoadOlder: () => void; hasOlder: boolean; loadingOlder: boolean; expanded?: boolean }) {
+function LogsContent({ t, catalog, source, onSourceChange, entries, query, onQueryChange, compact, onToggleCompact, onLoadOlder, hasOlder, loadingOlder, expanded = false }: { t: Translate; catalog: Record<string, unknown>; source: LogSourceFilter; onSourceChange: (value: LogSourceFilter) => void; entries: LogEntry[]; query: string; onQueryChange: (value: string) => void; compact: boolean; onToggleCompact: () => void; onLoadOlder: () => void; hasOlder: boolean; loadingOlder: boolean; expanded?: boolean }) {
   const logViewportRef = useRef<HTMLDivElement | null>(null);
   const [following, setFollowing] = useState(true);
   const [unread, setUnread] = useState(0);
@@ -528,7 +530,7 @@ function LogsContent({ t, source, onSourceChange, entries, query, onQueryChange,
           {visibleEntries.map((entry) => <div className="log-line" key={entry.id}>
             {compact ? null : <time dateTime={entry.timestamp}>{new Date(entry.timestamp).toLocaleTimeString(undefined, { hour12: false })}</time>}
             {showSource ? <span className="log-source">{entry.source}</span> : null}
-            <span className="log-message">{formatLogMessage(entry.message)}</span>
+            <span className="log-message">{translateLogEntry(entry, catalog)}</span>
           </div>)}
         </div>}
       </div>
@@ -541,7 +543,7 @@ function LogsContent({ t, source, onSourceChange, entries, query, onQueryChange,
   </div>;
 }
 
-function DataPage({ t, csrfToken, profiles, activeProfileId, backups, onProfilesChange, onBackupsChange }: { t: Translate; csrfToken: string; profiles: Profile[]; activeProfileId: string | null; backups: BackupManifest[]; onProfilesChange: (profiles: Profile[], activeProfileId: string | null) => void; onBackupsChange: (backups: BackupManifest[]) => void }) {
+function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, onProfilesChange, onBackupsChange }: { t: Translate; catalog: Record<string, unknown>; csrfToken: string; profiles: Profile[]; activeProfileId: string | null; backups: BackupManifest[]; onProfilesChange: (profiles: Profile[], activeProfileId: string | null) => void; onBackupsChange: (backups: BackupManifest[]) => void }) {
   const [name, setName] = useState('');
   const [backupName, setBackupName] = useState('');
   const [busyAction, setBusyAction] = useState<string | null>(null);
@@ -557,6 +559,7 @@ function DataPage({ t, csrfToken, profiles, activeProfileId, backups, onProfiles
   const [r2Busy, setR2Busy] = useState<string | null>(null);
   const [r2Message, setR2Message] = useState<string | null>(null);
   const busy = busyAction !== null;
+  const jobStep = (job: Job) => translateStep(job.step, catalog, job.stepCode, job.stepParams);
   const refresh = async () => {
     const [profileResponse, backupResponse, r2Response] = await Promise.all([fetch('/api/v1/profiles', { credentials: 'same-origin' }), fetch('/api/v1/backups', { credentials: 'same-origin' }), fetch('/api/v1/r2', { credentials: 'same-origin' })]);
     if (profileResponse.ok) { const payload = await profileResponse.json() as { profiles: Profile[]; activeProfileId: string | null }; onProfilesChange(payload.profiles, payload.activeProfileId); }
@@ -582,8 +585,8 @@ function DataPage({ t, csrfToken, profiles, activeProfileId, backups, onProfiles
         if (cancelled || !payload.job) return;
         const running = payload.job;
         setBusyAction(running.kind === 'restore' ? t('console.restore') : t('dashboard.backupNow'));
-        setOperationProgress({ percent: running.progress, step: running.step });
-        await waitForOperation(running.id, (job) => { if (!cancelled) setOperationProgress({ percent: job.progress, step: job.step }); });
+        setOperationProgress({ percent: running.progress, step: jobStep(running) });
+        await waitForOperation(running.id, (job) => { if (!cancelled) setOperationProgress({ percent: job.progress, step: jobStep(job) }); });
         if (!cancelled) await refresh();
       } catch (error: unknown) {
         if (!cancelled) setError(error instanceof Error ? error.message : t('console.backupRestoreFailed'));
@@ -626,7 +629,7 @@ function DataPage({ t, csrfToken, profiles, activeProfileId, backups, onProfiles
       const response = await fetch('/api/v1/backups', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ ...(backupName.trim() ? { name: backupName.trim() } : {}) }) });
       const payload = await response.json() as { jobId?: string; error?: { message?: string } };
       if (!response.ok || !payload.jobId) { setError(payload.error?.message ?? t('console.backupCreateFailed')); return; }
-      await waitForOperation(payload.jobId, (job) => setOperationProgress({ percent: job.progress, step: job.step }));
+      await waitForOperation(payload.jobId, (job) => setOperationProgress({ percent: job.progress, step: jobStep(job) }));
       setBackupName('');
       await refresh();
     } catch (error: unknown) { setError(error instanceof Error ? error.message : t('console.backupCreateFailed')); } finally { setBusyAction(null); setOperationProgress(null); }
@@ -658,7 +661,7 @@ function DataPage({ t, csrfToken, profiles, activeProfileId, backups, onProfiles
       const response = await fetch(`/api/v1/backups/${selectedBackup.id}/restore`, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ mode: restoreMode }) });
       const payload = await response.json() as { jobId?: string; error?: { message?: string } };
       if (!response.ok || !payload.jobId) { setError(payload.error?.message ?? t('console.backupRestoreFailed')); return; }
-      await waitForOperation(payload.jobId, (job) => setOperationProgress({ percent: job.progress, step: job.step }));
+      await waitForOperation(payload.jobId, (job) => setOperationProgress({ percent: job.progress, step: jobStep(job) }));
       setSelectedBackup(null); setSelectedPreview(null); await refresh();
     } catch (error: unknown) { setError(error instanceof Error ? error.message : t('console.backupRestoreFailed')); } finally { setBusyAction(null); setOperationProgress(null); }
   };

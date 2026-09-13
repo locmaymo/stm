@@ -7,7 +7,7 @@ import { pipeline } from 'node:stream/promises';
 import { chmod, lstat, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
-import type { BackupFilePreview, BackupManifest, BackupSource, Profile, ProfileLayout, RestoreMode, RestorePreview } from '../../contracts/src/index.js';
+import { logEvent, logLineText, type BackupFilePreview, type BackupManifest, type BackupSource, type LogEvent, type LogSink, type Profile, type ProfileLayout, type RestoreMode, type RestorePreview } from '../../contracts/src/index.js';
 import { createIoLimiter, ioConcurrency, runPooled } from '../../platform/src/index.js';
 import type { PlatformPaths } from '../../platform/src/index.js';
 
@@ -36,7 +36,7 @@ const TRASH_PREFIX = '.stm-trash-';
 export interface BackupStoreOptions {
   readonly paths: PlatformPaths;
   readonly now?: () => Date;
-  readonly logger?: (line: string) => void;
+  readonly logger?: LogSink;
 }
 
 export interface CreateBackupOptions {
@@ -47,7 +47,7 @@ export interface CreateBackupOptions {
 export interface RestoreOptions {
   readonly mode: RestoreMode;
   readonly onProgress?: (progress: { completed: number; total: number }) => void;
-  readonly onStatus?: (step: string) => void;
+  readonly onStatus?: (step: LogEvent) => void;
 }
 
 interface PersistedBackups {
@@ -79,7 +79,7 @@ interface UploadState {
 export class BackupStore {
   readonly paths: PlatformPaths;
   private readonly now: () => Date;
-  private readonly logger: (line: string) => void;
+  private readonly logger: LogSink;
   private manifests: BackupManifest[] | null = null;
   private writeQueue: Promise<void> = Promise.resolve();
   private operationTail: Promise<void> = Promise.resolve();
@@ -89,7 +89,7 @@ export class BackupStore {
   public constructor(options: BackupStoreOptions) {
     this.paths = options.paths;
     this.now = options.now ?? (() => new Date());
-    this.logger = options.logger ?? ((line) => console.log(line));
+    this.logger = options.logger ?? ((line) => console.log(logLineText(line)));
   }
 
   public async list(profileId?: string): Promise<BackupManifest[]> {
@@ -216,7 +216,7 @@ export class BackupStore {
         .filter((manifest) => manifest.profileId === profile.id && manifest.source === 'created' && manifest.fingerprint === fingerprint)
         .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
       if (candidate && await this.getArchivePath(candidate.id)) {
-        this.logger(`[backup] reusing ${candidate.name} as the safety copy; the profile has not changed since it was written`);
+        this.logger(logEvent('backup.reusingSafetyCopy', `[backup] reusing ${candidate.name} as the safety copy; the profile has not changed since it was written`, { name: candidate.name }));
         return candidate;
       }
       return await this.createUnlocked(profile, options);
@@ -247,7 +247,7 @@ export class BackupStore {
         completed += 1;
         options.onProgress?.({ completed, total: sources.length });
       }
-      if (skipped.length > 0) this.logger(`[backup] skipped ${skipped.length} file(s) removed while the backup was running, starting with ${skipped[0]}`);
+      if (skipped.length > 0) this.logger(logEvent('backup.skippedMissingFiles', `[backup] skipped ${skipped.length} file(s) removed while the backup was running, starting with ${skipped[0]}`, { count: skipped.length, first: skipped[0] ?? '' }));
       const archive = await writer.finish();
       await rename(temporary, target);
       const manifest: BackupManifest = {
@@ -265,7 +265,7 @@ export class BackupStore {
         fingerprint,
       };
       await this.save([...await this.load(), manifest]);
-      this.logger(`[backup] created ${manifest.name} (${manifest.fileCount} files)`);
+      this.logger(logEvent('backup.created', `[backup] created ${manifest.name} (${manifest.fileCount} files)`, { name: manifest.name, files: manifest.fileCount }));
       await this.pruneCreated(profile.id);
       return { ...manifest };
     } catch (error) {
@@ -297,7 +297,7 @@ export class BackupStore {
     // never an entry pointing at an archive that is no longer there.
     await this.save(manifests.filter((manifest) => !removed.has(manifest.id)));
     await runPooled(superseded, ioConcurrency(), async (manifest) => { await rm(join(this.paths.archives, `${manifest.id}.zip`), { force: true }); });
-    this.logger(`[backup] removed ${superseded.length} superseded backup(s)`);
+    this.logger(logEvent('backup.removedSuperseded', `[backup] removed ${superseded.length} superseded backup(s)`, { count: superseded.length }));
     return superseded.length;
   }
 
@@ -324,7 +324,7 @@ export class BackupStore {
       source: 'uploaded',
     };
     await this.save([...await this.load(), manifest]);
-    this.logger(`[backup] imported ${manifest.name} (${manifest.fileCount} files)`);
+    this.logger(logEvent('backup.imported', `[backup] imported ${manifest.name} (${manifest.fileCount} files)`, { name: manifest.name, files: manifest.fileCount }));
     return { manifest: { ...manifest }, preview };
   }
 
@@ -334,7 +334,7 @@ export class BackupStore {
     if (!current) throw new BackupError('backup_not_found', 'Backup not found');
     const next = { ...current, name: normalizeBackupName(name, current.profileName, current.createdAt) };
     await this.save(manifests.map((manifest) => manifest.id === id ? next : manifest));
-    this.logger(`[backup] renamed ${current.name} to ${next.name}`);
+    this.logger(logEvent('backup.renamed', `[backup] renamed ${current.name} to ${next.name}`, { from: current.name, to: next.name }));
     return { ...next };
   }
 
@@ -343,7 +343,7 @@ export class BackupStore {
     if (!manifests.some((manifest) => manifest.id === id)) throw new BackupError('backup_not_found', 'Backup not found');
     await rm(join(this.paths.archives, `${id}.zip`), { force: true });
     await this.save(manifests.filter((manifest) => manifest.id !== id));
-    this.logger(`[backup] deleted ${id}`);
+    this.logger(logEvent('backup.deleted', `[backup] deleted ${id}`, { id }));
   }
 
   public async preview(archivePath: string, fallbackLayout: ProfileLayout = 'data'): Promise<RestorePreview> {
@@ -384,29 +384,29 @@ export class BackupStore {
     // Read the profile's current contents before writing, so a replace knows
     // which of its files the archive is not going to overwrite.
     const obsolete = options.mode === 'replace'
-      ? await this.timed('listed files the backup does not contain', () => collectObsolete(dataDestination, dataDestination === resolve(profile.dataPath), keep))
+      ? await this.timed(logEvent('backup.phaseListedObsolete', 'listed files the backup does not contain'), () => collectObsolete(dataDestination, dataDestination === resolve(profile.dataPath), keep))
       : [];
     await mkdir(dataDestination, { recursive: true });
     // Staging directories from older versions are pure waste now; sweep any the
     // upgrade left behind rather than leaving them to confuse SillyTavern.
     await this.sweepAbandonedStaging(resolve(dataDestination, '..'));
-    options.onStatus?.('Restoring files');
-    this.logger(`[backup] restoring ${plan.length} files into ${dataDestination}`);
-    await this.timed(`wrote ${plan.length} files`, () => extractPlan(archivePath, plan, options.onProgress));
+    options.onStatus?.(logEvent('restore.restoringFiles', 'Restoring files'));
+    this.logger(logEvent('backup.restoring', `[backup] restoring ${plan.length} files into ${dataDestination}`, { count: plan.length, path: dataDestination }));
+    await this.timed(logEvent('backup.phaseWroteFiles', `wrote ${plan.length} files`, { count: plan.length }), () => extractPlan(archivePath, plan, options.onProgress));
     if (obsolete.length > 0) {
-      options.onStatus?.('Removing files the backup does not contain');
-      await this.timed(`removed ${obsolete.length} files the backup does not contain`, () => removeAll(obsolete));
+      options.onStatus?.(logEvent('restore.removingObsolete', 'Removing files the backup does not contain'));
+      await this.timed(logEvent('backup.phaseRemovedObsolete', `removed ${obsolete.length} files the backup does not contain`, { count: obsolete.length }), () => removeAll(obsolete));
     }
-    options.onStatus?.('Finalizing restored data');
+    options.onStatus?.(logEvent('restore.finalizing', 'Finalizing restored data'));
     const targetLabel = profile.layout === 'data' ? relative(resolve(profile.dataPath), dataDestination).replaceAll('\\', '/') || '.' : 'public/';
-    this.logger(`[backup] restored ${preview.fileCount} files to ${profile.name}/${targetLabel} (${options.mode})`);
+    this.logger(logEvent('backup.restored', `[backup] restored ${preview.fileCount} files to ${profile.name}/${targetLabel} (${options.mode})`, { count: preview.fileCount, profile: profile.name, target: targetLabel, mode: options.mode }));
     return preview;
   }
 
   private trackCleanup(path: string): void {
     this.cleanupTail = this.cleanupTail
       .then(() => removeTree(path))
-      .catch((error: unknown) => { this.logger(`[backup] deferred cleanup failed for ${path}: ${error instanceof Error ? error.message : 'unknown error'}`); });
+      .catch((error: unknown) => { const reason = error instanceof Error ? error.message : 'unknown error'; this.logger(logEvent('backup.deferredCleanupFailed', `[backup] deferred cleanup failed for ${path}: ${reason}`, { path, reason })); });
   }
 
   /** Wait for background deletions. Tests and shutdown need a quiet filesystem. */
@@ -421,12 +421,13 @@ export class BackupStore {
    * the only way to know which phase to work on next is to measure each one on
    * the machine that is actually slow.
    */
-  private async timed<T>(label: string, operation: () => Promise<T>): Promise<T> {
+  private async timed<T>(phase: LogEvent, operation: () => Promise<T>): Promise<T> {
     const startedAt = Date.now();
     try {
       return await operation();
     } finally {
-      this.logger(`[backup] ${label} in ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
+      const seconds = ((Date.now() - startedAt) / 1000).toFixed(1);
+      this.logger(logEvent(phase.code, `[backup] ${phase.message} in ${seconds}s`, { ...phase.params, seconds }));
     }
   }
 
@@ -576,7 +577,7 @@ export class BackupStore {
         // A file that vanished under us needed no sweeping.
       }
     }
-    if (removed > 0) this.logger(`[backup] removed ${removed} abandoned upload file(s)`);
+    if (removed > 0) this.logger(logEvent('backup.removedAbandonedUploads', `[backup] removed ${removed} abandoned upload file(s)`, { count: removed }));
     return removed;
   }
 
@@ -602,7 +603,7 @@ export class BackupStore {
     const orphans = names.filter((name) => (name.startsWith('.') && name.endsWith('.zip.tmp')) || (name.endsWith('.zip') && !known.has(name)));
     if (orphans.length === 0) return 0;
     await runPooled(orphans, ioConcurrency(), async (name) => { await rm(join(this.paths.archives, name), { force: true }); });
-    this.logger(`[backup] removed ${orphans.length} archive(s) an interrupted backup left behind`);
+    this.logger(logEvent('backup.removedOrphanArchives', `[backup] removed ${orphans.length} archive(s) an interrupted backup left behind`, { count: orphans.length }));
     return orphans.length;
   }
 

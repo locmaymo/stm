@@ -2,10 +2,11 @@ import { spawn } from 'node:child_process';
 import { stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { detectPlatform } from '../../../packages/platform/src/index.js';
+import { logEvent, logLineText, type LogSink } from '../../../packages/contracts/src/index.js';
 
 export interface BootstrapOptions {
   readonly env?: NodeJS.ProcessEnv;
-  readonly logger?: (line: string) => void;
+  readonly logger?: LogSink;
   /** Injectable for tests, so nothing is really launched. */
   readonly spawnImpl?: typeof spawn;
   readonly platform?: NodeJS.Platform;
@@ -25,10 +26,10 @@ export function panelStaticRoot(env: NodeJS.ProcessEnv = process.env): string {
  */
 export async function ensurePanelBuilt(options: BootstrapOptions = {}): Promise<boolean> {
   const env = options.env ?? process.env;
-  const logger = options.logger ?? ((line: string) => console.log(line));
+  const logger: LogSink = options.logger ?? ((line) => console.log(logLineText(line)));
   const staticRoot = panelStaticRoot(env);
   if (await isFile(join(staticRoot, 'index.html'))) return false;
-  logger('[manager] the panel has not been built yet; building it now');
+  logger(logEvent('panel.building', '[manager] the panel has not been built yet; building it now'));
   const runner = options.spawnImpl ?? spawn;
   const code = await new Promise<number | null>((resolvePromise) => {
     const child = runner(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'panel:build'], { stdio: 'inherit', windowsHide: true });
@@ -36,12 +37,12 @@ export async function ensurePanelBuilt(options: BootstrapOptions = {}): Promise<
     child.once('close', (status) => resolvePromise(status));
   });
   if (code === 0 && await isFile(join(staticRoot, 'index.html'))) {
-    logger('[manager] the panel is built');
+    logger(logEvent('panel.built', '[manager] the panel is built'));
     return true;
   }
   // The API is still worth serving without it, so say what to do rather than
   // refusing to start.
-  logger('[manager] the panel could not be built; run "npm run panel:build" and restart');
+  logger(logEvent('panel.buildFailed', '[manager] the panel could not be built; run "npm run panel:build" and restart'));
   return false;
 }
 
@@ -54,7 +55,7 @@ export async function ensurePanelBuilt(options: BootstrapOptions = {}): Promise<
  */
 export async function openInBrowser(url: string, options: BootstrapOptions = {}): Promise<boolean> {
   const env = options.env ?? process.env;
-  const logger = options.logger ?? ((line: string) => console.log(line));
+  const logger: LogSink = options.logger ?? ((line) => console.log(logLineText(line)));
   if (env.STM_OPEN_BROWSER === '0') return false;
   const host = options.platform ?? process.platform;
   const platform = detectPlatform({ env, platform: host });
@@ -74,7 +75,7 @@ export async function openInBrowser(url: string, options: BootstrapOptions = {})
     // when it opened the page.
     child.once('error', () => undefined);
     child.unref();
-    logger(`[manager] opened ${url}`);
+    logger(logEvent('manager.browserOpened', `[manager] opened ${url}`, { url }));
     return true;
   } catch {
     return false;

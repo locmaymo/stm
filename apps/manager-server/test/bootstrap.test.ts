@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { spawn } from 'node:child_process';
 import { ensurePanelBuilt, openInBrowser, panelStaticRoot } from '../src/bootstrap.js';
+import { logLineText } from '../../../packages/contracts/src/index.js';
 
 interface Launch { readonly file: string; readonly args: readonly string[] }
 
@@ -30,7 +31,7 @@ test('a built panel is left alone and a missing one is built', async () => {
   // because this spawn writes no output.
   const launches: Launch[] = [];
   const lines: string[] = [];
-  assert.equal(await ensurePanelBuilt({ env, logger: (line) => lines.push(line), spawnImpl: recordingSpawn(launches) }), false);
+  assert.equal(await ensurePanelBuilt({ env, logger: (line) => lines.push(logLineText(line)), spawnImpl: recordingSpawn(launches) }), false);
   assert.deepEqual(launches.map((launch) => launch.args), [['run', 'panel:build']]);
   assert.ok(lines.some((line) => line.includes('npm run panel:build')));
 

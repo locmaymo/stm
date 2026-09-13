@@ -90,7 +90,10 @@ export interface Installation {
   readonly markerPath: string;
   readonly status: InstallationStatus;
   readonly progress: number;
+  /** English step text; `stepCode` is what the panel shows when it has one. */
   readonly step: string;
+  readonly stepCode?: string;
+  readonly stepParams?: MessageParams;
   readonly error: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -185,11 +188,48 @@ export interface Job {
   readonly kind: JobKind;
   readonly state: JobState;
   readonly progress: number;
+  /** English step text; `stepCode` is what the panel shows when it has one. */
   readonly step: string;
+  readonly stepCode?: string;
+  readonly stepParams?: MessageParams;
   readonly installationId: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly error: string | null;
+}
+
+/** Values substituted into a translated log line or progress step. */
+export type MessageParams = Readonly<Record<string, string | number>>;
+
+/**
+ * A line the manager wrote itself, carrying both its English text and the
+ * catalog key the panel translates it with.
+ *
+ * Output produced by another program - SillyTavern, cloudflared, npm, git - is
+ * passed through as a plain string and shown exactly as it was written. Only
+ * what this project authors is translated.
+ */
+export interface LogEvent {
+  readonly code: string;
+  readonly message: string;
+  readonly params?: MessageParams;
+}
+
+export type LogLine = string | LogEvent;
+
+/** Where a component sends its output; the manager decides what to do with it. */
+export type LogSink = (line: LogLine) => void;
+
+export function logEvent(code: string, message: string, params?: MessageParams): LogEvent {
+  return params === undefined ? { code, message } : { code, message, params };
+}
+
+export function isLogEvent(line: LogLine): line is LogEvent {
+  return typeof line === 'object' && line !== null;
+}
+
+export function logLineText(line: LogLine): string {
+  return isLogEvent(line) ? line.message : line;
 }
 
 export interface LogEntry {
@@ -197,7 +237,11 @@ export interface LogEntry {
   readonly timestamp: string;
   readonly source: 'manager' | 'sillytavern' | 'cloudflared' | 'installer' | 'backup';
   readonly level: 'info' | 'warn' | 'error';
+  /** English rendering. Always present, and what the durable log file keeps. */
   readonly message: string;
+  /** Catalog key under `logs.`, absent for third-party output. */
+  readonly code?: string;
+  readonly params?: MessageParams;
 }
 
 export type LogSourceFilter = LogEntry['source'] | 'all';

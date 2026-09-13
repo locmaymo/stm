@@ -340,6 +340,121 @@
     "active": "Active",
     "ready": "Ready"
   },
+  "logs": {
+    "panel": {
+      "building": "The panel has not been built yet; building it now",
+      "built": "The panel is built",
+      "buildFailed": "The panel could not be built; run \"npm run panel:build\" and restart"
+    },
+    "manager": {
+      "browserOpened": "Opened {url}",
+      "requestFailed": "Request failed: {reason}"
+    },
+    "setup": {
+      "passwordBootstrapped": "Admin password taken from STM_ADMIN_PASSWORD",
+      "setupCode": "One-time setup code: {code}"
+    },
+    "config": {
+      "updated": "Updated {path}",
+      "accountsMigrated": "Moved access security to SillyTavern accounts; local network access is waiting for an admin password"
+    },
+    "sillytavern": {
+      "starting": "Starting {ref} on 127.0.0.1:8000",
+      "ready": "Ready on 127.0.0.1:8000 after {seconds}s",
+      "legacyHeap": "Using a {heap} MiB heap for the legacy public/ runtime",
+      "spawnFailed": "{reason}",
+      "failed": "{reason}",
+      "autoStartFailed": "Automatic startup failed: {reason}"
+    },
+    "installer": {
+      "ready": "Installation {ref} is ready",
+      "failed": "Installation failed: {reason}",
+      "previousRestored": "Previous runtime restored",
+      "rollbackFailed": "Rollback failed: {reason}",
+      "legacyMigrationFailed": "Legacy runtime migration failed: {reason}",
+      "migratedToSharedCheckout": "Moved {ref} to the shared Git checkout",
+      "removedLegacyCopy": "Removed legacy runtime copy {id}"
+    },
+    "install": {
+      "waiting": "Waiting to start",
+      "starting": "Starting installation",
+      "resolved": "Resolved {ref}",
+      "preparingCheckout": "Preparing the shared Git checkout for {ref}",
+      "checkedOut": "Checked out {ref}",
+      "downloading": "Downloading {ref}",
+      "downloadingArchive": "Downloading the source archive",
+      "extracting": "Extracting the source archive",
+      "installingDependencies": "Installing SillyTavern dependencies",
+      "checking": "Checking the installation",
+      "ready": "Installation ready",
+      "failed": "Installation failed"
+    },
+    "profiles": {
+      "created": "Created {name} ({layout})",
+      "activated": "Switched to {name}",
+      "rebound": "Rebound {name} to {installation} ({layout})",
+      "migrated": "Moved {name} from public/ to data/{handle}/",
+      "syncedToRuntime": "Synchronized {name} to the legacy public/ runtime",
+      "syncedFromRuntime": "Synchronized legacy public/ changes back to {name}",
+      "reclaimingMigrationCopy": "Reclaiming the SillyTavern migration copy left in the runtime",
+      "removingLegacySnapshots": "Removing the safety snapshot copies the backup library replaced",
+      "legacyHeap": "Legacy data is {size} GiB; using a {heap} MiB Node heap",
+      "legacySyncFailed": "Legacy synchronization failed: {reason}",
+      "deferredCleanupFailed": "Deferred cleanup failed for {path}: {reason}"
+    },
+    "backup": {
+      "created": "Created {name} ({files} files)",
+      "imported": "Imported {name} ({files} files)",
+      "renamed": "Renamed {from} to {to}",
+      "deleted": "Deleted {id}",
+      "restoring": "Restoring {count} files into {path}",
+      "restored": "Restored {count} files to {profile}/{target} ({mode})",
+      "reusingSafetyCopy": "Reusing {name} as the safety copy; the profile has not changed since it was written",
+      "skippedMissingFiles": "Skipped {count} file(s) removed while the backup was running, starting with {first}",
+      "removedSuperseded": "Removed {count} superseded backup(s)",
+      "removedAbandonedUploads": "Removed {count} abandoned upload file(s)",
+      "removedOrphanArchives": "Removed {count} archive(s) an interrupted backup left behind",
+      "deferredCleanupFailed": "Deferred cleanup failed for {path}: {reason}",
+      "schedulePaused": "Scheduled backup paused while another backup or restore is running",
+      "scheduledSnapshot": "Scheduled local snapshot {name}",
+      "scheduleSkipped": "Scheduled backup skipped: {reason}",
+      "phaseListedObsolete": "Listed the files the backup does not contain in {seconds}s",
+      "phaseWroteFiles": "Wrote {count} files in {seconds}s",
+      "phaseRemovedObsolete": "Removed {count} files the backup does not contain in {seconds}s"
+    },
+    "cloudflared": {
+      "startingQuick": "Starting Quick Tunnel to 127.0.0.1:8000",
+      "startingNamed": "Starting Named Tunnel to 127.0.0.1:8000",
+      "downloading": "Downloading {file}",
+      "installed": "Installed to {path}",
+      "spawnFailed": "{reason}",
+      "failed": "{reason}"
+    },
+    "r2": {
+      "uploaded": "Uploaded {name} ({bytes} bytes)"
+    },
+    "job": {
+      "preparingBackup": "Preparing backup",
+      "preparingRestore": "Preparing restore",
+      "compressingFiles": "Compressing files ({completed}/{total})",
+      "savingLibrary": "Saving the backup library",
+      "stoppingSillyTavern": "Stopping SillyTavern",
+      "creatingSafetySnapshot": "Creating a safety snapshot",
+      "backingUpCurrentData": "Backing up current data ({completed}/{total})",
+      "restoringData": "Restoring data",
+      "restoringFiles": "Restoring files ({completed}/{total})",
+      "startingSillyTavern": "Starting SillyTavern",
+      "startingTunnel": "Starting the public tunnel",
+      "restoreComplete": "Restore complete",
+      "completed": "Completed",
+      "failed": "Failed"
+    },
+    "restore": {
+      "restoringFiles": "Restoring files",
+      "removingObsolete": "Removing files the backup does not contain",
+      "finalizing": "Finalizing restored data"
+    }
+  },
   "system": {
     "title": "System",
     "cpu": "CPU",

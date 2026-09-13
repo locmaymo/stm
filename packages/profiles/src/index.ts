@@ -3,7 +3,7 @@ import { chmod, copyFile, lstat, mkdir, readFile, readdir, rename, rm, stat, wri
 import { constants as fsConstants } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { parse as parseYaml } from 'yaml';
-import type { Profile, ProfileLayout } from '../../contracts/src/index.js';
+import { logEvent, logLineText, type LogSink, type Profile, type ProfileLayout } from '../../contracts/src/index.js';
 import { createIoLimiter, ioConcurrency, runPooled } from '../../platform/src/index.js';
 import type { IoLimiter, PlatformPaths } from '../../platform/src/index.js';
 
@@ -16,7 +16,7 @@ const LEGACY_RUNTIME_STATIC_NAMES = new Set(['assets', 'css', 'favicon.ico', 'i1
 export interface ProfileStoreOptions {
   readonly paths: PlatformPaths;
   readonly now?: () => Date;
-  readonly logger?: (line: string) => void;
+  readonly logger?: LogSink;
 }
 
 export interface ProfileCreateInput {
@@ -39,7 +39,7 @@ interface PersistedProfiles {
 export class ProfileStore {
   readonly paths: PlatformPaths;
   private readonly now: () => Date;
-  private readonly logger: (line: string) => void;
+  private readonly logger: LogSink;
   private profiles: Profile[] | null = null;
   private writeQueue: Promise<void> = Promise.resolve();
   private cleanupTail: Promise<void> = Promise.resolve();
@@ -47,7 +47,7 @@ export class ProfileStore {
   public constructor(options: ProfileStoreOptions) {
     this.paths = options.paths;
     this.now = options.now ?? (() => new Date());
-    this.logger = options.logger ?? ((line) => console.log(line));
+    this.logger = options.logger ?? ((line) => console.log(logLineText(line)));
   }
 
   public async list(): Promise<Profile[]> {
@@ -128,7 +128,7 @@ export class ProfileStore {
     const next = shouldActivate ? profiles.map((item) => ({ ...item, active: false })) : profiles;
     next.push(profile);
     await this.save(next);
-    this.logger(`[profiles] created ${profile.name} (${profile.layout})`);
+    this.logger(logEvent('profiles.created', `[profiles] created ${profile.name} (${profile.layout})`, { name: profile.name, layout: profile.layout }));
     return { ...profile };
   }
 
@@ -144,7 +144,7 @@ export class ProfileStore {
       updatedAt: profile.id === id ? now : profile.updatedAt,
     }));
     await this.save(next);
-    this.logger(`[profiles] activated ${target.name}`);
+    this.logger(logEvent('profiles.activated', `[profiles] activated ${target.name}`, { name: target.name }));
     const activated = next.find((profile) => profile.id === id);
     if (!activated) throw new Error('Profile disappeared after activation');
     return { ...activated };
@@ -183,7 +183,7 @@ export class ProfileStore {
     await this.save(next);
     const rebound = next.find((profile) => profile.id === id);
     if (!rebound) throw new Error('Profile disappeared after rebind');
-    this.logger(`[profiles] rebound ${rebound.name} to ${installationId} (${rebound.layout})`);
+    this.logger(logEvent('profiles.rebound', `[profiles] rebound ${rebound.name} to ${installationId} (${rebound.layout})`, { name: rebound.name, installation: installationId, layout: rebound.layout }));
     return { ...rebound };
   }
 
@@ -206,7 +206,7 @@ export class ProfileStore {
     await this.save(next);
     const result = next.find((profile) => profile.id === id);
     if (!result) throw new Error('Profile disappeared after migration');
-    this.logger(`[profiles] migrated ${result.name} from public/ to data/${DEFAULT_USER_HANDLE}/`);
+    this.logger(logEvent('profiles.migrated', `[profiles] migrated ${result.name} from public/ to data/${DEFAULT_USER_HANDLE}/`, { name: result.name, handle: DEFAULT_USER_HANDLE }));
     return { ...result };
   }
 
@@ -221,7 +221,7 @@ export class ProfileStore {
     await syncCanonicalToLegacy(source, runtimePath);
     if (await exists(profile.configPath)) await copyPath(profile.configPath, join(runtimePath, 'config.yaml'));
     await writeLegacyRuntimeConfig(runtimePath);
-    this.logger(`[profiles] synchronized ${profile.name} to legacy public/ runtime`);
+    this.logger(logEvent('profiles.syncedToRuntime', `[profiles] synchronized ${profile.name} to legacy public/ runtime`, { name: profile.name }));
     return 'public';
   }
 
@@ -240,7 +240,7 @@ export class ProfileStore {
       ? (await readdir(publicRoot)).filter((child) => !LEGACY_RUNTIME_STATIC_NAMES.has(child))
       : [];
     if (unmigrated.length > 0) return;
-    this.logger('[profiles] reclaiming the SillyTavern migration copy left in the runtime');
+    this.logger(logEvent('profiles.reclaimingMigrationCopy', '[profiles] reclaiming the SillyTavern migration copy left in the runtime'));
     this.trackCleanup(migration);
   }
 
@@ -256,7 +256,7 @@ export class ProfileStore {
     // Everything is in the profile now, so the runtime's copy is waste. A run
     // that never got here keeps its copy, which is what the next start needs.
     await clearLegacyRuntimeData(runtimePath);
-    this.logger(`[profiles] synchronized legacy public/ changes back to ${profile.name}`);
+    this.logger(logEvent('profiles.syncedFromRuntime', `[profiles] synchronized legacy public/ changes back to ${profile.name}`, { name: profile.name }));
   }
 
   /**
@@ -272,7 +272,7 @@ export class ProfileStore {
     const gib = bytes / (1024 ** 3);
     const heapGb = Math.min(16, Math.max(8, Math.ceil(gib * 2 + 4)));
     const heapMb = heapGb * 1024;
-    this.logger(`[profiles] legacy data is ${gib.toFixed(2)} GiB; using a ${heapMb} MiB Node heap`);
+    this.logger(logEvent('profiles.legacyHeap', `[profiles] legacy data is ${gib.toFixed(2)} GiB; using a ${heapMb} MiB Node heap`, { size: gib.toFixed(2), heap: heapMb }));
     return heapMb;
   }
 
@@ -288,7 +288,7 @@ export class ProfileStore {
   public async removeLegacySnapshots(): Promise<boolean> {
     const root = join(this.paths.profiles, '.snapshots');
     if (!await exists(root)) return false;
-    this.logger('[profiles] removing the safety snapshot copies the backup library replaced');
+    this.logger(logEvent('profiles.removingLegacySnapshots', '[profiles] removing the safety snapshot copies the backup library replaced'));
     this.trackCleanup(root);
     return true;
   }
@@ -296,7 +296,7 @@ export class ProfileStore {
   private trackCleanup(path: string): void {
     this.cleanupTail = this.cleanupTail
       .then(() => rm(path, { recursive: true, force: true, maxRetries: 2, retryDelay: 250 }))
-      .catch((error: unknown) => { this.logger(`[profiles] deferred cleanup failed for ${path}: ${error instanceof Error ? error.message : 'unknown error'}`); });
+      .catch((error: unknown) => { const reason = error instanceof Error ? error.message : 'unknown error'; this.logger(logEvent('profiles.deferredCleanupFailed', `[profiles] deferred cleanup failed for ${path}: ${reason}`, { path, reason })); });
   }
 
   /** Wait for background deletions. Tests and shutdown need a quiet filesystem. */
@@ -322,7 +322,7 @@ export class ProfileStore {
     await this.save(next);
     const result = next.find((item) => item.id === profile.id);
     if (!result) throw new Error('Profile disappeared after legacy migration');
-    this.logger(`[profiles] migrated ${result.name} from public/ to data/${DEFAULT_USER_HANDLE}/`);
+    this.logger(logEvent('profiles.migrated', `[profiles] migrated ${result.name} from public/ to data/${DEFAULT_USER_HANDLE}/`, { name: result.name, handle: DEFAULT_USER_HANDLE }));
     return { ...result };
   }
 

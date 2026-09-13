@@ -3,7 +3,7 @@ import { appendFile, mkdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { PlatformPaths } from '../../../packages/platform/src/index.js';
-import type { LogEntry } from '../../../packages/contracts/src/index.js';
+import { isLogEvent, type LogEntry, type LogLine } from '../../../packages/contracts/src/index.js';
 
 export const LOG_LIMITS = {
   // Deep enough that the whole of a long restore, and the SillyTavern start
@@ -28,8 +28,8 @@ export class LogBuffer {
 
   public constructor(private readonly paths?: PlatformPaths, private readonly mirror?: (line: string) => void) {}
 
-  public append(source: LogEntry['source'], message: string, level: LogEntry['level'] = 'info'): void {
-    let clean = stripVTControlCharacters(message).trim();
+  public append(source: LogEntry['source'], line: LogLine, level: LogEntry['level'] = 'info'): void {
+    let clean = stripVTControlCharacters(isLogEvent(line) ? line.message : line).trim();
     if (!clean) return;
     if (clean.length > LOG_LIMITS.messageCharacters) {
       clean = clean.slice(0, LOG_LIMITS.messageCharacters - 1);
@@ -37,7 +37,8 @@ export class LogBuffer {
       if (last >= 0xd800 && last <= 0xdbff) clean = clean.slice(0, -1);
       clean += '…';
     }
-    const entry: LogEntry = { id: this.nextId++, timestamp: new Date().toISOString(), source, level, message: clean };
+    const translation = isLogEvent(line) ? { code: line.code, ...(line.params ? { params: line.params } : {}) } : {};
+    const entry: LogEntry = { id: this.nextId++, timestamp: new Date().toISOString(), source, level, message: clean, ...translation };
     this.entries.push(entry);
     this.characters += clean.length;
     while (this.entries.length > LOG_LIMITS.entries || this.characters > LOG_LIMITS.totalCharacters) {

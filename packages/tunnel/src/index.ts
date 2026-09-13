@@ -7,7 +7,7 @@ import { Readable } from 'node:stream';
 import type { ReadableStream } from 'node:stream/web';
 import { pipeline } from 'node:stream/promises';
 import { join } from 'node:path';
-import type { TunnelMode, TunnelState } from '../../contracts/src/index.js';
+import { logEvent, logLineText, type LogSink, type TunnelMode, type TunnelState } from '../../contracts/src/index.js';
 import type { PlatformPaths } from '../../platform/src/index.js';
 
 const execFileAsync = promisify(execFile);
@@ -30,7 +30,7 @@ function cloudflaredAsset(platform: NodeJS.Platform = process.platform, architec
 
 export interface TunnelManagerOptions {
   readonly paths: PlatformPaths;
-  readonly logger?: (line: string) => void;
+  readonly logger?: LogSink;
   readonly now?: () => Date;
   readonly binaryPath?: string;
   readonly env?: NodeJS.ProcessEnv;
@@ -41,7 +41,7 @@ export interface TunnelManagerOptions {
 
 export class TunnelManager {
   private readonly paths: PlatformPaths;
-  private readonly logger: (line: string) => void;
+  private readonly logger: LogSink;
   private readonly now: () => Date;
   private readonly env: NodeJS.ProcessEnv;
   private readonly configuredBinaryPath: string | undefined;
@@ -54,7 +54,7 @@ export class TunnelManager {
 
   public constructor(options: TunnelManagerOptions) {
     this.paths = options.paths;
-    this.logger = options.logger ?? ((line) => console.log(line));
+    this.logger = options.logger ?? ((line) => console.log(logLineText(line)));
     this.now = options.now ?? (() => new Date());
     this.env = options.env ?? process.env;
     this.configuredBinaryPath = options.binaryPath ?? this.env.STM_CLOUDFLARED_PATH;
@@ -80,7 +80,9 @@ export class TunnelManager {
       ? ['tunnel', '--no-autoupdate', '--url', 'http://127.0.0.1:8000']
       : ['tunnel', '--no-autoupdate', 'run', '--token', selectedToken!];
     this.state = { mode, status: 'starting', url: null, startedAt: this.now().toISOString(), error: null };
-    this.logger(`[cloudflared] starting ${mode === 'quick' ? 'Quick Tunnel' : 'Named Tunnel'} to 127.0.0.1:8000`);
+    this.logger(mode === 'quick'
+      ? logEvent('cloudflared.startingQuick', '[cloudflared] starting Quick Tunnel to 127.0.0.1:8000')
+      : logEvent('cloudflared.startingNamed', '[cloudflared] starting Named Tunnel to 127.0.0.1:8000'));
     const child = spawn(binary, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, env: this.env });
     this.child = child;
     const consume = (chunk: string) => {
@@ -94,7 +96,7 @@ export class TunnelManager {
     child.stdout?.on('data', consume);
     child.stderr?.on('data', consume);
     child.once('error', (error) => {
-      this.logger(`[cloudflared] ${error.message}`);
+      this.logger(logEvent('cloudflared.spawnFailed', `[cloudflared] ${error.message}`, { reason: error.message }));
       this.state = { ...this.state, status: 'error', error: 'cloudflared could not start' };
       this.child = null;
     });
@@ -159,7 +161,7 @@ export class TunnelManager {
     const target = join(this.paths.bin, asset.exe);
     const temporary = `${target}.${randomUUID()}.part`;
     await mkdir(this.paths.bin, { recursive: true });
-    this.logger(`[cloudflared] downloading ${asset.file}`);
+    this.logger(logEvent('cloudflared.downloading', `[cloudflared] downloading ${asset.file}`, { file: asset.file }));
     const response = await this.fetchImpl(`${CLOUDFLARED_RELEASE}/${asset.file}`, { redirect: 'follow' });
     if (!response.ok || !response.body) throw new Error(`cloudflared could not be downloaded (HTTP ${response.status})`);
     try {
@@ -170,7 +172,7 @@ export class TunnelManager {
       throw error;
     }
     if (process.platform !== 'win32') await chmod(target, 0o755);
-    this.logger(`[cloudflared] installed to ${target}`);
+    this.logger(logEvent('cloudflared.installed', `[cloudflared] installed to ${target}`, { path: target }));
     return target;
   }
 
@@ -191,7 +193,7 @@ export class TunnelManager {
 
   private fail(mode: Exclude<TunnelMode, 'off'>, error: string): TunnelState {
     this.state = { mode, status: 'error', url: null, startedAt: null, error };
-    this.logger(`[cloudflared] ${error}`);
+    this.logger(logEvent('cloudflared.failed', `[cloudflared] ${error}`, { reason: error }));
     return this.getState();
   }
 }

@@ -340,6 +340,121 @@
     "active": "Đang dùng",
     "ready": "Sẵn sàng"
   },
+  "logs": {
+    "panel": {
+      "building": "Giao diện chưa được dựng; đang dựng ngay bây giờ",
+      "built": "Đã dựng xong giao diện",
+      "buildFailed": "Không dựng được giao diện; hãy chạy \"npm run panel:build\" rồi khởi động lại"
+    },
+    "manager": {
+      "browserOpened": "Đã mở {url}",
+      "requestFailed": "Yêu cầu thất bại: {reason}"
+    },
+    "setup": {
+      "passwordBootstrapped": "Đã lấy mật khẩu quản trị từ STM_ADMIN_PASSWORD",
+      "setupCode": "Mã cài đặt dùng một lần: {code}"
+    },
+    "config": {
+      "updated": "Đã cập nhật {path}",
+      "accountsMigrated": "Đã chuyển bảo mật truy cập sang tài khoản SillyTavern; truy cập mạng nội bộ đang chờ mật khẩu quản trị"
+    },
+    "sillytavern": {
+      "starting": "Đang khởi động {ref} trên 127.0.0.1:8000",
+      "ready": "Đã sẵn sàng trên 127.0.0.1:8000 sau {seconds}s",
+      "legacyHeap": "Dùng heap {heap} MiB cho bản chạy public/ cũ",
+      "spawnFailed": "{reason}",
+      "failed": "{reason}",
+      "autoStartFailed": "Khởi động tự động thất bại: {reason}"
+    },
+    "installer": {
+      "ready": "Bản cài {ref} đã sẵn sàng",
+      "failed": "Cài đặt thất bại: {reason}",
+      "previousRestored": "Đã khôi phục bản chạy trước đó",
+      "rollbackFailed": "Quay lui thất bại: {reason}",
+      "legacyMigrationFailed": "Chuyển đổi bản chạy cũ thất bại: {reason}",
+      "migratedToSharedCheckout": "Đã chuyển {ref} sang bản checkout Git dùng chung",
+      "removedLegacyCopy": "Đã xóa bản sao runtime cũ {id}"
+    },
+    "install": {
+      "waiting": "Đang chờ bắt đầu",
+      "starting": "Đang bắt đầu cài đặt",
+      "resolved": "Đã xác định {ref}",
+      "preparingCheckout": "Đang chuẩn bị bản checkout Git dùng chung cho {ref}",
+      "checkedOut": "Đã checkout {ref}",
+      "downloading": "Đang tải {ref}",
+      "downloadingArchive": "Đang tải gói mã nguồn",
+      "extracting": "Đang giải nén gói mã nguồn",
+      "installingDependencies": "Đang cài các phụ thuộc của SillyTavern",
+      "checking": "Đang kiểm tra bản cài",
+      "ready": "Bản cài đã sẵn sàng",
+      "failed": "Cài đặt thất bại"
+    },
+    "profiles": {
+      "created": "Đã tạo {name} ({layout})",
+      "activated": "Đã chuyển sang {name}",
+      "rebound": "Đã gắn lại {name} vào {installation} ({layout})",
+      "migrated": "Đã chuyển {name} từ public/ sang data/{handle}/",
+      "syncedToRuntime": "Đã đồng bộ {name} sang bản chạy public/ cũ",
+      "syncedFromRuntime": "Đã đồng bộ thay đổi từ public/ cũ về {name}",
+      "reclaimingMigrationCopy": "Đang thu hồi bản sao chuyển đổi mà SillyTavern để lại trong runtime",
+      "removingLegacySnapshots": "Đang xóa các bản sao an toàn mà thư viện sao lưu đã thay thế",
+      "legacyHeap": "Dữ liệu cũ nặng {size} GiB; dùng heap Node {heap} MiB",
+      "legacySyncFailed": "Đồng bộ dữ liệu cũ thất bại: {reason}",
+      "deferredCleanupFailed": "Dọn dẹp trì hoãn thất bại cho {path}: {reason}"
+    },
+    "backup": {
+      "created": "Đã tạo {name} ({files} tệp)",
+      "imported": "Đã nhập {name} ({files} tệp)",
+      "renamed": "Đã đổi tên {from} thành {to}",
+      "deleted": "Đã xóa {id}",
+      "restoring": "Đang khôi phục {count} tệp vào {path}",
+      "restored": "Đã khôi phục {count} tệp vào {profile}/{target} ({mode})",
+      "reusingSafetyCopy": "Dùng lại {name} làm bản sao an toàn; hồ sơ không đổi kể từ khi bản đó được ghi",
+      "skippedMissingFiles": "Đã bỏ qua {count} tệp bị xóa trong lúc sao lưu, bắt đầu từ {first}",
+      "removedSuperseded": "Đã xóa {count} bản sao lưu cũ hơn",
+      "removedAbandonedUploads": "Đã xóa {count} tệp tải lên dang dở",
+      "removedOrphanArchives": "Đã xóa {count} tệp lưu trữ do một lần sao lưu bị gián đoạn để lại",
+      "deferredCleanupFailed": "Dọn dẹp trì hoãn thất bại cho {path}: {reason}",
+      "schedulePaused": "Tạm dừng sao lưu theo lịch vì đang có sao lưu hoặc khôi phục khác chạy",
+      "scheduledSnapshot": "Bản sao lưu cục bộ theo lịch {name}",
+      "scheduleSkipped": "Bỏ qua sao lưu theo lịch: {reason}",
+      "phaseListedObsolete": "Đã liệt kê các tệp không có trong bản sao lưu trong {seconds}s",
+      "phaseWroteFiles": "Đã ghi {count} tệp trong {seconds}s",
+      "phaseRemovedObsolete": "Đã xóa {count} tệp không có trong bản sao lưu trong {seconds}s"
+    },
+    "cloudflared": {
+      "startingQuick": "Đang khởi động Quick Tunnel tới 127.0.0.1:8000",
+      "startingNamed": "Đang khởi động Named Tunnel tới 127.0.0.1:8000",
+      "downloading": "Đang tải {file}",
+      "installed": "Đã cài vào {path}",
+      "spawnFailed": "{reason}",
+      "failed": "{reason}"
+    },
+    "r2": {
+      "uploaded": "Đã tải {name} lên ({bytes} byte)"
+    },
+    "job": {
+      "preparingBackup": "Đang chuẩn bị sao lưu",
+      "preparingRestore": "Đang chuẩn bị khôi phục",
+      "compressingFiles": "Đang nén tệp ({completed}/{total})",
+      "savingLibrary": "Đang lưu thư viện sao lưu",
+      "stoppingSillyTavern": "Đang dừng SillyTavern",
+      "creatingSafetySnapshot": "Đang tạo bản sao an toàn",
+      "backingUpCurrentData": "Đang sao lưu dữ liệu hiện tại ({completed}/{total})",
+      "restoringData": "Đang khôi phục dữ liệu",
+      "restoringFiles": "Đang khôi phục tệp ({completed}/{total})",
+      "startingSillyTavern": "Đang khởi động SillyTavern",
+      "startingTunnel": "Đang khởi động đường dẫn công khai",
+      "restoreComplete": "Khôi phục hoàn tất",
+      "completed": "Hoàn tất",
+      "failed": "Thất bại"
+    },
+    "restore": {
+      "restoringFiles": "Đang khôi phục tệp",
+      "removingObsolete": "Đang xóa các tệp không có trong bản sao lưu",
+      "finalizing": "Đang hoàn tất dữ liệu khôi phục"
+    }
+  },
   "system": {
     "title": "Hệ thống",
     "cpu": "CPU",

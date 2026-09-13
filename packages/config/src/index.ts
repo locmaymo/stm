@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { copyFile, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { parseDocument, type Document, type YAMLMap } from 'yaml';
-import type { ConfigDocument, ConfigSettings, ConfigUpdateInput, Installation, Profile } from '../../contracts/src/index.js';
+import { logEvent, logLineText, type ConfigDocument, type ConfigSettings, type ConfigUpdateInput, type Installation, type LogSink, type Profile } from '../../contracts/src/index.js';
 
 const CONFIG_SCHEMA_VERSION = 1 as const;
 const REDACTED_PASSWORD = '********';
@@ -19,15 +19,15 @@ export class ConfigError extends Error {
 }
 
 export interface ConfigStoreOptions {
-  readonly logger?: (line: string) => void;
+  readonly logger?: LogSink;
 }
 
 /** Reads and updates the active SillyTavern YAML document without replacing unknown keys. */
 export class ConfigStore {
-  private readonly logger: (line: string) => void;
+  private readonly logger: LogSink;
 
   public constructor(options: ConfigStoreOptions = {}) {
-    this.logger = options.logger ?? ((line) => console.log(line));
+    this.logger = options.logger ?? ((line) => console.log(logLineText(line)));
   }
 
   public async read(profile: Profile, installation: Installation): Promise<ConfigDocument> {
@@ -77,7 +77,7 @@ export class ConfigStore {
     }
     const nextRaw = String(document);
     await atomicWriteYaml(path, nextRaw);
-    this.logger(`[config] updated ${path}`);
+    this.logger(logEvent('config.updated', `[config] updated ${path}`, { path }));
     const savedDocument = parseYaml(nextRaw);
     return toConfigDocument(savedDocument, nextRaw, path, profile, installation);
   }

@@ -1,4 +1,4 @@
-import type { BackupManifest, Profile } from '../../../packages/contracts/src/index.js';
+import { logEvent, logLineText, type BackupManifest, type LogSink, type Profile } from '../../../packages/contracts/src/index.js';
 import { BackupStore } from '../../../packages/backup/src/index.js';
 import { ProfileStore } from '../../../packages/profiles/src/index.js';
 import { R2Manager } from '../../../packages/r2/src/index.js';
@@ -7,7 +7,7 @@ export interface BackupSchedulerOptions {
   readonly backups: BackupStore;
   readonly profiles: ProfileStore;
   readonly r2: R2Manager;
-  readonly logger?: (line: string) => void;
+  readonly logger?: LogSink;
   readonly now?: () => Date;
   readonly tickIntervalMs?: number;
 }
@@ -17,7 +17,7 @@ export class BackupScheduler {
   private readonly backups: BackupStore;
   private readonly profiles: ProfileStore;
   private readonly r2: R2Manager;
-  private readonly logger: (line: string) => void;
+  private readonly logger: LogSink;
   private readonly now: () => Date;
   private readonly tickIntervalMs: number;
   private timer: NodeJS.Timeout | null = null;
@@ -28,7 +28,7 @@ export class BackupScheduler {
     this.backups = options.backups;
     this.profiles = options.profiles;
     this.r2 = options.r2;
-    this.logger = options.logger ?? ((line) => console.log(line));
+    this.logger = options.logger ?? ((line) => console.log(logLineText(line)));
     this.now = options.now ?? (() => new Date());
     this.tickIntervalMs = options.tickIntervalMs ?? 60_000;
   }
@@ -46,7 +46,7 @@ export class BackupScheduler {
       // useful; saying it every minute buries the lines that matter.
       if (!this.reportedBusy) {
         this.reportedBusy = true;
-        this.logger('[backup] scheduled backup paused while another backup or restore is running');
+        this.logger(logEvent('backup.schedulePaused', '[backup] scheduled backup paused while another backup or restore is running'));
       }
       return;
     }
@@ -65,7 +65,7 @@ export class BackupScheduler {
       let localManifest: BackupManifest | undefined;
       if (localDue) {
         localManifest = await this.backups.create(profile, { name: fullDue ? `${profile.name}-scheduled-full` : `${profile.name}-scheduled` });
-        this.logger(`[backup] scheduled local snapshot ${localManifest.name}`);
+        this.logger(logEvent('backup.scheduledSnapshot', `[backup] scheduled local snapshot ${localManifest.name}`, { name: localManifest.name }));
       }
       if (!config.enabled || !config.configured) return;
       const r2Due = config.enabled && config.configured && (!config.lastUploadAt || config.lastFingerprint !== fingerprint && elapsed(this.now(), config.lastUploadAt) >= config.schedule.r2IntervalHours * 60 * 60 * 1000);
@@ -78,7 +78,8 @@ export class BackupScheduler {
         }
       }
     } catch (error: unknown) {
-      this.logger(`[backup] scheduled backup skipped: ${error instanceof Error ? error.message : 'unknown error'}`);
+      const reason = error instanceof Error ? error.message : 'unknown error';
+      this.logger(logEvent('backup.scheduleSkipped', `[backup] scheduled backup skipped: ${reason}`, { reason }));
     } finally {
       this.running = false;
     }

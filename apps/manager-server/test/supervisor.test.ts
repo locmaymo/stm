@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getPlatformPaths } from '../../../packages/platform/src/index.js';
-import type { Installation, Profile } from '../../../packages/contracts/src/index.js';
+import { logLineText, type Installation, type Profile } from '../../../packages/contracts/src/index.js';
 import { ProcessSupervisor } from '../src/supervisor.js';
 import { TunnelManager } from '../../../packages/tunnel/src/index.js';
 
@@ -17,7 +17,7 @@ test('process supervisor starts the marker-verified active runtime and captures 
   await writeFile(join(runtimePath, 'server.js'), "console.log('ready'); setInterval(() => {}, 1000);", 'utf8');
   const installation: Installation = { id: 'install-1', selector: 'latest', resolvedRef: '1.0.0', channel: 'release', runtimePath, markerPath, status: 'ready', progress: 100, step: 'Installation ready', error: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), activatedAt: new Date().toISOString() };
   const lines: string[] = [];
-  const supervisor = new ProcessSupervisor({ runtime: { getActiveInstallation: async () => installation } as never, readinessCheck: async () => undefined, logger: (line) => lines.push(line) });
+  const supervisor = new ProcessSupervisor({ runtime: { getActiveInstallation: async () => installation } as never, readinessCheck: async () => undefined, logger: (line) => lines.push(logLineText(line)) });
   const started = await supervisor.start();
   assert.equal(started.status, 'running');
   assert.equal(started.installationId, installation.id);
@@ -54,7 +54,7 @@ test('data-layout profiles are passed to SillyTavern without changing the runtim
   const installation: Installation = { id: 'install-1', selector: 'latest', resolvedRef: '1.0.0', channel: 'release', runtimePath, markerPath, status: 'ready', progress: 100, step: 'Installation ready', error: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), activatedAt: new Date().toISOString() };
   const profile: Profile = { id: 'profile-1', name: 'Data', installationId: installation.id, runtimePath, configPath, dataPath, layout: 'data', active: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), activatedAt: new Date().toISOString() };
   const lines: string[] = [];
-  const supervisor = new ProcessSupervisor({ runtime: { getActiveInstallation: async () => installation } as never, profileResolver: async () => profile, readinessCheck: async () => undefined, logger: (line) => lines.push(line) });
+  const supervisor = new ProcessSupervisor({ runtime: { getActiveInstallation: async () => installation } as never, profileResolver: async () => profile, readinessCheck: async () => undefined, logger: (line) => lines.push(logLineText(line)) });
   const started = await supervisor.start();
   assert.equal(started.profileId, profile.id);
   const deadline = Date.now() + 2_000;
@@ -79,7 +79,7 @@ test('large legacy profiles receive an expanded Node heap', async () => {
     profileResolver: async () => profile,
     profileLifecycle: { prepare: async () => 'public', persist: async () => undefined, legacyHeapMb: async () => 8192 },
     readinessCheck: async () => undefined,
-    logger: (line) => lines.push(line),
+    logger: (line) => lines.push(logLineText(line)),
   });
   await supervisor.start();
   const deadline = Date.now() + 2_000;

@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { getPlatformPaths } from '../../platform/src/index.js';
 import { RuntimeError, RuntimeManager, extractZipSafely } from '../src/index.js';
+import { logLineText } from '../../contracts/src/index.js';
 
 const exec = promisify(execFile);
 
@@ -166,7 +167,7 @@ test('health check forwards startup diagnostics when a runtime exits', async () 
     healthCheckPort: port,
     healthCheckTimeoutMs: 5_000,
     installDependencies: async () => undefined,
-    logger: (line) => lines.push(line),
+    logger: (line) => lines.push(logLineText(line)),
     fetch: async (input) => input.toString().includes('/releases')
       ? new Response(JSON.stringify([{ tag_name: '1.13.2', draft: false, prerelease: false }]), { status: 200 })
       : new Response(new Uint8Array(archive), { status: 200, headers: { 'content-type': 'application/zip' } }),

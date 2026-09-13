@@ -9,12 +9,15 @@ import { dirname, join, relative, resolve, sep } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { createServer as createProbeServer } from 'node:net';
-import type {
-  Installation,
-  InstallationStatus,
-  VersionChannel,
-  VersionOption,
-  VersionSelector,
+import {
+  logEvent, logLineText,
+  type Installation,
+  type InstallationStatus,
+  type LogEvent,
+  type LogSink,
+  type VersionChannel,
+  type VersionOption,
+  type VersionSelector,
 } from '../../contracts/src/index.js';
 import type { PlatformPaths } from '../../platform/src/index.js';
 
@@ -30,14 +33,15 @@ const DEPENDENCY_MARKER = '.stm-dependencies.json';
 export interface InstallationProgress {
   readonly status: InstallationStatus;
   readonly progress: number;
-  readonly step: string;
+  /** English step text, plus the catalog key the panel translates it with. */
+  readonly step: LogEvent;
 }
 
 export interface RuntimeManagerOptions {
   readonly paths: PlatformPaths;
   readonly fetch?: typeof globalThis.fetch;
   readonly now?: () => Date;
-  readonly logger?: (line: string) => void;
+  readonly logger?: LogSink;
   readonly githubApiBaseUrl?: string;
   readonly npmCommand?: string;
   readonly installDependencies?: (runtimePath: string, onLine: (line: string) => void) => Promise<void>;
@@ -73,7 +77,7 @@ export class RuntimeManager {
   readonly paths: PlatformPaths;
   private readonly fetcher: typeof globalThis.fetch;
   private readonly now: () => Date;
-  private readonly logger: (line: string) => void;
+  private readonly logger: LogSink;
   private readonly githubApiBaseUrl: string;
   private readonly npmCommand: string;
   private readonly installDependencies: (runtimePath: string, onLine: (line: string) => void) => Promise<void>;
@@ -91,7 +95,7 @@ export class RuntimeManager {
     this.paths = options.paths;
     this.fetcher = options.fetch ?? globalThis.fetch;
     this.now = options.now ?? (() => new Date());
-    this.logger = options.logger ?? ((line) => console.log(line));
+    this.logger = options.logger ?? ((line) => console.log(logLineText(line)));
     this.githubApiBaseUrl = (options.githubApiBaseUrl ?? GITHUB_API).replace(/\/$/u, '');
     this.npmCommand = options.npmCommand ?? 'npm';
     this.installDependencies = options.installDependencies ?? ((path, log) => runNpmInstall(path, this.npmCommand, log));
@@ -204,7 +208,7 @@ export class RuntimeManager {
     await this.writeMarker(migrated);
     await this.upsert(migrated);
     await this.writeActiveInstallation(migrated.id);
-    this.logger(`[installer] migrated ${installation.resolvedRef} to the shared Git checkout`);
+    this.logger(logEvent('installer.migratedToSharedCheckout', `[installer] migrated ${installation.resolvedRef} to the shared Git checkout`, { ref: installation.resolvedRef }));
     return migrated;
   }
 
@@ -219,7 +223,7 @@ export class RuntimeManager {
       if (!candidate.startsWith(`${parent}\\`) && !candidate.startsWith(`${parent}/`)) continue;
       await rm(parent, { recursive: true, force: true });
       await this.upsert({ ...installation, status: 'failed', step: 'Runtime moved to shared checkout', error: 'This legacy runtime copy was removed after switching to the shared Git checkout', updatedAt: this.now().toISOString() });
-      this.logger(`[installer] removed legacy runtime copy ${installation.id}`);
+      this.logger(logEvent('installer.removedLegacyCopy', `[installer] removed legacy runtime copy ${installation.id}`, { id: installation.id }));
     }
   }
 
@@ -266,14 +270,14 @@ export class RuntimeManager {
     const initial: Installation = {
       id, selector, resolvedRef: selector, channel: selector === 'staging' ? 'staging' : 'release',
       runtimePath: this.runtimePathFor(id), markerPath: join(this.runtimePathFor(id), MARKER_FILE),
-      status: 'queued', progress: 0, step: 'Waiting to start', error: null, createdAt: now, updatedAt: now, activatedAt: null,
+      status: 'queued', progress: 0, step: 'Waiting to start', stepCode: 'install.waiting', error: null, createdAt: now, updatedAt: now, activatedAt: null,
     };
     await this.upsert(initial);
-    const update = async (status: InstallationStatus, progress: number, step: string, error: string | null = null): Promise<Installation> => {
+    const update = async (status: InstallationStatus, progress: number, step: LogEvent, error: string | null = null): Promise<Installation> => {
       const current = await this.getInstallation(id);
       if (!current) throw new Error('Installation record disappeared');
-      const next: Installation = { ...current, status, progress, step, error, updatedAt: this.now().toISOString() };
-      await this.upsert(next); onProgress?.({ status, progress, step }); this.logger(`[installer:${id}] ${step}`); return next;
+      const next: Installation = { ...current, status, progress, step: step.message, stepCode: step.code, ...(step.params ? { stepParams: step.params } : {}), error, updatedAt: this.now().toISOString() };
+      await this.upsert(next); onProgress?.({ status, progress, step }); this.logger(logEvent(step.code, `[installer:${id}] ${step.message}`, step.params)); return next;
     };
 
     const stagingRoot = join(this.paths.tmp, `installation-${id}`);
@@ -282,33 +286,33 @@ export class RuntimeManager {
     let checkoutChanged = false;
     try {
       const resolved = await this.resolveSelector(selector);
-      await update('queued', 2, `Resolved ${resolved.ref}`);
+      await update('queued', 2, logEvent('install.resolved', `Resolved ${resolved.ref}`, { ref: resolved.ref }));
       await beforeInstall?.();
       await rm(stagingRoot, { recursive: true, force: true });
       await mkdir(stagingRoot, { recursive: true });
       let extractedPath: string;
       let revision: string | undefined;
       if (this.useGit) {
-        await update('downloading', 15, `Preparing shared Git checkout for ${resolved.ref}`);
+        await update('downloading', 15, logEvent('install.preparingCheckout', `Preparing shared Git checkout for ${resolved.ref}`, { ref: resolved.ref }));
         const sharedPath = this.runtimePathFor(id);
         checkoutChanged = true;
         await rm(join(sharedPath, MARKER_FILE), { force: true });
         revision = await this.prepareGitCheckout(sharedPath, resolved.ref, (line) => this.logger(`[installer:${id}] ${line}`));
-        await update('extracting', 48, `Checked out ${resolved.ref}`);
+        await update('extracting', 48, logEvent('install.checkedOut', `Checked out ${resolved.ref}`, { ref: resolved.ref }));
         extractedPath = sharedPath;
         finalRoot = sharedPath;
       } else {
         const zipPath = join(stagingRoot, 'source.zip');
-        await update('downloading', 5, `Downloading ${resolved.ref}`);
-        await this.downloadZip(resolved.ref, zipPath, (progress) => onProgress?.({ status: 'downloading', progress: 5 + progress * 0.4, step: 'Downloading source archive' }));
-        await update('extracting', 48, 'Extracting source archive');
+        await update('downloading', 5, logEvent('install.downloading', `Downloading ${resolved.ref}`, { ref: resolved.ref }));
+        await this.downloadZip(resolved.ref, zipPath, (progress) => onProgress?.({ status: 'downloading', progress: 5 + progress * 0.4, step: logEvent('install.downloadingArchive', 'Downloading source archive') }));
+        await update('extracting', 48, logEvent('install.extracting', 'Extracting source archive'));
         extractedPath = join(stagingRoot, 'runtime');
         await mkdir(extractedPath, { recursive: true });
-        await extractZipSafely(zipPath, extractedPath, (progress) => onProgress?.({ status: 'extracting', progress: 48 + progress * 0.2, step: 'Extracting source archive' }));
+        await extractZipSafely(zipPath, extractedPath, (progress) => onProgress?.({ status: 'extracting', progress: 48 + progress * 0.2, step: logEvent('install.extracting', 'Extracting source archive') }));
       }
-      await update('installing', 70, 'Installing SillyTavern dependencies');
+      await update('installing', 70, logEvent('install.installingDependencies', 'Installing SillyTavern dependencies'));
       await this.installDependenciesIfNeeded(extractedPath, (line) => this.logger(`[installer:${id}] ${line}`));
-      await update('health_check', 90, 'Checking the installation');
+      await update('health_check', 90, logEvent('install.checking', 'Checking the installation'));
       await this.healthCheck(extractedPath, (line) => this.logger(`[installer:${id}] ${line}`));
       if (!this.useGit) {
         finalRoot = this.runtimePathFor(id);
@@ -317,22 +321,22 @@ export class RuntimeManager {
         await rename(extractedPath, finalRoot);
       }
       const installedRoot = finalRoot ?? this.runtimePathFor(id);
-      const ready = await update('ready', 100, 'Installation ready');
+      const ready = await update('ready', 100, logEvent('install.ready', 'Installation ready'));
       const activated = { ...ready, ...(revision ? { revision } : {}), resolvedRef: resolved.ref, channel: resolved.channel, runtimePath: installedRoot, markerPath: join(installedRoot, MARKER_FILE), activatedAt: this.now().toISOString(), updatedAt: this.now().toISOString() } satisfies Installation;
       await this.writeMarker(activated);
       await this.upsert(activated);
       await this.writeActiveInstallation(id);
-      this.logger(`[installer:${id}] installation ${resolved.ref} is ready`);
+      this.logger(logEvent('installer.ready', `[installer:${id}] installation ${resolved.ref} is ready`, { ref: resolved.ref }));
       return activated;
     } catch (error: unknown) {
       const message = error instanceof RuntimeError ? error.message : error instanceof Error ? error.message : 'Installation failed';
-      const failed = await update('failed', 100, 'Installation failed', message);
+      const failed = await update('failed', 100, logEvent('install.failed', 'Installation failed'), message);
       if (finalRoot && !this.useGit) await rm(finalRoot, { recursive: true, force: true });
       if (checkoutChanged && previous) {
-        try { await this.activateInstallation(previous.id); this.logger('[installer] previous runtime restored'); }
-        catch (rollbackError: unknown) { this.logger(`[installer] rollback failed: ${rollbackError instanceof Error ? rollbackError.message : 'unknown error'}`); }
+        try { await this.activateInstallation(previous.id); this.logger(logEvent('installer.previousRestored', '[installer] previous runtime restored')); }
+        catch (rollbackError: unknown) { const reason = rollbackError instanceof Error ? rollbackError.message : 'unknown error'; this.logger(logEvent('installer.rollbackFailed', `[installer] rollback failed: ${reason}`, { reason })); }
       }
-      this.logger(`[installer:${id}] failed: ${message}`);
+      this.logger(logEvent('installer.failed', `[installer:${id}] failed: ${message}`, { reason: message }));
       return failed;
     } finally {
       await rm(stagingRoot, { recursive: true, force: true });
