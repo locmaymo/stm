@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, readdir, utimes, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, readdir, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getPlatformPaths } from '../../platform/src/index.js';
@@ -164,6 +164,24 @@ test('replace writes in place, drops files the backup lacks, and keeps secrets i
   assert.equal(await readFile(join(targetUserData, 'secrets.json'), 'utf8'), '{"api_key":"mine"}');
   // Nothing may be staged beside the user directory any more.
   assert.deepEqual((await readdir(targetData)).sort(), ['default-user']);
+});
+
+test('a restore overwrites a read-only file instead of failing the run', async () => {
+  const fixture = await createFixture();
+  const store = new BackupStore({ paths: fixture.paths });
+  const manifest = await store.create(fixture.profile);
+  const archive = await store.getArchivePath(manifest.id);
+  assert.ok(archive);
+
+  // Git writes its loose objects read-only, and Windows will not open a
+  // read-only file for writing - so every restore after the first one that
+  // created such a file failed on it.
+  const target = join(fixture.profile.dataPath, 'chats', 'こんにちは.json');
+  await writeFile(target, '{"message":"stale"}', 'utf8');
+  await chmod(target, 0o444);
+
+  await store.restore(fixture.profile, archive, { mode: 'merge' });
+  assert.equal(await readFile(target, 'utf8'), '{"message":"keep"}');
 });
 
 test('a safety copy reuses an unchanged profile’s newest backup instead of writing another', async () => {

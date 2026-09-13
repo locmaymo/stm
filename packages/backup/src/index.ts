@@ -4,7 +4,7 @@ import { createReadStream, createWriteStream } from 'node:fs';
 import { Transform, Readable } from 'node:stream';
 import { finished } from 'node:stream/promises';
 import { pipeline } from 'node:stream/promises';
-import { lstat, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
 import type { BackupFilePreview, BackupManifest, BackupSource, Profile, ProfileLayout, RestoreMode, RestorePreview } from '../../contracts/src/index.js';
@@ -21,6 +21,7 @@ const PRESERVED_DATA_ROOT_NAMES = new Set(['_storage', '_cache', '_uploads', '_w
 const PRESERVED_EXCLUDED_NAMES = new Set(['secrets.json', 'thumbnails', 'vectors', 'backups']);
 const EXCLUDED_NAMES = new Set(['secrets.json', 'thumbnails', 'vectors', 'backups', '.git', 'node_modules', '.DS_Store', 'Thumbs.db']);
 const RECOGNIZED_DATA_NAMES = new Set(['settings.json', 'characters', 'chats', 'worlds', 'groups', 'movingUI']);
+const OVERWRITE_ATTEMPTS = 4;
 const STAGING_PREFIX = '.stm-restore-';
 const TRASH_PREFIX = '.stm-trash-';
 
@@ -843,7 +844,30 @@ async function extractPlan(zipPath: string, planned: readonly PlannedEntry[], on
   }
 }
 
+/**
+ * Write one archive entry, taking the target from a read-only file if it must.
+ *
+ * Git stores its loose objects read-only, and Windows refuses to open a
+ * read-only file for writing at all. A profile holding a git-cloned extension
+ * therefore fails on the second restore of an archive whose first restore - on
+ * to a tree that did not have those objects yet - succeeded. A scanner that has
+ * just seen a newly written file can hold it for the same EPERM, so a cleared
+ * attribute is followed by a short wait rather than an immediate give-up.
+ */
 async function extractEntry(archive: FileHandle, entry: ZipEntry, target: string): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await writeEntry(archive, entry, target);
+      return;
+    } catch (error: unknown) {
+      if (!isPermissionError(error) || attempt === OVERWRITE_ATTEMPTS - 1) throw error;
+      await chmod(target, 0o600).catch(() => undefined);
+      if (attempt > 0) await new Promise((resolvePromise) => setTimeout(resolvePromise, 150 * attempt));
+    }
+  }
+}
+
+async function writeEntry(archive: FileHandle, entry: ZipEntry, target: string): Promise<void> {
   const local = Buffer.alloc(30);
   await readAt(archive, local, entry.localOffset);
   if (local.readUInt32LE(0) !== 0x04034b50) throw new BackupError('invalid_archive', 'The ZIP local header is corrupt');
@@ -991,7 +1015,16 @@ function isPreservedAtRoot(name: string, isDataRoot: boolean, restoreSecrets: bo
 }
 
 async function removeAll(paths: readonly string[]): Promise<void> {
-  await runPooled(paths, ioConcurrency(), async (path) => { await rm(path, { force: true }); });
+  await runPooled(paths, ioConcurrency(), async (path) => {
+    try {
+      await rm(path, { force: true });
+    } catch (error: unknown) {
+      // The same read-only git objects a write trips over also refuse deletion.
+      if (!isPermissionError(error)) throw error;
+      await chmod(path, 0o600).catch(() => undefined);
+      await rm(path, { force: true });
+    }
+  });
 }
 
 function hasDefaultUserWrapper(entries: ZipEntry[]): boolean {
@@ -1041,6 +1074,7 @@ function parseManifest(value: unknown): BackupManifest {
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null; }
 function isFileNotFound(error: unknown): boolean { return isRecord(error) && error.code === 'ENOENT'; }
 function isRetryableRemoveError(error: unknown): boolean { return isRecord(error) && ['EBUSY', 'ENOTEMPTY', 'EPERM'].includes(String(error.code)); }
+function isPermissionError(error: unknown): boolean { return isRecord(error) && ['EPERM', 'EACCES'].includes(String(error.code)); }
 function findSignature(buffer: Buffer, signature: number): number { for (let index = buffer.length - 4; index >= 0; index -= 1) if (buffer.readUInt32LE(index) === signature) return index; return -1; }
 function validateUploadId(value: string): void {
   if (!/^[A-Za-z0-9_-]{8,64}$/u.test(value)) throw new BackupError('invalid_upload_id', 'The upload id is invalid');
