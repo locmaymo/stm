@@ -24,7 +24,7 @@ test('both languages fill the same holes', () => {
   // The encoding gate checks this across every key. This pins the two callers
   // that pass values, where a mismatch shows as a literal brace on screen.
   const placeholders = (value: string) => [...value.matchAll(/\{([^{}]+)\}/gu)].map((match) => match[1]).sort();
-  for (const key of ['console.installConfirm', 'logs.install.resolved'] as const) {
+  for (const key of ['console.installConfirm', 'console.restoreTitle', 'console.restoreCounts', 'console.deleteBackupTitle', 'table.count', 'table.page', 'logs.install.resolved'] as const) {
     assert.deepEqual(placeholders(translator('en')(key)), placeholders(translator('vi')(key)), key);
   }
 });

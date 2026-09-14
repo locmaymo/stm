@@ -9,6 +9,7 @@ export * from './shadcn/dropdown-menu.js';
 export * from './shadcn/input.js';
 export * from './shadcn/label.js';
 export * from './shadcn/progress.js';
+export * from './shadcn/radio-group.js';
 export * from './shadcn/select.js';
 export * from './shadcn/separator.js';
 export * from './shadcn/sheet.js';

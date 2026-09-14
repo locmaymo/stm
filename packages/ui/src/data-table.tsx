@@ -115,7 +115,9 @@ export function DataTable<Row>({
       {searchText || toolbar ? (
         <div className="flex flex-wrap items-center gap-2">
           {searchText ? (
-            <div className="relative min-w-0 flex-1 sm:max-w-xs">
+            // Full width on a phone, so the controls beside it wrap to their own
+            // row rather than being squeezed into what the search box leaves.
+            <div className="relative min-w-0 flex-1 basis-full sm:basis-auto sm:max-w-xs">
               <Search
                 aria-hidden="true"
                 className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"

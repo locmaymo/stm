@@ -1,29 +1,33 @@
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import {
-  Archive, ArrowDown, ArrowUp, ArrowUpRight, BarChart3, Copy, Database, Download,
-  Globe2, LayoutDashboard, Maximize2, Minimize2, Moon, Package, Plus,
-  ScrollText, Search, Sun, Trash2, Upload, Users as UsersIcon, X, Rows3,
+  Archive, ArrowDown, ArrowUp, ArrowUpRight, BarChart3, Cloud, Copy, Database, Download,
+  Globe2, LayoutDashboard, Maximize2, Minimize2, Moon, Package, Pencil, Plus,
+  RotateCcw, ScrollText, Search, Sun, Trash2, Upload, Users as UsersIcon, X, Rows3,
   BrainCircuit, CircleStop, Clock3, Cpu, Ellipsis, Play, QrCode as QrCodeIcon, RefreshCw, Settings2, Square,
 } from 'lucide-react';
 import {
-  Alert, AlertDescription, AuthLayout, Badge, BrandMark, Button, Card, CardAction,
+  Alert, AlertDescription, AuthLayout, Badge, BrandMark, Button, buttonVariants, Card, CardAction,
   ConfirmDialog, DetailRow, EmptyState, StatusHero, type StatusTone,
   CardContent, CardFooter, CardHeader,
-  CardGrid, Checkbox, Dialog, DialogBody, DialogContent, DialogDescription,
+  CardGrid, Checkbox, cn, DataTable, type DataTableColumn, type DataTableLabels,
+  Dialog, DialogBody, DialogContent, DialogDescription,
   DialogFooter, DialogHeader, DialogTitle,
-  Field, Input, MobileNav, PageContainer, PasswordInput,
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
+  Field, initialQuery, Input, Label, MobileNav, PageContainer, PasswordInput,
+  RadioGroup, RadioGroupItem,
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
   Sidebar, SidebarContent, SidebarGroup, SidebarGroupContent, SidebarHeader,
   SidebarInset, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarProvider,
-  SidebarTrigger, Sheet, SheetContent, SheetHeader, SheetTitle, Switch, Toaster, Tooltip,
+  SidebarTrigger, Sheet, SheetContent, SheetHeader, SheetTitle, Switch,
+  Tabs, TabsContent, TabsList, TabsTrigger, type TableQuery, Toaster, Tooltip,
   TooltipContent, TooltipTrigger, useSidebar, useToast,
 } from '../../../packages/ui/src/index.js';
 import { logCatalog, translator, type Translate } from './i18n.js';
 import { browserEnvironment, browserStorage, readPreferences, savePreferences, type Preferences } from './preferences.js';
 import { authErrorKey } from './auth-error.js';
 import { apiFetch, onSessionExpired, resetSessionWatch } from './session.js';
-import type { AccessGatewayState, BackupManifest, ConfigDocument, ConfigUpdateInput, Installation, Job, LogEntry, LogSourceFilter, MetricsSnapshot, ProcessState, Profile, R2Config, R2SnapshotSummary, RestorePreview, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
-import { formatBytes } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, BackupManifest, ConfigDocument, ConfigUpdateInput, Installation, Job, LogEntry, LogSourceFilter, MetricsSnapshot, ProcessState, Profile, R2Config, R2SnapshotSummary, RestoreMode, RestorePreview, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import { backupSearchText, backupSortValue, formatBytes, snapshotSortValue } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
 import { translateLogEntry, translateStep } from './log-format.js';
 import { QrCode } from './qr-code.js';
@@ -993,12 +997,80 @@ function LogsContent({ t, catalog, source, onSourceChange, entries, query, onQue
   </div>;
 }
 
+/** The labels every table in the console borrows, in the reader's language. */
+function tableLabels(t: Translate): DataTableLabels {
+  return {
+    search: t('table.search'),
+    perPage: t('table.perPage'),
+    count: (shown, total) => t('table.count', { shown, total }),
+    sortAscending: t('table.sortAscending'),
+    sortDescending: t('table.sortDescending'),
+    navigation: t('table.navigation'),
+    previous: t('table.previous'),
+    next: t('table.next'),
+    page: (page, of) => t('table.page', { page, of }),
+  };
+}
+
+/**
+ * The stand-in the server hands back for a key it is holding.
+ *
+ * Sending it back unchanged means "leave the stored one alone", so a configured
+ * bucket can be edited without its secret ever reaching a browser.
+ */
+const SECRET_MASK = '********';
+
+interface R2FormState {
+  readonly endpoint: string;
+  readonly bucket: string;
+  readonly accountId: string;
+  readonly accessKeyId: string;
+  readonly secretAccessKey: string;
+  readonly enabled: boolean;
+  readonly localIntervalMinutes: number;
+  readonly hotIntervalMinutes: number;
+  readonly coldIntervalHours: number;
+  readonly keepRecent: number;
+  readonly keepDaily: number;
+  readonly keepWeekly: number;
+}
+
+function r2FormFrom(config: R2Config | null): R2FormState {
+  return {
+    endpoint: config?.endpoint ?? '',
+    bucket: config?.bucket ?? '',
+    accountId: config?.accountId ?? '',
+    accessKeyId: config?.accessKeyIdMasked ? SECRET_MASK : '',
+    secretAccessKey: config?.secretAccessKeyConfigured ? SECRET_MASK : '',
+    enabled: config?.enabled ?? false,
+    localIntervalMinutes: config?.schedule.localIntervalMinutes ?? 60,
+    hotIntervalMinutes: config?.schedule.hotIntervalMinutes ?? 5,
+    coldIntervalHours: config?.schedule.coldIntervalHours ?? 6,
+    keepRecent: config?.retention.keepRecent ?? 48,
+    keepDaily: config?.retention.keepDaily ?? 14,
+    keepWeekly: config?.retention.keepWeekly ?? 8,
+  };
+}
+
+/**
+ * The profiles, the backups and the off-machine copy.
+ *
+ * The page used to be three cards of exposed machinery: a disclosure triangle
+ * hiding a text box, a list of archives with four buttons on every row, and
+ * eleven R2 settings sitting open on the page whether or not anybody had a
+ * bucket. Nothing could be searched, a long list of backups could only be
+ * scrolled, and the two questions that cannot be undone - restoring over a
+ * profile and deleting an archive - were asked by `window.confirm` and
+ * `window.prompt`, which cannot be translated and ask in the browser's voice
+ * rather than this program's.
+ *
+ * Each card now asks one thing and keeps the rest behind a dialog, and the
+ * archives are a table that can be searched, sorted and paged.
+ */
 function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, onProfilesChange, onBackupsChange }: { t: Translate; catalog: Record<string, unknown>; csrfToken: string; profiles: Profile[]; activeProfileId: string | null; backups: BackupManifest[]; onProfilesChange: (profiles: Profile[], activeProfileId: string | null) => void; onBackupsChange: (backups: BackupManifest[]) => void }) {
-  const [name, setName] = useState('');
-  const [backupName, setBackupName] = useState('');
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [restoreMode, setRestoreMode] = useState<'merge' | 'replace'>('replace');
+  const [restoreMode, setRestoreMode] = useState<RestoreMode>('replace');
   const [selectedBackup, setSelectedBackup] = useState<BackupManifest | null>(null);
   const [selectedPreview, setSelectedPreview] = useState<RestorePreview | null>(null);
   const [operationProgress, setOperationProgress] = useState<{ percent: number; step: string } | null>(null);
@@ -1009,10 +1081,22 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
   const uploadAbort = useRef<AbortController | null>(null);
   const [r2Config, setR2Config] = useState<R2Config | null>(null);
   const [r2Snapshots, setR2Snapshots] = useState<R2SnapshotSummary[]>([]);
-  const [r2Form, setR2Form] = useState({ endpoint: '', bucket: '', accountId: '', accessKeyId: '', secretAccessKey: '', enabled: false, localIntervalMinutes: 60, hotIntervalMinutes: 5, coldIntervalHours: 6, keepRecent: 48, keepDaily: 14, keepWeekly: 8 });
   const [r2Busy, setR2Busy] = useState<string | null>(null);
   const [r2Message, setR2Message] = useState<string | null>(null);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [backupOpen, setBackupOpen] = useState(false);
+  const [renameTarget, setRenameTarget] = useState<BackupManifest | null>(null);
+  // Which archive is being deleted, and whether the question is on screen. The
+  // two are separate because the dialog fades out: clearing the row at the same
+  // moment left the title reading "Delete ?" for the length of the animation.
+  const [deleteTarget, setDeleteTarget] = useState<BackupManifest | null>(null);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [r2Open, setR2Open] = useState(false);
+  // Newest first: the archive somebody wants is nearly always the last one taken.
+  const [backupQuery, setBackupQuery] = useState<TableQuery>(() => initialQuery({ sort: 'createdAt', direction: 'desc' }));
+  const [snapshotQuery, setSnapshotQuery] = useState<TableQuery>(() => initialQuery({ pageSize: 5, sort: 'createdAt', direction: 'desc' }));
   const busy = busyAction !== null;
+  const labels = tableLabels(t);
   const jobStep = (job: Job) => translateStep(job.step, catalog, job.stepCode, job.stepParams);
   const refresh = async () => {
     const [profileResponse, backupResponse, r2Response, snapshotResponse] = await Promise.all([apiFetch('/api/v1/profiles', { credentials: 'same-origin' }), apiFetch('/api/v1/backups', { credentials: 'same-origin' }), apiFetch('/api/v1/r2', { credentials: 'same-origin' }), apiFetch('/api/v1/r2/snapshots', { credentials: 'same-origin' }).catch(() => null)]);
@@ -1022,11 +1106,7 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
     else setR2Snapshots([]);
     if (profileResponse.ok) { const payload = await profileResponse.json() as { profiles: Profile[]; activeProfileId: string | null }; onProfilesChange(payload.profiles, payload.activeProfileId); }
     if (backupResponse.ok) { const payload = await backupResponse.json() as { backups: BackupManifest[] }; onBackupsChange(payload.backups); }
-    if (r2Response.ok) {
-      const payload = await r2Response.json() as { config: R2Config };
-      setR2Config(payload.config);
-      setR2Form((current) => ({ ...current, endpoint: payload.config.endpoint ?? '', bucket: payload.config.bucket ?? '', accountId: payload.config.accountId ?? '', accessKeyId: payload.config.accessKeyIdMasked ? '********' : '', secretAccessKey: payload.config.secretAccessKeyConfigured ? '********' : '', enabled: payload.config.enabled, localIntervalMinutes: payload.config.schedule.localIntervalMinutes, hotIntervalMinutes: payload.config.schedule.hotIntervalMinutes, coldIntervalHours: payload.config.schedule.coldIntervalHours, keepRecent: payload.config.retention.keepRecent, keepDaily: payload.config.retention.keepDaily, keepWeekly: payload.config.retention.keepWeekly }));
-    }
+    if (r2Response.ok) setR2Config((await r2Response.json() as { config: R2Config }).config);
   };
   useEffect(() => { void refresh(); }, []);
 
@@ -1085,36 +1165,38 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
     return () => window.removeEventListener('beforeunload', warn);
   }, [uploading]);
 
-  const create = async () => {
-    if (!name.trim()) return;
-    setBusyAction(t('console.createProfile')); setError(null);
+  const createProfile = async (name: string): Promise<string | null> => {
+    setBusyAction(t('console.newProfile')); setError(null);
     try {
       const response = await apiFetch('/api/v1/profiles', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ name, layout: 'data' }) });
-      if (!response.ok) { const payload = await response.json() as { error?: { message?: string } }; setError(payload.error?.message ?? t('console.profileCreateFailed')); return; }
-      setName(''); await refresh();
-    } catch { setError(t('console.profileCreateFailed')); } finally { setBusyAction(null); }
+      if (!response.ok) { const payload = await response.json() as { error?: { message?: string } }; return payload.error?.message ?? t('console.profileCreateFailed'); }
+      await refresh();
+      return null;
+    } catch { return t('console.profileCreateFailed'); } finally { setBusyAction(null); }
   };
   const activate = async (id: string) => {
-    setBusyAction(t('console.activateProfile')); setError(null);
+    setBusyAction(t('console.switchProfile')); setError(null);
     try {
       const response = await apiFetch(`/api/v1/profiles/${id}/activate`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       if (!response.ok) { const payload = await response.json() as { error?: { message?: string } }; setError(payload.error?.message ?? t('console.profileActivateFailed')); return; }
       await refresh();
     } catch { setError(t('console.profileActivateFailed')); } finally { setBusyAction(null); }
   };
-  const createBackup = async () => {
+  const createBackup = async (name: string): Promise<string | null> => {
     setBusyAction(t('dashboard.backupNow')); setOperationProgress({ percent: 0, step: t('dashboard.backupNow') }); setError(null);
     try {
-      const response = await apiFetch('/api/v1/backups', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ ...(backupName.trim() ? { name: backupName.trim() } : {}) }) });
+      const response = await apiFetch('/api/v1/backups', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ ...(name ? { name } : {}) }) });
       const payload = await response.json() as { jobId?: string; error?: { message?: string } };
-      if (!response.ok || !payload.jobId) { setError(payload.error?.message ?? t('console.backupCreateFailed')); return; }
+      if (!response.ok || !payload.jobId) return payload.error?.message ?? t('console.backupCreateFailed');
       setRunningJobId(payload.jobId);
       await waitForOperation(payload.jobId, (job) => setOperationProgress({ percent: job.progress, step: jobStep(job) }));
-      setBackupName('');
       await refresh();
+      return null;
     } catch (error: unknown) {
-      if (error instanceof StoppedError) { setError(null); await refresh(); }
-      else setError(error instanceof Error ? error.message : t('console.backupCreateFailed'));
+      // Stopping is an answer rather than a failure: the dialog closes and the
+      // list says what is actually there.
+      if (error instanceof StoppedError) { await refresh(); return null; }
+      return error instanceof Error ? error.message : t('console.backupCreateFailed');
     } finally { setBusyAction(null); setOperationProgress(null); setRunningJobId(null); }
   };
   const waitForOperation = async (jobId: string, onUpdate: (job: Job) => void): Promise<void> => {
@@ -1130,24 +1212,30 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
     }
   };
   const previewBackup = async (backup: BackupManifest) => {
-    setBusyAction(t('console.previewBackup')); setError(null);
+    setBusyAction(t('console.restore')); setError(null);
     try {
       const response = await apiFetch(`/api/v1/backups/${backup.id}/preview`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       const payload = await response.json() as RestorePreview | { error?: { message?: string } };
       if (!response.ok || !('files' in payload)) { setError(('error' in payload ? payload.error?.message : undefined) ?? t('console.backupPreviewFailed')); return; }
+      setRestoreMode('replace');
       setSelectedBackup(backup); setSelectedPreview(payload);
     } catch { setError(t('console.backupPreviewFailed')); } finally { setBusyAction(null); }
   };
+  const closeRestore = () => { setSelectedBackup(null); setSelectedPreview(null); };
   const restoreSelected = async () => {
     if (!selectedBackup || !selectedPreview) return;
+    const backupId = selectedBackup.id;
+    // The question has been answered, so the dialog goes before the work
+    // starts: what happens next belongs on the page, where the Stop button is.
+    closeRestore();
     setBusyAction(t('console.restore')); setOperationProgress({ percent: 0, step: t('console.restore') }); setError(null);
     try {
-      const response = await apiFetch(`/api/v1/backups/${selectedBackup.id}/restore`, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ mode: restoreMode }) });
+      const response = await apiFetch(`/api/v1/backups/${backupId}/restore`, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ mode: restoreMode }) });
       const payload = await response.json() as { jobId?: string; error?: { message?: string } };
       if (!response.ok || !payload.jobId) { setError(payload.error?.message ?? t('console.backupRestoreFailed')); return; }
       setRunningJobId(payload.jobId);
       await waitForOperation(payload.jobId, (job) => setOperationProgress({ percent: job.progress, step: jobStep(job) }));
-      setSelectedBackup(null); setSelectedPreview(null); await refresh();
+      await refresh();
     } catch (error: unknown) {
       // A restore that was stopped part of the way through left the profile
       // part old and part new. Say so, and say where the way back is.
@@ -1199,6 +1287,7 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
       catch { throw new Error(apiErrorFromText(text, response.status, t('console.backupPreviewFailed'))); }
       if (!response.ok || !('files' in payload)) { setError(('error' in payload ? payload.error?.message : undefined) ?? t('console.backupPreviewFailed')); return; }
       if (!payload.backup) { setError(t('console.backupPreviewFailed')); return; }
+      setRestoreMode('replace');
       setSelectedBackup(payload.backup); setSelectedPreview(payload);
       await refresh();
     } catch (error: unknown) {
@@ -1208,34 +1297,36 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
       setError(error instanceof StoppedError ? null : error instanceof Error ? error.message : t('console.backupPreviewFailed'));
     } finally { uploadAbort.current = null; setBusyAction(null); setOperationProgress(null); setUploading(false); }
   };
-  const renameBackup = async (backup: BackupManifest) => {
-    const nextName = window.prompt(t('console.renameBackup'), backup.name.replace(/\.zip$/u, ''));
-    if (!nextName?.trim()) return;
-    setBusyAction(t('console.renameBackup')); setError(null);
+  const renameBackup = async (name: string): Promise<string | null> => {
+    if (!renameTarget) return null;
+    setBusyAction(t('common.rename')); setError(null);
     try {
-      const response = await apiFetch(`/api/v1/backups/${backup.id}`, { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ name: nextName }) });
-      if (!response.ok) { const payload = await response.json() as { error?: { message?: string } }; setError(payload.error?.message ?? t('console.backupRenameFailed')); return; }
+      const response = await apiFetch(`/api/v1/backups/${renameTarget.id}`, { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ name }) });
+      if (!response.ok) { const payload = await response.json() as { error?: { message?: string } }; return payload.error?.message ?? t('console.backupRenameFailed'); }
       await refresh();
-    } catch { setError(t('console.backupRenameFailed')); } finally { setBusyAction(null); }
+      return null;
+    } catch { return t('console.backupRenameFailed'); } finally { setBusyAction(null); }
   };
-  const deleteBackup = async (backup: BackupManifest) => {
-    if (!window.confirm(t('console.deleteBackupConfirm'))) return;
-    setBusyAction(t('console.deleteBackup')); setError(null);
+  const deleteBackup = async () => {
+    if (!deleteTarget) return;
+    const backup = deleteTarget;
+    setBusyAction(t('common.delete')); setError(null);
     try {
       const response = await apiFetch(`/api/v1/backups/${backup.id}`, { method: 'DELETE', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       if (!response.ok) { const payload = await response.json() as { error?: { message?: string } }; setError(payload.error?.message ?? t('console.backupDeleteFailed')); return; }
-      if (selectedBackup?.id === backup.id) { setSelectedBackup(null); setSelectedPreview(null); }
+      if (selectedBackup?.id === backup.id) closeRestore();
       await refresh();
-    } catch { setError(t('console.backupDeleteFailed')); } finally { setBusyAction(null); }
+    } catch { setError(t('console.backupDeleteFailed')); } finally { setBusyAction(null); setDeleteOpen(false); }
   };
-  const saveR2 = async () => {
-    setR2Busy(t('console.r2Save')); setR2Message(null);
+  const saveR2 = async (form: R2FormState): Promise<string | null> => {
+    setR2Message(null);
     try {
-      const response = await apiFetch('/api/v1/r2', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify(r2Form) });
+      const response = await apiFetch('/api/v1/r2', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify(form) });
       const payload = await response.json() as { config?: R2Config; error?: { message?: string } };
-      if (!response.ok || !payload.config) { setR2Message(payload.error?.message ?? t('console.r2SaveFailed')); return; }
+      if (!response.ok || !payload.config) return payload.error?.message ?? t('console.r2SaveFailed');
       setR2Config(payload.config); setR2Message(t('console.r2Saved')); await refresh();
-    } catch { setR2Message(t('console.r2SaveFailed')); } finally { setR2Busy(null); }
+      return null;
+    } catch { return t('console.r2SaveFailed'); }
   };
   const testR2 = async () => {
     setR2Busy(t('console.r2Test')); setR2Message(null);
@@ -1302,66 +1393,356 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
       setR2Message(t('console.r2LegacyRemoved')); await refresh();
     } catch { setR2Message(t('console.r2LegacyRemoveFailed')); } finally { setR2Busy(null); }
   };
+
   const activeProfile = profiles.find((profile) => profile.id === activeProfileId) ?? profiles[0] ?? null;
-  return <div className="data-workspace">
-    <Card className="data-profile-card"><PanelHeading icon={<UsersIcon />} action={<Badge variant="outline">{profiles.length}</Badge>}>{t('console.dataWorkspace')}</PanelHeading><CardContent>
-      <div className="data-profile-bar"><div className="data-profile-current"><span className="data-kicker">{t('console.activeProfile')}</span><strong>{activeProfile?.name ?? t('console.noProfiles')}</strong></div>{activeProfile ? <Select value={activeProfile.id} onValueChange={(id) => void activate(id)}><SelectTrigger aria-label={t('console.activateProfile')}><SelectValue /></SelectTrigger><SelectContent>{profiles.map((profile) => <SelectItem key={profile.id} value={profile.id}>{profile.name}</SelectItem>)}</SelectContent></Select> : null}</div>
-      <details className="profile-add"><summary><Plus />{t('console.addProfile')}</summary><div className="profile-create"><Input value={name} onChange={(event) => setName(event.target.value)} placeholder={t('console.profileName')} aria-label={t('console.profileName')} /><Button onClick={() => void create()} disabled={busy || !name.trim()}><Plus />{t('console.createProfile')}</Button></div></details>
-    </CardContent></Card>
-    <Card className="backup-library-card"><PanelHeading icon={<Archive />} action={<div className="backup-actions"><Button size="sm" onClick={() => void createBackup()} disabled={busy || !activeProfileId}><Archive />{t('dashboard.backupNow')}</Button><label className="button-outline"><Upload />{t('console.importZip')}<input type="file" accept=".zip,application/zip" onChange={(event) => void inspectUpload(event.target.files?.[0])} /></label></div>}>{t('console.backupLibrary')}</PanelHeading>
-      <CardContent className="space-y-4"><div className="backup-controls"><Input value={backupName} onChange={(event) => setBackupName(event.target.value)} placeholder={t('console.backupNameOptional')} aria-label={t('console.backupNameOptional')} /></div>{error ? <p className="install-error" role="alert">{error}</p> : null}{busyAction ? <div className="operation-progress" role="status"><span className="operation-headline">{busyAction}{uploading || runningJobId ? <Button variant="outline" size="sm" onClick={() => void stopOperation()} disabled={stopping}><CircleStop />{stopping ? t('console.stopping') : t('common.stop')}</Button> : null}</span>{operationProgress ? <><span>{operationProgress.step} · {operationProgress.percent}%</span><span className="progress-track"><span className="progress-value" style={{ width: `${operationProgress.percent}%` }} /></span></> : <span className="progress-track"><span className="progress-indeterminate" /></span>}{uploading ? <span className="operation-warning">{t('console.uploadKeepTabOpen')}</span> : null}</div> : null}{backups.length === 0 ? <p className="resource-empty">{t('dashboard.noBackup')}</p> : <div className="backup-list">{backups.map((backup) => <div className="backup-row" key={backup.id}><div className="min-w-0"><strong>{backup.name}</strong><span>{backup.source === 'uploaded' ? t('console.uploadedBackup') : t('console.createdBackup')} · {new Date(backup.createdAt).toLocaleString()} · {formatBytes(backup.sizeBytes)}</span></div><div className="backup-row-actions"><Button variant="ghost" size="sm" onClick={() => { window.location.href = `/api/v1/backups/${backup.id}/download`; }}>{t('console.downloadBackup')}</Button><Button variant="ghost" size="sm" onClick={() => void renameBackup(backup)} disabled={busy}>{t('console.renameBackup')}</Button><Button variant="ghost" size="sm" onClick={() => void deleteBackup(backup)} disabled={busy}>{t('console.deleteBackup')}</Button><Button variant="outline" size="sm" onClick={() => void previewBackup(backup)} disabled={busy}>{t('console.previewBackup')}</Button></div></div>)}</div>}{selectedPreview ? <div className="backup-preview"><strong>{t('console.restorePreview')}</strong><span>{selectedBackup?.name} · {selectedPreview.fileCount} {t('console.files')} · {formatBytes(selectedPreview.totalBytes)}</span>{selectedPreview.warnings.map((warning) => <p className="text-xs text-muted-foreground" key={warning}>{warning}</p>)}<div className="backup-restore-actions"><Select value={restoreMode} onValueChange={(value) => setRestoreMode(value as 'merge' | 'replace')}><SelectTrigger aria-label={t('console.restoreMode')}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="replace">{t('console.replaceRestore')}</SelectItem><SelectItem value="merge">{t('console.mergeRestore')}</SelectItem></SelectContent></Select><Button onClick={() => void restoreSelected()} disabled={busy}><Upload />{t('console.restore')}</Button></div></div> : null}</CardContent></Card>
-    <Card className="r2-placeholder">
-      <PanelHeading icon={<Globe2 />} action={<Badge variant="outline" className={r2Config?.configured ? 'status-online' : ''}>{r2Config?.configured ? t('console.r2Configured') : t('console.r2NotConfigured')}</Badge>}>{t('console.r2Title')}</PanelHeading>
-      <CardContent className="space-y-4">
-        <p>{t('console.r2Placeholder')}</p>
-        <div className="r2-form-grid">
-          <label className="field-label"><span>{t('console.r2Endpoint')}</span><Input value={r2Form.endpoint} onChange={(event) => setR2Form((current) => ({ ...current, endpoint: event.target.value }))} placeholder="https://ACCOUNT_ID.r2.cloudflarestorage.com" /></label>
-          <label className="field-label"><span>{t('console.r2Bucket')}</span><Input value={r2Form.bucket} onChange={(event) => setR2Form((current) => ({ ...current, bucket: event.target.value }))} /></label>
-          <label className="field-label"><span>{t('console.r2AccountId')}</span><Input value={r2Form.accountId} onChange={(event) => setR2Form((current) => ({ ...current, accountId: event.target.value }))} /></label>
-          <label className="field-label"><span>{t('console.r2AccessKey')}</span><Input value={r2Form.accessKeyId} onChange={(event) => setR2Form((current) => ({ ...current, accessKeyId: event.target.value }))} autoComplete="off" /></label>
-          <label className="field-label"><span>{t('console.r2SecretKey')}</span><Input type="password" value={r2Form.secretAccessKey} onChange={(event) => setR2Form((current) => ({ ...current, secretAccessKey: event.target.value }))} autoComplete="new-password" /></label>
-        </div>
-        <div className="r2-toggle-row"><label className="backup-option"><input type="checkbox" checked={r2Form.enabled} onChange={(event) => setR2Form((current) => ({ ...current, enabled: event.target.checked }))} />{t('console.r2Enabled')}</label></div>
-        <div className="r2-schedule-grid">
-          <label className="field-label"><span>{t('console.r2LocalEvery')}</span><Input type="number" min="1" value={r2Form.localIntervalMinutes} onChange={(event) => setR2Form((current) => ({ ...current, localIntervalMinutes: Number(event.target.value) }))} /></label>
-          <label className="field-label"><span>{t('console.r2HotEvery')}</span><Input type="number" min="1" value={r2Form.hotIntervalMinutes} onChange={(event) => setR2Form((current) => ({ ...current, hotIntervalMinutes: Number(event.target.value) }))} /></label>
-          <label className="field-label"><span>{t('console.r2ColdEvery')}</span><Input type="number" min="1" value={r2Form.coldIntervalHours} onChange={(event) => setR2Form((current) => ({ ...current, coldIntervalHours: Number(event.target.value) }))} /></label>
-          <label className="field-label"><span>{t('console.r2KeepRecent')}</span><Input type="number" min="1" value={r2Form.keepRecent} onChange={(event) => setR2Form((current) => ({ ...current, keepRecent: Number(event.target.value) }))} /></label>
-          <label className="field-label"><span>{t('console.r2KeepDaily')}</span><Input type="number" min="0" value={r2Form.keepDaily} onChange={(event) => setR2Form((current) => ({ ...current, keepDaily: Number(event.target.value) }))} /></label>
-          <label className="field-label"><span>{t('console.r2KeepWeekly')}</span><Input type="number" min="0" value={r2Form.keepWeekly} onChange={(event) => setR2Form((current) => ({ ...current, keepWeekly: Number(event.target.value) }))} /></label>
-        </div>
-        {r2Message ? <p className="text-sm" role="status">{r2Message}</p> : null}
-        <div className="r2-actions">
-          <Button onClick={() => void saveR2()} disabled={r2Busy !== null}>{t('console.r2Save')}</Button>
-          <Button variant="outline" onClick={() => void testR2()} disabled={r2Busy !== null || !r2Config?.configured}>{t('console.r2Test')}</Button>
-          <Button variant="ghost" onClick={() => void uploadR2()} disabled={r2Busy !== null || !r2Config?.configured}>{t('console.r2UploadLatest')}</Button>
-          <Button variant="ghost" onClick={() => void reconcileR2()} disabled={r2Busy !== null || !r2Config?.configured}>{t('console.r2Reconcile')}</Button>
-        </div>
-        {r2Config ? <R2Usage t={t} config={r2Config} /> : null}
-        {r2Config && r2Config.usage.legacyObjectCount > 0 ? <div className="r2-legacy" role="note">
-          {/* Backups taken under the old whole-file scheme. Nothing reads them
-              any more, but they are the operator's, so removing them is asked
-              for rather than assumed. */}
-          <span>{t('console.r2Legacy')}: {r2Config.usage.legacyObjectCount} ({formatBytes(r2Config.usage.legacyBytes)})</span>
-          <Button variant="outline" size="sm" onClick={() => void removeLegacy()} disabled={r2Busy !== null}>{t('console.r2LegacyRemove')}</Button>
-        </div> : null}
-        <div className="r2-snapshots">
-          <div className="r2-snapshot-heading"><strong>{t('console.r2Snapshots')}</strong><span>{r2Snapshots.length}</span></div>
-          {r2Snapshots.length === 0
-            ? <p className="text-sm">{t('console.r2NoSnapshots')}</p>
-            : <ul className="r2-snapshot-list">{r2Snapshots.slice(0, 12).map((snapshot) => <li key={snapshot.id}>
-              <span>{new Date(snapshot.createdAt).toLocaleString()}</span>
-              <Button variant="ghost" size="sm" onClick={() => void fetchSnapshot(snapshot)} disabled={r2Busy !== null}><Download />{t('console.r2Fetch')}</Button>
-            </li>)}</ul>}
-          <p className="r2-snapshot-note">{t('console.r2FetchNote')}</p>
-        </div>
-        {r2Busy ? <div className="operation-progress" role="status">
-          <div className="operation-headline"><span>{operationProgress?.step ?? r2Busy}</span>{runningJobId ? <Button variant="outline" size="sm" onClick={() => void stopOperation()} disabled={stopping}>{t('common.stop')}</Button> : null}</div>
-          <span className="progress-track">{operationProgress ? <span className="progress-value" style={{ width: `${Math.max(2, Math.min(100, operationProgress.percent))}%` }} /> : <span className="progress-indeterminate" />}</span>
-        </div> : null}
+  const backupColumns: DataTableColumn<BackupManifest>[] = [
+    { id: 'name', header: t('common.name'), sortable: true, cell: (backup) => <span className="font-medium">{backup.name}</span> },
+    { id: 'source', header: t('console.backupSource'), sortable: true, showFrom: 'md', cell: (backup) => <span className="text-muted-foreground">{backup.source === 'uploaded' ? t('console.uploadedBackup') : t('console.createdBackup')}</span> },
+    { id: 'createdAt', header: t('console.backupCreated'), sortable: true, showFrom: 'sm', cell: (backup) => <span className="whitespace-nowrap text-muted-foreground">{new Date(backup.createdAt).toLocaleString()}</span> },
+    { id: 'sizeBytes', header: t('console.backupSize'), sortable: true, align: 'end', showFrom: 'sm', cell: (backup) => <span className="whitespace-nowrap text-muted-foreground">{formatBytes(backup.sizeBytes)}</span> },
+    {
+      id: 'actions',
+      header: <span className="sr-only">{t('console.backupActions')}</span>,
+      align: 'end',
+      headClassName: 'w-12',
+      cell: (backup) => <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button variant="ghost" size="icon-sm" aria-label={t('console.backupRowMenu')} disabled={busy}><Ellipsis /></Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem onSelect={() => void previewBackup(backup)}><RotateCcw />{t('console.restore')}</DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => { window.location.href = `/api/v1/backups/${backup.id}/download`; }}><Download />{t('console.downloadBackup')}</DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => setRenameTarget(backup)}><Pencil />{t('common.rename')}</DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem variant="destructive" onSelect={() => { setDeleteTarget(backup); setDeleteOpen(true); }}><Trash2 />{t('common.delete')}</DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>,
+    },
+  ];
+  const snapshotColumns: DataTableColumn<R2SnapshotSummary>[] = [
+    { id: 'createdAt', header: t('console.backupCreated'), sortable: true, cell: (snapshot) => <span className="whitespace-nowrap">{new Date(snapshot.createdAt).toLocaleString()}</span> },
+    { id: 'indexBytes', header: t('console.backupSize'), sortable: true, align: 'end', showFrom: 'sm', cell: (snapshot) => <span className="whitespace-nowrap text-muted-foreground">{formatBytes(snapshot.indexBytes)}</span> },
+    {
+      id: 'actions',
+      header: <span className="sr-only">{t('console.backupActions')}</span>,
+      align: 'end',
+      headClassName: 'w-24',
+      cell: (snapshot) => <Button variant="ghost" size="sm" onClick={() => void fetchSnapshot(snapshot)} disabled={r2Busy !== null}><Download />{t('console.r2Fetch')}</Button>,
+    },
+  ];
+
+  return <div className="grid min-w-0 gap-4">
+    <Card>
+      <PanelHeading icon={<UsersIcon />} action={<Button variant="outline" size="sm" onClick={() => setProfileOpen(true)} disabled={busy}><Plus />{t('console.newProfile')}</Button>}>{t('console.profilesTitle')}</PanelHeading>
+      <CardContent>
+        {activeProfile === null
+          ? <EmptyState icon={<UsersIcon />} title={t('console.noProfiles')} />
+          : <Field label={t('console.switchProfile')}>
+            <Select value={activeProfile.id} onValueChange={(id) => void activate(id)} disabled={busy}>
+              <SelectTrigger className="w-full sm:max-w-xs"><SelectValue /></SelectTrigger>
+              <SelectContent>{profiles.map((profile) => <SelectItem key={profile.id} value={profile.id}>{profile.name}</SelectItem>)}</SelectContent>
+            </Select>
+          </Field>}
       </CardContent>
     </Card>
+
+    <Card>
+      <PanelHeading icon={<Archive />}>{t('console.backupLibrary')}</PanelHeading>
+      <CardContent className="grid gap-4">
+        {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
+        {busyAction ? <OperationProgress t={t} label={busyAction} progress={operationProgress} canStop={uploading || runningJobId !== null} stopping={stopping} onStop={() => void stopOperation()} warning={uploading ? t('console.uploadKeepTabOpen') : null} /> : null}
+        <DataTable
+          rows={backups}
+          columns={backupColumns}
+          rowKey={(backup) => backup.id}
+          query={backupQuery}
+          onQueryChange={setBackupQuery}
+          labels={labels}
+          searchText={backupSearchText}
+          sortValue={backupSortValue}
+          empty={<EmptyState icon={<Archive />} title={t('dashboard.noBackup')} />}
+          toolbar={<div className="flex flex-1 flex-wrap items-center justify-end gap-2">
+            <Button size="sm" onClick={() => setBackupOpen(true)} disabled={busy || activeProfileId === null}><Archive />{t('dashboard.backupNow')}</Button>
+            <label className={cn(buttonVariants({ variant: 'outline', size: 'sm' }), 'cursor-pointer')}>
+              <Upload aria-hidden="true" />{t('console.importZip')}
+              <input type="file" accept=".zip,application/zip" className="sr-only" disabled={busy} onChange={(event) => void inspectUpload(event.target.files?.[0])} />
+            </label>
+          </div>}
+        />
+      </CardContent>
+    </Card>
+
+    <Card>
+      <PanelHeading icon={<Cloud />} action={<Badge variant="outline" className={r2Config?.enabled ? 'status-online' : ''}>{r2Config?.enabled ? t('console.r2On') : t('console.r2Off')}</Badge>}>{t('console.r2Title')}</PanelHeading>
+      <CardContent className="grid gap-4">
+        <div>
+          <DetailRow label={t('console.r2Connection')} hint={r2Config?.configured ? r2Config.bucket : t('console.r2SetupBody')}>
+            <Button variant="outline" size="sm" onClick={() => setR2Open(true)}>{r2Config?.configured ? t('console.r2Change') : t('console.r2Configure')}</Button>
+          </DetailRow>
+          {r2Config?.configured ? <DetailRow label={t('console.r2LastUpload')} hint={r2Config.lastUploadAt ? new Date(r2Config.lastUploadAt).toLocaleString() : '—'}>
+            <Button size="sm" onClick={() => void uploadR2()} disabled={r2Busy !== null}><Upload />{t('console.r2UploadLatest')}</Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild><Button variant="ghost" size="icon-sm" aria-label={t('console.r2More')} disabled={r2Busy !== null}><Ellipsis /></Button></DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onSelect={() => void testR2()}>{t('console.r2Test')}</DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => void reconcileR2()}>{t('console.r2Reconcile')}</DropdownMenuItem>
+                {/* Backups taken under the old whole-file scheme. Nothing reads
+                    them any more, but they are the operator's, so removing them
+                    is asked for rather than assumed. */}
+                {r2Config.usage.legacyObjectCount > 0
+                  ? <DropdownMenuItem variant="destructive" onSelect={() => void removeLegacy()}><Trash2 />{t('console.r2LegacyRemove')} ({formatBytes(r2Config.usage.legacyBytes)})</DropdownMenuItem>
+                  : null}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </DetailRow> : null}
+        </div>
+        {r2Message ? <Alert><AlertDescription>{r2Message}</AlertDescription></Alert> : null}
+        {r2Busy ? <OperationProgress t={t} label={r2Busy} progress={operationProgress} canStop={runningJobId !== null} stopping={stopping} onStop={() => void stopOperation()} warning={null} /> : null}
+        {r2Config?.configured ? <>
+          <R2Usage t={t} config={r2Config} />
+          <div className="grid gap-2">
+            <h3 className="text-sm font-medium">{t('console.r2Snapshots')}</h3>
+            <DataTable
+              rows={r2Snapshots}
+              columns={snapshotColumns}
+              rowKey={(snapshot) => snapshot.id}
+              query={snapshotQuery}
+              onQueryChange={setSnapshotQuery}
+              labels={labels}
+              sortValue={snapshotSortValue}
+              pageSizes={[5, 10, 25]}
+              empty={<EmptyState icon={<Cloud />} title={t('console.r2NoSnapshots')} description={t('console.r2FetchNote')} />}
+            />
+          </div>
+        </> : null}
+      </CardContent>
+    </Card>
+
+    <NameDialog
+      t={t}
+      open={profileOpen}
+      onOpenChange={setProfileOpen}
+      title={t('console.newProfile')}
+      label={t('console.profileName')}
+      hint={t('console.profileNameHint')}
+      submitLabel={t('common.create')}
+      onSubmit={createProfile}
+    />
+    <NameDialog
+      t={t}
+      open={backupOpen}
+      onOpenChange={setBackupOpen}
+      title={t('dashboard.backupNow')}
+      label={t('common.name')}
+      hint={t('console.backupNameHint')}
+      submitLabel={t('dashboard.backupNow')}
+      optional
+      onSubmit={createBackup}
+    />
+    <NameDialog
+      t={t}
+      open={renameTarget !== null}
+      onOpenChange={(next) => { if (!next) setRenameTarget(null); }}
+      title={t('console.renameBackupTitle')}
+      label={t('common.name')}
+      initial={renameTarget?.name.replace(/\.zip$/u, '') ?? ''}
+      submitLabel={t('common.rename')}
+      onSubmit={renameBackup}
+    />
+    <ConfirmDialog
+      open={deleteOpen}
+      onOpenChange={setDeleteOpen}
+      title={t('console.deleteBackupTitle', { name: deleteTarget?.name ?? '' })}
+      description={t('console.deleteBackupBody')}
+      confirmLabel={t('common.delete')}
+      cancelLabel={t('common.cancel')}
+      onConfirm={deleteBackup}
+    />
+    <RestoreDialog t={t} backup={selectedBackup} preview={selectedPreview} mode={restoreMode} onModeChange={setRestoreMode} onClose={closeRestore} onRestore={restoreSelected} />
+    <R2Dialog t={t} open={r2Open} onOpenChange={setR2Open} config={r2Config} onSave={saveR2} />
   </div>;
+}
+
+/**
+ * What is happening now, and the way to stop it.
+ *
+ * A backup, a restore, an import and a send to R2 all report the same way, so
+ * one block says it rather than each card writing out its own bar, its own
+ * percentage and its own Stop button in its own place.
+ */
+function OperationProgress({ t, label, progress, canStop, stopping, onStop, warning }: { t: Translate; label: string; progress: { percent: number; step: string } | null; canStop: boolean; stopping: boolean; onStop: () => void; warning: string | null }) {
+  return <div className="grid gap-2 rounded-lg border bg-muted/40 p-3" role="status">
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <span className="min-w-0 text-sm">{progress ? `${progress.step} · ${progress.percent}%` : label}</span>
+      {canStop ? <Button variant="outline" size="sm" onClick={onStop} disabled={stopping}><CircleStop />{stopping ? t('console.stopping') : t('common.stop')}</Button> : null}
+    </div>
+    <span className="progress-track">{progress ? <span className="progress-value" style={{ width: `${Math.max(2, Math.min(100, progress.percent))}%` }} /> : <span className="progress-indeterminate" />}</span>
+    {warning ? <span className="text-xs text-destructive">{warning}</span> : null}
+  </div>;
+}
+
+/**
+ * One field, and the button that uses it.
+ *
+ * Naming a new profile, naming a backup and renaming one are the same question
+ * asked three times. None of them is `window.prompt` any more, which could not
+ * be translated, could not be styled, and asked in the browser's voice rather
+ * than this program's.
+ */
+function NameDialog({ t, open, onOpenChange, title, label, hint, initial = '', submitLabel, optional = false, onSubmit }: { t: Translate; open: boolean; onOpenChange: (open: boolean) => void; title: string; label: string; hint?: string; initial?: string; submitLabel: string; optional?: boolean; onSubmit: (name: string) => Promise<string | null> }) {
+  const [name, setName] = useState(initial);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // The dialog stays mounted, so what was typed last time is cleared on the way
+  // in rather than on the way out: a rename has to open on the name of the row
+  // that was actually pressed.
+  useEffect(() => { if (open) { setName(initial); setError(null); } }, [open, initial]);
+  const ready = optional || name.trim().length > 0;
+
+  const submit = async () => {
+    if (!ready || busy) return;
+    setBusy(true); setError(null);
+    try {
+      const failure = await onSubmit(name.trim());
+      setError(failure);
+      if (!failure) onOpenChange(false);
+    } finally { setBusy(false); }
+  };
+
+  return <Dialog open={open} onOpenChange={onOpenChange}>
+    <DialogContent className="sm:max-w-md">
+      <DialogHeader><DialogTitle>{title}</DialogTitle></DialogHeader>
+      <DialogBody className="grid gap-4">
+        <Field label={label} hint={hint}>
+          <Input value={name} onChange={(event) => setName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void submit(); } }} autoComplete="off" />
+        </Field>
+        {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
+      </DialogBody>
+      <DialogFooter>
+        <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={busy}>{t('common.cancel')}</Button>
+        <Button onClick={() => void submit()} disabled={busy || !ready}>{submitLabel}</Button>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>;
+}
+
+/**
+ * The one question a restore has to answer before it runs.
+ *
+ * What happens to the data already in the profile used to be a dropdown
+ * labelled "Restore mode" holding the words "Replace" and "Merge", sitting on
+ * the page beside a button that did it. The two outcomes are written out now
+ * where the choice is made, and the choice is made in a dialog, because one of
+ * them deletes everything that is there.
+ */
+function RestoreDialog({ t, backup, preview, mode, onModeChange, onClose, onRestore }: { t: Translate; backup: BackupManifest | null; preview: RestorePreview | null; mode: RestoreMode; onModeChange: (mode: RestoreMode) => void; onClose: () => void; onRestore: () => Promise<void> }) {
+  const group = useId();
+  if (!backup || !preview) return null;
+  const options: Array<{ value: RestoreMode; label: string; body: string }> = [
+    { value: 'replace', label: t('console.replaceRestore'), body: t('console.restoreReplaceBody') },
+    { value: 'merge', label: t('console.mergeRestore'), body: t('console.restoreMergeBody') },
+  ];
+  return <Dialog open onOpenChange={(next) => { if (!next) onClose(); }}>
+    <DialogContent className="sm:max-w-lg">
+      <DialogHeader>
+        <DialogTitle>{t('console.restoreTitle', { name: backup.name })}</DialogTitle>
+        <DialogDescription>{t('console.restoreCounts', { files: preview.fileCount, size: formatBytes(preview.totalBytes) })}</DialogDescription>
+      </DialogHeader>
+      <DialogBody className="grid gap-4">
+        <RadioGroup value={mode} onValueChange={(value) => onModeChange(value as RestoreMode)} aria-label={t('console.restoreChoose')}>
+          {options.map((option) => <div key={option.value} className="flex items-start gap-3 rounded-lg border p-3 has-[[data-state=checked]]:border-primary has-[[data-state=checked]]:bg-primary/5">
+            <RadioGroupItem id={`${group}-${option.value}`} value={option.value} className="mt-0.5" />
+            <div className="grid gap-1">
+              <Label htmlFor={`${group}-${option.value}`} className="font-medium">{option.label}</Label>
+              <p className="text-xs text-muted-foreground">{option.body}</p>
+            </div>
+          </div>)}
+        </RadioGroup>
+        {preview.warnings.length > 0 ? <Alert><AlertDescription>{preview.warnings.join(' ')}</AlertDescription></Alert> : null}
+        <p className="text-xs text-muted-foreground">{t('console.restoreSafety')}</p>
+      </DialogBody>
+      <DialogFooter>
+        <Button variant="ghost" onClick={onClose}>{t('common.cancel')}</Button>
+        <Button variant={mode === 'replace' ? 'destructive' : 'default'} onClick={() => void onRestore()}>{t('console.restoreStart')}</Button>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>;
+}
+
+/**
+ * Where the off-machine copy goes, behind one button.
+ *
+ * Eleven settings used to sit open on the page, which is eleven things to read
+ * past for everyone who has no bucket and is never going to get one. They are
+ * here now, split into the part that says where the data goes and the part that
+ * says how often.
+ */
+function R2Dialog({ t, open, onOpenChange, config, onSave }: { t: Translate; open: boolean; onOpenChange: (open: boolean) => void; config: R2Config | null; onSave: (form: R2FormState) => Promise<string | null> }) {
+  const [form, setForm] = useState<R2FormState>(() => r2FormFrom(config));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const enabledId = useId();
+  useEffect(() => { if (open) { setForm(r2FormFrom(config)); setError(null); } }, [open, config]);
+  const set = (patch: Partial<R2FormState>) => setForm((current) => ({ ...current, ...patch }));
+  const number = (value: string, fallback: number) => { const parsed = Number.parseInt(value, 10); return Number.isFinite(parsed) ? parsed : fallback; };
+
+  const save = async () => {
+    setBusy(true); setError(null);
+    try {
+      const failure = await onSave(form);
+      setError(failure);
+      if (!failure) onOpenChange(false);
+    } finally { setBusy(false); }
+  };
+
+  const schedule: Array<{ label: string; value: number; apply: (value: number) => Partial<R2FormState>; min: number }> = [
+    { label: t('console.r2LocalEvery'), value: form.localIntervalMinutes, apply: (value) => ({ localIntervalMinutes: value }), min: 1 },
+    { label: t('console.r2HotEvery'), value: form.hotIntervalMinutes, apply: (value) => ({ hotIntervalMinutes: value }), min: 1 },
+    { label: t('console.r2ColdEvery'), value: form.coldIntervalHours, apply: (value) => ({ coldIntervalHours: value }), min: 1 },
+    { label: t('console.r2KeepRecent'), value: form.keepRecent, apply: (value) => ({ keepRecent: value }), min: 1 },
+    { label: t('console.r2KeepDaily'), value: form.keepDaily, apply: (value) => ({ keepDaily: value }), min: 0 },
+    { label: t('console.r2KeepWeekly'), value: form.keepWeekly, apply: (value) => ({ keepWeekly: value }), min: 0 },
+  ];
+
+  return <Dialog open={open} onOpenChange={onOpenChange}>
+    <DialogContent className="sm:max-w-lg">
+      <DialogHeader>
+        <DialogTitle>{t('console.r2Title')}</DialogTitle>
+        <DialogDescription>{t('console.r2SetupBody')}</DialogDescription>
+      </DialogHeader>
+      <DialogBody>
+        <Tabs defaultValue="connection">
+          <TabsList className="w-full">
+            <TabsTrigger value="connection" className="flex-1">{t('console.r2Connection')}</TabsTrigger>
+            <TabsTrigger value="schedule" className="flex-1">{t('console.r2Schedule')}</TabsTrigger>
+          </TabsList>
+          <TabsContent value="connection" className="grid gap-4 pt-4">
+            <Field label={t('console.r2Endpoint')}><Input value={form.endpoint} onChange={(event) => set({ endpoint: event.target.value })} placeholder="https://ACCOUNT_ID.r2.cloudflarestorage.com" autoComplete="off" /></Field>
+            <Field label={t('console.r2Bucket')}><Input value={form.bucket} onChange={(event) => set({ bucket: event.target.value })} autoComplete="off" /></Field>
+            <Field label={t('console.r2AccountId')}><Input value={form.accountId} onChange={(event) => set({ accountId: event.target.value })} autoComplete="off" /></Field>
+            <Field label={t('console.r2AccessKey')}><Input value={form.accessKeyId} onChange={(event) => set({ accessKeyId: event.target.value })} autoComplete="off" /></Field>
+            <Field label={t('console.r2SecretKey')}><PasswordInput revealLabel={t('setup.reveal')} hideLabel={t('setup.hide')} value={form.secretAccessKey} onChange={(event) => set({ secretAccessKey: event.target.value })} autoComplete="new-password" /></Field>
+          </TabsContent>
+          <TabsContent value="schedule" className="grid gap-4 pt-4 sm:grid-cols-2">
+            {schedule.map((row) => <Field key={row.label} label={row.label}>
+              <Input type="number" min={row.min} value={row.value} onChange={(event) => set(row.apply(number(event.target.value, row.value)))} />
+            </Field>)}
+          </TabsContent>
+        </Tabs>
+        {error ? <Alert variant="destructive" className="mt-4"><AlertDescription>{error}</AlertDescription></Alert> : null}
+      </DialogBody>
+      <DialogFooter className="sm:justify-between">
+        <div className="flex items-center gap-2">
+          <Switch id={enabledId} checked={form.enabled} onCheckedChange={(checked) => set({ enabled: checked })} />
+          <Label htmlFor={enabledId}>{t('console.r2Enabled')}</Label>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={busy}>{t('common.cancel')}</Button>
+          <Button onClick={() => void save()} disabled={busy}>{t('common.save')}</Button>
+        </div>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>;
 }
 
 /**
@@ -1382,14 +1763,11 @@ function R2Usage({ t, config }: { t: Translate; config: R2Config }) {
     // round.
     { label: t('console.r2Reads'), text: `${config.usage.readOperations.toLocaleString()} / ${config.limits.maxReadOperations.toLocaleString()}`, filled: ratio(config.usage.readOperations, config.limits.maxReadOperations) },
   ];
-  return <div className="r2-usage">
-    {bars.map((bar) => <div className="r2-usage-row" key={bar.label}>
-      <span className={bar.filled >= 0.9 ? 'operation-warning' : ''}>{bar.label}: {bar.text}</span>
+  return <div className="grid gap-3">
+    {bars.map((bar) => <div className="grid gap-1" key={bar.label}>
+      <span className={cn('text-xs', bar.filled >= 0.9 ? 'text-destructive' : 'text-muted-foreground')}>{bar.label}: {bar.text}</span>
       <span className="progress-track"><span className="progress-value" style={{ width: `${Math.max(1, bar.filled * 100)}%` }} /></span>
     </div>)}
-    <div className="r2-summary">
-      <span>{t('console.r2LastUpload')}: {config.lastUploadAt ? new Date(config.lastUploadAt).toLocaleString() : '—'}</span>
-    </div>
   </div>;
 }
 
