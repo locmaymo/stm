@@ -470,7 +470,9 @@
       "skippedMissingFiles": "Bỏ qua {count} tệp bị xoá trong lúc đang tải lên",
       "pruned": "Đã bỏ {count} điểm khôi phục cũ",
       "reconciled": "{chunks} khối đang lưu, {size}; đã thu hồi {collected}",
-      "legacyRemoved": "Đã xoá {count} bản lưu định dạng nguyên tệp cũ, {size}"
+      "legacyRemoved": "Đã xoá {count} bản lưu định dạng nguyên tệp cũ, {size}",
+      "fetching": "Đang tải điểm khôi phục {createdAt} ({files} tệp)",
+      "fetched": "Điểm khôi phục {createdAt} đã nằm trong thư viện sao lưu với tên {name}"
     },
     "job": {
       "preparingBackup": "Đang chuẩn bị sao lưu",
@@ -483,6 +485,8 @@
       "restoringData": "Đang khôi phục dữ liệu",
       "restoringFiles": "Đang khôi phục tệp ({completed}/{total})",
       "startingSillyTavern": "Đang khởi động SillyTavern",
+      "fetchingRecoveryPoint": "Đang tải điểm khôi phục từ R2",
+      "fetchingFiles": "Đang tải tệp ({completed}/{total})",
       "restoreComplete": "Khôi phục hoàn tất",
       "completed": "Hoàn tất",
       "failed": "Thất bại",

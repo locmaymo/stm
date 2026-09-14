@@ -470,7 +470,9 @@
       "skippedMissingFiles": "Skipped {count} file(s) removed while the upload was running",
       "pruned": "Dropped {count} superseded recovery point(s)",
       "reconciled": "{chunks} stored chunk(s), {size}; collected {collected}",
-      "legacyRemoved": "Removed {count} archive(s) in the old whole-file format, {size}"
+      "legacyRemoved": "Removed {count} archive(s) in the old whole-file format, {size}",
+      "fetching": "Fetching recovery point {createdAt} ({files} files)",
+      "fetched": "Recovery point {createdAt} is in the backup library as {name}"
     },
     "job": {
       "preparingBackup": "Preparing backup",
@@ -483,6 +485,8 @@
       "restoringData": "Restoring data",
       "restoringFiles": "Restoring files ({completed}/{total})",
       "startingSillyTavern": "Starting SillyTavern",
+      "fetchingRecoveryPoint": "Fetching the recovery point from R2",
+      "fetchingFiles": "Fetching files ({completed}/{total})",
       "restoreComplete": "Restore complete",
       "completed": "Completed",
       "failed": "Failed",

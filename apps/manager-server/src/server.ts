@@ -22,6 +22,7 @@ import { ProfileError, ProfileStore } from '../../../packages/profiles/src/index
 import { BackupError, BackupStore } from '../../../packages/backup/src/index.js';
 import { R2Error, R2Manager, type R2UpdateInput } from '../../../packages/r2/src/index.js';
 import { BackupScheduler, syncProfileToR2 } from './r2-scheduler.js';
+import { fetchSnapshotToLibrary } from './r2-restore.js';
 import { MetricsStore } from './metrics.js';
 import { instrumentationLoaderPath } from '../../../packages/instrumentation/src/index.js';
 import { ConfigError, ConfigStore } from '../../../packages/config/src/index.js';
@@ -612,6 +613,22 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
   if (pathname === '/api/v1/r2/snapshots' && method === 'GET') {
     const profile = await profiles.getActive();
     sendJson(response, 200, { snapshots: profile ? await r2.listSnapshots(profile.id) : [] });
+    return;
+  }
+  const snapshotMatch = /^\/api\/v1\/r2\/snapshots\/([^/]+)\/fetch$/u.exec(pathname);
+  if (snapshotMatch && method === 'POST') {
+    const profile = await profiles.getActive();
+    if (!profile) { sendError(response, 409, 'profile_required', 'Create or activate a profile before fetching a recovery point'); return; }
+    const snapshotId = snapshotMatch[1] ?? '';
+    // Fetching lands it in the backup library rather than writing it straight
+    // into the profile. Restoring is then the path that already exists, with
+    // its preview, its safety snapshot and its merge-or-replace choice.
+    // It produces a backup in the library, so that is the kind of job it is.
+    const { job, signal } = jobs.createOperation('backup', logEvent('job.fetchingRecoveryPoint', 'Fetching the recovery point from R2'));
+    void fetchSnapshotToLibrary({ profile, r2, backups, snapshotId, signal, logger: (line) => jobs.append('backup', line), onProgress: ({ completed, total }) => jobs.updateOperation(job.id, total > 0 ? (completed / total) * 100 : 0, logEvent('job.fetchingFiles', `Fetching files (${completed}/${total})`, { completed, total })) })
+      .then(() => jobs.finishOperation(job.id, 'succeeded', null))
+      .catch((error: unknown) => jobs.finishOperation(job.id, 'failed', error instanceof Error ? error.message : 'The recovery point could not be fetched'));
+    sendJson(response, 202, { jobId: job.id, job });
     return;
   }
   if (pathname === '/api/v1/r2/legacy' && method === 'DELETE') {
