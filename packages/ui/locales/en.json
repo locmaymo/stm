@@ -7,7 +7,8 @@
     "delete": "Delete",
     "refresh": "Refresh",
     "loading": "Loading",
-    "stop": "Stop"
+    "stop": "Stop",
+    "turnOff": "Turn off"
   },
   "nav": {
     "overview": "Overview",
@@ -53,7 +54,7 @@
     "useDark": "Use dark theme",
     "publicAccess": "Public access",
     "enableTunnel": "Enable Quick Tunnel",
-    "local": "Local",
+    "local": "This machine only",
     "data": "Data",
     "restore": "Restore",
     "liveLogs": "Live logs",
@@ -113,8 +114,6 @@
     "backupCreateFailed": "Could not create the backup",
     "backupPreviewFailed": "Could not preview the backup",
     "backupRestoreFailed": "Could not restore the backup",
-    "r2Recommended": "R2 backup recommended",
-    "r2Help": "Keep a copy off this machine, so a broken disk or a deleted workspace does not take your backups with it.",
     "unavailable": "Available once SillyTavern is installed",
     "installComplete": "Installation complete",
     "installRequestFailed": "Could not start the installation",
@@ -173,9 +172,9 @@
     "r2Placeholder": "Keep a copy of your data off this machine, so a broken disk does not take it with it.",
     "quickTunnel": "Cloudflare tunnel",
     "lanAccess": "Local network",
-    "lanEnabled": "Reachable from devices on this network",
+    "lanEnabled": "Devices on this Wi-Fi can reach it",
     "lanDisabled": "Only this machine can reach it",
-    "lanAddress": "LAN address",
+    "lanAddress": "On this Wi-Fi",
     "enableLan": "Enable local network access",
     "passwordProtected": "Password protected",
     "passwordRequired": "Password required before sharing",
@@ -216,10 +215,32 @@
     "scanToOpen": "Scan to open on a phone",
     "openInNewTab": "Opens in a new tab",
     "passwordChangeSignsOut": "Every device that is already signed in will have to sign in again.",
-    "sillyPasswordMin": "Use at least 8 characters."
+    "sillyPasswordMin": "Use at least 8 characters.",
+    "heroRunning": "SillyTavern is running",
+    "heroStopped": "SillyTavern is stopped",
+    "heroNotInstalled": "SillyTavern is not installed yet",
+    "heroInstalling": "Installing SillyTavern",
+    "heroStarting": "Starting SillyTavern",
+    "heroStopping": "Stopping SillyTavern",
+    "heroFailed": "SillyTavern could not start",
+    "stopConfirm": "Stop SillyTavern?",
+    "stopConfirmBody": "Anyone using it right now will be disconnected.",
+    "installConfirm": "Install {version}?",
+    "installConfirmBody": "SillyTavern restarts on the new version. Your characters, chats and settings are kept.",
+    "tunnelOffConfirm": "Turn off the public link?",
+    "tunnelOffConfirmBody": "The current address stops working. Turning it back on gives you a different one.",
+    "lanOffConfirm": "Turn off access from other devices?",
+    "lanOffConfirmBody": "Phones and tablets on this network will no longer reach SillyTavern.",
+    "heroInstallFailed": "The install did not finish",
+    "versionInstalled": "Already installed",
+    "versionInstalledHint": "This is the version running now. Pick a different one to change it.",
+    "uninstall": "Remove SillyTavern",
+    "uninstallConfirm": "Remove SillyTavern?",
+    "uninstallConfirmBody": "The program is deleted so it can be installed again. Your characters, chats, settings and backups are kept.",
+    "uninstallFailed": "Could not remove SillyTavern",
+    "online": "Online"
   },
   "dashboard": {
-    "running": "Running",
     "start": "Start",
     "stop": "Stop",
     "offline": "Offline",
@@ -234,7 +255,7 @@
     "ready": "Ready",
     "installFailed": "Install failed",
     "open": "Open",
-    "publicAddress": "Public link"
+    "publicAddress": "Public (any device)"
   },
   "logs": {
     "panel": {
@@ -271,7 +292,8 @@
       "stoppedPasswordChange": "Stopped: applying the new SillyTavern password",
       "stoppedShutdown": "Stopped: the manager is shutting down",
       "stoppedStartupFailed": "Stopped: it did not finish starting",
-      "exited": "Exited on its own ({detail})"
+      "exited": "Exited on its own ({detail})",
+      "stoppedUninstall": "Stopped: removing SillyTavern"
     },
     "installer": {
       "ready": "Installation {ref} is ready",
@@ -280,7 +302,8 @@
       "rollbackFailed": "Rollback failed: {reason}",
       "legacyMigrationFailed": "Legacy runtime migration failed: {reason}",
       "migratedToSharedCheckout": "Moved {ref} to the shared Git checkout",
-      "removedLegacyCopy": "Removed legacy runtime copy {id}"
+      "removedLegacyCopy": "Removed legacy runtime copy {id}",
+      "removed": "SillyTavern was removed; your profiles were left alone"
     },
     "install": {
       "waiting": "Waiting to start",
@@ -294,7 +317,8 @@
       "installingDependencies": "Installing SillyTavern dependencies",
       "checking": "Checking the installation",
       "ready": "Installation ready",
-      "failed": "Installation failed"
+      "failed": "Installation failed",
+      "safetyCopy": "Copying your data before switching version"
     },
     "profiles": {
       "created": "Created {name} ({layout})",

@@ -10,6 +10,7 @@ import {
   Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
   DockerMark, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
   EmptyState, Field, GithubMark, Input, Label, PasswordInput, Progress, R2Mark,
+  StatusHero,
   Tabs, TabsContent, TabsList, TabsTrigger, Toaster, initialQuery, useToast, type TableQuery,
 } from '../../../packages/ui/src/index.js';
 
@@ -127,6 +128,22 @@ function GalleryBody() {
           <GithubMark />
         </div>
       </header>
+
+      <Section title="Status hero">
+        {/* Every state the overview can open in, which is otherwise only
+            reachable by installing SillyTavern and stopping it. */}
+        <div className="grid gap-3">
+          <StatusHero
+            tone="online"
+            title="SillyTavern is running"
+            detail="Shared at https://plain-otter-quietly.trycloudflare.com"
+            actions={<><Button variant="outline">Open</Button><Button variant="outline">Stop</Button></>}
+          />
+          <StatusHero tone="offline" title="SillyTavern is stopped" detail="1.18.0" actions={<Button>Start</Button>} />
+          <StatusHero tone="working" title="Installing SillyTavern" detail="Downloading the release · 62%" progress={62} />
+          <StatusHero tone="attention" title="SillyTavern could not start" detail="Port 8000 is already in use" actions={<Button>Start</Button>} />
+        </div>
+      </Section>
 
       <Section title="Buttons">
         <div className="flex flex-wrap items-center gap-2">

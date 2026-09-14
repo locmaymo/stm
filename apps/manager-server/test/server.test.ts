@@ -750,3 +750,59 @@ test('an empty list still answers with one page', async (t) => {
   assert.equal(unpaged.page.pageSize, 1);
   assert.equal(unpaged.page.pageCount, 1);
 });
+
+test('SillyTavern can be removed, and the request does not wait for the safety copy', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-uninstall-api-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const runtimePath = join(root, 'runtime');
+  await mkdir(runtimePath, { recursive: true });
+  const now = new Date().toISOString();
+  const installation: Installation = { id: 'install-1', selector: 'latest', resolvedRef: '1.2.3', channel: 'release', runtimePath, markerPath: join(runtimePath, '.stm-installation.json'), status: 'ready', progress: 100, step: 'Installation ready', error: null, createdAt: now, updatedAt: now, activatedAt: now };
+  let removed = false;
+  let stopped: string | undefined;
+  const processState: ProcessState = { status: 'running', installationId: installation.id, profileId: 'profile-1', pid: 1, startedAt: now, error: null };
+  const fakeSupervisor = {
+    getState: () => processState,
+    start: async () => processState,
+    stop: async (reason: string) => { stopped = reason; return { ...processState, status: 'stopped' }; },
+    close: async () => undefined,
+  } as unknown as ProcessSupervisor;
+
+  // A safety copy that never finishes. If the request waited for it, the
+  // response below would never arrive - which is exactly what it used to do.
+  let beforeInstall: ((report: (progress: number, step: unknown) => Promise<void>) => Promise<void>) | undefined;
+  const fakeRuntime = {
+    listVersions: async () => [],
+    listInstallations: async () => removed ? [] : [installation],
+    getActiveInstallation: async () => removed ? null : installation,
+    getInstallation: async (id: string) => !removed && id === installation.id ? installation : null,
+    removeInstallations: async () => { removed = true; },
+    queueInstall: (_selector: string, _onProgress: unknown, before?: typeof beforeInstall) => {
+      beforeInstall = before;
+      return { id: 'install-2', promise: new Promise<Installation>(() => undefined) };
+    },
+  } as unknown as RuntimeManager;
+
+  const manager = await startManagerServer({ host: '127.0.0.1', port: 0, paths, env: { STM_ADMIN_PASSWORD: 'correct horse battery staple' }, secureCookies: false,
+    accessPort: 0, runtime: fakeRuntime, supervisor: fakeSupervisor, logger: () => undefined });
+  t.after(() => manager.close());
+  const url = serverUrl(manager);
+  const login = await fetch(`${url}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'correct horse battery staple' }) });
+  const cookie = cookieFrom(login);
+  const csrf = (await login.json() as { session: { csrfToken: string } }).session.csrfToken;
+
+  const queued = await fetch(`${url}/api/v1/installations`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ version: 'latest' }) });
+  assert.equal(queued.status, 202, 'the install is accepted without waiting for the copy');
+  assert.equal((await queued.json() as { installationId: string }).installationId, 'install-2');
+  assert.equal(typeof beforeInstall, 'function', 'stopping and copying were handed to the job');
+
+  const uninstall = await fetch(`${url}/api/v1/installations`, { method: 'DELETE', headers: { cookie, 'x-csrf-token': csrf } });
+  assert.equal(uninstall.status, 200);
+  assert.deepEqual(await uninstall.json(), { ok: true, installations: [], activeInstallationId: null });
+  assert.equal(stopped, 'uninstall', 'SillyTavern is stopped before its files go');
+  assert.deepEqual((await (await fetch(`${url}/api/v1/installations`, { headers: { cookie } })).json() as { installations: unknown[] }).installations, []);
+
+  // Without the CSRF header it is refused, like every other change.
+  const unguarded = await fetch(`${url}/api/v1/installations`, { method: 'DELETE', headers: { cookie } });
+  assert.equal(unguarded.status, 403);
+});

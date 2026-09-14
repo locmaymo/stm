@@ -88,8 +88,6 @@
   --success-background: #e6f6ee;
   --attention: #b54708;
   --attention-background: #fdf0e3;
-  --run-start: #067647;
-  --run-stop: #d92d20;
 
   --elevation-1: 0 1px 2px rgb(16 24 40 / 0.05);
   --elevation-2: 0 4px 12px -2px rgb(16 24 40 / 0.10), 0 2px 4px -2px rgb(16 24 40 / 0.06);
@@ -133,8 +131,6 @@
   --success-background: #12291f;
   --attention: #f0b264;
   --attention-background: #2c2113;
-  --run-start: #2f9a69;
-  --run-stop: #d05a52;
 
   --elevation-1: 0 1px 2px rgb(0 0 0 / 0.30);
   --elevation-2: 0 4px 12px -2px rgb(0 0 0 / 0.45), 0 2px 4px -2px rgb(0 0 0 / 0.30);
@@ -203,9 +199,13 @@
 .status-online { color: var(--primary); border-color: color-mix(in srgb, var(--primary) 35%, transparent); background: color-mix(in srgb, var(--primary) 10%, transparent); }
 .field-label { display: block; margin-bottom: 9px; font-size: 13px; color: var(--muted-foreground); }
 .address-list { display: grid; gap: 12px; font-size: 13px; }
-.address-list > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
-.address-list dt { color: var(--muted-foreground); }
-.address-list dd { min-width: 0; overflow-wrap: anywhere; text-align: right; }
+/* The label and the address share a line while both fit. Once the labels say
+   which network they mean, a card-width column often cannot hold both, and the
+   address drops to its own line rather than breaking through the middle of an
+   IP. */
+.address-list > div { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px 12px; }
+.address-list dt { min-width: 0; color: var(--muted-foreground); }
+.address-list dd { min-width: 0; margin-left: auto; overflow-wrap: anywhere; text-align: right; }
 .address-link { display: inline-flex; align-items: center; gap: 4px; color: inherit; text-decoration: none; border-radius: 4px; }
 .address-link:hover code, .address-link:focus-visible code { text-decoration: underline; }
 .address-link svg { width: 13px; height: 13px; flex-shrink: 0; color: var(--muted-foreground); }
@@ -217,18 +217,11 @@
 .qr-modules { fill: #000; }
 /* The run control carries its meaning in its colour, so it keeps that colour
    in both themes rather than following the surrounding foreground. */
-.run-toggle { color: #fff; }
-.run-toggle-start { background: var(--run-start); }
-.run-toggle-start:hover:not(:disabled) { background: color-mix(in srgb, var(--run-start) 85%, #000); }
-.run-toggle-stop { background: var(--run-stop); }
-.run-toggle-stop:hover:not(:disabled) { background: color-mix(in srgb, var(--run-stop) 85%, #000); }
 .access-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 14px; padding: 12px 0; border-top: 1px solid var(--border); }
 .access-row:first-child { padding-top: 0; border-top: 0; }
 .access-row > div { display: grid; min-width: 0; gap: 2px; }
 .access-row strong { font-size: 13px; font-weight: 650; }
 .access-row span { color: var(--muted-foreground); font-size: 12px; }
-.r2-note { margin-bottom: -24px; padding: 12px 24px; border-top: 1px solid var(--border); color: var(--muted-foreground); font-size: 12px; }
-.r2-note button:hover { color: var(--foreground); text-decoration: underline; text-underline-offset: 3px; }
 [data-tour="logs"] { grid-column: 1 / -1; height: 28rem; min-height: 0; overflow: hidden; padding-bottom: 0; }
 [data-tour="logs"] [data-slot="card-header"] { flex-shrink: 0; }
 .log-toolbar { display: flex; flex-shrink: 0; flex-wrap: wrap; align-items: center; gap: 10px; }
@@ -441,7 +434,6 @@
 @media (max-width: 767px) {
   [data-slot="button"], [data-slot="select-trigger"] { min-height: 40px; }
   [data-slot="card-header"], [data-slot="card-content"], [data-slot="card-footer"] { padding-left: 18px; padding-right: 18px; }
-  .r2-note { padding-left: 18px; padding-right: 18px; }
   .site-header h1 { font-size: 14px; }
   .log-header-button { padding-left: 9px; padding-right: 9px; }
   [data-tour="logs"] { height: 24rem; }

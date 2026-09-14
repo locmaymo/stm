@@ -357,6 +357,7 @@ export type StopReason =
   | 'requested'
   | 'restart'
   | 'install'
+  | 'uninstall'
   | 'restore'
   | 'profileSwitch'
   | 'configChange'
@@ -368,6 +369,7 @@ export const STOP_REASON_TEXT: Readonly<Record<StopReason, string>> = {
   requested: 'you asked it to stop',
   restart: 'restarting it',
   install: 'installing a different SillyTavern version',
+  uninstall: 'removing SillyTavern',
   restore: 'restoring a backup',
   profileSwitch: 'switching profile',
   configChange: 'applying a configuration change',

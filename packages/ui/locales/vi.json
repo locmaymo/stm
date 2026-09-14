@@ -7,7 +7,8 @@
     "delete": "Xoá",
     "refresh": "Làm mới",
     "loading": "Đang tải",
-    "stop": "Dừng"
+    "stop": "Dừng",
+    "turnOff": "Tắt"
   },
   "nav": {
     "overview": "Tổng quan",
@@ -53,7 +54,7 @@
     "useDark": "Dùng giao diện tối",
     "publicAccess": "Truy cập công khai",
     "enableTunnel": "Bật Quick Tunnel",
-    "local": "Cục bộ",
+    "local": "Cục bộ (chỉ máy này)",
     "data": "Dữ liệu",
     "restore": "Khôi phục",
     "liveLogs": "Log trực tiếp",
@@ -113,8 +114,6 @@
     "backupCreateFailed": "Không thể tạo bản sao lưu",
     "backupPreviewFailed": "Không thể xem trước bản sao lưu",
     "backupRestoreFailed": "Không thể khôi phục bản sao lưu",
-    "r2Recommended": "Nên bật sao lưu lên R2",
-    "r2Help": "Giữ một bản ở ngoài máy này, để ổ cứng hỏng hay thư mục làm việc bị xoá thì không mất luôn bản sao lưu.",
     "unavailable": "Có sau khi cài SillyTavern",
     "installComplete": "Cài đặt hoàn tất",
     "installRequestFailed": "Không thể bắt đầu cài đặt",
@@ -173,9 +172,9 @@
     "r2Placeholder": "Giữ một bản dữ liệu ở ngoài máy này, để ổ cứng hỏng thì không mất theo.",
     "quickTunnel": "Cloudflare tunnel",
     "lanAccess": "Mạng nội bộ",
-    "lanEnabled": "Thiết bị trong mạng này có thể truy cập",
+    "lanEnabled": "Các thiết bị trong mạng Wi-Fi này có thể truy cập",
     "lanDisabled": "Chỉ máy này có thể truy cập",
-    "lanAddress": "Địa chỉ mạng nội bộ",
+    "lanAddress": "Nội bộ (cùng Wi-Fi)",
     "enableLan": "Bật truy cập mạng nội bộ",
     "passwordProtected": "Đã bảo vệ bằng mật khẩu",
     "passwordRequired": "Cần mật khẩu trước khi chia sẻ",
@@ -216,10 +215,32 @@
     "scanToOpen": "Quét để mở trên điện thoại",
     "openInNewTab": "Mở trong tab mới",
     "passwordChangeSignsOut": "Mọi thiết bị đang đăng nhập sẽ phải đăng nhập lại.",
-    "sillyPasswordMin": "Dùng ít nhất 8 ký tự."
+    "sillyPasswordMin": "Dùng ít nhất 8 ký tự.",
+    "heroRunning": "SillyTavern đang chạy",
+    "heroStopped": "SillyTavern đã dừng",
+    "heroNotInstalled": "Chưa cài SillyTavern",
+    "heroInstalling": "Đang cài SillyTavern",
+    "heroStarting": "Đang khởi động SillyTavern",
+    "heroStopping": "Đang dừng SillyTavern",
+    "heroFailed": "SillyTavern không khởi động được",
+    "stopConfirm": "Dừng SillyTavern?",
+    "stopConfirmBody": "Ai đang dùng ngay lúc này sẽ bị ngắt kết nối.",
+    "installConfirm": "Cài {version}?",
+    "installConfirmBody": "SillyTavern sẽ khởi động lại trên phiên bản mới. Nhân vật, đoạn chat và thiết lập của bạn được giữ nguyên.",
+    "tunnelOffConfirm": "Tắt link công khai?",
+    "tunnelOffConfirmBody": "Địa chỉ hiện tại sẽ ngừng hoạt động. Bật lại sẽ có một địa chỉ khác.",
+    "lanOffConfirm": "Tắt truy cập từ thiết bị khác?",
+    "lanOffConfirmBody": "Điện thoại và máy tính bảng trong mạng này sẽ không vào được SillyTavern nữa.",
+    "heroInstallFailed": "Cài đặt chưa xong",
+    "versionInstalled": "Đã cài bản này",
+    "versionInstalledHint": "Đây là phiên bản đang chạy. Chọn phiên bản khác nếu muốn đổi.",
+    "uninstall": "Gỡ SillyTavern",
+    "uninstallConfirm": "Gỡ SillyTavern?",
+    "uninstallConfirmBody": "Chương trình sẽ bị xoá để cài lại được. Nhân vật, đoạn chat, thiết lập và các bản sao lưu của bạn vẫn được giữ.",
+    "uninstallFailed": "Không gỡ được SillyTavern",
+    "online": "Đang online"
   },
   "dashboard": {
-    "running": "Đang chạy",
     "start": "Chạy",
     "stop": "Dừng",
     "offline": "Đang tắt",
@@ -234,7 +255,7 @@
     "ready": "Sẵn sàng",
     "installFailed": "Cài đặt lỗi",
     "open": "Mở",
-    "publicAddress": "Link công khai"
+    "publicAddress": "Công khai (mọi thiết bị)"
   },
   "logs": {
     "panel": {
@@ -271,7 +292,8 @@
       "stoppedPasswordChange": "Đã dừng: đang áp dụng mật khẩu SillyTavern mới",
       "stoppedShutdown": "Đã dừng: trình quản lý đang tắt",
       "stoppedStartupFailed": "Đã dừng: khởi động không hoàn tất",
-      "exited": "Tự thoát ({detail})"
+      "exited": "Tự thoát ({detail})",
+      "stoppedUninstall": "Đã dừng: đang gỡ SillyTavern"
     },
     "installer": {
       "ready": "Bản cài {ref} đã sẵn sàng",
@@ -280,7 +302,8 @@
       "rollbackFailed": "Quay lui thất bại: {reason}",
       "legacyMigrationFailed": "Chuyển đổi bản chạy cũ thất bại: {reason}",
       "migratedToSharedCheckout": "Đã chuyển {ref} sang bản checkout Git dùng chung",
-      "removedLegacyCopy": "Đã xoá bản sao runtime cũ {id}"
+      "removedLegacyCopy": "Đã xoá bản sao runtime cũ {id}",
+      "removed": "Đã gỡ SillyTavern; hồ sơ của bạn vẫn còn nguyên"
     },
     "install": {
       "waiting": "Đang chờ bắt đầu",
@@ -294,7 +317,8 @@
       "installingDependencies": "Đang cài các phụ thuộc của SillyTavern",
       "checking": "Đang kiểm tra bản cài",
       "ready": "Bản cài đã sẵn sàng",
-      "failed": "Cài đặt thất bại"
+      "failed": "Cài đặt thất bại",
+      "safetyCopy": "Đang sao chép dữ liệu trước khi đổi phiên bản"
     },
     "profiles": {
       "created": "Đã tạo {name} ({layout})",

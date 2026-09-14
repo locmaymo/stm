@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { deflateRawSync } from 'node:zlib';
-import { mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer as createNetServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -241,4 +241,82 @@ test('migrates an older per-installation runtime onto the shared checkout', asyn
   assert.equal(migrated.runtimePath, join(paths.profiles, 'runtime'));
   assert.equal((await readFile(join(migrated.runtimePath, 'server.js'), 'utf8')).replaceAll('\r\n', '\n'), 'module.exports = "shared";\n');
   assert.equal((await shared.getActiveInstallation())?.runtimePath, migrated.runtimePath);
+});
+
+test('removing SillyTavern deletes the program and leaves the profile data alone', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-uninstall-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const archive = zip([{ name: 'SillyTavern-abc/package.json', body: '{"name":"sillytavern","scripts":{"start":"node server.js"}}' }]);
+  const runtime = new RuntimeManager({
+    paths,
+    installDependencies: async () => undefined,
+    healthCheck: async () => undefined,
+    fetch: async (input) => input.toString().includes('/releases')
+      ? new Response(JSON.stringify([{ tag_name: '1.0.0', draft: false, prerelease: false }]), { status: 200 })
+      : new Response(new Uint8Array(archive), { status: 200, headers: { 'content-type': 'application/zip' } }),
+  });
+  const installation = await runtime.install('latest');
+  assert.equal(installation.status, 'ready');
+
+  // A profile keeps its characters and chats beside the runtime, not inside
+  // it. This is the whole promise of the uninstall button, so it is what the
+  // test checks.
+  const profileData = join(paths.profiles, 'profile-1', 'data');
+  await mkdir(profileData, { recursive: true });
+  await writeFile(join(profileData, 'chat.jsonl'), 'a chat nobody asked to delete\n', 'utf8');
+  t.after(async () => { await rm(root, { recursive: true, force: true }); });
+
+  await runtime.removeInstallations();
+
+  assert.equal(await stat(installation.runtimePath).then(() => false, () => true), true, 'the runtime is gone');
+  assert.deepEqual(await runtime.listInstallations(), [], 'no installation records are left');
+  assert.equal(await runtime.getActiveInstallation(), null, 'nothing is active any more');
+  assert.equal(await readFile(join(profileData, 'chat.jsonl'), 'utf8'), 'a chat nobody asked to delete\n');
+});
+
+test('SillyTavern cannot be removed out from under an install that is running', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-uninstall-busy-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const archive = zip([{ name: 'SillyTavern-abc/package.json', body: '{"name":"sillytavern","scripts":{"start":"node server.js"}}' }]);
+  let release = () => undefined as void;
+  const held = new Promise<void>((resolve) => { release = () => resolve(); });
+  const runtime = new RuntimeManager({
+    paths,
+    installDependencies: async () => { await held; },
+    healthCheck: async () => undefined,
+    fetch: async (input) => input.toString().includes('/releases')
+      ? new Response(JSON.stringify([{ tag_name: '1.0.0', draft: false, prerelease: false }]), { status: 200 })
+      : new Response(new Uint8Array(archive), { status: 200, headers: { 'content-type': 'application/zip' } }),
+  });
+  const queued = runtime.queueInstall('latest');
+  await assert.rejects(() => runtime.removeInstallations(), (error: unknown) => error instanceof RuntimeError && error.code === 'installation_busy');
+  release();
+  await queued.promise;
+});
+
+test('work run before the download can say what it is doing', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-before-install-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const archive = zip([{ name: 'SillyTavern-abc/package.json', body: '{"name":"sillytavern","scripts":{"start":"node server.js"}}' }]);
+  const runtime = new RuntimeManager({
+    paths,
+    installDependencies: async () => undefined,
+    healthCheck: async () => undefined,
+    fetch: async (input) => input.toString().includes('/releases')
+      ? new Response(JSON.stringify([{ tag_name: '1.0.0', draft: false, prerelease: false }]), { status: 200 })
+      : new Response(new Uint8Array(archive), { status: 200, headers: { 'content-type': 'application/zip' } }),
+  });
+  const steps: string[] = [];
+  let ran = false;
+  const queued = runtime.queueInstall(
+    'latest',
+    (progress) => { steps.push(`${progress.progress}:${progress.step.code}`); },
+    async (report) => { ran = true; await report(4, { code: 'install.safetyCopy', message: 'Copying your data before switching version' }); },
+  );
+  // The id is handed back before any of that work starts, which is what lets
+  // the request answer straight away and the panel start polling.
+  assert.match(queued.id, /^[0-9a-f-]{36}$/u);
+  await queued.promise;
+  assert.equal(ran, true);
+  assert.ok(steps.includes('4:install.safetyCopy'), `expected the reported step, saw ${steps.join(', ')}`);
 });

@@ -2,11 +2,12 @@ import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 
 import {
   Archive, ArrowDown, ArrowUp, ArrowUpRight, BarChart3, Copy, Database, Download,
   Globe2, LayoutDashboard, Maximize2, Minimize2, Moon, Package, Plus,
-  ScrollText, Search, Sun, Upload, Users as UsersIcon, X, Rows3,
+  ScrollText, Search, Sun, Trash2, Upload, Users as UsersIcon, X, Rows3,
   BrainCircuit, CircleStop, Clock3, Cpu, Ellipsis, Play, QrCode as QrCodeIcon, RefreshCw, Settings2, Square,
 } from 'lucide-react';
 import {
   Alert, AlertDescription, AuthLayout, Badge, BrandMark, Button, Card, CardAction,
+  ConfirmDialog, DetailRow, EmptyState, StatusHero, type StatusTone,
   CardContent, CardFooter, CardHeader,
   CardGrid, Checkbox, Dialog, DialogBody, DialogContent, DialogDescription,
   DialogFooter, DialogHeader, DialogTitle,
@@ -394,7 +395,31 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange }: { csrfToken
       if (path.includes('/process')) setProcessState(payload as ProcessState); else setTunnelState(payload as TunnelState);
     }
   };
-  const installation = <InstallationPanel t={t} catalog={catalog} process={processState} onAction={updateRuntime} version={version} onVersionChange={setVersion} versions={versions} installations={installations} activeInstallationId={activeInstallationId} pendingInstallationId={pendingInstallationId} onPendingInstallationId={setPendingInstallationId} csrfToken={csrfToken} installing={installing} onInstalling={setInstalling} />;
+  const activeInstallation = installations.find((item) => item.id === pendingInstallationId) ?? installations.find((item) => item.id === activeInstallationId) ?? installations.at(-1);
+  const removeInstallation = async (): Promise<string | null> => {
+    const response = await apiFetch('/api/v1/installations', { method: 'DELETE', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+    if (!response.ok) {
+      const payload = await response.json() as { error?: { message?: string } };
+      return payload.error?.message ?? t('console.uninstallFailed');
+    }
+    setInstallations([]);
+    setActiveInstallationId(null);
+    setPendingInstallationId(null);
+    return null;
+  };
+  const installation = <InstallationPanel t={t} catalog={catalog} version={version} onVersionChange={setVersion} versions={versions} installations={installations} activeInstallationId={activeInstallationId} pendingInstallationId={pendingInstallationId} onPendingInstallationId={setPendingInstallationId} csrfToken={csrfToken} installing={installing} onInstalling={setInstalling} running={processState.status === 'running'} onRemove={removeInstallation} />;
+  const hero = <OverviewHero
+    t={t}
+    catalog={catalog}
+    process={processState}
+    tunnel={tunnelState}
+    installed={Boolean(activeInstallationId)}
+    installing={installing}
+    active={activeInstallation}
+    onStart={() => updateRuntime('/api/v1/process/start')}
+    onStop={() => updateRuntime('/api/v1/process/stop')}
+    onOpen={() => { window.open('http://127.0.0.1:8000', '_blank', 'noopener,noreferrer'); }}
+  />;
   const logProps = { t, catalog, source: logSource, onSourceChange: setLogSource, entries: liveLogs.entries, query: logQuery, onQueryChange: setLogQuery, compact: compactLogs, onToggleCompact: () => setCompactLogs((current) => !current), onLoadOlder: liveLogs.loadOlder, hasOlder: liveLogs.hasOlder, loadingOlder: liveLogs.loadingOlder };
   const logs = <LogsPanel {...logProps} expanded={logsExpanded} onToggleExpanded={() => setLogsExpanded((current) => !current)} />;
   const updateConfig = async (input: ConfigUpdateInput): Promise<string | null> => {
@@ -448,7 +473,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange }: { csrfToken
             </div>
           </header>
           <PageContainer>
-            {page === 'overview' ? <CardGrid>{installation}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} installed={Boolean(activeInstallationId)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><DataPanel t={t} navigate={navigate} activeProfile={profiles.find((profile) => profile.id === activeProfileId) ?? null} latestBackup={backups.at(-1) ?? null} /><SystemPanel t={t} csrfToken={csrfToken ?? ''} />{logs}</CardGrid> : page === 'data' ? <DataPage t={t} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} config={configDocument} onConfigUpdate={updateConfig} onChangeManagerPassword={changeManagerPassword} /> : <ResourcePanel page={page} t={t} />}
+            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}<CardGrid>{installation}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} installed={Boolean(activeInstallationId)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><DataPanel t={t} navigate={navigate} activeProfile={profiles.find((profile) => profile.id === activeProfileId) ?? null} latestBackup={backups.at(-1) ?? null} /><SystemPanel t={t} csrfToken={csrfToken ?? ''} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} config={configDocument} onConfigUpdate={updateConfig} onChangeManagerPassword={changeManagerPassword} /> : <ResourcePanel page={page} t={t} />}
           </PageContainer>
           <MobileNav
             items={navigation.map(({ id, icon }) => ({ id, icon, href: `#${id}`, label: t(`nav.${id}`) }))}
@@ -491,21 +516,123 @@ function Unavailable({ t, children }: { t: Translate; children: ReactNode }) {
   return <Tooltip><TooltipTrigger asChild><span tabIndex={0} className="inline-flex rounded-md" aria-label={t('console.unavailable')}>{children}</span></TooltipTrigger><TooltipContent>{t('console.unavailable')}</TooltipContent></Tooltip>;
 }
 
-function InstallationPanel({ t, catalog, process, onAction, version, onVersionChange, versions, installations, activeInstallationId, pendingInstallationId, onPendingInstallationId, csrfToken, installing, onInstalling }: { t: Translate; catalog: Record<string, unknown>; process: ProcessState; onAction: (path: string, body?: unknown) => Promise<void>; version: string; onVersionChange: (value: string) => void; versions: VersionOption[]; installations: Installation[]; activeInstallationId: string | null; pendingInstallationId: string | null; onPendingInstallationId: (value: string | null) => void; csrfToken: string | null; installing: boolean; onInstalling: (value: boolean) => void }) {
-  const [requestError, setRequestError] = useState<string | null>(null);
-  const [runBusy, setRunBusy] = useState(false);
-  const active = installations.find((item) => item.id === pendingInstallationId) ?? installations.find((item) => item.id === activeInstallationId) ?? installations.at(-1);
+/**
+ * What the overview opens with.
+ *
+ * The page used to begin with four cards of equal weight, and finding out
+ * whether SillyTavern was up meant reading a badge in the corner of the first
+ * one. The state, and the single most useful thing to do about it, now sit
+ * above everything else.
+ *
+ * Start is a plain button; Stop asks first, because whoever is reading a chat
+ * through the public link is not in the room to be consulted.
+ */
+function OverviewHero({ t, catalog, process, tunnel, installed, installing, active, onStart, onStop, onOpen }: { t: Translate; catalog: Record<string, unknown>; process: ProcessState; tunnel: TunnelState; installed: boolean; installing: boolean; active: Installation | undefined; onStart: () => Promise<void>; onStop: () => Promise<void>; onOpen: () => void }) {
+  const [stopAsked, setStopAsked] = useState(false);
+  const [busy, setBusy] = useState(false);
   const running = process.status === 'running';
-  const installed = Boolean(activeInstallationId);
-  // One control that reads as what it will do, rather than a Start and a Stop
-  // sitting side by side with one of them always inert.
-  const toggleRun = async () => {
-    setRunBusy(true);
-    try { await onAction(running ? '/api/v1/process/stop' : '/api/v1/process/start'); } finally { setRunBusy(false); }
+  const pending = busy || process.status === 'starting' || process.status === 'stopping';
+  const installingNow = installing || (active !== undefined && active.status !== 'ready' && active.status !== 'failed');
+
+  const tone: StatusTone = installingNow || process.status === 'starting' || process.status === 'stopping'
+    ? 'working'
+    : running ? 'online'
+      : process.status === 'error' || active?.status === 'failed' ? 'attention'
+        : 'offline';
+
+
+  const installFailed = active?.status === 'failed';
+  const title = installingNow ? t('console.heroInstalling')
+    : installFailed ? t('console.heroInstallFailed')
+      : process.status === 'starting' ? t('console.heroStarting')
+        : process.status === 'stopping' ? t('console.heroStopping')
+          : process.status === 'error' ? t('console.heroFailed')
+            : running ? t('console.heroRunning')
+              : installed ? t('console.heroStopped')
+                : t('console.heroNotInstalled');
+
+  // What is worth saying under the title, in the order it becomes true: what
+  // the install is doing, then why it failed, then where it can be reached.
+  const detail = installingNow && active
+    ? `${translateStep(active.step, catalog, active.stepCode, active.stepParams)} · ${Math.round(active.progress)}%`
+    : (installFailed ? active?.error ?? process.error : process.error)
+      ?? active?.resolvedRef ?? null;
+
+  const run = async (work: () => Promise<void>) => {
+    setBusy(true);
+    try { await work(); } finally { setBusy(false); }
   };
-  const runPending = runBusy || process.status === 'starting' || process.status === 'stopping';
-  const status = active?.status === 'ready' ? t('dashboard.ready') : active?.status === 'failed' ? t('dashboard.installFailed') : active ? `${translateStep(active.step, catalog, active.stepCode, active.stepParams)} · ${Math.round(active.progress)}%` : t('dashboard.notInstalled');
+
+  // Before the first install there is no state to report and nothing here to
+  // press, and a banner saying "not installed" above a card headed SillyTavern
+  // with an Install button in it is a band of empty space in the way. The hero
+  // arrives with the thing it describes - or with the reason it is not there,
+  // because an install that failed leaves nothing installed and its error is
+  // the most important thing on the page.
+  if (!installed && !installingNow && !installFailed) return null;
+
+  return <>
+    <StatusHero
+      tone={tone}
+      title={title}
+      detail={detail}
+      {...(installingNow && active ? { progress: active.progress } : {})}
+      actions={installed ? <>
+        <Button variant="outline" onClick={onOpen} disabled={!running}><ArrowUpRight />{t('dashboard.open')}</Button>
+        {running
+          ? <Button variant="outline" onClick={() => setStopAsked(true)} disabled={pending}><Square />{t('dashboard.stop')}</Button>
+          : <Button onClick={() => void run(onStart)} disabled={pending || installingNow}><Play />{pending ? t('common.loading') : t('dashboard.start')}</Button>}
+      </> : null}
+    />
+    <ConfirmDialog
+      open={stopAsked}
+      onOpenChange={setStopAsked}
+      title={t('console.stopConfirm')}
+      description={t('console.stopConfirmBody')}
+      confirmLabel={t('dashboard.stop')}
+      cancelLabel={t('common.cancel')}
+      onConfirm={() => run(onStop)}
+    />
+  </>;
+}
+
+/**
+ * Choosing a version and putting it on the disk.
+ *
+ * Starting and stopping used to sit in this card's footer, next to a version
+ * select they had nothing to do with, so the button that ran SillyTavern was
+ * beside the button that replaced it. Running belongs to the hero above, which
+ * is where the state it changes is reported. What is left here is the install,
+ * and the install now asks before it restarts something that is already up.
+ */
+function InstallationPanel({ t, catalog, version, onVersionChange, versions, installations, activeInstallationId, pendingInstallationId, onPendingInstallationId, csrfToken, installing, onInstalling, running, onRemove }: { t: Translate; catalog: Record<string, unknown>; version: string; onVersionChange: (value: string) => void; versions: VersionOption[]; installations: Installation[]; activeInstallationId: string | null; pendingInstallationId: string | null; onPendingInstallationId: (value: string | null) => void; csrfToken: string | null; installing: boolean; onInstalling: (value: boolean) => void; running: boolean; onRemove: () => Promise<string | null> }) {
+  const [requestError, setRequestError] = useState<string | null>(null);
+  const [askedVersion, setAskedVersion] = useState<string | null>(null);
+  const [askedRemove, setAskedRemove] = useState(false);
+  const active = installations.find((item) => item.id === pendingInstallationId) ?? installations.find((item) => item.id === activeInstallationId) ?? installations.at(-1);
+  const installed = Boolean(activeInstallationId);
+  // A word, not the running commentary: the hero above is already saying what
+  // the install is doing and how far along it is.
+  const status = active?.status === 'ready' ? t('dashboard.ready')
+    : active?.status === 'failed' ? t('dashboard.installFailed')
+      : active ? t('common.loading')
+        : t('dashboard.notInstalled');
   const canInstall = Boolean(csrfToken) && !installing;
+  const choices = versions.length > 0 ? versions : [{ selector: 'latest', label: `${t('dashboard.latest')} (latest)`, ref: 'latest', channel: 'release', tag: null, publishedAt: null }, { selector: 'release', label: 'release', ref: 'release', channel: 'release', tag: null, publishedAt: null }, { selector: 'staging', label: 'staging', ref: 'staging', channel: 'staging', tag: null, publishedAt: null }] satisfies VersionOption[];
+  const chosen = choices.find((choice) => choice.selector === version);
+  const chosenLabel = chosen?.label ?? version;
+  /*
+   * Whether pressing Install would do nothing.
+   *
+   * Compared on the ref each option resolves to, not on the name of the
+   * option. "latest" is a moving target: matching on the word would lock the
+   * one choice most people leave selected, so an upstream release could never
+   * be installed. Matching on the ref it currently points at disables the
+   * button only while the installed copy really is that ref.
+   */
+  const installedRef = active?.status === 'ready' ? active.resolvedRef : null;
+  const alreadyInstalled = installedRef !== null && chosen !== undefined && chosen.ref === installedRef;
+
   const install = async () => {
     if (!csrfToken) return;
     setRequestError(null);
@@ -518,8 +645,50 @@ function InstallationPanel({ t, catalog, process, onAction, version, onVersionCh
       onPendingInstallationId(payload.installationId);
     } catch { setRequestError(t('console.installRequestFailed')); onInstalling(false); }
   };
-  const choices = versions.length > 0 ? versions : [{ selector: 'latest', label: `${t('dashboard.latest')} (latest)`, ref: 'latest', channel: 'release', tag: null, publishedAt: null }, { selector: 'release', label: 'release', ref: 'release', channel: 'release', tag: null, publishedAt: null }, { selector: 'staging', label: 'staging', ref: 'staging', channel: 'staging', tag: null, publishedAt: null }] satisfies VersionOption[];
-  return <Card data-tour="installation"><PanelHeading icon={<Package />} action={<Badge variant="outline" className={active?.status === 'ready' ? '' : 'status-attention'}>{status}</Badge>}>SillyTavern</PanelHeading><CardContent className="flex-1"><label className="field-label" htmlFor="install-version">{t('dashboard.version')}</label><Select value={version} onValueChange={onVersionChange}><SelectTrigger id="install-version" className="w-full"><SelectValue /></SelectTrigger><SelectContent position="popper" align="start" className="version-select-content">{choices.map((choice) => <SelectItem key={choice.selector} value={choice.selector}>{choice.label}</SelectItem>)}</SelectContent></Select>{active && active.status !== 'ready' && active.status !== 'failed' ? <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full bg-primary transition-all" style={{ width: `${active.progress}%` }} /></div> : null}{active?.status === 'ready' ? <p className="install-result">{t('console.installComplete')} · {active.resolvedRef}</p> : null}{active?.status === 'failed' && active.error ? <p className="install-error" role="alert">{active.error}</p> : null}{requestError ? <p className="install-error" role="alert">{requestError}</p> : null}</CardContent><CardFooter className="gap-2">{canInstall ? <Button variant="outline" onClick={() => void install()}><Download />{installing ? t('common.loading') : t('dashboard.install')}</Button> : <Unavailable t={t}><Button variant="outline" disabled><Download />{t('dashboard.install')}</Button></Unavailable>}<Button className={running ? 'run-toggle run-toggle-stop' : 'run-toggle run-toggle-start'} onClick={() => void toggleRun()} disabled={!installed || runPending} aria-label={running ? t('dashboard.stop') : t('dashboard.start')}>{running ? <Square /> : <Play />}{runPending ? t('common.loading') : running ? t('dashboard.stop') : t('dashboard.start')}</Button></CardFooter></Card>;
+
+  // The first install has nothing to interrupt. Every one after it replaces a
+  // working copy and restarts it, which is worth a question.
+  const requestInstall = () => { if (installed || running) setAskedVersion(version); else void install(); };
+
+  const remove = async () => {
+    setRequestError(null);
+    setRequestError(await onRemove());
+  };
+
+  return <Card data-tour="installation">
+    <PanelHeading icon={<Package />} action={<Badge variant="outline" className={active?.status === 'ready' ? '' : 'status-attention'}>{status}</Badge>}>SillyTavern</PanelHeading>
+    <CardContent className="flex-1">
+      <label className="field-label" htmlFor="install-version">{t('dashboard.version')}</label>
+      <Select value={version} onValueChange={onVersionChange}><SelectTrigger id="install-version" className="w-full"><SelectValue /></SelectTrigger><SelectContent position="popper" align="start" className="version-select-content">{choices.map((choice) => <SelectItem key={choice.selector} value={choice.selector}>{choice.label}</SelectItem>)}</SelectContent></Select>
+      {active?.status === 'ready' ? <p className="install-result">{t('console.installComplete')} · {active.resolvedRef}</p> : null}
+      {requestError ? <p className="install-error" role="alert">{requestError}</p> : null}
+    </CardContent>
+    <CardFooter className="flex-col items-stretch gap-2">
+      {alreadyInstalled
+        ? <Tooltip><TooltipTrigger asChild><span className="inline-flex"><Button variant="outline" className="w-full" disabled><Download />{t('console.versionInstalled')}</Button></span></TooltipTrigger><TooltipContent>{t('console.versionInstalledHint')}</TooltipContent></Tooltip>
+        : <Button variant="outline" className="w-full" onClick={requestInstall} disabled={!canInstall}><Download />{installing ? t('common.loading') : t('dashboard.install')}</Button>}
+      {installed ? <Button variant="ghost" size="sm" className="w-full text-muted-foreground" onClick={() => setAskedRemove(true)} disabled={installing}><Trash2 />{t('console.uninstall')}</Button> : null}
+    </CardFooter>
+    <ConfirmDialog
+      open={askedVersion !== null}
+      onOpenChange={(open) => { if (!open) setAskedVersion(null); }}
+      tone="default"
+      title={t('console.installConfirm', { version: chosenLabel })}
+      description={t('console.installConfirmBody')}
+      confirmLabel={t('dashboard.install')}
+      cancelLabel={t('common.cancel')}
+      onConfirm={install}
+    />
+    <ConfirmDialog
+      open={askedRemove}
+      onOpenChange={setAskedRemove}
+      title={t('console.uninstallConfirm')}
+      description={t('console.uninstallConfirmBody')}
+      confirmLabel={t('console.uninstall')}
+      cancelLabel={t('common.cancel')}
+      onConfirm={remove}
+    />
+  </Card>;
 }
 
 function AccessPanel({ t, process, tunnel, config, security, installed, onAction, onSetLan, onSetPassword }: { t: Translate; process: ProcessState; tunnel: TunnelState; config: ConfigDocument | null; security: AccessGatewayState; installed: boolean; onAction: (path: string, body?: unknown) => Promise<void>; onSetLan: (lan: boolean) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null> }) {
@@ -543,14 +712,18 @@ function AccessPanel({ t, process, tunnel, config, security, installed, onAction
   const passwordReady = security.passwordConfigured;
   const lan = security.lan;
   const lanLabel = lan ? t('console.lanEnabled') : t('console.lanDisabled');
-  const processLabel = process.status === 'running' ? t('dashboard.running') : process.status === 'starting' || process.status === 'stopping' ? t('common.loading') : process.status === 'error' ? t('dashboard.installFailed') : t('dashboard.offline');
   const [passwordOpen, setPasswordOpen] = useState(false);
+  // Turning either of these off takes an address away from whoever is on the
+  // other end of it, and they are not in the room to be asked.
+  const [closing, setClosing] = useState<'tunnel' | 'lan' | null>(null);
   const runAction = async (path: string, body?: unknown) => { setBusy(true); try { await onAction(path, body); } finally { setBusy(false); } };
-  const toggleTunnel = () => void runAction('/api/v1/tunnel', { mode: tunnelWanted ? 'off' : 'quick' });
-  const toggleLan = async (next: boolean) => {
+  const setTunnel = async (on: boolean) => { await runAction('/api/v1/tunnel', { mode: on ? 'quick' : 'off' }); };
+  const toggleTunnel = (next: boolean) => { if (next) void setTunnel(true); else setClosing('tunnel'); };
+  const setLanTo = async (next: boolean) => {
     setSecurityBusy(true); setSecurityMessage(null);
     try { setSecurityMessage(await onSetLan(next)); } finally { setSecurityBusy(false); }
   };
+  const toggleLan = (next: boolean) => { if (next) void setLanTo(true); else setClosing('lan'); };
   // This machine reaches SillyTavern directly, because the loopback address is
   // already a boundary. Everything else goes through the gateway and its
   // password: the LAN address and the tunnel both point there.
@@ -566,19 +739,27 @@ function AccessPanel({ t, process, tunnel, config, security, installed, onAction
   const shareLabel = tunnel.url ? t('dashboard.publicAddress') : t('console.lanAddress');
   const [qrOpen, setQrOpen] = useState(false);
   return <Card data-tour="public-access">
-    <PanelHeading icon={<Globe2 />} action={<Badge variant="secondary" className={running ? 'status-online' : tunnel.error ? 'status-attention' : ''}>{processLabel}</Badge>}>{t('console.publicAccess')}</PanelHeading>
+    <PanelHeading icon={<Globe2 />} action={<Badge variant="secondary" className={running ? 'status-online' : tunnel.error ? 'status-attention' : ''}>{running ? t('console.online') : t('dashboard.offline')}</Badge>}>{t('console.publicAccess')}</PanelHeading>
     <CardContent className="flex-1 space-y-4">
-      <div className="access-row"><div><strong>{t('console.lanAccess')}</strong><span>{lan ? lanLabel : passwordReady ? lanLabel : t('console.passwordRequired')}</span></div><Switch id="listen-switch" checked={lan} onCheckedChange={(checked) => void toggleLan(checked)} disabled={!installed || securityBusy || (!lan && !passwordReady)} aria-label={t('console.enableLan')} /></div>
+      <div className="access-row"><div><strong>{t('console.lanAccess')}</strong><span>{lan ? lanLabel : passwordReady ? lanLabel : t('console.passwordRequired')}</span></div><Switch id="listen-switch" checked={lan} onCheckedChange={toggleLan} disabled={!installed || securityBusy || (!lan && !passwordReady)} aria-label={t('console.enableLan')} /></div>
       <dl className="address-list"><div><dt>{t('console.lanAddress')}</dt><dd><AddressLink t={t} href={lanUrl}>{lanHost}</AddressLink></dd></div><div><dt>{t('console.local')}</dt><dd><AddressLink t={t} href={localUrl}>{localHost}</AddressLink></dd></div></dl>
       <div className="access-row access-row-public"><div><strong>{t('console.quickTunnel')}</strong><span>{passwordReady ? t('console.passwordProtected') : t('console.passwordRequired')}</span></div><Switch id="tunnel-switch" checked={tunnelWanted} onCheckedChange={toggleTunnel} disabled={busy || (tunnelWanted ? false : !installed || !running || !passwordReady)} aria-label={t('console.enableTunnel')} /></div>
       <dl className="address-list"><div><dt>{t('dashboard.publicAddress')}</dt><dd>{tunnel.url ? <AddressLink t={t} href={tunnel.url}>{tunnel.url}</AddressLink> : '—'}</dd></div></dl>
       {shareUrl ? <div className="access-qr"><Button variant="ghost" size="sm" onClick={() => setQrOpen((open) => !open)} aria-expanded={qrOpen}><QrCodeIcon />{qrOpen ? t('console.hideQr') : t('console.showQr')}</Button>{qrOpen ? <figure><QrCode value={shareUrl} label={`${shareLabel}: ${shareUrl}`} /><figcaption>{t('console.scanToOpen')} · {shareLabel}</figcaption></figure> : null}</div> : null}
       <div className="access-row"><div><strong>{t('console.passwordSettings')}</strong><span>{passwordReady ? t('console.passwordProtected') : t('console.passwordRequired')}</span></div><Button variant="outline" size="sm" onClick={() => setPasswordOpen(true)}>{passwordReady ? t('console.changePassword') : t('console.savePassword')}</Button></div>
+      <ConfirmDialog
+        open={closing !== null}
+        onOpenChange={(open) => { if (!open) setClosing(null); }}
+        title={closing === 'lan' ? t('console.lanOffConfirm') : t('console.tunnelOffConfirm')}
+        description={closing === 'lan' ? t('console.lanOffConfirmBody') : t('console.tunnelOffConfirmBody')}
+        confirmLabel={t('common.turnOff')}
+        cancelLabel={t('common.cancel')}
+        onConfirm={async () => { if (closing === 'lan') await setLanTo(false); else await setTunnel(false); }}
+      />
       <PasswordDialog t={t} open={passwordOpen} onOpenChange={setPasswordOpen} title={t('console.passwordSettings')} description={t('console.sillyPasswordHelp')} note={passwordReady ? t('console.passwordChangeSignsOut') : null} minLength={MIN_SILLY_PASSWORD} hint={t('console.sillyPasswordMin')} submitLabel={passwordReady ? t('console.changePassword') : t('console.savePassword')} onSubmit={onSetPassword} />
       {busy || securityBusy ? <div className="operation-progress" role="status"><span>{t('common.loading')}</span><span className="progress-track"><span className="progress-indeterminate" /></span></div> : null}
       {security.error ? <p className="install-error" role="alert">{security.error}</p> : null}
       {securityMessage ? <p className="install-error" role="alert">{securityMessage}</p> : null}
-      {process.error ? <p className="install-error" role="alert">{process.error}</p> : null}
       {tunnel.error ? <p className="install-error" role="alert">{tunnel.error}</p> : null}
     </CardContent>
     <CardFooter className="gap-2"><Button variant="outline" onClick={openLocal} disabled={!running}><ArrowUpRight />{t('dashboard.open')}</Button><Button variant="ghost" onClick={() => void copyTunnel()} disabled={!tunnel.url}><Copy />{t('dashboard.copyLink')}</Button></CardFooter>
@@ -651,8 +832,32 @@ function AddressLink({ t, href, children }: { t: Translate; href: string; childr
   return <a className="address-link" href={href} target="_blank" rel="noopener noreferrer" title={t('console.openInNewTab')}><code>{children}</code><ArrowUpRight aria-hidden="true" /></a>;
 }
 
+/**
+ * Where the data stands, and one way through to it.
+ *
+ * This card had four controls - a link in the body, two buttons in the footer
+ * and an advert pinned under them - and all four went to the same page. It
+ * also carried a standing recommendation to set up off-machine backups, which
+ * is advice printed on a page rather than offered where it can be acted on;
+ * that belongs next to the setting itself.
+ */
 function DataPanel({ t, navigate, activeProfile, latestBackup }: { t: Translate; navigate: Navigate; activeProfile: Profile | null; latestBackup: BackupManifest | null }) {
-  return <Card data-tour="data"><PanelHeading icon={<Database />}>{t('console.data')}</PanelHeading><CardContent className="flex-1 space-y-4"><div className="flex flex-wrap items-center justify-between gap-2"><span className="text-muted-foreground">{activeProfile?.name ?? t('console.noProfiles')}</span><Button variant="ghost" size="sm" onClick={() => navigate('data')}>{t('nav.data')}<ArrowUpRight /></Button></div><dl className="address-list"><div><dt>{t('status.lastBackup')}</dt><dd>{latestBackup ? new Date(latestBackup.createdAt).toLocaleString() : t('dashboard.noBackup')}</dd></div></dl></CardContent><CardFooter className="flex-wrap gap-2"><Button variant="outline" onClick={() => navigate('data')}><Archive />{t('nav.data')}</Button><Button variant="ghost" onClick={() => navigate('data')}><Upload />{t('console.restore')}</Button></CardFooter><div className="r2-note"><Tooltip><TooltipTrigger asChild><button type="button" onClick={() => navigate('data')}>{t('console.r2Recommended')}</button></TooltipTrigger><TooltipContent className="max-w-xs">{t('console.r2Help')}</TooltipContent></Tooltip></div></Card>;
+  return <Card data-tour="data">
+    <PanelHeading icon={<Database />}>{t('console.data')}</PanelHeading>
+    <CardContent className="flex-1">
+      {latestBackup
+        ? <div className="grid gap-1">
+          <DetailRow label={t('console.activeProfile')}>{activeProfile?.name ?? t('console.noProfiles')}</DetailRow>
+          <DetailRow label={t('status.lastBackup')}>{new Date(latestBackup.createdAt).toLocaleString()}</DetailRow>
+        </div>
+        : <EmptyState
+          icon={<Archive />}
+          title={t('dashboard.noBackup')}
+          action={<Button size="sm" onClick={() => navigate('data')}><Archive />{t('dashboard.backupNow')}</Button>}
+        />}
+    </CardContent>
+    {latestBackup ? <CardFooter><Button variant="outline" className="w-full" onClick={() => navigate('data')}><Database />{t('nav.data')}<ArrowUpRight /></Button></CardFooter> : null}
+  </Card>;
 }
 
 interface LogViewProps {

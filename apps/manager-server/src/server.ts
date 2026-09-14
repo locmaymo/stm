@@ -722,6 +722,17 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     sendList(response, 'installations', installations, searchParams, { searchText: installationSearchText, sortValue: installationSortValue }, { activeInstallationId: active?.id ?? null });
     return;
   }
+  if (pathname === '/api/v1/installations' && method === 'DELETE') {
+    await supervisor.stop('uninstall');
+    try {
+      await runtime.removeInstallations();
+    } catch (error: unknown) {
+      if (error instanceof RuntimeError) { sendError(response, 409, error.code, error.message); return; }
+      throw error;
+    }
+    sendJson(response, 200, { ok: true, installations: [], activeInstallationId: null });
+    return;
+  }
   if (pathname === '/api/v1/installations' && method === 'POST') {
     const body = await readJson(request);
     const selector = isRecord(body) && typeof body.version === 'string' ? body.version : null;
@@ -730,20 +741,30 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       return;
     }
     const previousProfile = await profiles.getActive();
-    await supervisor.stop('install');
-    if (previousProfile) {
-      try {
-        await backups.createSafetyCopy(previousProfile, { name: `${previousProfile.name}-preswitch` });
-      } catch (error: unknown) {
-        await supervisor.start().catch(() => supervisor.getState());
-        sendError(response, 500, 'profile_snapshot_failed', error instanceof Error ? error.message : 'Could not create a profile safety snapshot');
-        return;
-      }
-    }
     let queuedId = '';
     let queued: { id: string; promise: Promise<Installation> };
     try {
-      queued = runtime.queueInstall(selector as VersionSelector, (progress) => jobs.updateFromProgress(queuedId, progress));
+      /*
+       * Stopping SillyTavern and copying the profile happen inside the job,
+       * not inside this request.
+       *
+       * They used to run before the response was written, so a 202 meaning
+       * "accepted, watch the progress" did not arrive until a full copy of the
+       * profile had been written to disk - minutes, on a large one, with the
+       * panel holding its confirmation dialog open and nothing on screen
+       * saying a backup was being taken. The order of the work is unchanged;
+       * only the reply no longer waits for it.
+       */
+      queued = runtime.queueInstall(
+        selector as VersionSelector,
+        (progress) => jobs.updateFromProgress(queuedId, progress),
+        async (report) => {
+          await supervisor.stop('install');
+          if (!previousProfile) return;
+          await report(4, logEvent('install.safetyCopy', 'Copying your data before switching version'));
+          await backups.createSafetyCopy(previousProfile, { name: `${previousProfile.name}-preswitch` });
+        },
+      );
     } catch (error: unknown) {
       await supervisor.start();
       if (error instanceof RuntimeError) { sendError(response, 409, error.code, error.message); return; }
