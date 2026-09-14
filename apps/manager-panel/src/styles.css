@@ -220,8 +220,18 @@
 .r2-form-grid, .r2-schedule-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .r2-schedule-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 .r2-form-grid .field-label, .r2-schedule-grid .field-label { display: grid; gap: 6px; }
+.r2-schedule-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
 .r2-toggle-row, .r2-actions, .r2-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .r2-summary { justify-content: space-between; color: var(--muted-foreground); font-size: 12px; }
+.r2-usage { display: grid; gap: 8px; }
+.r2-usage-row { display: grid; gap: 4px; color: var(--muted-foreground); font-size: 12px; }
+.r2-legacy { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; color: var(--muted-foreground); font-size: 12px; }
+.r2-snapshots { display: grid; gap: 8px; }
+.r2-snapshot-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.r2-snapshot-list { display: grid; gap: 2px; max-height: 220px; overflow-y: auto; margin: 0; padding: 0; list-style: none; }
+.r2-snapshot-list li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 0; font-size: 12px; }
+.r2-snapshot-list li + li { border-top: 1px solid var(--border); }
+.r2-snapshot-note { color: var(--muted-foreground); font-size: 11px; }
 .data-stack { display: grid; gap: 20px; max-width: 760px; }
 .profile-list { display: grid; gap: 8px; }
 .profile-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; padding: 12px 0; border-top: 1px solid var(--border); }

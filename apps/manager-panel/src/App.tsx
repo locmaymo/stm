@@ -15,7 +15,7 @@ import {
 } from '../../../packages/ui/src/index.js';
 import { logCatalog, translator, type Translate } from './i18n.js';
 import { browserStorage, readPreferences, savePreferences, type Preferences } from './preferences.js';
-import type { AccessGatewayState, BackupManifest, ConfigDocument, ConfigUpdateInput, Installation, Job, LogEntry, LogSourceFilter, MetricsSnapshot, ProcessState, Profile, R2Config, R2Object, RestorePreview, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, BackupManifest, ConfigDocument, ConfigUpdateInput, Installation, Job, LogEntry, LogSourceFilter, MetricsSnapshot, ProcessState, Profile, R2Config, R2Object, R2SnapshotSummary, RestorePreview, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
 import { translateLogEntry, translateStep } from './log-format.js';
 import { QrCode } from './qr-code.js';
@@ -603,13 +603,18 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
   const uploadAbort = useRef<AbortController | null>(null);
   const [r2Config, setR2Config] = useState<R2Config | null>(null);
   const [r2Objects, setR2Objects] = useState<R2Object[]>([]);
+  const [r2Snapshots, setR2Snapshots] = useState<R2SnapshotSummary[]>([]);
   const [r2Form, setR2Form] = useState({ endpoint: '', bucket: '', accountId: '', accessKeyId: '', secretAccessKey: '', enabled: false, localIntervalMinutes: 60, hotIntervalMinutes: 5, coldIntervalHours: 6, keepRecent: 48, keepDaily: 14, keepWeekly: 8 });
   const [r2Busy, setR2Busy] = useState<string | null>(null);
   const [r2Message, setR2Message] = useState<string | null>(null);
   const busy = busyAction !== null;
   const jobStep = (job: Job) => translateStep(job.step, catalog, job.stepCode, job.stepParams);
   const refresh = async () => {
-    const [profileResponse, backupResponse, r2Response] = await Promise.all([fetch('/api/v1/profiles', { credentials: 'same-origin' }), fetch('/api/v1/backups', { credentials: 'same-origin' }), fetch('/api/v1/r2', { credentials: 'same-origin' })]);
+    const [profileResponse, backupResponse, r2Response, snapshotResponse] = await Promise.all([fetch('/api/v1/profiles', { credentials: 'same-origin' }), fetch('/api/v1/backups', { credentials: 'same-origin' }), fetch('/api/v1/r2', { credentials: 'same-origin' }), fetch('/api/v1/r2/snapshots', { credentials: 'same-origin' }).catch(() => null)]);
+    // Listing recovery points needs the bucket, so it is the one call here that
+    // fails when R2 is off or unreachable. That must not blank the page.
+    if (snapshotResponse?.ok) setR2Snapshots((await snapshotResponse.json() as { snapshots: R2SnapshotSummary[] }).snapshots);
+    else setR2Snapshots([]);
     if (profileResponse.ok) { const payload = await profileResponse.json() as { profiles: Profile[]; activeProfileId: string | null }; onProfilesChange(payload.profiles, payload.activeProfileId); }
     if (backupResponse.ok) { const payload = await backupResponse.json() as { backups: BackupManifest[] }; onBackupsChange(payload.backups); }
     if (r2Response.ok) {
@@ -838,12 +843,51 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
   const uploadR2 = async () => {
     setR2Busy(t('console.r2UploadLatest')); setR2Message(null);
     try {
-      const latest = backups[0];
-      const response = await fetch('/api/v1/r2/upload', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ ...(latest ? { backupId: latest.id } : {}) }) });
-      const payload = await response.json() as { error?: { message?: string } };
+      const response = await fetch('/api/v1/r2/sync', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      const payload = await response.json() as { uploadedChunks?: number; error?: { message?: string } };
       if (!response.ok) { setR2Message(payload.error?.message ?? t('console.r2UploadFailed')); return; }
       setR2Message(t('console.r2Saved')); await refresh();
     } catch { setR2Message(t('console.r2UploadFailed')); } finally { setR2Busy(null); }
+  };
+  /**
+   * Bring one recovery point back as a local archive.
+   *
+   * It lands in the backup library rather than being written into the profile,
+   * so restoring it is the same preview, the same safety snapshot and the same
+   * merge-or-replace choice as any other archive - and the operator gets to
+   * look at it first.
+   */
+  const fetchSnapshot = async (snapshot: R2SnapshotSummary) => {
+    setR2Busy(t('console.r2Fetch')); setR2Message(null);
+    setOperationProgress({ percent: 0, step: t('console.r2Fetch') });
+    try {
+      const response = await fetch(`/api/v1/r2/snapshots/${encodeURIComponent(snapshot.id)}/fetch`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      const payload = await response.json() as { jobId?: string; error?: { message?: string } };
+      if (!response.ok || !payload.jobId) { setR2Message(payload.error?.message ?? t('console.r2FetchFailed')); return; }
+      setRunningJobId(payload.jobId);
+      await waitForOperation(payload.jobId, (job) => setOperationProgress({ percent: job.progress, step: jobStep(job) }));
+      setR2Message(t('console.r2Fetched')); await refresh();
+    } catch (error: unknown) {
+      setR2Message(error instanceof StoppedError ? null : error instanceof Error ? error.message : t('console.r2FetchFailed'));
+    } finally { setR2Busy(null); setOperationProgress(null); setRunningJobId(null); }
+  };
+  const reconcileR2 = async () => {
+    setR2Busy(t('console.r2Reconcile')); setR2Message(null);
+    try {
+      const response = await fetch('/api/v1/r2/reconcile', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      const payload = await response.json() as { collectedBlobs?: number; error?: { message?: string } };
+      if (!response.ok) { setR2Message(payload.error?.message ?? t('console.r2ReconcileFailed')); return; }
+      setR2Message(t('console.r2Reconciled')); await refresh();
+    } catch { setR2Message(t('console.r2ReconcileFailed')); } finally { setR2Busy(null); }
+  };
+  const removeLegacy = async () => {
+    setR2Busy(t('console.r2LegacyRemove')); setR2Message(null);
+    try {
+      const response = await fetch('/api/v1/r2/legacy', { method: 'DELETE', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      const payload = await response.json() as { removed?: number; error?: { message?: string } };
+      if (!response.ok) { setR2Message(payload.error?.message ?? t('console.r2LegacyRemoveFailed')); return; }
+      setR2Message(t('console.r2LegacyRemoved')); await refresh();
+    } catch { setR2Message(t('console.r2LegacyRemoveFailed')); } finally { setR2Busy(null); }
   };
   const activeProfile = profiles.find((profile) => profile.id === activeProfileId) ?? profiles[0] ?? null;
   return <div className="data-workspace">
@@ -854,8 +898,90 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
     </CardContent></Card>
     <Card className="backup-library-card"><PanelHeading icon={<Archive />} action={<div className="backup-actions"><Button size="sm" onClick={() => void createBackup()} disabled={busy || !activeProfileId}><Archive />{t('dashboard.backupNow')}</Button><label className="button-outline"><Upload />{t('console.importZip')}<input type="file" accept=".zip,application/zip" onChange={(event) => void inspectUpload(event.target.files?.[0])} /></label></div>}>{t('console.backupLibrary')}</PanelHeading>
       <CardContent className="space-y-4"><div className="backup-controls"><Input value={backupName} onChange={(event) => setBackupName(event.target.value)} placeholder={t('console.backupNameOptional')} aria-label={t('console.backupNameOptional')} /></div>{error ? <p className="install-error" role="alert">{error}</p> : null}{busyAction ? <div className="operation-progress" role="status"><span className="operation-headline">{busyAction}{uploading || runningJobId ? <Button variant="outline" size="sm" onClick={() => void stopOperation()} disabled={stopping}><CircleStop />{stopping ? t('console.stopping') : t('common.stop')}</Button> : null}</span>{operationProgress ? <><span>{operationProgress.step} · {operationProgress.percent}%</span><span className="progress-track"><span className="progress-value" style={{ width: `${operationProgress.percent}%` }} /></span></> : <span className="progress-track"><span className="progress-indeterminate" /></span>}{uploading ? <span className="operation-warning">{t('console.uploadKeepTabOpen')}</span> : null}</div> : null}{backups.length === 0 ? <p className="resource-empty">{t('dashboard.noBackup')}</p> : <div className="backup-list">{backups.map((backup) => <div className="backup-row" key={backup.id}><div className="min-w-0"><strong>{backup.name}</strong><span>{backup.source === 'uploaded' ? t('console.uploadedBackup') : t('console.createdBackup')} · {new Date(backup.createdAt).toLocaleString()} · {formatBytes(backup.sizeBytes)}</span></div><div className="backup-row-actions"><Button variant="ghost" size="sm" onClick={() => { window.location.href = `/api/v1/backups/${backup.id}/download`; }}>{t('console.downloadBackup')}</Button><Button variant="ghost" size="sm" onClick={() => void renameBackup(backup)} disabled={busy}>{t('console.renameBackup')}</Button><Button variant="ghost" size="sm" onClick={() => void deleteBackup(backup)} disabled={busy}>{t('console.deleteBackup')}</Button><Button variant="outline" size="sm" onClick={() => void previewBackup(backup)} disabled={busy}>{t('console.previewBackup')}</Button></div></div>)}</div>}{selectedPreview ? <div className="backup-preview"><strong>{t('console.restorePreview')}</strong><span>{selectedBackup?.name} · {selectedPreview.fileCount} {t('console.files')} · {formatBytes(selectedPreview.totalBytes)}</span>{selectedPreview.warnings.map((warning) => <p className="text-xs text-muted-foreground" key={warning}>{warning}</p>)}<div className="backup-restore-actions"><Select value={restoreMode} onValueChange={(value) => setRestoreMode(value as 'merge' | 'replace')}><SelectTrigger aria-label={t('console.restoreMode')}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="replace">{t('console.replaceRestore')}</SelectItem><SelectItem value="merge">{t('console.mergeRestore')}</SelectItem></SelectContent></Select><Button onClick={() => void restoreSelected()} disabled={busy}><Upload />{t('console.restore')}</Button></div></div> : null}</CardContent></Card>
-    <Card className="r2-placeholder"><PanelHeading icon={<Globe2 />} action={<Badge variant="outline" className={r2Config?.configured ? 'status-online' : ''}>{r2Config?.configured ? t('console.r2Configured') : t('console.r2NotConfigured')}</Badge>}>{t('console.r2Title')}</PanelHeading><CardContent className="space-y-4"><p>{t('console.r2Placeholder')}</p><div className="r2-form-grid"><label className="field-label"><span>{t('console.r2Endpoint')}</span><Input value={r2Form.endpoint} onChange={(event) => setR2Form((current) => ({ ...current, endpoint: event.target.value }))} placeholder="https://ACCOUNT_ID.r2.cloudflarestorage.com" /></label><label className="field-label"><span>{t('console.r2Bucket')}</span><Input value={r2Form.bucket} onChange={(event) => setR2Form((current) => ({ ...current, bucket: event.target.value }))} /></label><label className="field-label"><span>{t('console.r2AccountId')}</span><Input value={r2Form.accountId} onChange={(event) => setR2Form((current) => ({ ...current, accountId: event.target.value }))} /></label><label className="field-label"><span>{t('console.r2AccessKey')}</span><Input value={r2Form.accessKeyId} onChange={(event) => setR2Form((current) => ({ ...current, accessKeyId: event.target.value }))} autoComplete="off" /></label><label className="field-label"><span>{t('console.r2SecretKey')}</span><Input type="password" value={r2Form.secretAccessKey} onChange={(event) => setR2Form((current) => ({ ...current, secretAccessKey: event.target.value }))} autoComplete="new-password" /></label></div><div className="r2-toggle-row"><label className="backup-option"><input type="checkbox" checked={r2Form.enabled} onChange={(event) => setR2Form((current) => ({ ...current, enabled: event.target.checked }))} />{t('console.r2Enabled')}</label></div><div className="r2-schedule-grid"><label className="field-label"><span>{t('console.r2LocalEvery')}</span><Input type="number" min="1" value={r2Form.localIntervalMinutes} onChange={(event) => setR2Form((current) => ({ ...current, localIntervalMinutes: Number(event.target.value) }))} /></label><label className="field-label"><span>{t('console.r2HotEvery')}</span><Input type="number" min="1" value={r2Form.hotIntervalMinutes} onChange={(event) => setR2Form((current) => ({ ...current, hotIntervalMinutes: Number(event.target.value) }))} /></label><label className="field-label"><span>{t('console.r2ColdEvery')}</span><Input type="number" min="1" value={r2Form.coldIntervalHours} onChange={(event) => setR2Form((current) => ({ ...current, coldIntervalHours: Number(event.target.value) }))} /></label><label className="field-label"><span>{t('console.r2KeepRecent')}</span><Input type="number" min="1" value={r2Form.keepRecent} onChange={(event) => setR2Form((current) => ({ ...current, keepRecent: Number(event.target.value) }))} /></label><label className="field-label"><span>{t('console.r2KeepDaily')}</span><Input type="number" min="0" value={r2Form.keepDaily} onChange={(event) => setR2Form((current) => ({ ...current, keepDaily: Number(event.target.value) }))} /></label><label className="field-label"><span>{t('console.r2KeepWeekly')}</span><Input type="number" min="0" value={r2Form.keepWeekly} onChange={(event) => setR2Form((current) => ({ ...current, keepWeekly: Number(event.target.value) }))} /></label></div>{r2Message ? <p className="text-sm" role="status">{r2Message}</p> : null}<div className="r2-actions"><Button onClick={() => void saveR2()} disabled={r2Busy !== null}>{t('console.r2Save')}</Button><Button variant="outline" onClick={() => void testR2()} disabled={r2Busy !== null || !r2Config?.configured}>{t('console.r2Test')}</Button><Button variant="ghost" onClick={() => void uploadR2()} disabled={r2Busy !== null || !r2Config?.configured}>{t('console.r2UploadLatest')}</Button></div><div className="r2-summary"><span>{t('console.r2Estimate')}: {formatBytes(r2Config?.usage.storageBytes ?? 0)} / {formatBytes(r2Config?.limits.maxStorageBytes ?? 0)}</span><span>{t('console.r2Objects')}: {r2Objects.length}</span><span>{t('console.r2Writes')}: {r2Config?.usage.writeOperations ?? 0} / {r2Config?.limits.maxWriteOperations ?? 0}</span></div>{r2Busy ? <div className="operation-progress" role="status"><span>{r2Busy}</span><span className="progress-track"><span className="progress-indeterminate" /></span></div> : null}</CardContent></Card>
+    <Card className="r2-placeholder">
+      <PanelHeading icon={<Globe2 />} action={<Badge variant="outline" className={r2Config?.configured ? 'status-online' : ''}>{r2Config?.configured ? t('console.r2Configured') : t('console.r2NotConfigured')}</Badge>}>{t('console.r2Title')}</PanelHeading>
+      <CardContent className="space-y-4">
+        <p>{t('console.r2Placeholder')}</p>
+        <div className="r2-form-grid">
+          <label className="field-label"><span>{t('console.r2Endpoint')}</span><Input value={r2Form.endpoint} onChange={(event) => setR2Form((current) => ({ ...current, endpoint: event.target.value }))} placeholder="https://ACCOUNT_ID.r2.cloudflarestorage.com" /></label>
+          <label className="field-label"><span>{t('console.r2Bucket')}</span><Input value={r2Form.bucket} onChange={(event) => setR2Form((current) => ({ ...current, bucket: event.target.value }))} /></label>
+          <label className="field-label"><span>{t('console.r2AccountId')}</span><Input value={r2Form.accountId} onChange={(event) => setR2Form((current) => ({ ...current, accountId: event.target.value }))} /></label>
+          <label className="field-label"><span>{t('console.r2AccessKey')}</span><Input value={r2Form.accessKeyId} onChange={(event) => setR2Form((current) => ({ ...current, accessKeyId: event.target.value }))} autoComplete="off" /></label>
+          <label className="field-label"><span>{t('console.r2SecretKey')}</span><Input type="password" value={r2Form.secretAccessKey} onChange={(event) => setR2Form((current) => ({ ...current, secretAccessKey: event.target.value }))} autoComplete="new-password" /></label>
+        </div>
+        <div className="r2-toggle-row"><label className="backup-option"><input type="checkbox" checked={r2Form.enabled} onChange={(event) => setR2Form((current) => ({ ...current, enabled: event.target.checked }))} />{t('console.r2Enabled')}</label></div>
+        <div className="r2-schedule-grid">
+          <label className="field-label"><span>{t('console.r2LocalEvery')}</span><Input type="number" min="1" value={r2Form.localIntervalMinutes} onChange={(event) => setR2Form((current) => ({ ...current, localIntervalMinutes: Number(event.target.value) }))} /></label>
+          <label className="field-label"><span>{t('console.r2HotEvery')}</span><Input type="number" min="1" value={r2Form.hotIntervalMinutes} onChange={(event) => setR2Form((current) => ({ ...current, hotIntervalMinutes: Number(event.target.value) }))} /></label>
+          <label className="field-label"><span>{t('console.r2ColdEvery')}</span><Input type="number" min="1" value={r2Form.coldIntervalHours} onChange={(event) => setR2Form((current) => ({ ...current, coldIntervalHours: Number(event.target.value) }))} /></label>
+          <label className="field-label"><span>{t('console.r2KeepRecent')}</span><Input type="number" min="1" value={r2Form.keepRecent} onChange={(event) => setR2Form((current) => ({ ...current, keepRecent: Number(event.target.value) }))} /></label>
+          <label className="field-label"><span>{t('console.r2KeepDaily')}</span><Input type="number" min="0" value={r2Form.keepDaily} onChange={(event) => setR2Form((current) => ({ ...current, keepDaily: Number(event.target.value) }))} /></label>
+          <label className="field-label"><span>{t('console.r2KeepWeekly')}</span><Input type="number" min="0" value={r2Form.keepWeekly} onChange={(event) => setR2Form((current) => ({ ...current, keepWeekly: Number(event.target.value) }))} /></label>
+        </div>
+        {r2Message ? <p className="text-sm" role="status">{r2Message}</p> : null}
+        <div className="r2-actions">
+          <Button onClick={() => void saveR2()} disabled={r2Busy !== null}>{t('console.r2Save')}</Button>
+          <Button variant="outline" onClick={() => void testR2()} disabled={r2Busy !== null || !r2Config?.configured}>{t('console.r2Test')}</Button>
+          <Button variant="ghost" onClick={() => void uploadR2()} disabled={r2Busy !== null || !r2Config?.configured}>{t('console.r2UploadLatest')}</Button>
+          <Button variant="ghost" onClick={() => void reconcileR2()} disabled={r2Busy !== null || !r2Config?.configured}>{t('console.r2Reconcile')}</Button>
+        </div>
+        {r2Config ? <R2Usage t={t} config={r2Config} objectCount={r2Objects.length} /> : null}
+        {r2Config && r2Config.usage.legacyObjectCount > 0 ? <div className="r2-legacy" role="note">
+          {/* Backups taken under the old whole-file scheme. Nothing reads them
+              any more, but they are the operator's, so removing them is asked
+              for rather than assumed. */}
+          <span>{t('console.r2Legacy')}: {r2Config.usage.legacyObjectCount} ({formatBytes(r2Config.usage.legacyBytes)})</span>
+          <Button variant="outline" size="sm" onClick={() => void removeLegacy()} disabled={r2Busy !== null}>{t('console.r2LegacyRemove')}</Button>
+        </div> : null}
+        <div className="r2-snapshots">
+          <div className="r2-snapshot-heading"><strong>{t('console.r2Snapshots')}</strong><span>{r2Snapshots.length}</span></div>
+          {r2Snapshots.length === 0
+            ? <p className="text-sm">{t('console.r2NoSnapshots')}</p>
+            : <ul className="r2-snapshot-list">{r2Snapshots.slice(0, 12).map((snapshot) => <li key={snapshot.id}>
+              <span>{new Date(snapshot.createdAt).toLocaleString()}</span>
+              <Button variant="ghost" size="sm" onClick={() => void fetchSnapshot(snapshot)} disabled={r2Busy !== null}><Download />{t('console.r2Fetch')}</Button>
+            </li>)}</ul>}
+          <p className="r2-snapshot-note">{t('console.r2FetchNote')}</p>
+        </div>
+        {r2Busy ? <div className="operation-progress" role="status">
+          <div className="operation-headline"><span>{operationProgress?.step ?? r2Busy}</span>{runningJobId ? <Button variant="outline" size="sm" onClick={() => void stopOperation()} disabled={stopping}>{t('common.stop')}</Button> : null}</div>
+          <span className="progress-track">{operationProgress ? <span className="progress-value" style={{ width: `${Math.max(2, Math.min(100, operationProgress.percent))}%` }} /> : <span className="progress-indeterminate" />}</span>
+        </div> : null}
+      </CardContent>
+    </Card>
   </div>;
+}
+
+/**
+ * What the bucket is holding, against what it is allowed to hold.
+ *
+ * The point of the whole incremental design is that a free account stays free,
+ * and the operator cannot check that from the number of files. Two bars say it
+ * directly: how full the storage is, and how much of the month's charged writes
+ * have gone. Both turn to the attention colour before they are reached, not
+ * after - a backup that has already refused is too late to be a warning.
+ */
+function R2Usage({ t, config, objectCount }: { t: Translate; config: R2Config; objectCount: number }) {
+  const storage = ratio(config.usage.storageBytes, config.limits.maxStorageBytes);
+  const writes = ratio(config.usage.writeOperations, config.limits.maxWriteOperations);
+  return <div className="r2-usage">
+    <div className="r2-usage-row">
+      <span className={storage >= 0.9 ? 'operation-warning' : ''}>{t('console.r2Estimate')}: {formatBytes(config.usage.storageBytes)} / {formatBytes(config.limits.maxStorageBytes)}</span>
+      <span className="progress-track"><span className="progress-value" style={{ width: `${Math.max(1, storage * 100)}%` }} /></span>
+    </div>
+    <div className="r2-usage-row">
+      <span className={writes >= 0.9 ? 'operation-warning' : ''}>{t('console.r2Writes')}: {config.usage.writeOperations} / {config.limits.maxWriteOperations}</span>
+      <span className="progress-track"><span className="progress-value" style={{ width: `${Math.max(1, writes * 100)}%` }} /></span>
+    </div>
+    <div className="r2-summary">
+      <span>{t('console.r2Objects')}: {objectCount}</span>
+      <span>{t('console.r2LastUpload')}: {config.lastUploadAt ? new Date(config.lastUploadAt).toLocaleString() : '—'}</span>
+    </div>
+  </div>;
+}
+
+function ratio(value: number, limit: number): number {
+  return limit > 0 ? Math.max(0, Math.min(1, value / limit)) : 0;
 }
 
 function formatBytes(value: number): string {
