@@ -454,7 +454,11 @@
       "stoppedPasswordChange": "Stopped: applying the new SillyTavern password",
       "stoppedShutdown": "Stopped: the manager is shutting down",
       "stoppedStartupFailed": "Stopped: it did not finish starting",
-      "exited": "Exited on its own ({detail})"
+      "exited": "Exited on its own ({detail})",
+      "reconnecting": "Reconnecting in {seconds}s",
+      "resuming": "Restoring the tunnel that was running before",
+      "resumeFailed": "The tunnel could not be restored: {reason}",
+      "stateNotSaved": "The tunnel setting could not be saved: {reason}"
     },
     "r2": {
       "uploaded": "Uploaded {name} ({bytes} bytes)"
@@ -470,7 +474,6 @@
       "restoringData": "Restoring data",
       "restoringFiles": "Restoring files ({completed}/{total})",
       "startingSillyTavern": "Starting SillyTavern",
-      "startingTunnel": "Starting the public tunnel",
       "restoreComplete": "Restore complete",
       "completed": "Completed",
       "failed": "Failed",

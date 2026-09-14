@@ -1,8 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import { mkdtemp, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { ChildProcess, spawn as spawnType } from 'node:child_process';
 import { getPlatformPaths } from '../../platform/src/index.js';
 import { parseTunnelUrl, TunnelManager } from '../src/index.js';
 
@@ -11,6 +14,45 @@ const binaryName = process.platform === 'win32' ? 'cloudflared.exe' : 'cloudflar
 async function createPaths(): Promise<ReturnType<typeof getPlatformPaths>> {
   const root = await mkdtemp(join(tmpdir(), 'stm-tunnel-'));
   return getPlatformPaths({ env: { STM_DATA_DIR: root } });
+}
+
+/** A cloudflared that never runs, so the manager's own behaviour is what is under test. */
+interface FakeCloudflared extends EventEmitter {
+  readonly stdout: PassThrough;
+  readonly stderr: PassThrough;
+  exitCode: number | null;
+  kill(signal?: NodeJS.Signals): boolean;
+}
+
+function fakeCloudflared(): FakeCloudflared {
+  const child = new EventEmitter() as FakeCloudflared;
+  Object.assign(child, {
+    stdout: new PassThrough(),
+    stderr: new PassThrough(),
+    exitCode: null,
+    // A real process does not exit inside the call that signals it, and a fake
+    // that does would let a missing `close` listener pass unnoticed.
+    kill(): boolean { setImmediate(() => { child.exitCode = 0; child.emit('close', null, 'SIGTERM'); }); return true; },
+  });
+  return child;
+}
+
+/** A binary that is already present, so nothing is downloaded during a test. */
+async function installFakeBinary(paths: ReturnType<typeof getPlatformPaths>): Promise<void> {
+  await mkdir(paths.bin, { recursive: true });
+  await writeFile(join(paths.bin, binaryName), 'fake cloudflared', { mode: 0o755 });
+}
+
+function waitFor(predicate: () => boolean, label: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const deadline = Date.now() + 5_000;
+    const poll = (): void => {
+      if (predicate()) { resolve(); return; }
+      if (Date.now() > deadline) { reject(new Error(`timed out waiting for ${label}`)); return; }
+      setTimeout(poll, 5);
+    };
+    poll();
+  });
 }
 
 test('cloudflared is downloaded on first use and reused afterwards', async () => {
@@ -69,4 +111,65 @@ test('the public address is the address, not whatever someone just opened', () =
   assert.equal(parseTunnelUrl(root), 'https://spectrum-volleyball-melissa-cottage.trycloudflare.com');
 
   assert.equal(parseTunnelUrl('INF Requesting new quick Tunnel on trycloudflare.com...'), undefined);
+});
+
+test('an exit nobody asked for is reconnected, and a requested stop is not', async () => {
+  const paths = await createPaths();
+  await installFakeBinary(paths);
+  const children: FakeCloudflared[] = [];
+  const lines: string[] = [];
+  const spawnImpl = ((): ChildProcess => {
+    const child = fakeCloudflared();
+    children.push(child);
+    return child as unknown as ChildProcess;
+  }) as unknown as typeof spawnType;
+  const tunnel = new TunnelManager({
+    paths,
+    spawnImpl,
+    env: { PATH: '' },
+    reconnectDelaysMs: [5],
+    logger: (line) => { lines.push(typeof line === 'string' ? line : line.message); },
+  });
+
+  await tunnel.start('quick');
+  assert.equal(children.length, 1);
+  children[0]!.stdout.write('INF |  https://cedar-married-designer-ticket.trycloudflare.com  |\n');
+  await waitFor(() => tunnel.getState().status === 'running', 'the first tunnel to come up');
+
+  // cloudflared going away on its own is the case the operator never sees: the
+  // link people have open stops working and nothing says so.
+  children[0]!.emit('close', 1, null);
+  await waitFor(() => children.length === 2, 'a reconnect');
+  assert.ok(lines.some((line) => line.includes('reconnecting in')));
+  children[1]!.stdout.write('INF |  https://spectrum-volleyball-melissa-cottage.trycloudflare.com  |\n');
+  await waitFor(() => tunnel.getState().status === 'running', 'the replacement tunnel to come up');
+
+  // Turning it off is a decision, not a fault, so nothing must reopen it.
+  await tunnel.disable();
+  assert.equal(tunnel.getState().mode, 'off');
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(children.length, 2);
+  await tunnel.close();
+});
+
+test('a tunnel that was on comes back when the manager starts again', async () => {
+  const paths = await createPaths();
+  await installFakeBinary(paths);
+  const spawnImpl = (() => fakeCloudflared() as unknown as ChildProcess) as unknown as typeof spawnType;
+  const options = { paths, spawnImpl, env: { PATH: '' }, logger: () => undefined };
+
+  // Nothing stored yet: a first start must not open anything by itself.
+  assert.equal((await new TunnelManager(options).resume()).mode, 'off');
+
+  const first = new TunnelManager(options);
+  await first.start('quick');
+  // The manager going down is not the operator turning the tunnel off.
+  await first.close();
+
+  const second = new TunnelManager(options);
+  assert.equal((await second.resume()).mode, 'quick');
+  await second.disable();
+
+  // ...and once it is off, it stays off across a restart too.
+  assert.equal((await new TunnelManager(options).resume()).mode, 'off');
 });

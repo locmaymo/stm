@@ -374,7 +374,16 @@ function AccessPanel({ t, process, tunnel, config, security, installed, onAction
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const running = process.status === 'running';
-  const tunnelRunning = tunnel.status === 'running' || tunnel.status === 'starting';
+  /**
+   * Whether the tunnel is meant to be open, rather than whether it is up.
+   *
+   * The tunnel outlives SillyTavern now - it publishes the access gateway, so a
+   * restart or a restore leaves the address alone, and an exit nobody asked for
+   * is reconnected. Reading the switch off the live status meant a tunnel that
+   * was between attempts looked off, and one that was reconnecting could not be
+   * turned off at all.
+   */
+  const tunnelWanted = tunnel.mode !== 'off';
   // The door is the manager's own, so its password and its reach are known
   // whether or not SillyTavern happens to be up. Nothing here has to wait for
   // a version to answer, and no reading is ever "unknown".
@@ -391,7 +400,7 @@ function AccessPanel({ t, process, tunnel, config, security, installed, onAction
     if (!security.passwordConfigured) setPasswordFormOpen(true);
   }, [security.status, security.passwordConfigured]);
   const runAction = async (path: string, body?: unknown) => { setBusy(true); try { await onAction(path, body); } finally { setBusy(false); } };
-  const toggleTunnel = () => void runAction('/api/v1/tunnel', { mode: tunnelRunning ? 'off' : 'quick' });
+  const toggleTunnel = () => void runAction('/api/v1/tunnel', { mode: tunnelWanted ? 'off' : 'quick' });
   const toggleLan = async (next: boolean) => {
     setSecurityBusy(true); setSecurityMessage(null);
     try { setSecurityMessage(await onSetLan(next)); } finally { setSecurityBusy(false); }
@@ -416,7 +425,7 @@ function AccessPanel({ t, process, tunnel, config, security, installed, onAction
     <CardContent className="flex-1 space-y-4">
       <div className="access-row"><div><strong>{t('console.lanAccess')}</strong><span>{lan ? lanLabel : passwordReady ? lanLabel : t('console.passwordRequired')}</span></div><Switch id="listen-switch" checked={lan} onCheckedChange={(checked) => void toggleLan(checked)} disabled={!installed || securityBusy || (!lan && !passwordReady)} aria-label={t('console.enableLan')} /></div>
       <dl className="address-list"><div><dt>{t('console.lanAddress')}</dt><dd><AddressLink t={t} href={lanUrl}>{lanHost}</AddressLink></dd></div><div><dt>{t('console.local')}</dt><dd><AddressLink t={t} href={localUrl}>{localHost}</AddressLink></dd></div></dl>
-      <div className="access-row access-row-public"><div><strong>{t('console.quickTunnel')}</strong><span>{passwordReady ? t('console.passwordProtected') : t('console.passwordRequired')}</span></div><Switch id="tunnel-switch" checked={tunnelRunning} onCheckedChange={toggleTunnel} disabled={!installed || !running || tunnel.status === 'starting' || busy || !passwordReady} aria-label={t('console.enableTunnel')} /></div>
+      <div className="access-row access-row-public"><div><strong>{t('console.quickTunnel')}</strong><span>{passwordReady ? t('console.passwordProtected') : t('console.passwordRequired')}</span></div><Switch id="tunnel-switch" checked={tunnelWanted} onCheckedChange={toggleTunnel} disabled={busy || (tunnelWanted ? false : !installed || !running || !passwordReady)} aria-label={t('console.enableTunnel')} /></div>
       <dl className="address-list"><div><dt>{t('dashboard.publicAddress')}</dt><dd>{tunnel.url ? <AddressLink t={t} href={tunnel.url}>{tunnel.url}</AddressLink> : '—'}</dd></div></dl>
       {shareUrl ? <div className="access-qr"><Button variant="ghost" size="sm" onClick={() => setQrOpen((open) => !open)} aria-expanded={qrOpen}><QrCodeIcon />{qrOpen ? t('console.hideQr') : t('console.showQr')}</Button>{qrOpen ? <figure><QrCode value={shareUrl} label={`${shareLabel}: ${shareUrl}`} /><figcaption>{t('console.scanToOpen')} · {shareLabel}</figcaption></figure> : null}</div> : null}
       <details className="access-security" open={passwordFormOpen} onToggle={(event) => setPasswordFormOpen(event.currentTarget.open)}><summary>{t('console.passwordSettings')}</summary><div className="security-form">

@@ -313,6 +313,10 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   // address is the same one every time and a saved bookmark keeps working.
   gateway.setPassword(persisted.accessPasswordHash);
   await gateway.start(persisted.accessLanEnabled);
+  // The tunnel publishes the gateway, not SillyTavern, so it can come back as
+  // soon as the gateway is listening - it does not have to wait for SillyTavern
+  // and it does not go away again when SillyTavern is restarted.
+  void tunnel.resume().catch((error: unknown) => logger(logEvent('cloudflared.resumeFailed', `[cloudflared] the tunnel could not be restored: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' })));
   const activeInstallation = await runtime.getActiveInstallation();
   if (activeInstallation?.status === 'ready') {
     let readyInstallation = activeInstallation;
@@ -519,9 +523,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     if (!profile || !installation || installation.status !== 'ready') { sendError(response, 409, 'installation_required', 'Install SillyTavern before editing its configuration'); return; }
     if (method === 'GET') { sendJson(response, 200, await decorateConfig(await config.read(profile, installation))); return; }
     const input = parseConfigUpdateInput(await readJson(request));
-    const previousTunnelMode = tunnel.getState().mode;
     const wasRunning = supervisor.getState().status === 'running';
-    await tunnel.stop('configChange');
     // Stop before writing. A runtime old enough to keep its own copy of the
     // config has that copy synchronized back into the profile when it stops,
     // so a config written first is overwritten by the restart that was meant
@@ -529,7 +531,6 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     if (wasRunning) await supervisor.stop('configChange');
     const saved = await config.update(profile, installation, input);
     const process = wasRunning ? await supervisor.start() : supervisor.getState();
-    if (previousTunnelMode !== 'off' && process.status === 'running') await tunnel.restart().catch(() => undefined);
     sendJson(response, 200, { config: await decorateConfig(saved), process, tunnel: tunnel.getState() });
     return;
   }
@@ -666,15 +667,12 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       return;
     }
     const previousProfile = await profiles.getActive();
-    const previousTunnelMode = tunnel.getState().mode;
-    await tunnel.stop('install');
     await supervisor.stop('install');
     if (previousProfile) {
       try {
         await backups.createSafetyCopy(previousProfile, { name: `${previousProfile.name}-preswitch` });
       } catch (error: unknown) {
-        const process = await supervisor.start().catch(() => supervisor.getState());
-        if (previousTunnelMode !== 'off' && process.status === 'running') await tunnel.restart().catch(() => undefined);
+        await supervisor.start().catch(() => supervisor.getState());
         sendError(response, 500, 'profile_snapshot_failed', error instanceof Error ? error.message : 'Could not create a profile safety snapshot');
         return;
       }
@@ -684,8 +682,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     try {
       queued = runtime.queueInstall(selector as VersionSelector, (progress) => jobs.updateFromProgress(queuedId, progress));
     } catch (error: unknown) {
-      const process = await supervisor.start();
-      if (previousTunnelMode !== 'off' && process.status === 'running') await tunnel.restart();
+      await supervisor.start();
       if (error instanceof RuntimeError) { sendError(response, 409, error.code, error.message); return; }
       throw error;
     }
@@ -698,16 +695,14 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
         else await profiles.ensureDefault({ installationId: installation.id, runtimePath: installation.runtimePath });
         await runtime.cleanupLegacyRuntimeCopies?.(installation.id);
       }
-      const process = await supervisor.start();
-      if (previousTunnelMode !== 'off' && process.status === 'running') await tunnel.restart();
+      await supervisor.start();
     }).catch(async (error: unknown) => {
       jobs.finish(queued.id, 'failed', error instanceof Error ? error.message : 'Installation failed');
       // Putting SillyTavern back is best effort: this path only runs because
       // something already failed, and a second failure inside it rejected with
       // nobody listening - which ends the manager process and takes the console
       // down with it, leaving no way to install a different version.
-      const restarted = await supervisor.start().catch(() => supervisor.getState());
-      if (previousTunnelMode !== 'off' && restarted.status === 'running') await tunnel.restart().catch(() => undefined);
+      await supervisor.start().catch(() => supervisor.getState());
     });
     sendJson(response, 202, { installationId: queued.id, job });
     return;
@@ -742,8 +737,6 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     const installation = await runtime.getInstallation(profile.installationId);
     if (!installation || installation.status !== 'ready') { sendError(response, 409, 'installation_required', 'The profile installation is not ready'); return; }
     const current = await profiles.getActive();
-    const previousTunnelMode = tunnel.getState().mode;
-    await tunnel.stop('profileSwitch');
     await supervisor.stop('profileSwitch');
     let snapshot: Awaited<ReturnType<BackupStore['create']>> | null = null;
     try {
@@ -751,7 +744,6 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       await runtime.activateInstallation(installation.id);
       const activated = await profiles.activate(profile.id);
       const process = await supervisor.start();
-      if (previousTunnelMode !== 'off' && process.status === 'running') await tunnel.restart();
       sendJson(response, 200, { profile: activated, process, safetySnapshot: snapshot });
     } catch (error: unknown) {
       if (error instanceof ProfileError) { sendError(response, 409, error.code, error.message); return; }
@@ -829,7 +821,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       if (mode !== 'merge' && mode !== 'replace') { sendError(response, 400, 'invalid_restore_mode', 'Restore mode must be merge or replace'); return; }
       const libraryPath = await backups.getArchivePath(imported.manifest.id);
       if (!libraryPath) { sendError(response, 500, 'backup_archive_missing', 'The uploaded archive could not be stored'); return; }
-      const result = await restoreWithProcess({ profile, backups, archivePath: libraryPath, mode, supervisor, tunnel });
+      const result = await restoreWithProcess({ profile, backups, archivePath: libraryPath, mode, supervisor });
       sendJson(response, 200, result);
     } finally {
       if (!retained) await backups.removeTemporary(archivePath);
@@ -874,7 +866,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       const mode = isRecord(body) && (body.mode === 'merge' || body.mode === 'replace') ? body.mode : null;
       if (!mode) { sendError(response, 400, 'invalid_restore_mode', 'Restore mode must be merge or replace'); return; }
       const { job, signal } = jobs.createOperation('restore', logEvent('job.preparingRestore', 'Preparing restore'));
-      void restoreWithProcess({ profile, backups, archivePath, mode, supervisor, tunnel, signal, onProgress: (progress, step) => jobs.updateOperation(job.id, progress, step) })
+      void restoreWithProcess({ profile, backups, archivePath, mode, supervisor, signal, onProgress: (progress, step) => jobs.updateOperation(job.id, progress, step) })
         .then(() => jobs.finishOperation(job.id, 'succeeded', null))
         .catch((error: unknown) => jobs.finishOperation(job.id, 'failed', error instanceof Error ? error.message : 'Restore failed'));
       sendJson(response, 202, { jobId: job.id, job });
@@ -889,17 +881,19 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     if (method === 'GET' && !action) { sendJson(response, 200, installation); return; }
     if (action && method === 'POST') {
       if (action === 'start') { sendJson(response, 200, await supervisor.start()); return; }
-      await tunnel.stop(action === 'stop' ? 'requested' : 'restart');
       const state = action === 'stop' ? await supervisor.stop() : await supervisor.restart();
-      if (action === 'restart' && state.status === 'running' && tunnel.getState().mode !== 'off') await tunnel.restart();
       sendJson(response, 200, state);
       return;
     }
   }
   if (pathname === '/api/v1/process' && method === 'GET') { sendJson(response, 200, supervisor.getState()); return; }
   if (pathname === '/api/v1/process/start' && method === 'POST') { sendJson(response, 200, await supervisor.start()); return; }
-  if (pathname === '/api/v1/process/stop' && method === 'POST') { await tunnel.stop('requested'); sendJson(response, 200, await supervisor.stop('requested')); return; }
-  if (pathname === '/api/v1/process/restart' && method === 'POST') { await tunnel.stop('restart'); const process = await supervisor.restart(); if (tunnel.getState().mode !== 'off' && process.status === 'running') await tunnel.restart(); sendJson(response, 200, process); return; }
+  // SillyTavern stopping does not close the door in front of it. The tunnel
+  // publishes the access gateway, which stays up and says SillyTavern is not
+  // answering yet - so the public address survives a stop, a restart and a
+  // version switch instead of being replaced by a different random one.
+  if (pathname === '/api/v1/process/stop' && method === 'POST') { sendJson(response, 200, await supervisor.stop('requested')); return; }
+  if (pathname === '/api/v1/process/restart' && method === 'POST') { sendJson(response, 200, await supervisor.restart()); return; }
   if (pathname === '/api/v1/tunnel' && method === 'GET') { sendJson(response, 200, tunnel.getState()); return; }
   if (pathname === '/api/v1/tunnel' && method === 'PUT') {
     const body = await readJson(request);
@@ -907,7 +901,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     if (!mode) { sendError(response, 400, 'invalid_tunnel_mode', 'Tunnel mode must be off, quick, or named'); return; }
     if (mode !== 'off' && supervisor.getState().status !== 'running') { sendError(response, 409, 'sillytavern_not_running', 'Start SillyTavern before enabling the tunnel'); return; }
     if (mode !== 'off' && !gateway.getState().passwordConfigured) { sendError(response, 409, 'public_access_password_required', 'Set the SillyTavern password before opening a public tunnel'); return; }
-    const state = mode === 'off' ? await tunnel.stop() : await tunnel.start(mode, isRecord(body) && typeof body.token === 'string' ? body.token : undefined);
+    const state = mode === 'off' ? await tunnel.disable() : await tunnel.start(mode, isRecord(body) && typeof body.token === 'string' ? body.token : undefined);
     sendJson(response, 200, state);
     return;
   }
@@ -959,18 +953,15 @@ async function restoreWithProcess(options: {
   readonly archivePath: string;
   readonly mode: 'merge' | 'replace';
   readonly supervisor: ProcessSupervisor;
-  readonly tunnel: TunnelManager;
   readonly signal?: AbortSignal;
   readonly onProgress?: (progress: number, step: LogEvent) => void;
 }): Promise<{ preview: Awaited<ReturnType<BackupStore['restore']>>; safetySnapshot: Awaited<ReturnType<BackupStore['create']>>; process: ReturnType<ProcessSupervisor['getState']> }> {
-  const { profile, backups, archivePath, mode, supervisor, tunnel, signal, onProgress } = options;
-  const previousTunnelMode = tunnel.getState().mode;
+  const { profile, backups, archivePath, mode, supervisor, signal, onProgress } = options;
   // Claim the backup store before stopping anything. Otherwise the scheduler's
   // next tick sees an idle store and starts a full backup that the restore then
   // has to wait out.
   const releaseOperationSlot = backups.reserve();
   onProgress?.(5, logEvent('job.stoppingSillyTavern', 'Stopping SillyTavern'));
-  await tunnel.stop('restore');
   await supervisor.stop('restore');
   try {
     // A safety copy has to exist before the restore overwrites anything, but it
@@ -993,15 +984,10 @@ async function restoreWithProcess(options: {
     });
     onProgress?.(90, logEvent('job.startingSillyTavern', 'Starting SillyTavern'));
     const process = await supervisor.start();
-    if (previousTunnelMode !== 'off' && process.status === 'running') {
-      onProgress?.(95, logEvent('job.startingTunnel', 'Starting public tunnel'));
-      await tunnel.restart();
-    }
     onProgress?.(100, logEvent('job.restoreComplete', 'Restore complete'));
     return { preview, safetySnapshot, process };
   } catch (error) {
-    const process = await supervisor.start().catch(() => supervisor.getState());
-    if (previousTunnelMode !== 'off' && process.status === 'running') await tunnel.restart().catch(() => undefined);
+    await supervisor.start().catch(() => supervisor.getState());
     throw error;
   } finally {
     releaseOperationSlot();

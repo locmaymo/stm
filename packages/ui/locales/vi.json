@@ -454,7 +454,11 @@
       "stoppedPasswordChange": "Đã dừng: đang áp dụng mật khẩu SillyTavern mới",
       "stoppedShutdown": "Đã dừng: trình quản lý đang tắt",
       "stoppedStartupFailed": "Đã dừng: khởi động không hoàn tất",
-      "exited": "Tự thoát ({detail})"
+      "exited": "Tự thoát ({detail})",
+      "reconnecting": "Sẽ kết nối lại sau {seconds}s",
+      "resuming": "Đang mở lại đường dẫn công khai đã chạy trước đó",
+      "resumeFailed": "Không mở lại được đường dẫn công khai: {reason}",
+      "stateNotSaved": "Không lưu được thiết lập đường dẫn công khai: {reason}"
     },
     "r2": {
       "uploaded": "Đã tải {name} lên ({bytes} byte)"
@@ -470,7 +474,6 @@
       "restoringData": "Đang khôi phục dữ liệu",
       "restoringFiles": "Đang khôi phục tệp ({completed}/{total})",
       "startingSillyTavern": "Đang khởi động SillyTavern",
-      "startingTunnel": "Đang khởi động đường dẫn công khai",
       "restoreComplete": "Khôi phục hoàn tất",
       "completed": "Hoàn tất",
       "failed": "Thất bại",
