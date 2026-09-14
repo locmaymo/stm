@@ -259,3 +259,61 @@ test('a bucket at the storage ceiling refuses to grow', async () => {
   const chat = await source(root, 'chats/one.jsonl', 'hello\n');
   await assert.rejects(() => manager.syncProfile({ profile: profile(), sources: [chat], fingerprint: 'two' }), /ceiling/u);
 });
+
+test('an upload reports the bytes it still has to send, not just a file count', async () => {
+  const bucket = fakeBucket();
+  const { manager, root } = await createManager({ fetchImpl: bucket.fetchImpl });
+  // A settings file and a character card. Counting files would call this half
+  // done after the settings file, which is wrong by four orders of magnitude.
+  const settings = await source(root, 'settings.json', '{"a":1}');
+  const card = await source(root, 'characters/Assistant.png', randomBytes(512 * 1024));
+  const seen: Array<{ completedBytes: number; totalBytes: number; completedItems: number; totalItems: number }> = [];
+
+  const result = await manager.syncProfile({
+    profile: profile(), sources: [settings, card], fingerprint: 'one',
+    onProgress: (progress) => seen.push({ ...progress }),
+  });
+
+  const expected = settings.file.sizeBytes + card.file.sizeBytes;
+  assert.equal(seen.length, 2);
+  assert.equal(seen[0]?.totalBytes, expected, 'the total is known before the first byte goes');
+  assert.equal(seen.at(-1)?.completedBytes, expected);
+  assert.equal(seen.at(-1)?.completedItems, 2);
+  assert.equal(result.uploadedChunks, 2);
+
+  // Nothing to send means nothing to wait for, and no progress claiming otherwise.
+  const quiet: unknown[] = [];
+  await manager.syncProfile({ profile: profile(), sources: [settings, card], fingerprint: 'two', onProgress: (progress) => quiet.push(progress) });
+  assert.deepEqual(quiet, []);
+});
+
+test('the run after an upload does not pay to be told what it just wrote', async () => {
+  const bucket = fakeBucket();
+  const { manager, root } = await createManager({ fetchImpl: bucket.fetchImpl });
+  const chat = await source(root, 'chats/one.jsonl', 'hello\n');
+  await manager.syncProfile({ profile: profile(), sources: [chat], fingerprint: 'one' });
+
+  // A listing is a charged operation, and at one run every five minutes this
+  // one was spent asking the bucket for an answer already on disk.
+  const listsBefore = bucket.requests.list;
+  const latest = await manager.latestSnapshot('profile-1');
+  assert.equal(latest?.files.length, 1);
+  assert.equal(bucket.requests.list - listsBefore, 0);
+
+  // Retention only needs a listing when there is something to thin, which the
+  // local count answers.
+  assert.equal(await manager.pruneDue(), false);
+  await manager.update({ keepRecent: 1, keepDaily: 0, keepWeekly: 0 });
+  await manager.syncProfile({ profile: profile(), sources: [await source(root, 'chats/one.jsonl', 'hello again\n')], fingerprint: 'two' });
+  assert.equal(await manager.pruneDue(), true);
+});
+
+test('a remembered recovery point that is gone falls back to the listing', async () => {
+  const bucket = fakeBucket();
+  const { manager, root } = await createManager({ fetchImpl: bucket.fetchImpl });
+  await manager.syncProfile({ profile: profile(), sources: [await source(root, 'settings.json', '{"a":1}')], fingerprint: 'one' });
+  // Someone deleted it from the bucket. The cache is a cache; the bucket is
+  // still what is true.
+  for (const key of [...bucket.objects.keys()]) if (key.includes('/snapshots/')) bucket.objects.delete(key);
+  assert.equal(await manager.latestSnapshot('profile-1'), null);
+});

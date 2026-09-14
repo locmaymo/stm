@@ -842,12 +842,20 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
   };
   const uploadR2 = async () => {
     setR2Busy(t('console.r2UploadLatest')); setR2Message(null);
+    setOperationProgress({ percent: 0, step: t('console.r2UploadLatest') });
     try {
       const response = await fetch('/api/v1/r2/sync', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
-      const payload = await response.json() as { uploadedChunks?: number; error?: { message?: string } };
-      if (!response.ok) { setR2Message(payload.error?.message ?? t('console.r2UploadFailed')); return; }
-      setR2Message(t('console.r2Saved')); await refresh();
-    } catch { setR2Message(t('console.r2UploadFailed')); } finally { setR2Busy(null); }
+      const payload = await response.json() as { jobId?: string; error?: { message?: string } };
+      if (!response.ok || !payload.jobId) { setR2Message(payload.error?.message ?? t('console.r2UploadFailed')); return; }
+      // A first upload is gigabytes. It runs in the server and is followed the
+      // same way a restore is, so the bar says how far it has got and the Stop
+      // button reaches the work rather than only this page.
+      setRunningJobId(payload.jobId);
+      await waitForOperation(payload.jobId, (job) => setOperationProgress({ percent: job.progress, step: jobStep(job) }));
+      setR2Message(t('console.r2Uploaded')); await refresh();
+    } catch (error: unknown) {
+      setR2Message(error instanceof StoppedError ? null : error instanceof Error ? error.message : t('console.r2UploadFailed'));
+    } finally { setR2Busy(null); setOperationProgress(null); setRunningJobId(null); }
   };
   /**
    * Bring one recovery point back as a local archive.

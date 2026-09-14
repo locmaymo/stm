@@ -1,5 +1,5 @@
 import { Readable } from 'node:stream';
-import { logEvent, type BackupManifest, type LogSink, type Profile, type RestorePreview } from '../../../packages/contracts/src/index.js';
+import { logEvent, type BackupManifest, type LogSink, type Profile, type RestorePreview, type TransferProgress } from '../../../packages/contracts/src/index.js';
 import { BackupStore, type ImportEntry } from '../../../packages/backup/src/index.js';
 import { R2Manager } from '../../../packages/r2/src/index.js';
 import type { HashedFile } from '../../../packages/r2/src/sync.js';
@@ -24,7 +24,7 @@ export interface FetchSnapshotOptions {
   readonly snapshotId: string;
   readonly logger?: LogSink;
   readonly signal?: AbortSignal;
-  readonly onProgress?: (progress: { completed: number; total: number }) => void;
+  readonly onProgress?: (progress: TransferProgress) => void;
 }
 
 /**
@@ -38,12 +38,21 @@ export async function fetchSnapshotToLibrary(options: FetchSnapshotOptions): Pro
   const { profile, r2, backups, snapshotId } = options;
   const snapshot = await r2.readSnapshot(profile.id, snapshotId);
   const files = [...snapshot.files].sort((left, right) => left.name.localeCompare(right.name));
+  // Known before the first request, because the recovery point records the size
+  // of everything it names. That is what makes an estimate possible at all.
+  const totalBytes = files.reduce((sum, file) => sum + file.sizeBytes, 0);
   options.logger?.(logEvent('r2.fetching', `[r2] fetching recovery point ${snapshot.createdAt} (${files.length} files)`, { createdAt: snapshot.createdAt, files: files.length }));
+  let completedBytes = 0;
   const result = await backups.importFromEntries(profile, {
     name: `${profile.name}-r2-${snapshotId}`,
     total: files.length,
     ...(options.signal ? { signal: options.signal } : {}),
-    ...(options.onProgress ? { onProgress: options.onProgress } : {}),
+    ...(options.onProgress ? {
+      onProgress: ({ completed }: { completed: number; total: number }) => {
+        completedBytes += files[completed - 1]?.sizeBytes ?? 0;
+        options.onProgress?.({ completedBytes, totalBytes, completedItems: completed, totalItems: files.length });
+      },
+    } : {}),
     entries: entriesFor(r2, files, options.signal),
   });
   options.logger?.(logEvent('r2.fetched', `[r2] recovery point ${snapshot.createdAt} is in the backup library as ${result.manifest.name}`, { createdAt: snapshot.createdAt, name: result.manifest.name }));

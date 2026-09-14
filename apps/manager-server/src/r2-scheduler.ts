@@ -1,4 +1,4 @@
-import { logEvent, logLineText, type BackupManifest, type LogSink, type Profile } from '../../../packages/contracts/src/index.js';
+import { logEvent, logLineText, type BackupManifest, type LogSink, type Profile, type TransferProgress } from '../../../packages/contracts/src/index.js';
 import { BackupStore, type ArchiveSource } from '../../../packages/backup/src/index.js';
 import { ProfileStore } from '../../../packages/profiles/src/index.js';
 import { R2Manager, type SyncSource } from '../../../packages/r2/src/index.js';
@@ -26,7 +26,14 @@ const REGENERABLE = ['backups/', 'thumbnails/', 'vectors/', '_webpack/', '_cache
  * recovery point either way; the tier decides how often it is looked at, not
  * whether it is kept.
  */
-const HOT_PREFIXES = ['chats/', 'characters/', 'groups/', 'group chats/', 'worlds/', 'context/', 'instruct/', 'presets/', 'QuickReplies/', 'themes/', 'movingUI/'];
+const HOT_PREFIXES = [
+  'chats/', 'characters/', 'groups/', 'group chats/', 'worlds/',
+  // SillyTavern keeps presets in one directory per backend, spelled out, with
+  // spaces. An earlier list guessed `presets/`, which exists in no version, so
+  // editing a preset waited for the slow clock instead of the fast one.
+  'OpenAI Settings/', 'TextGen Settings/', 'NovelAI Settings/', 'KoboldAI Settings/',
+  'context/', 'instruct/', 'sysprompt/', 'reasoning/', 'QuickReplies/', 'themes/', 'movingUI/',
+];
 const HOT_FILES = ['settings.json', 'secrets.json', 'stats.json', 'config.yaml', 'config.yml'];
 
 export interface BackupSchedulerOptions {
@@ -127,7 +134,9 @@ export class BackupScheduler {
     this.lastHotUploadAt = this.now().getTime();
     this.logger(logEvent('backup.r2Synced', `[backup] ${tier === 'cold' ? 'full' : 'frequent'} R2 backup: ${result.uploadedChunks} chunk(s) sent, ${result.fileCount} file(s) recorded`, { tier, chunks: result.uploadedChunks, files: result.fileCount }));
 
-    await this.r2.pruneSnapshots(profile.id);
+    // Thinning needs a listing, which is charged. Asking for one after every
+    // upload spent it on being told there was nothing to thin.
+    if (await this.r2.pruneDue()) await this.r2.pruneSnapshots(profile.id);
     // The only sweep whose cost grows with how much is stored, so it runs on
     // its own slow clock rather than after every upload.
     if (await this.r2.reconcileDue()) await this.r2.reconcile();
@@ -147,6 +156,8 @@ export interface SyncProfileOptions {
   readonly tier: 'hot' | 'cold';
   readonly fingerprint?: string;
   readonly logger?: LogSink;
+  readonly signal?: AbortSignal;
+  readonly onProgress?: (progress: TransferProgress) => void;
 }
 
 /**
@@ -167,7 +178,11 @@ export async function syncProfileToR2(options: SyncProfileOptions): Promise<Awai
   // A hot run names the cold files from the last recovery point rather than
   // re-reading them, so what it writes is still a complete profile.
   const untouched = tier === 'cold' ? [] : (previous?.files ?? []).filter((file) => !isHot(file.name));
-  return await r2.syncProfile({ profile, sources: hashed, carried: [...carried, ...untouched], fingerprint, tier });
+  return await r2.syncProfile({
+    profile, sources: hashed, carried: [...carried, ...untouched], fingerprint, tier,
+    ...(options.signal ? { signal: options.signal } : {}),
+    ...(options.onProgress ? { onProgress: options.onProgress } : {}),
+  });
 }
 
 /**
@@ -198,11 +213,8 @@ async function hashChanged(sources: readonly ArchiveSource[], known: ReadonlyMap
 }
 
 async function previousSnapshot(r2: R2Manager, profileId: string, logger?: LogSink): Promise<{ files: readonly HashedFile[] } | null> {
-  const snapshots = await r2.listSnapshots(profileId);
-  const latest = snapshots[0];
-  if (!latest) return null;
   try {
-    return await r2.readSnapshot(profileId, latest.id);
+    return await r2.latestSnapshot(profileId);
   } catch (error: unknown) {
     // An unreadable index is not a reason to stop backing up. It only means
     // this run compares against nothing and sends more than it had to.

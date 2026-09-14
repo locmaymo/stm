@@ -195,6 +195,20 @@ export interface R2Usage {
   readonly lastReconciledAt: string | null;
 }
 
+/**
+ * How far a transfer has got, in bytes as well as in things.
+ *
+ * A count of files says nothing about how long is left when the files are a
+ * settings file and a twenty megabyte character card. Bytes are what the wait
+ * is actually made of.
+ */
+export interface TransferProgress {
+  readonly completedBytes: number;
+  readonly totalBytes: number;
+  readonly completedItems: number;
+  readonly totalItems: number;
+}
+
 /** One recovery point in the bucket, as a listing can describe it without reading it. */
 export interface R2SnapshotSummary {
   readonly id: string;

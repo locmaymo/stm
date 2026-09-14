@@ -1,7 +1,7 @@
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { mkdir, open, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { logEvent, logLineText, type LogSink, type Profile, type R2Config, type R2Object, type R2SnapshotSummary, type R2Usage } from '../../contracts/src/index.js';
+import { logEvent, logLineText, type LogSink, type Profile, type R2Config, type R2Object, type R2SnapshotSummary, type R2Usage, type TransferProgress } from '../../contracts/src/index.js';
 import { ioConcurrency, runPooled } from '../../platform/src/index.js';
 import type { PlatformPaths } from '../../platform/src/index.js';
 import { BlobLedger } from './ledger.js';
@@ -82,6 +82,16 @@ interface StoredR2Config {
   /** The cold tier runs on its own clock, so it is remembered separately. */
   readonly lastColdUploadAt: string | null;
   readonly lastFingerprint: string | null;
+  /**
+   * The newest recovery point this manager wrote, so the next run does not have
+   * to list the bucket to find it.
+   *
+   * A listing is a charged operation and the frequent run makes one every few
+   * minutes for an answer it already knew. It is a cache like the chunk ledger:
+   * if it names something the bucket no longer has, the listing is still there
+   * to fall back on.
+   */
+  readonly lastSnapshot: { readonly profileId: string; readonly id: string } | null;
   readonly usage: StoredUsage;
 }
 
@@ -132,7 +142,7 @@ export interface R2SyncInput {
   readonly fingerprint: string;
   readonly tier?: 'hot' | 'cold';
   readonly signal?: AbortSignal;
-  readonly onProgress?: (progress: { completed: number; total: number }) => void;
+  readonly onProgress?: (progress: TransferProgress) => void;
 }
 
 export interface R2SyncResult {
@@ -280,6 +290,10 @@ export class R2Manager {
       let uploadedChunks = 0;
       let uploadedBytes = 0;
       let completed = 0;
+      // What is left to send, which is the only number that says how long this
+      // will take. A count of files cannot: one of them is a settings file and
+      // the next is a twenty megabyte character card.
+      let sentBytes = 0;
       const dropped = new Set<string>();
       const uploadedHashes: string[] = [];
       await runPooled(planned.files, ioConcurrency(), async (entry) => {
@@ -295,7 +309,10 @@ export class R2Manager {
           uploadedHashes.push(...sent.hashes);
         }
         completed += 1;
-        input.onProgress?.({ completed, total: planned.files.length });
+        // Measured as the data it holds rather than as what went over the wire,
+        // so the total is known before the first byte is compressed.
+        sentBytes += plannedBytes(entry);
+        input.onProgress?.({ completedBytes: sentBytes, totalBytes: planned.bytes, completedItems: completed, totalItems: planned.files.length });
       });
       // Only after the bytes are in the bucket, and only once, so an interrupted
       // run never records a chunk it did not finish sending.
@@ -329,6 +346,7 @@ export class R2Manager {
         lastUploadAt: createdAt,
         ...(input.tier === 'cold' ? { lastColdUploadAt: createdAt } : {}),
         lastFingerprint: input.fingerprint,
+        lastSnapshot: { profileId: input.profile.id, id: snapshot.id },
         usage: nextUsage,
       });
       if (dropped.size > 0) this.logger(logEvent('r2.skippedMissingFiles', `[r2] skipped ${dropped.size} file(s) removed while the upload was running`, { count: dropped.size }));
@@ -353,6 +371,39 @@ export class R2Manager {
       .map((object) => toSnapshotSummary(object))
       .filter((summary): summary is R2SnapshotSummary => summary !== null)
       .sort((left, right) => right.id.localeCompare(left.id));
+  }
+
+  /**
+   * The recovery point to compare this run against, without asking the bucket.
+   *
+   * Listing is a charged operation, and the frequent run would make one every
+   * few minutes to be told what it wrote itself last time. The stored answer is
+   * a cache: anything unexpected about it falls back to the listing, which is
+   * still the truth.
+   */
+  public async latestSnapshot(profileId: string): Promise<R2Snapshot | null> {
+    const config = await this.load();
+    const remembered = config.lastSnapshot?.profileId === profileId ? config.lastSnapshot.id : null;
+    if (remembered) {
+      try {
+        return await this.readSnapshot(profileId, remembered);
+      } catch {
+        // Pruned, or never landed. The listing below settles it.
+      }
+    }
+    const listed = (await this.listSnapshots(profileId))[0];
+    return listed ? await this.readSnapshot(profileId, listed.id) : null;
+  }
+
+  /**
+   * Whether there are more recovery points than retention allows.
+   *
+   * Answered from the local count so that the listing thinning needs is made
+   * only when there is something to thin, rather than after every upload.
+   */
+  public async pruneDue(): Promise<boolean> {
+    const config = await this.load();
+    return config.usage.snapshotCount > config.keepRecent + config.keepDaily + config.keepWeekly;
   }
 
   /** Read one recovery point, for showing what it holds or for restoring it. */
@@ -674,6 +725,14 @@ interface PlannedFile {
 interface UploadPlan {
   readonly files: readonly PlannedFile[];
   readonly reused: number;
+  /** How much data has to go, for saying how long that will take. */
+  readonly bytes: number;
+}
+
+function plannedBytes(entry: PlannedFile): number {
+  let total = 0;
+  for (const chunk of entry.chunks) total += chunk.length;
+  return total;
 }
 
 /**
@@ -695,7 +754,7 @@ function planUpload(sources: readonly SyncSource[], ledger: BlobLedger): UploadP
     });
     if (chunks.length > 0) files.push({ source, chunks });
   }
-  return { files, reused };
+  return { files, reused, bytes: files.reduce((sum, entry) => sum + plannedBytes(entry), 0) };
 }
 
 /** The complete file list for a snapshot: what this run walked, plus what it carried. */
@@ -958,6 +1017,7 @@ function defaultStoredConfig(now: Date): StoredR2Config {
     lastUploadAt: null,
     lastColdUploadAt: null,
     lastFingerprint: null,
+    lastSnapshot: null,
     usage: {
       storageBytes: 0,
       blobCount: 0,

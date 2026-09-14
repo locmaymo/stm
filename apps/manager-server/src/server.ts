@@ -23,6 +23,7 @@ import { BackupError, BackupStore } from '../../../packages/backup/src/index.js'
 import { R2Error, R2Manager, type R2UpdateInput } from '../../../packages/r2/src/index.js';
 import { BackupScheduler, syncProfileToR2 } from './r2-scheduler.js';
 import { fetchSnapshotToLibrary } from './r2-restore.js';
+import { TransferMeter } from './progress.js';
 import { MetricsStore } from './metrics.js';
 import { instrumentationLoaderPath } from '../../../packages/instrumentation/src/index.js';
 import { ConfigError, ConfigStore } from '../../../packages/config/src/index.js';
@@ -625,7 +626,15 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     // its preview, its safety snapshot and its merge-or-replace choice.
     // It produces a backup in the library, so that is the kind of job it is.
     const { job, signal } = jobs.createOperation('backup', logEvent('job.fetchingRecoveryPoint', 'Fetching the recovery point from R2'));
-    void fetchSnapshotToLibrary({ profile, r2, backups, snapshotId, signal, logger: (line) => jobs.append('backup', line), onProgress: ({ completed, total }) => jobs.updateOperation(job.id, total > 0 ? (completed / total) * 100 : 0, logEvent('job.fetchingFiles', `Fetching files (${completed}/${total})`, { completed, total })) })
+    const meter = new TransferMeter();
+    void fetchSnapshotToLibrary({
+      profile, r2, backups, snapshotId, signal,
+      logger: (line) => jobs.append('backup', line),
+      onProgress: (progress) => {
+        const { percent, params } = meter.update(progress);
+        jobs.updateOperation(job.id, percent, logEvent('job.fetchingChunks', `Fetching ${String(params.done)} of ${String(params.total)} - ${String(params.rate)}, ${String(params.eta)} left`, params));
+      },
+    })
       .then(() => jobs.finishOperation(job.id, 'succeeded', null))
       .catch((error: unknown) => jobs.finishOperation(job.id, 'failed', error instanceof Error ? error.message : 'The recovery point could not be fetched'));
     sendJson(response, 202, { jobId: job.id, job });
@@ -645,7 +654,23 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
   if ((pathname === '/api/v1/r2/upload' || pathname === '/api/v1/r2/sync') && method === 'POST') {
     const profile = await profiles.getActive();
     if (!profile) { sendError(response, 409, 'profile_required', 'Create or activate a profile before uploading to R2'); return; }
-    sendJson(response, 200, await syncProfileToR2({ profile, backups, r2, tier: 'cold' }));
+    // A first upload of a profile is gigabytes and many minutes. Answering it
+    // synchronously meant the panel had an indeterminate bar and no way to
+    // stop - indistinguishable from a hang, and the reasonable response to a
+    // hang is to kill it, which is the one thing that makes it take longer.
+    const { job, signal } = jobs.createOperation('backup', logEvent('job.sendingToR2', 'Sending to R2'));
+    const meter = new TransferMeter();
+    void syncProfileToR2({
+      profile, backups, r2, tier: 'cold', signal,
+      logger: (line) => jobs.append('backup', line),
+      onProgress: (progress) => {
+        const { percent, params } = meter.update(progress);
+        jobs.updateOperation(job.id, percent, logEvent('job.sendingChunks', `Sending ${String(params.done)} of ${String(params.total)} - ${String(params.rate)}, ${String(params.eta)} left`, params));
+      },
+    })
+      .then(() => jobs.finishOperation(job.id, 'succeeded', null))
+      .catch((error: unknown) => jobs.finishOperation(job.id, 'failed', error instanceof Error ? error.message : 'The R2 backup failed'));
+    sendJson(response, 202, { jobId: job.id, job });
     return;
   }
   if (pathname === '/api/v1/logs' && method === 'GET') {
