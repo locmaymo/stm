@@ -21,6 +21,7 @@ export * from './shadcn/toast.js';
 export * from './shadcn/tooltip.js';
 export * from './shadcn/utils.js';
 
+export * from './auth-layout.js';
 export * from './brand.js';
 export * from './confirm-dialog.js';
 export * from './data-table.js';

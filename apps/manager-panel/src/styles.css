@@ -227,10 +227,6 @@
 .access-row > div { display: grid; min-width: 0; gap: 2px; }
 .access-row strong { font-size: 13px; font-weight: 650; }
 .access-row span { color: var(--muted-foreground); font-size: 12px; }
-.access-security { border-top: 1px solid var(--border); padding-top: 12px; }
-.access-security summary { cursor: pointer; color: var(--muted-foreground); font-size: 12px; font-weight: 600; }
-.security-form { display: grid; min-width: 0; gap: 12px; margin-top: 12px; }
-.security-actions { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
 .r2-note { margin-bottom: -24px; padding: 12px 24px; border-top: 1px solid var(--border); color: var(--muted-foreground); font-size: 12px; }
 .r2-note button:hover { color: var(--foreground); text-decoration: underline; text-underline-offset: 3px; }
 [data-tour="logs"] { grid-column: 1 / -1; height: 28rem; min-height: 0; overflow: hidden; padding-bottom: 0; }

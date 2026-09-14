@@ -6,16 +6,21 @@ import {
   BrainCircuit, CircleStop, Clock3, Cpu, Ellipsis, Play, QrCode as QrCodeIcon, RefreshCw, Settings2, Square,
 } from 'lucide-react';
 import {
-  Badge, BrandMark, Button, Card, CardAction, CardContent, CardFooter, CardHeader,
-  CardGrid, Input, MobileNav, PageContainer, Select, SelectContent, SelectItem,
-  SelectTrigger, SelectValue,
+  Alert, AlertDescription, AuthLayout, Badge, BrandMark, Button, Card, CardAction,
+  CardContent, CardFooter, CardHeader,
+  CardGrid, Checkbox, Dialog, DialogBody, DialogContent, DialogDescription,
+  DialogFooter, DialogHeader, DialogTitle,
+  Field, Input, MobileNav, PageContainer, PasswordInput,
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
   Sidebar, SidebarContent, SidebarGroup, SidebarGroupContent, SidebarHeader,
   SidebarInset, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarProvider,
   SidebarTrigger, Sheet, SheetContent, SheetHeader, SheetTitle, Switch, Toaster, Tooltip,
-  TooltipContent, TooltipTrigger, useSidebar,
+  TooltipContent, TooltipTrigger, useSidebar, useToast,
 } from '../../../packages/ui/src/index.js';
 import { logCatalog, translator, type Translate } from './i18n.js';
 import { browserEnvironment, browserStorage, readPreferences, savePreferences, type Preferences } from './preferences.js';
+import { authErrorKey } from './auth-error.js';
+import { apiFetch, onSessionExpired, resetSessionWatch } from './session.js';
 import type { AccessGatewayState, BackupManifest, ConfigDocument, ConfigUpdateInput, Installation, Job, LogEntry, LogSourceFilter, MetricsSnapshot, ProcessState, Profile, R2Config, R2SnapshotSummary, RestorePreview, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { formatBytes } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
@@ -34,6 +39,11 @@ function pageFromHash(): PageId {
   const hash = window.location.hash.slice(1);
   return navigation.find(({ id }) => id === hash)?.id ?? 'overview';
 }
+
+/** What the server's own `validatePassword` accepts, so the form agrees with it. */
+const MIN_MANAGER_PASSWORD = 6;
+/** The access gateway holds SillyTavern open to a network, and asks for more. */
+const MIN_SILLY_PASSWORD = 8;
 
 const UPLOAD_CHUNK_BYTES = 4 * 1024 * 1024;
 const UPLOAD_RETRIES = 3;
@@ -62,7 +72,7 @@ async function uploadChunkWithRetry(url: string, body: Blob, headers: HeadersIni
     if (signal?.aborted) throw new StoppedError();
     let response: Response;
     try {
-      response = await fetch(url, { method: 'POST', credentials: 'same-origin', headers, body, ...(signal ? { signal } : {}) });
+      response = await apiFetch(url, { method: 'POST', credentials: 'same-origin', headers, body, ...(signal ? { signal } : {}) });
     } catch (error: unknown) {
       if (signal?.aborted) throw new StoppedError();
       lastError = error instanceof Error ? error.message : lastError;
@@ -84,52 +94,186 @@ export function App() {
   return <AuthGate />;
 }
 
+type AuthMode = 'checking' | 'setup' | 'login' | 'ready';
+
+/**
+ * The screen in front of the console, and the one place that owns the session.
+ *
+ * It also owns the language and the theme. Both used to live inside the
+ * console, which meant the first screen anyone sees - a password field, before
+ * there is any session to read a preference with - was stuck in whatever
+ * language the browser reported, with no way to change it until after signing
+ * in. They are set here and handed down.
+ */
 function AuthGate() {
-  const [mode, setMode] = useState<'checking' | 'setup' | 'login' | 'ready'>('checking');
+  const [mode, setMode] = useState<AuthMode>('checking');
   const [csrfToken, setCsrfToken] = useState<string | null>(null);
   const [setupCodeRequired, setSetupCodeRequired] = useState(false);
-  const [password, setPassword] = useState('');
-  const [setupCode, setSetupCode] = useState('');
-  const [accepted, setAccepted] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const t = translator(readPreferences(browserStorage(), browserEnvironment()).locale);
+  const [signedOut, setSignedOut] = useState(false);
+  const [preferences, setPreferences] = useState(() => readPreferences(browserStorage(), browserEnvironment()));
+  const t = translator(preferences.locale);
+  const changePreferences = (update: Partial<Preferences>) => setPreferences((current) => ({ ...current, ...update }));
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', preferences.theme === 'dark');
+    document.documentElement.lang = preferences.locale;
+    document.documentElement.dataset.theme = preferences.theme;
+    savePreferences(preferences, browserStorage());
+  }, [preferences]);
+
+  // The console polls the runtime every second and a half. When the session
+  // ends it has to be taken down, or those calls go on being refused with
+  // nobody reading the refusal and nothing on screen saying why.
+  useEffect(() => onSessionExpired(() => {
+    setCsrfToken(null);
+    setSignedOut(true);
+    setMode('login');
+  }), []);
+
   useEffect(() => {
     let cancelled = false;
-    void fetch('/api/v1/setup/status', { credentials: 'same-origin' }).then(async (response) => response.json() as Promise<{ setupRequired: boolean; setupCodeRequired: boolean }>).then(async (status) => {
+    void apiFetch('/api/v1/setup/status').then(async (response) => response.json() as Promise<{ setupRequired: boolean; setupCodeRequired: boolean }>).then(async (status) => {
       if (cancelled) return;
       setSetupCodeRequired(status.setupCodeRequired);
       if (status.setupRequired) { setMode('setup'); return; }
+      // The session probe and the sign-in form are the calls where a refusal
+      // is an ordinary answer rather than a session running out, so they go
+      // straight to `fetch`. Routed through the watch, a first visit would be
+      // met by a notice saying the reader had been signed out of something,
+      // and a mistyped password would say the same.
       const response = await fetch('/api/v1/auth/session', { credentials: 'same-origin' });
       if (!response.ok) { if (!cancelled) setMode('login'); return; }
       const payload = await response.json() as { session: { csrfToken: string } };
       if (!cancelled) { setCsrfToken(payload.session.csrfToken); setMode('ready'); }
-    }).catch(() => { if (!cancelled) { setError(t('setup.connectionError')); setMode('login'); } });
+    }).catch(() => { if (!cancelled) setMode('login'); });
     return () => { cancelled = true; };
   }, []);
-  if (mode === 'ready' && csrfToken) return <ConsoleApp csrfToken={csrfToken} />;
+
+  const signedIn = (token: string) => {
+    // Arm the watch again: the session that expired is not the session now held.
+    resetSessionWatch();
+    setSignedOut(false);
+    setCsrfToken(token);
+    setMode('ready');
+  };
+
+  if (mode === 'ready') {
+    if (!csrfToken) return <div className="auth-shell" role="status" aria-busy="true" />;
+    return <ConsoleApp csrfToken={csrfToken} preferences={preferences} onPreferencesChange={changePreferences} />;
+  }
   // Until the session check answers there is nothing to ask for. Falling
   // through to the form showed a flash of the login screen on every reload of
   // an already signed-in console.
   if (mode === 'checking') return <div className="auth-shell" role="status" aria-busy="true" />;
+  return (
+    <AuthScreen
+      t={t}
+      mode={mode}
+      setupCodeRequired={setupCodeRequired}
+      signedOut={signedOut}
+      preferences={preferences}
+      onPreferencesChange={changePreferences}
+      onSignedIn={signedIn}
+    />
+  );
+}
+
+function AuthScreen({ t, mode, setupCodeRequired, signedOut, preferences, onPreferencesChange, onSignedIn }: { t: Translate; mode: 'setup' | 'login'; setupCodeRequired: boolean; signedOut: boolean; preferences: Preferences; onPreferencesChange: (value: Partial<Preferences>) => void; onSignedIn: (csrfToken: string) => void }) {
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [setupCode, setSetupCode] = useState('');
+  const [accepted, setAccepted] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const setup = mode === 'setup';
+  // Shown once the second field stops being a prefix of the first, rather than
+  // the moment the two differ - a mismatch warning under a half-typed password
+  // is noise that goes away on its own.
+  const mismatch = setup && confirmPassword.length > 0 && !password.startsWith(confirmPassword);
+  const ready = password.length >= MIN_MANAGER_PASSWORD
+    && (!setup || (accepted && password === confirmPassword && (!setupCodeRequired || setupCode.length > 0)));
+
   const submit = async () => {
     setBusy(true); setError(null);
     try {
-      const response = await fetch(mode === 'setup' ? '/api/v1/setup/password' : '/api/v1/auth/login', {
+      // Not `apiFetch`: see the note on the session probe above.
+      const response = await fetch(setup ? '/api/v1/setup/password' : '/api/v1/auth/login', {
         method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(mode === 'setup' ? { password, setupCode, termsAccepted: accepted, telemetryAccepted: accepted } : { password }),
+        body: JSON.stringify(setup ? { password, setupCode, termsAccepted: accepted, telemetryAccepted: accepted } : { password }),
       });
-      const payload = await response.json() as { session?: { csrfToken: string }; error?: { message: string } };
-      if (!response.ok || !payload.session) { setError(payload.error?.message ?? t('setup.authError')); return; }
-      setCsrfToken(payload.session.csrfToken); setMode('ready');
+      const payload = await response.json() as { session?: { csrfToken: string }; error?: { code?: string; message?: string } };
+      if (!response.ok || !payload.session) {
+        const key = authErrorKey(payload.error?.code);
+        setError(key ? t(key) : payload.error?.message ?? t('setup.authError'));
+        return;
+      }
+      onSignedIn(payload.session.csrfToken);
     } catch { setError(t('setup.connectionError')); } finally { setBusy(false); }
   };
-  return <div className="auth-shell"><Card className="w-full max-w-md"><CardHeader><h1 className="text-xl font-semibold">{mode === 'setup' ? t('setup.title') : t('setup.loginTitle')}</h1></CardHeader><CardContent><form className="space-y-4" onSubmit={(event) => { event.preventDefault(); void submit(); }}><div><label className="field-label" htmlFor="admin-password">{t('setup.password')}</label><Input id="admin-password" type="password" autoComplete={mode === 'setup' ? 'new-password' : 'current-password'} value={password} onChange={(event) => setPassword(event.target.value)} minLength={6} required /></div>{mode === 'setup' && setupCodeRequired ? <div><label className="field-label" htmlFor="setup-code">{t('setup.setupCode')}</label><Input id="setup-code" value={setupCode} onChange={(event) => setSetupCode(event.target.value)} required /></div> : null}{mode === 'setup' ? <><p className="text-sm text-muted-foreground">{t('setup.telemetryNotice')}</p><label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={accepted} onChange={(event) => setAccepted(event.target.checked)} required className="mt-1" /><span>{t('setup.terms')}</span></label></> : null}{error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}<Button type="submit" className="w-full" disabled={busy || (mode === 'setup' && !accepted)}>{busy ? t('common.loading') : mode === 'setup' ? t('setup.createAdmin') : t('setup.signIn')}</Button></form></CardContent></Card></div>;
+
+  return (
+    <AuthLayout
+      title={setup ? t('setup.title') : t('setup.loginTitle')}
+      subtitle={setup ? t('setup.subtitle') : t('setup.loginSubtitle')}
+      footer={setup ? t('setup.telemetryNotice') : null}
+      controls={<>
+        <LanguageControl t={t} preferences={preferences} onChange={onPreferencesChange} />
+        <Button variant="ghost" size="icon-sm" className="size-9" aria-label={preferences.theme === 'dark' ? t('console.useLight') : t('console.useDark')} onClick={() => onPreferencesChange({ theme: preferences.theme === 'dark' ? 'light' : 'dark' })}>
+          {preferences.theme === 'dark' ? <Sun /> : <Moon />}
+        </Button>
+      </>}
+    >
+      <Card>
+        <CardContent className="pt-6">
+          <form className="grid gap-5" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+            {signedOut ? <Alert><Clock3 /><AlertDescription>{t('setup.signedOut')}</AlertDescription></Alert> : null}
+            <Field label={t('setup.password')} hint={setup ? t('setup.passwordHint') : null}>
+              <PasswordInput
+                revealLabel={t('setup.reveal')}
+                hideLabel={t('setup.hide')}
+                autoComplete={setup ? 'new-password' : 'current-password'}
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                minLength={MIN_MANAGER_PASSWORD}
+                required
+              />
+            </Field>
+            {setup ? (
+              <Field label={t('console.confirmPassword')} error={mismatch ? t('setup.mismatch') : null}>
+                <PasswordInput
+                  revealLabel={t('setup.reveal')}
+                  hideLabel={t('setup.hide')}
+                  autoComplete="new-password"
+                  value={confirmPassword}
+                  onChange={(event) => setConfirmPassword(event.target.value)}
+                  required
+                />
+              </Field>
+            ) : null}
+            {setup && setupCodeRequired ? (
+              <Field label={t('setup.setupCode')} hint={t('setup.setupCodeHint')}>
+                <Input value={setupCode} onChange={(event) => setSetupCode(event.target.value)} autoComplete="off" required />
+              </Field>
+            ) : null}
+            {setup ? (
+              <label className="flex items-start gap-2.5 text-sm">
+                <Checkbox checked={accepted} onCheckedChange={(checked) => setAccepted(checked === true)} className="mt-0.5" />
+                <span className="text-muted-foreground">{t('setup.terms')}</span>
+              </label>
+            ) : null}
+            {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
+            <Button type="submit" size="lg" className="w-full" disabled={busy || !ready}>
+              {busy ? t('common.loading') : setup ? t('setup.createAdmin') : t('setup.signIn')}
+            </Button>
+          </form>
+        </CardContent>
+      </Card>
+    </AuthLayout>
+  );
 }
 
-function ConsoleApp({ csrfToken }: { csrfToken: string }) {
+function ConsoleApp({ csrfToken, preferences, onPreferencesChange }: { csrfToken: string; preferences: Preferences; onPreferencesChange: (value: Partial<Preferences>) => void }) {
   const [page, setPage] = useState<PageId>(pageFromHash);
-  const [preferences, setPreferences] = useState(() => readPreferences(browserStorage(), browserEnvironment()));
   const [version, setVersion] = useState('latest');
   const [versions, setVersions] = useState<VersionOption[]>([]);
   const [installations, setInstallations] = useState<Installation[]>([]);
@@ -162,7 +306,7 @@ function ConsoleApp({ csrfToken }: { csrfToken: string }) {
     if (!activeInstallationId) { setConfigDocument(null); return undefined; }
     let cancelled = false;
     const load = async () => {
-      const response = await fetch('/api/v1/config', { credentials: 'same-origin' });
+      const response = await apiFetch('/api/v1/config', { credentials: 'same-origin' });
       if (response.ok && !cancelled) setConfigDocument(await response.json() as ConfigDocument);
     };
     void load();
@@ -173,9 +317,9 @@ function ConsoleApp({ csrfToken }: { csrfToken: string }) {
     let cancelled = false;
     const refresh = async () => {
       const [processResponse, tunnelResponse, securityResponse] = await Promise.all([
-        fetch('/api/v1/process', { credentials: 'same-origin' }),
-        fetch('/api/v1/tunnel', { credentials: 'same-origin' }),
-        fetch('/api/v1/access/security', { credentials: 'same-origin' }),
+        apiFetch('/api/v1/process', { credentials: 'same-origin' }),
+        apiFetch('/api/v1/tunnel', { credentials: 'same-origin' }),
+        apiFetch('/api/v1/access/security', { credentials: 'same-origin' }),
       ]);
       if (cancelled) return;
       if (processResponse.ok) setProcessState(await processResponse.json() as ProcessState);
@@ -186,13 +330,6 @@ function ConsoleApp({ csrfToken }: { csrfToken: string }) {
     const timer = window.setInterval(() => { void refresh(); }, 1500);
     return () => { cancelled = true; window.clearInterval(timer); };
   }, []);
-
-  useEffect(() => {
-    document.documentElement.classList.toggle('dark', preferences.theme === 'dark');
-    document.documentElement.lang = preferences.locale;
-    document.documentElement.dataset.theme = preferences.theme;
-    savePreferences(preferences, browserStorage());
-  }, [preferences]);
 
   useEffect(() => {
     const onHashChange = () => {
@@ -209,10 +346,10 @@ function ConsoleApp({ csrfToken }: { csrfToken: string }) {
   useEffect(() => {
     let cancelled = false;
     void Promise.all([
-      fetch('/api/v1/versions', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<{ versions: VersionOption[] }> : null),
-      fetch('/api/v1/installations', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<{ installations: Installation[]; activeInstallationId: string | null }> : null),
-      fetch('/api/v1/profiles', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<{ profiles: Profile[]; activeProfileId: string | null }> : null),
-      fetch('/api/v1/backups', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<{ backups: BackupManifest[] }> : null),
+      apiFetch('/api/v1/versions', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<{ versions: VersionOption[] }> : null),
+      apiFetch('/api/v1/installations', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<{ installations: Installation[]; activeInstallationId: string | null }> : null),
+      apiFetch('/api/v1/profiles', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<{ profiles: Profile[]; activeProfileId: string | null }> : null),
+      apiFetch('/api/v1/backups', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<{ backups: BackupManifest[] }> : null),
     ]).then(([versionPayload, installationPayload, profilePayload, backupPayload]) => {
       if (cancelled) return;
       if (versionPayload) setVersions(versionPayload.versions);
@@ -227,14 +364,14 @@ function ConsoleApp({ csrfToken }: { csrfToken: string }) {
     if (!installing) return undefined;
     if (!pendingInstallationId) return undefined;
     const timer = window.setInterval(() => {
-      void fetch(`/api/v1/installations/${pendingInstallationId}`, { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<Installation> : null).then((installation) => {
+      void apiFetch(`/api/v1/installations/${pendingInstallationId}`, { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<Installation> : null).then((installation) => {
         if (!installation) return;
         setInstallations((current) => [...current.filter((item) => item.id !== installation.id), installation]);
         if (installation.status === 'ready' || installation.status === 'failed') {
           setInstalling(false);
           // Keep the pending id so the just-finished result stays visible.
           // Refresh the active pointer after the runtime switches atomically.
-          void fetch('/api/v1/installations', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<{ installations: Installation[]; activeInstallationId: string | null }> : null).then((payload) => {
+          void apiFetch('/api/v1/installations', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<{ installations: Installation[]; activeInstallationId: string | null }> : null).then((payload) => {
             if (!payload) return;
             setInstallations(payload.installations);
             setActiveInstallationId(payload.activeInstallationId);
@@ -246,12 +383,12 @@ function ConsoleApp({ csrfToken }: { csrfToken: string }) {
   }, [installing, pendingInstallationId]);
 
   const navigate: Navigate = (next) => { window.location.hash = next; setPage(next); window.scrollTo({ top: 0 }); };
-  const changePreferences = (update: Partial<Preferences>) => setPreferences((current) => ({ ...current, ...update }));
+  const changePreferences = onPreferencesChange;
   const liveLogs = useLiveLogs(logSource);
   const updateRuntime = async (path: string, body?: unknown) => {
     const init: RequestInit = { method: body === undefined ? 'POST' : 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken } };
     if (body !== undefined) init.body = JSON.stringify(body);
-    const response = await fetch(path, init);
+    const response = await apiFetch(path, init);
     if (response.ok) {
       const payload = await response.json() as ProcessState | TunnelState;
       if (path.includes('/process')) setProcessState(payload as ProcessState); else setTunnelState(payload as TunnelState);
@@ -261,7 +398,7 @@ function ConsoleApp({ csrfToken }: { csrfToken: string }) {
   const logProps = { t, catalog, source: logSource, onSourceChange: setLogSource, entries: liveLogs.entries, query: logQuery, onQueryChange: setLogQuery, compact: compactLogs, onToggleCompact: () => setCompactLogs((current) => !current), onLoadOlder: liveLogs.loadOlder, hasOlder: liveLogs.hasOlder, loadingOlder: liveLogs.loadingOlder };
   const logs = <LogsPanel {...logProps} expanded={logsExpanded} onToggleExpanded={() => setLogsExpanded((current) => !current)} />;
   const updateConfig = async (input: ConfigUpdateInput): Promise<string | null> => {
-    const response = await fetch('/api/v1/config', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify(input) });
+    const response = await apiFetch('/api/v1/config', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify(input) });
     const payload = await response.json() as { config?: ConfigDocument; process?: ProcessState; tunnel?: TunnelState; error?: { message?: string } };
     if (!response.ok || !payload.config) return payload.error?.message ?? t('console.configSaveFailed');
     setConfigDocument(payload.config);
@@ -270,21 +407,21 @@ function ConsoleApp({ csrfToken }: { csrfToken: string }) {
     return null;
   };
   const setAccessPassword = async (password: string, confirmPassword: string): Promise<string | null> => {
-    const response = await fetch('/api/v1/access/password', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ password, confirmPassword }) });
+    const response = await apiFetch('/api/v1/access/password', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ password, confirmPassword }) });
     const payload = await response.json() as AccessGatewayState & { error?: { message?: string } };
     if (!response.ok) return payload.error?.message ?? t('console.passwordSaveFailed');
     setAccessSecurity(payload);
     return null;
   };
   const setAccessLan = async (lan: boolean): Promise<string | null> => {
-    const response = await fetch('/api/v1/access/network', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ lan }) });
+    const response = await apiFetch('/api/v1/access/network', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ lan }) });
     const payload = await response.json() as AccessGatewayState & { error?: { message?: string } };
     if (!response.ok) return payload.error?.message ?? t('console.configSaveFailed');
     setAccessSecurity(payload);
     return null;
   };
   const changeManagerPassword = async (password: string, confirmPassword: string): Promise<string | null> => {
-    const response = await fetch('/api/v1/auth/password', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ password, confirmPassword }) });
+    const response = await apiFetch('/api/v1/auth/password', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ password, confirmPassword }) });
     const payload = await response.json() as { error?: { message?: string } };
     return response.ok ? null : payload.error?.message ?? t('console.managerPasswordSaveFailed');
   };
@@ -374,7 +511,7 @@ function InstallationPanel({ t, catalog, process, onAction, version, onVersionCh
     setRequestError(null);
     onInstalling(true);
     try {
-      const response = await fetch('/api/v1/installations', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ version }) });
+      const response = await apiFetch('/api/v1/installations', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ version }) });
       const payload = await response.json() as { installationId?: string; error?: { message?: string } };
       if (!response.ok) { setRequestError(payload.error?.message ?? t('console.installRequestFailed')); onInstalling(false); return; }
       if (!payload.installationId) { setRequestError(t('console.installRequestFailed')); onInstalling(false); return; }
@@ -389,8 +526,6 @@ function AccessPanel({ t, process, tunnel, config, security, installed, onAction
   const [busy, setBusy] = useState(false);
   const [securityBusy, setSecurityBusy] = useState(false);
   const [securityMessage, setSecurityMessage] = useState<string | null>(null);
-  const [password, setPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
   const running = process.status === 'running';
   /**
    * Whether the tunnel is meant to be open, rather than whether it is up.
@@ -409,21 +544,13 @@ function AccessPanel({ t, process, tunnel, config, security, installed, onAction
   const lan = security.lan;
   const lanLabel = lan ? t('console.lanEnabled') : t('console.lanDisabled');
   const processLabel = process.status === 'running' ? t('dashboard.running') : process.status === 'starting' || process.status === 'stopping' ? t('common.loading') : process.status === 'error' ? t('dashboard.installFailed') : t('dashboard.offline');
-  // Open the password form once, on the first reading that says there is none.
-  const [passwordFormOpen, setPasswordFormOpen] = useState(false);
-  const prompted = useRef(false);
-  useEffect(() => {
-    if (prompted.current || security.status === 'stopped') return;
-    prompted.current = true;
-    if (!security.passwordConfigured) setPasswordFormOpen(true);
-  }, [security.status, security.passwordConfigured]);
+  const [passwordOpen, setPasswordOpen] = useState(false);
   const runAction = async (path: string, body?: unknown) => { setBusy(true); try { await onAction(path, body); } finally { setBusy(false); } };
   const toggleTunnel = () => void runAction('/api/v1/tunnel', { mode: tunnelWanted ? 'off' : 'quick' });
   const toggleLan = async (next: boolean) => {
     setSecurityBusy(true); setSecurityMessage(null);
     try { setSecurityMessage(await onSetLan(next)); } finally { setSecurityBusy(false); }
   };
-  const saveSecurity = async () => { setSecurityBusy(true); setSecurityMessage(null); try { const error = await onSetPassword(password, confirmPassword); setSecurityMessage(error); if (!error) { setPassword(''); setConfirmPassword(''); } } finally { setSecurityBusy(false); } };
   // This machine reaches SillyTavern directly, because the loopback address is
   // already a boundary. Everything else goes through the gateway and its
   // password: the LAN address and the tunnel both point there.
@@ -446,13 +573,8 @@ function AccessPanel({ t, process, tunnel, config, security, installed, onAction
       <div className="access-row access-row-public"><div><strong>{t('console.quickTunnel')}</strong><span>{passwordReady ? t('console.passwordProtected') : t('console.passwordRequired')}</span></div><Switch id="tunnel-switch" checked={tunnelWanted} onCheckedChange={toggleTunnel} disabled={busy || (tunnelWanted ? false : !installed || !running || !passwordReady)} aria-label={t('console.enableTunnel')} /></div>
       <dl className="address-list"><div><dt>{t('dashboard.publicAddress')}</dt><dd>{tunnel.url ? <AddressLink t={t} href={tunnel.url}>{tunnel.url}</AddressLink> : '—'}</dd></div></dl>
       {shareUrl ? <div className="access-qr"><Button variant="ghost" size="sm" onClick={() => setQrOpen((open) => !open)} aria-expanded={qrOpen}><QrCodeIcon />{qrOpen ? t('console.hideQr') : t('console.showQr')}</Button>{qrOpen ? <figure><QrCode value={shareUrl} label={`${shareLabel}: ${shareUrl}`} /><figcaption>{t('console.scanToOpen')} · {shareLabel}</figcaption></figure> : null}</div> : null}
-      <details className="access-security" open={passwordFormOpen} onToggle={(event) => setPasswordFormOpen(event.currentTarget.open)}><summary>{t('console.passwordSettings')}</summary><div className="security-form">
-        <p className="text-xs text-muted-foreground">{t('console.sillyPasswordHelp')}</p>
-        <label className="field-label"><span>{t('console.password')}</span><Input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="new-password" /></label>
-        <label className="field-label"><span>{t('console.confirmPassword')}</span><Input type="password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} autoComplete="new-password" /></label>
-        <div className="security-actions"><Badge variant="outline">{passwordReady ? t('console.passwordProtected') : t('console.passwordRequired')}</Badge><Button size="sm" onClick={() => void saveSecurity()} disabled={securityBusy || password.length < 8 || password !== confirmPassword}>{passwordReady ? t('console.changePassword') : t('console.savePassword')}</Button></div>
-        {passwordReady ? <p className="text-xs text-muted-foreground">{t('console.passwordChangeSignsOut')}</p> : null}
-      </div></details>
+      <div className="access-row"><div><strong>{t('console.passwordSettings')}</strong><span>{passwordReady ? t('console.passwordProtected') : t('console.passwordRequired')}</span></div><Button variant="outline" size="sm" onClick={() => setPasswordOpen(true)}>{passwordReady ? t('console.changePassword') : t('console.savePassword')}</Button></div>
+      <PasswordDialog t={t} open={passwordOpen} onOpenChange={setPasswordOpen} title={t('console.passwordSettings')} description={t('console.sillyPasswordHelp')} note={passwordReady ? t('console.passwordChangeSignsOut') : null} minLength={MIN_SILLY_PASSWORD} hint={t('console.sillyPasswordMin')} submitLabel={passwordReady ? t('console.changePassword') : t('console.savePassword')} onSubmit={onSetPassword} />
       {busy || securityBusy ? <div className="operation-progress" role="status"><span>{t('common.loading')}</span><span className="progress-track"><span className="progress-indeterminate" /></span></div> : null}
       {security.error ? <p className="install-error" role="alert">{security.error}</p> : null}
       {securityMessage ? <p className="install-error" role="alert">{securityMessage}</p> : null}
@@ -461,6 +583,67 @@ function AccessPanel({ t, process, tunnel, config, security, installed, onAction
     </CardContent>
     <CardFooter className="gap-2"><Button variant="outline" onClick={openLocal} disabled={!running}><ArrowUpRight />{t('dashboard.open')}</Button><Button variant="ghost" onClick={() => void copyTunnel()} disabled={!tunnel.url}><Copy />{t('dashboard.copyLink')}</Button></CardFooter>
   </Card>;
+}
+
+/**
+ * Setting a password, wherever a password is set.
+ *
+ * There are two, and they open different things: one lets a browser into this
+ * manager, the other lets a browser into SillyTavern. They used to be asked
+ * for in two different shapes on two different pages - a collapsed section on
+ * the access card, a pair of bare fields on the settings page - so the only
+ * way to tell which one was being changed was to already know. Both are asked
+ * for here, named after what they open, and only when the reader asks.
+ */
+function PasswordDialog({ t, open, onOpenChange, title, description, note, minLength, hint, submitLabel, onSubmit }: { t: Translate; open: boolean; onOpenChange: (open: boolean) => void; title: string; description: string; note?: string | null; minLength: number; hint: string; submitLabel: string; onSubmit: (password: string, confirmPassword: string) => Promise<string | null> }) {
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // Flagged once the second field stops being a prefix of the first, rather
+  // than the moment the two differ - a warning under a half-typed password is
+  // noise that goes away on its own.
+  const mismatch = confirmPassword.length > 0 && !password.startsWith(confirmPassword);
+  const ready = password.length >= minLength && password === confirmPassword;
+
+  const close = (next: boolean) => {
+    onOpenChange(next);
+    if (!next) { setPassword(''); setConfirmPassword(''); setError(null); }
+  };
+
+  const save = async () => {
+    setBusy(true); setError(null);
+    try {
+      const failure = await onSubmit(password, confirmPassword);
+      setError(failure);
+      if (!failure) close(false);
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={close}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>{description}</DialogDescription>
+        </DialogHeader>
+        <DialogBody className="grid gap-4">
+          <Field label={t('console.password')} hint={hint}>
+            <PasswordInput revealLabel={t('setup.reveal')} hideLabel={t('setup.hide')} autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} />
+          </Field>
+          <Field label={t('console.confirmPassword')} error={mismatch ? t('setup.mismatch') : null}>
+            <PasswordInput revealLabel={t('setup.reveal')} hideLabel={t('setup.hide')} autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} />
+          </Field>
+          {note ? <p className="text-xs text-muted-foreground">{note}</p> : null}
+          {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
+        </DialogBody>
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => close(false)}>{t('common.cancel')}</Button>
+          <Button onClick={() => void save()} disabled={busy || !ready}>{submitLabel}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
 }
 
 /** An address that opens in its own tab rather than sitting there as text. */
@@ -627,7 +810,7 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
   const busy = busyAction !== null;
   const jobStep = (job: Job) => translateStep(job.step, catalog, job.stepCode, job.stepParams);
   const refresh = async () => {
-    const [profileResponse, backupResponse, r2Response, snapshotResponse] = await Promise.all([fetch('/api/v1/profiles', { credentials: 'same-origin' }), fetch('/api/v1/backups', { credentials: 'same-origin' }), fetch('/api/v1/r2', { credentials: 'same-origin' }), fetch('/api/v1/r2/snapshots', { credentials: 'same-origin' }).catch(() => null)]);
+    const [profileResponse, backupResponse, r2Response, snapshotResponse] = await Promise.all([apiFetch('/api/v1/profiles', { credentials: 'same-origin' }), apiFetch('/api/v1/backups', { credentials: 'same-origin' }), apiFetch('/api/v1/r2', { credentials: 'same-origin' }), apiFetch('/api/v1/r2/snapshots', { credentials: 'same-origin' }).catch(() => null)]);
     // Listing recovery points needs the bucket, so it is the one call here that
     // fails when R2 is off or unreachable. That must not blank the page.
     if (snapshotResponse?.ok) setR2Snapshots((await snapshotResponse.json() as { snapshots: R2SnapshotSummary[] }).snapshots);
@@ -649,7 +832,7 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
     let cancelled = false;
     void (async () => {
       try {
-        const response = await fetch('/api/v1/jobs/active', { credentials: 'same-origin' });
+        const response = await apiFetch('/api/v1/jobs/active', { credentials: 'same-origin' });
         if (!response.ok) return;
         const payload = await response.json() as { job: Job | null };
         if (cancelled || !payload.job) return;
@@ -680,7 +863,7 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
     setStopping(true);
     try {
       uploadAbort.current?.abort();
-      if (runningJobId) await fetch(`/api/v1/jobs/${encodeURIComponent(runningJobId)}/cancel`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      if (runningJobId) await apiFetch(`/api/v1/jobs/${encodeURIComponent(runningJobId)}/cancel`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
     } catch {
       // The poll below reports what actually happened either way.
     } finally {
@@ -701,7 +884,7 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
     if (!name.trim()) return;
     setBusyAction(t('console.createProfile')); setError(null);
     try {
-      const response = await fetch('/api/v1/profiles', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ name, layout: 'data' }) });
+      const response = await apiFetch('/api/v1/profiles', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ name, layout: 'data' }) });
       if (!response.ok) { const payload = await response.json() as { error?: { message?: string } }; setError(payload.error?.message ?? t('console.profileCreateFailed')); return; }
       setName(''); await refresh();
     } catch { setError(t('console.profileCreateFailed')); } finally { setBusyAction(null); }
@@ -709,7 +892,7 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
   const activate = async (id: string) => {
     setBusyAction(t('console.activateProfile')); setError(null);
     try {
-      const response = await fetch(`/api/v1/profiles/${id}/activate`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      const response = await apiFetch(`/api/v1/profiles/${id}/activate`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       if (!response.ok) { const payload = await response.json() as { error?: { message?: string } }; setError(payload.error?.message ?? t('console.profileActivateFailed')); return; }
       await refresh();
     } catch { setError(t('console.profileActivateFailed')); } finally { setBusyAction(null); }
@@ -717,7 +900,7 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
   const createBackup = async () => {
     setBusyAction(t('dashboard.backupNow')); setOperationProgress({ percent: 0, step: t('dashboard.backupNow') }); setError(null);
     try {
-      const response = await fetch('/api/v1/backups', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ ...(backupName.trim() ? { name: backupName.trim() } : {}) }) });
+      const response = await apiFetch('/api/v1/backups', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ ...(backupName.trim() ? { name: backupName.trim() } : {}) }) });
       const payload = await response.json() as { jobId?: string; error?: { message?: string } };
       if (!response.ok || !payload.jobId) { setError(payload.error?.message ?? t('console.backupCreateFailed')); return; }
       setRunningJobId(payload.jobId);
@@ -731,7 +914,7 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
   };
   const waitForOperation = async (jobId: string, onUpdate: (job: Job) => void): Promise<void> => {
     for (;;) {
-      const response = await fetch(`/api/v1/jobs/${encodeURIComponent(jobId)}`, { credentials: 'same-origin' });
+      const response = await apiFetch(`/api/v1/jobs/${encodeURIComponent(jobId)}`, { credentials: 'same-origin' });
       if (!response.ok) throw new Error(t('console.backupRestoreFailed'));
       const job = await response.json() as Job;
       onUpdate(job);
@@ -744,7 +927,7 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
   const previewBackup = async (backup: BackupManifest) => {
     setBusyAction(t('console.previewBackup')); setError(null);
     try {
-      const response = await fetch(`/api/v1/backups/${backup.id}/preview`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      const response = await apiFetch(`/api/v1/backups/${backup.id}/preview`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       const payload = await response.json() as RestorePreview | { error?: { message?: string } };
       if (!response.ok || !('files' in payload)) { setError(('error' in payload ? payload.error?.message : undefined) ?? t('console.backupPreviewFailed')); return; }
       setSelectedBackup(backup); setSelectedPreview(payload);
@@ -754,7 +937,7 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
     if (!selectedBackup || !selectedPreview) return;
     setBusyAction(t('console.restore')); setOperationProgress({ percent: 0, step: t('console.restore') }); setError(null);
     try {
-      const response = await fetch(`/api/v1/backups/${selectedBackup.id}/restore`, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ mode: restoreMode }) });
+      const response = await apiFetch(`/api/v1/backups/${selectedBackup.id}/restore`, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ mode: restoreMode }) });
       const payload = await response.json() as { jobId?: string; error?: { message?: string } };
       if (!response.ok || !payload.jobId) { setError(payload.error?.message ?? t('console.backupRestoreFailed')); return; }
       setRunningJobId(payload.jobId);
@@ -804,7 +987,7 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
       // leaving the page no longer loses anything.
       setUploading(false);
       setOperationProgress({ percent: 100, step: t('console.importFinishing') });
-      const response = await fetch('/api/v1/backups/import/finish', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ uploadId, name: file.name, expectedBytes: file.size }) });
+      const response = await apiFetch('/api/v1/backups/import/finish', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ uploadId, name: file.name, expectedBytes: file.size }) });
       const text = await response.text();
       let payload: (RestorePreview & { backup?: BackupManifest }) | { error?: { message?: string } };
       try { payload = JSON.parse(text) as (RestorePreview & { backup?: BackupManifest }) | { error?: { message?: string } }; }
@@ -816,7 +999,7 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
     } catch (error: unknown) {
       // The part file on the server is worth nothing without the rest of it,
       // whether the upload failed or the operator stopped it.
-      await fetch(`/api/v1/backups/import/chunk?uploadId=${encodeURIComponent(uploadId)}`, { method: 'DELETE', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } }).catch(() => undefined);
+      await apiFetch(`/api/v1/backups/import/chunk?uploadId=${encodeURIComponent(uploadId)}`, { method: 'DELETE', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } }).catch(() => undefined);
       setError(error instanceof StoppedError ? null : error instanceof Error ? error.message : t('console.backupPreviewFailed'));
     } finally { uploadAbort.current = null; setBusyAction(null); setOperationProgress(null); setUploading(false); }
   };
@@ -825,7 +1008,7 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
     if (!nextName?.trim()) return;
     setBusyAction(t('console.renameBackup')); setError(null);
     try {
-      const response = await fetch(`/api/v1/backups/${backup.id}`, { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ name: nextName }) });
+      const response = await apiFetch(`/api/v1/backups/${backup.id}`, { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ name: nextName }) });
       if (!response.ok) { const payload = await response.json() as { error?: { message?: string } }; setError(payload.error?.message ?? t('console.backupRenameFailed')); return; }
       await refresh();
     } catch { setError(t('console.backupRenameFailed')); } finally { setBusyAction(null); }
@@ -834,7 +1017,7 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
     if (!window.confirm(t('console.deleteBackupConfirm'))) return;
     setBusyAction(t('console.deleteBackup')); setError(null);
     try {
-      const response = await fetch(`/api/v1/backups/${backup.id}`, { method: 'DELETE', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      const response = await apiFetch(`/api/v1/backups/${backup.id}`, { method: 'DELETE', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       if (!response.ok) { const payload = await response.json() as { error?: { message?: string } }; setError(payload.error?.message ?? t('console.backupDeleteFailed')); return; }
       if (selectedBackup?.id === backup.id) { setSelectedBackup(null); setSelectedPreview(null); }
       await refresh();
@@ -843,7 +1026,7 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
   const saveR2 = async () => {
     setR2Busy(t('console.r2Save')); setR2Message(null);
     try {
-      const response = await fetch('/api/v1/r2', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify(r2Form) });
+      const response = await apiFetch('/api/v1/r2', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify(r2Form) });
       const payload = await response.json() as { config?: R2Config; error?: { message?: string } };
       if (!response.ok || !payload.config) { setR2Message(payload.error?.message ?? t('console.r2SaveFailed')); return; }
       setR2Config(payload.config); setR2Message(t('console.r2Saved')); await refresh();
@@ -852,7 +1035,7 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
   const testR2 = async () => {
     setR2Busy(t('console.r2Test')); setR2Message(null);
     try {
-      const response = await fetch('/api/v1/r2/test', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      const response = await apiFetch('/api/v1/r2/test', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       const payload = await response.json() as { error?: { message?: string } };
       setR2Message(response.ok ? t('console.r2Tested') : payload.error?.message ?? t('console.r2TestFailed'));
     } catch { setR2Message(t('console.r2TestFailed')); } finally { setR2Busy(null); }
@@ -861,7 +1044,7 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
     setR2Busy(t('console.r2UploadLatest')); setR2Message(null);
     setOperationProgress({ percent: 0, step: t('console.r2UploadLatest') });
     try {
-      const response = await fetch('/api/v1/r2/sync', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      const response = await apiFetch('/api/v1/r2/sync', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       const payload = await response.json() as { jobId?: string; error?: { message?: string } };
       if (!response.ok || !payload.jobId) { setR2Message(payload.error?.message ?? t('console.r2UploadFailed')); return; }
       // A first upload is gigabytes. It runs in the server and is followed the
@@ -886,7 +1069,7 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
     setR2Busy(t('console.r2Fetch')); setR2Message(null);
     setOperationProgress({ percent: 0, step: t('console.r2Fetch') });
     try {
-      const response = await fetch(`/api/v1/r2/snapshots/${encodeURIComponent(snapshot.id)}/fetch`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      const response = await apiFetch(`/api/v1/r2/snapshots/${encodeURIComponent(snapshot.id)}/fetch`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       const payload = await response.json() as { jobId?: string; error?: { message?: string } };
       if (!response.ok || !payload.jobId) { setR2Message(payload.error?.message ?? t('console.r2FetchFailed')); return; }
       setRunningJobId(payload.jobId);
@@ -899,7 +1082,7 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
   const reconcileR2 = async () => {
     setR2Busy(t('console.r2Reconcile')); setR2Message(null);
     try {
-      const response = await fetch('/api/v1/r2/reconcile', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      const response = await apiFetch('/api/v1/r2/reconcile', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       const payload = await response.json() as { collectedBlobs?: number; error?: { message?: string } };
       if (!response.ok) { setR2Message(payload.error?.message ?? t('console.r2ReconcileFailed')); return; }
       setR2Message(t('console.r2Reconciled')); await refresh();
@@ -908,7 +1091,7 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
   const removeLegacy = async () => {
     setR2Busy(t('console.r2LegacyRemove')); setR2Message(null);
     try {
-      const response = await fetch('/api/v1/r2/legacy', { method: 'DELETE', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      const response = await apiFetch('/api/v1/r2/legacy', { method: 'DELETE', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       const payload = await response.json() as { removed?: number; error?: { message?: string } };
       if (!response.ok) { setR2Message(payload.error?.message ?? t('console.r2LegacyRemoveFailed')); return; }
       setR2Message(t('console.r2LegacyRemoved')); await refresh();
@@ -1022,7 +1205,7 @@ function SystemPanel({ t, csrfToken }: { t: Translate; csrfToken: string }) {
   const [snapshot, setSnapshot] = useState<SystemSnapshot | null>(null);
   const remeasure = async () => {
     try {
-      const response = await fetch('/api/v1/system/measure', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      const response = await apiFetch('/api/v1/system/measure', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       if (response.ok) setSnapshot(await response.json() as SystemSnapshot);
     } catch {
       // The next poll reports the sizes whether or not this request landed.
@@ -1033,7 +1216,7 @@ function SystemPanel({ t, csrfToken }: { t: Translate; csrfToken: string }) {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const poll = async () => {
       try {
-        const response = await fetch('/api/v1/system', { credentials: 'same-origin', signal: controller.signal });
+        const response = await apiFetch('/api/v1/system', { credentials: 'same-origin', signal: controller.signal });
         if (response.ok && !controller.signal.aborted) setSnapshot(await response.json() as SystemSnapshot);
       } catch {
         // A dropped reading is replaced by the next one.
@@ -1108,7 +1291,7 @@ function MetricsPage({ t }: { t: Translate }) {
     const controller = new AbortController();
     const load = async () => {
       try {
-        const response = await fetch(`/api/v1/metrics?days=${days}`, { credentials: 'same-origin', signal: controller.signal });
+        const response = await apiFetch(`/api/v1/metrics?days=${days}`, { credentials: 'same-origin', signal: controller.signal });
         if (!response.ok) throw new Error('metrics request failed');
         const payload = await response.json() as MetricsSnapshot;
         if (!cancelled) { setSnapshot(payload); setError(false); }
@@ -1226,10 +1409,8 @@ function ConfigPage({ t, config, onConfigUpdate, onChangeManagerPassword }: { t:
   const [rawYaml, setRawYaml] = useState('');
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
-  const [managerPassword, setManagerPassword] = useState('');
-  const [managerPasswordConfirm, setManagerPasswordConfirm] = useState('');
-  const [managerPasswordBusy, setManagerPasswordBusy] = useState(false);
-  const [managerPasswordMessage, setManagerPasswordMessage] = useState<string | null>(null);
+  const [managerPasswordOpen, setManagerPasswordOpen] = useState(false);
+  const { toast } = useToast();
   useEffect(() => {
     if (!config) return;
     setForm({ sslEnabled: config.settings.sslEnabled, enableCorsProxy: config.settings.enableCorsProxy, disableCsrfProtection: config.settings.disableCsrfProtection });
@@ -1237,22 +1418,18 @@ function ConfigPage({ t, config, onConfigUpdate, onChangeManagerPassword }: { t:
   }, [config]);
   const save = async (input: ConfigUpdateInput) => { setBusy(true); setMessage(null); try { const error = await onConfigUpdate(input); setMessage(error ?? t('console.configSaved')); } finally { setBusy(false); } };
   const saveCommon = () => void save({ settings: { sslEnabled: form.sslEnabled, enableCorsProxy: form.enableCorsProxy, disableCsrfProtection: form.disableCsrfProtection } });
-  const saveManagerPassword = async () => {
-    setManagerPasswordBusy(true);
-    setManagerPasswordMessage(null);
-    try {
-      const error = await onChangeManagerPassword(managerPassword, managerPasswordConfirm);
-      setManagerPasswordMessage(error ?? t('console.managerPasswordSaved'));
-      if (!error) { setManagerPassword(''); setManagerPasswordConfirm(''); }
-    } finally { setManagerPasswordBusy(false); }
+  const saveManagerPassword = async (password: string, confirmPassword: string): Promise<string | null> => {
+    const error = await onChangeManagerPassword(password, confirmPassword);
+    if (!error) toast({ title: t('console.managerPasswordSaved'), tone: 'success' });
+    return error;
   };
   return <div className="config-workspace">
     <div className="config-heading"><div><h2>{t('console.configTitle')}</h2></div>{config ? <Badge variant="outline">{config.runtimeRef}</Badge> : null}</div>
     <Card className="config-card">
       <CardHeader><h3 className="panel-title"><UsersIcon />{t('console.managerPasswordTitle')}</h3></CardHeader>
-      <CardContent className="space-y-4"><p className="text-sm text-muted-foreground">{t('console.managerPasswordHint')}</p><div className="config-form-grid"><label className="field-label"><span>{t('console.managerPassword')}</span><Input type="password" autoComplete="new-password" minLength={6} value={managerPassword} onChange={(event) => setManagerPassword(event.target.value)} /></label><label className="field-label"><span>{t('console.confirmPassword')}</span><Input type="password" autoComplete="new-password" minLength={6} value={managerPasswordConfirm} onChange={(event) => setManagerPasswordConfirm(event.target.value)} /></label></div></CardContent>
-      <CardFooter className="config-actions"><span className="config-restart-note" role="status">{managerPasswordMessage ?? t('console.managerPasswordMin')}</span><Button onClick={() => void saveManagerPassword()} disabled={managerPasswordBusy || managerPassword.length < 6 || managerPassword !== managerPasswordConfirm}>{t('console.managerPasswordSave')}</Button></CardFooter>
+      <CardContent><div className="access-row"><div><strong>{t('console.managerPasswordHint')}</strong></div><Button variant="outline" size="sm" onClick={() => setManagerPasswordOpen(true)}>{t('console.changePassword')}</Button></div></CardContent>
     </Card>
+    <PasswordDialog t={t} open={managerPasswordOpen} onOpenChange={setManagerPasswordOpen} title={t('console.managerPasswordTitle')} description={t('console.managerPasswordHint')} note={t('console.passwordChangeSignsOut')} minLength={MIN_MANAGER_PASSWORD} hint={t('console.managerPasswordMin')} submitLabel={t('console.changePassword')} onSubmit={saveManagerPassword} />
     {!config ? <Card className="resource-panel"><CardContent className="resource-empty"><p>{t('console.noConfiguration')}</p></CardContent></Card> : <>
       <Card className="config-card"><CardHeader><h3 className="panel-title"><Settings2 />{t('console.commonSettings')}</h3><p className="config-path">{config.path}</p></CardHeader><CardContent className="config-form-grid"><label className="config-toggle"><span><strong>{t('console.ssl')}</strong><small>{t('console.sslHint')}</small></span><Switch checked={form.sslEnabled} onCheckedChange={(value) => setForm((current) => ({ ...current, sslEnabled: value }))} /></label><label className="config-toggle"><span><strong>{t('console.corsProxy')}</strong><small>{t('console.corsProxyHint')}</small></span><Switch checked={form.enableCorsProxy} onCheckedChange={(value) => setForm((current) => ({ ...current, enableCorsProxy: value }))} /></label><label className="config-toggle"><span><strong>{t('console.disableCsrf')}</strong><small>{t('console.disableCsrfHint')}</small></span><Switch checked={form.disableCsrfProtection} onCheckedChange={(value) => setForm((current) => ({ ...current, disableCsrfProtection: value }))} /></label><div className="config-fixed"><span>{t('console.port')}</span><strong>8000</strong></div></CardContent><CardFooter className="config-actions"><span className="config-restart-note">{t('console.restartAfterSave')}</span><Button onClick={saveCommon} disabled={busy}>{t('common.save')}</Button></CardFooter></Card><Card className="config-card"><CardHeader><h3 className="panel-title"><ScrollText />{t('console.rawYaml')}</h3></CardHeader><CardContent><textarea className="config-editor" value={rawYaml} onChange={(event) => setRawYaml(event.target.value)} spellCheck={false} aria-label={t('console.rawYaml')} /></CardContent><CardFooter className="config-actions"><span className={message?.startsWith('Could') ? 'install-error' : 'config-restart-note'} role="status">{message ?? t('console.rawYamlHint')}</span><Button variant="outline" onClick={() => void save({ rawYaml })} disabled={busy}>{t('console.applyYaml')}</Button></CardFooter></Card>
     </>}

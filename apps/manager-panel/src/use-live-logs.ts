@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { apiFetch } from './session.js';
 import type { LogEntry, LogSourceFilter } from '../../../packages/contracts/src/index.js';
 
 /** How many lines the panel keeps for one source before dropping the oldest. */
@@ -32,7 +33,7 @@ export function useLiveLogs(source: LogSourceFilter): LiveLogs {
     inFlight.current = false;
     const poll = async () => {
       try {
-        const response = await fetch(`/api/v1/logs?source=${source}&after=${cursor}`, { credentials: 'same-origin', signal: controller.signal });
+        const response = await apiFetch(`/api/v1/logs?source=${source}&after=${cursor}`, { credentials: 'same-origin', signal: controller.signal });
         if (!response.ok) return;
         const payload = await response.json() as { entries: LogEntry[]; nextCursor: number };
         if (controller.signal.aborted) return;
@@ -63,7 +64,7 @@ export function useLiveLogs(source: LogSourceFilter): LiveLogs {
     setLoadingOlder(true);
     void (async () => {
       try {
-        const response = await fetch(`/api/v1/logs?source=${source}&before=${before}&limit=${HISTORY_PAGE}`, { credentials: 'same-origin' });
+        const response = await apiFetch(`/api/v1/logs?source=${source}&before=${before}&limit=${HISTORY_PAGE}`, { credentials: 'same-origin' });
         if (!response.ok) return;
         const payload = await response.json() as { entries: LogEntry[]; hasMore: boolean };
         if (payload.entries.length === 0) { setHasOlder(false); return; }
