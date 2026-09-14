@@ -2,9 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   applyQuery, backupSearchText, backupSortValue, installationSearchText, installationSortValue,
+  metricsSearchText, metricsSortValue,
   pageInfo, parseTableQuery, snapshotSortValue, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE,
+  METRICS_SORT_FIELDS,
 } from '../src/index.js';
-import type { BackupManifest, Installation, R2SnapshotSummary } from '../src/index.js';
+import type { BackupManifest, Installation, MetricsBucket, R2SnapshotSummary } from '../src/index.js';
 
 function backup(overrides: Partial<BackupManifest>): BackupManifest {
   return {
@@ -114,4 +116,28 @@ test('a recovery point sorts by when it was taken and by what it holds', () => {
   assert.equal(snapshotSortValue(snapshot, 'createdAt'), '2026-02-02T00:00:00.000Z');
   assert.equal(snapshotSortValue(snapshot, 'indexBytes'), 42);
   assert.equal(snapshotSortValue(snapshot, 'profileId'), undefined);
+});
+
+test('a provider row sorts by every number the panel puts in a column', () => {
+  const bucket = (values: Partial<MetricsBucket>): MetricsBucket => ({
+    key: 'anthropic', requests: 3, inputTokens: 10, outputTokens: 4, totalTokens: 14,
+    cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, cacheEligibleInputTokens: 0,
+    cacheObservedRequests: 0, cacheHitRate: null, streamRequests: 0, errors: 0, errorRate: 0,
+    averageLatencyMs: 120, ...values,
+  });
+  // Every id the metrics tables name as a column has to be a name this
+  // function answers to, or that column sorts by nothing at all.
+  for (const column of METRICS_SORT_FIELDS) {
+    assert.notEqual(metricsSortValue(bucket({}), column), undefined, column);
+  }
+  assert.equal(metricsSortValue(bucket({}), 'errorRate'), undefined);
+
+  const rows = [bucket({ key: 'a', requests: 1 }), bucket({ key: 'b', requests: 90 }), bucket({ key: 'c', requests: 9 })];
+  const sorted = applyQuery(rows, { page: 1, pageSize: 10, search: '', sort: 'requests', direction: 'desc' }, { sortValue: metricsSortValue });
+  assert.deepEqual(sorted.rows.map((row) => row.key), ['b', 'c', 'a']);
+
+  // The counts are not searchable: typing "9" to find a model would otherwise
+  // match every row whose totals happen to contain a nine.
+  assert.equal(metricsSearchText(bucket({ key: 'claude', completionSource: 'chat' })), 'claude chat');
+  assert.equal(metricsSearchText(bucket({ key: 'claude' })).trim(), 'claude');
 });

@@ -11,7 +11,8 @@
     "turnOff": "Tắt",
     "rename": "Đổi tên",
     "create": "Tạo",
-    "name": "Tên"
+    "name": "Tên",
+    "edit": "Sửa"
   },
   "nav": {
     "overview": "Tổng quan",
@@ -173,7 +174,6 @@
     "passwordSaveFailed": "Không thể lưu mật khẩu SillyTavern",
     "password": "Mật khẩu",
     "configTitle": "Thiết lập SillyTavern",
-    "commonSettings": "Thiết lập phổ biến",
     "ssl": "HTTPS",
     "sslHint": "Dùng chứng chỉ mà SillyTavern đã được cài sẵn.",
     "corsProxy": "CORS proxy",

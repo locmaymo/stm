@@ -1,4 +1,4 @@
-import type { BackupManifest, Installation, R2SnapshotSummary } from './index.js';
+import type { BackupManifest, Installation, MetricsBucket, R2SnapshotSummary } from './index.js';
 
 /**
  * What each list can be searched and sorted by.
@@ -16,10 +16,12 @@ import type { BackupManifest, Installation, R2SnapshotSummary } from './index.js
 export const BACKUP_SORT_FIELDS = ['name', 'createdAt', 'sizeBytes', 'fileCount', 'source'] as const;
 export const SNAPSHOT_SORT_FIELDS = ['createdAt', 'indexBytes'] as const;
 export const INSTALLATION_SORT_FIELDS = ['resolvedRef', 'channel', 'status', 'createdAt', 'activatedAt'] as const;
+export const METRICS_SORT_FIELDS = ['key', 'requests', 'totalTokens', 'inputTokens', 'outputTokens', 'averageLatencyMs'] as const;
 
 export type BackupSortField = typeof BACKUP_SORT_FIELDS[number];
 export type SnapshotSortField = typeof SNAPSHOT_SORT_FIELDS[number];
 export type InstallationSortField = typeof INSTALLATION_SORT_FIELDS[number];
+export type MetricsSortField = typeof METRICS_SORT_FIELDS[number];
 
 type SortValue = string | number | boolean | null | undefined;
 
@@ -70,6 +72,28 @@ export function installationSortValue(installation: Installation, column: string
     // Never activated sorts last in both directions, which `applyQuery`
     // arranges for anything missing.
     case 'activatedAt': return installation.activatedAt;
+    default: return undefined;
+  }
+}
+
+/**
+ * A provider or model row.
+ *
+ * The name is the only text worth searching: the numbers beside it are counts,
+ * and matching "3" against every total finds most of the table.
+ */
+export function metricsSearchText(bucket: MetricsBucket): string {
+  return `${bucket.key} ${bucket.completionSource ?? ''}`;
+}
+
+export function metricsSortValue(bucket: MetricsBucket, column: string): SortValue {
+  switch (column) {
+    case 'key': return bucket.key;
+    case 'requests': return bucket.requests;
+    case 'totalTokens': return bucket.totalTokens;
+    case 'inputTokens': return bucket.inputTokens;
+    case 'outputTokens': return bucket.outputTokens;
+    case 'averageLatencyMs': return bucket.averageLatencyMs;
     default: return undefined;
   }
 }

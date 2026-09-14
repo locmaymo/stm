@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import {
   Alert, AlertDescription, AuthLayout, Badge, BrandMark, Button, buttonVariants, Card, CardAction,
-  ConfirmDialog, DetailRow, EmptyState, StatusHero, type StatusTone,
+  ConfirmDialog, DetailRow, EmptyState, StatTile, StatusHero, type StatusTone,
   CardContent, CardFooter, CardHeader,
   CardGrid, Checkbox, cn, DataTable, type DataTableColumn, type DataTableLabels,
   Dialog, DialogBody, DialogContent, DialogDescription,
@@ -26,8 +26,8 @@ import { logCatalog, translator, type Translate } from './i18n.js';
 import { browserEnvironment, browserStorage, readPreferences, savePreferences, type Preferences } from './preferences.js';
 import { authErrorKey } from './auth-error.js';
 import { apiFetch, onSessionExpired, resetSessionWatch } from './session.js';
-import type { AccessGatewayState, BackupManifest, ConfigDocument, ConfigUpdateInput, Installation, Job, LogEntry, LogSourceFilter, MetricsSnapshot, ProcessState, Profile, R2Config, R2SnapshotSummary, RestoreMode, RestorePreview, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
-import { backupSearchText, backupSortValue, formatBytes, snapshotSortValue } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, BackupManifest, ConfigDocument, ConfigUpdateInput, Installation, Job, LogEntry, LogSourceFilter, MetricsBucket, MetricsSnapshot, ProcessState, Profile, R2Config, R2SnapshotSummary, RestoreMode, RestorePreview, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import { backupSearchText, backupSortValue, formatBytes, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
 import { translateLogEntry, translateStep } from './log-format.js';
 import { QrCode } from './qr-code.js';
@@ -1864,11 +1864,25 @@ function SystemPanel({ t, csrfToken }: { t: Translate; csrfToken: string }) {
   </CardContent></Card>;
 }
 
+/**
+ * What the providers have been asked for.
+ *
+ * The page opened with four tiles written at three different sizes, one of
+ * which hid six more numbers behind a disclosure triangle drawn as an
+ * ellipsis, and ended with two lists that were not tables: a `role="table"`
+ * div, a hand-drawn bar per row, and a hard cap at eight rows with no way to
+ * reach the ninth. The tiles are one shape now, the detail is behind a named
+ * button rather than a triangle, and the two lists are the same table as
+ * everywhere else - so they can be searched, sorted and paged through.
+ */
 function MetricsPage({ t }: { t: Translate }) {
   const [snapshot, setSnapshot] = useState<MetricsSnapshot | null>(null);
   const [error, setError] = useState(false);
   const [days, setDays] = useState(30);
   const [refresh, setRefresh] = useState(0);
+  const [breakdownOpen, setBreakdownOpen] = useState(false);
+  const [providerQuery, setProviderQuery] = useState<TableQuery>(() => initialQuery({ pageSize: 10, sort: 'requests', direction: 'desc' }));
+  const [modelQuery, setModelQuery] = useState<TableQuery>(() => initialQuery({ pageSize: 10, sort: 'requests', direction: 'desc' }));
   useEffect(() => {
     let cancelled = false;
     const controller = new AbortController();
@@ -1884,52 +1898,103 @@ function MetricsPage({ t }: { t: Translate }) {
     const timer = window.setInterval(() => { void load(); }, 30_000);
     return () => { cancelled = true; controller.abort(); window.clearInterval(timer); };
   }, [days, refresh]);
-  return <div className="metrics-workspace">
-    <div className="metrics-toolbar">
-      <div className="metrics-segments" role="group" aria-label={t('console.metricsPeriod')}>
-        {([7, 30, 90] as const).map((value) => <button key={value} type="button" aria-pressed={days === value} onClick={() => { if (days !== value) { setSnapshot(null); setDays(value); } }}>{value} {t('console.metricsDays')}</button>)}
-      </div>
-      <Button variant="ghost" size="icon" aria-label={t('common.refresh')} onClick={() => setRefresh((value) => value + 1)}><RefreshCw /></Button>
+
+  const labels = tableLabels(t);
+  const columns: DataTableColumn<MetricsBucket>[] = [
+    {
+      id: 'key',
+      header: t('common.name'),
+      sortable: true,
+      cell: (row) => <div className="grid min-w-0">
+        <span className="truncate font-medium" title={row.key}>{row.key}</span>
+        {row.completionSource ? <span className="truncate text-xs text-muted-foreground">{row.completionSource}</span> : null}
+      </div>,
+    },
+    { id: 'requests', header: t('console.metricRequests'), sortable: true, align: 'end', cell: (row) => <span className="tabular-nums">{row.requests.toLocaleString()}</span> },
+    { id: 'totalTokens', header: t('console.metricTokens'), sortable: true, align: 'end', showFrom: 'sm', cell: (row) => <span className="tabular-nums text-muted-foreground">{row.totalTokens.toLocaleString()}</span> },
+    { id: 'averageLatencyMs', header: t('console.metricLatency'), sortable: true, align: 'end', showFrom: 'md', cell: (row) => <span className="whitespace-nowrap tabular-nums text-muted-foreground">{metricDuration(row.averageLatencyMs)}</span> },
+  ];
+
+  return <div className="grid min-w-0 gap-4">
+    <div className="flex flex-wrap items-center justify-end gap-2">
+      <Tabs value={String(days)} onValueChange={(value) => { const next = Number(value); if (next !== days) { setSnapshot(null); setDays(next); } }}>
+        <TabsList aria-label={t('console.metricsPeriod')}>
+          {([7, 30, 90] as const).map((value) => <TabsTrigger key={value} value={String(value)}>{value} {t('console.metricsDays')}</TabsTrigger>)}
+        </TabsList>
+      </Tabs>
+      <Button variant="ghost" size="icon-sm" aria-label={t('common.refresh')} onClick={() => setRefresh((value) => value + 1)}><RefreshCw /></Button>
     </div>
-    {error ? <p className="text-sm text-destructive" role="alert">{t('console.metricsLoadFailed')}</p> : null}
-    {!snapshot ? <Card className="resource-panel"><CardContent className="resource-empty"><p>{t(error ? 'console.metricsLoadFailed' : 'common.loading')}</p></CardContent></Card> : <>
-    <div className="metrics-summary-grid">
-      <MetricValue icon={<BarChart3 />} label={t('console.metricRequests')} value={snapshot.totals.requests.toLocaleString()} />
-      <TokenMetricCard t={t} totals={snapshot.totals} />
-      <MetricValue icon={<Database />} label={t('console.metricCacheHit')} value={formatMetricRate(snapshot.totals.cacheHitRate)} {...(snapshot.totals.cacheObservedRequests > 0 ? { subtitle: `${snapshot.totals.cacheObservedRequests.toLocaleString()} ${t('console.metricCacheRequests')}` } : {})} />
-      <MetricValue icon={<Clock3 />} label={t('console.metricLatency')} value={metricDuration(snapshot.totals.averageLatencyMs)} />
-    </div>
-    <TrendChart t={t} daily={snapshot.daily} to={snapshot.range.to} days={days} />
-    <div className="metrics-tables">
-      <MetricsTable t={t} title={t('console.metricProviders')} rows={snapshot.providers} maxRequests={snapshot.totals.requests} />
-      <MetricsTable t={t} title={t('console.metricModels')} rows={snapshot.models} maxRequests={snapshot.totals.requests} />
-    </div>
-    </>}
+    {!snapshot
+      ? <Card><CardContent className="px-0"><EmptyState icon={<BarChart3 />} title={t(error ? 'console.metricsLoadFailed' : 'common.loading')} /></CardContent></Card>
+      : <>
+        {error ? <Alert variant="destructive"><AlertDescription>{t('console.metricsLoadFailed')}</AlertDescription></Alert> : null}
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <StatTile icon={<BarChart3 />} label={t('console.metricRequests')} value={snapshot.totals.requests.toLocaleString()} />
+          <StatTile
+            icon={<Database />}
+            label={t('console.metricTokens')}
+            value={snapshot.totals.totalTokens.toLocaleString()}
+            hint={`${metricCompact(snapshot.totals.inputTokens)} ${t('console.metricInput')} · ${metricCompact(snapshot.totals.outputTokens)} ${t('console.metricOutput')}`}
+            action={<Button variant="ghost" size="icon-sm" aria-label={t('console.metricBreakdown')} onClick={() => setBreakdownOpen(true)}><Ellipsis /></Button>}
+          />
+          <StatTile
+            icon={<Database />}
+            label={t('console.metricCacheHit')}
+            value={formatMetricRate(snapshot.totals.cacheHitRate)}
+            {...(snapshot.totals.cacheObservedRequests > 0 ? { hint: `${snapshot.totals.cacheObservedRequests.toLocaleString()} ${t('console.metricCacheRequests')}` } : {})}
+          />
+          <StatTile icon={<Clock3 />} label={t('console.metricLatency')} value={metricDuration(snapshot.totals.averageLatencyMs)} />
+        </div>
+        <TrendChart t={t} daily={snapshot.daily} to={snapshot.range.to} days={days} />
+        <div className="grid min-w-0 gap-4">
+          <Card>
+            <PanelHeading icon={<BarChart3 />} action={<Badge variant="outline">{snapshot.providers.length}</Badge>}>{t('console.metricProviders')}</PanelHeading>
+            <CardContent>
+              <DataTable rows={snapshot.providers} columns={columns} rowKey={(row) => row.key} query={providerQuery} onQueryChange={setProviderQuery} labels={labels} searchText={metricsSearchText} sortValue={metricsSortValue} pageSizes={[10, 25, 50]} empty={<EmptyState icon={<BarChart3 />} title={t('console.noMetrics')} />} />
+            </CardContent>
+          </Card>
+          <Card>
+            <PanelHeading icon={<BrainCircuit />} action={<Badge variant="outline">{snapshot.models.length}</Badge>}>{t('console.metricModels')}</PanelHeading>
+            <CardContent>
+              <DataTable rows={snapshot.models} columns={columns} rowKey={(row) => row.key} query={modelQuery} onQueryChange={setModelQuery} labels={labels} searchText={metricsSearchText} sortValue={metricsSortValue} pageSizes={[10, 25, 50]} empty={<EmptyState icon={<BrainCircuit />} title={t('console.noMetrics')} />} />
+            </CardContent>
+          </Card>
+        </div>
+        <TokenBreakdown t={t} open={breakdownOpen} onOpenChange={setBreakdownOpen} totals={snapshot.totals} />
+      </>}
   </div>;
 }
 
-function MetricValue({ icon, label, value, subtitle }: { icon: ReactNode; label: string; value: string; subtitle?: string }) {
-  return <Card className="metric-value"><CardContent><div className="metric-value-label">{icon}<span>{label}</span></div><div className="metric-value-number"><strong>{value}</strong>{subtitle ? <small>{subtitle}</small> : null}</div></CardContent></Card>;
-}
-
-function TokenMetricCard({ t, totals }: { t: Translate; totals: MetricsSnapshot['totals'] }) {
-  const total = totals.totalTokens.toLocaleString();
-  const input = totals.inputTokens.toLocaleString();
-  const output = totals.outputTokens.toLocaleString();
-  return <Card className="metric-value metric-token-card"><CardContent>
-    <div className="metric-token-topline"><div className="metric-value-label"><Database /><span>{t('console.metricTokens')}</span></div><TokenDetails t={t} values={totals} /></div>
-    <strong className="metric-token-total" title={total}>{total}</strong>
-    <div className="token-pair"><span title={`${t('console.metricInput')}: ${input}`} aria-label={t('console.metricInput')}><ArrowDown /><b>{input}</b></span><span title={`${t('console.metricOutput')}: ${output}`} aria-label={t('console.metricOutput')}><ArrowUp /><b>{output}</b></span></div>
-  </CardContent></Card>;
-}
-
-function TokenDetails({ t, values }: { t: Translate; values: Pick<MetricsSnapshot['totals'], 'cacheReadTokens' | 'cacheWriteTokens' | 'cacheObservedRequests' | 'reasoningTokens' | 'streamRequests'> }) {
-  return <details className="token-details"><summary title={t('console.metricBreakdown')} aria-label={t('console.metricBreakdown')}><Ellipsis /></summary><dl className="token-details-grid">
-    <div><dt><ArrowDown />{t('console.metricCacheRead')}</dt><dd>{values.cacheObservedRequests === 0 ? '—' : values.cacheReadTokens.toLocaleString()}</dd></div>
-    <div><dt><ArrowUp />{t('console.metricCacheWrite')}</dt><dd>{values.cacheObservedRequests === 0 ? '—' : values.cacheWriteTokens.toLocaleString()}</dd></div>
-    <div><dt><BrainCircuit />{t('console.metricReasoning')}</dt><dd>{values.reasoningTokens.toLocaleString()}</dd></div>
-    <div><dt><ArrowUpRight />{t('console.metricStreaming')}</dt><dd>{values.streamRequests.toLocaleString()}</dd></div>
-  </dl></details>;
+/**
+ * The numbers only somebody tuning a prompt cache wants.
+ *
+ * They used to hang off an ellipsis in the corner of a tile, in a popover that
+ * closed when the pointer left it. Behind a named button they can be read at
+ * leisure, and the tile above is four numbers shorter.
+ */
+function TokenBreakdown({ t, open, onOpenChange, totals }: { t: Translate; open: boolean; onOpenChange: (open: boolean) => void; totals: MetricsSnapshot['totals'] }) {
+  // Cached tokens are reported by the provider, not counted here. Nothing
+  // observed means nothing to say, which is not the same as zero.
+  const cached = (value: number) => totals.cacheObservedRequests === 0 ? '—' : value.toLocaleString();
+  const rows: Array<{ label: string; value: string }> = [
+    { label: t('console.metricInput'), value: totals.inputTokens.toLocaleString() },
+    { label: t('console.metricOutput'), value: totals.outputTokens.toLocaleString() },
+    { label: t('console.metricCacheRead'), value: cached(totals.cacheReadTokens) },
+    { label: t('console.metricCacheWrite'), value: cached(totals.cacheWriteTokens) },
+    { label: t('console.metricReasoning'), value: totals.reasoningTokens.toLocaleString() },
+    { label: t('console.metricStreaming'), value: totals.streamRequests.toLocaleString() },
+  ];
+  return <Dialog open={open} onOpenChange={onOpenChange}>
+    <DialogContent className="sm:max-w-md">
+      <DialogHeader><DialogTitle>{t('console.metricBreakdown')}</DialogTitle></DialogHeader>
+      <DialogBody>
+        {rows.map((row) => <DetailRow key={row.label} label={row.label}><span className="tabular-nums">{row.value}</span></DetailRow>)}
+      </DialogBody>
+      <DialogFooter>
+        <Button variant="outline" onClick={() => onOpenChange(false)}>{t('common.close')}</Button>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>;
 }
 
 function TrendChart({ t, daily, to, days }: { t: Translate; daily: readonly MetricsSnapshot['daily'][number][]; to: string; days: number }) {
@@ -1951,14 +2016,16 @@ function TrendChart({ t, daily, to, days }: { t: Translate; daily: readonly Metr
   const yFor = (value: number) => pad.top + plotHeight * (1 - value / scale);
   const points = series.map((bucket, index) => `${xFor(index)},${yFor(bucket[measure])}`).join(' ');
   const selection = series.find((bucket) => bucket.key === selected) ?? series.at(-1)!;
-  return <Card className="metrics-chart-card">
-    <CardHeader><div className="metrics-chart-heading"><h2 className="panel-title">{t('console.metricActivity')}</h2><div className="metrics-segments" role="group" aria-label={t('console.metricActivity')}>
-      <button type="button" aria-pressed={measure === 'requests'} onClick={() => setMeasure('requests')}>{t('console.metricRequests')}</button>
-      <button type="button" aria-pressed={measure === 'totalTokens'} onClick={() => setMeasure('totalTokens')}>{t('console.metricTokens')}</button>
-    </div></div></CardHeader>
+  return <Card>
+    <PanelHeading icon={<BarChart3 />} action={<Tabs value={measure} onValueChange={(value) => setMeasure(value as 'requests' | 'totalTokens')}>
+      <TabsList aria-label={t('console.metricActivity')}>
+        <TabsTrigger value="requests">{t('console.metricRequests')}</TabsTrigger>
+        <TabsTrigger value="totalTokens">{t('console.metricTokens')}</TabsTrigger>
+      </TabsList>
+    </Tabs>}>{t('console.metricActivity')}</PanelHeading>
     <CardContent>
       <div className="trend-selection" aria-live="polite"><time dateTime={selection.key}>{new Date(selection.key).toLocaleDateString(undefined, { day: 'numeric', month: 'short', timeZone: 'UTC' })}</time><strong>{selection[measure].toLocaleString()}</strong><span>{t(measure === 'requests' ? 'console.metricRequestsShort' : 'console.metricTokens')}</span></div>
-      {daily.length === 0 ? <p className="metrics-empty">{t('console.noMetrics')}</p> : <div className="metrics-chart-shell">
+      {daily.length === 0 ? <EmptyState icon={<BarChart3 />} title={t('console.noMetrics')} /> : <div className="metrics-chart-shell">
         <svg className="metrics-chart-svg" viewBox={`0 0 ${width} ${height}`} role="group" aria-label={t('console.metricActivity')}>
           {ticks.map((value) => <g key={value}><line x1={pad.left} x2={width - pad.right} y1={yFor(value)} y2={yFor(value)} className="trend-grid-line" /><text x={pad.left - 10} y={yFor(value) + 4} textAnchor="end" className="trend-axis-label">{metricCompact(value)}</text></g>)}
           <polygon points={`${pad.left},${yFor(0)} ${points} ${width - pad.right},${yFor(0)}`} className="trend-area" />
@@ -1979,44 +2046,117 @@ function metricCompact(value: number): string { return new Intl.NumberFormat(und
 function metricDuration(value: number): string { return value >= 1000 ? `${(value / 1000).toFixed(1)} s` : `${Math.round(value)} ms`; }
 function formatMetricRate(value: number | null): string { return value === null ? '—' : `${(value * 100).toFixed(1)}%`; }
 
-function MetricsTable({ t, title, rows, maxRequests }: { t: Translate; title: string; rows: readonly MetricsSnapshot['providers'][number][]; maxRequests: number }) {
-  return <Card className="metrics-table-card"><CardHeader><div className="metrics-chart-heading"><div className="metric-value-label"><BarChart3 /><span>{title}</span></div><span className="metrics-count">{rows.length}</span></div></CardHeader><CardContent>{rows.length === 0 ? <p className="text-sm text-muted-foreground">—</p> : <div className="metrics-table" role="table">{rows.slice(0, 8).map((row, index) => <div className="metrics-table-row" role="row" key={row.key}><div className="metrics-rank">{index + 1}</div><div className="metrics-rank-main"><div className="metrics-rank-top"><div className="metrics-rank-name"><strong title={row.key}>{row.key}</strong>{row.completionSource ? <small>{row.completionSource}</small> : null}</div><span>{maxRequests > 0 ? `${Math.round((row.requests / maxRequests) * 100)}%` : '0%'}</span></div><div className="metrics-rank-bar"><i style={{ width: `${maxRequests > 0 ? Math.max(3, (row.requests / maxRequests) * 100) : 0}%` }} /></div><div className="metrics-rank-meta"><span>{row.requests.toLocaleString()} {t('console.metricRequestsShort')}</span><TokenSummary t={t} values={row} /></div></div></div>)}</div>}</CardContent></Card>;
-}
-
-function TokenSummary({ t, values }: { t: Translate; values: MetricsSnapshot['providers'][number] }) {
-  return <div className="token-summary"><span title={t('console.metricInput')}><ArrowDown />{values.inputTokens.toLocaleString()}</span><span title={t('console.metricOutput')}><ArrowUp />{values.outputTokens.toLocaleString()}</span><TokenDetails t={t} values={values} /></div>;
-}
-
+/**
+ * The two passwords' page, and SillyTavern's own settings.
+ *
+ * A thirty-line YAML editor used to sit open at the bottom of it. It is the
+ * one control here that can stop SillyTavern from starting, and it was the
+ * largest thing on the page - so it is behind a button now, where somebody who
+ * wants it will still find it and nobody else has to scroll past it.
+ *
+ * Whether a save worked was decided by testing the message for the English
+ * word "Could", which meant a Vietnamese failure was shown in the colour of a
+ * note. Success and failure are separate states now, and success is a toast,
+ * because saving restarts SillyTavern and redraws the page underneath it.
+ */
 function ConfigPage({ t, config, onConfigUpdate, onChangeManagerPassword }: { t: Translate; config: ConfigDocument | null; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onChangeManagerPassword: (password: string, confirmPassword: string) => Promise<string | null> }) {
   const [form, setForm] = useState({ sslEnabled: false, enableCorsProxy: false, disableCsrfProtection: false });
-  const [rawYaml, setRawYaml] = useState('');
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [managerPasswordOpen, setManagerPasswordOpen] = useState(false);
+  const [yamlOpen, setYamlOpen] = useState(false);
   const { toast } = useToast();
   useEffect(() => {
     if (!config) return;
     setForm({ sslEnabled: config.settings.sslEnabled, enableCorsProxy: config.settings.enableCorsProxy, disableCsrfProtection: config.settings.disableCsrfProtection });
-    setRawYaml(config.rawYaml);
   }, [config]);
-  const save = async (input: ConfigUpdateInput) => { setBusy(true); setMessage(null); try { const error = await onConfigUpdate(input); setMessage(error ?? t('console.configSaved')); } finally { setBusy(false); } };
-  const saveCommon = () => void save({ settings: { sslEnabled: form.sslEnabled, enableCorsProxy: form.enableCorsProxy, disableCsrfProtection: form.disableCsrfProtection } });
-  const saveManagerPassword = async (password: string, confirmPassword: string): Promise<string | null> => {
-    const error = await onChangeManagerPassword(password, confirmPassword);
-    if (!error) toast({ title: t('console.managerPasswordSaved'), tone: 'success' });
-    return error;
+  const save = async (input: ConfigUpdateInput): Promise<string | null> => {
+    setBusy(true); setError(null);
+    try {
+      const failure = await onConfigUpdate(input);
+      setError(failure);
+      if (!failure) toast({ title: t('console.configSaved'), tone: 'success' });
+      return failure;
+    } finally { setBusy(false); }
   };
-  return <div className="config-workspace">
-    <div className="config-heading"><div><h2>{t('console.configTitle')}</h2></div>{config ? <Badge variant="outline">{config.runtimeRef}</Badge> : null}</div>
-    <Card className="config-card">
-      <CardHeader><h3 className="panel-title"><UsersIcon />{t('console.managerPasswordTitle')}</h3></CardHeader>
-      <CardContent><div className="access-row"><div><strong>{t('console.managerPasswordHint')}</strong></div><Button variant="outline" size="sm" onClick={() => setManagerPasswordOpen(true)}>{t('console.changePassword')}</Button></div></CardContent>
+  const saveManagerPassword = async (password: string, confirmPassword: string): Promise<string | null> => {
+    const failure = await onChangeManagerPassword(password, confirmPassword);
+    if (!failure) toast({ title: t('console.managerPasswordSaved'), tone: 'success' });
+    return failure;
+  };
+  const switches: Array<{ label: string; hint: string; checked: boolean; apply: (value: boolean) => void }> = [
+    { label: t('console.ssl'), hint: t('console.sslHint'), checked: form.sslEnabled, apply: (value) => setForm((current) => ({ ...current, sslEnabled: value })) },
+    { label: t('console.corsProxy'), hint: t('console.corsProxyHint'), checked: form.enableCorsProxy, apply: (value) => setForm((current) => ({ ...current, enableCorsProxy: value })) },
+    { label: t('console.disableCsrf'), hint: t('console.disableCsrfHint'), checked: form.disableCsrfProtection, apply: (value) => setForm((current) => ({ ...current, disableCsrfProtection: value })) },
+  ];
+
+  return <div className="grid min-w-0 gap-4">
+    <Card>
+      <PanelHeading icon={<UsersIcon />}>{t('console.managerPasswordTitle')}</PanelHeading>
+      <CardContent>
+        <DetailRow label={t('console.password')}>
+          <Button variant="outline" size="sm" onClick={() => setManagerPasswordOpen(true)}>{t('console.changePassword')}</Button>
+        </DetailRow>
+      </CardContent>
     </Card>
     <PasswordDialog t={t} open={managerPasswordOpen} onOpenChange={setManagerPasswordOpen} title={t('console.managerPasswordTitle')} description={t('console.managerPasswordHint')} note={t('console.passwordChangeSignsOut')} minLength={MIN_MANAGER_PASSWORD} hint={t('console.managerPasswordMin')} submitLabel={t('console.changePassword')} onSubmit={saveManagerPassword} />
-    {!config ? <Card className="resource-panel"><CardContent className="resource-empty"><p>{t('console.noConfiguration')}</p></CardContent></Card> : <>
-      <Card className="config-card"><CardHeader><h3 className="panel-title"><Settings2 />{t('console.commonSettings')}</h3><p className="config-path">{config.path}</p></CardHeader><CardContent className="config-form-grid"><label className="config-toggle"><span><strong>{t('console.ssl')}</strong><small>{t('console.sslHint')}</small></span><Switch checked={form.sslEnabled} onCheckedChange={(value) => setForm((current) => ({ ...current, sslEnabled: value }))} /></label><label className="config-toggle"><span><strong>{t('console.corsProxy')}</strong><small>{t('console.corsProxyHint')}</small></span><Switch checked={form.enableCorsProxy} onCheckedChange={(value) => setForm((current) => ({ ...current, enableCorsProxy: value }))} /></label><label className="config-toggle"><span><strong>{t('console.disableCsrf')}</strong><small>{t('console.disableCsrfHint')}</small></span><Switch checked={form.disableCsrfProtection} onCheckedChange={(value) => setForm((current) => ({ ...current, disableCsrfProtection: value }))} /></label><div className="config-fixed"><span>{t('console.port')}</span><strong>8000</strong></div></CardContent><CardFooter className="config-actions"><span className="config-restart-note">{t('console.restartAfterSave')}</span><Button onClick={saveCommon} disabled={busy}>{t('common.save')}</Button></CardFooter></Card><Card className="config-card"><CardHeader><h3 className="panel-title"><ScrollText />{t('console.rawYaml')}</h3></CardHeader><CardContent><textarea className="config-editor" value={rawYaml} onChange={(event) => setRawYaml(event.target.value)} spellCheck={false} aria-label={t('console.rawYaml')} /></CardContent><CardFooter className="config-actions"><span className={message?.startsWith('Could') ? 'install-error' : 'config-restart-note'} role="status">{message ?? t('console.rawYamlHint')}</span><Button variant="outline" onClick={() => void save({ rawYaml })} disabled={busy}>{t('console.applyYaml')}</Button></CardFooter></Card>
-    </>}
+    {!config
+      ? <Card><CardContent className="px-0"><EmptyState icon={<Settings2 />} title={t('console.noConfiguration')} /></CardContent></Card>
+      : <Card>
+        <PanelHeading icon={<Settings2 />} action={<Badge variant="outline">{config.runtimeRef}</Badge>}>{t('console.configTitle')}</PanelHeading>
+        <CardContent className="grid gap-4">
+          <div>
+            {switches.map((row) => <DetailRow key={row.label} label={row.label} hint={row.hint}>
+              <Switch checked={row.checked} onCheckedChange={row.apply} aria-label={row.label} />
+            </DetailRow>)}
+            <DetailRow label={t('console.port')}><span className="tabular-nums">8000</span></DetailRow>
+            {/* The path is long enough to wrap the row onto three lines and
+                push the button under it, and it is only ever glanced at. */}
+            <DetailRow label={t('console.rawYaml')} hint={<span className="block truncate" title={config.path}>{config.path}</span>}>
+              <Button variant="ghost" size="sm" onClick={() => setYamlOpen(true)}><ScrollText />{t('common.edit')}</Button>
+            </DetailRow>
+          </div>
+          {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
+        </CardContent>
+        <CardFooter className="items-center justify-between gap-3">
+          <span className="text-xs text-muted-foreground">{t('console.restartAfterSave')}</span>
+          <Button onClick={() => void save({ settings: { sslEnabled: form.sslEnabled, enableCorsProxy: form.enableCorsProxy, disableCsrfProtection: form.disableCsrfProtection } })} disabled={busy}>{t('common.save')}</Button>
+        </CardFooter>
+      </Card>}
+    {config ? <YamlDialog t={t} open={yamlOpen} onOpenChange={setYamlOpen} initial={config.rawYaml} busy={busy} onApply={(rawYaml) => save({ rawYaml })} /> : null}
   </div>;
+}
+
+/** SillyTavern's own configuration file, for whoever wants to edit it directly. */
+function YamlDialog({ t, open, onOpenChange, initial, busy, onApply }: { t: Translate; open: boolean; onOpenChange: (open: boolean) => void; initial: string; busy: boolean; onApply: (rawYaml: string) => Promise<string | null> }) {
+  const [rawYaml, setRawYaml] = useState(initial);
+  const [error, setError] = useState<string | null>(null);
+  // Opening reloads the file as it is on disk, so an edit abandoned last time
+  // is not silently re-applied over a change made since.
+  useEffect(() => { if (open) { setRawYaml(initial); setError(null); } }, [open, initial]);
+
+  const apply = async () => {
+    const failure = await onApply(rawYaml);
+    setError(failure);
+    if (!failure) onOpenChange(false);
+  };
+
+  return <Dialog open={open} onOpenChange={onOpenChange}>
+    <DialogContent className="sm:max-w-3xl">
+      <DialogHeader>
+        <DialogTitle>{t('console.rawYaml')}</DialogTitle>
+        <DialogDescription>{t('console.rawYamlHint')}</DialogDescription>
+      </DialogHeader>
+      <DialogBody className="grid gap-3">
+        <textarea className="config-editor" value={rawYaml} onChange={(event) => setRawYaml(event.target.value)} spellCheck={false} aria-label={t('console.rawYaml')} />
+        {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
+      </DialogBody>
+      <DialogFooter>
+        <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={busy}>{t('common.cancel')}</Button>
+        <Button onClick={() => void apply()} disabled={busy}>{t('console.applyYaml')}</Button>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>;
 }
 
 function ResourcePanel({ page, t }: { page: Exclude<PageId, 'overview' | 'data'>; t: Translate }) {

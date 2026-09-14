@@ -11,7 +11,8 @@
     "turnOff": "Turn off",
     "rename": "Rename",
     "create": "Create",
-    "name": "Name"
+    "name": "Name",
+    "edit": "Edit"
   },
   "nav": {
     "overview": "Overview",
@@ -173,7 +174,6 @@
     "passwordSaveFailed": "Could not save the SillyTavern password",
     "password": "Password",
     "configTitle": "SillyTavern settings",
-    "commonSettings": "Common settings",
     "ssl": "HTTPS",
     "sslHint": "Uses the certificates SillyTavern is already set up with.",
     "corsProxy": "CORS proxy",

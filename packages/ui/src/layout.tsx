@@ -139,7 +139,11 @@ export function DetailRow({
       )}
       {...props}
     >
-      <div className="grid min-w-0 gap-0.5">
+      {/* `flex-1` and a `minmax(0, 1fr)` track, not only `min-w-0`: an auto
+          grid track is sized by its content, so one long value - a file path,
+          a bucket name - widened the row until the card scrolled sideways
+          rather than being clipped where it asked to be. */}
+      <div className="grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)] gap-0.5">
         <span className="text-sm font-medium">{label}</span>
         {hint ? <span className="text-xs text-muted-foreground">{hint}</span> : null}
       </div>
