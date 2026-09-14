@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { TransferMeter, formatBytes, formatDuration } from '../src/progress.js';
+import { TransferMeter, formatDuration } from '../src/progress.js';
+import { formatBytes } from '../../../packages/contracts/src/index.js';
 
 test('a transfer too young to have a rate says so rather than inventing one', () => {
   let clock = 1_000;
@@ -18,11 +19,11 @@ test('a transfer reports how fast it is going and how much longer', () => {
   // 1 MiB/s: half of a 10 MiB transfer done in five seconds, so five to go.
   clock = 5_000;
   const half = meter.update({ completedBytes: 5 * 1024 * 1024, totalBytes: 10 * 1024 * 1024, completedItems: 5, totalItems: 10 });
-  assert.equal(half.params.rate, '1.0 MiB/s');
+  assert.equal(half.params.rate, '1.0 MB/s');
   assert.equal(half.params.eta, '0:05');
   assert.equal(Math.round(half.percent), 50);
-  assert.equal(half.params.done, '5.0 MiB');
-  assert.equal(half.params.total, '10.0 MiB');
+  assert.equal(half.params.done, '5.2 MB');
+  assert.equal(half.params.total, '10.5 MB');
 });
 
 test('the rate follows a connection that slows down instead of the whole average', () => {
@@ -52,10 +53,14 @@ test('a transfer that has not moved says so rather than guessing', () => {
 });
 
 test('sizes and durations read the same in any language', () => {
+  // Decimal, because that is what Cloudflare quotes a bucket in and what a
+  // network rate is measured in everywhere. Binary maths with a "GB" label is
+  // how the panel and the Cloudflare dashboard came to disagree by seven
+  // percent about the same bucket.
   assert.equal(formatBytes(0), '0 B');
   assert.equal(formatBytes(999), '999 B');
-  assert.equal(formatBytes(1024), '1.0 KiB');
-  assert.equal(formatBytes(2_889_161_660), '2.7 GiB');
+  assert.equal(formatBytes(1000), '1.0 kB');
+  assert.equal(formatBytes(3_379_086_928), '3.4 GB');
   assert.equal(formatDuration(0), '0:00');
   assert.equal(formatDuration(65), '1:05');
   assert.equal(formatDuration(3_725), '1:02:05');

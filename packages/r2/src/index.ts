@@ -1,7 +1,7 @@
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { mkdir, open, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { logEvent, logLineText, type LogSink, type Profile, type R2Config, type R2Object, type R2SnapshotSummary, type R2Usage, type TransferProgress } from '../../contracts/src/index.js';
+import { formatBytes, logEvent, logLineText, type LogSink, type Profile, type R2Config, type R2Object, type R2SnapshotSummary, type R2Usage, type TransferProgress } from '../../contracts/src/index.js';
 import { ioConcurrency, runPooled } from '../../platform/src/index.js';
 import type { PlatformPaths } from '../../platform/src/index.js';
 import { BlobLedger } from './ledger.js';
@@ -46,8 +46,11 @@ const DEFAULTS = {
   keepRecent: 48,
   keepDaily: 14,
   keepWeekly: 8,
-  maxStorageBytes: 8 * 1024 * 1024 * 1024,
+  // Four fifths of what Cloudflare gives away, in the same decimal units it
+  // quotes: 10 GB of storage, a million charged writes, ten million reads.
+  maxStorageBytes: 8_000_000_000,
   maxWriteOperations: 800_000,
+  maxReadOperations: 8_000_000,
 } as const;
 
 interface StoredUsage {
@@ -55,6 +58,7 @@ interface StoredUsage {
   readonly blobCount: number;
   readonly snapshotCount: number;
   readonly writeOperations: number;
+  readonly readOperations: number;
   readonly periodStartedAt: string;
   readonly legacyObjectCount: number;
   readonly legacyBytes: number;
@@ -78,6 +82,7 @@ interface StoredR2Config {
   readonly keepWeekly: number;
   readonly maxStorageBytes: number;
   readonly maxWriteOperations: number;
+  readonly maxReadOperations: number;
   readonly lastUploadAt: string | null;
   /** The cold tier runs on its own clock, so it is remembered separately. */
   readonly lastColdUploadAt: string | null;
@@ -119,6 +124,7 @@ export interface R2UpdateInput {
   readonly keepWeekly?: number;
   readonly maxStorageBytes?: number;
   readonly maxWriteOperations?: number;
+  readonly maxReadOperations?: number;
 }
 
 /** One file to consider sending, and where its bytes are on this machine. */
@@ -214,6 +220,16 @@ export class R2Manager {
    * written yet, and those would look exactly like garbage.
    */
   private busy: Promise<unknown> = Promise.resolve();
+  /**
+   * Charged requests made since they were last written down.
+   *
+   * The count used to live on the client, and every method that made its own
+   * client threw its count away with it - which is how listing the bucket, the
+   * most expensive thing the panel did, counted as nothing at all. It belongs
+   * to the manager, because the manager is what outlives a request.
+   */
+  private charges = { write: 0, read: 0 };
+  private chargesWrittenAt = 0;
 
   public constructor(options: R2ManagerOptions) {
     this.paths = options.paths;
@@ -246,7 +262,8 @@ export class R2Manager {
       ...(input.keepDaily !== undefined ? { keepDaily: integerInRange(input.keepDaily, 0, 365, 'daily retention') } : {}),
       ...(input.keepWeekly !== undefined ? { keepWeekly: integerInRange(input.keepWeekly, 0, 520, 'weekly retention') } : {}),
       ...(input.maxStorageBytes !== undefined ? { maxStorageBytes: integerInRange(input.maxStorageBytes, 1024 * 1024, 1024 ** 4, 'storage ceiling') } : {}),
-      ...(input.maxWriteOperations !== undefined ? { maxWriteOperations: integerInRange(input.maxWriteOperations, 1000, 1_000_000_000, 'operation ceiling') } : {}),
+      ...(input.maxWriteOperations !== undefined ? { maxWriteOperations: integerInRange(input.maxWriteOperations, 1000, 1_000_000_000, 'write ceiling') } : {}),
+      ...(input.maxReadOperations !== undefined ? { maxReadOperations: integerInRange(input.maxReadOperations, 1000, 1_000_000_000, 'read ceiling') } : {}),
     };
     validateStoredConfig(next);
     await this.save(next);
@@ -255,13 +272,28 @@ export class R2Manager {
 
   public async testConnection(): Promise<R2ConnectionResult> {
     const config = await this.load();
-    const objects = await this.listAll(config, OBJECT_PREFIX);
-    return { ok: true, objectCount: objects.length, totalBytes: objects.reduce((sum, object) => sum + object.sizeBytes, 0) };
+    try {
+      const objects = await this.listAll(config, OBJECT_PREFIX);
+      return { ok: true, objectCount: objects.length, totalBytes: objects.reduce((sum, object) => sum + object.sizeBytes, 0) };
+    } finally {
+      await this.recordCharges();
+    }
   }
 
+  /**
+   * Every object under the manager's prefix.
+   *
+   * One listing per thousand objects, each one charged, so this is for when
+   * somebody asked to see the bucket - not for telling the panel how many
+   * things are in it. The counts it keeps answer that for free.
+   */
   public async listObjects(): Promise<R2Object[]> {
     const config = await this.load();
-    return (await this.listAll(config, OBJECT_PREFIX)).map(toPublicObject);
+    try {
+      return (await this.listAll(config, OBJECT_PREFIX)).map(toPublicObject);
+    } finally {
+      await this.recordCharges();
+    }
   }
 
   /**
@@ -339,7 +371,6 @@ export class R2Manager {
         storageBytes: usage.storageBytes + uploadedBytes + body.byteLength,
         blobCount: usage.blobCount + uploadedChunks,
         snapshotCount: usage.snapshotCount + 1,
-        writeOperations: usage.writeOperations + client.chargedWrites,
       };
       await this.save({
         ...config,
@@ -349,6 +380,7 @@ export class R2Manager {
         lastSnapshot: { profileId: input.profile.id, id: snapshot.id },
         usage: nextUsage,
       });
+      await this.recordCharges();
       if (dropped.size > 0) this.logger(logEvent('r2.skippedMissingFiles', `[r2] skipped ${dropped.size} file(s) removed while the upload was running`, { count: dropped.size }));
       this.logger(logEvent('r2.synced', `[r2] sent ${uploadedChunks} changed chunk(s), ${formatBytes(uploadedBytes)}, of ${files.length} file(s)`, { chunks: uploadedChunks, bytes: formatBytes(uploadedBytes), files: files.length }));
       return {
@@ -366,11 +398,14 @@ export class R2Manager {
   public async listSnapshots(profileId?: string): Promise<R2SnapshotSummary[]> {
     const config = await this.load();
     const prefix = profileId ? `${SNAPSHOT_PREFIX}${profileId}/` : SNAPSHOT_PREFIX;
-    const objects = await this.listAll(config, prefix);
-    return objects
-      .map((object) => toSnapshotSummary(object))
-      .filter((summary): summary is R2SnapshotSummary => summary !== null)
-      .sort((left, right) => right.id.localeCompare(left.id));
+    try {
+      return (await this.listAll(config, prefix))
+        .map((object) => toSnapshotSummary(object))
+        .filter((summary): summary is R2SnapshotSummary => summary !== null)
+        .sort((left, right) => right.id.localeCompare(left.id));
+    } finally {
+      await this.recordCharges();
+    }
   }
 
   /**
@@ -409,16 +444,22 @@ export class R2Manager {
   /** Read one recovery point, for showing what it holds or for restoring it. */
   public async readSnapshot(profileId: string, snapshotIdentifier: string): Promise<R2Snapshot> {
     const config = await this.load();
-    const client = this.client(config);
-    const body = await client.getObject(snapshotKey(OBJECT_PREFIX, profileId, snapshotIdentifier));
-    return await decodeSnapshot(body);
+    try {
+      return await decodeSnapshot(await this.client(config).getObject(snapshotKey(OBJECT_PREFIX, profileId, snapshotIdentifier)));
+    } finally {
+      await this.recordCharges();
+    }
   }
 
   /** Fetch one stored chunk, already decoded back to the bytes it holds. */
   public async readBlob(hash: string): Promise<Buffer> {
     const config = await this.load();
-    const client = this.client(config);
-    return await decodeBlob(await client.getObject(blobKey(OBJECT_PREFIX, hash)));
+    const blob = await decodeBlob(await this.client(config).getObject(blobKey(OBJECT_PREFIX, hash)));
+    // A restore is one of these per file. Writing the counters down after each
+    // one would be thousands of state writes for a figure nobody reads that
+    // often, so they are folded in a few times a minute instead.
+    await this.recordCharges({ atMostEvery: 5_000 });
+    return blob;
   }
 
   /**
@@ -444,9 +485,9 @@ export class R2Manager {
         usage: {
           ...usage,
           snapshotCount: Math.max(0, usage.snapshotCount - removed.length),
-          writeOperations: usage.writeOperations + client.chargedWrites,
         },
       });
+      await this.recordCharges();
       this.logger(logEvent('r2.pruned', `[r2] dropped ${removed.length} superseded recovery point(s)`, { count: removed.length }));
       return removed;
     });
@@ -512,13 +553,15 @@ export class R2Manager {
         storageBytes: blobBytesTotal + snapshotBytesTotal + legacyBytes,
         blobCount: blobs.size,
         snapshotCount: snapshots.length,
-        writeOperations: previous.writeOperations + client.chargedWrites,
+        writeOperations: previous.writeOperations,
+        readOperations: previous.readOperations,
         periodStartedAt: previous.periodStartedAt,
         legacyObjectCount,
         legacyBytes,
         lastReconciledAt: this.now().toISOString(),
       };
       await this.save({ ...config, usage });
+      await this.recordCharges();
       this.logger(logEvent('r2.reconciled', `[r2] ${blobs.size} stored chunk(s), ${formatBytes(usage.storageBytes)}; collected ${collectedBlobs}`, { chunks: blobs.size, size: formatBytes(usage.storageBytes), collected: collectedBlobs }));
       return { blobCount: blobs.size, collectedBlobs, collectedBytes, usage: toPublicUsage(usage) };
     });
@@ -550,9 +593,9 @@ export class R2Manager {
           storageBytes: Math.max(0, usage.storageBytes - bytes),
           legacyObjectCount: 0,
           legacyBytes: 0,
-          writeOperations: usage.writeOperations + client.chargedWrites,
         },
       });
+      await this.recordCharges();
       this.logger(logEvent('r2.legacyRemoved', `[r2] removed ${legacy.length} archive(s) in the old whole-file format, ${formatBytes(bytes)}`, { count: legacy.length, size: formatBytes(bytes) }));
       return { removed: legacy.length, bytes };
     });
@@ -562,6 +605,7 @@ export class R2Manager {
     if (!key.startsWith(OBJECT_PREFIX) || key.includes('..')) throw new R2Error('invalid_object_key', 'The R2 object key is invalid');
     const config = await this.load();
     await this.client(config).deleteObject(key);
+    await this.recordCharges();
   }
 
   public async markFingerprint(fingerprint: string): Promise<void> {
@@ -629,7 +673,32 @@ export class R2Manager {
   }
 
   private client(config: StoredR2Config): R2Client {
-    return new R2Client(toCredentials(config), this.fetchImpl);
+    return new R2Client(toCredentials(config), this.fetchImpl, (kind) => {
+      if (kind === 'charged') this.charges.write += 1;
+      else if (kind === 'read') this.charges.read += 1;
+    });
+  }
+
+  /**
+   * Write down what has been charged since the last time.
+   *
+   * Called at the end of every operation that talks to R2, including the ones
+   * that only read, so the figure the panel shows is the whole bill rather than
+   * the part that happened to pass through a saved result.
+   */
+  private async recordCharges(options: { readonly atMostEvery?: number } = {}): Promise<void> {
+    if (this.charges.write === 0 && this.charges.read === 0) return;
+    const since = this.now().getTime() - this.chargesWrittenAt;
+    if (options.atMostEvery !== undefined && since < options.atMostEvery) return;
+    this.chargesWrittenAt = this.now().getTime();
+    const config = await this.load();
+    const usage = await this.currentPeriod(config);
+    const taken = this.charges;
+    this.charges = { write: 0, read: 0 };
+    await this.save({
+      ...config,
+      usage: { ...usage, writeOperations: usage.writeOperations + taken.write, readOperations: usage.readOperations + taken.read },
+    });
   }
 
   /** Run one whole-store operation at a time, whatever else is asked for meanwhile. */
@@ -656,7 +725,7 @@ export class R2Manager {
         reconcileIntervalHours: config.reconcileIntervalHours,
       },
       retention: { keepRecent: config.keepRecent, keepDaily: config.keepDaily, keepWeekly: config.keepWeekly },
-      limits: { maxStorageBytes: config.maxStorageBytes, maxWriteOperations: config.maxWriteOperations },
+      limits: { maxStorageBytes: config.maxStorageBytes, maxWriteOperations: config.maxWriteOperations, maxReadOperations: config.maxReadOperations },
       usage: toPublicUsage(config.usage),
       lastFingerprint: config.lastFingerprint,
     };
@@ -834,21 +903,16 @@ function throwIfStopped(signal?: AbortSignal): void {
   if (signal?.aborted) throw new R2Error('r2_upload_stopped', 'The upload was stopped');
 }
 
-function formatBytes(value: number): string {
-  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
-  let size = value;
-  let unit = 0;
-  while (size >= 1024 && unit < units.length - 1) { size /= 1024; unit += 1; }
-  return `${unit === 0 ? size : size.toFixed(1)} ${units[unit]}`;
-}
-
 class R2Client {
   private readonly region = 'auto';
   private readonly service = 's3';
-  /** Charged writes and listings this client has made, for the monthly counter. */
-  public chargedWrites = 0;
 
-  public constructor(private readonly credentials: R2Credentials, private readonly fetchImpl: typeof fetch) {}
+  public constructor(
+    private readonly credentials: R2Credentials,
+    private readonly fetchImpl: typeof fetch,
+    /** Told about every request that Cloudflare charges for, as it is made. */
+    private readonly onRequest: (billing: 'charged' | 'read' | 'free') => void,
+  ) {}
 
   public async listObjects(prefix: string, maxKeys: number, cursor?: string): Promise<{ objects: S3ObjectRecord[]; cursor: string | undefined }> {
     const query = new URLSearchParams([['list-type', '2'], ['prefix', prefix], ['max-keys', String(maxKeys)]]);
@@ -892,7 +956,7 @@ class R2Client {
     const { authorization } = signRequest({ method, url, headers, payloadHash, accessKeyId: this.credentials.accessKeyId, secretAccessKey: this.credentials.secretAccessKey, region: this.region, service: this.service });
     headers.authorization = authorization;
     const init = { method, headers, ...(body === null ? {} : { body: body as BodyInit }), duplex: 'half' } as RequestInit & { duplex: 'half' };
-    if (billing === 'charged') this.chargedWrites += 1;
+    this.onRequest(billing);
     const response = await this.fetchImpl(url, init);
     if (!response.ok) {
       const message = (await response.text()).slice(0, 500);
@@ -1023,6 +1087,7 @@ function defaultStoredConfig(now: Date): StoredR2Config {
       blobCount: 0,
       snapshotCount: 0,
       writeOperations: 0,
+      readOperations: 0,
       periodStartedAt: monthStart(now),
       legacyObjectCount: 0,
       legacyBytes: 0,

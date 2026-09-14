@@ -317,3 +317,40 @@ test('a remembered recovery point that is gone falls back to the listing', async
   for (const key of [...bucket.objects.keys()]) if (key.includes('/snapshots/')) bucket.objects.delete(key);
   assert.equal(await manager.latestSnapshot('profile-1'), null);
 });
+
+test('every charged request is counted, including the listings that were free before', async () => {
+  const bucket = fakeBucket();
+  const { manager, root } = await createManager({ fetchImpl: bucket.fetchImpl });
+  await manager.syncProfile({ profile: profile(), sources: [await source(root, 'settings.json', '{"a":1}')], fingerprint: 'one' });
+
+  // Listing used to make its own client and throw the tally away with it, so
+  // the most expensive thing the panel did counted as nothing at all.
+  const before = (await manager.getConfig()).usage;
+  const listsBefore = bucket.requests.list;
+  await manager.listObjects();
+  await manager.listSnapshots('profile-1');
+  const listed = bucket.requests.list - listsBefore;
+  assert.ok(listed >= 2);
+  const after = (await manager.getConfig()).usage;
+  assert.equal(after.writeOperations - before.writeOperations, listed);
+});
+
+test('reading a recovery point back is counted as reads, not as writes', async () => {
+  const bucket = fakeBucket();
+  const { manager, root } = await createManager({ fetchImpl: bucket.fetchImpl });
+  const chat = await source(root, 'chats/one.jsonl', 'hello\n');
+  const card = await source(root, 'characters/Assistant.png', 'card');
+  await manager.syncProfile({ profile: profile(), sources: [chat, card], fingerprint: 'one' });
+  const before = (await manager.getConfig()).usage;
+
+  // A restore is one of these per file, and the free allowance for them is
+  // separate from the one for writes. Charging them to the wrong counter made
+  // a restore look like it had used up the backup budget.
+  const snapshot = (await manager.listSnapshots('profile-1'))[0]!;
+  await manager.readSnapshot('profile-1', snapshot.id);
+  for (const hash of [chat.file.chunks[0]!.hash, card.file.chunks[0]!.hash]) await manager.readBlob(hash);
+  await manager.listSnapshots('profile-1');
+
+  const after = (await manager.getConfig()).usage;
+  assert.ok(after.readOperations - before.readOperations >= 3, `expected at least three reads, got ${after.readOperations - before.readOperations}`);
+});

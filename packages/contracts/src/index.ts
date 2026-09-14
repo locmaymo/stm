@@ -177,6 +177,14 @@ export interface R2Config {
   readonly limits: {
     readonly maxStorageBytes: number;
     readonly maxWriteOperations: number;
+    /**
+     * Reads are reported against this but never refused because of it.
+     *
+     * The reads are a restore. Refusing to give someone their data back to
+     * avoid a small bill is the wrong trade, and the ceiling that would do it
+     * is worse than the bill.
+     */
+    readonly maxReadOperations: number;
   };
   readonly usage: R2Usage;
   readonly lastFingerprint: string | null;
@@ -188,11 +196,30 @@ export interface R2Usage {
   readonly snapshotCount: number;
   /** Charged writes and listings this calendar month, counted locally. */
   readonly writeOperations: number;
+  /** Charged reads this calendar month. A restore is roughly one per file. */
+  readonly readOperations: number;
   readonly periodStartedAt: string;
   /** Archives left in the bucket by the version that uploaded whole ZIP files. */
   readonly legacyObjectCount: number;
   readonly legacyBytes: number;
   readonly lastReconciledAt: string | null;
+}
+
+/**
+ * A size in the units the thing being measured is actually sold in.
+ *
+ * Cloudflare quotes a bucket in GB and gives away 10 of them, decimal, and
+ * network rates are decimal everywhere. Dividing by 1024 and writing "GB"
+ * understates a bucket by seven percent - enough that the panel and the
+ * Cloudflare dashboard disagreed about the same bucket and neither looked
+ * wrong. One function, so they cannot disagree again.
+ */
+export function formatBytes(value: number): string {
+  const units = ['B', 'kB', 'MB', 'GB', 'TB'];
+  let size = Math.max(0, value);
+  let unit = 0;
+  while (size >= 1000 && unit < units.length - 1) { size /= 1000; unit += 1; }
+  return `${unit === 0 ? Math.round(size) : size.toFixed(1)} ${units[unit]}`;
 }
 
 /**

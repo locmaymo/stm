@@ -569,7 +569,12 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     return;
   }
   if (pathname === '/api/v1/r2' && method === 'GET') {
-    sendJson(response, 200, { config: await r2.getConfig(), objects: await r2.listObjects().catch(() => []) });
+    // This used to list the bucket to show how many objects were in it. With
+    // nine thousand of them that is ten charged listings for every load of the
+    // page - more charged operations than a day of backups - to display a
+    // number the manager already keeps. `/api/v1/r2/objects` still lists, for
+    // when somebody actually asked to see the contents.
+    sendJson(response, 200, { config: await r2.getConfig() });
     return;
   }
   if (pathname === '/api/v1/r2' && method === 'PUT') {

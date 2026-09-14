@@ -1,4 +1,4 @@
-import type { MessageParams, TransferProgress } from '../../../packages/contracts/src/index.js';
+import { formatBytes, type MessageParams, type TransferProgress } from '../../../packages/contracts/src/index.js';
 
 /**
  * How much history the rate is averaged over.
@@ -60,14 +60,6 @@ export class TransferMeter {
       },
     };
   }
-}
-
-export function formatBytes(value: number): string {
-  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
-  let size = Math.max(0, value);
-  let unit = 0;
-  while (size >= 1024 && unit < units.length - 1) { size /= 1024; unit += 1; }
-  return `${unit === 0 ? Math.round(size) : size.toFixed(1)} ${units[unit]}`;
 }
 
 /**

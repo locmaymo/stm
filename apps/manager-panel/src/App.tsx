@@ -15,7 +15,8 @@ import {
 } from '../../../packages/ui/src/index.js';
 import { logCatalog, translator, type Translate } from './i18n.js';
 import { browserStorage, readPreferences, savePreferences, type Preferences } from './preferences.js';
-import type { AccessGatewayState, BackupManifest, ConfigDocument, ConfigUpdateInput, Installation, Job, LogEntry, LogSourceFilter, MetricsSnapshot, ProcessState, Profile, R2Config, R2Object, R2SnapshotSummary, RestorePreview, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, BackupManifest, ConfigDocument, ConfigUpdateInput, Installation, Job, LogEntry, LogSourceFilter, MetricsSnapshot, ProcessState, Profile, R2Config, R2SnapshotSummary, RestorePreview, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import { formatBytes } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
 import { translateLogEntry, translateStep } from './log-format.js';
 import { QrCode } from './qr-code.js';
@@ -602,7 +603,6 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
   const [stopping, setStopping] = useState(false);
   const uploadAbort = useRef<AbortController | null>(null);
   const [r2Config, setR2Config] = useState<R2Config | null>(null);
-  const [r2Objects, setR2Objects] = useState<R2Object[]>([]);
   const [r2Snapshots, setR2Snapshots] = useState<R2SnapshotSummary[]>([]);
   const [r2Form, setR2Form] = useState({ endpoint: '', bucket: '', accountId: '', accessKeyId: '', secretAccessKey: '', enabled: false, localIntervalMinutes: 60, hotIntervalMinutes: 5, coldIntervalHours: 6, keepRecent: 48, keepDaily: 14, keepWeekly: 8 });
   const [r2Busy, setR2Busy] = useState<string | null>(null);
@@ -618,8 +618,8 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
     if (profileResponse.ok) { const payload = await profileResponse.json() as { profiles: Profile[]; activeProfileId: string | null }; onProfilesChange(payload.profiles, payload.activeProfileId); }
     if (backupResponse.ok) { const payload = await backupResponse.json() as { backups: BackupManifest[] }; onBackupsChange(payload.backups); }
     if (r2Response.ok) {
-      const payload = await r2Response.json() as { config: R2Config; objects: R2Object[] };
-      setR2Config(payload.config); setR2Objects(payload.objects);
+      const payload = await r2Response.json() as { config: R2Config };
+      setR2Config(payload.config);
       setR2Form((current) => ({ ...current, endpoint: payload.config.endpoint ?? '', bucket: payload.config.bucket ?? '', accountId: payload.config.accountId ?? '', accessKeyId: payload.config.accessKeyIdMasked ? '********' : '', secretAccessKey: payload.config.secretAccessKeyConfigured ? '********' : '', enabled: payload.config.enabled, localIntervalMinutes: payload.config.schedule.localIntervalMinutes, hotIntervalMinutes: payload.config.schedule.hotIntervalMinutes, coldIntervalHours: payload.config.schedule.coldIntervalHours, keepRecent: payload.config.retention.keepRecent, keepDaily: payload.config.retention.keepDaily, keepWeekly: payload.config.retention.keepWeekly }));
     }
   };
@@ -933,7 +933,7 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
           <Button variant="ghost" onClick={() => void uploadR2()} disabled={r2Busy !== null || !r2Config?.configured}>{t('console.r2UploadLatest')}</Button>
           <Button variant="ghost" onClick={() => void reconcileR2()} disabled={r2Busy !== null || !r2Config?.configured}>{t('console.r2Reconcile')}</Button>
         </div>
-        {r2Config ? <R2Usage t={t} config={r2Config} objectCount={r2Objects.length} /> : null}
+        {r2Config ? <R2Usage t={t} config={r2Config} /> : null}
         {r2Config && r2Config.usage.legacyObjectCount > 0 ? <div className="r2-legacy" role="note">
           {/* Backups taken under the old whole-file scheme. Nothing reads them
               any more, but they are the operator's, so removing them is asked
@@ -969,20 +969,22 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
  * have gone. Both turn to the attention colour before they are reached, not
  * after - a backup that has already refused is too late to be a warning.
  */
-function R2Usage({ t, config, objectCount }: { t: Translate; config: R2Config; objectCount: number }) {
-  const storage = ratio(config.usage.storageBytes, config.limits.maxStorageBytes);
-  const writes = ratio(config.usage.writeOperations, config.limits.maxWriteOperations);
+function R2Usage({ t, config }: { t: Translate; config: R2Config }) {
+  const bars: Array<{ label: string; text: string; filled: number }> = [
+    { label: t('console.r2Estimate'), text: `${formatBytes(config.usage.storageBytes)} / ${formatBytes(config.limits.maxStorageBytes)}`, filled: ratio(config.usage.storageBytes, config.limits.maxStorageBytes) },
+    { label: t('console.r2Writes'), text: `${config.usage.writeOperations.toLocaleString()} / ${config.limits.maxWriteOperations.toLocaleString()}`, filled: ratio(config.usage.writeOperations, config.limits.maxWriteOperations) },
+    // Reads are what a restore costs. They are reported but never enforced:
+    // refusing someone their data back to avoid a small bill is the wrong way
+    // round.
+    { label: t('console.r2Reads'), text: `${config.usage.readOperations.toLocaleString()} / ${config.limits.maxReadOperations.toLocaleString()}`, filled: ratio(config.usage.readOperations, config.limits.maxReadOperations) },
+  ];
   return <div className="r2-usage">
-    <div className="r2-usage-row">
-      <span className={storage >= 0.9 ? 'operation-warning' : ''}>{t('console.r2Estimate')}: {formatBytes(config.usage.storageBytes)} / {formatBytes(config.limits.maxStorageBytes)}</span>
-      <span className="progress-track"><span className="progress-value" style={{ width: `${Math.max(1, storage * 100)}%` }} /></span>
-    </div>
-    <div className="r2-usage-row">
-      <span className={writes >= 0.9 ? 'operation-warning' : ''}>{t('console.r2Writes')}: {config.usage.writeOperations} / {config.limits.maxWriteOperations}</span>
-      <span className="progress-track"><span className="progress-value" style={{ width: `${Math.max(1, writes * 100)}%` }} /></span>
-    </div>
+    {bars.map((bar) => <div className="r2-usage-row" key={bar.label}>
+      <span className={bar.filled >= 0.9 ? 'operation-warning' : ''}>{bar.label}: {bar.text}</span>
+      <span className="progress-track"><span className="progress-value" style={{ width: `${Math.max(1, bar.filled * 100)}%` }} /></span>
+    </div>)}
     <div className="r2-summary">
-      <span>{t('console.r2Objects')}: {objectCount}</span>
+      <span>{t('console.r2Chunks')}: {config.usage.blobCount.toLocaleString()}</span>
       <span>{t('console.r2LastUpload')}: {config.lastUploadAt ? new Date(config.lastUploadAt).toLocaleString() : '—'}</span>
     </div>
   </div>;
@@ -992,12 +994,6 @@ function ratio(value: number, limit: number): number {
   return limit > 0 ? Math.max(0, Math.min(1, value / limit)) : 0;
 }
 
-function formatBytes(value: number): string {
-  if (value < 1024) return `${value} B`;
-  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
-  if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
-}
 
 function formatDuration(seconds: number): string {
   const total = Math.max(0, Math.round(seconds));
