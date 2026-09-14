@@ -46,6 +46,21 @@ export interface CreateBackupOptions {
   readonly signal?: AbortSignal;
 }
 
+export interface ImportEntry {
+  /** The archive-relative name, the same one a backup of this profile would use. */
+  readonly name: string;
+  readonly body: Readable;
+}
+
+export interface ImportEntriesOptions {
+  readonly name?: string;
+  readonly entries: AsyncIterable<ImportEntry>;
+  /** How many entries are coming, so progress can be a fraction rather than a count. */
+  readonly total?: number;
+  readonly onProgress?: (progress: { completed: number; total: number }) => void;
+  readonly signal?: AbortSignal;
+}
+
 export interface RestoreOptions {
   readonly mode: RestoreMode;
   readonly onProgress?: (progress: { completed: number; total: number }) => void;
@@ -69,7 +84,7 @@ interface ZipEntry {
   readonly symlink: boolean;
 }
 
-interface ArchiveSource {
+export interface ArchiveSource {
   readonly name: string;
   readonly path: string;
 }
@@ -154,6 +169,17 @@ export class BackupStore {
       newestMtime = Math.max(newestMtime, configDetails.mtimeMs);
     }
     return createHash('sha256').update(`${fileCount}:${totalBytes}:${Math.floor(newestMtime)}`, 'utf8').digest('hex');
+  }
+
+  /**
+   * Every file an archive of this profile would hold, with where each one is.
+   *
+   * The incremental R2 backup walks the same tree the ZIP does, so that the two
+   * cannot disagree about what a backup of this profile means - the difference
+   * between them is what is sent, not what is included.
+   */
+  public async sources(profile: Profile): Promise<ArchiveSource[]> {
+    return await collectSources(profile);
   }
 
   public async create(profile: Profile, options: CreateBackupOptions = {}): Promise<BackupManifest> {
@@ -331,6 +357,40 @@ export class BackupStore {
     await this.save([...await this.load(), manifest]);
     this.logger(logEvent('backup.imported', `[backup] imported ${manifest.name} (${manifest.fileCount} files)`, { name: manifest.name, files: manifest.fileCount }));
     return { manifest: { ...manifest }, preview };
+  }
+
+  /**
+   * Build an archive out of content that is not on this disk, and shelve it.
+   *
+   * A recovery point pulled back from R2 lands in the same library as anything
+   * else, so restoring it is the path that already exists: the same validation,
+   * the same preview, the same safety snapshot, the same merge-or-replace
+   * choice. Nothing about restoring has to know where an archive came from.
+   */
+  public async importFromEntries(profile: Profile, options: ImportEntriesOptions): Promise<{ manifest: BackupManifest; preview: RestorePreview }> {
+    await mkdir(this.paths.tmp, { recursive: true });
+    // Beside its final target, because /tmp is often a different filesystem
+    // from the persistent volume and the move would fail with EXDEV.
+    await mkdir(this.paths.archives, { recursive: true });
+    const temporary = join(this.paths.archives, `.${randomUUID()}.zip.tmp`);
+    let writer: ZipWriter | null = null;
+    try {
+      writer = new ZipWriter(temporary);
+      let completed = 0;
+      for await (const entry of options.entries) {
+        throwIfStopped(options.signal);
+        await writer.addStream(entry.name, entry.body);
+        completed += 1;
+        options.onProgress?.({ completed, total: options.total ?? completed });
+      }
+      await writer.finish();
+      writer = null;
+      return await this.importArchive(profile, temporary, options.name);
+    } catch (error) {
+      await writer?.abort();
+      await rm(temporary, { force: true });
+      throw error;
+    }
   }
 
   public async rename(id: string, name: string): Promise<BackupManifest> {
@@ -735,14 +795,27 @@ class ZipWriter {
       throw error;
     }
     try {
-      await this.writeEntry(nameBuffer, handle);
+      await this.writeEntry(nameBuffer, handle.createReadStream({ autoClose: false }));
     } finally {
       await handle.close().catch(() => undefined);
     }
     return true;
   }
 
-  private async writeEntry(nameBuffer: Buffer, handle: FileHandle): Promise<void> {
+  /**
+   * Add one entry whose bytes are not on this disk.
+   *
+   * A recovery point fetched from R2 arrives as chunks over the network. Giving
+   * them a temporary file each, only to read all of them back, would be a
+   * second full pass over gigabytes and a second copy of them on the volume.
+   */
+  public async addStream(name: string, source: Readable): Promise<void> {
+    const nameBuffer = Buffer.from(name, 'utf8');
+    if (nameBuffer.length > 0xffff) throw new BackupError('invalid_filename', `Archive filename is too long: ${name}`);
+    await this.writeEntry(nameBuffer, source);
+  }
+
+  private async writeEntry(nameBuffer: Buffer, source: Readable): Promise<void> {
     const offset = this.offset;
     const local = Buffer.alloc(30 + nameBuffer.length);
     local.writeUInt32LE(0x04034b50, 0);
@@ -766,7 +839,6 @@ class ZipWriter {
       },
     });
     const crcTransformState = { crc: 0, size: 0 };
-    const source = handle.createReadStream({ autoClose: false });
     const deflate = createDeflateRaw();
     const compressed = source.pipe(crcTransform).pipe(deflate);
     // pipe does not forward errors. A read that fails would emit on the source

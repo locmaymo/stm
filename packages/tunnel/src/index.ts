@@ -1,7 +1,7 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
-import { access, chmod, mkdir, rename, rm } from 'node:fs/promises';
+import { access, chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
 import { Readable } from 'node:stream';
 import type { ReadableStream } from 'node:stream/web';
@@ -12,6 +12,25 @@ import type { PlatformPaths } from '../../platform/src/index.js';
 
 const execFileAsync = promisify(execFile);
 const CLOUDFLARED_RELEASE = 'https://github.com/cloudflare/cloudflared/releases/latest/download';
+/** What the tunnel should be doing, so a manager restart does not take the link down with it. */
+const TUNNEL_STATE_FILE = 'tunnel-config.json';
+const TUNNEL_SCHEMA_VERSION = 1 as const;
+/**
+ * How long to wait before reconnecting, per consecutive failure.
+ *
+ * cloudflared keeps its own edge connections alive, so reaching this at all
+ * means the process itself went away - the host slept, the network dropped for
+ * longer than cloudflared tolerates, or something killed it. Retrying at once
+ * is right for the first case and wrong for a machine that is simply offline,
+ * so the wait grows and then sits at a minute.
+ */
+const RECONNECT_DELAYS_MS = [2_000, 5_000, 15_000, 30_000, 60_000] as const;
+
+interface StoredTunnelState {
+  readonly schemaVersion: 1;
+  readonly mode: TunnelMode;
+  readonly token: string | null;
+}
 
 /**
  * Which cloudflared build this machine needs.
@@ -58,6 +77,10 @@ export interface TunnelManagerOptions {
   readonly beforeStart?: () => Promise<void>;
   /** Injectable for tests; defaults to the global fetch. */
   readonly fetchImpl?: typeof globalThis.fetch;
+  /** Injectable for tests, so no real cloudflared has to be launched. */
+  readonly spawnImpl?: typeof spawn;
+  /** How long to wait before each reconnect attempt; shortened by tests. */
+  readonly reconnectDelaysMs?: readonly number[];
 }
 
 export class TunnelManager {
@@ -69,12 +92,19 @@ export class TunnelManager {
   private readonly targetUrl: string;
   private readonly beforeStart: (() => Promise<void>) | undefined;
   private readonly fetchImpl: typeof globalThis.fetch;
+  private readonly spawnImpl: typeof spawn;
+  private readonly reconnectDelaysMs: readonly number[];
   private child: ChildProcess | null = null;
   private token: string | undefined;
   private buffer = '';
   private state: TunnelState = { mode: 'off', status: 'stopped', url: null, startedAt: null, error: null };
   /** Set while a stop this manager asked for is in flight, so the exit can say so. */
   private stopReason: StopReason | null = null;
+  /** The pending reconnect, and how many have failed in a row before it. */
+  private reconnectTimer: NodeJS.Timeout | null = null;
+  private reconnectAttempt = 0;
+  /** Set once the manager is shutting down, so nothing reconnects behind it. */
+  private closed = false;
 
   public constructor(options: TunnelManagerOptions) {
     this.paths = options.paths;
@@ -85,12 +115,15 @@ export class TunnelManager {
     this.targetUrl = options.targetUrl ?? 'http://127.0.0.1:8001';
     this.beforeStart = options.beforeStart;
     this.fetchImpl = options.fetchImpl ?? ((...args) => globalThis.fetch(...args));
+    this.spawnImpl = options.spawnImpl ?? spawn;
+    this.reconnectDelaysMs = options.reconnectDelaysMs?.length ? options.reconnectDelaysMs : RECONNECT_DELAYS_MS;
   }
 
   public getState(): TunnelState { return { ...this.state }; }
 
   public async start(mode: Exclude<TunnelMode, 'off'> = 'quick', token?: string): Promise<TunnelState> {
     if (this.child) return this.getState();
+    this.clearReconnect();
     try { await this.beforeStart?.(); } catch (error: unknown) { return this.fail(mode, error instanceof Error ? error.message : 'Tunnel security requirements are not met'); }
     const selectedToken = token?.trim() || this.token;
     if (mode === 'named' && !selectedToken) return this.fail(mode, 'A Named Tunnel token is required');
@@ -104,12 +137,13 @@ export class TunnelManager {
     const args = mode === 'quick'
       ? ['tunnel', '--no-autoupdate', '--url', this.targetUrl]
       : ['tunnel', '--no-autoupdate', 'run', '--token', selectedToken!];
+    await this.remember(mode, mode === 'named' ? selectedToken ?? null : null);
     this.state = { mode, status: 'starting', url: null, startedAt: this.now().toISOString(), error: null };
     const target = this.targetUrl.replace(/^https?:\/\//u, '');
     this.logger(mode === 'quick'
       ? logEvent('cloudflared.startingQuick', `[cloudflared] starting Quick Tunnel to ${target}`, { target })
       : logEvent('cloudflared.startingNamed', `[cloudflared] starting Named Tunnel to ${target}`, { target }));
-    const child = spawn(binary, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, env: this.env });
+    const child = this.spawnImpl(binary, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, env: this.env });
     this.child = child;
     const consume = (chunk: string) => {
       this.buffer += chunk;
@@ -132,7 +166,8 @@ export class TunnelManager {
       const reason = this.stopReason;
       this.stopReason = null;
       const exit = describeExit(code, signal);
-      if (this.child === child) {
+      const owned = this.child === child;
+      if (owned) {
         this.child = null;
         if (this.state.status !== 'error' && this.state.status !== 'stopped') {
           this.state = { ...this.state, status: reason || code === 0 ? 'stopped' : 'error', error: reason || code === 0 ? null : `cloudflared exited on its own (${exit})` };
@@ -141,11 +176,15 @@ export class TunnelManager {
       this.logger(reason
         ? logEvent(`cloudflared.${stopReasonCode(reason)}`, `[cloudflared] stopped: ${STOP_REASON_TEXT[reason]}`)
         : logEvent('cloudflared.exited', `[cloudflared] exited on its own (${exit})`, { detail: exit }));
+      // Nobody asked for this. The link is what people have open, so put it
+      // back rather than waiting for someone to notice the switch moved.
+      if (owned && !reason) this.scheduleReconnect(mode);
     });
     return this.getState();
   }
 
   public async stop(reason: StopReason = 'requested'): Promise<TunnelState> {
+    this.clearReconnect();
     const child = this.child;
     if (!child) { this.state = { ...this.state, status: 'stopped', url: null }; return this.getState(); }
     this.stopReason = reason;
@@ -160,7 +199,16 @@ export class TunnelManager {
     return this.getState();
   }
 
-  public async close(): Promise<void> { await this.stop('shutdown'); }
+  /**
+   * Shut down without forgetting that the tunnel was wanted.
+   *
+   * The manager going down is not the operator turning the tunnel off, so the
+   * stored mode survives and `resume` brings it back on the next start.
+   */
+  public async close(): Promise<void> {
+    this.closed = true;
+    await this.stop('shutdown');
+  }
 
   public async restart(reason: StopReason = 'restart'): Promise<TunnelState> {
     const mode = this.state.mode;
@@ -169,12 +217,110 @@ export class TunnelManager {
     return this.start(mode);
   }
 
+  /**
+   * Turn the tunnel off, and remember that it is off.
+   *
+   * This is the only path that forgets the mode. Everything else - a restart, a
+   * restore, the manager shutting down - leaves it stored, because none of them
+   * mean the operator no longer wants a public address.
+   */
+  public async disable(): Promise<TunnelState> {
+    await this.remember('off', null);
+    const state = await this.stop('requested');
+    this.state = { ...state, mode: 'off' };
+    return this.getState();
+  }
+
+  /**
+   * Start the tunnel again if it was on when the manager last went down.
+   *
+   * A Quick Tunnel gets a fresh address every time cloudflared starts, so this
+   * is what keeps a manager restart from silently leaving the link dead; with a
+   * Named Tunnel the address is the same one as before.
+   */
+  public async resume(): Promise<TunnelState> {
+    const stored = await this.readStored();
+    if (!stored || stored.mode === 'off') return this.getState();
+    if (stored.mode === 'named') this.token = stored.token ?? undefined;
+    this.logger(logEvent('cloudflared.resuming', '[cloudflared] restoring the tunnel that was running before'));
+    const state = await this.start(stored.mode, stored.token ?? undefined);
+    if (state.status === 'error') this.scheduleReconnect(stored.mode);
+    return state;
+  }
+
   private handleLine(line: string): void {
     const clean = line.replace(/\u001b\[[0-?]*[ -\/]*[@-~]/gu, '').trim();
     if (!clean) return;
     const url = parseTunnelUrl(clean);
-    if (url && this.state.mode === 'quick') this.state = { ...this.state, status: 'running', url };
+    if (url && this.state.mode === 'quick') this.state = { ...this.state, status: 'running', url, error: null };
+    // A Named Tunnel never announces a trycloudflare address - its hostname is
+    // the one configured in Cloudflare - so without this it stayed at
+    // "starting" for as long as it ran, and nothing could tell a working tunnel
+    // from one that never came up.
+    if (this.state.mode === 'named' && /registered tunnel connection/iu.test(clean)) this.state = { ...this.state, status: 'running', error: null };
+    if (this.state.status === 'running') this.reconnectAttempt = 0;
     this.logger(`[cloudflared] ${clean}`);
+  }
+
+  /**
+   * Bring the tunnel back after an exit nobody asked for.
+   *
+   * The attempt itself can fail - the machine may still be offline - so a
+   * failed attempt schedules the next one rather than giving up.
+   */
+  private scheduleReconnect(mode: Exclude<TunnelMode, 'off'>): void {
+    if (this.closed || this.reconnectTimer || this.child) return;
+    const delay = this.reconnectDelaysMs[Math.min(this.reconnectAttempt, this.reconnectDelaysMs.length - 1)] ?? 60_000;
+    this.reconnectAttempt += 1;
+    const seconds = Math.round(delay / 1000);
+    this.logger(logEvent('cloudflared.reconnecting', `[cloudflared] reconnecting in ${seconds}s`, { seconds }));
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      void this.start(mode).then((state) => { if (state.status === 'error') this.scheduleReconnect(mode); }).catch(() => this.scheduleReconnect(mode));
+    }, delay);
+    // The manager must still be able to exit while one of these is pending.
+    this.reconnectTimer.unref();
+  }
+
+  private clearReconnect(): void {
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+  }
+
+  /** Record what the tunnel should be doing, for the next time the manager starts. */
+  private async remember(mode: TunnelMode, token: string | null): Promise<void> {
+    const stored: StoredTunnelState = { schemaVersion: TUNNEL_SCHEMA_VERSION, mode, token };
+    const target = join(this.paths.state, TUNNEL_STATE_FILE);
+    const temporary = `${target}.${randomUUID()}.tmp`;
+    try {
+      await mkdir(this.paths.state, { recursive: true });
+      // The Named Tunnel token is a credential, so it gets the same treatment
+      // as the R2 keys next to it rather than a world-readable file.
+      await writeFile(temporary, `${JSON.stringify(stored, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+      await rename(temporary, target);
+    } catch (error: unknown) {
+      await rm(temporary, { force: true }).catch(() => undefined);
+      // Not being able to remember this is not a reason to refuse to open the
+      // tunnel; it only costs the automatic restore on the next start.
+      const reason = error instanceof Error ? error.message : 'unknown error';
+      this.logger(logEvent('cloudflared.stateNotSaved', `[cloudflared] the tunnel setting could not be saved: ${reason}`, { reason }));
+    }
+  }
+
+  private async readStored(): Promise<StoredTunnelState | null> {
+    try {
+      const parsed: unknown = JSON.parse(await readFile(join(this.paths.state, TUNNEL_STATE_FILE), 'utf8'));
+      if (typeof parsed !== 'object' || parsed === null) return null;
+      const record = parsed as Record<string, unknown>;
+      if (record.schemaVersion !== TUNNEL_SCHEMA_VERSION) return null;
+      const mode = record.mode;
+      if (mode !== 'off' && mode !== 'quick' && mode !== 'named') return null;
+      const token = typeof record.token === 'string' && record.token.trim() ? record.token.trim() : null;
+      if (mode === 'named' && !token) return null;
+      return { schemaVersion: TUNNEL_SCHEMA_VERSION, mode, token };
+    } catch {
+      return null;
+    }
   }
 
   /**
