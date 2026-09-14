@@ -324,3 +324,37 @@ test('only a proxy on this machine may say who a request is from', () => {
   assert.equal(from('192.168.1.40', '203.0.113.9'), '192.168.1.40');
   assert.equal(from('192.168.1.40'), '192.168.1.40');
 });
+
+test('a large body arrives whole, in both directions', async (t) => {
+  // Importing a character card or a lorebook is a body of megabytes, and a
+  // backup coming back is larger still. A proxy that mangles either corrupts
+  // the thing being imported rather than failing where anyone would see it.
+  const sent = Buffer.alloc(4 * 1024 * 1024);
+  for (let index = 0; index < sent.length; index += 1) sent[index] = index % 251;
+  let received: Buffer | null = null;
+  const upstream = await startUpstream((request, response) => {
+    const chunks: Buffer[] = [];
+    request.on('data', (chunk: Buffer) => chunks.push(chunk));
+    request.on('end', () => {
+      received = Buffer.concat(chunks);
+      response.writeHead(200, { 'content-type': 'application/octet-stream' });
+      response.end(sent);
+    });
+  });
+  const { gateway, base } = await startGateway(upstream);
+  t.after(async () => { await gateway.close(); await upstream.close(); });
+
+  const cookie = await signIn(base);
+  const response = await fetch(`${base}/api/characters/import`, {
+    method: 'POST',
+    headers: { cookie, 'content-type': 'application/octet-stream' },
+    body: sent,
+  });
+  assert.equal(response.status, 200);
+  const returned = Buffer.from(await response.arrayBuffer());
+  assert.ok(received, 'the body reached SillyTavern');
+  assert.equal((received as Buffer).length, sent.length);
+  assert.ok((received as Buffer).equals(sent), 'byte for byte on the way in');
+  assert.equal(returned.length, sent.length);
+  assert.ok(returned.equals(sent), 'and on the way back');
+});
