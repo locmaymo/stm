@@ -141,6 +141,12 @@
   --elevation-3: 0 16px 40px -12px rgb(0 0 0 / 0.60), 0 4px 10px -4px rgb(0 0 0 / 0.40);
 }
 
+/* The indeterminate progress bar: work that cannot say how far along it is. */
+@keyframes progress-sweep {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
