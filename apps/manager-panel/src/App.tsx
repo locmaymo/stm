@@ -6,11 +6,12 @@ import {
   BrainCircuit, CircleStop, Clock3, Cpu, Ellipsis, Play, QrCode as QrCodeIcon, RefreshCw, Settings2, Square,
 } from 'lucide-react';
 import {
-  Badge, Button, Card, CardAction, CardContent, CardFooter, CardHeader,
-  Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+  Badge, BrandMark, Button, Card, CardAction, CardContent, CardFooter, CardHeader,
+  CardGrid, Input, MobileNav, PageContainer, Select, SelectContent, SelectItem,
+  SelectTrigger, SelectValue,
   Sidebar, SidebarContent, SidebarGroup, SidebarGroupContent, SidebarHeader,
   SidebarInset, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarProvider,
-  SidebarTrigger, Sheet, SheetContent, SheetHeader, SheetTitle, Switch, Tooltip,
+  SidebarTrigger, Sheet, SheetContent, SheetHeader, SheetTitle, Switch, Toaster, Tooltip,
   TooltipContent, TooltipTrigger, useSidebar,
 } from '../../../packages/ui/src/index.js';
 import { logCatalog, translator, type Translate } from './i18n.js';
@@ -289,26 +290,39 @@ function ConsoleApp({ csrfToken }: { csrfToken: string }) {
   };
 
   return (
-    <SidebarProvider style={{ '--sidebar-width': '15rem', '--sidebar-width-icon': '3.75rem' } as CSSProperties}>
-      <AppSidebar page={page} navigate={navigate} t={t} />
-      <SidebarInset className="min-w-0">
-        <header className="site-header">
-          <SidebarTrigger label={t('console.toggleNavigation')} className="size-10 shrink-0" />
-          <h1>{t(`nav.${page}`)}</h1>
-          <div className="ml-auto flex shrink-0 items-center gap-2">
-            <Button variant="outline" size="sm" className="log-header-button" onClick={() => setLogsExpanded(true)}><ScrollText />{t('console.openLogs')}</Button>
-            <LanguageControl t={t} preferences={preferences} onChange={changePreferences} />
-            <Button variant="ghost" size="icon" className="size-10" aria-label={preferences.theme === 'dark' ? t('console.useLight') : t('console.useDark')} onClick={() => changePreferences({ theme: preferences.theme === 'dark' ? 'light' : 'dark' })}>
-              {preferences.theme === 'dark' ? <Sun /> : <Moon />}
-            </Button>
-          </div>
-        </header>
-        <div className="page-body">
-          {page === 'overview' ? <div className="core-grid">{installation}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} installed={Boolean(activeInstallationId)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /> <DataPanel t={t} navigate={navigate} activeProfile={profiles.find((profile) => profile.id === activeProfileId) ?? null} latestBackup={backups.at(-1) ?? null} /><SystemPanel t={t} csrfToken={csrfToken ?? ''} />{logs}</div> : page === 'data' ? <DataPage t={t} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} config={configDocument} onConfigUpdate={updateConfig} onChangeManagerPassword={changeManagerPassword} /> : <ResourcePanel page={page} t={t} />}
-        </div>
-      </SidebarInset>
-      <LogsSheet {...logProps} open={logsExpanded} onClose={() => setLogsExpanded(false)} />
-    </SidebarProvider>
+    <Toaster>
+      <SidebarProvider style={{ '--sidebar-width': '15rem', '--sidebar-width-icon': '3.75rem' } as CSSProperties}>
+        <AppSidebar page={page} navigate={navigate} t={t} />
+        <SidebarInset className="min-w-0">
+          <header className="site-header">
+            <div className="site-header-inner">
+              {/* The trigger is desktop-only: below `md` the destinations are
+                  along the bottom of the screen, where a thumb already is. */}
+              <SidebarTrigger label={t('console.toggleNavigation')} className="-ml-2 hidden size-9 shrink-0 md:inline-flex" />
+              <BrandMark size={26} className="md:hidden" />
+              <h1>{t(`nav.${page}`)}</h1>
+              <div className="ml-auto flex shrink-0 items-center gap-1.5">
+                <Button variant="outline" size="sm" className="log-header-button" onClick={() => setLogsExpanded(true)}><ScrollText />{t('console.openLogs')}</Button>
+                <LanguageControl t={t} preferences={preferences} onChange={changePreferences} />
+                <Button variant="ghost" size="icon-sm" className="size-9" aria-label={preferences.theme === 'dark' ? t('console.useLight') : t('console.useDark')} onClick={() => changePreferences({ theme: preferences.theme === 'dark' ? 'light' : 'dark' })}>
+                  {preferences.theme === 'dark' ? <Sun /> : <Moon />}
+                </Button>
+              </div>
+            </div>
+          </header>
+          <PageContainer>
+            {page === 'overview' ? <CardGrid>{installation}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} installed={Boolean(activeInstallationId)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><DataPanel t={t} navigate={navigate} activeProfile={profiles.find((profile) => profile.id === activeProfileId) ?? null} latestBackup={backups.at(-1) ?? null} /><SystemPanel t={t} csrfToken={csrfToken ?? ''} />{logs}</CardGrid> : page === 'data' ? <DataPage t={t} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} config={configDocument} onConfigUpdate={updateConfig} onChangeManagerPassword={changeManagerPassword} /> : <ResourcePanel page={page} t={t} />}
+          </PageContainer>
+          <MobileNav
+            items={navigation.map(({ id, icon }) => ({ id, icon, href: `#${id}`, label: t(`nav.${id}`) }))}
+            current={page}
+            onNavigate={(id) => navigate(id as PageId)}
+            label={t('console.navigation')}
+          />
+        </SidebarInset>
+        <LogsSheet {...logProps} open={logsExpanded} onClose={() => setLogsExpanded(false)} />
+      </SidebarProvider>
+    </Toaster>
   );
 }
 
@@ -317,7 +331,10 @@ function AppSidebar({ page, navigate, t }: { page: PageId; navigate: Navigate; t
   return (
     <Sidebar collapsible="icon" mobileTitle={t('console.navigation')}>
       <SidebarHeader className="brand-header">
-        <a href="#overview" aria-label="SillyTavern Manager" className="brand" onClick={() => setOpenMobile(false)}><span className="brand-symbol" aria-hidden="true">ST</span><span className="truncate group-data-[collapsible=icon]:hidden">ST Manager</span></a>
+        <a href="#overview" aria-label="SillyTavern Manager" className="brand" onClick={() => setOpenMobile(false)}>
+          <BrandMark size={28} />
+          <span className="truncate group-data-[collapsible=icon]:hidden">ST Manager</span>
+        </a>
         {isMobile ? <Button variant="ghost" size="icon" className="ml-auto shrink-0" aria-label={t('console.closeNavigation')} onClick={() => setOpenMobile(false)}><X /></Button> : null}
       </SidebarHeader>
       <SidebarContent><SidebarGroup><SidebarGroupContent><nav aria-label={t('console.navigation')}><SidebarMenu>{navigation.map(({ id, icon: Icon }) => <SidebarMenuItem key={id}><SidebarMenuButton asChild isActive={page === id} tooltip={t(`nav.${id}`)} className="h-11 gap-3 px-3 text-sm md:h-10 group-data-[collapsible=icon]:size-11! group-data-[collapsible=icon]:p-3!"><a href={`#${id}`} aria-current={page === id ? 'page' : undefined} aria-label={t(`nav.${id}`)} onClick={() => { navigate(id); setOpenMobile(false); }}><Icon className="size-4" /><span>{t(`nav.${id}`)}</span></a></SidebarMenuButton></SidebarMenuItem>)}</SidebarMenu></nav></SidebarGroupContent></SidebarGroup></SidebarContent>
