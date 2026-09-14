@@ -14,7 +14,7 @@ import {
   TooltipContent, TooltipTrigger, useSidebar,
 } from '../../../packages/ui/src/index.js';
 import { logCatalog, translator, type Translate } from './i18n.js';
-import { browserStorage, readPreferences, savePreferences, type Preferences } from './preferences.js';
+import { browserEnvironment, browserStorage, readPreferences, savePreferences, type Preferences } from './preferences.js';
 import type { AccessGatewayState, BackupManifest, ConfigDocument, ConfigUpdateInput, Installation, Job, LogEntry, LogSourceFilter, MetricsSnapshot, ProcessState, Profile, R2Config, R2SnapshotSummary, RestorePreview, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { formatBytes } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
@@ -92,7 +92,7 @@ function AuthGate() {
   const [accepted, setAccepted] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const t = translator(readPreferences(browserStorage()).locale);
+  const t = translator(readPreferences(browserStorage(), browserEnvironment()).locale);
   useEffect(() => {
     let cancelled = false;
     void fetch('/api/v1/setup/status', { credentials: 'same-origin' }).then(async (response) => response.json() as Promise<{ setupRequired: boolean; setupCodeRequired: boolean }>).then(async (status) => {
@@ -128,7 +128,7 @@ function AuthGate() {
 
 function ConsoleApp({ csrfToken }: { csrfToken: string }) {
   const [page, setPage] = useState<PageId>(pageFromHash);
-  const [preferences, setPreferences] = useState(() => readPreferences(browserStorage()));
+  const [preferences, setPreferences] = useState(() => readPreferences(browserStorage(), browserEnvironment()));
   const [version, setVersion] = useState('latest');
   const [versions, setVersions] = useState<VersionOption[]>([]);
   const [installations, setInstallations] = useState<Installation[]>([]);

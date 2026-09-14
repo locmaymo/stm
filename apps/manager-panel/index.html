@@ -2,9 +2,21 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#101513" />
-    <title>SillyTavern Manager</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <!-- The address bar follows the theme, so the console does not sit under a
+         pale strip on a phone in dark mode. -->
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f7f9fc" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0f141b" />
+    <meta name="description" content="Install, run, share and back up SillyTavern." />
+    <link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png" />
+    <link rel="icon" type="image/png" sizes="512x512" href="/icon-512.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/site.webmanifest" />
+    <meta name="apple-mobile-web-app-title" content="ST Manager" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <title>ST Manager</title>
   </head>
   <body>
     <div id="root"></div>

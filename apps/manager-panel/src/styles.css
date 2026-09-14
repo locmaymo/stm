@@ -6,25 +6,31 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
-  --font-sans: "Noto Sans Variable", "Segoe UI", sans-serif;
+  --font-sans: "Noto Sans Variable", "Segoe UI Variable", "Segoe UI", Tahoma, sans-serif;
+  --font-mono: Consolas, "SFMono-Regular", "Cascadia Mono", monospace;
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
   --color-card-foreground: var(--foreground);
-  --color-popover: var(--card);
-  --color-popover-foreground: var(--foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
   --color-secondary: var(--muted);
   --color-secondary-foreground: var(--foreground);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
-  --color-accent: var(--muted);
+  --color-accent: var(--accent);
   --color-accent-foreground: var(--foreground);
   --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success-background: var(--success-background);
+  --color-attention-background: var(--attention-background);
+  --color-success: var(--success);
+  --color-attention: var(--attention);
   --color-border: var(--border);
   --color-input: var(--border);
-  --color-ring: var(--primary);
+  --color-ring: var(--ring);
   --color-sidebar: var(--sidebar);
   --color-sidebar-foreground: var(--foreground);
   --color-sidebar-primary: var(--primary);
@@ -32,50 +38,116 @@
   --color-sidebar-accent: var(--sidebar-accent);
   --color-sidebar-accent-foreground: var(--foreground);
   --color-sidebar-border: var(--border);
-  --color-sidebar-ring: var(--primary);
+  --color-sidebar-ring: var(--ring);
   --radius-sm: 0.375rem;
   --radius-md: 0.5rem;
-  --radius-lg: 0.625rem;
-  --radius-xl: 0.75rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+  --shadow-card: var(--elevation-1);
+  --shadow-overlay: var(--elevation-3);
 }
 
+/*
+ * The palette is a steady blue on clean, near-neutral surfaces.
+ *
+ * An earlier attempt took the maroon and brick red straight off the STVN mark.
+ * It matched the icon and it was unpleasant to sit in: every surface went
+ * brown, and the one colour that should have meant "careful" was also the
+ * colour of the button pressed most often. The mark keeps its own colours,
+ * which are recorded below for the plate behind the icon; the interface does
+ * not borrow them, and red is left to mean exactly one thing.
+ */
 :root {
   color-scheme: light;
-  --background: #f6f6f3;
-  --foreground: #252728;
+
+  /* The artwork's own colours. Used for the icon plate, not for the interface. */
+  --brand-plate: #3a1b18;
+  --brand-disc: #502020;
+  --brand-brick: #a03830;
+  --brand-ring: #e0b0a0;
+  --brand-flag: #da251d;
+  --brand-star: #ffcd00;
+
+  --background: #f7f9fc;
   --card: #ffffff;
-  --sidebar: #efefeb;
-  --sidebar-accent: #e0e7e3;
-  --muted: #f0f1ed;
-  --muted-foreground: #686b6c;
-  --border: #dedfda;
-  --primary: #17775f;
+  --popover: #ffffff;
+  --popover-foreground: #101828;
+  --foreground: #101828;
+  --sidebar: #eef2f8;
+  --sidebar-accent: #dfe7f3;
+  --muted: #eef1f6;
+  --accent: #e8eef7;
+  --muted-foreground: #5a6678;
+  --border: #dfe5ee;
+  --primary: #2563eb;
   --primary-foreground: #ffffff;
-  --destructive: #c43c3c;
-  --attention: #8a5613;
-  --attention-background: #fff5dd;
-  --run-start: #1a7f4f;
-  --run-stop: #b33a3a;
-  --header-height: 3.75rem;
+  --ring: #2563eb;
+  --destructive: #d92d20;
+  --destructive-foreground: #ffffff;
+  --success: #067647;
+  --success-background: #e6f6ee;
+  --attention: #b54708;
+  --attention-background: #fdf0e3;
+  --run-start: #067647;
+  --run-stop: #d92d20;
+
+  --elevation-1: 0 1px 2px rgb(16 24 40 / 0.05);
+  --elevation-2: 0 4px 12px -2px rgb(16 24 40 / 0.10), 0 2px 4px -2px rgb(16 24 40 / 0.06);
+  --elevation-3: 0 16px 40px -12px rgb(16 24 40 / 0.20), 0 4px 10px -4px rgb(16 24 40 / 0.10);
+
+  /* One content width and one gutter for every page, so nothing shifts when
+     the navigation moves between destinations. */
+  --page-width: 76rem;
+  --page-gutter: 1rem;
+  --header-height: 3.5rem;
+  --section-gap: 1rem;
+}
+
+@media (min-width: 640px) {
+  :root { --page-gutter: 1.5rem; --header-height: 3.75rem; --section-gap: 1.25rem; }
+}
+
+@media (min-width: 1024px) {
+  :root { --page-gutter: 2rem; --section-gap: 1.5rem; }
 }
 
 .dark {
   color-scheme: dark;
-  --background: #181a1c;
-  --foreground: #e9eaeb;
-  --card: #202225;
-  --sidebar: #1c1e20;
-  --sidebar-accent: #2c3833;
-  --muted: #292c2f;
-  --muted-foreground: #a2a6a9;
-  --border: #36393c;
-  --primary: #86d3b5;
-  --primary-foreground: #14251f;
-  --destructive: #ed7878;
-  --attention: #e6bc74;
-  --attention-background: #392f20;
-  --run-start: #2a9d62;
-  --run-stop: #c9504f;
+  --background: #0f141b;
+  --card: #171d26;
+  --popover: #1c2430;
+  --popover-foreground: #e8edf4;
+  --foreground: #e8edf4;
+  --sidebar: #131922;
+  --sidebar-accent: #23303f;
+  --muted: #1f2732;
+  --accent: #1f2937;
+  --muted-foreground: #94a2b6;
+  --border: #2a3442;
+  --primary: #5b8def;
+  --primary-foreground: #0b1220;
+  --ring: #5b8def;
+  --destructive: #f97066;
+  --destructive-foreground: #2a100d;
+  --success: #4ec48b;
+  --success-background: #12291f;
+  --attention: #f0b264;
+  --attention-background: #2c2113;
+  --run-start: #2f9a69;
+  --run-stop: #d05a52;
+
+  --elevation-1: 0 1px 2px rgb(0 0 0 / 0.30);
+  --elevation-2: 0 4px 12px -2px rgb(0 0 0 / 0.45), 0 2px 4px -2px rgb(0 0 0 / 0.30);
+  --elevation-3: 0 16px 40px -12px rgb(0 0 0 / 0.60), 0 4px 10px -4px rgb(0 0 0 / 0.40);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 @layer base {

@@ -4,7 +4,7 @@ import { readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import { createSocket } from 'node:dgram';
-import { extname, join, relative, resolve } from 'node:path';
+import { extname, join, relative, resolve, sep } from 'node:path';
 import { logEvent, logLineText, type ApiErrorBody, type ConfigUpdateInput, type HealthResponse, type Installation, type Job, type JobState, type LogEntry, type LogEvent, type LogLine, type LogSink, type LogSourceFilter, type ManagerPorts, type ProfileLayout, type SetupStatus, type VersionSelector } from '../../../packages/contracts/src/index.js';
 import { getPlatformPaths, type PlatformPaths } from '../../../packages/platform/src/index.js';
 import { RuntimeError, RuntimeManager, type InstallationProgress } from '../../../packages/sillytavern-runtime/src/index.js';
@@ -1404,7 +1404,7 @@ async function servePanel(request: IncomingMessage, response: ServerResponse, pa
   response.statusCode = 200;
   response.setHeader('Content-Type', contentTypeFor(filePath));
   response.setHeader('X-Content-Type-Options', 'nosniff');
-  response.setHeader('Cache-Control', filePath.endsWith('index.html') ? 'no-cache' : 'public, max-age=31536000, immutable');
+  response.setHeader('Cache-Control', cacheControlFor(filePath));
   if (request.method === 'HEAD') {
     response.end();
     return;
@@ -1412,14 +1412,32 @@ async function servePanel(request: IncomingMessage, response: ServerResponse, pa
   response.end(body);
 }
 
+/**
+ * How long the browser may keep a static file.
+ *
+ * Only the bundler's output carries a content hash in its name, so only it can
+ * be kept forever. The brand icons and the manifest keep their names across
+ * every release, and a year-long `immutable` on those meant a changed icon was
+ * never picked up again on a machine that had loaded the old one once.
+ */
+function cacheControlFor(filePath: string): string {
+  if (filePath.endsWith('index.html')) return 'no-cache';
+  const inBundle = filePath.includes(`${sep}assets${sep}`);
+  return inBundle ? 'public, max-age=31536000, immutable' : 'public, max-age=3600';
+}
+
 function contentTypeFor(filePath: string): string {
   const extension = extname(filePath).toLowerCase();
   const types: Record<string, string> = {
     '.css': 'text/css; charset=utf-8',
     '.html': 'text/html; charset=utf-8',
+    '.ico': 'image/x-icon',
     '.js': 'text/javascript; charset=utf-8',
     '.json': 'application/json; charset=utf-8',
+    '.png': 'image/png',
     '.svg': 'image/svg+xml',
+    '.webmanifest': 'application/manifest+json; charset=utf-8',
+    '.webp': 'image/webp',
     '.woff': 'font/woff',
     '.woff2': 'font/woff2',
   };

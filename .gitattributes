@@ -9,4 +9,9 @@
 *.yml  text working-tree-encoding=UTF-8
 *.css  text working-tree-encoding=UTF-8
 *.html text working-tree-encoding=UTF-8
-*.zip  binary
+*.webmanifest text working-tree-encoding=UTF-8
+*.ico   binary
+*.png   binary
+*.woff  binary
+*.woff2 binary
+*.zip   binary
