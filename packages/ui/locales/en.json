@@ -487,7 +487,8 @@
       "stopped": "SillyTavern access is closed",
       "failed": "{reason}",
       "signedIn": "Signed in from {address}",
-      "rejected": "Refused a sign-in from {address}"
+      "rejected": "Refused a sign-in from {address}",
+      "upstreamFailed": "The request for {path} did not reach SillyTavern: {reason}"
     }
   },
   "system": {

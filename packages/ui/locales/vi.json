@@ -487,7 +487,8 @@
       "stopped": "Cổng truy cập SillyTavern đã đóng",
       "failed": "{reason}",
       "signedIn": "Đã đăng nhập từ {address}",
-      "rejected": "Đã từ chối một lần đăng nhập từ {address}"
+      "rejected": "Đã từ chối một lần đăng nhập từ {address}",
+      "upstreamFailed": "Yêu cầu tới {path} không đến được SillyTavern: {reason}"
     }
   },
   "system": {

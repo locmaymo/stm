@@ -55,13 +55,28 @@ async function startGateway(upstream: Upstream, options: { password?: string | n
   return { gateway, base: `http://127.0.0.1:${state.port}` };
 }
 
-async function signIn(base: string, password = PASSWORD): Promise<string> {
-  const response = await fetch(`${base}/__stm/login`, {
+/** The token and cookie a served sign-in page hands a browser to post back. */
+async function loginForm(base: string): Promise<{ token: string; cookie: string }> {
+  const response = await fetch(`${base}/__stm/login`, { headers: { accept: 'text/html' } });
+  const token = /name="token" value="([^"]+)"/u.exec(await response.text())?.[1];
+  const cookie = (response.headers.getSetCookie?.() ?? []).find((value) => value.startsWith('stm_login='))?.split(';', 1)[0];
+  assert.ok(token, 'the page carries a form token');
+  assert.ok(cookie, 'and sets the cookie that has to come back with it');
+  return { token, cookie };
+}
+
+async function submitLogin(base: string, password: string, form?: { token: string; cookie: string }): Promise<Response> {
+  const credentials = form ?? await loginForm(base);
+  return fetch(`${base}/__stm/login`, {
     method: 'POST',
     redirect: 'manual',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ password }).toString(),
+    headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: credentials.cookie },
+    body: new URLSearchParams({ password, token: credentials.token }).toString(),
   });
+}
+
+async function signIn(base: string, password = PASSWORD): Promise<string> {
+  const response = await submitLogin(base, password);
   assert.equal(response.status, 303, 'signing in redirects into SillyTavern');
   const cookie = (response.headers.getSetCookie?.() ?? []).find((value) => value.startsWith(`${ACCESS_COOKIE_NAME}=`));
   assert.ok(cookie, 'a session cookie is issued');
@@ -84,14 +99,9 @@ test('nothing reaches SillyTavern until the gateway password is given', async (t
   assert.equal((await asset.json() as { error: { code: string } }).error.code, 'login_required');
   assert.equal(upstream.seen.length, 0, 'SillyTavern was never asked');
 
-  const wrong = await fetch(`${base}/__stm/login`, {
-    method: 'POST',
-    redirect: 'manual',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ password: 'not the password' }).toString(),
-  });
+  const wrong = await submitLogin(base, 'not the password');
   assert.equal(wrong.status, 401);
-  assert.equal((wrong.headers.getSetCookie?.() ?? []).length, 0, 'a refused attempt issues no session');
+  assert.equal((wrong.headers.getSetCookie?.() ?? []).filter((value) => value.startsWith(`${ACCESS_COOKIE_NAME}=`)).length, 0, 'a refused attempt issues no session');
   assert.equal(upstream.seen.length, 0);
 });
 
@@ -137,29 +147,50 @@ test('a gateway with no password yet lets nobody in at all', async (t) => {
 
   const page = await fetch(`${base}/`, { headers: { accept: 'text/html' } });
   assert.equal(page.status, 401);
-  const attempt = await fetch(`${base}/__stm/login`, {
-    method: 'POST',
-    redirect: 'manual',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ password: '' }).toString(),
-  });
+  const attempt = await submitLogin(base, '', { token: 'anything', cookie: 'stm_login=anything' });
   assert.equal(attempt.status, 503);
   assert.equal(upstream.seen.length, 0);
 });
 
-test('a sign-in posted from another site is refused', async (t) => {
+test('a sign-in that did not come from a page this gateway served is refused', async (t) => {
   const upstream = await startUpstream();
   const { gateway, base } = await startGateway(upstream);
   t.after(async () => { await gateway.close(); await upstream.close(); });
 
-  const response = await fetch(`${base}/__stm/login`, {
+  // The right password, posted from somewhere that never asked for the page.
+  const bare = await fetch(`${base}/__stm/login`, {
     method: 'POST',
     redirect: 'manual',
     headers: { 'content-type': 'application/x-www-form-urlencoded', origin: 'https://evil.example' },
     body: new URLSearchParams({ password: PASSWORD }).toString(),
   });
-  assert.equal(response.status, 403);
-  assert.equal((response.headers.getSetCookie?.() ?? []).length, 0);
+  assert.equal(bare.status, 403);
+  assert.equal((bare.headers.getSetCookie?.() ?? []).filter((value) => value.startsWith(`${ACCESS_COOKIE_NAME}=`)).length, 0);
+
+  // A token from one page cannot be posted with another page's cookie.
+  const first = await loginForm(base);
+  const second = await loginForm(base);
+  const mixed = await submitLogin(base, PASSWORD, { token: first.token, cookie: second.cookie });
+  assert.equal(mixed.status, 403);
+  // And a refused form still hands back a working one rather than a dead end.
+  assert.equal((await submitLogin(base, PASSWORD)).status, 303);
+});
+
+test('a browser that sends no origin at all can still sign in', async (t) => {
+  // An embedded or sandboxed browser sends `Origin: null`. Refusing that left
+  // the person holding the right password told it was wrong.
+  const upstream = await startUpstream();
+  const { gateway, base } = await startGateway(upstream);
+  t.after(async () => { await gateway.close(); await upstream.close(); });
+
+  const form = await loginForm(base);
+  const response = await fetch(`${base}/__stm/login`, {
+    method: 'POST',
+    redirect: 'manual',
+    headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: form.cookie, origin: 'null' },
+    body: new URLSearchParams({ password: PASSWORD, token: form.token }).toString(),
+  });
+  assert.equal(response.status, 303);
 });
 
 test('a generated response streams through as it is produced', async (t) => {
@@ -230,24 +261,14 @@ test('repeated guesses are throttled instead of answered forever', async (t) => 
   const { gateway, base } = await startGateway(upstream);
   t.after(async () => { await gateway.close(); await upstream.close(); });
 
-  const guess = async (): Promise<number> => (await fetch(`${base}/__stm/login`, {
-    method: 'POST',
-    redirect: 'manual',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ password: 'wrong' }).toString(),
-  })).status;
+  const guess = async (): Promise<number> => (await submitLogin(base, 'wrong')).status;
   const codes: number[] = [];
   for (let attempt = 0; attempt < 12; attempt += 1) codes.push(await guess());
   assert.ok(codes.includes(429), 'guessing is cut off');
   // The window is held against the address, so the right password waits it out
   // too. That is the trade a public door makes: a slow lockout for whoever is
   // behind that address is better than an unlimited supply of guesses.
-  assert.equal((await fetch(`${base}/__stm/login`, {
-    method: 'POST',
-    redirect: 'manual',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ password: PASSWORD }).toString(),
-  })).status, 429);
+  assert.equal((await submitLogin(base, PASSWORD)).status, 429);
 });
 
 test('the gateway rebinds between this machine and the whole network', async (t) => {

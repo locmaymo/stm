@@ -1,11 +1,13 @@
-import { createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { randomBytes } from 'node:crypto';
+import { Agent, createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import type { Duplex } from 'node:stream';
 import { logEvent, logLineText, type AccessGatewayState, type LogSink } from '../../../packages/contracts/src/index.js';
 import { verifyPassword } from './password.js';
 import { RateLimiter } from './rate-limit.js';
 
 export const ACCESS_COOKIE_NAME = 'stm_access';
+/** Scoped to the sign-in path, so SillyTavern never receives it either. */
+const LOGIN_COOKIE_NAME = 'stm_login';
 export const ACCESS_GATEWAY_PORT = 8001 as const;
 const LOGIN_PATH = '/__stm/login';
 const LOGOUT_PATH = '/__stm/logout';
@@ -30,6 +32,7 @@ interface GatewayText {
   readonly unconfigured: string;
   readonly offline: string;
   readonly signedOut: string;
+  readonly expired: string;
 }
 
 const TEXT: Readonly<Record<'en' | 'vi', GatewayText>> = {
@@ -43,6 +46,7 @@ const TEXT: Readonly<Record<'en' | 'vi', GatewayText>> = {
     unconfigured: 'No access password has been set yet. Open SillyTavern Manager on the host machine and set one.',
     offline: 'SillyTavern is not answering yet. It may still be starting.',
     signedOut: 'You are signed out.',
+    expired: 'This sign-in page is no longer current. Here is a fresh one - try again.',
   },
   vi: {
     signIn: 'Đăng nhập',
@@ -54,6 +58,7 @@ const TEXT: Readonly<Record<'en' | 'vi', GatewayText>> = {
     unconfigured: 'Chưa đặt mật khẩu truy cập. Hãy mở SillyTavern Manager trên máy chủ và đặt một mật khẩu.',
     offline: 'SillyTavern chưa trả lời. Có thể nó vẫn đang khởi động.',
     signedOut: 'Bạn đã đăng xuất.',
+    expired: 'Trang đăng nhập này không còn hiệu lực. Đây là trang mới - hãy thử lại.',
   },
 };
 
@@ -98,6 +103,19 @@ export class AccessGateway {
    * what lets a shutdown actually finish while a page has a socket open.
    */
   private readonly upgraded = new Set<Duplex>();
+  /**
+   * How many connections to SillyTavern may be open at once.
+   *
+   * One page load is hundreds of requests, and a browser asks for them all at
+   * the same time. Without a limit that many sockets opened at once, and one
+   * of them would be refused - which reached the page as a 502 on a random
+   * file and left it loading forever.
+   *
+   * They are not kept alive, because SillyTavern does not keep them alive: it
+   * closes an idle connection out from under a proxy that tries to reuse it,
+   * and every request that lands on one of those dies with ECONNRESET.
+   */
+  private readonly upstreamAgent = new Agent({ keepAlive: false, maxSockets: 64 });
   private server: Server | null = null;
   private passwordHash: string | null = null;
   private lan = false;
@@ -168,6 +186,7 @@ export class AccessGateway {
     if (server) {
       for (const socket of this.upgraded) socket.destroy();
       this.upgraded.clear();
+      this.upstreamAgent.destroy();
       await new Promise<void>((resolve) => { server.close(() => resolve()); server.closeAllConnections(); });
       this.logger(logEvent('gateway.stopped', '[gateway] SillyTavern access is closed'));
     }
@@ -216,20 +235,27 @@ export class AccessGateway {
   }
 
   private async handleLogin(request: IncomingMessage, response: ServerResponse, text: GatewayText): Promise<void> {
-    // The form is served from this same origin, so a request that claims to
-    // come from somewhere else is not one of ours.
-    if (!sameOrigin(request)) { this.sendLogin(request, response, 403, text, text.invalid); return; }
     if (!this.passwordHash) { this.sendLogin(request, response, 503, text, text.unconfigured); return; }
+    let body: string;
+    try { body = await readBody(request, MAX_LOGIN_BODY_BYTES); }
+    catch { this.sendLogin(request, response, 413, text, text.invalid); return; }
+    const form = new URLSearchParams(body);
+    // Every sign-in page carries a token that is also set as a cookie, and a
+    // submission has to return both. That is what makes this a sign-in from
+    // this page rather than from somewhere else, and unlike the Origin header
+    // it is not something an embedded or sandboxed browser can strip: one of
+    // those sends `Origin: null`, which would leave the person holding the
+    // right password told it was wrong, with nothing to do about it.
+    if (!matchingToken(form.get('token'), cookieValue(request.headers.cookie, LOGIN_COOKIE_NAME))) {
+      this.sendLogin(request, response, 403, text, text.expired, form.get('next') ?? undefined);
+      return;
+    }
     const limit = this.attempts.check(clientAddress(request));
     if (!limit.allowed) {
       response.setHeader('Retry-After', String(limit.retryAfterSeconds));
       this.sendLogin(request, response, 429, text, text.throttled.replace('{seconds}', String(limit.retryAfterSeconds)));
       return;
     }
-    let body: string;
-    try { body = await readBody(request, MAX_LOGIN_BODY_BYTES); }
-    catch { this.sendLogin(request, response, 413, text, text.invalid); return; }
-    const form = new URLSearchParams(body);
     const password = form.get('password') ?? '';
     if (!password || !verifyPassword(password, this.passwordHash)) {
       this.logger(logEvent('gateway.rejected', `[gateway] rejected a sign-in from ${clientAddress(request)}`, { address: clientAddress(request) }));
@@ -244,13 +270,16 @@ export class AccessGateway {
     redirect(response, safeNext(form.get('next')));
   }
 
-  private proxy(request: IncomingMessage, response: ServerResponse, text: GatewayText): void {
+  private proxy(request: IncomingMessage, response: ServerResponse, text: GatewayText, attempt = 0): void {
+    const method = (request.method ?? 'GET').toUpperCase();
+    const bodyless = method === 'GET' || method === 'HEAD';
     const upstream = httpRequest({
       host: this.targetHost,
       port: this.targetPort,
-      method: request.method ?? 'GET',
+      method,
       path: request.url ?? '/',
       headers: forwardedHeaders(request),
+      agent: this.upstreamAgent,
     }, (upstreamResponse) => {
       response.writeHead(upstreamResponse.statusCode ?? 502, responseHeaders(upstreamResponse));
       // No compression, no buffering: a token stream has to arrive as it is
@@ -258,13 +287,20 @@ export class AccessGateway {
       upstreamResponse.pipe(response);
     });
     upstream.setTimeout(0);
-    upstream.on('error', () => {
+    upstream.on('error', (error: Error) => {
       if (response.headersSent) { response.destroy(); return; }
+      // A connection closed before it answered is not an answer. Asking once
+      // more costs nothing when the request carried no body, and it is the
+      // difference between a page that loads and one that sits on a spinner
+      // because a single file of hundreds happened to lose the race.
+      if (bodyless && attempt === 0) { this.proxy(request, response, text, 1); return; }
+      this.logger(logEvent('gateway.upstreamFailed', `[gateway] ${request.url ?? '/'} did not reach SillyTavern: ${error.message}`, { path: request.url ?? '/', reason: error.message }));
       response.writeHead(502, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
       response.end(errorPage(text.offline));
     });
     response.on('close', () => { if (!response.writableEnded) upstream.destroy(); });
-    request.pipe(upstream);
+    if (bodyless) upstream.end();
+    else request.pipe(upstream);
   }
 
   private handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void {
@@ -278,6 +314,9 @@ export class AccessGateway {
       method: request.method ?? 'GET',
       path: request.url ?? '/',
       headers: forwardedHeaders(request, true),
+      // An upgraded connection belongs to one conversation for its whole life,
+      // so it must not come from, or return to, a pool.
+      agent: false,
     });
     upstream.on('upgrade', (upstreamResponse, upstreamSocket, upstreamHead) => {
       const lines = [`HTTP/1.1 ${upstreamResponse.statusCode ?? 101} ${upstreamResponse.statusMessage ?? 'Switching Protocols'}`];
@@ -326,13 +365,14 @@ export class AccessGateway {
   }
 
   private cookie(request: IncomingMessage, token: string, maxAgeSeconds: number): string {
-    // Through a tunnel the connection is HTTPS and the cookie must say so; on
-    // the local network it is plain HTTP, where Secure would discard it.
-    const secure = (request.headers['x-forwarded-proto'] ?? '').toString().split(',')[0]?.trim() === 'https';
-    return `${ACCESS_COOKIE_NAME}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}${secure ? '; Secure' : ''}`;
+    return `${ACCESS_COOKIE_NAME}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}${secureConnection(request) ? '; Secure' : ''}`;
   }
 
   private sendLogin(request: IncomingMessage, response: ServerResponse, status: number, text: GatewayText, message: string | null, next?: string): void {
+    const formToken = randomBytes(18).toString('base64url');
+    // Appended rather than set, because signing out is already clearing the
+    // session cookie on this same response.
+    response.appendHeader('Set-Cookie', `${LOGIN_COOKIE_NAME}=${formToken}; Path=${LOGIN_PATH}; HttpOnly; SameSite=Lax; Max-Age=600${secureConnection(request) ? '; Secure' : ''}`);
     response.writeHead(status, {
       'content-type': 'text/html; charset=utf-8',
       'cache-control': 'no-store',
@@ -340,7 +380,7 @@ export class AccessGateway {
       'x-content-type-options': 'nosniff',
       'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
     });
-    response.end(loginPage(text, message, this.passwordHash === null ? text.unconfigured : null, safeNext(next ?? requestPath(request))));
+    response.end(loginPage(text, message, this.passwordHash === null ? text.unconfigured : null, safeNext(next ?? requestPath(request)), formToken));
   }
 }
 
@@ -359,10 +399,16 @@ function wantsDocument(request: IncomingMessage): boolean {
   return (request.headers.accept ?? '').toString().includes('text/html');
 }
 
-function sameOrigin(request: IncomingMessage): boolean {
-  const origin = request.headers.origin;
-  if (!origin) return true;
-  try { return new URL(origin).host === request.headers.host; } catch { return false; }
+/** Whether this hop arrived over HTTPS, which through a tunnel it does. */
+function secureConnection(request: IncomingMessage): boolean {
+  return (request.headers['x-forwarded-proto'] ?? '').toString().split(',')[0]?.trim() === 'https';
+}
+
+function matchingToken(submitted: string | null, expected: string | undefined): boolean {
+  if (!submitted || !expected) return false;
+  const left = Buffer.from(submitted, 'utf8');
+  const right = Buffer.from(expected, 'utf8');
+  return left.length === right.length && timingSafeEqual(left, right);
 }
 
 /** A redirect target that can only be a path on this same gateway. */
@@ -445,8 +491,8 @@ function escapeHtml(value: string): string {
 
 const PAGE_STYLE = `:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0b0f14;color:#e6edf3;font:16px/1.5 system-ui,"Segoe UI",Roboto,"Noto Sans",sans-serif}main{width:min(22rem,calc(100vw - 2rem));padding:2rem;border:1px solid #1f2833;border-radius:14px;background:#111820}h1{margin:0 0 .25rem;font-size:1.25rem}p{margin:0 0 1.25rem;color:#8b98a5;font-size:.875rem}label{display:block;margin-bottom:.375rem;font-size:.8125rem;color:#8b98a5}input{width:100%;padding:.625rem .75rem;border:1px solid #263241;border-radius:8px;background:#0b0f14;color:inherit;font:inherit}input:focus{outline:2px solid #3b82f6;outline-offset:1px}button{width:100%;margin-top:1rem;padding:.625rem;border:0;border-radius:8px;background:#3b82f6;color:#fff;font:inherit;font-weight:600;cursor:pointer}button:disabled{opacity:.6;cursor:not-allowed}.note{margin:1rem 0 0;color:#f87171}.muted{margin:1rem 0 0;color:#8b98a5}`;
 
-function loginPage(text: GatewayText, message: string | null, blocked: string | null, next: string): string {
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>${escapeHtml(text.signIn)} · SillyTavern</title><style>${PAGE_STYLE}</style></head><body><main><h1>${escapeHtml(text.signIn)}</h1><p>${escapeHtml(text.subtitle)}</p><form method="post" action="${LOGIN_PATH}"><input type="hidden" name="next" value="${escapeHtml(next)}"><label for="password">${escapeHtml(text.password)}</label><input id="password" name="password" type="password" autocomplete="current-password" autofocus required${blocked ? ' disabled' : ''}><button type="submit"${blocked ? ' disabled' : ''}>${escapeHtml(text.submit)}</button></form>${message ? `<p class="${blocked ? 'muted' : 'note'}" role="alert">${escapeHtml(message)}</p>` : ''}</main></body></html>`;
+function loginPage(text: GatewayText, message: string | null, blocked: string | null, next: string, formToken: string): string {
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>${escapeHtml(text.signIn)} · SillyTavern</title><style>${PAGE_STYLE}</style></head><body><main><h1>${escapeHtml(text.signIn)}</h1><p>${escapeHtml(text.subtitle)}</p><form method="post" action="${LOGIN_PATH}"><input type="hidden" name="next" value="${escapeHtml(next)}"><input type="hidden" name="token" value="${escapeHtml(formToken)}"><label for="password">${escapeHtml(text.password)}</label><input id="password" name="password" type="password" autocomplete="current-password" autofocus required${blocked ? ' disabled' : ''}><button type="submit"${blocked ? ' disabled' : ''}>${escapeHtml(text.submit)}</button></form>${message ? `<p class="${blocked ? 'muted' : 'note'}" role="alert">${escapeHtml(message)}</p>` : ''}</main></body></html>`;
 }
 
 function errorPage(message: string): string {
