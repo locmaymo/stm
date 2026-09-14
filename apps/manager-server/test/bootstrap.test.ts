@@ -42,6 +42,43 @@ test('a built panel is left alone and a missing one is built', async () => {
   assert.deepEqual(afterBuild, []);
 });
 
+test('a panel older than its sources is built again rather than served as it is', async () => {
+  // Serving whatever was built first is how a console ends up calling an API
+  // that has moved on: every field comes back undefined, every control it
+  // cannot account for is disabled, and nothing anywhere says why.
+  const root = await mkdtemp(join(tmpdir(), 'stm-bootstrap-stale-'));
+  const staticRoot = join(root, 'dist');
+  const source = join(root, 'src');
+  const env = { STM_STATIC_ROOT: staticRoot };
+  await mkdir(staticRoot, { recursive: true });
+  await mkdir(join(source, 'nested'), { recursive: true });
+  await writeFile(join(source, 'nested', 'App.tsx'), 'export const panel = 1;\n', 'utf8');
+  await writeFile(join(staticRoot, 'index.html'), '<!doctype html>', 'utf8');
+
+  // Built after the sources: nothing to do.
+  const fresh: Launch[] = [];
+  assert.equal(await ensurePanelBuilt({ env, sourceRoots: [source], logger: () => undefined, spawnImpl: recordingSpawn(fresh) }), false);
+  assert.deepEqual(fresh, []);
+
+  // A source written afterwards is what makes the build out of date.
+  await writeFile(join(source, 'nested', 'App.tsx'), 'export const panel = 2;\n', 'utf8');
+  const stale: Launch[] = [];
+  const lines: string[] = [];
+  await ensurePanelBuilt({ env, sourceRoots: [source], logger: (line) => lines.push(logLineText(line)), spawnImpl: recordingSpawn(stale) });
+  assert.deepEqual(stale.map((launch) => launch.args), [['run', 'panel:build']]);
+  assert.ok(lines.some((line) => line.includes('older than the sources')));
+
+  // A spawn that throws rather than reporting - which is what Node does for a
+  // .cmd on Windows - must not end the manager before it listens.
+  const throwing = ((): never => { throw new Error('spawn EINVAL'); }) as unknown as typeof spawn;
+  assert.equal(await ensurePanelBuilt({ env, sourceRoots: [source], logger: () => undefined, spawnImpl: throwing }), false);
+
+  // An installed release ships no sources, so it never rebuilds.
+  const released: Launch[] = [];
+  assert.equal(await ensurePanelBuilt({ env, sourceRoots: [join(root, 'not-here')], logger: () => undefined, spawnImpl: recordingSpawn(released) }), false);
+  assert.deepEqual(released, []);
+});
+
 test('the console is opened for a person at the machine and not for a container', async () => {
   const launches: Launch[] = [];
   const opened = await openInBrowser('http://127.0.0.1:7860', { env: {}, logger: () => undefined, spawnImpl: recordingSpawn(launches, null) });

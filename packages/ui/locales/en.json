@@ -349,7 +349,8 @@
     "panel": {
       "building": "The panel has not been built yet; building it now",
       "built": "The panel is built",
-      "buildFailed": "The panel could not be built; run \"npm run panel:build\" and restart"
+      "buildFailed": "The panel could not be built; run \"npm run panel:build\" and restart",
+      "stale": "The panel is older than the sources it was built from; building it again"
     },
     "manager": {
       "browserOpened": "Opened {url}",

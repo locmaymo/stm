@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getPlatformPaths } from '../../../packages/platform/src/index.js';
 import { StateStore } from '../src/state.js';
-import { startManagerServer, type ManagerServer } from '../src/server.js';
+import { preferredNetworkHost, startManagerServer, type ManagerServer } from '../src/server.js';
 import type { AccessGatewayState, Installation, ProcessState, VersionOption } from '../../../packages/contracts/src/index.js';
 import type { RuntimeManager } from '../../../packages/sillytavern-runtime/src/index.js';
 import type { ProcessSupervisor } from '../src/supervisor.js';
@@ -643,4 +643,20 @@ test('a legacy runtime that rewrites the profile config on stop does not lose th
   for (const path of [profileConfigPath, runtimeConfigPath]) {
     assert.match(await readFile(path, 'utf8'), /enableCorsProxy: true/u, `the save survived in ${path}`);
   }
+});
+
+test('the LAN address offered is one another device can actually reach', () => {
+  const wifi = { family: 'IPv4' as const, internal: false, address: '192.168.1.25' };
+  const linkLocal = { family: 'IPv4' as const, internal: false, address: '169.254.83.107' };
+  const loopback = { family: 'IPv4' as const, internal: true, address: '127.0.0.1' };
+  const sixth = { family: 'IPv6' as const, internal: false, address: 'fe80::1' };
+
+  // A virtual adapter that assigned itself a link-local address listed first
+  // is what put an unreachable host behind the LAN link and its QR code.
+  assert.equal(preferredNetworkHost([loopback, linkLocal, wifi, sixth]), '192.168.1.25');
+  assert.equal(preferredNetworkHost([loopback, sixth]), undefined);
+  assert.equal(preferredNetworkHost([linkLocal]), undefined, 'nothing is better than an address that goes nowhere');
+  // A routable address on a network that is not one of the private ranges is
+  // still the right answer when it is all there is.
+  assert.equal(preferredNetworkHost([{ family: 'IPv4', internal: false, address: '100.103.121.60' }]), '100.103.121.60');
 });

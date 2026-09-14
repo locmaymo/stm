@@ -1032,8 +1032,31 @@ function parseConfigUpdateInput(value: unknown): ConfigUpdateInput {
 }
 
 function decorateConfig(document: Awaited<ReturnType<ConfigStore['read']>>): Awaited<ReturnType<ConfigStore['read']>> {
-  const host = Object.values(networkInterfaces()).flatMap((entries) => entries ?? []).find((entry) => entry.family === 'IPv4' && !entry.internal)?.address;
+  const host = preferredNetworkHost(Object.values(networkInterfaces()).flatMap((entries) => entries ?? []));
   return host ? { ...document, networkHost: host } : document;
+}
+
+/**
+ * The address another device on this network can actually reach.
+ *
+ * Taking the first non-loopback address found handed out 169.254.83.107 - a
+ * link-local address a virtual adapter assigned itself when nothing answered
+ * it. That is not reachable from anywhere, so the LAN link and the code to
+ * scan both pointed nowhere, which is indistinguishable from the feature being
+ * broken. A real private address is what a phone on the same Wi-Fi can open.
+ */
+export function preferredNetworkHost(entries: ReadonlyArray<{ family: string | number; internal: boolean; address: string }>): string | undefined {
+  const candidates = entries
+    .filter((entry) => (entry.family === 'IPv4' || entry.family === 4) && !entry.internal)
+    .map((entry) => entry.address)
+    // Self-assigned when no address was ever handed out, so nothing routes to it.
+    .filter((address) => !address.startsWith('169.254.'));
+  const isPrivate = (address: string): boolean => {
+    if (address.startsWith('192.168.') || address.startsWith('10.')) return true;
+    const second = Number(address.split('.')[1]);
+    return address.startsWith('172.') && second >= 16 && second <= 31;
+  };
+  return candidates.find(isPrivate) ?? candidates[0];
 }
 
 function isVersionSelector(value: string): boolean {

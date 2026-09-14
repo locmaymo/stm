@@ -349,7 +349,8 @@
     "panel": {
       "building": "Giao diện chưa được dựng; đang dựng ngay bây giờ",
       "built": "Đã dựng xong giao diện",
-      "buildFailed": "Không dựng được giao diện; hãy chạy \"npm run panel:build\" rồi khởi động lại"
+      "buildFailed": "Không dựng được giao diện; hãy chạy \"npm run panel:build\" rồi khởi động lại",
+      "stale": "Giao diện cũ hơn mã nguồn đã dựng ra nó; đang dựng lại"
     },
     "manager": {
       "browserOpened": "Đã mở {url}",
