@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { createConnection } from 'node:net';
 import type { Duplex } from 'node:stream';
-import { AccessGateway, ACCESS_COOKIE_NAME } from '../src/gateway.js';
+import { AccessGateway, ACCESS_COOKIE_NAME, clientAddress } from '../src/gateway.js';
 import { hashPassword } from '../src/password.js';
 
 const PASSWORD = 'correct horse battery staple';
@@ -117,7 +117,34 @@ test('a signed-in browser reaches SillyTavern, and SillyTavern never sees the ga
   const forwarded = upstream.seen.at(-1);
   assert.ok(forwarded);
   assert.equal(forwarded.headers.cookie, 'st_theme=dark', 'its own cookies pass through and the gateway cookie does not');
-  assert.equal(forwarded.headers['x-forwarded-for'], '127.0.0.1');
+  assert.equal(forwarded.headers['x-forwarded-proto'], 'http', 'the scheme survives, because links and cookies are built from it');
+});
+
+test('SillyTavern is told nothing it would refuse the connection over', async (t) => {
+  // With a whitelist on - its own default - SillyTavern reads the address a
+  // proxy claims and refuses anything not on the list. Handing it the real one
+  // met everybody who had just signed in with "Forbidden".
+  const upstream = await startUpstream();
+  const { gateway, base } = await startGateway(upstream);
+  t.after(async () => { await gateway.close(); await upstream.close(); });
+
+  const cookie = await signIn(base);
+  await fetch(`${base}/`, { headers: { cookie, accept: 'text/html', 'x-forwarded-for': '203.0.113.9', 'x-real-ip': '203.0.113.9', forwarded: 'for=203.0.113.9' } });
+  const forwarded = upstream.seen.at(-1);
+  assert.ok(forwarded);
+  for (const header of ['x-forwarded-for', 'x-forwarded-host', 'x-real-ip', 'forwarded']) {
+    assert.equal(forwarded.headers[header], undefined, `${header} never reaches SillyTavern`);
+  }
+});
+
+test('a browser on a tunnel is reported as being on HTTPS', async (t) => {
+  const upstream = await startUpstream();
+  const { gateway, base } = await startGateway(upstream);
+  t.after(async () => { await gateway.close(); await upstream.close(); });
+
+  const cookie = await signIn(base);
+  await fetch(`${base}/`, { headers: { cookie, accept: 'text/html', 'x-forwarded-proto': 'https' } });
+  assert.equal(upstream.seen.at(-1)?.headers['x-forwarded-proto'], 'https');
 });
 
 test('a session ends when it is signed out, and when the password is changed', async (t) => {
@@ -280,4 +307,20 @@ test('the gateway rebinds between this machine and the whole network', async (t)
   assert.equal((await gateway.setLan(true)).host, '0.0.0.0');
   assert.equal(gateway.getState().lan, true);
   assert.equal((await gateway.setLan(false)).host, '127.0.0.1');
+});
+
+test('only a proxy on this machine may say who a request is from', () => {
+  const from = (remoteAddress: string, forwardedFor?: string) =>
+    clientAddress({ headers: forwardedFor === undefined ? {} : { 'x-forwarded-for': forwardedFor }, socket: { remoteAddress } });
+
+  // cloudflared runs here and puts the real visitor in the header.
+  assert.equal(from('127.0.0.1', '203.0.113.9, 10.0.0.1'), '203.0.113.9');
+  assert.equal(from('::ffff:127.0.0.1', '203.0.113.9'), '203.0.113.9');
+  assert.equal(from('127.0.0.1'), '127.0.0.1');
+
+  // Anyone else is only ever themselves. Believing them would let one caller
+  // on the network put a new address in the header on every try and never run
+  // out of guesses at the password.
+  assert.equal(from('192.168.1.40', '203.0.113.9'), '192.168.1.40');
+  assert.equal(from('192.168.1.40'), '192.168.1.40');
 });

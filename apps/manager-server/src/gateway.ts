@@ -417,9 +417,21 @@ function safeNext(value: string | null | undefined): string {
   return value;
 }
 
-function clientAddress(request: IncomingMessage): string {
-  const forwarded = (request.headers['x-forwarded-for'] ?? '').toString().split(',')[0]?.trim();
-  return forwarded || request.socket.remoteAddress || 'unknown';
+/**
+ * Who this request is from, for the log and for the attempt limit.
+ *
+ * Only a proxy on this machine may speak for someone else, because the only
+ * one there legitimately is cloudflared. Believing the header from anyone
+ * would let a caller on the network put a different address in it on every
+ * try and have an unlimited number of guesses at the password.
+ */
+export function clientAddress(request: Pick<IncomingMessage, 'headers'> & { socket: { remoteAddress?: string | undefined } }): string {
+  const peer = request.socket.remoteAddress ?? 'unknown';
+  if (peer === '127.0.0.1' || peer === '::1' || peer === '::ffff:127.0.0.1') {
+    const claimed = (request.headers['x-forwarded-for'] ?? '').toString().split(',')[0]?.trim();
+    if (claimed) return claimed;
+  }
+  return peer;
 }
 
 function cookieValue(header: string | undefined, name: string): string | undefined {
@@ -447,9 +459,23 @@ function forwardedHeaders(request: IncomingMessage, keepUpgrade = false): Record
     if (kept.length > 0) headers.cookie = kept.join('; ');
     else delete headers.cookie;
   }
-  headers['x-forwarded-for'] = clientAddress(request);
-  headers['x-forwarded-proto'] = (request.headers['x-forwarded-proto'] ?? 'http').toString();
-  if (request.headers.host) headers['x-forwarded-host'] = request.headers.host;
+  // Tell SillyTavern nothing about who is on the other end of this.
+  //
+  // It decides whether to answer at all from these: with a whitelist on - its
+  // own default - and `enableForwardedWhitelist` on, it reads the address a
+  // proxy claims and refuses anything not on the list. Handing it the real
+  // address therefore blocked every single person who had just signed in, with
+  // "Forbidden" and nothing to do about it. It has no business making that
+  // decision any more: it is on the loopback address, the only way to it is
+  // this gateway, and the password was already asked for. What it sees now is
+  // what is actually true - a local connection from the manager.
+  //
+  // The address is not lost, it just belongs in the manager's log rather than
+  // in a header the upstream might act on.
+  for (const name of ['x-forwarded-for', 'x-forwarded-host', 'x-real-ip', 'forwarded']) delete headers[name];
+  // The scheme does have to survive: through a tunnel the browser is on HTTPS,
+  // and SillyTavern builds links and sets cookies from this.
+  headers['x-forwarded-proto'] = secureConnection(request) ? 'https' : 'http';
   return headers;
 }
 

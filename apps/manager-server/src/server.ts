@@ -3,6 +3,7 @@ import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypt
 import { readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { networkInterfaces } from 'node:os';
+import { createSocket } from 'node:dgram';
 import { extname, join, relative, resolve } from 'node:path';
 import { logEvent, logLineText, type ApiErrorBody, type ConfigUpdateInput, type HealthResponse, type Installation, type Job, type JobState, type LogEntry, type LogEvent, type LogLine, type LogSink, type LogSourceFilter, type ManagerPorts, type ProfileLayout, type SetupStatus, type VersionSelector } from '../../../packages/contracts/src/index.js';
 import { getPlatformPaths, type PlatformPaths } from '../../../packages/platform/src/index.js';
@@ -516,7 +517,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     const profile = await profiles.getActive();
     const installation = await runtime.getActiveInstallation();
     if (!profile || !installation || installation.status !== 'ready') { sendError(response, 409, 'installation_required', 'Install SillyTavern before editing its configuration'); return; }
-    if (method === 'GET') { sendJson(response, 200, decorateConfig(await config.read(profile, installation))); return; }
+    if (method === 'GET') { sendJson(response, 200, await decorateConfig(await config.read(profile, installation))); return; }
     const input = parseConfigUpdateInput(await readJson(request));
     const previousTunnelMode = tunnel.getState().mode;
     const wasRunning = supervisor.getState().status === 'running';
@@ -529,7 +530,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     const saved = await config.update(profile, installation, input);
     const process = wasRunning ? await supervisor.start() : supervisor.getState();
     if (previousTunnelMode !== 'off' && process.status === 'running') await tunnel.restart().catch(() => undefined);
-    sendJson(response, 200, { config: decorateConfig(saved), process, tunnel: tunnel.getState() });
+    sendJson(response, 200, { config: await decorateConfig(saved), process, tunnel: tunnel.getState() });
     return;
   }
   if (pathname === '/api/v1/access/security' && method === 'GET') {
@@ -1031,8 +1032,8 @@ function parseConfigUpdateInput(value: unknown): ConfigUpdateInput {
   } };
 }
 
-function decorateConfig(document: Awaited<ReturnType<ConfigStore['read']>>): Awaited<ReturnType<ConfigStore['read']>> {
-  const host = preferredNetworkHost(Object.values(networkInterfaces()).flatMap((entries) => entries ?? []));
+async function decorateConfig(document: Awaited<ReturnType<ConfigStore['read']>>): Promise<Awaited<ReturnType<ConfigStore['read']>>> {
+  const host = preferredNetworkHost(Object.values(networkInterfaces()).flatMap((entries) => entries ?? []), await routedAddress());
   return host ? { ...document, networkHost: host } : document;
 }
 
@@ -1041,22 +1042,60 @@ function decorateConfig(document: Awaited<ReturnType<ConfigStore['read']>>): Awa
  *
  * Taking the first non-loopback address found handed out 169.254.83.107 - a
  * link-local address a virtual adapter assigned itself when nothing answered
- * it. That is not reachable from anywhere, so the LAN link and the code to
- * scan both pointed nowhere, which is indistinguishable from the feature being
- * broken. A real private address is what a phone on the same Wi-Fi can open.
+ * it. Preferring a private range instead handed out 192.168.137.1, the Windows
+ * Mobile Hotspot adapter: just as private, and just as useless for reaching
+ * this machine from the Wi-Fi everything else is on. Either way the LAN link
+ * and the code to scan pointed somewhere unreachable, which looks exactly like
+ * the feature not working.
+ *
+ * So `routed` decides it when it is known: the address of the interface the
+ * operating system itself would use to leave this machine, which is the one
+ * the phone in the same room shares. The ranges are only the fallback.
  */
-export function preferredNetworkHost(entries: ReadonlyArray<{ family: string | number; internal: boolean; address: string }>): string | undefined {
+export function preferredNetworkHost(entries: ReadonlyArray<{ family: string | number; internal: boolean; address: string }>, routed?: string | undefined): string | undefined {
   const candidates = entries
     .filter((entry) => (entry.family === 'IPv4' || entry.family === 4) && !entry.internal)
     .map((entry) => entry.address)
     // Self-assigned when no address was ever handed out, so nothing routes to it.
     .filter((address) => !address.startsWith('169.254.'));
+  if (routed && candidates.includes(routed)) return routed;
   const isPrivate = (address: string): boolean => {
     if (address.startsWith('192.168.') || address.startsWith('10.')) return true;
     const second = Number(address.split('.')[1]);
     return address.startsWith('172.') && second >= 16 && second <= 31;
   };
   return candidates.find(isPrivate) ?? candidates[0];
+}
+
+/**
+ * Which interface this machine leaves by, without sending anything.
+ *
+ * Connecting a UDP socket transmits no packet; it only makes the operating
+ * system choose the route, and the local address it picked is then readable.
+ * Nothing here depends on that address being reachable or even existing.
+ */
+async function routedAddress(): Promise<string | undefined> {
+  return new Promise<string | undefined>((resolve) => {
+    const socket = createSocket('udp4');
+    let settled = false;
+    const finish = (address?: string): void => {
+      if (settled) return;
+      settled = true;
+      try { socket.close(); } catch { /* already closed */ }
+      resolve(address && address !== '0.0.0.0' ? address : undefined);
+    };
+    const timer = setTimeout(() => finish(), 300);
+    timer.unref?.();
+    socket.once('error', () => finish());
+    try {
+      socket.connect(53, '8.8.8.8', () => {
+        let address: string | undefined;
+        try { address = socket.address().address; } catch { /* nothing bound */ }
+        clearTimeout(timer);
+        finish(address);
+      });
+    } catch { finish(); }
+  });
 }
 
 function isVersionSelector(value: string): boolean {

@@ -651,9 +651,17 @@ test('the LAN address offered is one another device can actually reach', () => {
   const loopback = { family: 'IPv4' as const, internal: true, address: '127.0.0.1' };
   const sixth = { family: 'IPv6' as const, internal: false, address: 'fe80::1' };
 
+  const hotspot = { family: 'IPv4' as const, internal: false, address: '192.168.137.1' };
+
   // A virtual adapter that assigned itself a link-local address listed first
   // is what put an unreachable host behind the LAN link and its QR code.
   assert.equal(preferredNetworkHost([loopback, linkLocal, wifi, sixth]), '192.168.1.25');
+  // Windows Mobile Hotspot is just as private as the Wi-Fi address and just as
+  // useless for reaching this machine, so the range alone cannot decide it.
+  assert.equal(preferredNetworkHost([hotspot, wifi], '192.168.1.25'), '192.168.1.25');
+  assert.equal(preferredNetworkHost([wifi, hotspot], '192.168.137.1'), '192.168.137.1', 'a machine that really does leave by the hotspot says so');
+  // A route out through an address no interface reports is not an answer.
+  assert.equal(preferredNetworkHost([hotspot, wifi], '10.9.9.9'), '192.168.137.1');
   assert.equal(preferredNetworkHost([loopback, sixth]), undefined);
   assert.equal(preferredNetworkHost([linkLocal]), undefined, 'nothing is better than an address that goes nowhere');
   // A routable address on a network that is not one of the private ranges is
