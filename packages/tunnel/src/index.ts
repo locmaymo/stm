@@ -28,6 +28,21 @@ function cloudflaredAsset(platform: NodeJS.Platform = process.platform, architec
   return { file: `cloudflared-linux-${mapped}`, exe: 'cloudflared' };
 }
 
+/**
+ * The public address in a line of cloudflared output, without any path.
+ *
+ * cloudflared announces the address once in a banner, and then names it again
+ * in every request line it logs - including the failures, as `dest=https://
+ * host/user/images/Assistant/....mp4`. The pattern used to allow a path after
+ * the hostname, so whichever file someone had just opened was appended to the
+ * public link shown in the console, and the link changed again the next time
+ * anything was logged. The address is the origin; the path belongs to whoever
+ * was browsing.
+ */
+export function parseTunnelUrl(line: string): string | undefined {
+  return /https:\/\/[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.trycloudflare\.com/u.exec(line)?.[0];
+}
+
 export interface TunnelManagerOptions {
   readonly paths: PlatformPaths;
   /**
@@ -157,7 +172,7 @@ export class TunnelManager {
   private handleLine(line: string): void {
     const clean = line.replace(/\u001b\[[0-?]*[ -\/]*[@-~]/gu, '').trim();
     if (!clean) return;
-    const url = /https:\/\/[A-Za-z0-9.-]+\.trycloudflare\.com(?:\/[^\s]*)?/u.exec(clean)?.[0];
+    const url = parseTunnelUrl(clean);
     if (url && this.state.mode === 'quick') this.state = { ...this.state, status: 'running', url };
     this.logger(`[cloudflared] ${clean}`);
   }
