@@ -2,7 +2,7 @@
 
 [Read this guide in Vietnamese](README.vi.md)
 
-SillyTavern Manager is a cross-platform control panel for installing, running, accessing, backing up, and monitoring [SillyTavern](https://github.com/SillyTavern/SillyTavern). It keeps the manager on port <code>7860</code> and SillyTavern on port <code>8000</code>. A Cloudflare Tunnel, when enabled, points only to SillyTavern; it never exposes the manager panel.
+SillyTavern Manager is a cross-platform control panel for installing, running, accessing, backing up, and monitoring [SillyTavern](https://github.com/SillyTavern/SillyTavern). It keeps the manager on port <code>7860</code> and SillyTavern on port <code>8000</code>, where only this machine can reach it. Another device on the network, or a Cloudflare Tunnel, reaches SillyTavern through the manager's access gateway on port <code>8001</code>, which asks for one password first. The tunnel never exposes the manager panel.
 
 ## Choose your platform
 
@@ -161,9 +161,9 @@ Windows users should prefer the portable ZIP because it includes Node.js. The pa
 3. Choose a SillyTavern version; <code>latest</code> is selected by default.
 4. Press **Install** and wait for **Ready**. Ready means SillyTavern answered on port <code>8000</code>.
 5. Open the local link, or enable local-network access or a public tunnel in the access card.
-6. Set a SillyTavern account password before enabling LAN or a public tunnel.
+6. Set the SillyTavern password before enabling LAN or a public tunnel.
 
-The manager password and the SillyTavern account password are separate. The public tunnel never forwards the manager panel.
+The manager password and the SillyTavern password are separate. The SillyTavern password is asked for by a sign-in page the manager serves, so it works the same on every SillyTavern version, old or new; changing it signs out every device that was already in. The public tunnel never forwards the manager panel.
 
 ## Backup and restore
 

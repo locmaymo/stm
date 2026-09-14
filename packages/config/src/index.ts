@@ -2,20 +2,34 @@ import { randomUUID } from 'node:crypto';
 import { copyFile, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { parseDocument, type Document, type YAMLMap } from 'yaml';
-import { logEvent, logLineText, type AccessMode, type ConfigDocument, type ConfigSettings, type ConfigUpdateInput, type Installation, type LogSink, type Profile } from '../../contracts/src/index.js';
+import { logEvent, logLineText, type ConfigDocument, type ConfigSettings, type ConfigUpdateInput, type Installation, type LogSink, type Profile } from '../../contracts/src/index.js';
 
 const CONFIG_SCHEMA_VERSION = 1 as const;
 const REDACTED_PASSWORD = '********';
 const DEFAULT_BASIC_AUTH_USER = { username: 'user', password: 'password' } as const;
 /**
- * Files that only exist in a SillyTavern that has user accounts.
+ * The settings the manager owns, and the value each one has to hold.
  *
- * Accounts arrived in 1.12. Before that there is no account to hold a password,
- * `enableUserAccounts` is an unknown key, and /api/users/list does not exist -
- * which is what left older versions with no way to set a password at all, and
- * so with no LAN address and no tunnel either.
+ * Every one of them is SillyTavern's own default, so this is not a policy the
+ * manager invents - it is the manager refusing to move them. `listen` is the
+ * important one: SillyTavern stays on the loopback address on every version,
+ * and the only way in from anywhere else is the access gateway, which asks for
+ * a password first. The two protections SillyTavern ships are left switched
+ * off, because neither of them works on every version the manager installs.
+ *
+ * A key that is simply absent is already at its default, so nothing is written
+ * for it. Only a key that is set to something else gets moved back.
  */
-const ACCOUNT_RUNTIME_MARKERS = ['src/users.js', 'src/endpoints/users-admin.js'] as const;
+const MANAGED_DEFAULTS: ReadonlyArray<{ readonly path: readonly string[]; readonly value: boolean }> = [
+  { path: ['listen'], value: false },
+  { path: ['whitelistMode'], value: true },
+  { path: ['basicAuthMode'], value: false },
+  { path: ['enableUserAccounts'], value: false },
+  // The manager opens the console itself; these are what the older versions
+  // read instead of --browserLaunchEnabled, which they ignore.
+  { path: ['autorun'], value: false },
+  { path: ['browserLaunch', 'enabled'], value: false },
+];
 
 export class ConfigError extends Error {
   public readonly code: 'config_missing' | 'invalid_yaml' | 'invalid_config' | 'invalid_security';
@@ -43,114 +57,25 @@ export class ConfigStore {
     const path = await resolveConfigPath(profile, installation.runtimePath);
     const raw = await readConfig(path);
     const document = parseYaml(raw);
-    return toConfigDocument(document, raw, path, installation, await this.accessMode(installation));
-  }
-
-  /** Whether this installed version has user accounts, or only Basic Auth. */
-  public async accessMode(installation: Installation): Promise<AccessMode> {
-    for (const marker of ACCOUNT_RUNTIME_MARKERS) {
-      try { await stat(join(installation.runtimePath, ...marker.split('/'))); return 'accounts'; } catch { /* try the next marker */ }
-    }
-    // A shipped default template naming the key is the same evidence, and it
-    // survives a layout change that moves the files above.
-    try {
-      if ((await readFile(join(installation.runtimePath, 'default', 'config.yaml'), 'utf8')).includes('enableUserAccounts')) return 'accounts';
-    } catch { /* older versions ship no default template */ }
-    return 'basicAuth';
+    return toConfigDocument(document, raw, path, installation);
   }
 
   /**
-   * Make the profile config something this runtime version will start from.
+   * Move the settings the manager owns back to their defaults, if they moved.
    *
-   * The two versions want opposite things from the same file, so switching
-   * between them has to rewrite it. Returns which shape it moved the config
-   * into, or null when it was already right.
+   * Called before every start, because the runtime about to be started may be
+   * a different version than the one this config was last written for, and
+   * because a config restored from a backup carries whatever it was set to on
+   * the machine it came from. Returns whether anything had to be written.
    */
-  public async reconcileForRuntime(profile: Profile, installation: Installation): Promise<AccessMode | null> {
-    if (await this.accessMode(installation) === 'accounts') {
-      if (!await this.needsAccountMigration(profile, installation)) return null;
-      await this.update(profile, installation, { settings: { listen: false, enableUserAccounts: true } });
-      return 'accounts';
-    }
-    return await this.secureLegacyConfig(profile, installation) ? 'basicAuth' : null;
-  }
-
-  /**
-   * Leave an older runtime with a configuration it will actually start from.
-   *
-   * SillyTavern before 1.12 exits immediately when `listen` is on and neither
-   * whitelisting nor Basic Auth is - and that is the exact shape of a config
-   * written for a version with user accounts, where `listen` is safe because
-   * an account password guards it. Installing an older version on top of that
-   * config produced a runtime that printed "unsecurely open to the public" and
-   * exited with code 1 on every start, which reads as the version being broken.
-   */
-  private async secureLegacyConfig(profile: Profile, installation: Installation): Promise<boolean> {
+  public async applyManagedDefaults(profile: Profile, installation: Installation): Promise<boolean> {
     const path = await resolveConfigPath(profile, installation.runtimePath);
     const document = parseYaml(await readConfig(path));
-    let changed = false;
-    if (getPath(document, ['listen']) === true && getPath(document, ['basicAuthMode']) !== true && getPath(document, ['whitelistMode']) !== true) {
-      // Keep the network open when there is a real password to open it with,
-      // and close it when there is not. Never start it unprotected.
-      const password = getPath(document, ['basicAuthUser', 'password']);
-      if (typeof password === 'string' && password && password !== DEFAULT_BASIC_AUTH_USER.password) setPath(document, ['basicAuthMode'], true);
-      else setPath(document, ['listen'], false);
-      changed = true;
-    }
-    // The manager opens the console itself. These are the keys the older
-    // versions read instead of --browserLaunchEnabled, which they ignore.
-    for (const key of [['autorun'], ['browserLaunch', 'enabled']]) {
-      if (getPath(document, key) === true) { setPath(document, key, false); changed = true; }
-    }
-    if (!changed) return false;
+    if (!applyManagedDefaults(document)) return false;
     const nextRaw = String(document);
     await atomicWriteYaml(path, nextRaw);
-    this.logger(logEvent('config.legacySecured', `[config] adjusted ${path} so this SillyTavern version will start`, { path }));
+    this.logger(logEvent('config.managedDefaults', `[config] returned the managed settings in ${path} to their defaults`, { path }));
     return true;
-  }
-
-  /** What the panel needs to report Basic Auth, without reading the password out. */
-  public async readBasicAuth(profile: Profile, installation: Installation): Promise<{ username: string; passwordConfigured: boolean; enabled: boolean }> {
-    const document = parseYaml(await readConfig(await resolveConfigPath(profile, installation.runtimePath)));
-    const username = getPath(document, ['basicAuthUser', 'username']);
-    const password = getPath(document, ['basicAuthUser', 'password']);
-    return {
-      username: typeof username === 'string' && username ? username : DEFAULT_BASIC_AUTH_USER.username,
-      passwordConfigured: typeof password === 'string' && password.length > 0 && password !== DEFAULT_BASIC_AUTH_USER.password,
-      enabled: getPath(document, ['basicAuthMode']) === true,
-    };
-  }
-
-  /**
-   * Give a version without user accounts the only password it understands.
-   *
-   * Basic Auth is checked by the HTTP layer before anything else, so it guards
-   * a LAN address or a tunnel exactly as an account password would.
-   */
-  public async setBasicAuthPassword(profile: Profile, installation: Installation, password: string): Promise<ConfigDocument> {
-    const path = await resolveConfigPath(profile, installation.runtimePath);
-    const document = parseYaml(await readConfig(path));
-    if (getPath(document, ['basicAuthUser', 'username']) === undefined) setPath(document, ['basicAuthUser', 'username'], DEFAULT_BASIC_AUTH_USER.username);
-    setPath(document, ['basicAuthUser', 'password'], password);
-    setPath(document, ['basicAuthMode'], true);
-    const nextRaw = String(document);
-    await atomicWriteYaml(path, nextRaw);
-    this.logger(logEvent('config.basicAuthPasswordSet', '[config] set the Basic Auth password in ' + path, { path }));
-    return toConfigDocument(parseYaml(nextRaw), nextRaw, path, installation, 'basicAuth');
-  }
-
-  /**
-   * Returns whether active Basic Auth must be disabled or account mode enabled.
-   *
-   * Never for a version without accounts: there is nothing to migrate to, and
-   * answering yes rewrote that config on every single start.
-   */
-  public async needsAccountMigration(profile: Profile, installation: Installation): Promise<boolean> {
-    if (await this.accessMode(installation) === 'basicAuth') return false;
-    const path = await resolveConfigPath(profile, installation.runtimePath);
-    const document = parseYaml(await readConfig(path));
-    return getPath(document, ['basicAuthMode']) === true
-      || getPath(document, ['enableUserAccounts']) !== true;
   }
 
   public async validate(rawYaml: string): Promise<ConfigSettings> {
@@ -167,34 +92,17 @@ export class ConfigStore {
       setPath(document, ['basicAuthUser', 'password'], getPath(previousDocument, ['basicAuthUser', 'password']) ?? DEFAULT_BASIC_AUTH_USER.password);
     }
     applySettings(document, input.settings);
-    const mode = await this.accessMode(installation);
-    if (mode === 'accounts') {
-      // Disable Basic Auth while retaining its YAML keys. SillyTavern restores
-      // missing defaults at startup, so removing them causes repeated rewrites.
-      setPath(document, ['enableUserAccounts'], true);
-      setPath(document, ['basicAuthMode'], false);
-    }
-    for (const key of ['username', 'password'] as const) {
-      if (getPath(document, ['basicAuthUser', key]) === undefined) {
-        setPath(document, ['basicAuthUser', key], DEFAULT_BASIC_AUTH_USER[key]);
-      }
-    }
+    // An edited YAML document can carry anything, including the settings that
+    // decide who can reach SillyTavern. Those are not the editor's to move.
+    applyManagedDefaults(document);
     const settings = extractSettings(document);
-    if (settings.listen) {
-      setPath(document, ['whitelistMode'], false);
-      // Without accounts, Basic Auth is the only thing guarding the port, and
-      // a version that has no accounts refuses to start without one of them.
-      // The API will not enable listen until a password exists.
-      if (mode === 'basicAuth') setPath(document, ['basicAuthMode'], true);
-    }
     if (settings.port !== 8000) {
       throw new ConfigError('invalid_config', 'SillyTavern must keep port 8000 when managed by SillyTavern Manager');
     }
     const nextRaw = String(document);
     await atomicWriteYaml(path, nextRaw);
     this.logger(logEvent('config.updated', `[config] updated ${path}`, { path }));
-    const savedDocument = parseYaml(nextRaw);
-    return toConfigDocument(savedDocument, nextRaw, path, installation, mode);
+    return toConfigDocument(parseYaml(nextRaw), nextRaw, path, installation);
   }
 }
 
@@ -234,7 +142,7 @@ function parseYaml(raw: string): Document.Parsed {
   }
 }
 
-function toConfigDocument(document: Document.Parsed, raw: string, path: string, installation: Installation, accessMode: AccessMode): ConfigDocument {
+function toConfigDocument(document: Document.Parsed, raw: string, path: string, installation: Installation): ConfigDocument {
   const redacted = parseYaml(raw);
   const password = getPath(redacted, ['basicAuthUser', 'password']);
   if (typeof password === 'string' && password && password !== DEFAULT_BASIC_AUTH_USER.password) {
@@ -249,7 +157,6 @@ function toConfigDocument(document: Document.Parsed, raw: string, path: string, 
     path,
     format: path.toLowerCase().endsWith('.yml') ? 'yml' : 'yaml',
     rawYaml: String(redacted),
-    accessMode,
     settings,
     restartRequired: true,
   };
@@ -283,13 +190,21 @@ function extractSettings(document: Document.Parsed): ConfigSettings {
 
 function applySettings(document: Document.Parsed, settings: ConfigUpdateInput['settings']): void {
   if (!settings) return;
-  if (settings.listen !== undefined) setPath(document, ['listen'], settings.listen);
-  if (settings.listenAddress?.ipv4 !== undefined) setPath(document, ['listenAddress', 'ipv4'], settings.listenAddress.ipv4);
-  if (settings.listenAddress?.ipv6 !== undefined) setPath(document, ['listenAddress', 'ipv6'], settings.listenAddress.ipv6);
-  if (settings.enableUserAccounts !== undefined) setPath(document, ['enableUserAccounts'], settings.enableUserAccounts);
   if (settings.sslEnabled !== undefined) setPath(document, ['ssl', 'enabled'], settings.sslEnabled);
   if (settings.enableCorsProxy !== undefined) setPath(document, ['enableCorsProxy'], settings.enableCorsProxy);
   if (settings.disableCsrfProtection !== undefined) setPath(document, ['disableCsrfProtection'], settings.disableCsrfProtection);
+}
+
+/** Returns whether any managed setting had to be moved back to its default. */
+function applyManagedDefaults(document: Document.Parsed): boolean {
+  let changed = false;
+  for (const { path, value } of MANAGED_DEFAULTS) {
+    const current = getPath(document, [...path]);
+    if (current === undefined || current === value) continue;
+    setPath(document, [...path], value);
+    changed = true;
+  }
+  return changed;
 }
 
 function getPath(document: Document.Parsed, path: string[]): unknown {

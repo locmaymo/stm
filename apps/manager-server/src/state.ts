@@ -16,6 +16,10 @@ interface PersistedManagerState {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly adminPasswordHash: string | null;
+  /** The password the access gateway asks for, separate from the one above. */
+  readonly accessPasswordHash: string | null;
+  /** Whether that gateway binds to the local network or to this machine only. */
+  readonly accessLanEnabled: boolean;
   readonly setupAcceptedAt: string | null;
   readonly setupCode: string | null;
   readonly setupCodeHash: string | null;
@@ -83,6 +87,8 @@ export class StateStore {
         createdAt: now,
         updatedAt: now,
         adminPasswordHash: null,
+        accessPasswordHash: null,
+        accessLanEnabled: false,
         setupAcceptedAt: null,
         setupCode: this.initialSetupCode,
         setupCodeHash: sha256(this.initialSetupCode),
@@ -120,6 +126,37 @@ export class StateStore {
     this.adminWriteQueue = previous.then(operation, operation);
     await this.adminWriteQueue;
     return saved;
+  }
+
+  /**
+   * Save the password that opens SillyTavern, replacing any earlier one.
+   *
+   * Unlike the manager password this has no "only once" rule: it guards a door
+   * that is meant to be handed out and taken back.
+   */
+  public async setAccessPassword(passwordHash: string): Promise<void> {
+    const operation = async (): Promise<void> => {
+      const state = await this.load();
+      const updated: PersistedManagerState = { ...state, accessPasswordHash: passwordHash, updatedAt: this.now().toISOString() };
+      await this.write(updated);
+      this.state = updated;
+    };
+    const previous = this.adminWriteQueue;
+    this.adminWriteQueue = previous.then(operation, operation);
+    await this.adminWriteQueue;
+  }
+
+  public async setAccessLan(enabled: boolean): Promise<void> {
+    const operation = async (): Promise<void> => {
+      const state = await this.load();
+      if (state.accessLanEnabled === enabled) return;
+      const updated: PersistedManagerState = { ...state, accessLanEnabled: enabled, updatedAt: this.now().toISOString() };
+      await this.write(updated);
+      this.state = updated;
+    };
+    const previous = this.adminWriteQueue;
+    this.adminWriteQueue = previous.then(operation, operation);
+    await this.adminWriteQueue;
   }
 
   public async bootstrapAdminPassword(passwordHash: string): Promise<boolean> {
@@ -244,7 +281,11 @@ export class StateStore {
       throw new Error('Invalid manager state timestamp field');
     }
     const setupCode = isNullableString(input.setupCode) ? input.setupCode : null;
-    return { ...input, setupCode } as unknown as PersistedManagerState;
+    // State written before the access gateway existed has neither key, and a
+    // missing one means the same as its default rather than a broken file.
+    const accessPasswordHash = isNullableString(input.accessPasswordHash) ? input.accessPasswordHash : null;
+    const accessLanEnabled = input.accessLanEnabled === true;
+    return { ...input, setupCode, accessPasswordHash, accessLanEnabled } as unknown as PersistedManagerState;
   }
 }
 

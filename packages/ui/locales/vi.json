@@ -184,10 +184,9 @@
     "passwordProtected": "Đã bảo vệ bằng mật khẩu",
     "passwordRequired": "Cần mật khẩu trước khi chia sẻ",
     "passwordSettings": "Thiết lập mật khẩu",
-    "sillyPasswordHelp": "Dùng thông tin này để mở SillyTavern. Tài khoản đăng nhập manager là riêng.",
+    "sillyPasswordHelp": "Một mật khẩu cho mọi thiết bị mở SillyTavern, trên mọi phiên bản. Mật khẩu đăng nhập trình quản lý là riêng.",
     "savePassword": "Lưu mật khẩu",
     "changePassword": "Đổi mật khẩu",
-    "adminAccount": "Tài khoản admin SillyTavern",
     "confirmPassword": "Xác nhận mật khẩu",
     "passwordSaveFailed": "Không thể lưu mật khẩu SillyTavern",
     "passwordProtection": "Bảo vệ mật khẩu SillyTavern",
@@ -198,8 +197,6 @@
     "configKicker": "CẤU HÌNH SILLYTAVERN",
     "configTitle": "Thiết lập runtime",
     "commonSettings": "Thiết lập phổ biến",
-    "listenMode": "Lắng nghe trong mạng nội bộ",
-    "listenModeHint": "Cho phép điện thoại và thiết bị cùng mạng kết nối qua cổng 8000.",
     "ssl": "HTTPS",
     "sslHint": "Dùng các đường dẫn chứng chỉ đã có trong SillyTavern.",
     "corsProxy": "CORS proxy",
@@ -223,15 +220,13 @@
     "uploading": "Đang tải lên",
     "uploadRemaining": "còn lại",
     "uploadEstimating": "đang tính thời gian còn lại…",
-    "basicAuthHelp": "Phiên bản SillyTavern này không có tài khoản người dùng, nên trình quản lý bảo vệ nó bằng Basic Auth. Trình duyệt sẽ hỏi tên đăng nhập và mật khẩu này. Mật khẩu đăng nhập trình quản lý là riêng biệt.",
-    "basicAuthUser": "Tên đăng nhập Basic Auth",
-    "accountsUnavailable": "SillyTavern không báo cáo thông tin tài khoản cho phiên bản hoặc cấu hình đăng nhập này.",
     "stopping": "Đang dừng…",
     "restoreStoppedPartway": "Khôi phục đã bị dừng giữa chừng, nên hồ sơ này đang có một phần dữ liệu cũ và một phần dữ liệu mới. Hãy khôi phục bản sao lưu -prerestore trong danh sách để đưa nó về như trước.",
     "showQr": "Hiện mã QR",
     "hideQr": "Ẩn mã QR",
     "scanToOpen": "Quét để mở trên điện thoại",
-    "openInNewTab": "Mở trong tab mới"
+    "openInNewTab": "Mở trong tab mới",
+    "passwordChangeSignsOut": "Đổi mật khẩu sẽ đăng xuất mọi thiết bị đang ở trong."
   },
   "dashboard": {
     "eyebrow": "TRUNG TÂM ĐIỀU HÀNH / TỔNG QUAN",
@@ -354,7 +349,8 @@
     "panel": {
       "building": "Giao diện chưa được dựng; đang dựng ngay bây giờ",
       "built": "Đã dựng xong giao diện",
-      "buildFailed": "Không dựng được giao diện; hãy chạy \"npm run panel:build\" rồi khởi động lại"
+      "buildFailed": "Không dựng được giao diện; hãy chạy \"npm run panel:build\" rồi khởi động lại",
+      "stale": "Giao diện cũ hơn mã nguồn đã dựng ra nó; đang dựng lại"
     },
     "manager": {
       "browserOpened": "Đã mở {url}",
@@ -366,9 +362,7 @@
     },
     "config": {
       "updated": "Đã cập nhật {path}",
-      "accountsMigrated": "Đã chuyển bảo mật truy cập sang tài khoản SillyTavern; truy cập mạng nội bộ đang chờ mật khẩu quản trị",
-      "basicAuthPasswordSet": "Đã đặt mật khẩu Basic Auth trong {path}",
-      "legacySecured": "Đã chỉnh {path} để phiên bản SillyTavern này khởi động được"
+      "managedDefaults": "Đã đưa các thiết lập do trình quản lý giữ trong {path} về mặc định"
     },
     "sillytavern": {
       "starting": "Đang khởi động {ref} trên 127.0.0.1:8000",
@@ -445,8 +439,8 @@
       "phaseRemovedObsolete": "Đã xóa {count} tệp không có trong bản sao lưu trong {seconds}s"
     },
     "cloudflared": {
-      "startingQuick": "Đang khởi động Quick Tunnel tới 127.0.0.1:8000",
-      "startingNamed": "Đang khởi động Named Tunnel tới 127.0.0.1:8000",
+      "startingQuick": "Đang khởi động Quick Tunnel tới {target}",
+      "startingNamed": "Đang khởi động Named Tunnel tới {target}",
       "downloading": "Đang tải {file}",
       "installed": "Đã cài vào {path}",
       "spawnFailed": "{reason}",
@@ -487,6 +481,15 @@
       "restoringFiles": "Đang khôi phục tệp",
       "removingObsolete": "Đang xóa các tệp không có trong bản sao lưu",
       "finalizing": "Đang hoàn tất dữ liệu khôi phục"
+    },
+    "gateway": {
+      "startedLocal": "Cổng truy cập SillyTavern đang lắng nghe tại 127.0.0.1:{port}",
+      "startedLan": "Cổng truy cập SillyTavern đã mở cho mạng này ở cổng {port}",
+      "stopped": "Cổng truy cập SillyTavern đã đóng",
+      "failed": "{reason}",
+      "signedIn": "Đã đăng nhập từ {address}",
+      "rejected": "Đã từ chối một lần đăng nhập từ {address}",
+      "upstreamFailed": "Yêu cầu tới {path} không đến được SillyTavern: {reason}"
     }
   },
   "system": {

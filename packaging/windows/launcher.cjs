@@ -69,6 +69,7 @@ function banner() {
   line('  ' + '-'.repeat(46));
   line(`  Console      ${MANAGER_URL}`);
   line(`  SillyTavern  http://127.0.0.1:8000  (once you start it)`);
+  line(`  Shared link  http://127.0.0.1:8001  (asks for the SillyTavern password)`);
   line(`  Your data    ${dataLocation}`);
   line();
   line('  Starting. The console opens in your browser when it is ready.');

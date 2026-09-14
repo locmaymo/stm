@@ -184,10 +184,9 @@
     "passwordProtected": "Password protected",
     "passwordRequired": "Password required before sharing",
     "passwordSettings": "Password settings",
-    "sillyPasswordHelp": "Use these credentials to open SillyTavern. Your manager login is separate.",
+    "sillyPasswordHelp": "One password for every device that opens SillyTavern, on any version. Your manager login is separate.",
     "savePassword": "Save password",
     "changePassword": "Change password",
-    "adminAccount": "SillyTavern admin account",
     "confirmPassword": "Confirm password",
     "passwordSaveFailed": "Could not save the SillyTavern password",
     "passwordProtection": "SillyTavern password protection",
@@ -198,8 +197,6 @@
     "configKicker": "SILLYTAVERN CONFIG",
     "configTitle": "Runtime settings",
     "commonSettings": "Common settings",
-    "listenMode": "Listen on the local network",
-    "listenModeHint": "Allows phones and other devices on the same network to connect on port 8000.",
     "ssl": "HTTPS",
     "sslHint": "Uses the certificate paths already configured in SillyTavern.",
     "corsProxy": "CORS proxy",
@@ -223,15 +220,13 @@
     "uploading": "Uploading",
     "uploadRemaining": "left",
     "uploadEstimating": "estimating time left…",
-    "basicAuthHelp": "This SillyTavern version has no user accounts, so the manager protects it with Basic Auth. Your browser will ask for this username and password. Your manager login is separate.",
-    "basicAuthUser": "Basic Auth username",
-    "accountsUnavailable": "SillyTavern did not report its account details for this version or login configuration.",
     "stopping": "Stopping…",
     "restoreStoppedPartway": "The restore was stopped partway, so this profile holds part of the old data and part of the new. Restore the -prerestore backup in the list to put it back as it was.",
     "showQr": "Show QR code",
     "hideQr": "Hide QR code",
     "scanToOpen": "Scan to open on a phone",
-    "openInNewTab": "Opens in a new tab"
+    "openInNewTab": "Opens in a new tab",
+    "passwordChangeSignsOut": "Changing it signs out every device that is already in."
   },
   "dashboard": {
     "eyebrow": "CONTROL ROOM / OVERVIEW",
@@ -354,7 +349,8 @@
     "panel": {
       "building": "The panel has not been built yet; building it now",
       "built": "The panel is built",
-      "buildFailed": "The panel could not be built; run \"npm run panel:build\" and restart"
+      "buildFailed": "The panel could not be built; run \"npm run panel:build\" and restart",
+      "stale": "The panel is older than the sources it was built from; building it again"
     },
     "manager": {
       "browserOpened": "Opened {url}",
@@ -366,9 +362,7 @@
     },
     "config": {
       "updated": "Updated {path}",
-      "accountsMigrated": "Moved access security to SillyTavern accounts; local network access is waiting for an admin password",
-      "basicAuthPasswordSet": "Set the Basic Auth password in {path}",
-      "legacySecured": "Adjusted {path} so this SillyTavern version will start"
+      "managedDefaults": "Returned the managed settings in {path} to their defaults"
     },
     "sillytavern": {
       "starting": "Starting {ref} on 127.0.0.1:8000",
@@ -445,8 +439,8 @@
       "phaseRemovedObsolete": "Removed {count} files the backup does not contain in {seconds}s"
     },
     "cloudflared": {
-      "startingQuick": "Starting Quick Tunnel to 127.0.0.1:8000",
-      "startingNamed": "Starting Named Tunnel to 127.0.0.1:8000",
+      "startingQuick": "Starting Quick Tunnel to {target}",
+      "startingNamed": "Starting Named Tunnel to {target}",
       "downloading": "Downloading {file}",
       "installed": "Installed to {path}",
       "spawnFailed": "{reason}",
@@ -487,6 +481,15 @@
       "restoringFiles": "Restoring files",
       "removingObsolete": "Removing files the backup does not contain",
       "finalizing": "Finalizing restored data"
+    },
+    "gateway": {
+      "startedLocal": "SillyTavern access is listening on 127.0.0.1:{port}",
+      "startedLan": "SillyTavern access is open to this network on port {port}",
+      "stopped": "SillyTavern access is closed",
+      "failed": "{reason}",
+      "signedIn": "Signed in from {address}",
+      "rejected": "Refused a sign-in from {address}",
+      "upstreamFailed": "The request for {path} did not reach SillyTavern: {reason}"
     }
   },
   "system": {
