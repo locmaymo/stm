@@ -1,19 +1,68 @@
 import { createHash, createHmac, randomBytes } from 'node:crypto';
-import { createReadStream } from 'node:fs';
-import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
-import { Readable } from 'node:stream';
+import { mkdir, open, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { logEvent, logLineText, type BackupManifest, type LogSink, type R2Config, type R2Object } from '../../contracts/src/index.js';
+import { logEvent, logLineText, type LogSink, type Profile, type R2Config, type R2Object, type R2SnapshotSummary, type R2Usage } from '../../contracts/src/index.js';
+import { ioConcurrency, runPooled } from '../../platform/src/index.js';
 import type { PlatformPaths } from '../../platform/src/index.js';
+import { BlobLedger } from './ledger.js';
+import {
+  blobKey,
+  decodeBlob,
+  decodeSnapshot,
+  encodeBlob,
+  encodeSnapshot,
+  referencedHashes,
+  shouldCompress,
+  snapshotKey,
+  type FileChunk,
+  type HashedFile,
+  type R2Snapshot,
+} from './sync.js';
 
 const R2_STATE_FILE = 'r2-config.json';
-const R2_SCHEMA_VERSION = 1 as const;
-const MULTIPART_THRESHOLD_BYTES = 64 * 1024 * 1024;
-const MULTIPART_PART_BYTES = 64 * 1024 * 1024;
+const R2_LEDGER_FILE = 'r2-blobs.log';
+const R2_SCHEMA_VERSION = 2 as const;
 const MASKED_SECRET = '********';
+const OBJECT_PREFIX = 'sillytavern-manager/';
+const BLOB_PREFIX = `${OBJECT_PREFIX}blobs/`;
+const SNAPSHOT_PREFIX = `${OBJECT_PREFIX}snapshots/`;
+/** One listing page. R2 caps it here too, so asking for more changes nothing. */
+const LIST_PAGE_KEYS = 1000;
+
+/**
+ * Defaults chosen against what Cloudflare gives away: 10 GB of storage and a
+ * million charged writes a month.
+ *
+ * Storage is the binding constraint, not operations. Sending only changed
+ * chunks means a five-minute schedule costs a handful of small writes per run
+ * and nothing at all when nothing changed, so the interval is set by how much
+ * work is acceptable to lose rather than by what the quota can bear.
+ */
+const DEFAULTS = {
+  localIntervalMinutes: 60,
+  hotIntervalMinutes: 5,
+  coldIntervalHours: 6,
+  reconcileIntervalHours: 24,
+  keepRecent: 48,
+  keepDaily: 14,
+  keepWeekly: 8,
+  maxStorageBytes: 8 * 1024 * 1024 * 1024,
+  maxWriteOperations: 800_000,
+} as const;
+
+interface StoredUsage {
+  readonly storageBytes: number;
+  readonly blobCount: number;
+  readonly snapshotCount: number;
+  readonly writeOperations: number;
+  readonly periodStartedAt: string;
+  readonly legacyObjectCount: number;
+  readonly legacyBytes: number;
+  readonly lastReconciledAt: string | null;
+}
 
 interface StoredR2Config {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 2;
   readonly enabled: boolean;
   readonly endpoint: string | null;
   readonly bucket: string | null;
@@ -21,13 +70,19 @@ interface StoredR2Config {
   readonly accessKeyId: string | null;
   readonly secretAccessKey: string | null;
   readonly localIntervalMinutes: number;
-  readonly r2IntervalHours: number;
-  readonly fullIntervalDays: number;
-  readonly maxBackups: number;
-  readonly retentionDays: number | null;
+  readonly hotIntervalMinutes: number;
+  readonly coldIntervalHours: number;
+  readonly reconcileIntervalHours: number;
+  readonly keepRecent: number;
+  readonly keepDaily: number;
+  readonly keepWeekly: number;
+  readonly maxStorageBytes: number;
+  readonly maxWriteOperations: number;
   readonly lastUploadAt: string | null;
+  /** The cold tier runs on its own clock, so it is remembered separately. */
+  readonly lastColdUploadAt: string | null;
   readonly lastFingerprint: string | null;
-  readonly estimatedBytes: number;
+  readonly usage: StoredUsage;
 }
 
 export interface R2ManagerOptions {
@@ -46,16 +101,54 @@ export interface R2UpdateInput {
   readonly accessKeyId?: string | null;
   readonly secretAccessKey?: string | null;
   readonly localIntervalMinutes?: number;
-  readonly r2IntervalHours?: number;
-  readonly fullIntervalDays?: number;
-  readonly maxBackups?: number;
-  readonly retentionDays?: number | null;
+  readonly hotIntervalMinutes?: number;
+  readonly coldIntervalHours?: number;
+  readonly reconcileIntervalHours?: number;
+  readonly keepRecent?: number;
+  readonly keepDaily?: number;
+  readonly keepWeekly?: number;
+  readonly maxStorageBytes?: number;
+  readonly maxWriteOperations?: number;
 }
 
-export interface R2UploadResult {
-  readonly object: R2Object;
-  readonly manifestObject: R2Object;
-  readonly estimatedBytes: number;
+/** One file to consider sending, and where its bytes are on this machine. */
+export interface SyncSource {
+  readonly file: HashedFile;
+  readonly path: string;
+}
+
+export interface R2SyncInput {
+  readonly profile: Profile;
+  /** The files walked and hashed this run. */
+  readonly sources: readonly SyncSource[];
+  /**
+   * Files this run did not look at, taken from the previous snapshot unchanged.
+   *
+   * This is what lets the frequent run touch only chats and settings while every
+   * snapshot it writes is still a complete recovery point: the parts it skipped
+   * are already in the bucket, so naming them costs nothing.
+   */
+  readonly carried?: readonly HashedFile[];
+  readonly fingerprint: string;
+  readonly tier?: 'hot' | 'cold';
+  readonly signal?: AbortSignal;
+  readonly onProgress?: (progress: { completed: number; total: number }) => void;
+}
+
+export interface R2SyncResult {
+  readonly snapshot: R2SnapshotSummary;
+  readonly fileCount: number;
+  readonly uploadedChunks: number;
+  readonly uploadedBytes: number;
+  readonly reusedChunks: number;
+  readonly usage: R2Usage;
+}
+
+export interface R2ReconcileResult {
+  readonly blobCount: number;
+  readonly collectedBlobs: number;
+  readonly collectedBytes: number;
+  readonly usage: R2Usage;
 }
 
 export interface R2ConnectionResult {
@@ -100,8 +193,17 @@ export class R2Manager {
   private readonly now: () => Date;
   private readonly logger: LogSink;
   private readonly fetchImpl: typeof fetch;
+  private readonly ledger: BlobLedger;
   private configState: StoredR2Config | null = null;
   private writeQueue: Promise<void> = Promise.resolve();
+  /**
+   * Held for a sync or a reconcile, never both.
+   *
+   * Collecting unreferenced chunks reads the snapshots to decide what is still
+   * wanted. A sync running beside it has uploaded chunks whose snapshot is not
+   * written yet, and those would look exactly like garbage.
+   */
+  private busy: Promise<unknown> = Promise.resolve();
 
   public constructor(options: R2ManagerOptions) {
     this.paths = options.paths;
@@ -109,6 +211,7 @@ export class R2Manager {
     this.now = options.now ?? (() => new Date());
     this.logger = options.logger ?? ((line) => console.log(logLineText(line)));
     this.fetchImpl = options.fetchImpl ?? fetch;
+    this.ledger = new BlobLedger({ path: join(this.paths.state, R2_LEDGER_FILE) });
   }
 
   public async getConfig(): Promise<R2Config> {
@@ -126,10 +229,14 @@ export class R2Manager {
       ...(input.accessKeyId !== undefined ? { accessKeyId: preserveSecret(input.accessKeyId, current.accessKeyId) } : {}),
       ...(input.secretAccessKey !== undefined ? { secretAccessKey: preserveSecret(input.secretAccessKey, current.secretAccessKey) } : {}),
       ...(input.localIntervalMinutes !== undefined ? { localIntervalMinutes: integerInRange(input.localIntervalMinutes, 1, 7 * 24 * 60, 'local interval') } : {}),
-      ...(input.r2IntervalHours !== undefined ? { r2IntervalHours: integerInRange(input.r2IntervalHours, 1, 30 * 24, 'R2 interval') } : {}),
-      ...(input.fullIntervalDays !== undefined ? { fullIntervalDays: integerInRange(input.fullIntervalDays, 1, 365, 'full backup interval') } : {}),
-      ...(input.maxBackups !== undefined ? { maxBackups: integerInRange(input.maxBackups, 1, 1000, 'retention count') } : {}),
-      ...(input.retentionDays !== undefined ? { retentionDays: input.retentionDays === null ? null : integerInRange(input.retentionDays, 1, 3650, 'retention days') } : {}),
+      ...(input.hotIntervalMinutes !== undefined ? { hotIntervalMinutes: integerInRange(input.hotIntervalMinutes, 1, 7 * 24 * 60, 'frequent upload interval') } : {}),
+      ...(input.coldIntervalHours !== undefined ? { coldIntervalHours: integerInRange(input.coldIntervalHours, 1, 30 * 24, 'full upload interval') } : {}),
+      ...(input.reconcileIntervalHours !== undefined ? { reconcileIntervalHours: integerInRange(input.reconcileIntervalHours, 1, 30 * 24, 'reconcile interval') } : {}),
+      ...(input.keepRecent !== undefined ? { keepRecent: integerInRange(input.keepRecent, 1, 1000, 'recent retention') } : {}),
+      ...(input.keepDaily !== undefined ? { keepDaily: integerInRange(input.keepDaily, 0, 365, 'daily retention') } : {}),
+      ...(input.keepWeekly !== undefined ? { keepWeekly: integerInRange(input.keepWeekly, 0, 520, 'weekly retention') } : {}),
+      ...(input.maxStorageBytes !== undefined ? { maxStorageBytes: integerInRange(input.maxStorageBytes, 1024 * 1024, 1024 ** 4, 'storage ceiling') } : {}),
+      ...(input.maxWriteOperations !== undefined ? { maxWriteOperations: integerInRange(input.maxWriteOperations, 1000, 1_000_000_000, 'operation ceiling') } : {}),
     };
     validateStoredConfig(next);
     await this.save(next);
@@ -138,42 +245,272 @@ export class R2Manager {
 
   public async testConnection(): Promise<R2ConnectionResult> {
     const config = await this.load();
-    const client = this.client(config);
-    const objects = await client.listObjects(this.prefix(), 1000);
+    const objects = await this.listAll(config, OBJECT_PREFIX);
     return { ok: true, objectCount: objects.length, totalBytes: objects.reduce((sum, object) => sum + object.sizeBytes, 0) };
   }
 
   public async listObjects(): Promise<R2Object[]> {
     const config = await this.load();
-    const objects = await this.client(config).listObjects(this.prefix(), 1000);
-    return objects.map(toPublicObject);
+    return (await this.listAll(config, OBJECT_PREFIX)).map(toPublicObject);
   }
 
-  public async uploadArchive(archivePath: string, manifest: BackupManifest, fingerprint: string | null = null): Promise<R2UploadResult> {
+  /**
+   * Send whatever of this profile the bucket does not already hold.
+   *
+   * Nothing is compared against the bucket during the run: the ledger says what
+   * is already there, which is the difference between a handful of writes and
+   * one per file. The snapshot naming every chunk is written last, so a run
+   * killed halfway leaves chunks nothing points at - wasted space that the next
+   * reconcile collects, never a recovery point with holes in it.
+   */
+  public async syncProfile(input: R2SyncInput): Promise<R2SyncResult> {
+    return await this.exclusive(async () => {
+      const config = await this.requireUsable();
+      await this.ledger.load();
+      const usage = await this.currentPeriod(config);
+      if (usage.storageBytes >= config.maxStorageBytes) {
+        throw new R2Error('r2_storage_ceiling', `The bucket is holding ${formatBytes(usage.storageBytes)}, at or above the ${formatBytes(config.maxStorageBytes)} ceiling. Lower retention or raise the ceiling.`);
+      }
+      if (usage.writeOperations >= config.maxWriteOperations) {
+        throw new R2Error('r2_operation_ceiling', `${usage.writeOperations} charged writes have been used this month, at or above the ${config.maxWriteOperations} ceiling.`);
+      }
+
+      const planned = planUpload(input.sources, this.ledger);
+      const client = this.client(config);
+      let uploadedChunks = 0;
+      let uploadedBytes = 0;
+      let completed = 0;
+      const dropped = new Set<string>();
+      const uploadedHashes: string[] = [];
+      await runPooled(planned.files, ioConcurrency(), async (entry) => {
+        throwIfStopped(input.signal);
+        const sent = await this.uploadChunks(client, entry);
+        if (sent === null) {
+          // Gone since the walk. Naming it in the snapshot would point at a
+          // chunk that was never stored, so the file leaves this recovery point.
+          dropped.add(entry.source.file.name);
+        } else {
+          uploadedChunks += sent.hashes.length;
+          uploadedBytes += sent.bytes;
+          uploadedHashes.push(...sent.hashes);
+        }
+        completed += 1;
+        input.onProgress?.({ completed, total: planned.files.length });
+      });
+      // Only after the bytes are in the bucket, and only once, so an interrupted
+      // run never records a chunk it did not finish sending.
+      await this.ledger.add(uploadedHashes);
+
+      const files = mergeFiles(input.sources, input.carried ?? [], dropped);
+      const createdAt = this.now().toISOString();
+      const snapshot: R2Snapshot = {
+        schemaVersion: 1,
+        id: snapshotId(createdAt),
+        createdAt,
+        profileId: input.profile.id,
+        profileName: input.profile.name,
+        layout: input.profile.layout,
+        fingerprint: input.fingerprint,
+        files,
+      };
+      const body = await encodeSnapshot(snapshot);
+      const key = snapshotKey(OBJECT_PREFIX, input.profile.id, snapshot.id);
+      await client.putObject(key, body, 'application/gzip');
+
+      const nextUsage: StoredUsage = {
+        ...usage,
+        storageBytes: usage.storageBytes + uploadedBytes + body.byteLength,
+        blobCount: usage.blobCount + uploadedChunks,
+        snapshotCount: usage.snapshotCount + 1,
+        writeOperations: usage.writeOperations + client.chargedWrites,
+      };
+      await this.save({
+        ...config,
+        lastUploadAt: createdAt,
+        ...(input.tier === 'cold' ? { lastColdUploadAt: createdAt } : {}),
+        lastFingerprint: input.fingerprint,
+        usage: nextUsage,
+      });
+      if (dropped.size > 0) this.logger(logEvent('r2.skippedMissingFiles', `[r2] skipped ${dropped.size} file(s) removed while the upload was running`, { count: dropped.size }));
+      this.logger(logEvent('r2.synced', `[r2] sent ${uploadedChunks} changed chunk(s), ${formatBytes(uploadedBytes)}, of ${files.length} file(s)`, { chunks: uploadedChunks, bytes: formatBytes(uploadedBytes), files: files.length }));
+      return {
+        snapshot: { id: snapshot.id, profileId: snapshot.profileId, createdAt: snapshot.createdAt, indexBytes: body.byteLength },
+        fileCount: files.length,
+        uploadedChunks,
+        uploadedBytes,
+        reusedChunks: planned.reused,
+        usage: toPublicUsage(nextUsage),
+      };
+    });
+  }
+
+  /** The recovery points in the bucket, newest first. */
+  public async listSnapshots(profileId?: string): Promise<R2SnapshotSummary[]> {
     const config = await this.load();
-    const details = await stat(archivePath);
+    const prefix = profileId ? `${SNAPSHOT_PREFIX}${profileId}/` : SNAPSHOT_PREFIX;
+    const objects = await this.listAll(config, prefix);
+    return objects
+      .map((object) => toSnapshotSummary(object))
+      .filter((summary): summary is R2SnapshotSummary => summary !== null)
+      .sort((left, right) => right.id.localeCompare(left.id));
+  }
+
+  /** Read one recovery point, for showing what it holds or for restoring it. */
+  public async readSnapshot(profileId: string, snapshotIdentifier: string): Promise<R2Snapshot> {
+    const config = await this.load();
     const client = this.client(config);
-    const key = `${this.prefix()}${manifest.id}.zip`;
-    await client.uploadFile(key, archivePath, details.size, 'application/zip');
-    const manifestKey = `${this.prefix()}${manifest.id}.manifest.json`;
-    const manifestBody = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
-    await client.putObject(manifestKey, manifestBody, 'application/json');
-    const usage = await this.applyRetention(config, client);
-    const uploadedAt = this.now().toISOString();
-    await this.save({ ...config, lastUploadAt: uploadedAt, lastFingerprint: fingerprint, estimatedBytes: usage.totalBytes });
-    this.logger(logEvent('r2.uploaded', `[r2] uploaded ${manifest.name} (${details.size} bytes)`, { name: manifest.name, bytes: details.size }));
-    const objects = usage.objects;
-    const object = objects.find((item) => item.key === key) ?? { key, sizeBytes: details.size, lastModified: uploadedAt, etag: null };
-    const manifestObject = objects.find((item) => item.key === manifestKey) ?? { key: manifestKey, sizeBytes: manifestBody.byteLength, lastModified: uploadedAt, etag: null };
-    return { object: toPublicObject(object), manifestObject: toPublicObject(manifestObject), estimatedBytes: usage.totalBytes };
+    const body = await client.getObject(snapshotKey(OBJECT_PREFIX, profileId, snapshotIdentifier));
+    return await decodeSnapshot(body);
+  }
+
+  /** Fetch one stored chunk, already decoded back to the bytes it holds. */
+  public async readBlob(hash: string): Promise<Buffer> {
+    const config = await this.load();
+    const client = this.client(config);
+    return await decodeBlob(await client.getObject(blobKey(OBJECT_PREFIX, hash)));
+  }
+
+  /**
+   * Thin the recovery points down to what retention asks for.
+   *
+   * Deleting the index is free and does not free any space on its own - the
+   * chunks it named are still there, shared with every other snapshot that
+   * wants them. Working out which ones nobody wants any more is the reconcile's
+   * job, because it is the expensive half.
+   */
+  public async pruneSnapshots(profileId: string): Promise<R2SnapshotSummary[]> {
+    return await this.exclusive(async () => {
+      const config = await this.load();
+      const snapshots = await this.listSnapshots(profileId);
+      const keep = selectRetained(snapshots, config);
+      const removed = snapshots.filter((snapshot) => !keep.has(snapshot.id));
+      if (removed.length === 0) return [];
+      const client = this.client(config);
+      for (const snapshot of removed) await client.deleteObject(snapshotKey(OBJECT_PREFIX, profileId, snapshot.id));
+      const usage = await this.currentPeriod(config);
+      await this.save({
+        ...config,
+        usage: {
+          ...usage,
+          snapshotCount: Math.max(0, usage.snapshotCount - removed.length),
+          writeOperations: usage.writeOperations + client.chargedWrites,
+        },
+      });
+      this.logger(logEvent('r2.pruned', `[r2] dropped ${removed.length} superseded recovery point(s)`, { count: removed.length }));
+      return removed;
+    });
+  }
+
+  /**
+   * Make what the manager believes match what the bucket holds, and take back
+   * the space nothing points at any more.
+   *
+   * This is the only operation that lists the whole store, and the only one
+   * whose cost grows with how much is in it, which is why it runs on its own
+   * slow clock rather than with every backup.
+   */
+  public async reconcile(): Promise<R2ReconcileResult> {
+    return await this.exclusive(async () => {
+      const config = await this.requireUsable();
+      const client = this.client(config);
+      const objects = await this.listAll(config, OBJECT_PREFIX, client);
+      const blobs = new Map<string, S3ObjectRecord>();
+      const snapshotKeys: string[] = [];
+      let legacyObjectCount = 0;
+      let legacyBytes = 0;
+      for (const object of objects) {
+        if (object.key.startsWith(BLOB_PREFIX)) {
+          const hash = object.key.slice(object.key.lastIndexOf('/') + 1);
+          if (/^[0-9a-f]{64}$/u.test(hash)) blobs.set(hash, object);
+          continue;
+        }
+        if (object.key.startsWith(SNAPSHOT_PREFIX)) { snapshotKeys.push(object.key); continue; }
+        // Whole-ZIP archives from the version before this one. They are not
+        // read and not deleted behind the operator's back; the panel offers it.
+        legacyObjectCount += 1;
+        legacyBytes += object.sizeBytes;
+      }
+
+      const snapshots: R2Snapshot[] = [];
+      for (const key of snapshotKeys) {
+        try {
+          snapshots.push(await decodeSnapshot(await client.getObject(key)));
+        } catch (error: unknown) {
+          // One damaged index must not make every chunk look collectable.
+          throw new R2Error('r2_unreadable_snapshot', `A recovery point could not be read, so nothing was collected: ${error instanceof Error ? error.message : 'unknown error'}`);
+        }
+      }
+      const wanted = referencedHashes(snapshots);
+      let collectedBlobs = 0;
+      let collectedBytes = 0;
+      const collected: string[] = [];
+      for (const [hash, object] of blobs) {
+        if (wanted.has(hash)) continue;
+        await client.deleteObject(object.key);
+        collected.push(hash);
+        collectedBlobs += 1;
+        collectedBytes += object.sizeBytes;
+      }
+      for (const hash of collected) blobs.delete(hash);
+      await this.ledger.reconcile(blobs.keys());
+
+      const snapshotBytesTotal = objects.filter((object) => object.key.startsWith(SNAPSHOT_PREFIX)).reduce((sum, object) => sum + object.sizeBytes, 0);
+      const blobBytesTotal = [...blobs.values()].reduce((sum, object) => sum + object.sizeBytes, 0);
+      const previous = await this.currentPeriod(config);
+      const usage: StoredUsage = {
+        storageBytes: blobBytesTotal + snapshotBytesTotal + legacyBytes,
+        blobCount: blobs.size,
+        snapshotCount: snapshots.length,
+        writeOperations: previous.writeOperations + client.chargedWrites,
+        periodStartedAt: previous.periodStartedAt,
+        legacyObjectCount,
+        legacyBytes,
+        lastReconciledAt: this.now().toISOString(),
+      };
+      await this.save({ ...config, usage });
+      this.logger(logEvent('r2.reconciled', `[r2] ${blobs.size} stored chunk(s), ${formatBytes(usage.storageBytes)}; collected ${collectedBlobs}`, { chunks: blobs.size, size: formatBytes(usage.storageBytes), collected: collectedBlobs }));
+      return { blobCount: blobs.size, collectedBlobs, collectedBytes, usage: toPublicUsage(usage) };
+    });
+  }
+
+  /**
+   * Remove the whole-ZIP archives the previous scheme uploaded.
+   *
+   * Never automatic. They are the operator's backups, taken under a design that
+   * no longer runs, and deciding they are worthless is not this manager's call
+   * to make on its own.
+   */
+  public async deleteLegacyObjects(): Promise<{ removed: number; bytes: number }> {
+    return await this.exclusive(async () => {
+      const config = await this.requireUsable();
+      const client = this.client(config);
+      const objects = await this.listAll(config, OBJECT_PREFIX, client);
+      const legacy = objects.filter((object) => !object.key.startsWith(BLOB_PREFIX) && !object.key.startsWith(SNAPSHOT_PREFIX));
+      let bytes = 0;
+      for (const object of legacy) {
+        await client.deleteObject(object.key);
+        bytes += object.sizeBytes;
+      }
+      const usage = await this.currentPeriod(config);
+      await this.save({
+        ...config,
+        usage: {
+          ...usage,
+          storageBytes: Math.max(0, usage.storageBytes - bytes),
+          legacyObjectCount: 0,
+          legacyBytes: 0,
+          writeOperations: usage.writeOperations + client.chargedWrites,
+        },
+      });
+      this.logger(logEvent('r2.legacyRemoved', `[r2] removed ${legacy.length} archive(s) in the old whole-file format, ${formatBytes(bytes)}`, { count: legacy.length, size: formatBytes(bytes) }));
+      return { removed: legacy.length, bytes };
+    });
   }
 
   public async deleteObject(key: string): Promise<void> {
-    if (!key.startsWith(this.prefix()) || key.includes('..')) throw new R2Error('invalid_object_key', 'The R2 object key is invalid');
+    if (!key.startsWith(OBJECT_PREFIX) || key.includes('..')) throw new R2Error('invalid_object_key', 'The R2 object key is invalid');
     const config = await this.load();
     await this.client(config).deleteObject(key);
-    const objects = await this.client(config).listObjects(this.prefix(), 1000);
-    await this.save({ ...(await this.load()), estimatedBytes: objects.reduce((sum, object) => sum + object.sizeBytes, 0) });
   }
 
   public async markFingerprint(fingerprint: string): Promise<void> {
@@ -181,32 +518,74 @@ export class R2Manager {
     await this.save({ ...config, lastFingerprint: fingerprint });
   }
 
-  private async applyRetention(config: StoredR2Config, client: R2Client): Promise<{ objects: S3ObjectRecord[]; totalBytes: number }> {
-    let objects = await client.listObjects(this.prefix(), 1000);
-    const now = this.now().getTime();
-    const candidates = objects.filter((object) => object.key.endsWith('.zip')).sort((left, right) => (right.lastModified ?? '').localeCompare(left.lastModified ?? ''));
-    const remove = new Set<string>();
-    candidates.forEach((object, index) => {
-      const ageExpired = config.retentionDays !== null && object.lastModified !== null && now - Date.parse(object.lastModified) > config.retentionDays * 24 * 60 * 60 * 1000;
-      if (index >= config.maxBackups || ageExpired) {
-        remove.add(object.key);
-        remove.add(object.key.replace(/\.zip$/u, '.manifest.json'));
-      }
-    });
-    for (const key of remove) {
-      await client.deleteObject(key);
-      objects = objects.filter((object) => object.key !== key);
+  /** Upload every chunk of one file the bucket is missing, or report the file is gone. */
+  private async uploadChunks(client: R2Client, entry: PlannedFile): Promise<{ hashes: string[]; bytes: number } | null> {
+    let handle;
+    try {
+      handle = await open(entry.source.path, 'r');
+    } catch (error: unknown) {
+      if (isFileNotFound(error)) return null;
+      throw error;
     }
-    return { objects, totalBytes: objects.reduce((sum, object) => sum + object.sizeBytes, 0) };
+    try {
+      const hashes: string[] = [];
+      let bytes = 0;
+      const compress = shouldCompress(entry.source.file.name);
+      for (const chunk of entry.chunks) {
+        const raw = Buffer.allocUnsafe(chunk.length);
+        const { bytesRead } = await handle.read(raw, 0, chunk.length, chunk.offset);
+        // The file changed under the walk. The snapshot describes what was
+        // hashed, so a short read means this file no longer matches it.
+        if (bytesRead !== chunk.length) return null;
+        const body = await encodeBlob(raw, compress);
+        await client.putObject(blobKey(OBJECT_PREFIX, chunk.hash), body, 'application/octet-stream');
+        hashes.push(chunk.hash);
+        bytes += body.byteLength;
+      }
+      return { hashes, bytes };
+    } catch (error: unknown) {
+      if (isFileNotFound(error)) return null;
+      throw error;
+    } finally {
+      await handle.close().catch(() => undefined);
+    }
+  }
+
+  private async listAll(config: StoredR2Config, prefix: string, client?: R2Client): Promise<S3ObjectRecord[]> {
+    const target = client ?? this.client(config);
+    const objects: S3ObjectRecord[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await target.listObjects(prefix, LIST_PAGE_KEYS, cursor);
+      objects.push(...page.objects);
+      cursor = page.cursor;
+    } while (cursor);
+    return objects;
+  }
+
+  private async requireUsable(): Promise<StoredR2Config> {
+    const config = await this.load();
+    if (!config.enabled) throw new R2Error('r2_disabled', 'R2 backup is switched off');
+    toCredentials(config);
+    return config;
+  }
+
+  /** The usage counters, with the charged-write count reset when the month turns over. */
+  private async currentPeriod(config: StoredR2Config): Promise<StoredUsage> {
+    const period = monthStart(this.now());
+    if (config.usage.periodStartedAt === period) return config.usage;
+    return { ...config.usage, writeOperations: 0, periodStartedAt: period };
   }
 
   private client(config: StoredR2Config): R2Client {
-    const credentials = toCredentials(config);
-    return new R2Client(credentials, this.fetchImpl);
+    return new R2Client(toCredentials(config), this.fetchImpl);
   }
 
-  private prefix(): string {
-    return 'sillytavern-manager/';
+  /** Run one whole-store operation at a time, whatever else is asked for meanwhile. */
+  private async exclusive<T>(operation: () => Promise<T>): Promise<T> {
+    const run = this.busy.then(operation, operation);
+    this.busy = run.catch(() => undefined);
+    return await run;
   }
 
   private toPublic(config: StoredR2Config): R2Config {
@@ -221,13 +600,31 @@ export class R2Manager {
       secretAccessKeyConfigured: Boolean(config.secretAccessKey),
       schedule: {
         localIntervalMinutes: config.localIntervalMinutes,
-        r2IntervalHours: config.r2IntervalHours,
-        fullIntervalDays: config.fullIntervalDays,
+        hotIntervalMinutes: config.hotIntervalMinutes,
+        coldIntervalHours: config.coldIntervalHours,
+        reconcileIntervalHours: config.reconcileIntervalHours,
       },
-      retention: { maxBackups: config.maxBackups, retentionDays: config.retentionDays },
+      retention: { keepRecent: config.keepRecent, keepDaily: config.keepDaily, keepWeekly: config.keepWeekly },
+      limits: { maxStorageBytes: config.maxStorageBytes, maxWriteOperations: config.maxWriteOperations },
+      usage: toPublicUsage(config.usage),
       lastFingerprint: config.lastFingerprint,
-      estimatedBytes: config.estimatedBytes,
     };
+  }
+
+  /** When the cold tier is next owed a run, which the scheduler asks about. */
+  public async coldDue(): Promise<boolean> {
+    const config = await this.load();
+    if (!config.lastColdUploadAt) return true;
+    const elapsed = this.now().getTime() - Date.parse(config.lastColdUploadAt);
+    return !Number.isFinite(elapsed) || elapsed >= config.coldIntervalHours * 60 * 60 * 1000;
+  }
+
+  /** Whether a listing of the whole store is owed, which is the only costly sweep. */
+  public async reconcileDue(): Promise<boolean> {
+    const config = await this.load();
+    if (!config.usage.lastReconciledAt) return true;
+    const elapsed = this.now().getTime() - Date.parse(config.usage.lastReconciledAt);
+    return !Number.isFinite(elapsed) || elapsed >= config.reconcileIntervalHours * 60 * 60 * 1000;
   }
 
   private async load(): Promise<StoredR2Config> {
@@ -239,21 +636,13 @@ export class R2Manager {
     } catch (error: unknown) {
       if (!isFileNotFound(error)) throw error;
       const fromEnvironment: StoredR2Config = {
-        schemaVersion: R2_SCHEMA_VERSION,
+        ...defaultStoredConfig(this.now()),
         enabled: Boolean(this.env.STM_R2_ENDPOINT && this.env.STM_R2_BUCKET && this.env.STM_R2_ACCESS_KEY_ID && this.env.STM_R2_SECRET_ACCESS_KEY),
         endpoint: nullableEnvironment(this.env.STM_R2_ENDPOINT),
         bucket: nullableEnvironment(this.env.STM_R2_BUCKET),
         accountId: nullableEnvironment(this.env.STM_R2_ACCOUNT_ID),
         accessKeyId: nullableEnvironment(this.env.STM_R2_ACCESS_KEY_ID),
         secretAccessKey: nullableEnvironment(this.env.STM_R2_SECRET_ACCESS_KEY),
-        localIntervalMinutes: 60,
-        r2IntervalHours: 24,
-        fullIntervalDays: 7,
-        maxBackups: 7,
-        retentionDays: 30,
-        lastUploadAt: null,
-        lastFingerprint: null,
-        estimatedBytes: 0,
       };
       validateStoredConfig(fromEnvironment);
       await this.save(fromEnvironment);
@@ -277,85 +666,166 @@ export class R2Manager {
   }
 }
 
+interface PlannedFile {
+  readonly source: SyncSource;
+  readonly chunks: readonly FileChunk[];
+}
+
+interface UploadPlan {
+  readonly files: readonly PlannedFile[];
+  readonly reused: number;
+}
+
+/**
+ * Decide what actually has to be sent.
+ *
+ * A chunk shared by two files is claimed by the first one here rather than
+ * being raced for during the upload: identical content is identical wherever it
+ * came from, so sending it once is both correct and the point.
+ */
+function planUpload(sources: readonly SyncSource[], ledger: BlobLedger): UploadPlan {
+  const claimed = new Set<string>();
+  const files: PlannedFile[] = [];
+  let reused = 0;
+  for (const source of sources) {
+    const chunks = source.file.chunks.filter((chunk) => {
+      if (ledger.has(chunk.hash) || claimed.has(chunk.hash)) { reused += 1; return false; }
+      claimed.add(chunk.hash);
+      return true;
+    });
+    if (chunks.length > 0) files.push({ source, chunks });
+  }
+  return { files, reused };
+}
+
+/** The complete file list for a snapshot: what this run walked, plus what it carried. */
+function mergeFiles(sources: readonly SyncSource[], carried: readonly HashedFile[], dropped: ReadonlySet<string>): HashedFile[] {
+  const files = new Map<string, HashedFile>();
+  for (const file of carried) if (!dropped.has(file.name)) files.set(file.name, file);
+  for (const source of sources) if (!dropped.has(source.file.name)) files.set(source.file.name, source.file);
+  return [...files.values()].sort((left, right) => left.name.localeCompare(right.name));
+}
+
+/**
+ * Which recovery points survive: the newest few, then one a day, then one a week.
+ *
+ * Thinning rather than expiring is what makes a five-minute schedule affordable
+ * to keep: an hour ago is worth every point, last month is worth one.
+ */
+function selectRetained(snapshots: readonly R2SnapshotSummary[], config: { keepRecent: number; keepDaily: number; keepWeekly: number }): Set<string> {
+  const ordered = [...snapshots].sort((left, right) => right.id.localeCompare(left.id));
+  const keep = new Set<string>(ordered.slice(0, config.keepRecent).map((snapshot) => snapshot.id));
+  const claimFirst = (limit: number, bucket: (snapshot: R2SnapshotSummary) => string): void => {
+    const seen = new Set<string>();
+    for (const snapshot of ordered) {
+      const period = bucket(snapshot);
+      if (seen.has(period)) continue;
+      seen.add(period);
+      if (seen.size > limit) return;
+      keep.add(snapshot.id);
+    }
+  };
+  claimFirst(config.keepDaily, (snapshot) => snapshot.createdAt.slice(0, 10));
+  claimFirst(config.keepWeekly, (snapshot) => isoWeek(snapshot.createdAt));
+  return keep;
+}
+
+/** The ISO week a timestamp falls in, so "one a week" means the same week to everyone. */
+function isoWeek(timestamp: string): string {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return timestamp.slice(0, 10);
+  const target = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  // Thursday decides the year a week belongs to, which is what makes the turn
+  // of the year one week rather than two partial ones.
+  target.setUTCDate(target.getUTCDate() + 4 - (target.getUTCDay() || 7));
+  const yearStart = Date.UTC(target.getUTCFullYear(), 0, 1);
+  const week = Math.ceil(((target.getTime() - yearStart) / 86_400_000 + 1) / 7);
+  return `${target.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
+}
+
+function toSnapshotSummary(object: S3ObjectRecord): R2SnapshotSummary | null {
+  const rest = object.key.slice(SNAPSHOT_PREFIX.length);
+  const separator = rest.indexOf('/');
+  if (separator <= 0 || !rest.endsWith('.json.gz')) return null;
+  const identifier = rest.slice(separator + 1, -'.json.gz'.length);
+  if (!identifier) return null;
+  return { id: identifier, profileId: rest.slice(0, separator), createdAt: snapshotTimestamp(identifier), indexBytes: object.sizeBytes };
+}
+
+/**
+ * Snapshot names are timestamps with the punctuation a key cannot carry.
+ *
+ * Naming them this way means a listing comes back in chronological order and
+ * retention never has to read a single index to know what is oldest.
+ */
+function snapshotId(createdAt: string): string {
+  return createdAt.replace(/[:.]/gu, '-');
+}
+
+function snapshotTimestamp(identifier: string): string {
+  const match = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/u.exec(identifier);
+  return match ? `${match[1]}T${match[2]}:${match[3]}:${match[4]}.${match[5]}Z` : identifier;
+}
+
+function monthStart(now: Date): string {
+  return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-01T00:00:00.000Z`;
+}
+
+function throwIfStopped(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new R2Error('r2_upload_stopped', 'The upload was stopped');
+}
+
+function formatBytes(value: number): string {
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  let size = value;
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) { size /= 1024; unit += 1; }
+  return `${unit === 0 ? size : size.toFixed(1)} ${units[unit]}`;
+}
+
 class R2Client {
   private readonly region = 'auto';
   private readonly service = 's3';
+  /** Charged writes and listings this client has made, for the monthly counter. */
+  public chargedWrites = 0;
+
   public constructor(private readonly credentials: R2Credentials, private readonly fetchImpl: typeof fetch) {}
 
-  public async listObjects(prefix: string, maxKeys: number): Promise<S3ObjectRecord[]> {
-    const response = await this.request('GET', '', null, new URLSearchParams([['list-type', '2'], ['prefix', prefix], ['max-keys', String(maxKeys)]]));
+  public async listObjects(prefix: string, maxKeys: number, cursor?: string): Promise<{ objects: S3ObjectRecord[]; cursor: string | undefined }> {
+    const query = new URLSearchParams([['list-type', '2'], ['prefix', prefix], ['max-keys', String(maxKeys)]]);
+    if (cursor) query.set('continuation-token', cursor);
+    const response = await this.request('GET', '', null, query, {}, 'charged');
     const body = await response.text();
-    const items: S3ObjectRecord[] = [];
+    const objects: S3ObjectRecord[] = [];
     for (const match of body.matchAll(/<Contents>([\s\S]*?)<\/Contents>/gu)) {
       const content = match[1] ?? '';
       const key = decodeXml(readXmlTag(content, 'Key') ?? '');
       if (!key) continue;
       const size = Number(readXmlTag(content, 'Size') ?? 0);
-      items.push({ key, sizeBytes: Number.isFinite(size) ? size : 0, lastModified: readXmlTag(content, 'LastModified'), etag: readXmlTag(content, 'ETag') });
+      objects.push({ key, sizeBytes: Number.isFinite(size) ? size : 0, lastModified: readXmlTag(content, 'LastModified'), etag: readXmlTag(content, 'ETag') });
     }
-    return items;
+    // A store of tens of thousands of chunks does not fit one page, and a
+    // listing that stopped at the first one made every chunk past it look
+    // absent - which would have meant uploading them all again, every time.
+    const truncated = readXmlTag(body, 'IsTruncated') === 'true';
+    const next = readXmlTag(body, 'NextContinuationToken');
+    return { objects, cursor: truncated && next ? decodeXml(next) : undefined };
   }
 
   public async putObject(key: string, body: Uint8Array, contentType: string): Promise<void> {
-    await this.request('PUT', key, body, undefined, { 'content-type': contentType, 'content-length': String(body.byteLength) });
+    await this.request('PUT', key, body, undefined, { 'content-type': contentType, 'content-length': String(body.byteLength) }, 'charged');
   }
 
-  public async uploadFile(key: string, path: string, sizeBytes: number, contentType: string): Promise<void> {
-    if (sizeBytes < MULTIPART_THRESHOLD_BYTES) {
-      const stream = createReadStream(path);
-      try {
-        await this.request('PUT', key, Readable.toWeb(stream) as unknown as BodyInit, undefined, { 'content-type': contentType, 'content-length': String(sizeBytes) });
-      } finally {
-        stream.destroy();
-      }
-      return;
-    }
-    const uploadId = await this.createMultipart(key, contentType);
-    const parts: Array<{ partNumber: number; etag: string }> = [];
-    try {
-      let partNumber = 1;
-      for (let offset = 0; offset < sizeBytes; offset += MULTIPART_PART_BYTES) {
-        const length = Math.min(MULTIPART_PART_BYTES, sizeBytes - offset);
-        const stream = createReadStream(path, { start: offset, end: offset + length - 1 });
-        try {
-          const response = await this.request('PUT', key, Readable.toWeb(stream) as unknown as BodyInit, new URLSearchParams([['partNumber', String(partNumber)], ['uploadId', uploadId]]), { 'content-type': contentType, 'content-length': String(length) });
-          const etag = response.headers.get('etag');
-          if (!etag) throw new R2Error('r2_missing_etag', 'R2 did not return a multipart ETag');
-          parts.push({ partNumber, etag });
-        } finally {
-          stream.destroy();
-        }
-        partNumber += 1;
-      }
-      await this.completeMultipart(key, uploadId, parts);
-    } catch (error) {
-      await this.abortMultipart(key, uploadId).catch(() => undefined);
-      throw error;
-    }
+  public async getObject(key: string): Promise<Buffer> {
+    const response = await this.request('GET', key, null, undefined, {}, 'read');
+    return Buffer.from(await response.arrayBuffer());
   }
 
   public async deleteObject(key: string): Promise<void> {
-    await this.request('DELETE', key, null);
+    await this.request('DELETE', key, null, undefined, {}, 'free');
   }
 
-  private async createMultipart(key: string, contentType: string): Promise<string> {
-    const response = await this.request('POST', key, null, new URLSearchParams([['uploads', '']]), { 'content-type': contentType });
-    const body = await response.text();
-    const uploadId = readXmlTag(body, 'UploadId');
-    if (!uploadId) throw new R2Error('r2_missing_upload_id', 'R2 did not return a multipart upload id');
-    return decodeXml(uploadId);
-  }
-
-  private async completeMultipart(key: string, uploadId: string, parts: readonly { partNumber: number; etag: string }[]): Promise<void> {
-    const body = `<CompleteMultipartUpload>${parts.map((part) => `<Part><PartNumber>${part.partNumber}</PartNumber><ETag>${escapeXml(part.etag)}</ETag></Part>`).join('')}</CompleteMultipartUpload>`;
-    await this.request('POST', key, Buffer.from(body, 'utf8'), new URLSearchParams([['uploadId', uploadId]]), { 'content-type': 'application/xml' });
-  }
-
-  private async abortMultipart(key: string, uploadId: string): Promise<void> {
-    await this.request('DELETE', key, null, new URLSearchParams([['uploadId', uploadId]]));
-  }
-
-  private async request(method: string, key: string, body: BodyInit | Uint8Array | null, query?: URLSearchParams, extraHeaders: Record<string, string> = {}): Promise<Response> {
+  private async request(method: string, key: string, body: BodyInit | Uint8Array | null, query?: URLSearchParams, extraHeaders: Record<string, string> = {}, billing: 'charged' | 'read' | 'free' = 'read'): Promise<Response> {
     const url = objectUrl(this.credentials.endpoint, this.credentials.bucket, key, query);
     const payloadHash = 'UNSIGNED-PAYLOAD';
     const amzDate = formatAmzDate(new Date());
@@ -363,6 +833,7 @@ class R2Client {
     const { authorization } = signRequest({ method, url, headers, payloadHash, accessKeyId: this.credentials.accessKeyId, secretAccessKey: this.credentials.secretAccessKey, region: this.region, service: this.service });
     headers.authorization = authorization;
     const init = { method, headers, ...(body === null ? {} : { body: body as BodyInit }), duplex: 'half' } as RequestInit & { duplex: 'half' };
+    if (billing === 'charged') this.chargedWrites += 1;
     const response = await this.fetchImpl(url, init);
     if (!response.ok) {
       const message = (await response.text()).slice(0, 500);
@@ -436,15 +907,72 @@ function validateStoredConfig(config: StoredR2Config): void {
   if (config.bucket !== null && !/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/u.test(config.bucket)) throw new R2Error('invalid_r2_bucket', 'R2 bucket name is invalid');
 }
 
+/**
+ * Read the stored settings, including one written by the version that uploaded
+ * whole ZIP files.
+ *
+ * What the operator typed is kept - the endpoint, the bucket and the keys are
+ * not something to make them find again. The schedule and retention are not:
+ * they described a different scheme, and carrying "keep 7 archives" forward
+ * into one where a recovery point is an index would mean nothing.
+ */
 function parseStoredConfig(value: unknown): StoredR2Config {
-  if (!isRecord(value) || value.schemaVersion !== R2_SCHEMA_VERSION) throw new Error('Unsupported R2 configuration schema');
-  const config = { ...defaultStoredConfig(), ...value, schemaVersion: R2_SCHEMA_VERSION } as StoredR2Config;
+  if (!isRecord(value)) throw new Error('Unsupported R2 configuration schema');
+  const defaults = defaultStoredConfig(new Date());
+  if (value.schemaVersion === 1) {
+    const migrated: StoredR2Config = {
+      ...defaults,
+      enabled: typeof value.enabled === 'boolean' ? value.enabled : false,
+      endpoint: typeof value.endpoint === 'string' ? value.endpoint : null,
+      bucket: typeof value.bucket === 'string' ? value.bucket : null,
+      accountId: typeof value.accountId === 'string' ? value.accountId : null,
+      accessKeyId: typeof value.accessKeyId === 'string' ? value.accessKeyId : null,
+      secretAccessKey: typeof value.secretAccessKey === 'string' ? value.secretAccessKey : null,
+      localIntervalMinutes: typeof value.localIntervalMinutes === 'number' ? value.localIntervalMinutes : defaults.localIntervalMinutes,
+    };
+    validateStoredConfig(migrated);
+    return migrated;
+  }
+  if (value.schemaVersion !== R2_SCHEMA_VERSION) throw new Error('Unsupported R2 configuration schema');
+  const usage = isRecord(value.usage) ? value.usage : {};
+  const config: StoredR2Config = {
+    ...defaults,
+    ...value,
+    schemaVersion: R2_SCHEMA_VERSION,
+    usage: { ...defaults.usage, ...usage } as StoredUsage,
+  } as StoredR2Config;
   validateStoredConfig(config);
   return config;
 }
 
-function defaultStoredConfig(): StoredR2Config {
-  return { schemaVersion: R2_SCHEMA_VERSION, enabled: false, endpoint: null, bucket: null, accountId: null, accessKeyId: null, secretAccessKey: null, localIntervalMinutes: 60, r2IntervalHours: 24, fullIntervalDays: 7, maxBackups: 7, retentionDays: 30, lastUploadAt: null, lastFingerprint: null, estimatedBytes: 0 };
+function defaultStoredConfig(now: Date): StoredR2Config {
+  return {
+    schemaVersion: R2_SCHEMA_VERSION,
+    enabled: false,
+    endpoint: null,
+    bucket: null,
+    accountId: null,
+    accessKeyId: null,
+    secretAccessKey: null,
+    ...DEFAULTS,
+    lastUploadAt: null,
+    lastColdUploadAt: null,
+    lastFingerprint: null,
+    usage: {
+      storageBytes: 0,
+      blobCount: 0,
+      snapshotCount: 0,
+      writeOperations: 0,
+      periodStartedAt: monthStart(now),
+      legacyObjectCount: 0,
+      legacyBytes: 0,
+      lastReconciledAt: null,
+    },
+  };
+}
+
+function toPublicUsage(usage: StoredUsage): R2Usage {
+  return { ...usage };
 }
 
 function normalizeNullable(value: string | null): string | null {
@@ -480,10 +1008,6 @@ function decodeXml(value: string): string {
   return value.replace(/&lt;/gu, '<').replace(/&gt;/gu, '>').replace(/&quot;/gu, '"').replace(/&apos;/gu, "'").replace(/&amp;/gu, '&');
 }
 
-function escapeXml(value: string): string {
-  return value.replace(/&/gu, '&amp;').replace(/</gu, '&lt;').replace(/>/gu, '&gt;').replace(/"/gu, '&quot;').replace(/'/gu, '&apos;');
-}
-
 function nullableEnvironment(value: string | undefined): string | null {
   return value?.trim() || null;
 }
@@ -493,5 +1017,5 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isFileNotFound(error: unknown): boolean {
-  return isRecord(error) && error.code === 'ENOENT';
+  return isRecord(error) && (error.code === 'ENOENT' || error.code === 'EISDIR');
 }

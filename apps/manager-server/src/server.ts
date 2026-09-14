@@ -21,7 +21,7 @@ import { TunnelManager } from '../../../packages/tunnel/src/index.js';
 import { ProfileError, ProfileStore } from '../../../packages/profiles/src/index.js';
 import { BackupError, BackupStore } from '../../../packages/backup/src/index.js';
 import { R2Error, R2Manager, type R2UpdateInput } from '../../../packages/r2/src/index.js';
-import { BackupScheduler } from './r2-scheduler.js';
+import { BackupScheduler, syncProfileToR2 } from './r2-scheduler.js';
 import { MetricsStore } from './metrics.js';
 import { instrumentationLoaderPath } from '../../../packages/instrumentation/src/index.js';
 import { ConfigError, ConfigStore } from '../../../packages/config/src/index.js';
@@ -581,10 +581,14 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       ...(typeof body.accessKeyId === 'string' || body.accessKeyId === null ? { accessKeyId: body.accessKeyId as string | null } : {}),
       ...(typeof body.secretAccessKey === 'string' || body.secretAccessKey === null ? { secretAccessKey: body.secretAccessKey as string | null } : {}),
       ...(typeof body.localIntervalMinutes === 'number' ? { localIntervalMinutes: body.localIntervalMinutes } : {}),
-      ...(typeof body.r2IntervalHours === 'number' ? { r2IntervalHours: body.r2IntervalHours } : {}),
-      ...(typeof body.fullIntervalDays === 'number' ? { fullIntervalDays: body.fullIntervalDays } : {}),
-      ...(typeof body.maxBackups === 'number' ? { maxBackups: body.maxBackups } : {}),
-      ...(typeof body.retentionDays === 'number' || body.retentionDays === null ? { retentionDays: body.retentionDays as number | null } : {}),
+      ...(typeof body.hotIntervalMinutes === 'number' ? { hotIntervalMinutes: body.hotIntervalMinutes } : {}),
+      ...(typeof body.coldIntervalHours === 'number' ? { coldIntervalHours: body.coldIntervalHours } : {}),
+      ...(typeof body.reconcileIntervalHours === 'number' ? { reconcileIntervalHours: body.reconcileIntervalHours } : {}),
+      ...(typeof body.keepRecent === 'number' ? { keepRecent: body.keepRecent } : {}),
+      ...(typeof body.keepDaily === 'number' ? { keepDaily: body.keepDaily } : {}),
+      ...(typeof body.keepWeekly === 'number' ? { keepWeekly: body.keepWeekly } : {}),
+      ...(typeof body.maxStorageBytes === 'number' ? { maxStorageBytes: body.maxStorageBytes } : {}),
+      ...(typeof body.maxWriteOperations === 'number' ? { maxWriteOperations: body.maxWriteOperations } : {}),
     };
     sendJson(response, 200, { config: await r2.update(input) });
     return;
@@ -605,17 +609,26 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     sendJson(response, 200, { ok: true });
     return;
   }
+  if (pathname === '/api/v1/r2/snapshots' && method === 'GET') {
+    const profile = await profiles.getActive();
+    sendJson(response, 200, { snapshots: profile ? await r2.listSnapshots(profile.id) : [] });
+    return;
+  }
+  if (pathname === '/api/v1/r2/legacy' && method === 'DELETE') {
+    sendJson(response, 200, await r2.deleteLegacyObjects());
+    return;
+  }
+  if (pathname === '/api/v1/r2/reconcile' && method === 'POST') {
+    sendJson(response, 200, await r2.reconcile());
+    return;
+  }
+  // One R2 backup now, whatever the clock says. It sends the whole profile
+  // rather than the frequent subset, because someone asking for it by hand is
+  // asking for a complete recovery point.
   if ((pathname === '/api/v1/r2/upload' || pathname === '/api/v1/r2/sync') && method === 'POST') {
     const profile = await profiles.getActive();
     if (!profile) { sendError(response, 409, 'profile_required', 'Create or activate a profile before uploading to R2'); return; }
-    const body = await readJson(request);
-    const backupId = isRecord(body) && typeof body.backupId === 'string' ? body.backupId : null;
-    const manifest = backupId ? await backups.get(backupId) : await backups.create(profile, { name: `${profile.name}-r2` });
-    if (!manifest || manifest.profileId !== profile.id) { sendError(response, 404, 'backup_not_found', 'Backup not found in the active profile'); return; }
-    const archivePath = await backups.getArchivePath(manifest.id);
-    if (!archivePath) { sendError(response, 410, 'backup_archive_missing', 'The backup archive is missing'); return; }
-    const upload = await r2.uploadArchive(archivePath, manifest, manifest.fingerprint ?? null);
-    sendJson(response, 200, { manifest, upload });
+    sendJson(response, 200, await syncProfileToR2({ profile, backups, r2, tier: 'cold' }));
     return;
   }
   if (pathname === '/api/v1/logs' && method === 'GET') {

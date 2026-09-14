@@ -149,16 +149,58 @@ export interface R2Config {
   readonly accessKeyIdMasked: string | null;
   readonly secretAccessKeyConfigured: boolean;
   readonly schedule: {
+    /** The local ZIP recovery point, which R2 does not replace. */
     readonly localIntervalMinutes: number;
-    readonly r2IntervalHours: number;
-    readonly fullIntervalDays: number;
+    /**
+     * How often the small, precious part of the profile is sent: chats,
+     * settings, worlds and character cards. Only changed chunks go, so this can
+     * be minutes rather than a day.
+     */
+    readonly hotIntervalMinutes: number;
+    /** How often everything else goes - images and attachments, large and rarely touched. */
+    readonly coldIntervalHours: number;
+    /** How often a listing replaces what the manager believes the bucket holds. */
+    readonly reconcileIntervalHours: number;
   };
+  /**
+   * How many recovery points survive, oldest thinned first.
+   *
+   * Snapshots share every chunk they have in common, so keeping more of them
+   * costs the changes between them rather than a copy each.
+   */
   readonly retention: {
-    readonly maxBackups: number;
-    readonly retentionDays: number | null;
+    readonly keepRecent: number;
+    readonly keepDaily: number;
+    readonly keepWeekly: number;
   };
+  /** What the manager refuses to exceed, so a free account stays a free account. */
+  readonly limits: {
+    readonly maxStorageBytes: number;
+    readonly maxWriteOperations: number;
+  };
+  readonly usage: R2Usage;
   readonly lastFingerprint: string | null;
-  readonly estimatedBytes: number;
+}
+
+export interface R2Usage {
+  readonly storageBytes: number;
+  readonly blobCount: number;
+  readonly snapshotCount: number;
+  /** Charged writes and listings this calendar month, counted locally. */
+  readonly writeOperations: number;
+  readonly periodStartedAt: string;
+  /** Archives left in the bucket by the version that uploaded whole ZIP files. */
+  readonly legacyObjectCount: number;
+  readonly legacyBytes: number;
+  readonly lastReconciledAt: string | null;
+}
+
+/** One recovery point in the bucket, as a listing can describe it without reading it. */
+export interface R2SnapshotSummary {
+  readonly id: string;
+  readonly profileId: string;
+  readonly createdAt: string;
+  readonly indexBytes: number;
 }
 
 export interface R2Object {

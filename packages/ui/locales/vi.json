@@ -156,17 +156,19 @@
     "r2Enabled": "Bật backup ngoài máy",
     "r2Schedule": "Lịch sao lưu",
     "r2LocalEvery": "Backup cục bộ mỗi (phút)",
-    "r2Every": "Đẩy lên R2 mỗi (giờ)",
-    "r2FullEvery": "Full backup mỗi (ngày)",
-    "r2MaxBackups": "Giữ lại số bản remote",
-    "r2RetentionDays": "Xoá bản remote sau (ngày)",
+    "r2HotEvery": "Gửi chat và cài đặt mỗi (phút)",
+    "r2ColdEvery": "Gửi ảnh và phần còn lại mỗi (giờ)",
+    "r2KeepRecent": "Giữ số điểm khôi phục gần nhất",
+    "r2KeepDaily": "Rồi giữ mỗi ngày một bản",
+    "r2KeepWeekly": "Rồi giữ mỗi tuần một bản",
     "r2Save": "Lưu cấu hình R2",
     "r2Test": "Kiểm tra kết nối",
     "r2UploadLatest": "Đẩy backup mới nhất",
     "r2Configured": "Đã cấu hình",
     "r2NotConfigured": "Chưa cấu hình",
-    "r2Estimate": "Dung lượng remote ước tính",
+    "r2Estimate": "Dung lượng remote đã dùng",
     "r2Objects": "Đối tượng remote",
+    "r2Writes": "Lượt ghi tính phí tháng này",
     "r2Saved": "Đã lưu cấu hình R2",
     "r2Tested": "Kết nối R2 hoạt động",
     "r2SaveFailed": "Không thể lưu cấu hình R2",
@@ -434,6 +436,8 @@
       "schedulePaused": "Tạm dừng sao lưu theo lịch vì đang có sao lưu hoặc khôi phục khác chạy",
       "scheduledSnapshot": "Bản sao lưu cục bộ theo lịch {name}",
       "scheduleSkipped": "Bỏ qua sao lưu theo lịch: {reason}",
+      "r2Synced": "Sao lưu R2 {tier}: đã gửi {chunks} khối, ghi nhận {files} tệp",
+      "r2SnapshotUnreadable": "Không đọc được điểm khôi phục R2 gần nhất, nên lần này không có gì để so sánh: {reason}",
       "phaseListedObsolete": "Đã liệt kê các tệp không có trong bản sao lưu trong {seconds}s",
       "phaseWroteFiles": "Đã ghi {count} tệp trong {seconds}s",
       "phaseRemovedObsolete": "Đã xóa {count} tệp không có trong bản sao lưu trong {seconds}s"
@@ -461,7 +465,12 @@
       "stateNotSaved": "Không lưu được thiết lập đường dẫn công khai: {reason}"
     },
     "r2": {
-      "uploaded": "Đã tải {name} lên ({bytes} byte)"
+      "uploaded": "Đã tải {name} lên ({bytes} byte)",
+      "synced": "Đã gửi {chunks} khối thay đổi, {bytes}, của {files} tệp",
+      "skippedMissingFiles": "Bỏ qua {count} tệp bị xoá trong lúc đang tải lên",
+      "pruned": "Đã bỏ {count} điểm khôi phục cũ",
+      "reconciled": "{chunks} khối đang lưu, {size}; đã thu hồi {collected}",
+      "legacyRemoved": "Đã xoá {count} bản lưu định dạng nguyên tệp cũ, {size}"
     },
     "job": {
       "preparingBackup": "Đang chuẩn bị sao lưu",

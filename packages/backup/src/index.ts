@@ -69,7 +69,7 @@ interface ZipEntry {
   readonly symlink: boolean;
 }
 
-interface ArchiveSource {
+export interface ArchiveSource {
   readonly name: string;
   readonly path: string;
 }
@@ -154,6 +154,17 @@ export class BackupStore {
       newestMtime = Math.max(newestMtime, configDetails.mtimeMs);
     }
     return createHash('sha256').update(`${fileCount}:${totalBytes}:${Math.floor(newestMtime)}`, 'utf8').digest('hex');
+  }
+
+  /**
+   * Every file an archive of this profile would hold, with where each one is.
+   *
+   * The incremental R2 backup walks the same tree the ZIP does, so that the two
+   * cannot disagree about what a backup of this profile means - the difference
+   * between them is what is sent, not what is included.
+   */
+  public async sources(profile: Profile): Promise<ArchiveSource[]> {
+    return await collectSources(profile);
   }
 
   public async create(profile: Profile, options: CreateBackupOptions = {}): Promise<BackupManifest> {
