@@ -5,7 +5,7 @@ import { createReadStream } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import { createSocket } from 'node:dgram';
 import { extname, join, relative, resolve, sep } from 'node:path';
-import { logEvent, logLineText, type ApiErrorBody, type ConfigUpdateInput, type HealthResponse, type Installation, type Job, type JobState, type LogEntry, type LogEvent, type LogLine, type LogSink, type LogSourceFilter, type ManagerPorts, type ProfileLayout, type SetupStatus, type VersionSelector } from '../../../packages/contracts/src/index.js';
+import { applyQuery, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, type ApiErrorBody, type ConfigUpdateInput, type HealthResponse, type Installation, type Job, type JobState, type LogEntry, type LogEvent, type LogLine, type LogSink, type LogSourceFilter, type ManagerPorts, type ProfileLayout, type SetupStatus, type VersionSelector } from '../../../packages/contracts/src/index.js';
 import { getPlatformPaths, type PlatformPaths } from '../../../packages/platform/src/index.js';
 import { RuntimeError, RuntimeManager, type InstallationProgress } from '../../../packages/sillytavern-runtime/src/index.js';
 import { hashPassword, MIN_PASSWORD_LENGTH, validatePassword, verifyPassword } from './password.js';
@@ -121,6 +121,7 @@ interface RequestContext {
   readonly request: IncomingMessage;
   readonly response: ServerResponse;
   readonly pathname: string;
+  readonly searchParams: URLSearchParams;
   readonly originTrusted: boolean;
   readonly sessionToken: string | undefined;
 }
@@ -390,6 +391,7 @@ async function handleRequest(options: {
     request,
     response,
     pathname,
+    searchParams: url.searchParams,
     originTrusted: isTrustedOrigin(request, platform),
     sessionToken: parseSessionCookie(headerValue(request.headers.cookie), COOKIE_NAME),
   };
@@ -492,7 +494,7 @@ async function handleRequest(options: {
 }
 
 async function handleRuntimeRequest(context: RequestContext, store: StateStore, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, gateway: AccessGateway, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, metrics: MetricsStore, config: ConfigStore, system: SystemStore): Promise<void> {
-  const { pathname, request, response } = context;
+  const { pathname, request, response, searchParams } = context;
   const method = request.method ?? 'GET';
   if (pathname === '/api/v1/auth/password' && method === 'POST') {
     const body = await readJson(request);
@@ -618,7 +620,8 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
   }
   if (pathname === '/api/v1/r2/snapshots' && method === 'GET') {
     const profile = await profiles.getActive();
-    sendJson(response, 200, { snapshots: profile ? await r2.listSnapshots(profile.id) : [] });
+    const snapshots = profile ? await r2.listSnapshots(profile.id) : [];
+    sendList(response, 'snapshots', snapshots, searchParams, { searchText: snapshotSearchText, sortValue: snapshotSortValue });
     return;
   }
   const snapshotMatch = /^\/api\/v1\/r2\/snapshots\/([^/]+)\/fetch$/u.exec(pathname);
@@ -679,18 +682,17 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     return;
   }
   if (pathname === '/api/v1/logs' && method === 'GET') {
-    const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
-    const afterValue = Number(url.searchParams.get('after') ?? 0);
-    const sourceParam = url.searchParams.get('source') ?? 'all';
+    const afterValue = Number(searchParams.get('after') ?? 0);
+    const sourceParam = searchParams.get('source') ?? 'all';
     if (!Number.isSafeInteger(afterValue) || afterValue < 0) { sendError(response, 400, 'invalid_cursor', 'The log cursor is invalid'); return; }
     if (!isLogSourceFilter(sourceParam)) { sendError(response, 400, 'invalid_source', 'The log source is invalid'); return; }
     const source = sourceParam === 'all' ? null : sourceParam;
     // `before` reads backwards through what is still retained, so a reader that
     // scrolls up can pull in older lines instead of only following new ones.
-    const beforeParam = url.searchParams.get('before');
+    const beforeParam = searchParams.get('before');
     if (beforeParam !== null) {
       const beforeValue = Number(beforeParam);
-      const limitValue = Number(url.searchParams.get('limit') ?? LOG_LIMITS.historyEntries);
+      const limitValue = Number(searchParams.get('limit') ?? LOG_LIMITS.historyEntries);
       if (!Number.isSafeInteger(beforeValue) || beforeValue < 0) { sendError(response, 400, 'invalid_cursor', 'The log cursor is invalid'); return; }
       if (!Number.isSafeInteger(limitValue) || limitValue < 1) { sendError(response, 400, 'invalid_limit', 'The log limit is invalid'); return; }
       sendJson(response, 200, jobs.logHistory(beforeValue, source, limitValue));
@@ -700,8 +702,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     return;
   }
   if (pathname === '/api/v1/metrics' && method === 'GET') {
-    const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
-    const requestedDays = Number(url.searchParams.get('days') ?? 30);
+    const requestedDays = Number(searchParams.get('days') ?? 30);
     if (!Number.isInteger(requestedDays) || requestedDays < 1 || requestedDays > 90) {
       sendError(response, 400, 'invalid_metrics_range', 'Metrics range must be between 1 and 90 days');
       return;
@@ -716,7 +717,9 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
   }
   if (pathname === '/api/v1/installations' && method === 'GET') {
     const [installations, active] = await Promise.all([runtime.listInstallations(), runtime.getActiveInstallation()]);
-    sendJson(response, 200, { installations, activeInstallationId: active?.id ?? null });
+    // The active pointer travels with the page: it names a row that may not be
+    // on it, and the panel needs it to mark the row wherever it turns up.
+    sendList(response, 'installations', installations, searchParams, { searchText: installationSearchText, sortValue: installationSortValue }, { activeInstallationId: active?.id ?? null });
     return;
   }
   if (pathname === '/api/v1/installations' && method === 'POST') {
@@ -813,7 +816,8 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
   }
   if (pathname === '/api/v1/backups' && method === 'GET') {
     const activeProfile = await profiles.getActive();
-    sendJson(response, 200, { backups: activeProfile ? await backups.list(activeProfile.id) : [] });
+    const list = activeProfile ? await backups.list(activeProfile.id) : [];
+    sendList(response, 'backups', list, searchParams, { searchText: backupSearchText, sortValue: backupSortValue });
     return;
   }
   if (pathname === '/api/v1/backups' && method === 'POST') {
@@ -832,16 +836,14 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     return;
   }
   if (pathname === '/api/v1/backups/import/chunk' && method === 'POST') {
-    const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
-    const uploadId = url.searchParams.get('uploadId') ?? '';
-    const index = Number(url.searchParams.get('index') ?? '');
+    const uploadId = searchParams.get('uploadId') ?? '';
+    const index = Number(searchParams.get('index') ?? '');
     const chunk = await backups.appendUploadChunk(uploadId, index, request);
     sendJson(response, 200, { ok: true, ...chunk });
     return;
   }
   if (pathname === '/api/v1/backups/import/chunk' && method === 'DELETE') {
-    const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
-    const uploadId = url.searchParams.get('uploadId') ?? '';
+    const uploadId = searchParams.get('uploadId') ?? '';
     await backups.removeUpload(uploadId);
     sendJson(response, 200, { ok: true });
     return;
@@ -1315,6 +1317,38 @@ function sendJson(response: ServerResponse, statusCode: number, payload: unknown
   response.setHeader('Cache-Control', 'no-store');
   response.setHeader('X-Content-Type-Options', 'nosniff');
   response.end(body);
+}
+
+/**
+ * Answer a list request, paged only if it asked to be.
+ *
+ * A caller that sends no paging parameters gets the whole list and a `page`
+ * block describing it as one page - which is what every caller in the panel
+ * did before this existed, and what the overview still does when it wants the
+ * most recent backup out of the list. Quietly starting to answer those with
+ * the first ten rows would hide data nobody asked to hide.
+ */
+function sendList<Row>(
+  response: ServerResponse,
+  key: string,
+  rows: readonly Row[],
+  searchParams: URLSearchParams,
+  options: { searchText: (row: Row) => string; sortValue: (row: Row, column: string) => string | number | boolean | null | undefined },
+  extra: Record<string, unknown> = {},
+): void {
+  const query = parseTableQuery(searchParams);
+  if (!query) {
+    sendJson(response, 200, {
+      [key]: rows,
+      // Unpaged, the page holds everything - but never a size of zero, which
+      // is a division waiting to happen in whatever reads this next.
+      page: { page: 1, pageSize: Math.max(rows.length, 1), total: rows.length, pageCount: 1 },
+      ...extra,
+    });
+    return;
+  }
+  const result = applyQuery(rows, query, options);
+  sendJson(response, 200, { [key]: result.rows, page: pageInfo(result, query.pageSize), ...extra });
 }
 
 function sendError(response: ServerResponse, statusCode: number, code: string, message: string): void {

@@ -1,3 +1,6 @@
+export * from './table-query.js';
+export * from './table-fields.js';
+
 export type PlatformKind = 'windows' | 'linux' | 'termux' | 'docker' | 'modelscope' | 'unknown';
 
 export interface ManagerPorts {

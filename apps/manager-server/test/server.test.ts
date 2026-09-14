@@ -668,3 +668,85 @@ test('the LAN address offered is one another device can actually reach', () => {
   // still the right answer when it is all there is.
   assert.equal(preferredNetworkHost([{ family: 'IPv4', internal: false, address: '100.103.121.60' }]), '100.103.121.60');
 });
+
+test('a list answers the page it was asked for, and the whole list when it was not', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-paging-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const now = new Date().toISOString();
+  const base = {
+    selector: 'latest' as const, channel: 'release' as const, runtimePath: join(root, 'rt'),
+    markerPath: join(root, 'rt', '.stm-installation.json'), status: 'ready' as const, progress: 100,
+    step: 'Installation ready', error: null, createdAt: now, updatedAt: now,
+  };
+  // Named so that sorting by ref has a different answer from the order they
+  // are listed in, and so that "1.9.0" against "1.18.0" catches a plain string
+  // comparison pretending to be a version sort.
+  const installations: Installation[] = [
+    { ...base, id: 'i-a', resolvedRef: '1.18.0', activatedAt: now },
+    { ...base, id: 'i-b', resolvedRef: '1.9.0', activatedAt: null },
+    { ...base, id: 'i-c', resolvedRef: '1.12.3', activatedAt: null },
+  ];
+  const fakeRuntime = {
+    listVersions: async () => [],
+    listInstallations: async () => installations,
+    getActiveInstallation: async () => installations[0],
+    getInstallation: async (id: string) => installations.find((item) => item.id === id) ?? null,
+  } as unknown as RuntimeManager;
+  const manager = await startManagerServer({ host: '127.0.0.1', port: 0, paths, env: { STM_ADMIN_PASSWORD: 'correct horse battery staple' }, secureCookies: false,
+    accessPort: 0, runtime: fakeRuntime, logger: () => undefined });
+  t.after(() => manager.close());
+  const url = serverUrl(manager);
+  const login = await fetch(`${url}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'correct horse battery staple' }) });
+  const cookie = cookieFrom(login);
+  const listed = async (query: string) => await (await fetch(`${url}/api/v1/installations${query}`, { headers: { cookie } })).json() as {
+    installations: Installation[]; activeInstallationId: string | null; page: { page: number; pageSize: number; total: number; pageCount: number };
+  };
+
+  // No parameters: the whole list, described as one page, exactly as the panel
+  // has always received it.
+  const all = await listed('');
+  assert.deepEqual(all.installations.map((row) => row.id), ['i-a', 'i-b', 'i-c']);
+  assert.deepEqual(all.page, { page: 1, pageSize: 3, total: 3, pageCount: 1 });
+  assert.equal(all.activeInstallationId, 'i-a');
+
+  const second = await listed('?page=2&pageSize=2');
+  assert.deepEqual(second.installations.map((row) => row.id), ['i-c']);
+  assert.deepEqual(second.page, { page: 2, pageSize: 2, total: 3, pageCount: 2 });
+  // The active pointer names a row that is not on this page, and still travels
+  // with it - the panel needs it to mark the row wherever it turns up.
+  assert.equal(second.activeInstallationId, 'i-a');
+
+  const sorted = await listed('?sort=resolvedRef&direction=asc&pageSize=50');
+  assert.deepEqual(sorted.installations.map((row) => row.resolvedRef), ['1.9.0', '1.12.3', '1.18.0']);
+  const reversed = await listed('?sort=resolvedRef&direction=desc&pageSize=50');
+  assert.deepEqual(reversed.installations.map((row) => row.resolvedRef), ['1.18.0', '1.12.3', '1.9.0']);
+
+  const searched = await listed('?q=1.12');
+  assert.deepEqual(searched.installations.map((row) => row.id), ['i-c']);
+  assert.equal(searched.page.total, 1);
+
+  // A page past the end is the last page, not an empty table with no way back.
+  assert.equal((await listed('?page=99&pageSize=2')).page.page, 2);
+  // And a caller cannot ask the manager to walk everything it has at once.
+  assert.equal((await listed('?pageSize=100000')).page.pageSize, 200);
+});
+
+test('an empty list still answers with one page', async (t) => {
+  const manager = await createServer({ bootstrapPassword: 'correct horse battery staple' });
+  t.after(() => manager.close());
+  const url = serverUrl(manager);
+  const login = await fetch(`${url}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'correct horse battery staple' }) });
+  const cookie = cookieFrom(login);
+  const payload = await (await fetch(`${url}/api/v1/backups?page=1&pageSize=10`, { headers: { cookie } })).json() as {
+    backups: unknown[]; page: { page: number; total: number; pageCount: number };
+  };
+  assert.deepEqual(payload.backups, []);
+  // One page, so the table has somewhere to draw its empty state.
+  assert.deepEqual(payload.page, { page: 1, pageSize: 10, total: 0, pageCount: 1 });
+
+  // The same list without a query: still one page, and never a page size of
+  // zero for whatever divides by it.
+  const unpaged = await (await fetch(`${url}/api/v1/backups`, { headers: { cookie } })).json() as { page: { pageSize: number; pageCount: number } };
+  assert.equal(unpaged.page.pageSize, 1);
+  assert.equal(unpaged.page.pageCount, 1);
+});
