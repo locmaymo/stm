@@ -24,3 +24,18 @@ if (gallery) {
 createRoot(root).render(
   <StrictMode>{gallery ? <Gallery /> : <App />}</StrictMode>,
 );
+
+/*
+ * Take the boot screen away once there is something behind it.
+ *
+ * Two frames, not one: the first is the frame this render is committed in, and
+ * the second is the one it is painted in. Removing the screen any earlier
+ * shows the empty page it was put there to cover.
+ */
+const boot = document.getElementById('boot');
+if (boot) {
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    boot.dataset.done = 'true';
+    window.setTimeout(() => boot.remove(), 220);
+  }));
+}

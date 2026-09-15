@@ -227,7 +227,13 @@ export class StateStore {
     };
   }
 
-  public getSetupCodeForTests(): string {
+  /**
+   * The code a first visit has to type, before any password exists.
+   *
+   * It was named for the tests that first needed it, and is now read by the
+   * banner printed at startup as well, where the name was a lie.
+   */
+  public getInitialSetupCode(): string {
     return this.state?.setupCode ?? this.initialSetupCode;
   }
 

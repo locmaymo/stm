@@ -1,4 +1,5 @@
-import { startManagerServer } from './server.js';
+import { networkHost, startManagerServer } from './server.js';
+import { bootstrapBanner } from './banner.js';
 import { ensurePanelBuilt, openInBrowser } from './bootstrap.js';
 
 await ensurePanelBuilt();
@@ -21,7 +22,37 @@ const shutdown = async (reason: string): Promise<void> => {
 
 const manager = await startManagerServer({ onShutdownRequest: () => { void shutdown('the launcher asked'); } });
 const url = `http://127.0.0.1:${manager.port}`;
-console.log(`[manager] listening on ${url}`);
+
+/*
+ * Say where the console is, once, in the place the operator is already looking.
+ *
+ * The lines above this are the log: a missing `.env`, the gateway's port, a
+ * panel build. They are worth keeping and worth nobody having to read. What
+ * somebody who has just installed this needs is the address, the address their
+ * phone can use, a code to scan so they do not have to type it, and how to
+ * stop the thing again.
+ *
+ * Colour and the drawn code are for a terminal only. Piped into a file or a
+ * service manager's journal, this is plain text.
+ */
+const persisted = await manager.store.getPersisted();
+const lan = await networkHost();
+const lanUrl = lan ? `http://${lan}:${manager.port}` : undefined;
+const colour = Boolean(process.stdout.isTTY) && process.env.NO_COLOR === undefined && process.env.TERM !== 'dumb';
+console.log(bootstrapBanner({
+  title: `ST Manager ${persisted.managerVersion}`,
+  addresses: [
+    { label: 'On this computer', url },
+    ...(lanUrl ? [{ label: 'On this Wi-Fi', url: lanUrl }] : []),
+  ],
+  // Only until a password exists: after that the code opens nothing, and
+  // printing it every start would train people to ignore the banner.
+  ...(persisted.adminPasswordHash ? {} : { setupCode: { label: 'Setup code', value: manager.store.getInitialSetupCode() } }),
+  ...(lanUrl ? { qr: { value: lanUrl, caption: 'Scan to open on a phone' } } : {}),
+  stopHint: 'Press Ctrl+C to stop.',
+  colour,
+  ...(process.stdout.columns ? { width: process.stdout.columns } : {}),
+}));
 
 /**
  * Report a fault instead of letting it end the process in silence.

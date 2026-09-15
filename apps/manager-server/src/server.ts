@@ -243,7 +243,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     logger(logEvent('setup.passwordBootstrapped', '[setup] admin password bootstrapped from STM_ADMIN_PASSWORD'));
   }
   if (!persisted.adminPasswordHash && persisted.setupCodeHash) {
-    logger(logEvent('setup.setupCode', `[setup] one-time setup code: ${store.getSetupCodeForTests()}`, { code: store.getSetupCodeForTests() }));
+    logger(logEvent('setup.setupCode', `[setup] one-time setup code: ${store.getInitialSetupCode()}`, { code: store.getInitialSetupCode() }));
   }
 
   const shutdownToken = env.STM_SHUTDOWN_TOKEN?.trim() || null;
@@ -1102,8 +1102,19 @@ function parseConfigUpdateInput(value: unknown): ConfigUpdateInput {
 }
 
 async function decorateConfig(document: Awaited<ReturnType<ConfigStore['read']>>): Promise<Awaited<ReturnType<ConfigStore['read']>>> {
-  const host = preferredNetworkHost(Object.values(networkInterfaces()).flatMap((entries) => entries ?? []), await routedAddress());
+  const host = await networkHost();
   return host ? { ...document, networkHost: host } : document;
+}
+
+/**
+ * This machine's address on the network around it, or nothing when it has none.
+ *
+ * The panel asks for it with the configuration; the banner printed at startup
+ * asks for it too, and the two must not disagree about which of several
+ * adapters is the real one.
+ */
+export async function networkHost(): Promise<string | undefined> {
+  return preferredNetworkHost(Object.values(networkInterfaces()).flatMap((entries) => entries ?? []), await routedAddress());
 }
 
 /**

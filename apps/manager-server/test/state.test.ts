@@ -12,11 +12,11 @@ test('state survives a restart and keeps the setup code stable until setup', asy
   const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
   const first = new StateStore({ paths, setupCode: 'stable-setup-code' });
   await first.load();
-  assert.equal(first.getSetupCodeForTests(), 'stable-setup-code');
+  assert.equal(first.getInitialSetupCode(), 'stable-setup-code');
 
   const second = new StateStore({ paths, setupCode: 'different-process-code' });
   await second.load();
-  assert.equal(second.getSetupCodeForTests(), 'stable-setup-code');
+  assert.equal(second.getInitialSetupCode(), 'stable-setup-code');
 });
 
 test('manager password changes persist across a new state store', async () => {

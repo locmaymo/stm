@@ -14,10 +14,10 @@
     "apps/manager-server/src/**/*.js",
     "packages/*/src/**/*.js",
     "packages/instrumentation/src/*.mjs",
-    "panel/**",
-    "node_modules/yaml/**"
+    "panel/**"
   ],
   "dependencies": {
+    "qrcode-generator": "^2.0.4",
     "yaml": "^2.9.0"
   }
 }

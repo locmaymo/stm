@@ -17,9 +17,73 @@
     <meta name="apple-mobile-web-app-title" content="ST Manager" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <title>ST Manager</title>
+    <script>
+      /*
+       * Pick the theme before anything is painted.
+       *
+       * The stylesheet and the bundle both arrive after this, and the app sets
+       * the class from the same two inputs once it runs - so without this line
+       * a reader who chose dark gets a white page first, which on a phone at
+       * night is the whole screen.
+       *
+       * `readPreferences` in src/preferences.ts is the authority on what these
+       * two inputs mean; this is the same decision made earlier, and a test
+       * checks the two still agree.
+       */
+      try {
+        var storedTheme = window.localStorage.getItem('stm-theme');
+        var wantsDark = storedTheme === 'dark' || (storedTheme !== 'light' && !window.matchMedia('(prefers-color-scheme: light)').matches);
+        document.documentElement.classList.toggle('dark', wantsDark);
+      } catch (error) {
+        document.documentElement.classList.add('dark');
+      }
+    </script>
+    <style>
+      /* The boot screen, inline because it has to be on screen before the
+         stylesheet has been fetched. It is removed once React has painted. */
+      html { background: #f7f9fc; }
+      html.dark { background: #0f141b; }
+      #boot {
+        position: fixed;
+        inset: 0;
+        z-index: 9;
+        display: grid;
+        align-content: center;
+        justify-items: center;
+        gap: 18px;
+        background: inherit;
+      }
+      #boot[data-done] { opacity: 0; transition: opacity .2s ease; pointer-events: none; }
+      #boot img { width: 56px; height: 56px; }
+      #boot span {
+        display: block;
+        width: 116px;
+        height: 3px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: color-mix(in srgb, #2563eb 18%, transparent);
+      }
+      #boot i {
+        display: block;
+        width: 40%;
+        height: 100%;
+        border-radius: inherit;
+        background: #2563eb;
+        animation: boot-slide 1.1s ease-in-out infinite;
+      }
+      @keyframes boot-slide { from { transform: translateX(-120%); } to { transform: translateX(320%); } }
+      @media (prefers-reduced-motion: reduce) {
+        #boot i { width: 100%; animation: none; opacity: .45; }
+        #boot[data-done] { transition: none; }
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>
+    <div id="boot" aria-hidden="true">
+      <img src="/brand-mark.png" width="56" height="56" alt="" />
+      <span><i></i></span>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
