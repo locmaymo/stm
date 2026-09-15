@@ -419,8 +419,12 @@ test('the passcode door waits to be touched before it opens a keyboard', async (
   // The field lies over the dots, so touching them is touching it.
   assert.ok(page.includes('class="field"'));
   assert.ok(page.includes('caret-color:transparent'));
-  // Double-tapping a key is a second press, not a zoom.
+  // Double-tapping a key is a second press, not a zoom, and a pinch does
+  // nothing either - including on iOS, which ignores the meta tag and has to
+  // be told through its own gesture events.
   assert.ok(page.includes('touch-action:manipulation'));
+  assert.ok(page.includes('user-scalable=no'));
+  assert.ok(page.includes('gesturestart'));
   /*
    * And nothing in the form may be called `submit`. A control with that id or
    * name becomes a property of the form and replaces the form's own submit()
@@ -439,6 +443,9 @@ test("the door shows SillyTavern's own logo, read from the installation", async 
 
   const page = await (await fetch(`${base}/__stm/login`, { headers: { accept: 'text/html' } })).text();
   assert.ok(page.includes('src="/__stm/logo.png"'));
+  // On a plate, because the artwork is white letters drawn for a dark theme
+  // and a light page swallowed them.
+  assert.ok(page.includes('class="mark"'));
   // The picture is part of the door, so it is served before anybody is let in.
   const served = await fetch(`${base}/__stm/logo.png`);
   assert.equal(served.status, 200);

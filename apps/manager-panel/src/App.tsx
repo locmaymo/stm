@@ -4,7 +4,7 @@ import {
   Globe2, LayoutDashboard, Maximize2, Minimize2, Moon, Package, Pencil, Plus,
   LogOut, RotateCcw, ScrollText, Search, Sun, Trash2, Upload, Users as UsersIcon, X, Rows3,
   BrainCircuit, CircleStop, Clock3, Cpu, Ellipsis, Play, QrCode as QrCodeIcon, RefreshCw, Settings2, ShieldCheck, Square,
-  Blocks, Gauge, History,
+  Blocks, FileCode2, Gauge, History,
 } from 'lucide-react';
 import {
   Alert, AlertDescription, AuthLayout, Badge, BrandMark, Button, buttonVariants, Card, CardAction,
@@ -285,8 +285,8 @@ function AuthScreen({ t, mode, setupCodeRequired, signedOut, preferences, onPref
         </Button>
       </>}
     >
-      <Card>
-        <CardContent className="pt-6">
+      <Card className="rounded-2xl shadow-[var(--elevation-3)]">
+        <CardContent className="p-6">
           <form className="grid gap-5" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
             {signedOut ? <Alert><Clock3 /><AlertDescription>{t('setup.signedOut')}</AlertDescription></Alert> : null}
             <Field label={t('setup.password')} hint={setup ? t('setup.passwordHint') : null}>
@@ -2329,6 +2329,11 @@ function offeredSettings(settings: ConfigSettings): ConfigSettingsInput {
   };
 }
 
+/** `1.19.0` is a number; `v1.19.0` is a version. */
+function versionLabel(ref: string): string {
+  return /^[0-9]/u.test(ref) ? `v${ref}` : ref;
+}
+
 /** `config.yaml`, or `config.yml` where that is what the version wrote. */
 function configFileName(path: string): string {
   return path.split(/[\\/]/u).at(-1) ?? 'config.yaml';
@@ -2404,8 +2409,8 @@ function ConfigPage({ t, config, security, onConfigUpdate, onChangeManagerPasswo
    * The labels only appear from `sm` up. On a phone the row has a name, and a
    * pencil next to a name has never needed the word "edit" under it.
    */
-  const rowAction = (icon: ReactNode, label: string, full: string, onClick: () => void, options: { readonly variant?: 'outline' | 'ghost'; readonly disabled?: boolean } = {}) =>
-    <Button variant={options.variant ?? 'ghost'} size="sm" disabled={options.disabled ?? false} aria-label={full} title={full} onClick={onClick}>
+  const rowAction = (icon: ReactNode, label: string, full: string, onClick: () => void, options: { readonly variant?: 'outline'; readonly disabled?: boolean } = {}) =>
+    <Button variant={options.variant ?? 'outline'} size="sm" disabled={options.disabled ?? false} aria-label={full} title={full} onClick={onClick}>
       {icon}<span className="hidden sm:inline">{label}</span>
     </Button>;
 
@@ -2417,7 +2422,7 @@ function ConfigPage({ t, config, security, onConfigUpdate, onChangeManagerPasswo
           <DetailRow label={t('console.managerPasswordTitle')} hint={t('console.managerPasswordHint')}>
             <div className="flex items-center gap-1">
               {rowAction(<Pencil />, t('console.changePassword'), t('console.changeManagerPassword'), () => setManagerPasswordOpen(true), { variant: 'outline' })}
-              {rowAction(<LogOut />, t('console.signOut'), t('console.signOutManager'), () => void onSignOut())}
+              {rowAction(<LogOut />, t('console.signOut'), t('console.signOutManager'), () => void onSignOut(), { variant: 'outline' })}
             </div>
           </DetailRow>
           <DetailRow
@@ -2426,7 +2431,7 @@ function ConfigPage({ t, config, security, onConfigUpdate, onChangeManagerPasswo
           >
             <div className="flex items-center gap-1">
               {rowAction(<Pencil />, security.passwordConfigured ? t('console.changePassword') : t('console.setPassword'), security.passwordConfigured ? t('console.changeSillyPassword') : t('console.setSillyPassword'), () => setSillyPasswordOpen(true), { variant: 'outline' })}
-              {rowAction(<LogOut />, t('console.signOut'), security.sessions > 0 ? t('console.signOutDevices') : t('console.signOutDevicesNone'), () => setSignOutDevicesOpen(true), { disabled: security.sessions === 0 })}
+              {rowAction(<LogOut />, t('console.signOut'), security.sessions > 0 ? t('console.signOutDevices') : t('console.signOutDevicesNone'), () => setSignOutDevicesOpen(true), { variant: 'outline', disabled: security.sessions === 0 })}
             </div>
           </DetailRow>
         </div>
@@ -2447,9 +2452,8 @@ function ConfigPage({ t, config, security, onConfigUpdate, onChangeManagerPasswo
       ? <Card><CardContent className="px-0"><EmptyState icon={<Settings2 />} title={t('console.noConfiguration')} /></CardContent></Card>
       : <>
         <Card>
-          <PanelHeading icon={<Settings2 />} action={<Badge variant="outline">{config.runtimeRef}</Badge>}>{t('console.configTitle')}</PanelHeading>
+          <PanelHeading icon={<Settings2 />} action={<Badge variant="outline">{versionLabel(config.runtimeRef)}</Badge>}>{t('console.configTitle')}</PanelHeading>
           <CardContent className="grid gap-5">
-            <p className="text-xs text-muted-foreground">{t('console.managedNote')}</p>
             <div>
               <SettingsGroup icon={<Gauge />} title={t('console.performanceTitle')} />
               {flag('lazyLoadCharacters')}
@@ -2470,21 +2474,22 @@ function ConfigPage({ t, config, security, onConfigUpdate, onChangeManagerPasswo
               {flag('chatBackups')}
               {choice('chatBackupCount', CHAT_BACKUP_COUNTS, { disabled: form.chatBackups !== true })}
             </div>
+            <div>
+              {/* In the same card as the switches, because it is the same
+                  thing: every switch above is a line in this file, and an
+                  edit in either place shows up in the other. In a card of
+                  its own it read as some separate feature. */}
+              <SettingsGroup icon={<FileCode2 />} title={t('console.configFileTitle')} />
+              <DetailRow label={<code className="font-mono text-sm">{configFileName(config.path)}</code>} hint={t('console.configFileHint')}>
+                <Button variant="outline" size="sm" onClick={() => setYamlOpen(true)}><Pencil />{t('common.edit')}</Button>
+              </DetailRow>
+            </div>
             {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
           </CardContent>
           <CardFooter className="items-center justify-between gap-3">
             <span className="text-xs text-muted-foreground">{t('console.restartAfterSave')}</span>
             <Button onClick={() => void save({ settings: form })} disabled={busy}>{t('common.save')}</Button>
           </CardFooter>
-        </Card>
-        <Card>
-          <CardContent>
-            {/* The path is long enough to wrap the row onto three lines and
-                push the button under it, and it is only ever glanced at. */}
-            <DetailRow label={<code className="font-mono text-sm">{configFileName(config.path)}</code>} hint={<span className="block truncate" title={config.path}>{config.path}</span>}>
-              <Button variant="outline" size="sm" onClick={() => setYamlOpen(true)}><ScrollText />{t('common.edit')}</Button>
-            </DetailRow>
-          </CardContent>
         </Card>
       </>}
     {config ? <YamlDialog t={t} open={yamlOpen} onOpenChange={setYamlOpen} initial={config.rawYaml} busy={busy} onApply={(rawYaml) => save({ rawYaml })} /> : null}
