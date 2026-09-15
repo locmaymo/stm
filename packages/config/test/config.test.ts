@@ -109,21 +109,21 @@ test('the settings the console offers land on the keys SillyTavern reads', async
   assert.equal(before.settings.lazyLoadCharacters, false);
 
   const saved = await store.update(profile, installation, {
-    settings: { requestCompression: true, memoryCacheCapacity: '250mb', extensionModelDownload: false, chatBackupCount: 20 },
+    settings: { requestCompression: true, memoryCacheCapacity: '250mb', allowKeysExposure: true, chatBackupCount: 20 },
   });
   assert.equal(saved.settings.requestCompression, true);
   assert.equal(saved.settings.memoryCacheCapacity, '250mb');
-  assert.equal(saved.settings.extensionModelDownload, false);
+  assert.equal(saved.settings.allowKeysExposure, true);
   assert.equal(saved.settings.chatBackupCount, 20);
 
   const raw = parseYaml(await readFile(configPath, 'utf8')) as {
     performance: { requestCompression: { enabled: boolean }; memoryCacheCapacity: string };
-    extensions: { models: { autoDownload: boolean } };
+    allowKeysExposure: boolean;
     backups: { common: { numberOfBackups: number } };
   };
   assert.equal(raw.performance.requestCompression.enabled, true);
   assert.equal(raw.performance.memoryCacheCapacity, '250mb');
-  assert.equal(raw.extensions.models.autoDownload, false);
+  assert.equal(raw.allowKeysExposure, true);
   assert.equal(raw.backups.common.numberOfBackups, 20);
 });
 

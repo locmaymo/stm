@@ -173,7 +173,6 @@
     "passwordSaveFailed": "Không thể lưu mật khẩu SillyTavern",
     "password": "Mật khẩu",
     "configTitle": "Thiết lập SillyTavern",
-    "restartAfterSave": "Thay đổi sẽ khởi động lại SillyTavern.",
     "rawYamlHint": "Ghi chú và những thiết lập không có ở trên đều được giữ nguyên.",
     "applyYaml": "Kiểm tra và áp dụng",
     "configSaved": "Đã lưu cấu hình và khởi động lại SillyTavern.",
@@ -276,7 +275,7 @@
     "signOutDevices": "Đăng xuất mọi thiết bị",
     "signOutDevicesNone": "Không có thiết bị nào đang đăng nhập SillyTavern",
     "signOutDevicesTitle": "Đăng xuất mọi thiết bị?",
-    "signOutDevicesBody": "Số thiết bị đang đăng nhập: {count}. Mỗi thiết bị sẽ phải nhập lại mã. Mã số thì không đổi.",
+    "signOutDevicesBody": "Số thiết bị đang đăng nhập: {count}.",
     "signOutDevicesDone": "Đã đăng xuất mọi thiết bị.",
     "performanceTitle": "Hiệu năng",
     "extensionsTitle": "Tiện ích mở rộng",
@@ -292,23 +291,28 @@
       "cacheOff": "Tắt",
       "requestCompression": "Nén dữ liệu gửi lên",
       "requestCompressionHint": "Đáng bật khi dùng qua liên kết công khai hoặc mạng chậm.",
-      "thumbnails": "Tạo ảnh thu nhỏ",
-      "thumbnailsHint": "Ảnh đại diện và ảnh nền tải nhẹ hơn, nhất là trên điện thoại.",
       "extensions": "Bật tiện ích mở rộng",
       "extensionsHint": "Tắt để thử xem có phải một tiện ích gây lỗi không.",
       "extensionAutoUpdate": "Tự cập nhật tiện ích",
       "extensionAutoUpdateHint": "Cập nhật lúc khởi động, khi có phiên bản mới.",
-      "extensionModelDownload": "Tự tải mô hình cho tiện ích",
-      "extensionModelDownloadHint": "Tải từ HuggingFace, có thể vài trăm MB.",
-      "downloadableTokenizers": "Tải bộ tách từ khi cần",
-      "downloadableTokenizersHint": "Đếm token sát hơn cho vài mô hình. Tắt thì dùng bộ có sẵn.",
       "chatBackups": "Tự sao lưu đoạn chat",
       "chatBackupsHint": "SillyTavern giữ bản sao ngay trong thư mục dữ liệu của nó.",
       "chatBackupCount": "Số bản giữ lại",
-      "chatBackupCountHint": "Cho mỗi đoạn chat và mỗi tệp thiết lập."
+      "chatBackupCountHint": "Cho mỗi đoạn chat và mỗi tệp thiết lập.",
+      "allowKeysExposure": "Cho xem lại khoá đã lưu",
+      "allowKeysExposureHint": "Bật thì SillyTavern hiện lại được khoá đã lưu. Tắt thì khoá chỉ nhập vào, không xem lại được."
     },
     "configFileTitle": "Tệp cấu hình",
-    "configFileHint": "Mọi thiết lập ở trên đều là một dòng trong tệp này. Sửa ở đâu thì bên kia cũng đổi theo."
+    "configFileHint": "Mọi thiết lập ở trên đều là một dòng trong tệp này. Sửa ở đâu thì bên kia cũng đổi theo.",
+    "apiKeysTitle": "Khoá API",
+    "saveChanges": "Lưu thay đổi",
+    "saveChangesTitle": "Lưu thay đổi?",
+    "saveChangesBody": "SillyTavern sẽ khởi động lại để nhận thay đổi.",
+    "configFileCaution": "Chỉ sửa nếu bạn biết mình đang sửa gì",
+    "restoreDefaults": "Khôi phục mặc định",
+    "restoreDefaultsTitle": "Khôi phục cấu hình mặc định?",
+    "restoreDefaultsBody": "Tệp sẽ trở về đúng bản mà SillyTavern này mang theo. Mọi thứ đang có trong đó sẽ mất.",
+    "restoreDefaultsDone": "Đã khôi phục cấu hình mặc định."
   },
   "dashboard": {
     "start": "Chạy",
@@ -410,7 +414,8 @@
     },
     "config": {
       "updated": "Đã cập nhật {path}",
-      "managedDefaults": "Đã đưa các thiết lập do trình quản lý giữ trong {path} về mặc định"
+      "managedDefaults": "Đã đưa các thiết lập do trình quản lý giữ trong {path} về mặc định",
+      "restoredDefaults": "Đã khôi phục {path} về mặc định của bản {ref}"
     },
     "sillytavern": {
       "starting": "Đang khởi động {ref} trên 127.0.0.1:8000",

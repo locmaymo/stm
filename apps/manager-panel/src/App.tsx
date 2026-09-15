@@ -4,7 +4,7 @@ import {
   Globe2, LayoutDashboard, Maximize2, Minimize2, Moon, Package, Pencil, Plus,
   LogOut, RotateCcw, ScrollText, Search, Sun, Trash2, Upload, Users as UsersIcon, X, Rows3,
   BrainCircuit, CircleStop, Clock3, Cpu, Ellipsis, Play, QrCode as QrCodeIcon, RefreshCw, Settings2, ShieldCheck, Square,
-  Blocks, FileCode2, Gauge, History,
+  Blocks, FileCode2, Gauge, History, KeyRound, TriangleAlert,
 } from 'lucide-react';
 import {
   Alert, AlertDescription, AuthLayout, Badge, BrandMark, Button, buttonVariants, Card, CardAction,
@@ -521,6 +521,15 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     if (payload.tunnel) setTunnelState(payload.tunnel);
     return null;
   };
+  const resetConfig = async (): Promise<string | null> => {
+    const response = await apiFetch('/api/v1/config/reset', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+    const payload = await response.json() as { config?: ConfigDocument; process?: ProcessState; tunnel?: TunnelState; error?: { message?: string } };
+    if (!response.ok || !payload.config) return fail.body(payload, t('console.configSaveFailed'));
+    setConfigDocument(payload.config);
+    if (payload.process) setProcessState(payload.process);
+    if (payload.tunnel) setTunnelState(payload.tunnel);
+    return null;
+  };
   const setAccessPassword = async (password: string, confirmPassword: string): Promise<string | null> => {
     const response = await apiFetch('/api/v1/access/password', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ password, confirmPassword }) });
     const payload = await response.json() as AccessGatewayState & { error?: { message?: string } };
@@ -572,7 +581,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
             </div>
           </header>
           <PageContainer>
-            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}<CardGrid>{installation}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} installed={Boolean(activeInstallationId)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><DataPanel t={t} navigate={navigate} activeProfile={profiles.find((profile) => profile.id === activeProfileId) ?? null} latestBackup={backups.at(-1) ?? null} /><SystemPanel t={t} csrfToken={csrfToken ?? ''} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} config={configDocument} security={accessSecurity} onConfigUpdate={updateConfig} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} /> : <ResourcePanel page={page} t={t} />}
+            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}<CardGrid>{installation}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} installed={Boolean(activeInstallationId)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><DataPanel t={t} navigate={navigate} activeProfile={profiles.find((profile) => profile.id === activeProfileId) ?? null} latestBackup={backups.at(-1) ?? null} /><SystemPanel t={t} csrfToken={csrfToken ?? ''} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} config={configDocument} security={accessSecurity} onConfigUpdate={updateConfig} onConfigReset={resetConfig} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} /> : <ResourcePanel page={page} t={t} />}
           </PageContainer>
           <MobileNav
             items={navigation.map(({ id, icon }) => ({ id, icon, href: `#${id}`, label: t(`nav.${id}`) }))}
@@ -2319,11 +2328,9 @@ function offeredSettings(settings: ConfigSettings): ConfigSettingsInput {
     useDiskCache: settings.useDiskCache,
     memoryCacheCapacity: settings.memoryCacheCapacity,
     requestCompression: settings.requestCompression,
-    thumbnails: settings.thumbnails,
     extensions: settings.extensions,
     extensionAutoUpdate: settings.extensionAutoUpdate,
-    extensionModelDownload: settings.extensionModelDownload,
-    downloadableTokenizers: settings.downloadableTokenizers,
+    allowKeysExposure: settings.allowKeysExposure,
     chatBackups: settings.chatBackups,
     chatBackupCount: settings.chatBackupCount,
   };
@@ -2346,7 +2353,7 @@ function SettingsGroup({ icon, title }: { icon: ReactNode; title: string }) {
   </div>;
 }
 
-function ConfigPage({ t, config, security, onConfigUpdate, onChangeManagerPassword, onSetPassword, onSignOut, onSignOutDevices }: { t: Translate; config: ConfigDocument | null; security: AccessGatewayState; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onChangeManagerPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSignOut: () => Promise<void>; onSignOutDevices: () => Promise<string | null> }) {
+function ConfigPage({ t, config, security, onConfigUpdate, onConfigReset, onChangeManagerPassword, onSetPassword, onSignOut, onSignOutDevices }: { t: Translate; config: ConfigDocument | null; security: AccessGatewayState; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onConfigReset: () => Promise<string | null>; onChangeManagerPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSignOut: () => Promise<void>; onSignOutDevices: () => Promise<string | null> }) {
   const [form, setForm] = useState<ConfigSettingsInput>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -2354,6 +2361,8 @@ function ConfigPage({ t, config, security, onConfigUpdate, onChangeManagerPasswo
   const [sillyPasswordOpen, setSillyPasswordOpen] = useState(false);
   const [yamlOpen, setYamlOpen] = useState(false);
   const [signOutDevicesOpen, setSignOutDevicesOpen] = useState(false);
+  const [saveOpen, setSaveOpen] = useState(false);
+  const [resetOpen, setResetOpen] = useState(false);
   const { toast } = useToast();
   useEffect(() => {
     if (!config) return;
@@ -2366,6 +2375,14 @@ function ConfigPage({ t, config, security, onConfigUpdate, onChangeManagerPasswo
       setError(failure);
       if (!failure) toast({ title: t('console.configSaved'), tone: 'success' });
       return failure;
+    } finally { setBusy(false); }
+  };
+  const restoreDefaults = async () => {
+    setBusy(true); setError(null);
+    try {
+      const failure = await onConfigReset();
+      setError(failure);
+      if (!failure) toast({ title: t('console.restoreDefaultsDone'), tone: 'success' });
     } finally { setBusy(false); }
   };
   const saveManagerPassword = async (password: string, confirmPassword: string): Promise<string | null> => {
@@ -2460,37 +2477,62 @@ function ConfigPage({ t, config, security, onConfigUpdate, onChangeManagerPasswo
               {flag('useDiskCache')}
               {choice('memoryCacheCapacity', MEMORY_CACHE_SIZES)}
               {flag('requestCompression')}
-              {flag('thumbnails')}
             </div>
             <div>
               <SettingsGroup icon={<Blocks />} title={t('console.extensionsTitle')} />
               {flag('extensions')}
               {flag('extensionAutoUpdate', { disabled: form.extensions !== true })}
-              {flag('extensionModelDownload', { disabled: form.extensions !== true })}
-              {flag('downloadableTokenizers')}
+            </div>
+            <div>
+              <SettingsGroup icon={<KeyRound />} title={t('console.apiKeysTitle')} />
+              {flag('allowKeysExposure')}
             </div>
             <div>
               <SettingsGroup icon={<History />} title={t('console.chatBackupsTitle')} />
               {flag('chatBackups')}
               {choice('chatBackupCount', CHAT_BACKUP_COUNTS, { disabled: form.chatBackups !== true })}
             </div>
-            <div>
-              {/* In the same card as the switches, because it is the same
-                  thing: every switch above is a line in this file, and an
-                  edit in either place shows up in the other. In a card of
-                  its own it read as some separate feature. */}
-              <SettingsGroup icon={<FileCode2 />} title={t('console.configFileTitle')} />
-              <DetailRow label={<code className="font-mono text-sm">{configFileName(config.path)}</code>} hint={t('console.configFileHint')}>
-                <Button variant="outline" size="sm" onClick={() => setYamlOpen(true)}><Pencil />{t('common.edit')}</Button>
-              </DetailRow>
+            {/* Still in this card - every switch above is a line in this
+                file - but set into a block of its own, because editing the
+                file by hand is a different act from flipping a switch and
+                should not read as the next row down. */}
+            <div className="mt-2 grid gap-3 rounded-xl border bg-muted/40 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+                <span className="flex items-center gap-2 text-sm font-medium"><FileCode2 className="size-4 text-muted-foreground" />{t('console.configFileTitle')}</span>
+                <span className="flex items-center gap-1.5 text-xs text-muted-foreground"><TriangleAlert className="size-3.5" />{t('console.configFileCaution')}</span>
+              </div>
+              <p className="text-xs text-muted-foreground">{t('console.configFileHint')}</p>
+              <div className="flex flex-wrap items-center gap-2">
+                <code className="mr-auto font-mono text-sm">{configFileName(config.path)}</code>
+                <Button variant="outline" size="sm" disabled={busy} onClick={() => setResetOpen(true)}><RotateCcw />{t('console.restoreDefaults')}</Button>
+                <Button variant="outline" size="sm" disabled={busy} onClick={() => setYamlOpen(true)}><Pencil />{t('common.edit')}</Button>
+              </div>
             </div>
             {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
           </CardContent>
-          <CardFooter className="items-center justify-between gap-3">
-            <span className="text-xs text-muted-foreground">{t('console.restartAfterSave')}</span>
-            <Button onClick={() => void save({ settings: form })} disabled={busy}>{t('common.save')}</Button>
+          <CardFooter className="justify-end">
+            <Button onClick={() => setSaveOpen(true)} disabled={busy}>{t('console.saveChanges')}</Button>
           </CardFooter>
         </Card>
+        <ConfirmDialog
+          open={saveOpen}
+          onOpenChange={setSaveOpen}
+          tone="default"
+          title={t('console.saveChangesTitle')}
+          description={t('console.saveChangesBody')}
+          confirmLabel={t('console.saveChanges')}
+          cancelLabel={t('common.cancel')}
+          onConfirm={async () => { await save({ settings: form }); }}
+        />
+        <ConfirmDialog
+          open={resetOpen}
+          onOpenChange={setResetOpen}
+          title={t('console.restoreDefaultsTitle')}
+          description={t('console.restoreDefaultsBody')}
+          confirmLabel={t('console.restoreDefaults')}
+          cancelLabel={t('common.cancel')}
+          onConfirm={restoreDefaults}
+        />
       </>}
     {config ? <YamlDialog t={t} open={yamlOpen} onOpenChange={setYamlOpen} initial={config.rawYaml} busy={busy} onApply={(rawYaml) => save({ rawYaml })} /> : null}
   </div>;

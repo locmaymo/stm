@@ -549,6 +549,19 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     sendJson(response, 200, { config: await decorateConfig(saved), process, tunnel: tunnel.getState() });
     return;
   }
+  if (pathname === '/api/v1/config/reset' && method === 'POST') {
+    const profile = await profiles.getActive();
+    const installation = await runtime.getActiveInstallation();
+    if (!profile || !installation || installation.status !== 'ready') { sendError(response, 409, 'installation_required', 'Install SillyTavern before editing its configuration'); return; }
+    // Same order as a save, and for the same reason: a runtime that keeps its
+    // own copy of the config writes it back when it stops.
+    const wasRunning = supervisor.getState().status === 'running';
+    if (wasRunning) await supervisor.stop('configChange');
+    const restored = await config.restoreDefaults(profile, installation);
+    const process = wasRunning ? await supervisor.start() : supervisor.getState();
+    sendJson(response, 200, { config: await decorateConfig(restored), process, tunnel: tunnel.getState() });
+    return;
+  }
   if (pathname === '/api/v1/access/security' && method === 'GET') {
     sendJson(response, 200, gateway.getState());
     return;
@@ -1112,9 +1125,8 @@ function parseConfigUpdateInput(value: unknown): ConfigUpdateInput {
   const settings = value.settings;
   if (!isRecord(settings)) throw new RequestError(400, 'invalid_input', 'Configuration settings are required');
   const flags = [
-    'lazyLoadCharacters', 'useDiskCache', 'requestCompression', 'thumbnails',
-    'extensions', 'extensionAutoUpdate', 'extensionModelDownload',
-    'downloadableTokenizers', 'chatBackups',
+    'lazyLoadCharacters', 'useDiskCache', 'requestCompression',
+    'extensions', 'extensionAutoUpdate', 'allowKeysExposure', 'chatBackups',
   ] as const;
   const input: Record<string, unknown> = {};
   for (const flag of flags) if (typeof settings[flag] === 'boolean') input[flag] = settings[flag];

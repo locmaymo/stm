@@ -173,7 +173,6 @@
     "passwordSaveFailed": "Could not save the SillyTavern password",
     "password": "Password",
     "configTitle": "SillyTavern settings",
-    "restartAfterSave": "Changes restart SillyTavern.",
     "rawYamlHint": "Comments and anything not listed above are kept as they are.",
     "applyYaml": "Validate and apply",
     "configSaved": "Configuration saved and SillyTavern restarted.",
@@ -276,7 +275,7 @@
     "signOutDevices": "Sign out every device",
     "signOutDevicesNone": "No device is signed in to SillyTavern",
     "signOutDevicesTitle": "Sign out every device?",
-    "signOutDevicesBody": "Devices signed in: {count}. Each of them will have to enter the passcode again. The passcode itself does not change.",
+    "signOutDevicesBody": "Devices signed in: {count}.",
     "signOutDevicesDone": "Every device has been signed out.",
     "performanceTitle": "Performance",
     "extensionsTitle": "Extensions",
@@ -292,23 +291,28 @@
       "cacheOff": "Off",
       "requestCompression": "Compress large uploads",
       "requestCompressionHint": "Worth having over a public link or a slow network.",
-      "thumbnails": "Make thumbnails",
-      "thumbnailsHint": "Avatars and backgrounds load lighter, on a phone most of all.",
       "extensions": "Enable extensions",
       "extensionsHint": "Turn off to find out whether an extension is what broke.",
       "extensionAutoUpdate": "Update extensions automatically",
       "extensionAutoUpdateHint": "On start, whenever a release version changes.",
-      "extensionModelDownload": "Download extension models",
-      "extensionModelDownloadHint": "From HuggingFace, and they run to hundreds of megabytes.",
-      "downloadableTokenizers": "Download tokenizers when needed",
-      "downloadableTokenizersHint": "Closer token counts for some models. Off falls back to a local one.",
       "chatBackups": "Back up each chat",
       "chatBackupsHint": "SillyTavern keeps copies inside its own data folder.",
       "chatBackupCount": "Copies to keep",
-      "chatBackupCountHint": "For each chat and each settings file."
+      "chatBackupCountHint": "For each chat and each settings file.",
+      "allowKeysExposure": "Let stored keys be read back",
+      "allowKeysExposureHint": "On, SillyTavern can show a saved provider key again. Off, a key can only be typed in."
     },
     "configFileTitle": "The file",
-    "configFileHint": "Every setting above is a line in this file. Change it in either place and the other follows."
+    "configFileHint": "Every setting above is a line in this file. Change it in either place and the other follows.",
+    "apiKeysTitle": "API keys",
+    "saveChanges": "Save changes",
+    "saveChangesTitle": "Save changes?",
+    "saveChangesBody": "SillyTavern restarts to pick them up.",
+    "configFileCaution": "Only edit this if you know what it does",
+    "restoreDefaults": "Restore defaults",
+    "restoreDefaultsTitle": "Restore the default configuration?",
+    "restoreDefaultsBody": "The file goes back to the one this SillyTavern ships with. Everything in it now is lost.",
+    "restoreDefaultsDone": "The configuration is back to its defaults."
   },
   "dashboard": {
     "start": "Start",
@@ -410,7 +414,8 @@
     },
     "config": {
       "updated": "Updated {path}",
-      "managedDefaults": "Returned the managed settings in {path} to their defaults"
+      "managedDefaults": "Returned the managed settings in {path} to their defaults",
+      "restoredDefaults": "Restored {path} to the defaults shipped with {ref}"
     },
     "sillytavern": {
       "starting": "Starting {ref} on 127.0.0.1:8000",

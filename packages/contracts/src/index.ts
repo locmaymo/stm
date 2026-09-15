@@ -457,12 +457,10 @@ export interface ConfigSettings {
   readonly memoryCacheCapacity: string;
   /** Compress large uploads - the one that matters over a tunnel. */
   readonly requestCompression: boolean;
-  readonly thumbnails: boolean;
   readonly extensions: boolean;
   readonly extensionAutoUpdate: boolean;
-  /** Extension models come from HuggingFace and are hundreds of megabytes. */
-  readonly extensionModelDownload: boolean;
-  readonly downloadableTokenizers: boolean;
+  /** Whether a stored provider key can be read back out of SillyTavern. */
+  readonly allowKeysExposure: boolean;
   /** SillyTavern's own per-chat backups, which the manager then backs up too. */
   readonly chatBackups: boolean;
   readonly chatBackupCount: number;
@@ -474,11 +472,9 @@ export type ConfigSettingsInput = Partial<Pick<ConfigSettings,
   | 'useDiskCache'
   | 'memoryCacheCapacity'
   | 'requestCompression'
-  | 'thumbnails'
   | 'extensions'
   | 'extensionAutoUpdate'
-  | 'extensionModelDownload'
-  | 'downloadableTokenizers'
+  | 'allowKeysExposure'
   | 'chatBackups'
   | 'chatBackupCount'
 >>;

@@ -446,6 +446,9 @@ test("the door shows SillyTavern's own logo, read from the installation", async 
   // On a plate, because the artwork is white letters drawn for a dark theme
   // and a light page swallowed them.
   assert.ok(page.includes('class="mark"'));
+  // And on the tab from the first request, rather than appearing only once
+  // SillyTavern itself is reachable and can serve its own.
+  assert.ok(page.includes(`<link rel="icon" href="/__stm/logo.png"`));
   // The picture is part of the door, so it is served before anybody is let in.
   const served = await fetch(`${base}/__stm/logo.png`);
   assert.equal(served.status, 200);

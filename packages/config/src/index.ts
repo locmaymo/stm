@@ -78,6 +78,25 @@ export class ConfigStore {
     return true;
   }
 
+  /**
+   * Put the configuration back to the file this version ships with.
+   *
+   * The template is the runtime's own `default/config.yaml`, so "default"
+   * means what this SillyTavern considers default rather than what the
+   * manager remembers of some other version. The settings the manager owns go
+   * back on top afterwards: the shipped file is written for somebody running
+   * SillyTavern by hand, and opens a browser and reads `listen` accordingly.
+   */
+  public async restoreDefaults(profile: Profile, installation: Installation): Promise<ConfigDocument> {
+    const document = parseYaml(await readTemplate(installation.runtimePath));
+    applyManagedDefaults(document);
+    const path = await resolveConfigPath(profile, installation.runtimePath);
+    const nextRaw = String(document);
+    await atomicWriteYaml(path, nextRaw);
+    this.logger(logEvent('config.restoredDefaults', `[config] restored ${path} to the defaults shipped with ${installation.resolvedRef}`, { path, ref: installation.resolvedRef }));
+    return toConfigDocument(parseYaml(nextRaw), nextRaw, path, installation);
+  }
+
   public async validate(rawYaml: string): Promise<ConfigSettings> {
     const document = parseYaml(rawYaml);
     return extractSettings(document);
@@ -124,6 +143,14 @@ async function resolveConfigPath(profile: Profile, runtimePath: string): Promise
     try { await stat(candidate); return candidate; } catch { /* try the next layout */ }
   }
   return profile.configPath;
+}
+
+/** The untouched file SillyTavern ships, which is what restoring restores. */
+async function readTemplate(runtimePath: string): Promise<string> {
+  for (const candidate of [join(runtimePath, 'default', 'config.yaml'), join(runtimePath, 'default', 'config.yml')]) {
+    try { return await readFile(candidate, 'utf8'); } catch { /* try the next name */ }
+  }
+  throw new ConfigError('config_missing', 'This SillyTavern does not ship a default configuration to restore');
 }
 
 async function readConfig(path: string): Promise<string> {
@@ -195,11 +222,9 @@ function extractSettings(document: Document.Parsed): ConfigSettings {
     useDiskCache: getBoolean(['performance', 'useDiskCache'], true),
     memoryCacheCapacity: getString(['performance', 'memoryCacheCapacity'], '100mb'),
     requestCompression: getBoolean(['performance', 'requestCompression', 'enabled'], false),
-    thumbnails: getBoolean(['thumbnails', 'enabled'], true),
     extensions: getBoolean(['extensions', 'enabled'], true),
     extensionAutoUpdate: getBoolean(['extensions', 'autoUpdate'], true),
-    extensionModelDownload: getBoolean(['extensions', 'models', 'autoDownload'], true),
-    downloadableTokenizers: getBoolean(['enableDownloadableTokenizers'], true),
+    allowKeysExposure: getBoolean(['allowKeysExposure'], false),
     chatBackups: getBoolean(['backups', 'chat', 'enabled'], true),
     chatBackupCount: getNumber(['backups', 'common', 'numberOfBackups'], 50),
   };
@@ -214,11 +239,9 @@ const SETTING_PATHS: { readonly [K in keyof Required<ConfigSettingsInput>]: read
   useDiskCache: ['performance', 'useDiskCache'],
   memoryCacheCapacity: ['performance', 'memoryCacheCapacity'],
   requestCompression: ['performance', 'requestCompression', 'enabled'],
-  thumbnails: ['thumbnails', 'enabled'],
   extensions: ['extensions', 'enabled'],
   extensionAutoUpdate: ['extensions', 'autoUpdate'],
-  extensionModelDownload: ['extensions', 'models', 'autoDownload'],
-  downloadableTokenizers: ['enableDownloadableTokenizers'],
+  allowKeysExposure: ['allowKeysExposure'],
   chatBackups: ['backups', 'chat', 'enabled'],
   chatBackupCount: ['backups', 'common', 'numberOfBackups'],
 };
