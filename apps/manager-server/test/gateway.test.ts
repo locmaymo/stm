@@ -401,6 +401,24 @@ test('a passcode door asks with a keypad and no password field at all', async (t
   assert.ok(cookie);
 });
 
+test('the passcode door waits to be touched before it opens a keyboard', async (t) => {
+  const upstream = await startUpstream();
+  const { gateway, base } = await startGateway(upstream, { password: '417203', passcode: true });
+  t.after(async () => { await gateway.close(); await upstream.close(); });
+  const page = await (await fetch(`${base}/__stm/login`, { headers: { accept: 'text/html' } })).text();
+
+  // No autofocus in the markup: on a phone that is the system keypad sliding
+  // up over the keypad on screen before anything has been touched. The script
+  // focuses the field only where the pointer is a mouse.
+  assert.equal(page.includes('autofocus'), false);
+  assert.ok(page.includes("matchMedia('(pointer: fine)')"));
+  // The field lies over the dots, so touching them is touching it.
+  assert.ok(page.includes('class="field"'));
+  assert.ok(page.includes('caret-color:transparent'));
+  // Double-tapping a key is a second press, not a zoom.
+  assert.ok(page.includes('touch-action:manipulation'));
+});
+
 test('a door set up before passcodes existed keeps its password field', async (t) => {
   const upstream = await startUpstream();
   const { gateway, base } = await startGateway(upstream);
