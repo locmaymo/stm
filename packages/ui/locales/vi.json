@@ -266,7 +266,11 @@
     "tunnelOnDone": "Link công khai đã mở.",
     "tunnelOffDone": "Đã đóng link công khai.",
     "lanOnDone": "Các thiết bị khác trong Wi-Fi này truy cập được rồi.",
-    "lanOffDone": "Giờ chỉ máy này truy cập được."
+    "lanOffDone": "Giờ chỉ máy này truy cập được.",
+    "passwordsTitle": "Mật khẩu",
+    "passwordNotSetYet": "Chưa đặt",
+    "signOutTitle": "Trình duyệt này",
+    "signOut": "Đăng xuất"
   },
   "dashboard": {
     "start": "Chạy",

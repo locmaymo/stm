@@ -266,7 +266,11 @@
     "tunnelOnDone": "The public link is open.",
     "tunnelOffDone": "The public link is closed.",
     "lanOnDone": "Other devices on this Wi-Fi can reach it now.",
-    "lanOffDone": "Only this machine can reach it now."
+    "lanOffDone": "Only this machine can reach it now.",
+    "passwordsTitle": "Passwords",
+    "passwordNotSetYet": "Not set yet",
+    "signOutTitle": "This browser",
+    "signOut": "Sign out"
   },
   "dashboard": {
     "start": "Start",

@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState, type CSSProperties, type ReactNode 
 import {
   Archive, ArrowDown, ArrowUp, ArrowUpRight, BarChart3, Cloud, Copy, Database, Download,
   Globe2, LayoutDashboard, Maximize2, Minimize2, Moon, Package, Pencil, Plus,
-  RotateCcw, ScrollText, Search, Sun, Trash2, Upload, Users as UsersIcon, X, Rows3,
+  LogOut, RotateCcw, ScrollText, Search, Sun, Trash2, Upload, Users as UsersIcon, X, Rows3,
   BrainCircuit, CircleStop, Clock3, Cpu, Ellipsis, Play, QrCode as QrCodeIcon, RefreshCw, Settings2, Square,
 } from 'lucide-react';
 import {
@@ -175,6 +175,21 @@ function AuthGate() {
     return () => { cancelled = true; };
   }, []);
 
+  /**
+   * Leave, deliberately.
+   *
+   * Without this the only way out was to wait for the session to expire, and
+   * the notice that follows an expiry - "you were signed out, sign in again" -
+   * is the wrong thing to say to somebody who just pressed Sign out.
+   */
+  const signOut = async () => {
+    await apiFetch('/api/v1/auth/logout', { method: 'POST', credentials: 'same-origin', headers: csrfToken ? { 'x-csrf-token': csrfToken } : {} }).catch(() => undefined);
+    resetSessionWatch();
+    setSignedOut(false);
+    setCsrfToken(null);
+    setMode('login');
+  };
+
   const signedIn = (token: string) => {
     // Arm the watch again: the session that expired is not the session now held.
     resetSessionWatch();
@@ -190,7 +205,7 @@ function AuthGate() {
   const body = mode === 'checking'
     ? waiting
     : mode === 'ready'
-      ? csrfToken ? <ConsoleApp csrfToken={csrfToken} preferences={preferences} onPreferencesChange={changePreferences} /> : waiting
+      ? csrfToken ? <ConsoleApp csrfToken={csrfToken} preferences={preferences} onPreferencesChange={changePreferences} onSignOut={signOut} /> : waiting
       : <AuthScreen
         t={t}
         mode={mode}
@@ -308,7 +323,7 @@ function AuthScreen({ t, mode, setupCodeRequired, signedOut, preferences, onPref
   );
 }
 
-function ConsoleApp({ csrfToken, preferences, onPreferencesChange }: { csrfToken: string; preferences: Preferences; onPreferencesChange: (value: Partial<Preferences>) => void }) {
+function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: { csrfToken: string; preferences: Preferences; onPreferencesChange: (value: Partial<Preferences>) => void; onSignOut: () => Promise<void> }) {
   const [page, setPage] = useState<PageId>(pageFromHash);
   const [version, setVersion] = useState('latest');
   const [versions, setVersions] = useState<VersionOption[]>([]);
@@ -538,7 +553,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange }: { csrfToken
             </div>
           </header>
           <PageContainer>
-            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}<CardGrid>{installation}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} installed={Boolean(activeInstallationId)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><DataPanel t={t} navigate={navigate} activeProfile={profiles.find((profile) => profile.id === activeProfileId) ?? null} latestBackup={backups.at(-1) ?? null} /><SystemPanel t={t} csrfToken={csrfToken ?? ''} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} config={configDocument} onConfigUpdate={updateConfig} onChangeManagerPassword={changeManagerPassword} /> : <ResourcePanel page={page} t={t} />}
+            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}<CardGrid>{installation}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} installed={Boolean(activeInstallationId)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><DataPanel t={t} navigate={navigate} activeProfile={profiles.find((profile) => profile.id === activeProfileId) ?? null} latestBackup={backups.at(-1) ?? null} /><SystemPanel t={t} csrfToken={csrfToken ?? ''} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} config={configDocument} security={accessSecurity} onConfigUpdate={updateConfig} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} /> : <ResourcePanel page={page} t={t} />}
           </PageContainer>
           <MobileNav
             items={navigation.map(({ id, icon }) => ({ id, icon, href: `#${id}`, label: t(`nav.${id}`) }))}
@@ -785,7 +800,14 @@ function AccessPanel({ t, process, tunnel, config, security, installed, onAction
   const [closing, setClosing] = useState<'tunnel' | 'lan' | null>(null);
   const runAction = async (path: string, body?: unknown) => { setBusy(true); try { await onAction(path, body); } finally { setBusy(false); } };
   const setTunnel = async (on: boolean) => { await runAction('/api/v1/tunnel', { mode: on ? 'quick' : 'off' }); };
-  const toggleTunnel = (next: boolean) => { if (next) void setTunnel(true); else setClosing('tunnel'); };
+  // What to turn on once a password exists, or null when nothing is waiting.
+  const [waiting, setWaiting] = useState<'tunnel' | 'lan' | null>(null);
+  const askForPassword = (what: 'tunnel' | 'lan') => { setWaiting(what); setPasswordOpen(true); };
+  const toggleTunnel = (next: boolean) => {
+    if (!next) { setClosing('tunnel'); return; }
+    if (!passwordReady) { askForPassword('tunnel'); return; }
+    void setTunnel(true);
+  };
   const setLanTo = async (next: boolean) => {
     setSecurityBusy(true);
     try {
@@ -796,7 +818,11 @@ function AccessPanel({ t, process, tunnel, config, security, installed, onAction
       else toast({ title: next ? t('console.lanOnDone') : t('console.lanOffDone'), tone: 'success' });
     } finally { setSecurityBusy(false); }
   };
-  const toggleLan = (next: boolean) => { if (next) void setLanTo(true); else setClosing('lan'); };
+  const toggleLan = (next: boolean) => {
+    if (!next) { setClosing('lan'); return; }
+    if (!passwordReady) { askForPassword('lan'); return; }
+    void setLanTo(true);
+  };
   // This machine reaches SillyTavern directly, because the loopback address is
   // already a boundary. Everything else goes through the gateway and its
   // password: the LAN address and the tunnel both point there.
@@ -814,12 +840,11 @@ function AccessPanel({ t, process, tunnel, config, security, installed, onAction
   return <Card data-tour="public-access">
     <PanelHeading icon={<Globe2 />} action={<Badge variant="secondary" className={running ? 'status-online' : tunnel.error ? 'status-attention' : ''}>{running ? t('console.online') : t('dashboard.offline')}</Badge>}>{t('console.publicAccess')}</PanelHeading>
     <CardContent className="flex-1 space-y-4">
-      <div className="access-row"><div><strong>{t('console.lanAccess')}</strong><span>{lan ? lanLabel : passwordReady ? lanLabel : t('console.passwordRequired')}</span></div><Switch id="listen-switch" checked={lan} onCheckedChange={toggleLan} disabled={!installed || securityBusy || (!lan && !passwordReady)} aria-label={t('console.enableLan')} /></div>
+      <div className="access-row"><div><strong>{t('console.lanAccess')}</strong><span>{lan ? lanLabel : passwordReady ? lanLabel : t('console.passwordRequired')}</span></div><Switch id="listen-switch" checked={lan} onCheckedChange={toggleLan} disabled={!installed || securityBusy} aria-label={t('console.enableLan')} /></div>
       <dl className="address-list"><div><dt>{t('console.lanAddress')}</dt><dd><AddressLink t={t} href={lanUrl}>{lanHost}</AddressLink></dd></div><div><dt>{t('console.local')}</dt><dd><AddressLink t={t} href={localUrl}>{localHost}</AddressLink></dd></div></dl>
-      <div className="access-row access-row-public"><div><strong>{t('console.quickTunnel')}</strong><span>{passwordReady ? t('console.passwordProtected') : t('console.passwordRequired')}</span></div><Switch id="tunnel-switch" checked={tunnelWanted} onCheckedChange={toggleTunnel} disabled={busy || (tunnelWanted ? false : !installed || !running || !passwordReady)} aria-label={t('console.enableTunnel')} /></div>
+      <div className="access-row access-row-public"><div><strong>{t('console.quickTunnel')}</strong><span>{passwordReady ? t('console.passwordProtected') : t('console.passwordRequired')}</span></div><Switch id="tunnel-switch" checked={tunnelWanted} onCheckedChange={toggleTunnel} disabled={busy || (tunnelWanted ? false : !installed || !running)} aria-label={t('console.enableTunnel')} /></div>
       <dl className="address-list"><div><dt>{t('dashboard.publicAddress')}</dt><dd>{tunnel.url ? <AddressLink t={t} href={tunnel.url}>{tunnel.url}</AddressLink> : '—'}</dd></div></dl>
       {shareUrl ? <div className="access-qr"><Button variant="ghost" size="sm" onClick={() => setQrOpen((open) => !open)} aria-expanded={qrOpen}><QrCodeIcon />{qrOpen ? t('console.hideQr') : t('console.showQr')}</Button>{qrOpen ? <figure><QrCode value={shareUrl} label={`${shareLabel}: ${shareUrl}`} /><figcaption>{t('console.scanToOpen')} · {shareLabel}</figcaption></figure> : null}</div> : null}
-      <div className="access-row"><div><strong>{t('console.passwordSettings')}</strong><span>{passwordReady ? t('console.passwordProtected') : t('console.passwordRequired')}</span></div><Button variant="outline" size="sm" onClick={() => setPasswordOpen(true)}>{passwordReady ? t('console.changePassword') : t('console.savePassword')}</Button></div>
       <ConfirmDialog
         open={closing !== null}
         onOpenChange={(open) => { if (!open) setClosing(null); }}
@@ -829,7 +854,26 @@ function AccessPanel({ t, process, tunnel, config, security, installed, onAction
         cancelLabel={t('common.cancel')}
         onConfirm={async () => { if (closing === 'lan') await setLanTo(false); else await setTunnel(false); }}
       />
-      <PasswordDialog t={t} open={passwordOpen} onOpenChange={setPasswordOpen} title={t('console.passwordSettings')} description={t('console.sillyPasswordHelp')} note={passwordReady ? t('console.passwordChangeSignsOut') : null} minLength={MIN_SILLY_PASSWORD} hint={t('console.sillyPasswordMin')} submitLabel={passwordReady ? t('console.changePassword') : t('console.savePassword')} onSubmit={onSetPassword} />
+      <PasswordDialog
+        t={t}
+        open={passwordOpen}
+        onOpenChange={(open) => { setPasswordOpen(open); if (!open) setWaiting(null); }}
+        title={t('console.passwordSettings')}
+        description={t('console.sillyPasswordHelp')}
+        note={null}
+        minLength={MIN_SILLY_PASSWORD}
+        hint={t('console.sillyPasswordMin')}
+        submitLabel={t('console.savePassword')}
+        onSubmit={async (password, confirmPassword) => {
+          const failure = await onSetPassword(password, confirmPassword);
+          if (failure) return failure;
+          const next = waiting;
+          setWaiting(null);
+          if (next === 'tunnel') await setTunnel(true);
+          if (next === 'lan') await setLanTo(true);
+          return null;
+        }}
+      />
       {busy || securityBusy ? <div className="operation-progress" role="status"><span>{t('common.loading')}</span><span className="progress-track"><span className="progress-indeterminate" /></span></div> : null}
       {security.error ? <p className="install-error" role="alert">{security.error}</p> : null}
       {tunnel.error ? <p className="install-error" role="alert">{tunnel.error}</p> : null}
@@ -2168,11 +2212,12 @@ function formatMetricRate(value: number | null): string { return value === null 
  * note. Success and failure are separate states now, and success is a toast,
  * because saving restarts SillyTavern and redraws the page underneath it.
  */
-function ConfigPage({ t, config, onConfigUpdate, onChangeManagerPassword }: { t: Translate; config: ConfigDocument | null; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onChangeManagerPassword: (password: string, confirmPassword: string) => Promise<string | null> }) {
+function ConfigPage({ t, config, security, onConfigUpdate, onChangeManagerPassword, onSetPassword, onSignOut }: { t: Translate; config: ConfigDocument | null; security: AccessGatewayState; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onChangeManagerPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSignOut: () => Promise<void> }) {
   const [form, setForm] = useState({ sslEnabled: false, enableCorsProxy: false, disableCsrfProtection: false });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [managerPasswordOpen, setManagerPasswordOpen] = useState(false);
+  const [sillyPasswordOpen, setSillyPasswordOpen] = useState(false);
   const [yamlOpen, setYamlOpen] = useState(false);
   const { toast } = useToast();
   useEffect(() => {
@@ -2199,16 +2244,33 @@ function ConfigPage({ t, config, onConfigUpdate, onChangeManagerPassword }: { t:
     { label: t('console.disableCsrf'), hint: t('console.disableCsrfHint'), checked: form.disableCsrfProtection, apply: (value) => setForm((current) => ({ ...current, disableCsrfProtection: value })) },
   ];
 
+  /*
+   * Both passwords, on the page that holds settings.
+   *
+   * The SillyTavern one used to sit in the card that governs the public door,
+   * between two switches it had nothing to do with. It is a setting, and it is
+   * asked for on the overview only at the moment it is actually needed - when
+   * somebody turns on sharing without having set one.
+   */
   return <div className="grid min-w-0 gap-4">
     <Card>
-      <PanelHeading icon={<UsersIcon />}>{t('console.managerPasswordTitle')}</PanelHeading>
+      <PanelHeading icon={<UsersIcon />}>{t('console.passwordsTitle')}</PanelHeading>
       <CardContent>
-        <DetailRow label={t('console.password')}>
-          <Button variant="outline" size="sm" onClick={() => setManagerPasswordOpen(true)}>{t('console.changePassword')}</Button>
-        </DetailRow>
+        <div>
+          <DetailRow label={t('console.managerPasswordTitle')} hint={t('console.managerPasswordHint')}>
+            <Button variant="outline" size="sm" onClick={() => setManagerPasswordOpen(true)}>{t('console.changePassword')}</Button>
+          </DetailRow>
+          <DetailRow label={t('console.passwordSettings')} hint={security.passwordConfigured ? t('console.passwordProtected') : t('console.passwordNotSetYet')}>
+            <Button variant="outline" size="sm" onClick={() => setSillyPasswordOpen(true)}>{security.passwordConfigured ? t('console.changePassword') : t('console.savePassword')}</Button>
+          </DetailRow>
+          <DetailRow label={t('console.signOutTitle')}>
+            <Button variant="ghost" size="sm" onClick={() => void onSignOut()}><LogOut />{t('console.signOut')}</Button>
+          </DetailRow>
+        </div>
       </CardContent>
     </Card>
     <PasswordDialog t={t} open={managerPasswordOpen} onOpenChange={setManagerPasswordOpen} title={t('console.managerPasswordTitle')} description={t('console.managerPasswordHint')} note={t('console.passwordChangeSignsOut')} minLength={MIN_MANAGER_PASSWORD} hint={t('console.managerPasswordMin')} submitLabel={t('console.changePassword')} onSubmit={saveManagerPassword} />
+    <PasswordDialog t={t} open={sillyPasswordOpen} onOpenChange={setSillyPasswordOpen} title={t('console.passwordSettings')} description={t('console.sillyPasswordHelp')} note={security.passwordConfigured ? t('console.passwordChangeSignsOut') : null} minLength={MIN_SILLY_PASSWORD} hint={t('console.sillyPasswordMin')} submitLabel={security.passwordConfigured ? t('console.changePassword') : t('console.savePassword')} onSubmit={onSetPassword} />
     {!config
       ? <Card><CardContent className="px-0"><EmptyState icon={<Settings2 />} title={t('console.noConfiguration')} /></CardContent></Card>
       : <Card>
