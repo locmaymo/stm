@@ -14,6 +14,12 @@ const LOGOUT_PATH = '/__stm/logout';
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const MAX_LOGIN_BODY_BYTES = 4 * 1024;
 /**
+ * How long the door stays shut after consecutive failures, whoever they came
+ * from. Five wrong tries is a person who has forgotten it; twenty is not.
+ */
+const LOCKOUT_STEPS_MS = [30_000, 60_000, 5 * 60_000, 15 * 60_000, 60 * 60_000];
+const LOCKOUT_AFTER = 5;
+/**
  * Headers that describe one hop and must not be forwarded to the next one.
  *
  * Passing `connection` or `transfer-encoding` through makes Node encode a body
@@ -26,8 +32,13 @@ interface GatewayText {
   readonly signIn: string;
   readonly subtitle: string;
   readonly password: string;
+  readonly passcode: string;
+  readonly digit: string;
+  readonly clear: string;
+  readonly backspace: string;
   readonly submit: string;
   readonly invalid: string;
+  readonly invalidPasscode: string;
   readonly throttled: string;
   readonly unconfigured: string;
   readonly offline: string;
@@ -40,8 +51,13 @@ const TEXT: Readonly<Record<'en' | 'vi', GatewayText>> = {
     signIn: 'Sign in',
     subtitle: 'This SillyTavern is protected by SillyTavern Manager.',
     password: 'Password',
+    passcode: 'Passcode',
+    digit: 'Digit {n}',
+    clear: 'Clear',
+    backspace: 'Delete the last digit',
     submit: 'Sign in',
     invalid: 'That password is not right.',
+    invalidPasscode: 'That passcode is not right.',
     throttled: 'Too many attempts. Try again in {seconds} seconds.',
     unconfigured: 'No access password has been set yet. Open SillyTavern Manager on the host machine and set one.',
     offline: 'SillyTavern is not answering yet. It may still be starting.',
@@ -52,8 +68,13 @@ const TEXT: Readonly<Record<'en' | 'vi', GatewayText>> = {
     signIn: 'Đăng nhập',
     subtitle: 'SillyTavern này được SillyTavern Manager bảo vệ.',
     password: 'Mật khẩu',
+    passcode: 'Mã số',
+    digit: 'Số {n}',
+    clear: 'Xoá hết',
+    backspace: 'Xoá số cuối',
     submit: 'Đăng nhập',
     invalid: 'Mật khẩu không đúng.',
+    invalidPasscode: 'Mã không đúng.',
     throttled: 'Thử quá nhiều lần. Hãy thử lại sau {seconds} giây.',
     unconfigured: 'Chưa đặt mật khẩu truy cập. Hãy mở SillyTavern Manager trên máy chủ và đặt một mật khẩu.',
     offline: 'SillyTavern chưa trả lời. Có thể nó vẫn đang khởi động.',
@@ -118,6 +139,17 @@ export class AccessGateway {
   private readonly upstreamAgent = new Agent({ keepAlive: false, maxSockets: 64 });
   private server: Server | null = null;
   private passwordHash: string | null = null;
+  private passcode = false;
+  /**
+   * Consecutive failures, counted across every source rather than per address.
+   *
+   * Six digits is a million combinations, which a phone is happy with because
+   * a phone locks the whole device rather than one caller. A per-address limit
+   * alone does not do that: an attacker with a hundred addresses gets a
+   * hundred times the attempts. This is the lock the passcode is worth.
+   */
+  private failures = 0;
+  private lockedUntil = 0;
   private lan = false;
   private state: AccessGatewayState;
 
@@ -131,16 +163,21 @@ export class AccessGateway {
     // Ten tries per quarter hour per address. The surface behind this is a
     // public tunnel, so the limit guards a password rather than a form.
     this.attempts = options.rateLimiter ?? new RateLimiter({ limit: 10, windowMs: 15 * 60 * 1000 });
-    this.state = { status: 'stopped', host: null, port: this.port, lan: false, passwordConfigured: false, error: null };
+    this.state = { status: 'stopped', host: null, port: this.port, lan: false, passwordConfigured: false, passcode: false, error: null };
   }
 
   public getState(): AccessGatewayState { return { ...this.state }; }
 
   /** Adopts a new password, and ends every session opened with the old one. */
-  public setPassword(passwordHash: string | null): void {
+  public setPassword(passwordHash: string | null, passcode = false): void {
     this.passwordHash = passwordHash;
+    this.passcode = passcode;
+    // A credential that has just been changed is a fresh start for whoever is
+    // allowed through it.
+    this.failures = 0;
+    this.lockedUntil = 0;
     this.sessions.clear();
-    this.state = { ...this.state, passwordConfigured: passwordHash !== null };
+    this.state = { ...this.state, passwordConfigured: passwordHash !== null, passcode };
   }
 
   public async start(lan = this.lan): Promise<AccessGatewayState> {
@@ -166,14 +203,14 @@ export class AccessGateway {
       });
     } catch (error: unknown) {
       const reason = error instanceof Error ? error.message : 'the access gateway could not start';
-      this.state = { status: 'error', host: null, port: this.port, lan, passwordConfigured: this.passwordHash !== null, error: reason };
+      this.state = { status: 'error', host: null, port: this.port, lan, passwordConfigured: this.passwordHash !== null, passcode: this.passcode, error: reason };
       this.logger(logEvent('gateway.failed', `[gateway] ${reason}`, { reason }));
       return this.getState();
     }
     this.server = server;
     const address = server.address();
     const port = address && typeof address !== 'string' ? address.port : this.port;
-    this.state = { status: 'running', host, port, lan, passwordConfigured: this.passwordHash !== null, error: null };
+    this.state = { status: 'running', host, port, lan, passwordConfigured: this.passwordHash !== null, passcode: this.passcode, error: null };
     this.logger(lan
       ? logEvent('gateway.startedLan', `[gateway] SillyTavern access is open to this network on port ${port}`, { port })
       : logEvent('gateway.startedLocal', `[gateway] SillyTavern access is listening on 127.0.0.1:${port}`, { port }));
@@ -238,7 +275,7 @@ export class AccessGateway {
     if (!this.passwordHash) { this.sendLogin(request, response, 503, text, text.unconfigured); return; }
     let body: string;
     try { body = await readBody(request, MAX_LOGIN_BODY_BYTES); }
-    catch { this.sendLogin(request, response, 413, text, text.invalid); return; }
+    catch { this.sendLogin(request, response, 413, text, this.wrongCredential(text)); return; }
     const form = new URLSearchParams(body);
     // Every sign-in page carries a token that is also set as a cookie, and a
     // submission has to return both. That is what makes this a sign-in from
@@ -250,6 +287,12 @@ export class AccessGateway {
       this.sendLogin(request, response, 403, text, text.expired, form.get('next') ?? undefined);
       return;
     }
+    const locked = this.lockedFor();
+    if (locked > 0) {
+      response.setHeader('Retry-After', String(locked));
+      this.sendLogin(request, response, 429, text, text.throttled.replace('{seconds}', String(locked)), form.get('next') ?? undefined);
+      return;
+    }
     const limit = this.attempts.check(clientAddress(request));
     if (!limit.allowed) {
       response.setHeader('Retry-After', String(limit.retryAfterSeconds));
@@ -258,16 +301,43 @@ export class AccessGateway {
     }
     const password = form.get('password') ?? '';
     if (!password || !verifyPassword(password, this.passwordHash)) {
+      this.failures += 1;
+      const wait = this.lockedFor();
       this.logger(logEvent('gateway.rejected', `[gateway] rejected a sign-in from ${clientAddress(request)}`, { address: clientAddress(request) }));
-      this.sendLogin(request, response, 401, text, text.invalid, form.get('next') ?? undefined);
+      this.sendLogin(request, response, 401, text, wait > 0 ? text.throttled.replace('{seconds}', String(wait)) : this.wrongCredential(text), form.get('next') ?? undefined);
       return;
     }
     this.attempts.clear(clientAddress(request));
+    this.failures = 0;
+    this.lockedUntil = 0;
     const token = randomBytes(32).toString('base64url');
     this.sessions.set(token, this.now() + this.sessionTtlMs);
     response.setHeader('Set-Cookie', this.cookie(request, token, Math.floor(this.sessionTtlMs / 1000)));
     this.logger(logEvent('gateway.signedIn', `[gateway] signed in from ${clientAddress(request)}`, { address: clientAddress(request) }));
     redirect(response, safeNext(form.get('next')));
+  }
+
+  /**
+   * Seconds the door is shut for, and zero when it is open.
+   *
+   * The wait is read off the failure count rather than stored, so it is the
+   * same after a restart as before one - a lockout that could be cleared by
+   * waiting for a crash is not a lockout.
+   */
+  /** A passcode is not a password, and being told the wrong one is not is worse. */
+  private wrongCredential(text: GatewayText): string {
+    return this.passcode ? text.invalidPasscode : text.invalid;
+  }
+
+  private lockedFor(): number {
+    if (this.failures < LOCKOUT_AFTER) return 0;
+    const step = Math.min(this.failures - LOCKOUT_AFTER, LOCKOUT_STEPS_MS.length - 1);
+    const wait = LOCKOUT_STEPS_MS[step] ?? 0;
+    const until = Math.max(this.lockedUntil, this.now() + wait);
+    // Each failure past the threshold pushes the door further out, so a script
+    // that keeps trying keeps it shut rather than getting one try per wait.
+    this.lockedUntil = until;
+    return Math.max(0, Math.ceil((until - this.now()) / 1000));
   }
 
   private proxy(request: IncomingMessage, response: ServerResponse, text: GatewayText, attempt = 0): void {
@@ -370,6 +440,10 @@ export class AccessGateway {
 
   private sendLogin(request: IncomingMessage, response: ServerResponse, status: number, text: GatewayText, message: string | null, next?: string): void {
     const formToken = randomBytes(18).toString('base64url');
+    // The keypad is one inline script, and this page is a public door: it gets
+    // a nonce rather than `unsafe-inline`, so the policy still refuses every
+    // other script including any that an upstream response could inject.
+    const nonce = randomBytes(16).toString('base64');
     // Appended rather than set, because signing out is already clearing the
     // session cookie on this same response.
     response.appendHeader('Set-Cookie', `${LOGIN_COOKIE_NAME}=${formToken}; Path=${LOGIN_PATH}; HttpOnly; SameSite=Lax; Max-Age=600${secureConnection(request) ? '; Secure' : ''}`);
@@ -378,9 +452,9 @@ export class AccessGateway {
       'cache-control': 'no-store',
       'referrer-policy': 'no-referrer',
       'x-content-type-options': 'nosniff',
-      'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
+      'content-security-policy': `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; form-action 'self'; frame-ancestors 'none'`,
     });
-    response.end(loginPage(text, message, this.passwordHash === null ? text.unconfigured : null, safeNext(next ?? requestPath(request)), formToken));
+    response.end(loginPage(text, message, this.passwordHash === null ? text.unconfigured : null, safeNext(next ?? requestPath(request)), formToken, this.passcode, nonce));
   }
 }
 
@@ -515,11 +589,53 @@ function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/gu, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character] ?? character);
 }
 
-const PAGE_STYLE = `:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0b0f14;color:#e6edf3;font:16px/1.5 system-ui,"Segoe UI",Roboto,"Noto Sans",sans-serif}main{width:min(22rem,calc(100vw - 2rem));padding:2rem;border:1px solid #1f2833;border-radius:14px;background:#111820}h1{margin:0 0 .25rem;font-size:1.25rem}p{margin:0 0 1.25rem;color:#8b98a5;font-size:.875rem}label{display:block;margin-bottom:.375rem;font-size:.8125rem;color:#8b98a5}input{width:100%;padding:.625rem .75rem;border:1px solid #263241;border-radius:8px;background:#0b0f14;color:inherit;font:inherit}input:focus{outline:2px solid #3b82f6;outline-offset:1px}button{width:100%;margin-top:1rem;padding:.625rem;border:0;border-radius:8px;background:#3b82f6;color:#fff;font:inherit;font-weight:600;cursor:pointer}button:disabled{opacity:.6;cursor:not-allowed}.note{margin:1rem 0 0;color:#f87171}.muted{margin:1rem 0 0;color:#8b98a5}`;
+const PAGE_STYLE = `:root{color-scheme:dark}*{box-sizing:border-box}[hidden]{display:none!important}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0b0f14;color:#e6edf3;font:16px/1.5 system-ui,"Segoe UI",Roboto,"Noto Sans",sans-serif}main{width:min(22rem,calc(100vw - 2rem));padding:2rem;border:1px solid #1f2833;border-radius:14px;background:#111820}h1{margin:0 0 .25rem;font-size:1.25rem}p{margin:0 0 1.25rem;color:#8b98a5;font-size:.875rem}label{display:block;margin-bottom:.375rem;font-size:.8125rem;color:#8b98a5}input{width:100%;padding:.625rem .75rem;border:1px solid #263241;border-radius:8px;background:#0b0f14;color:inherit;font:inherit}input:focus{outline:2px solid #3b82f6;outline-offset:1px}button{width:100%;margin-top:1rem;padding:.625rem;border:0;border-radius:8px;background:#3b82f6;color:#fff;font:inherit;font-weight:600;cursor:pointer}button:disabled{opacity:.6;cursor:not-allowed}.note{margin:1rem 0 0;color:#f87171}.muted{margin:1rem 0 0;color:#8b98a5}.pad{display:grid;grid-template-columns:repeat(3,1fr);gap:.5rem;margin-top:1rem}.pad button{margin:0;padding:0;height:3.25rem;border:1px solid #263241;border-radius:10px;background:#0b0f14;color:inherit;font-size:1.25rem;font-weight:500}.pad button:active{background:#18212c}.pad .wide{font-size:.875rem;font-weight:600;color:#8b98a5;background:transparent;border-color:transparent}.dots{display:flex;justify-content:center;gap:.75rem;margin:.25rem 0 0}.dots i{width:.875rem;height:.875rem;border-radius:50%;border:1px solid #37475a;transition:background .12s ease,transform .12s ease}.dots i.on{background:#3b82f6;border-color:#3b82f6;transform:scale(1.1)}.code{text-align:center;letter-spacing:.6em;font-size:1.25rem;padding-left:.6em}.sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}@media (prefers-reduced-motion:reduce){.dots i{transition:none}}`;
 
-function loginPage(text: GatewayText, message: string | null, blocked: string | null, next: string, formToken: string): string {
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>${escapeHtml(text.signIn)} · SillyTavern</title><style>${PAGE_STYLE}</style></head><body><main><h1>${escapeHtml(text.signIn)}</h1><p>${escapeHtml(text.subtitle)}</p><form method="post" action="${LOGIN_PATH}"><input type="hidden" name="next" value="${escapeHtml(next)}"><input type="hidden" name="token" value="${escapeHtml(formToken)}"><label for="password">${escapeHtml(text.password)}</label><input id="password" name="password" type="password" autocomplete="current-password" autofocus required${blocked ? ' disabled' : ''}><button type="submit"${blocked ? ' disabled' : ''}>${escapeHtml(text.submit)}</button></form>${message ? `<p class="${blocked ? 'muted' : 'note'}" role="alert">${escapeHtml(message)}</p>` : ''}</main></body></html>`;
+/**
+ * The door, as a page.
+ *
+ * A passcode is asked for with a keypad and no password field at all. That is
+ * not decoration: this page is reached through a `trycloudflare.com` address,
+ * and a browser that sees a password typed into a random subdomain it does not
+ * recognise warns the reader, in red, that they may have just handed their
+ * password to a phishing site. The warning is reasonable in general and wrong
+ * here, and the way to stop it is to stop asking for a password.
+ *
+ * Without JavaScript the same form is a plain numeric field that submits
+ * normally, because a door that needs a working script to open is not a door.
+ * The keypad and the dots are added on top of it when there is a script to add
+ * them with; the field stays focusable either way, so a physical keyboard and
+ * a screen reader both still work.
+ *
+ * A door set up before passcodes existed keeps its password field.
+ */
+function loginPage(text: GatewayText, message: string | null, blocked: string | null, next: string, formToken: string, passcode: boolean, nonce: string): string {
+  const disabled = blocked ? ' disabled' : '';
+  const field = passcode
+    ? `<label for="password">${escapeHtml(text.passcode)}</label><input id="password" name="password" class="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" autofocus required${disabled}><div class="dots" id="dots" hidden>${'<i></i>'.repeat(PASSCODE_DIGITS)}</div>${keypad(text, blocked !== null)}`
+    : `<label for="password">${escapeHtml(text.password)}</label><input id="password" name="password" type="password" autocomplete="current-password" autofocus required${disabled}>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>${escapeHtml(text.signIn)} · SillyTavern</title><style>${PAGE_STYLE}</style></head><body><main><h1>${escapeHtml(text.signIn)}</h1><p>${escapeHtml(text.subtitle)}</p><form method="post" action="${LOGIN_PATH}" id="form"><input type="hidden" name="next" value="${escapeHtml(next)}"><input type="hidden" name="token" value="${escapeHtml(formToken)}">${field}<button type="submit"${disabled}>${escapeHtml(text.submit)}</button></form>${message ? `<p class="${blocked ? 'muted' : 'note'}" role="alert">${escapeHtml(message)}</p>` : ''}</main>${passcode && !blocked ? `<script nonce="${escapeHtml(nonce)}">${PASSCODE_SCRIPT}</script>` : ''}</body></html>`;
 }
+
+const PASSCODE_DIGITS = 6;
+
+/** Three rows of digits, then clear, zero and backspace. */
+function keypad(text: GatewayText, blocked: boolean): string {
+  const key = (label: string, value: string, aria: string, wide = false) =>
+    `<button type="button" class="${wide ? 'wide' : ''}" data-key="${escapeHtml(value)}" aria-label="${escapeHtml(aria)}"${blocked ? ' disabled' : ''}>${escapeHtml(label)}</button>`;
+  const digits = ['1', '2', '3', '4', '5', '6', '7', '8', '9']
+    .map((digit) => key(digit, digit, text.digit.replace('{n}', digit)))
+    .join('');
+  return `<div class="pad" id="pad" hidden>${digits}${key('✕', 'clear', text.clear, true)}${key('0', '0', text.digit.replace('{n}', '0'))}${key('⌫', 'back', text.backspace, true)}</div>`;
+}
+
+/*
+ * Progressive enhancement, in the smallest form that does the job: reveal the
+ * keypad and the dots, keep them in step with the field, and submit as soon as
+ * the sixth digit lands - which is what a phone's lock screen does and what
+ * anybody who has used one expects.
+ */
+const PASSCODE_SCRIPT = `(function(){var i=document.getElementById('password'),p=document.getElementById('pad'),d=document.getElementById('dots'),f=document.getElementById('form');if(!i||!p||!d||!f)return;p.hidden=false;d.hidden=false;i.classList.add('sr');var s=false;function draw(){var n=i.value.length;var c=d.children;for(var k=0;k<c.length;k++){c[k].className=k<n?'on':''}if(n===6&&!s){s=true;f.submit()}}function set(v){i.value=v.slice(0,6);draw()}i.addEventListener('input',function(){set(i.value.replace(/[^0-9]/g,''))});p.addEventListener('click',function(e){var b=e.target.closest('button');if(!b)return;var k=b.getAttribute('data-key');if(k==='clear')set('');else if(k==='back')set(i.value.slice(0,-1));else set(i.value+k);i.focus()});draw()})();`;
 
 function errorPage(message: string): string {
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SillyTavern</title><style>${PAGE_STYLE}</style></head><body><main><h1>SillyTavern</h1><p>${escapeHtml(message)}</p></main></body></html>`;

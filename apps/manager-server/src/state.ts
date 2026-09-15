@@ -18,6 +18,8 @@ interface PersistedManagerState {
   readonly adminPasswordHash: string | null;
   /** The password the access gateway asks for, separate from the one above. */
   readonly accessPasswordHash: string | null;
+  /** Whether that hash came from a six-digit passcode; see AccessGatewayState. */
+  readonly accessPasscode: boolean;
   /** Whether that gateway binds to the local network or to this machine only. */
   readonly accessLanEnabled: boolean;
   readonly setupAcceptedAt: string | null;
@@ -88,6 +90,7 @@ export class StateStore {
         updatedAt: now,
         adminPasswordHash: null,
         accessPasswordHash: null,
+        accessPasscode: false,
         accessLanEnabled: false,
         setupAcceptedAt: null,
         setupCode: this.initialSetupCode,
@@ -134,10 +137,10 @@ export class StateStore {
    * Unlike the manager password this has no "only once" rule: it guards a door
    * that is meant to be handed out and taken back.
    */
-  public async setAccessPassword(passwordHash: string): Promise<void> {
+  public async setAccessPassword(passwordHash: string, passcode: boolean): Promise<void> {
     const operation = async (): Promise<void> => {
       const state = await this.load();
-      const updated: PersistedManagerState = { ...state, accessPasswordHash: passwordHash, updatedAt: this.now().toISOString() };
+      const updated: PersistedManagerState = { ...state, accessPasswordHash: passwordHash, accessPasscode: passcode, updatedAt: this.now().toISOString() };
       await this.write(updated);
       this.state = updated;
     };
@@ -291,7 +294,10 @@ export class StateStore {
     // missing one means the same as its default rather than a broken file.
     const accessPasswordHash = isNullableString(input.accessPasswordHash) ? input.accessPasswordHash : null;
     const accessLanEnabled = input.accessLanEnabled === true;
-    return { ...input, setupCode, accessPasswordHash, accessLanEnabled } as unknown as PersistedManagerState;
+    // Absent in a file written before passcodes existed, which is exactly the
+    // case that has to keep its password field.
+    const accessPasscode = input.accessPasscode === true;
+    return { ...input, setupCode, accessPasswordHash, accessPasscode, accessLanEnabled } as unknown as PersistedManagerState;
   }
 }
 

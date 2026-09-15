@@ -32,6 +32,7 @@ export * from './layout.js';
 export * from './mobile-nav.js';
 export * from './pagination.js';
 export * from './password-input.js';
+export * from './passcode-input.js';
 export * from './status-hero.js';
 export * from './stat-tile.js';
 export * from './table-model.js';

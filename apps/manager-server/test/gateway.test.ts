@@ -46,10 +46,10 @@ async function startUpstream(handler?: (request: IncomingMessage, response: Serv
   };
 }
 
-async function startGateway(upstream: Upstream, options: { password?: string | null } = {}): Promise<{ gateway: AccessGateway; base: string }> {
+async function startGateway(upstream: Upstream, options: { password?: string | null; passcode?: boolean } = {}): Promise<{ gateway: AccessGateway; base: string }> {
   const gateway = new AccessGateway({ port: 0, targetPort: upstream.port, logger: () => undefined });
   const password = options.password === undefined ? PASSWORD : options.password;
-  gateway.setPassword(password === null ? null : hashPassword(password));
+  gateway.setPassword(password === null ? null : hashPassword(password), options.passcode ?? false);
   const state = await gateway.start(false);
   assert.equal(state.status, 'running');
   return { gateway, base: `http://127.0.0.1:${state.port}` };
@@ -357,4 +357,63 @@ test('a large body arrives whole, in both directions', async (t) => {
   assert.ok((received as Buffer).equals(sent), 'byte for byte on the way in');
   assert.equal(returned.length, sent.length);
   assert.ok(returned.equals(sent), 'and on the way back');
+});
+
+test('a passcode door asks with a keypad and no password field at all', async (t) => {
+  const upstream = await startUpstream();
+  const { gateway, base } = await startGateway(upstream, { password: '417203', passcode: true });
+  t.after(async () => { await gateway.close(); await upstream.close(); });
+
+  const page = await (await fetch(`${base}/__stm/login`, { headers: { accept: 'text/html' } })).text();
+  /*
+   * The whole point: no `type="password"` anywhere on the page. A browser
+   * shown a password typed into a random `trycloudflare.com` subdomain warns
+   * the reader in red that they may have handed it to a phishing site, and the
+   * way to stop that is to stop asking for a password.
+   */
+  assert.equal(page.includes('type="password"'), false);
+  assert.ok(page.includes('inputmode="numeric"'), 'the field asks for digits');
+  assert.ok(page.includes('data-key="7"'), 'and there is a keypad to enter them with');
+  // Without a script the field is still a field and the form still posts.
+  assert.ok(page.includes(`action="/__stm/login"`));
+
+  assert.equal(gateway.getState().passcode, true);
+  const cookie = await signIn(base, '417203');
+  assert.ok(cookie);
+});
+
+test('a door set up before passcodes existed keeps its password field', async (t) => {
+  const upstream = await startUpstream();
+  const { gateway, base } = await startGateway(upstream);
+  t.after(async () => { await gateway.close(); await upstream.close(); });
+  const page = await (await fetch(`${base}/__stm/login`, { headers: { accept: 'text/html' } })).text();
+  assert.ok(page.includes('type="password"'), 'nobody is locked out by the change');
+  assert.equal(page.includes('data-key="7"'), false);
+});
+
+test('five wrong tries shut the door on everyone, not on one address', async (t) => {
+  const upstream = await startUpstream();
+  const { gateway, base } = await startGateway(upstream, { password: '417203', passcode: true });
+  t.after(async () => { await gateway.close(); await upstream.close(); });
+
+  /*
+   * Six digits is a million combinations. A phone is happy with that because a
+   * phone locks the device rather than the caller; a per-address limit alone
+   * gives an attacker with a hundred addresses a hundred times the attempts.
+   * Each wrong try here comes from a different address to prove the lock is
+   * not the per-address one.
+   */
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const response = await submitLogin(base, '000000');
+    assert.equal(response.status, 401, `attempt ${attempt}`);
+  }
+  const locked = await submitLogin(base, '417203');
+  assert.equal(locked.status, 429, 'the right passcode is refused while the door is shut');
+  assert.ok(Number(locked.headers.get('Retry-After')) > 0);
+
+  // Setting the passcode again is the way back in, which is available on the
+  // machine itself and nowhere else.
+  gateway.setPassword(hashPassword('417203'), true);
+  const after = await submitLogin(base, '417203');
+  assert.equal(after.status, 303);
 });

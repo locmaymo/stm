@@ -493,12 +493,22 @@ test('one password opens SillyTavern on any version, and nothing is shared befor
     assert.equal((await response.json() as { error: { code: string } }).error.code, 'public_access_password_required');
   }
 
-  const saved = await fetch(`${base}/api/v1/access/password`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ password: 'a-real-secret', confirmPassword: 'a-real-secret' }) });
+  // Anything but six digits is refused: the sign-in page on the far end has a
+  // keypad and nothing else to type with.
+  for (const rejected of ['a-real-secret', '12345', '1234567', '12345a']) {
+    const response = await fetch(`${base}/api/v1/access/password`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ password: rejected, confirmPassword: rejected }) });
+    assert.equal(response.status, 400, rejected);
+    assert.equal((await response.json() as { error: { code: string } }).error.code, 'invalid_passcode', rejected);
+  }
+
+  const saved = await fetch(`${base}/api/v1/access/password`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ password: '417203', confirmPassword: '417203' }) });
   assert.equal(saved.status, 200);
-  assert.equal((await saved.json() as AccessGatewayState).passwordConfigured, true);
-  // The password belongs to the manager, so it never lands in SillyTavern's
+  const savedState = await saved.json() as AccessGatewayState;
+  assert.equal(savedState.passwordConfigured, true);
+  assert.equal(savedState.passcode, true, 'the sign-in page is told to ask for a passcode');
+  // The passcode belongs to the manager, so it never lands in SillyTavern's
   // own configuration where a restore or a version switch could carry it off.
-  assert.equal((await readFile(profile.configPath, 'utf8')).includes('a-real-secret'), false);
+  assert.equal((await readFile(profile.configPath, 'utf8')).includes('417203'), false);
 
   const opened = await fetch(`${base}/api/v1/access/network`, { method: 'PUT', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ lan: true }) });
   assert.equal(opened.status, 200);

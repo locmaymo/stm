@@ -13,7 +13,7 @@ import {
   Dialog, DialogBody, DialogContent, DialogDescription,
   DialogFooter, DialogHeader, DialogTitle,
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
-  Field, initialQuery, Input, Label, MobileNav, PageContainer, PasswordInput,
+  Field, initialQuery, Input, Label, MobileNav, PageContainer, PasscodeInput, PasswordInput,
   Skeleton,
   RadioGroup, RadioGroupItem,
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -49,7 +49,17 @@ function pageFromHash(): PageId {
 /** What the server's own `validatePassword` accepts, so the form agrees with it. */
 const MIN_MANAGER_PASSWORD = 6;
 /** The access gateway holds SillyTavern open to a network, and asks for more. */
-const MIN_SILLY_PASSWORD = 8;
+/**
+ * The passcode that opens SillyTavern from outside this machine.
+ *
+ * Six digits rather than a password, because the public address is a
+ * `trycloudflare.com` subdomain and a browser shown a password typed into one of
+ * those warns the reader, in red, that they may have handed it to a phishing
+ * site. The door is worth less entropy than a password, so the gateway locks
+ * globally after five consecutive wrong tries rather than only per address -
+ * the trade a phone makes, for the same reason.
+ */
+const PASSCODE_DIGITS = 6;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -341,7 +351,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
   const [processState, setProcessState] = useState<ProcessState>({ status: 'stopped', installationId: null, profileId: null, pid: null, startedAt: null, error: null });
   const [tunnelState, setTunnelState] = useState<TunnelState>({ mode: 'off', status: 'stopped', url: null, startedAt: null, error: null });
   const [configDocument, setConfigDocument] = useState<ConfigDocument | null>(null);
-  const [accessSecurity, setAccessSecurity] = useState<AccessGatewayState>({ status: 'stopped', host: null, port: 8001, lan: false, passwordConfigured: false, error: null });
+  const [accessSecurity, setAccessSecurity] = useState<AccessGatewayState>({ status: 'stopped', host: null, port: 8001, lan: false, passwordConfigured: false, passcode: false, error: null });
   const t = translator(preferences.locale);
   const catalog = logCatalog(preferences.locale);
   const fail = failures(preferences.locale);
@@ -854,18 +864,13 @@ function AccessPanel({ t, process, tunnel, config, security, installed, onAction
         cancelLabel={t('common.cancel')}
         onConfirm={async () => { if (closing === 'lan') await setLanTo(false); else await setTunnel(false); }}
       />
-      <PasswordDialog
+      <PasscodeDialog
         t={t}
         open={passwordOpen}
         onOpenChange={(open) => { setPasswordOpen(open); if (!open) setWaiting(null); }}
-        title={t('console.passwordSettings')}
-        description={t('console.sillyPasswordHelp')}
         note={null}
-        minLength={MIN_SILLY_PASSWORD}
-        hint={t('console.sillyPasswordMin')}
-        submitLabel={t('console.savePassword')}
-        onSubmit={async (password, confirmPassword) => {
-          const failure = await onSetPassword(password, confirmPassword);
+        onSubmit={async (passcode, confirmPasscode) => {
+          const failure = await onSetPassword(passcode, confirmPasscode);
           if (failure) return failure;
           const next = waiting;
           setWaiting(null);
@@ -941,6 +946,81 @@ function PasswordDialog({ t, open, onOpenChange, title, description, note, minLe
       </DialogContent>
     </Dialog>
   );
+}
+
+/**
+ * Set the passcode, twice.
+ *
+ * Twice because a passcode that was mistyped once locks the door on its owner
+ * from wherever they were going to use it, and there is no "forgot it" here -
+ * only the console on the machine itself.
+ */
+function PasscodeDialog({ t, open, onOpenChange, note, onSubmit }: { t: Translate; open: boolean; onOpenChange: (open: boolean) => void; note: string | null; onSubmit: (passcode: string, confirmPasscode: string) => Promise<string | null> }) {
+  const [entered, setEntered] = useState('');
+  const [confirmed, setConfirmed] = useState('');
+  const [stage, setStage] = useState<'enter' | 'confirm'>('enter');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const labels = { digit: t('console.passcodeDigit'), clear: t('console.passcodeClear'), backspace: t('console.passcodeBackspace') };
+
+  const close = (next: boolean) => {
+    onOpenChange(next);
+    if (!next) { setEntered(''); setConfirmed(''); setStage('enter'); setError(null); }
+  };
+
+  const save = async (code: string) => {
+    setBusy(true); setError(null);
+    try {
+      const failure = await onSubmit(entered, code);
+      if (failure) { setError(failure); setConfirmed(''); setStage('enter'); setEntered(''); return; }
+      close(false);
+    } finally { setBusy(false); }
+  };
+
+  const mismatch = stage === 'confirm' && confirmed.length === PASSCODE_DIGITS && confirmed !== entered;
+
+  return <Dialog open={open} onOpenChange={close}>
+    <DialogContent className="sm:max-w-sm">
+      <DialogHeader>
+        <DialogTitle>{t('console.passwordSettings')}</DialogTitle>
+        <DialogDescription>{stage === 'enter' ? t('console.passcodeChoose') : t('console.passcodeRepeat')}</DialogDescription>
+      </DialogHeader>
+      <DialogBody className="grid gap-4">
+        {stage === 'enter'
+          ? <PasscodeInput
+            key="enter"
+            value={entered}
+            onChange={(value) => { setEntered(value); setError(null); }}
+            onComplete={() => setStage('confirm')}
+            label={t('console.passwordSettings')}
+            length={PASSCODE_DIGITS}
+            labels={labels}
+            disabled={busy}
+            autoFocus
+          />
+          : <PasscodeInput
+            key="confirm"
+            value={confirmed}
+            onChange={(value) => setConfirmed(value)}
+            onComplete={(value) => { if (value === entered) void save(value); }}
+            label={t('console.confirmPassword')}
+            length={PASSCODE_DIGITS}
+            labels={labels}
+            disabled={busy}
+            autoFocus
+          />}
+        {mismatch ? <Alert variant="destructive"><AlertDescription>{t('setup.mismatch')}</AlertDescription></Alert> : null}
+        {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
+        {note ? <p className="text-xs text-muted-foreground">{note}</p> : null}
+      </DialogBody>
+      <DialogFooter>
+        <Button variant="ghost" onClick={() => close(false)} disabled={busy}>{t('common.cancel')}</Button>
+        {stage === 'confirm'
+          ? <Button variant="outline" onClick={() => { setStage('enter'); setConfirmed(''); }} disabled={busy}>{t('console.passcodeAgain')}</Button>
+          : null}
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>;
 }
 
 /** An address that opens in its own tab rather than sitting there as text. */
@@ -2270,7 +2350,7 @@ function ConfigPage({ t, config, security, onConfigUpdate, onChangeManagerPasswo
       </CardContent>
     </Card>
     <PasswordDialog t={t} open={managerPasswordOpen} onOpenChange={setManagerPasswordOpen} title={t('console.managerPasswordTitle')} description={t('console.managerPasswordHint')} note={t('console.passwordChangeSignsOut')} minLength={MIN_MANAGER_PASSWORD} hint={t('console.managerPasswordMin')} submitLabel={t('console.changePassword')} onSubmit={saveManagerPassword} />
-    <PasswordDialog t={t} open={sillyPasswordOpen} onOpenChange={setSillyPasswordOpen} title={t('console.passwordSettings')} description={t('console.sillyPasswordHelp')} note={security.passwordConfigured ? t('console.passwordChangeSignsOut') : null} minLength={MIN_SILLY_PASSWORD} hint={t('console.sillyPasswordMin')} submitLabel={security.passwordConfigured ? t('console.changePassword') : t('console.savePassword')} onSubmit={onSetPassword} />
+    <PasscodeDialog t={t} open={sillyPasswordOpen} onOpenChange={setSillyPasswordOpen} note={security.passwordConfigured ? t('console.passwordChangeSignsOut') : null} onSubmit={onSetPassword} />
     {!config
       ? <Card><CardContent className="px-0"><EmptyState icon={<Settings2 />} title={t('console.noConfiguration')} /></CardContent></Card>
       : <Card>

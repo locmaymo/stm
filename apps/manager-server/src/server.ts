@@ -8,7 +8,7 @@ import { extname, join, relative, resolve, sep } from 'node:path';
 import { applyQuery, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, type ApiErrorBody, type ConfigUpdateInput, type HealthResponse, type Installation, type Job, type JobState, type LogEntry, type LogEvent, type LogLine, type LogSink, type LogSourceFilter, type ManagerPorts, type ProfileLayout, type SetupStatus, type VersionSelector } from '../../../packages/contracts/src/index.js';
 import { getPlatformPaths, type PlatformPaths } from '../../../packages/platform/src/index.js';
 import { RuntimeError, RuntimeManager, type InstallationProgress } from '../../../packages/sillytavern-runtime/src/index.js';
-import { hashPassword, MIN_PASSWORD_LENGTH, validatePassword, verifyPassword } from './password.js';
+import { hashPassword, MIN_PASSWORD_LENGTH, validatePasscode, validatePassword, verifyPassword } from './password.js';
 import { RateLimiter } from './rate-limit.js';
 import { parseSessionCookie, SessionStore, clearSessionCookie, sessionCookie } from './sessions.js';
 import { hashSetupCode, StateStore } from './state.js';
@@ -42,7 +42,6 @@ const NOTICE = {
   disclaimer: 'You are responsible for your SillyTavern data, credentials, providers, backups, and compliance with applicable service terms.',
 } as const;
 
-const ACCESS_PASSWORD_MIN_LENGTH = 8;
 
 const PROTECTED_PATHS = new Set([
   '/api/v1/versions',
@@ -314,7 +313,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   const actualPort = address && typeof address !== 'string' ? address.port : port;
   // The door opens with the manager rather than with SillyTavern, so its
   // address is the same one every time and a saved bookmark keeps working.
-  gateway.setPassword(persisted.accessPasswordHash);
+  gateway.setPassword(persisted.accessPasswordHash, persisted.accessPasscode);
   await gateway.start(persisted.accessLanEnabled);
   // The tunnel publishes the gateway, not SillyTavern, so it can come back as
   // soon as the gateway is listening - it does not have to wait for SillyTavern
@@ -548,13 +547,14 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       sendError(response, 400, 'password_confirmation_mismatch', 'Enter the same SillyTavern password twice');
       return;
     }
-    if (body.password.length < ACCESS_PASSWORD_MIN_LENGTH) { sendError(response, 400, 'invalid_password', `The SillyTavern password must be at least ${ACCESS_PASSWORD_MIN_LENGTH} characters`); return; }
+    const invalid = validatePasscode(body.password);
+    if (invalid) { sendError(response, 400, 'invalid_passcode', invalid); return; }
     const passwordHash = hashPassword(body.password);
-    await store.setAccessPassword(passwordHash);
+    await store.setAccessPassword(passwordHash, true);
     // Whoever was already inside is signed out, so a password changed because
     // it was shared too widely takes effect immediately rather than at the
     // next restart.
-    gateway.setPassword(passwordHash);
+    gateway.setPassword(passwordHash, true);
     if (gateway.getState().status !== 'running') await gateway.start();
     sendJson(response, 200, gateway.getState());
     return;

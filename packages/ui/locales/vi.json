@@ -270,7 +270,13 @@
     "passwordsTitle": "Mật khẩu",
     "passwordNotSetYet": "Chưa đặt",
     "signOutTitle": "Trình duyệt này",
-    "signOut": "Đăng xuất"
+    "signOut": "Đăng xuất",
+    "passcodeChoose": "Chọn mã 6 số.",
+    "passcodeRepeat": "Nhập lại lần nữa.",
+    "passcodeAgain": "Nhập lại từ đầu",
+    "passcodeDigit": "Số {n}",
+    "passcodeClear": "Xoá hết",
+    "passcodeBackspace": "Xoá số cuối"
   },
   "dashboard": {
     "start": "Chạy",
@@ -310,6 +316,7 @@
     "invalid_archive": "Tệp đó không phải ZIP mà trình quản lý đọc được.",
     "invalid_backup_name": "Không dùng được tên đó cho bản sao lưu.",
     "invalid_config": "Trình quản lý không lưu cấu hình đó.",
+    "invalid_passcode": "Mã phải gồm 6 chữ số.",
     "invalid_password": "Không dùng được mật khẩu đó.",
     "invalid_profile_name": "Không dùng được tên đó cho hồ sơ.",
     "invalid_r2_bucket": "Không dùng được tên bucket đó.",

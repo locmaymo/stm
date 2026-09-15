@@ -479,6 +479,14 @@ export interface AccessGatewayState {
   /** Whether it is reachable from the local network rather than this machine. */
   readonly lan: boolean;
   readonly passwordConfigured: boolean;
+  /**
+   * Whether that credential is a six-digit passcode rather than a password.
+   *
+   * The public sign-in page needs to know which of the two to ask for, and it
+   * only ever sees the hash. A door set up before passcodes existed keeps the
+   * field it was set up with rather than locking its owner out.
+   */
+  readonly passcode: boolean;
   readonly error: string | null;
 }
 

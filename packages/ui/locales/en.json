@@ -270,7 +270,13 @@
     "passwordsTitle": "Passwords",
     "passwordNotSetYet": "Not set yet",
     "signOutTitle": "This browser",
-    "signOut": "Sign out"
+    "signOut": "Sign out",
+    "passcodeChoose": "Choose a six-digit passcode.",
+    "passcodeRepeat": "Enter it again.",
+    "passcodeAgain": "Start over",
+    "passcodeDigit": "Digit {n}",
+    "passcodeClear": "Clear",
+    "passcodeBackspace": "Delete the last digit"
   },
   "dashboard": {
     "start": "Start",
@@ -310,6 +316,7 @@
     "invalid_archive": "That file is not a ZIP the manager can read.",
     "invalid_backup_name": "That name cannot be used for a backup.",
     "invalid_config": "The manager will not save that configuration.",
+    "invalid_passcode": "The passcode must be six digits.",
     "invalid_password": "That password cannot be used.",
     "invalid_profile_name": "That name cannot be used for a profile.",
     "invalid_r2_bucket": "That bucket name cannot be used.",

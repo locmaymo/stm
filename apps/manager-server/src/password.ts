@@ -75,3 +75,12 @@ export function verifyPassword(password: string, encoded: string): boolean {
     return false;
   }
 }
+
+/** Exactly six digits, which is what the public sign-in page can enter. */
+export const PASSCODE_LENGTH = 6;
+
+export function validatePasscode(value: unknown): string | null {
+  if (typeof value !== 'string') return 'Passcode is required';
+  if (!new RegExp(`^[0-9]{${PASSCODE_LENGTH}}$`, 'u').test(value)) return `The passcode must be ${PASSCODE_LENGTH} digits`;
+  return null;
+}
