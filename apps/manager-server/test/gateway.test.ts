@@ -4,6 +4,10 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { createConnection } from 'node:net';
 import type { Duplex } from 'node:stream';
 import { AccessGateway, ACCESS_COOKIE_NAME, clientAddress } from '../src/gateway.js';
+import { rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { hashPassword } from '../src/password.js';
 
 const PASSWORD = 'correct horse battery staple';
@@ -46,8 +50,8 @@ async function startUpstream(handler?: (request: IncomingMessage, response: Serv
   };
 }
 
-async function startGateway(upstream: Upstream, options: { password?: string | null; passcode?: boolean } = {}): Promise<{ gateway: AccessGateway; base: string }> {
-  const gateway = new AccessGateway({ port: 0, targetPort: upstream.port, logger: () => undefined });
+async function startGateway(upstream: Upstream, options: { password?: string | null; passcode?: boolean; brandLogo?: () => Promise<string | null> } = {}): Promise<{ gateway: AccessGateway; base: string }> {
+  const gateway = new AccessGateway({ port: 0, targetPort: upstream.port, logger: () => undefined, ...(options.brandLogo ? { brandLogo: options.brandLogo } : {}) });
   const password = options.password === undefined ? PASSWORD : options.password;
   gateway.setPassword(password === null ? null : hashPassword(password), options.passcode ?? false);
   const state = await gateway.start(false);
@@ -417,6 +421,39 @@ test('the passcode door waits to be touched before it opens a keyboard', async (
   assert.ok(page.includes('caret-color:transparent'));
   // Double-tapping a key is a second press, not a zoom.
   assert.ok(page.includes('touch-action:manipulation'));
+  /*
+   * And nothing in the form may be called `submit`. A control with that id or
+   * name becomes a property of the form and replaces the form's own submit()
+   * with itself, so the script that sends the form on the sixth digit calls a
+   * button instead and the door never opens.
+   */
+  assert.equal(/<(?:input|button)[^>]*(?:id|name)="submit"/u.test(page), false);
+});
+
+test("the door shows SillyTavern's own logo, read from the installation", async (t) => {
+  const upstream = await startUpstream();
+  const logo = join(tmpdir(), `stm-logo-${randomUUID()}.png`);
+  await writeFile(logo, Buffer.from('89504e470d0a1a0a', 'hex'));
+  const { gateway, base } = await startGateway(upstream, { password: '417203', passcode: true, brandLogo: async () => logo });
+  t.after(async () => { await gateway.close(); await upstream.close(); await rm(logo, { force: true }); });
+
+  const page = await (await fetch(`${base}/__stm/login`, { headers: { accept: 'text/html' } })).text();
+  assert.ok(page.includes('src="/__stm/logo.png"'));
+  // The picture is part of the door, so it is served before anybody is let in.
+  const served = await fetch(`${base}/__stm/logo.png`);
+  assert.equal(served.status, 200);
+  assert.equal(served.headers.get('content-type'), 'image/png');
+  assert.equal((await served.arrayBuffer()).byteLength, 8);
+});
+
+test('a door with nothing installed behind it simply has no picture', async (t) => {
+  const upstream = await startUpstream();
+  const { gateway, base } = await startGateway(upstream, { password: '417203', passcode: true });
+  t.after(async () => { await gateway.close(); await upstream.close(); });
+
+  const page = await (await fetch(`${base}/__stm/login`, { headers: { accept: 'text/html' } })).text();
+  assert.equal(page.includes('/__stm/logo.png'), false);
+  assert.equal((await fetch(`${base}/__stm/logo.png`)).status, 404);
 });
 
 test('a door set up before passcodes existed keeps its password field', async (t) => {

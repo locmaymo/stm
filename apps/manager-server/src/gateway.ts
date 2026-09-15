@@ -1,5 +1,6 @@
 import { Agent, createServer, request as httpRequest, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import type { Duplex } from 'node:stream';
 import { logEvent, logLineText, type AccessGatewayState, type LogSink } from '../../../packages/contracts/src/index.js';
 import { verifyPassword } from './password.js';
@@ -11,6 +12,16 @@ const LOGIN_COOKIE_NAME = 'stm_login';
 export const ACCESS_GATEWAY_PORT = 8001 as const;
 const LOGIN_PATH = '/__stm/login';
 const LOGOUT_PATH = '/__stm/logout';
+/**
+ * SillyTavern's own mark, served from the installation rather than kept here.
+ *
+ * It is their artwork, so the copy that is shown is the copy they shipped -
+ * nothing to fall out of date, and nothing of theirs vendored into this
+ * repository. The door works without it; the page simply has no picture.
+ */
+const LOGO_PATH = '/__stm/logo.png';
+const LOGO_TTL_MS = 60_000;
+const MAX_LOGO_BYTES = 512 * 1024;
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const MAX_LOGIN_BODY_BYTES = 4 * 1024;
 /**
@@ -29,6 +40,7 @@ const LOCKOUT_AFTER = 5;
 const HOP_BY_HOP = new Set(['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade']);
 
 interface GatewayText {
+  readonly lang: 'en' | 'vi';
   readonly signIn: string;
   readonly subtitle: string;
   readonly password: string;
@@ -48,6 +60,7 @@ interface GatewayText {
 
 const TEXT: Readonly<Record<'en' | 'vi', GatewayText>> = {
   en: {
+    lang: 'en',
     signIn: 'Sign in',
     subtitle: 'This SillyTavern is protected by SillyTavern Manager.',
     password: 'Password',
@@ -65,6 +78,7 @@ const TEXT: Readonly<Record<'en' | 'vi', GatewayText>> = {
     expired: 'This sign-in page is no longer current. Here is a fresh one - try again.',
   },
   vi: {
+    lang: 'vi',
     signIn: 'Đăng nhập',
     subtitle: 'SillyTavern này được SillyTavern Manager bảo vệ.',
     password: 'Mật khẩu',
@@ -85,6 +99,8 @@ const TEXT: Readonly<Record<'en' | 'vi', GatewayText>> = {
 
 export interface AccessGatewayOptions {
   readonly logger?: LogSink;
+  /** Where SillyTavern's own logo is on disk, if there is an installation. */
+  readonly brandLogo?: () => Promise<string | null>;
   readonly port?: number;
   readonly targetHost?: string;
   readonly targetPort?: number;
@@ -114,6 +130,7 @@ export class AccessGateway {
   private readonly targetPort: number;
   private readonly now: () => number;
   private readonly sessionTtlMs: number;
+  private readonly brandLogo: (() => Promise<string | null>) | null;
   private readonly attempts: RateLimiter;
   private readonly sessions = new Map<string, number>();
   /**
@@ -151,6 +168,15 @@ export class AccessGateway {
   private failures = 0;
   private lockedUntil = 0;
   private lan = false;
+  /**
+   * The logo, kept in memory and re-checked on a timer.
+   *
+   * A timer rather than a subscription because the interesting transition is
+   * "nothing installed yet" to "installed", which happens once on a new
+   * machine and does not need wiring through three objects to notice.
+   */
+  private logo: Buffer | null = null;
+  private logoCheckedAt = 0;
   private state: Omit<AccessGatewayState, 'sessions'>;
 
   public constructor(options: AccessGatewayOptions = {}) {
@@ -160,6 +186,7 @@ export class AccessGateway {
     this.targetPort = options.targetPort ?? 8000;
     this.now = options.now ?? Date.now;
     this.sessionTtlMs = options.sessionTtlMs ?? SESSION_TTL_MS;
+    this.brandLogo = options.brandLogo ?? null;
     // Ten tries per quarter hour per address. The surface behind this is a
     // public tunnel, so the limit guards a password rather than a form.
     this.attempts = options.rateLimiter ?? new RateLimiter({ limit: 10, windowMs: 15 * 60 * 1000 });
@@ -208,6 +235,7 @@ export class AccessGateway {
       return this.getState();
     }
     this.server = server;
+    await this.refreshLogo();
     const address = server.address();
     const port = address && typeof address !== 'string' ? address.port : this.port;
     this.state = { status: 'running', host, port, lan, passwordConfigured: this.passwordHash !== null, passcode: this.passcode, error: null };
@@ -271,6 +299,7 @@ export class AccessGateway {
       this.sendLogin(request, response, 200, text, text.signedOut);
       return;
     }
+    if (pathname === LOGO_PATH) { this.sendLogo(response); return; }
     if (pathname === LOGIN_PATH && (request.method ?? 'GET') === 'POST') { void this.handleLogin(request, response, text); return; }
     if (this.authenticated(request)) {
       if (pathname === LOGIN_PATH) { redirect(response, '/'); return; }
@@ -448,6 +477,38 @@ export class AccessGateway {
     for (const [token, expiresAt] of this.sessions) if (expiresAt <= now) this.sessions.delete(token);
   }
 
+  /**
+   * Reads SillyTavern's logo, or forgets it if there is no installation.
+   *
+   * Anything unreadable, oversized or simply absent leaves the door with no
+   * picture, which is a page that looks plainer and works exactly the same.
+   */
+  private async refreshLogo(): Promise<void> {
+    this.logoCheckedAt = this.now();
+    if (!this.brandLogo) return;
+    try {
+      const path = await this.brandLogo();
+      if (!path) { this.logo = null; return; }
+      const bytes = await readFile(path);
+      this.logo = bytes.byteLength > MAX_LOGO_BYTES ? null : bytes;
+    } catch { this.logo = null; }
+  }
+
+  private sendLogo(response: ServerResponse): void {
+    const bytes = this.logo;
+    if (!bytes) { response.writeHead(404, { 'cache-control': 'no-store' }); response.end(); return; }
+    // An <img> never runs script in an SVG or anything else, and this says so
+    // a second time in case something ever links to it directly.
+    response.writeHead(200, {
+      'content-type': 'image/png',
+      'content-length': bytes.byteLength,
+      'cache-control': 'private, max-age=300',
+      'x-content-type-options': 'nosniff',
+      'content-security-policy': "default-src 'none'",
+    });
+    response.end(bytes);
+  }
+
   private cookie(request: IncomingMessage, token: string, maxAgeSeconds: number): string {
     return `${ACCESS_COOKIE_NAME}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}${secureConnection(request) ? '; Secure' : ''}`;
   }
@@ -458,6 +519,10 @@ export class AccessGateway {
     // a nonce rather than `unsafe-inline`, so the policy still refuses every
     // other script including any that an upstream response could inject.
     const nonce = randomBytes(16).toString('base64');
+    // Whether there is an installation to take a logo from can change while
+    // the manager runs, so the answer is re-checked on a timer rather than
+    // decided once at startup. The current answer is used for this page.
+    if (this.now() - this.logoCheckedAt > LOGO_TTL_MS) void this.refreshLogo();
     // Appended rather than set, because signing out is already clearing the
     // session cookie on this same response.
     response.appendHeader('Set-Cookie', `${LOGIN_COOKIE_NAME}=${formToken}; Path=${LOGIN_PATH}; HttpOnly; SameSite=Lax; Max-Age=600${secureConnection(request) ? '; Secure' : ''}`);
@@ -466,9 +531,9 @@ export class AccessGateway {
       'cache-control': 'no-store',
       'referrer-policy': 'no-referrer',
       'x-content-type-options': 'nosniff',
-      'content-security-policy': `default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; form-action 'self'; frame-ancestors 'none'`,
+      'content-security-policy': `default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; form-action 'self'; frame-ancestors 'none'`,
     });
-    response.end(loginPage(text, message, this.passwordHash === null ? text.unconfigured : null, safeNext(next ?? requestPath(request)), formToken, this.passcode, nonce));
+    response.end(loginPage(text, message, this.passwordHash === null ? text.unconfigured : null, safeNext(next ?? requestPath(request)), formToken, this.passcode, nonce, this.logo !== null));
   }
 }
 
@@ -603,7 +668,7 @@ function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/gu, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character] ?? character);
 }
 
-const PAGE_STYLE = `:root{color-scheme:dark}*{box-sizing:border-box}[hidden]{display:none!important}html{-webkit-text-size-adjust:100%}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0b0f14;color:#e6edf3;font:16px/1.5 system-ui,"Segoe UI",Roboto,"Noto Sans",sans-serif;touch-action:manipulation}main{width:min(22rem,calc(100vw - 2rem));padding:2rem;border:1px solid #1f2833;border-radius:14px;background:#111820}h1{margin:0 0 .25rem;font-size:1.25rem}p{margin:0 0 1.25rem;color:#8b98a5;font-size:.875rem}label{display:block;margin-bottom:.375rem;font-size:.8125rem;color:#8b98a5}input{width:100%;padding:.625rem .75rem;border:1px solid #263241;border-radius:8px;background:#0b0f14;color:inherit;font:inherit}input:focus{outline:2px solid #3b82f6;outline-offset:1px}button{width:100%;margin-top:1rem;padding:.625rem;border:0;border-radius:8px;background:#3b82f6;color:#fff;font:inherit;font-weight:600;cursor:pointer}button:disabled{opacity:.6;cursor:not-allowed}.note{margin:1rem 0 0;color:#f87171}.muted{margin:1rem 0 0;color:#8b98a5}.pad{display:grid;grid-template-columns:repeat(3,1fr);gap:.5rem;margin-top:1rem}.pad button{margin:0;padding:0;height:3.25rem;border:1px solid #263241;border-radius:10px;background:#0b0f14;color:inherit;font-size:1.25rem;font-weight:500}.pad button:active{background:#18212c}.pad .wide{font-size:.875rem;font-weight:600;color:#8b98a5;background:transparent;border-color:transparent}.field{position:relative}.dots{display:flex;justify-content:center;align-items:center;gap:.75rem;min-height:3rem;margin:.25rem 0 0;pointer-events:none}.dots i{width:.875rem;height:.875rem;border-radius:50%;border:1px solid #37475a;transition:background .12s ease,transform .12s ease}.dots i.on{background:#3b82f6;border-color:#3b82f6;transform:scale(1.1)}.code{text-align:center;letter-spacing:.6em;font-size:1.25rem;padding-left:.6em}.veil{position:absolute;inset:0;z-index:1;width:100%;height:100%;padding:0;border:1px solid transparent;border-radius:10px;background:transparent;color:transparent;caret-color:transparent;letter-spacing:normal;cursor:pointer}.veil::selection{background:transparent}.veil:focus{outline:2px solid #3b82f6;outline-offset:1px}.sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}@media (prefers-reduced-motion:reduce){.dots i{transition:none}}`;
+const PAGE_STYLE = `*{box-sizing:border-box}[hidden]{display:none!important}html{-webkit-text-size-adjust:100%}:root{color-scheme:dark;--bg:#080b11;--glow:rgba(59,130,246,.16);--panel:#0f1622;--line:#1d2635;--ink:#e9eff7;--muted:#8a9bb0;--brand:#3b82f6;--key:#141d2a;--key-line:#25313f;--key-press:#1d2836;--danger:#fb7185;--shadow:0 1.5rem 3rem -1.75rem rgba(0,0,0,.85)}@media (prefers-color-scheme:light){:root{color-scheme:light;--bg:#eef2f9;--glow:rgba(59,130,246,.2);--panel:#fff;--line:#e2e8f2;--ink:#0f172a;--muted:#5a6b82;--key:#f6f8fc;--key-line:#e2e8f2;--key-press:#e6ecf6;--danger:#dc2626;--shadow:0 1.5rem 3rem -1.75rem rgba(15,23,42,.28)}}body{margin:0;min-height:100dvh;display:grid;place-items:center;padding:clamp(1rem,5vw,2rem);background:radial-gradient(70rem 36rem at 50% -14%,var(--glow),transparent 72%),var(--bg);color:var(--ink);font:16px/1.55 system-ui,"Segoe UI",Roboto,"Noto Sans",sans-serif;touch-action:manipulation}main{width:min(21.5rem,100%);display:grid;gap:1.25rem}.brand{display:grid;justify-items:center;gap:.375rem;text-align:center}.brand img{width:4.5rem;height:auto;filter:drop-shadow(0 .75rem 1.5rem var(--glow))}h1{margin:.5rem 0 0;font-size:1.5rem;font-weight:650;letter-spacing:-.01em}.sub{margin:0;color:var(--muted);font-size:.875rem;text-wrap:balance}form{display:grid;gap:.875rem;padding:1.25rem;border:1px solid var(--line);border-radius:1.125rem;background:var(--panel);box-shadow:var(--shadow)}label{display:block;text-align:center;font-size:.8125rem;color:var(--muted)}input{width:100%;padding:.75rem;border:1px solid var(--key-line);border-radius:.75rem;background:var(--key);color:inherit;font:inherit}input:focus{outline:2px solid var(--brand);outline-offset:1px}button{padding:.75rem;border:0;border-radius:.75rem;background:var(--brand);color:#fff;font:inherit;font-weight:600;cursor:pointer}button:disabled{opacity:.55;cursor:not-allowed}.field{position:relative}.code{text-align:center;letter-spacing:.6em;font-size:1.25rem;padding-left:.6em}.veil{position:absolute;inset:0;z-index:1;width:100%;height:100%;padding:0;border:1px solid transparent;border-radius:.75rem;background:transparent;color:transparent;caret-color:transparent;letter-spacing:normal;cursor:pointer}.veil::selection{background:transparent}.veil:focus{outline:2px solid var(--brand);outline-offset:2px}.dots{display:flex;align-items:center;justify-content:center;gap:.875rem;min-height:3rem;pointer-events:none}.dots i{width:.9rem;height:.9rem;border-radius:50%;border:1.5px solid var(--key-line);transition:background .12s ease,transform .12s ease,border-color .12s ease}.dots i.on{background:var(--brand);border-color:var(--brand);transform:scale(1.15)}.pad{display:grid;grid-template-columns:repeat(3,1fr);gap:.625rem}.pad button{height:3.25rem;padding:0;border:1px solid var(--key-line);border-radius:.875rem;background:var(--key);color:var(--ink);font-size:1.375rem;font-weight:500;transition:background .1s ease,transform .1s ease}.pad button:active{background:var(--key-press);transform:scale(.97)}.pad .wide{background:transparent;border-color:transparent;color:var(--muted);font-size:1.125rem}.note,.muted{margin:0;text-align:center;font-size:.875rem;text-wrap:balance}.note{color:var(--danger)}.muted{color:var(--muted)}.sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}@media (max-height:680px){main{gap:1rem}.brand img{width:3.25rem}h1{font-size:1.25rem}.pad button{height:2.875rem}form{padding:1rem}}@media (prefers-reduced-motion:reduce){.dots i,.pad button{transition:none}.pad button:active{transform:none}}`;
 
 /**
  * The door, as a page.
@@ -625,16 +690,30 @@ const PAGE_STYLE = `:root{color-scheme:dark}*{box-sizing:border-box}[hidden]{dis
  * its text and caret made transparent. Touching the dots is then touching the
  * field and brings up the device's keyboard; touching the keypad leaves focus
  * where it is and does not, because somebody pressing the keypad on the screen
- * has already picked which keyboard they are using.
+ * has already picked which keyboard they are using. The submit button goes
+ * away with the script too - six digits sends the form, the way a lock screen
+ * does - and comes back the moment there is no script to send it. Its id is
+ * `send` and not `submit` on purpose: a control named `submit` inside a form
+ * replaces the form's own `submit()` method with itself, and the script that
+ * sends the form then calls a button instead of sending anything.
+ *
+ * It is one column at every width, because it is one short thing to do and a
+ * second column next to it would only be decoration that has to be designed
+ * twice. What changes with the viewport is breathing room, and on a short
+ * screen the logo and the keys give some of it back so the keypad still fits
+ * above the fold.
  *
  * A door set up before passcodes existed keeps its password field.
  */
-function loginPage(text: GatewayText, message: string | null, blocked: string | null, next: string, formToken: string, passcode: boolean, nonce: string): string {
+function loginPage(text: GatewayText, message: string | null, blocked: string | null, next: string, formToken: string, passcode: boolean, nonce: string, logo: boolean): string {
   const disabled = blocked ? ' disabled' : '';
   const field = passcode
     ? `<label for="password">${escapeHtml(text.passcode)}</label><div class="field"><input id="password" name="password" class="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" required${disabled}><div class="dots" id="dots" hidden>${'<i></i>'.repeat(PASSCODE_DIGITS)}</div></div>${keypad(text, blocked !== null)}`
     : `<label for="password">${escapeHtml(text.password)}</label><input id="password" name="password" type="password" autocomplete="current-password" autofocus required${disabled}>`;
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>${escapeHtml(text.signIn)} · SillyTavern</title><style>${PAGE_STYLE}</style></head><body><main><h1>${escapeHtml(text.signIn)}</h1><p>${escapeHtml(text.subtitle)}</p><form method="post" action="${LOGIN_PATH}" id="form"><input type="hidden" name="next" value="${escapeHtml(next)}"><input type="hidden" name="token" value="${escapeHtml(formToken)}">${field}<button type="submit"${disabled}>${escapeHtml(text.submit)}</button></form>${message ? `<p class="${blocked ? 'muted' : 'note'}" role="alert">${escapeHtml(message)}</p>` : ''}</main>${passcode && !blocked ? `<script nonce="${escapeHtml(nonce)}">${PASSCODE_SCRIPT}</script>` : ''}</body></html>`;
+  // `alt` is empty on purpose: the heading under it already says SillyTavern,
+  // and a screen reader reading the name twice is worse than not seeing it.
+  const mark = logo ? `<img src="${LOGO_PATH}" alt="" width="96" height="90">` : '';
+  return `<!doctype html><html lang="${text.lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="dark light"><meta name="robots" content="noindex,nofollow"><title>${escapeHtml(text.signIn)} · SillyTavern</title><style>${PAGE_STYLE}</style></head><body><main><header class="brand">${mark}<h1>SillyTavern</h1><p class="sub">${escapeHtml(text.subtitle)}</p></header><form method="post" action="${LOGIN_PATH}" id="form"><input type="hidden" name="next" value="${escapeHtml(next)}"><input type="hidden" name="token" value="${escapeHtml(formToken)}">${field}<button type="submit" id="send"${disabled}>${escapeHtml(text.submit)}</button></form>${message ? `<p class="${blocked ? 'muted' : 'note'}" role="alert">${escapeHtml(message)}</p>` : ''}</main>${passcode && !blocked ? `<script nonce="${escapeHtml(nonce)}">${PASSCODE_SCRIPT}</script>` : ''}</body></html>`;
 }
 
 const PASSCODE_DIGITS = 6;
@@ -651,12 +730,13 @@ function keypad(text: GatewayText, blocked: boolean): string {
 
 /*
  * Progressive enhancement, in the smallest form that does the job: reveal the
- * keypad and the dots, keep them in step with the field, and submit as soon as
- * the sixth digit lands - which is what a phone's lock screen does and what
- * anybody who has used one expects.
+ * keypad and the dots, lay the field over them, keep them in step, and submit
+ * as soon as the sixth digit lands - which is what a phone's lock screen does
+ * and what anybody who has used one expects.
  */
-const PASSCODE_SCRIPT = `(function(){var i=document.getElementById('password'),p=document.getElementById('pad'),d=document.getElementById('dots'),f=document.getElementById('form');if(!i||!p||!d||!f)return;p.hidden=false;d.hidden=false;i.classList.remove('code');i.classList.add('veil');var s=false;function draw(){var n=i.value.length;var c=d.children;for(var k=0;k<c.length;k++){c[k].className=k<n?'on':''}if(n===6&&!s){s=true;f.submit()}}function set(v){i.value=v.slice(0,6);draw()}i.addEventListener('input',function(){set(i.value.replace(/[^0-9]/g,''))});p.addEventListener('mousedown',function(e){e.preventDefault()});p.addEventListener('click',function(e){var b=e.target.closest('button');if(!b)return;var k=b.getAttribute('data-key');if(k==='clear')set('');else if(k==='back')set(i.value.slice(0,-1));else set(i.value+k)});if(window.matchMedia&&window.matchMedia('(pointer: fine)').matches)i.focus();draw()})();`;
+const PASSCODE_SCRIPT = `(function(){var i=document.getElementById('password'),p=document.getElementById('pad'),d=document.getElementById('dots'),f=document.getElementById('form'),b=document.getElementById('send');if(!i||!p||!d||!f)return;p.hidden=false;d.hidden=false;if(b)b.hidden=true;i.classList.remove('code');i.classList.add('veil');var s=false;function draw(){var n=i.value.length;var c=d.children;for(var k=0;k<c.length;k++){c[k].className=k<n?'on':''}if(n===6&&!s){s=true;f.submit()}}function set(v){i.value=v.slice(0,6);draw()}i.addEventListener('input',function(){set(i.value.replace(/[^0-9]/g,''))});p.addEventListener('mousedown',function(e){e.preventDefault()});p.addEventListener('click',function(e){var t=e.target.closest('button');if(!t)return;var k=t.getAttribute('data-key');if(k==='clear')set('');else if(k==='back')set(i.value.slice(0,-1));else set(i.value+k)});if(window.matchMedia&&window.matchMedia('(pointer: fine)').matches)i.focus();draw()})();`;
 
+/** The same page with nothing to sign into - SillyTavern is not answering. */
 function errorPage(message: string): string {
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SillyTavern</title><style>${PAGE_STYLE}</style></head><body><main><h1>SillyTavern</h1><p>${escapeHtml(message)}</p></main></body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="dark light"><title>SillyTavern</title><style>${PAGE_STYLE}</style></head><body><main><header class="brand"><h1>SillyTavern</h1><p class="sub">${escapeHtml(message)}</p></header></main></body></html>`;
 }

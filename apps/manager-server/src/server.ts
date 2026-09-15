@@ -144,7 +144,18 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   const metrics = options.metrics ?? new MetricsStore(paths);
   const config = options.config ?? new ConfigStore({ logger: (line) => { jobs.append('manager', line); baseLogger(line); } });
   const accessPort = options.accessPort ?? (Number(env.STM_ACCESS_PORT ?? '') || ACCESS_GATEWAY_PORT);
-  const gateway = options.gateway ?? new AccessGateway({ port: accessPort, targetPort: SILLYTAVERN_PORT, logger: (line) => { jobs.append('manager', line); baseLogger(line); } });
+  const gateway = options.gateway ?? new AccessGateway({
+    port: accessPort,
+    targetPort: SILLYTAVERN_PORT,
+    // The sign-in page shows SillyTavern's own mark, read from whatever
+    // version is installed rather than kept in this repository.
+    brandLogo: async () => {
+      const installation = await runtime.getActiveInstallation();
+      if (!installation || installation.status !== 'ready') return null;
+      return join(installation.runtimePath, 'public', 'img', 'logo.png');
+    },
+    logger: (line) => { jobs.append('manager', line); baseLogger(line); },
+  });
   const supervisor = options.supervisor ?? new ProcessSupervisor({
     runtime,
     profileResolver: (installation) => profiles.getActiveForInstallation(installation.id),
