@@ -52,6 +52,7 @@ const PROTECTED_PATHS = new Set([
   '/api/v1/access/security',
   '/api/v1/access/password',
   '/api/v1/access/network',
+  '/api/v1/access/sessions',
   '/api/v1/auth/password',
   '/api/v1/metrics',
   '/api/v1/system',
@@ -556,6 +557,11 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     // next restart.
     gateway.setPassword(passwordHash, true);
     if (gateway.getState().status !== 'running') await gateway.start();
+    sendJson(response, 200, gateway.getState());
+    return;
+  }
+  if (pathname === '/api/v1/access/sessions' && method === 'DELETE') {
+    gateway.signOutEveryone();
     sendJson(response, 200, gateway.getState());
     return;
   }

@@ -168,7 +168,6 @@
     "passwordRequired": "Cần mật khẩu trước khi chia sẻ",
     "passwordSettings": "Mật khẩu SillyTavern",
     "sillyPasswordHelp": "Đây là mật khẩu để mở SillyTavern. Đăng nhập vào trình quản lý dùng mật khẩu khác.",
-    "savePassword": "Lưu mật khẩu",
     "changePassword": "Đổi mật khẩu",
     "confirmPassword": "Xác nhận mật khẩu",
     "passwordSaveFailed": "Không thể lưu mật khẩu SillyTavern",
@@ -267,16 +266,26 @@
     "tunnelOffDone": "Đã đóng link công khai.",
     "lanOnDone": "Các thiết bị khác trong Wi-Fi này truy cập được rồi.",
     "lanOffDone": "Giờ chỉ máy này truy cập được.",
-    "passwordsTitle": "Mật khẩu",
     "passwordNotSetYet": "Chưa đặt",
-    "signOutTitle": "Trình duyệt này",
     "signOut": "Đăng xuất",
     "passcodeChoose": "Chọn mã 6 số.",
     "passcodeRepeat": "Nhập lại lần nữa.",
     "passcodeAgain": "Nhập lại từ đầu",
     "passcodeDigit": "Số {n}",
     "passcodeClear": "Xoá hết",
-    "passcodeBackspace": "Xoá số cuối"
+    "passcodeBackspace": "Xoá số cuối",
+    "securityTitle": "Bảo mật",
+    "setPassword": "Đặt mật khẩu",
+    "setSillyPassword": "Đặt mã số SillyTavern",
+    "changeManagerPassword": "Đổi mật khẩu trình quản lý",
+    "changeSillyPassword": "Đổi mã số SillyTavern",
+    "sillyPasswordHint": "Mã số mà trình duyệt cần để mở SillyTavern từ máy khác.",
+    "signOutManager": "Đăng xuất trình quản lý trên trình duyệt này",
+    "signOutDevices": "Đăng xuất mọi thiết bị",
+    "signOutDevicesNone": "Không có thiết bị nào đang đăng nhập SillyTavern",
+    "signOutDevicesTitle": "Đăng xuất mọi thiết bị?",
+    "signOutDevicesBody": "Số thiết bị đang đăng nhập: {count}. Mỗi thiết bị sẽ phải nhập lại mã. Mã số thì không đổi.",
+    "signOutDevicesDone": "Đã đăng xuất mọi thiết bị."
   },
   "dashboard": {
     "start": "Chạy",
@@ -525,7 +534,8 @@
       "failed": "{reason}",
       "signedIn": "Đã đăng nhập từ {address}",
       "rejected": "Đã từ chối một lần đăng nhập từ {address}",
-      "upstreamFailed": "Yêu cầu tới {path} không đến được SillyTavern: {reason}"
+      "upstreamFailed": "Yêu cầu tới {path} không đến được SillyTavern: {reason}",
+      "signedOutAll": "Đã đăng xuất mọi thiết bị khỏi SillyTavern ({count})"
     }
   },
   "system": {

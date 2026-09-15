@@ -167,6 +167,25 @@ test('a session ends when it is signed out, and when the password is changed', a
   assert.equal((await fetch(`${base}/`, { headers: { cookie: second, accept: '*/*' } })).status, 401);
 });
 
+test('signing every device out ends the sessions and leaves the passcode alone', async (t) => {
+  const upstream = await startUpstream();
+  const { gateway, base } = await startGateway(upstream, { password: '417203', passcode: true });
+  t.after(async () => { await gateway.close(); await upstream.close(); });
+
+  const phone = await signIn(base, '417203');
+  const laptop = await signIn(base, '417203');
+  assert.equal(gateway.getState().sessions, 2);
+
+  assert.equal(gateway.signOutEveryone(), 2);
+  assert.equal(gateway.getState().sessions, 0);
+  for (const cookie of [phone, laptop]) {
+    assert.equal((await fetch(`${base}/`, { headers: { cookie, accept: '*/*' } })).status, 401);
+  }
+  // The point of this over changing the passcode: the one everybody already
+  // has still works, so getting one device out is not a message to the rest.
+  assert.ok(await signIn(base, '417203'));
+});
+
 test('a gateway with no password yet lets nobody in at all', async (t) => {
   const upstream = await startUpstream();
   const { gateway, base } = await startGateway(upstream, { password: null });

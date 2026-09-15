@@ -168,7 +168,6 @@
     "passwordRequired": "Password required before sharing",
     "passwordSettings": "SillyTavern password",
     "sillyPasswordHelp": "This is the password for opening SillyTavern. Signing in to the manager uses a different one.",
-    "savePassword": "Save password",
     "changePassword": "Change password",
     "confirmPassword": "Confirm password",
     "passwordSaveFailed": "Could not save the SillyTavern password",
@@ -267,16 +266,26 @@
     "tunnelOffDone": "The public link is closed.",
     "lanOnDone": "Other devices on this Wi-Fi can reach it now.",
     "lanOffDone": "Only this machine can reach it now.",
-    "passwordsTitle": "Passwords",
     "passwordNotSetYet": "Not set yet",
-    "signOutTitle": "This browser",
     "signOut": "Sign out",
     "passcodeChoose": "Choose a six-digit passcode.",
     "passcodeRepeat": "Enter it again.",
     "passcodeAgain": "Start over",
     "passcodeDigit": "Digit {n}",
     "passcodeClear": "Clear",
-    "passcodeBackspace": "Delete the last digit"
+    "passcodeBackspace": "Delete the last digit",
+    "securityTitle": "Security",
+    "setPassword": "Set password",
+    "setSillyPassword": "Set the SillyTavern passcode",
+    "changeManagerPassword": "Change the manager password",
+    "changeSillyPassword": "Change the SillyTavern passcode",
+    "sillyPasswordHint": "The passcode a browser needs to open SillyTavern from anywhere but this computer.",
+    "signOutManager": "Sign out of the manager on this browser",
+    "signOutDevices": "Sign out every device",
+    "signOutDevicesNone": "No device is signed in to SillyTavern",
+    "signOutDevicesTitle": "Sign out every device?",
+    "signOutDevicesBody": "Devices signed in: {count}. Each of them will have to enter the passcode again. The passcode itself does not change.",
+    "signOutDevicesDone": "Every device has been signed out."
   },
   "dashboard": {
     "start": "Start",
@@ -525,7 +534,8 @@
       "failed": "{reason}",
       "signedIn": "Signed in from {address}",
       "rejected": "Refused a sign-in from {address}",
-      "upstreamFailed": "The request for {path} did not reach SillyTavern: {reason}"
+      "upstreamFailed": "The request for {path} did not reach SillyTavern: {reason}",
+      "signedOutAll": "Signed every device out of SillyTavern ({count})"
     }
   },
   "system": {

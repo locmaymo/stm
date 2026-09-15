@@ -3,7 +3,7 @@ import {
   Archive, ArrowDown, ArrowUp, ArrowUpRight, BarChart3, Cloud, Copy, Database, Download,
   Globe2, LayoutDashboard, Maximize2, Minimize2, Moon, Package, Pencil, Plus,
   LogOut, RotateCcw, ScrollText, Search, Sun, Trash2, Upload, Users as UsersIcon, X, Rows3,
-  BrainCircuit, CircleStop, Clock3, Cpu, Ellipsis, Play, QrCode as QrCodeIcon, RefreshCw, Settings2, Square,
+  BrainCircuit, CircleStop, Clock3, Cpu, Ellipsis, Play, QrCode as QrCodeIcon, RefreshCw, Settings2, ShieldCheck, Square,
 } from 'lucide-react';
 import {
   Alert, AlertDescription, AuthLayout, Badge, BrandMark, Button, buttonVariants, Card, CardAction,
@@ -351,7 +351,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
   const [processState, setProcessState] = useState<ProcessState>({ status: 'stopped', installationId: null, profileId: null, pid: null, startedAt: null, error: null });
   const [tunnelState, setTunnelState] = useState<TunnelState>({ mode: 'off', status: 'stopped', url: null, startedAt: null, error: null });
   const [configDocument, setConfigDocument] = useState<ConfigDocument | null>(null);
-  const [accessSecurity, setAccessSecurity] = useState<AccessGatewayState>({ status: 'stopped', host: null, port: 8001, lan: false, passwordConfigured: false, passcode: false, error: null });
+  const [accessSecurity, setAccessSecurity] = useState<AccessGatewayState>({ status: 'stopped', host: null, port: 8001, lan: false, passwordConfigured: false, passcode: false, sessions: 0, error: null });
   const t = translator(preferences.locale);
   const catalog = logCatalog(preferences.locale);
   const fail = failures(preferences.locale);
@@ -535,6 +535,14 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     setAccessSecurity(payload);
     return null;
   };
+  const signOutAccessDevices = async (): Promise<string | null> => {
+    const response = await apiFetch('/api/v1/access/sessions', { method: 'DELETE', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+    const payload = await response.json() as AccessGatewayState & { error?: { message?: string } };
+    if (!response.ok) return fail.body(payload, t('console.actionFailed'));
+    setAccessSecurity(payload);
+    toast({ title: t('console.signOutDevicesDone'), tone: 'success' });
+    return null;
+  };
   const changeManagerPassword = async (password: string, confirmPassword: string): Promise<string | null> => {
     const response = await apiFetch('/api/v1/auth/password', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ password, confirmPassword }) });
     const payload = await response.json() as { error?: { message?: string } };
@@ -563,7 +571,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
             </div>
           </header>
           <PageContainer>
-            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}<CardGrid>{installation}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} installed={Boolean(activeInstallationId)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><DataPanel t={t} navigate={navigate} activeProfile={profiles.find((profile) => profile.id === activeProfileId) ?? null} latestBackup={backups.at(-1) ?? null} /><SystemPanel t={t} csrfToken={csrfToken ?? ''} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} config={configDocument} security={accessSecurity} onConfigUpdate={updateConfig} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} /> : <ResourcePanel page={page} t={t} />}
+            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}<CardGrid>{installation}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} installed={Boolean(activeInstallationId)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><DataPanel t={t} navigate={navigate} activeProfile={profiles.find((profile) => profile.id === activeProfileId) ?? null} latestBackup={backups.at(-1) ?? null} /><SystemPanel t={t} csrfToken={csrfToken ?? ''} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} config={configDocument} security={accessSecurity} onConfigUpdate={updateConfig} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} /> : <ResourcePanel page={page} t={t} />}
           </PageContainer>
           <MobileNav
             items={navigation.map(({ id, icon }) => ({ id, icon, href: `#${id}`, label: t(`nav.${id}`) }))}
@@ -2292,13 +2300,14 @@ function formatMetricRate(value: number | null): string { return value === null 
  * note. Success and failure are separate states now, and success is a toast,
  * because saving restarts SillyTavern and redraws the page underneath it.
  */
-function ConfigPage({ t, config, security, onConfigUpdate, onChangeManagerPassword, onSetPassword, onSignOut }: { t: Translate; config: ConfigDocument | null; security: AccessGatewayState; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onChangeManagerPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSignOut: () => Promise<void> }) {
+function ConfigPage({ t, config, security, onConfigUpdate, onChangeManagerPassword, onSetPassword, onSignOut, onSignOutDevices }: { t: Translate; config: ConfigDocument | null; security: AccessGatewayState; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onChangeManagerPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSignOut: () => Promise<void>; onSignOutDevices: () => Promise<string | null> }) {
   const [form, setForm] = useState({ sslEnabled: false, enableCorsProxy: false, disableCsrfProtection: false });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [managerPasswordOpen, setManagerPasswordOpen] = useState(false);
   const [sillyPasswordOpen, setSillyPasswordOpen] = useState(false);
   const [yamlOpen, setYamlOpen] = useState(false);
+  const [signOutDevicesOpen, setSignOutDevicesOpen] = useState(false);
   const { toast } = useToast();
   useEffect(() => {
     if (!config) return;
@@ -2325,30 +2334,53 @@ function ConfigPage({ t, config, security, onConfigUpdate, onChangeManagerPasswo
   ];
 
   /*
-   * Both passwords, on the page that holds settings.
+   * One card for both doors.
    *
-   * The SillyTavern one used to sit in the card that governs the public door,
-   * between two switches it had nothing to do with. It is a setting, and it is
-   * asked for on the overview only at the moment it is actually needed - when
-   * somebody turns on sharing without having set one.
+   * It is not "Passwords": half of what it holds is signing out, and the two
+   * belong together anyway - the reason to change a credential and the reason
+   * to end the sessions opened with it are usually the same reason. Each row
+   * is one door, with the two things that can be done to it.
+   *
+   * The labels only appear from `sm` up. On a phone the row has a name, and a
+   * pencil next to a name has never needed the word "edit" under it.
    */
+  const rowAction = (icon: ReactNode, label: string, full: string, onClick: () => void, options: { readonly variant?: 'outline' | 'ghost'; readonly disabled?: boolean } = {}) =>
+    <Button variant={options.variant ?? 'ghost'} size="sm" disabled={options.disabled ?? false} aria-label={full} title={full} onClick={onClick}>
+      {icon}<span className="hidden sm:inline">{label}</span>
+    </Button>;
+
   return <div className="grid min-w-0 gap-4">
     <Card>
-      <PanelHeading icon={<UsersIcon />}>{t('console.passwordsTitle')}</PanelHeading>
+      <PanelHeading icon={<ShieldCheck />}>{t('console.securityTitle')}</PanelHeading>
       <CardContent>
         <div>
           <DetailRow label={t('console.managerPasswordTitle')} hint={t('console.managerPasswordHint')}>
-            <Button variant="outline" size="sm" onClick={() => setManagerPasswordOpen(true)}>{t('console.changePassword')}</Button>
+            <div className="flex items-center gap-1">
+              {rowAction(<Pencil />, t('console.changePassword'), t('console.changeManagerPassword'), () => setManagerPasswordOpen(true), { variant: 'outline' })}
+              {rowAction(<LogOut />, t('console.signOut'), t('console.signOutManager'), () => void onSignOut())}
+            </div>
           </DetailRow>
-          <DetailRow label={t('console.passwordSettings')} hint={security.passwordConfigured ? t('console.passwordProtected') : t('console.passwordNotSetYet')}>
-            <Button variant="outline" size="sm" onClick={() => setSillyPasswordOpen(true)}>{security.passwordConfigured ? t('console.changePassword') : t('console.savePassword')}</Button>
-          </DetailRow>
-          <DetailRow label={t('console.signOutTitle')}>
-            <Button variant="ghost" size="sm" onClick={() => void onSignOut()}><LogOut />{t('console.signOut')}</Button>
+          <DetailRow
+            label={<span className="flex flex-wrap items-center gap-2">{t('console.passwordSettings')}{security.passwordConfigured ? null : <Badge variant="outline">{t('console.passwordNotSetYet')}</Badge>}</span>}
+            hint={t('console.sillyPasswordHint')}
+          >
+            <div className="flex items-center gap-1">
+              {rowAction(<Pencil />, security.passwordConfigured ? t('console.changePassword') : t('console.setPassword'), security.passwordConfigured ? t('console.changeSillyPassword') : t('console.setSillyPassword'), () => setSillyPasswordOpen(true), { variant: 'outline' })}
+              {rowAction(<LogOut />, t('console.signOut'), security.sessions > 0 ? t('console.signOutDevices') : t('console.signOutDevicesNone'), () => setSignOutDevicesOpen(true), { disabled: security.sessions === 0 })}
+            </div>
           </DetailRow>
         </div>
       </CardContent>
     </Card>
+    <ConfirmDialog
+      open={signOutDevicesOpen}
+      onOpenChange={setSignOutDevicesOpen}
+      title={t('console.signOutDevicesTitle')}
+      description={t('console.signOutDevicesBody', { count: security.sessions })}
+      confirmLabel={t('console.signOutDevices')}
+      cancelLabel={t('common.cancel')}
+      onConfirm={async () => { await onSignOutDevices(); }}
+    />
     <PasswordDialog t={t} open={managerPasswordOpen} onOpenChange={setManagerPasswordOpen} title={t('console.managerPasswordTitle')} description={t('console.managerPasswordHint')} note={t('console.passwordChangeSignsOut')} minLength={MIN_MANAGER_PASSWORD} hint={t('console.managerPasswordMin')} submitLabel={t('console.changePassword')} onSubmit={saveManagerPassword} />
     <PasscodeDialog t={t} open={sillyPasswordOpen} onOpenChange={setSillyPasswordOpen} note={security.passwordConfigured ? t('console.passwordChangeSignsOut') : null} onSubmit={onSetPassword} />
     {!config

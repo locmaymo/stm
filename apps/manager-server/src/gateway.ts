@@ -151,7 +151,7 @@ export class AccessGateway {
   private failures = 0;
   private lockedUntil = 0;
   private lan = false;
-  private state: AccessGatewayState;
+  private state: Omit<AccessGatewayState, 'sessions'>;
 
   public constructor(options: AccessGatewayOptions = {}) {
     this.logger = options.logger ?? ((line) => console.log(logLineText(line)));
@@ -166,7 +166,7 @@ export class AccessGateway {
     this.state = { status: 'stopped', host: null, port: this.port, lan: false, passwordConfigured: false, passcode: false, error: null };
   }
 
-  public getState(): AccessGatewayState { return { ...this.state }; }
+  public getState(): AccessGatewayState { return { ...this.state, sessions: this.sessionCount() }; }
 
   /** Adopts a new password, and ends every session opened with the old one. */
   public setPassword(passwordHash: string | null, passcode = false): void {
@@ -242,10 +242,24 @@ export class AccessGateway {
 
   public async close(): Promise<void> { await this.stop(); }
 
-  /** The addresses a browser can reach SillyTavern on, for the console to show. */
   public sessionCount(): number {
     this.pruneSessions();
     return this.sessions.size;
+  }
+
+  /**
+   * Ends every session at once, without changing the passcode.
+   *
+   * The passcode is shared with whoever is meant to have it, so changing it to
+   * get one forgotten phone out is a message to everybody else too. This is
+   * the smaller instrument: every device signs in again, with the passcode
+   * they already have.
+   */
+  public signOutEveryone(): number {
+    const count = this.sessionCount();
+    this.sessions.clear();
+    if (count > 0) this.logger(logEvent('gateway.signedOutAll', `[gateway] signed every device out of SillyTavern (${count})`, { count }));
+    return count;
   }
 
   private handle(request: IncomingMessage, response: ServerResponse): void {

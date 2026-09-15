@@ -487,6 +487,14 @@ export interface AccessGatewayState {
    * field it was set up with rather than locking its owner out.
    */
   readonly passcode: boolean;
+  /**
+   * How many browsers hold a session through this door right now.
+   *
+   * The settings page offers to end all of them at once, and a count is what
+   * makes that offer mean something: it is the difference between "sign out
+   * every device" and "sign out the three devices that are signed in".
+   */
+  readonly sessions: number;
   readonly error: string | null;
 }
 
