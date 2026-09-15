@@ -50,8 +50,14 @@ async function startUpstream(handler?: (request: IncomingMessage, response: Serv
   };
 }
 
-async function startGateway(upstream: Upstream, options: { password?: string | null; passcode?: boolean; brandLogo?: () => Promise<string | null> } = {}): Promise<{ gateway: AccessGateway; base: string }> {
-  const gateway = new AccessGateway({ port: 0, targetPort: upstream.port, logger: () => undefined, ...(options.brandLogo ? { brandLogo: options.brandLogo } : {}) });
+async function startGateway(upstream: Upstream, options: { password?: string | null; passcode?: boolean; brandLogo?: () => Promise<string | null>; frameAncestors?: readonly string[] } = {}): Promise<{ gateway: AccessGateway; base: string }> {
+  const gateway = new AccessGateway({
+    port: 0,
+    targetPort: upstream.port,
+    logger: () => undefined,
+    ...(options.brandLogo ? { brandLogo: options.brandLogo } : {}),
+    ...(options.frameAncestors ? { frameAncestors: options.frameAncestors } : {}),
+  });
   const password = options.password === undefined ? PASSWORD : options.password;
   gateway.setPassword(password === null ? null : hashPassword(password), options.passcode ?? false);
   const state = await gateway.start(false);
@@ -86,6 +92,43 @@ async function signIn(base: string, password = PASSWORD): Promise<string> {
   assert.ok(cookie, 'a session cookie is issued');
   return cookie.split(';', 1)[0] as string;
 }
+
+test('the console may hold SillyTavern in a frame, and nothing else may', async (t) => {
+  const upstream = await startUpstream((_request, response) => {
+    // What SillyTavern actually sends, and a policy of its own to check that
+    // the gateway narrows it rather than throwing it away.
+    response.writeHead(200, {
+      'content-type': 'text/html; charset=utf-8',
+      'x-frame-options': 'SAMEORIGIN',
+      'content-security-policy': "default-src 'self'",
+    });
+    response.end('<!doctype html><title>SillyTavern</title>');
+  });
+  const { gateway, base } = await startGateway(upstream, { frameAncestors: ['http://127.0.0.1:7860'] });
+  t.after(async () => { await gateway.close(); await upstream.close(); });
+
+  const cookie = await signIn(base);
+  const page = await fetch(`${base}/`, { headers: { cookie, accept: 'text/html' } });
+  assert.equal(page.status, 200);
+  assert.equal(page.headers.get('x-frame-options'), null, 'the header that cannot name one origin is gone');
+  const policy = page.headers.get('content-security-policy') ?? '';
+  assert.match(policy, /default-src 'self'/u, "SillyTavern's own policy still applies");
+  assert.match(policy, /frame-ancestors 'self' http:\/\/127\.0\.0\.1:7860/u, 'and only the console may frame it');
+
+  // The sign-in page is reached from inside that frame, so it has to agree.
+  const door = await fetch(`${base}/`, { headers: { accept: 'text/html' } });
+  assert.match(door.headers.get('content-security-policy') ?? '', /frame-ancestors 'self' http:\/\/127\.0\.0\.1:7860/u);
+});
+
+test('a gateway told of no console refuses every frame', async (t) => {
+  const upstream = await startUpstream();
+  const { gateway, base } = await startGateway(upstream);
+  t.after(async () => { await gateway.close(); await upstream.close(); });
+
+  const cookie = await signIn(base);
+  const page = await fetch(`${base}/`, { headers: { cookie, accept: 'text/html' } });
+  assert.match(page.headers.get('content-security-policy') ?? '', /frame-ancestors 'none'/u);
+});
 
 test('nothing reaches SillyTavern until the gateway password is given', async (t) => {
   const upstream = await startUpstream();

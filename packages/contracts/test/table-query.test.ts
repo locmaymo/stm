@@ -112,9 +112,10 @@ test('an installation that was never activated stays last in both directions', (
 });
 
 test('a recovery point sorts by when it was taken and by what it holds', () => {
-  const snapshot: R2SnapshotSummary = { id: 's1', profileId: 'p1', createdAt: '2026-02-02T00:00:00.000Z', indexBytes: 42 };
+  const snapshot: R2SnapshotSummary = { id: 's1', profileId: 'p1', createdAt: '2026-02-02T00:00:00.000Z', indexBytes: 42, fileCount: 3, dataBytes: 9000 };
   assert.equal(snapshotSortValue(snapshot, 'createdAt'), '2026-02-02T00:00:00.000Z');
   assert.equal(snapshotSortValue(snapshot, 'indexBytes'), 42);
+  assert.equal(snapshotSortValue(snapshot, 'dataBytes'), 9000);
   assert.equal(snapshotSortValue(snapshot, 'profileId'), undefined);
 });
 

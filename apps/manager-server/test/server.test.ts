@@ -10,20 +10,27 @@ import type { AccessGatewayState, Installation, ProcessState, VersionOption } fr
 import type { RuntimeManager } from '../../../packages/sillytavern-runtime/src/index.js';
 import type { ProcessSupervisor } from '../src/supervisor.js';
 
-async function createServer(options: { setupCodeRequired?: boolean; bootstrapPassword?: string; platform?: 'linux' | 'modelscope' } = {}): Promise<ManagerServer> {
-  const root = await mkdtemp(join(tmpdir(), 'stm-manager-'));
+async function createServer(options: {
+  bootstrapPassword?: string;
+  platform?: 'linux' | 'modelscope';
+  /** An existing data directory, for starting the same manager again. */
+  root?: string;
+  /** Runs before the server starts, for leaving files an older version wrote. */
+  prepare?: (paths: ReturnType<typeof getPlatformPaths>) => Promise<void>;
+} = {}): Promise<ManagerServer> {
+  const root = options.root ?? await mkdtemp(join(tmpdir(), 'stm-manager-'));
   const basePaths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
   const paths = options.platform === 'modelscope' ? { ...basePaths, platform: 'modelscope' as const } : basePaths;
   const staticRoot = join(root, 'panel');
   await mkdir(staticRoot, { recursive: true });
   await writeFile(join(staticRoot, 'index.html'), '<!doctype html><title>Manager panel</title>', 'utf8');
-  const store = new StateStore({ paths, setupCode: 'setup-test-code' });
+  await options.prepare?.(paths);
+  const store = new StateStore({ paths });
   return startManagerServer({
     host: '127.0.0.1',
     port: 0,
     paths,
     store,
-    setupCodeRequired: options.setupCodeRequired ?? true,
     env: options.bootstrapPassword ? { STM_ADMIN_PASSWORD: options.bootstrapPassword } : {},
     secureCookies: false,
     accessPort: 0,
@@ -44,6 +51,17 @@ test('ModelScope proxy origins are accepted while unrelated origins remain block
   assert.equal(unrelated.status, 403);
   assert.equal((await unrelated.json() as { error: { code: string } }).error.code, 'origin_rejected');
 });
+
+/** Set the password on a fresh manager, or sign in to one that has it. */
+async function signIn(base: string, password = 'correct horse battery staple'): Promise<{ cookie: string; csrfToken: string }> {
+  const status = await (await fetch(`${base}/api/v1/setup/status`)).json() as { setupRequired: boolean };
+  const response = status.setupRequired
+    ? await fetch(`${base}/api/v1/setup/password`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password, termsAccepted: true, telemetryAccepted: true }) })
+    : await fetch(`${base}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password }) });
+  assert.equal(response.ok, true, `signing in answered ${response.status}`);
+  const body = await response.json() as { session: { csrfToken: string } };
+  return { cookie: cookieFrom(response), csrfToken: body.session.csrfToken };
+}
 
 function serverUrl(manager: ManagerServer): string {
   const address = manager.server.address();
@@ -74,12 +92,12 @@ test('setup, login, CSRF, health, and logout work on the manager port', async (t
 
   const setupStatus = await fetch(`${base}/api/v1/setup/status`);
   assert.equal(setupStatus.status, 200);
-  assert.equal((await setupStatus.json() as { setupRequired: boolean; setupCodeRequired: boolean }).setupCodeRequired, true);
+  assert.equal((await setupStatus.json() as { setupRequired: boolean }).setupRequired, true);
 
   const setup = await fetch(`${base}/api/v1/setup/password`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ password: 'correct horse battery staple', setupCode: 'setup-test-code', termsAccepted: true, telemetryAccepted: true }),
+    body: JSON.stringify({ password: 'correct horse battery staple', termsAccepted: true, telemetryAccepted: true }),
   });
   assert.equal(setup.status, 201);
   const setupBody = await setup.json() as { session: { csrfToken: string } };
@@ -132,7 +150,7 @@ test('STM_ADMIN_PASSWORD bootstraps a fresh installation without exposing the pa
 });
 
 test('a fresh manager without an environment secret accepts first-run password setup', async (t) => {
-  const manager = await createServer({ setupCodeRequired: false });
+  const manager = await createServer();
   t.after(() => manager.close());
   const base = serverUrl(manager);
   const setup = await fetch(`${base}/api/v1/setup/password`, {
@@ -226,7 +244,7 @@ test('only one concurrent first-run setup can create the admin', async (t) => {
   const manager = await createServer();
   t.after(() => manager.close());
   const base = serverUrl(manager);
-  const payload = JSON.stringify({ password: 'correct horse battery staple', setupCode: 'setup-test-code', termsAccepted: true, telemetryAccepted: true });
+  const payload = JSON.stringify({ password: 'correct horse battery staple', termsAccepted: true, telemetryAccepted: true });
   const responses = await Promise.all([
     fetch(`${base}/api/v1/setup/password`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: payload }),
     fetch(`${base}/api/v1/setup/password`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: payload }),
@@ -815,4 +833,75 @@ test('SillyTavern can be removed, and the request does not wait for the safety c
   // Without the CSRF header it is refused, like every other change.
   const unguarded = await fetch(`${url}/api/v1/installations`, { method: 'DELETE', headers: { cookie } });
   assert.equal(unguarded.status, 403);
+});
+
+test('the local backup schedule is read and changed over HTTP, and survives a restart', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-manager-schedule-'));
+  const first = await createServer({ root });
+  let firstClosed = false;
+  t.after(async () => { if (!firstClosed) await first.close(); });
+  const base = serverUrl(first);
+
+  assert.equal((await fetch(`${base}/api/v1/backups/schedule`)).status, 401);
+  const { cookie, csrfToken } = await signIn(base);
+  const put = (body: unknown, headers: Record<string, string> = { 'x-csrf-token': csrfToken }) => fetch(`${base}/api/v1/backups/schedule`, {
+    method: 'PUT',
+    headers: { cookie, 'content-type': 'application/json', ...headers },
+    body: JSON.stringify(body),
+  });
+  const read = async () => {
+    const response = await fetch(`${base}/api/v1/backups/schedule`, { headers: { cookie } });
+    assert.equal(response.status, 200);
+    return (await response.json() as { schedule: { intervalMinutes: number } }).schedule.intervalMinutes;
+  };
+
+  assert.equal(await read(), 60);
+
+  // A change without the CSRF token is refused and changes nothing.
+  assert.notEqual((await put({ intervalMinutes: 360 }, {})).status, 200);
+  assert.equal(await read(), 60);
+
+  const saved = await put({ intervalMinutes: 360 });
+  assert.equal(saved.status, 200);
+  assert.equal((await saved.json() as { schedule: { intervalMinutes: number } }).schedule.intervalMinutes, 360);
+
+  for (const invalid of [{ intervalMinutes: 0 }, { intervalMinutes: 7 * 24 * 60 + 1 }, { intervalMinutes: 1.5 }, { intervalMinutes: '360' }, {}]) {
+    const refused = await put(invalid);
+    assert.equal(refused.status, 400, JSON.stringify(invalid));
+    assert.equal((await refused.json() as { error: { code: string } }).error.code, 'invalid_backup_schedule');
+  }
+  assert.equal(await read(), 360);
+
+  // Kept with the backup library, and nowhere in the R2 settings.
+  const library = JSON.parse(await readFile(join(first.store.paths.state, 'backups.json'), 'utf8')) as { schedule?: { intervalMinutes: number } };
+  assert.equal(library.schedule?.intervalMinutes, 360);
+  const r2 = await (await fetch(`${base}/api/v1/r2`, { headers: { cookie } })).json() as { config: { schedule: Record<string, unknown> } };
+  assert.equal('localIntervalMinutes' in r2.config.schedule, false);
+
+  await first.close();
+  firstClosed = true;
+  const second = await createServer({ root });
+  t.after(() => second.close());
+  const again = await signIn(serverUrl(second));
+  const reread = await fetch(`${serverUrl(second)}/api/v1/backups/schedule`, { headers: { cookie: again.cookie } });
+  assert.equal((await reread.json() as { schedule: { intervalMinutes: number } }).schedule.intervalMinutes, 360);
+});
+
+test('an interval an older version kept with the R2 settings moves to the backup library on start', async (t) => {
+  const manager = await createServer({
+    prepare: async (paths) => {
+      await mkdir(paths.state, { recursive: true });
+      await writeFile(join(paths.state, 'r2-config.json'), JSON.stringify({
+        schemaVersion: 2, enabled: false, endpoint: null, bucket: null, accessKeyId: null, secretAccessKey: null, localIntervalMinutes: 30,
+      }), 'utf8');
+    },
+  });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const { cookie } = await signIn(base);
+
+  const response = await fetch(`${base}/api/v1/backups/schedule`, { headers: { cookie } });
+  assert.equal((await response.json() as { schedule: { intervalMinutes: number } }).schedule.intervalMinutes, 30);
+  // Handed over once: the R2 file no longer carries it.
+  assert.equal((await readFile(join(manager.store.paths.state, 'r2-config.json'), 'utf8')).includes('localIntervalMinutes'), false);
 });

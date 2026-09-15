@@ -393,3 +393,30 @@ test('archives nothing points at are reclaimed, and the ones in the library are 
   // Nothing left to reclaim on the next start.
   assert.equal(await store.sweepOrphanArchives(), 0);
 });
+
+test('the local backup schedule is kept with the library and survives a restart', async () => {
+  const fixture = await createFixture();
+  const store = new BackupStore({ paths: fixture.paths });
+  assert.equal((await store.getSchedule()).intervalMinutes, 60);
+  const created = await store.create(fixture.profile);
+  await store.setSchedule({ intervalMinutes: 360 });
+  await assert.rejects(() => store.setSchedule({ intervalMinutes: 0 }), (error: unknown) => error instanceof BackupError && error.code === 'invalid_backup_schedule');
+
+  const reopened = new BackupStore({ paths: fixture.paths });
+  assert.equal((await reopened.getSchedule()).intervalMinutes, 360);
+  // Saving the schedule wrote the library as it was then, backup included.
+  assert.deepEqual((await reopened.list()).map((backup) => backup.id), [created.id]);
+  // An interval handed over from the old R2 settings never overrides a choice made here.
+  await reopened.adoptLegacySchedule(30);
+  assert.equal((await reopened.getSchedule()).intervalMinutes, 360);
+});
+
+test('an interval from the old R2 settings is taken when none was chosen here', async () => {
+  const fixture = await createFixture();
+  await new BackupStore({ paths: fixture.paths }).adoptLegacySchedule(30);
+  assert.equal((await new BackupStore({ paths: fixture.paths }).getSchedule()).intervalMinutes, 30);
+  // One that was out of range is dropped, leaving the default.
+  const other = await createFixture();
+  await new BackupStore({ paths: other.paths }).adoptLegacySchedule(0);
+  assert.equal((await new BackupStore({ paths: other.paths }).getSchedule()).intervalMinutes, 60);
+});

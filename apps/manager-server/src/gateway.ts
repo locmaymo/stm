@@ -107,6 +107,17 @@ export interface AccessGatewayOptions {
   readonly now?: () => number;
   readonly sessionTtlMs?: number;
   readonly rateLimiter?: RateLimiter;
+  /**
+   * Origins allowed to hold this gateway in a frame, beyond its own.
+   *
+   * The manager's own console goes here and nothing else. SillyTavern sends
+   * `X-Frame-Options: SAMEORIGIN`, which is decided on origin rather than
+   * site, so the console on port 7860 cannot show a page served on 8001 -
+   * the frame comes up blank with nothing in the console to say why. Naming
+   * the one origin that may do it is narrower than the header it replaces:
+   * `SAMEORIGIN` also permits any other page this gateway itself serves.
+   */
+  readonly frameAncestors?: readonly string[];
 }
 
 /**
@@ -131,6 +142,7 @@ export class AccessGateway {
   private readonly now: () => number;
   private readonly sessionTtlMs: number;
   private readonly brandLogo: (() => Promise<string | null>) | null;
+  private readonly framePolicy: string;
   private readonly attempts: RateLimiter;
   private readonly sessions = new Map<string, number>();
   /**
@@ -187,6 +199,11 @@ export class AccessGateway {
     this.now = options.now ?? Date.now;
     this.sessionTtlMs = options.sessionTtlMs ?? SESSION_TTL_MS;
     this.brandLogo = options.brandLogo ?? null;
+    // `'self'` so the sign-in page can still be reached inside whatever frame
+    // the console put the gateway in; without it, signing in from the embedded
+    // view would blank the frame at the one moment it has something to say.
+    const ancestors = (options.frameAncestors ?? []).filter((origin) => origin.length > 0);
+    this.framePolicy = ancestors.length > 0 ? `frame-ancestors 'self' ${ancestors.join(' ')}` : "frame-ancestors 'none'";
     // Ten tries per quarter hour per address. The surface behind this is a
     // public tunnel, so the limit guards a password rather than a form.
     this.attempts = options.rateLimiter ?? new RateLimiter({ limit: 10, windowMs: 15 * 60 * 1000 });
@@ -394,7 +411,7 @@ export class AccessGateway {
       headers: forwardedHeaders(request),
       agent: this.upstreamAgent,
     }, (upstreamResponse) => {
-      response.writeHead(upstreamResponse.statusCode ?? 502, responseHeaders(upstreamResponse));
+      response.writeHead(upstreamResponse.statusCode ?? 502, this.framed(responseHeaders(upstreamResponse)));
       // No compression, no buffering: a token stream has to arrive as it is
       // produced or generation looks frozen until it finishes.
       upstreamResponse.pipe(response);
@@ -460,8 +477,55 @@ export class AccessGateway {
     upstream.end();
   }
 
+  /**
+   * Who may frame what SillyTavern just answered with.
+   *
+   * `X-Frame-Options` goes, because it is the header saying no and it cannot
+   * express "this one other origin". What replaces it is stricter, not looser.
+   * It is added as a second policy rather than merged into any policy
+   * SillyTavern sent: two Content-Security-Policy headers are both enforced,
+   * so whatever it asked for still holds and this only narrows it further.
+   */
+  private framed(headers: Record<string, string | string[]>): Record<string, string | string[]> {
+    for (const name of Object.keys(headers)) {
+      if (name.toLowerCase() === 'x-frame-options') delete headers[name];
+    }
+    const existing = headers['content-security-policy'];
+    headers['content-security-policy'] = existing === undefined
+      ? this.framePolicy
+      : [...(Array.isArray(existing) ? existing : [existing]), this.framePolicy];
+    return headers;
+  }
+
+  /**
+   * A session for somebody the manager has already let in.
+   *
+   * The console's own password is the stronger door: whoever is through it can
+   * stop SillyTavern, read its data directory, and change this PIN. Asking
+   * them for the PIN as well, to look at the thing they are already
+   * administering, guards nothing - so the console mints a session here and
+   * the embedded view opens straight into it.
+   *
+   * It is the same kind of session a correct PIN produces, with the same
+   * expiry, and "sign every device out" ends it like any other. That is why
+   * this is the only other way one can be created.
+   */
+  public issueSession(): { token: string; maxAgeSeconds: number } {
+    const token = randomBytes(32).toString('base64url');
+    this.sessions.set(token, this.now() + this.sessionTtlMs);
+    this.logger(logEvent('gateway.consoleSession', '[gateway] opened SillyTavern for the signed-in console', {}));
+    return { token, maxAgeSeconds: Math.floor(this.sessionTtlMs / 1000) };
+  }
+
+  /** The cookie for a token, so the console can set the one this gateway reads. */
+  public sessionCookie(request: IncomingMessage, token: string, maxAgeSeconds: number): string {
+    return this.cookie(request, token, maxAgeSeconds);
+  }
+
   private authenticated(request: IncomingMessage): boolean {
-    if (!this.passwordHash) return false;
+    // A valid session is proof on its own. It is only ever handed out by a
+    // correct PIN or by the console, so requiring a PIN to exist as well would
+    // shut the console out of an installation that has not set one.
     const token = cookieValue(request.headers.cookie, ACCESS_COOKIE_NAME);
     if (!token) return false;
     const expiresAt = this.sessions.get(token);
@@ -531,7 +595,7 @@ export class AccessGateway {
       'cache-control': 'no-store',
       'referrer-policy': 'no-referrer',
       'x-content-type-options': 'nosniff',
-      'content-security-policy': `default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; form-action 'self'; frame-ancestors 'none'`,
+      'content-security-policy': `default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; form-action 'self'; ${this.framePolicy}`,
     });
     response.end(loginPage(text, message, this.passwordHash === null ? text.unconfigured : null, safeNext(next ?? requestPath(request)), formToken, this.passcode, nonce, this.logo !== null));
   }

@@ -22,8 +22,6 @@ export interface BannerAddress {
 export interface BannerInput {
   readonly title: string;
   readonly addresses: readonly BannerAddress[];
-  /** Shown only until an administrator password exists. */
-  readonly setupCode?: { readonly label: string; readonly value: string } | undefined;
   /** The address to draw as a code, when there is room and colour to draw it. */
   readonly qr?: { readonly value: string; readonly caption: string } | undefined;
   readonly stopHint: string;
@@ -46,7 +44,7 @@ const QUIET_ZONE = 4;
 export function bootstrapBanner(input: BannerInput): string {
   const width = input.width ?? DEFAULT_WIDTH;
   const paint = (text: string, code: string) => input.colour ? `${code}${text}${RESET}` : text;
-  const labels = [...input.addresses.map((address) => address.label), input.setupCode?.label ?? ''];
+  const labels = input.addresses.map((address) => address.label);
   const column = Math.max(0, ...labels.map((label) => label.length));
   const row = (label: string, value: string) => `${INDENT}${paint(label.padEnd(column), DIM)}  ${paint(value, BOLD)}`;
 
@@ -62,7 +60,6 @@ export function bootstrapBanner(input: BannerInput): string {
   }
 
   lines.push('');
-  if (input.setupCode) lines.push(row(input.setupCode.label, input.setupCode.value), '');
   lines.push(`${INDENT}${paint(input.stopHint, DIM)}`, '');
   return lines.join('\n');
 }

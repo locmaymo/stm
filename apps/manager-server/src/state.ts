@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ManagerState } from '../../../packages/contracts/src/index.js';
@@ -23,9 +23,6 @@ interface PersistedManagerState {
   /** Whether that gateway binds to the local network or to this machine only. */
   readonly accessLanEnabled: boolean;
   readonly setupAcceptedAt: string | null;
-  readonly setupCode: string | null;
-  readonly setupCodeHash: string | null;
-  readonly setupCodeCreatedAt: string | null;
   readonly termsVersion: string;
   readonly telemetryNoticeVersion: string;
 }
@@ -34,7 +31,6 @@ export interface StateStoreOptions {
   readonly paths?: PlatformPaths;
   readonly managerVersion?: string;
   readonly now?: () => Date;
-  readonly setupCode?: string;
 }
 
 export class StateStore {
@@ -42,14 +38,12 @@ export class StateStore {
   private readonly managerVersion: string;
   private readonly now: () => Date;
   private state: PersistedManagerState | null = null;
-  private initialSetupCode: string;
   private adminWriteQueue: Promise<void> = Promise.resolve();
 
   public constructor(options: StateStoreOptions = {}) {
     this.paths = options.paths ?? getPlatformPaths();
     this.managerVersion = options.managerVersion ?? '0.1.0';
     this.now = options.now ?? (() => new Date());
-    this.initialSetupCode = options.setupCode ?? randomBytes(18).toString('base64url');
   }
 
   public async load(): Promise<PersistedManagerState> {
@@ -60,22 +54,7 @@ export class StateStore {
     try {
       const raw = await readFile(this.stateFile(), 'utf8');
       const parsed: unknown = JSON.parse(raw);
-      const parsedState = this.parsePersistedState(parsed);
-      if (!parsedState.adminPasswordHash && !parsedState.setupCode) {
-        const refreshed: PersistedManagerState = {
-          ...parsedState,
-          setupCode: this.initialSetupCode,
-          setupCodeHash: sha256(this.initialSetupCode),
-          updatedAt: this.now().toISOString(),
-        };
-        await this.write(refreshed);
-        this.state = refreshed;
-        return refreshed;
-      }
-      if (parsedState.setupCode) {
-        this.initialSetupCode = parsedState.setupCode;
-      }
-      this.state = parsedState;
+      this.state = this.parsePersistedState(parsed);
       return this.state;
     } catch (error: unknown) {
       if (!isFileNotFound(error)) {
@@ -93,9 +72,6 @@ export class StateStore {
         accessPasscode: false,
         accessLanEnabled: false,
         setupAcceptedAt: null,
-        setupCode: this.initialSetupCode,
-        setupCodeHash: sha256(this.initialSetupCode),
-        setupCodeCreatedAt: now,
         termsVersion: TERMS_VERSION,
         telemetryNoticeVersion: TELEMETRY_NOTICE_VERSION,
       };
@@ -116,9 +92,6 @@ export class StateStore {
         ...state,
         adminPasswordHash: passwordHash,
         setupAcceptedAt: acceptedAt,
-        setupCode: null,
-        setupCodeHash: null,
-        setupCodeCreatedAt: null,
         updatedAt: acceptedAt,
       };
       await this.write(updated);
@@ -192,19 +165,6 @@ export class StateStore {
     return changed;
   }
 
-  public async clearSetupCode(): Promise<void> {
-    const state = await this.load();
-    const updated: PersistedManagerState = {
-      ...state,
-      setupCode: null,
-      setupCodeHash: null,
-      setupCodeCreatedAt: null,
-      updatedAt: this.now().toISOString(),
-    };
-    await this.write(updated);
-    this.state = updated;
-  }
-
   public async getPersisted(): Promise<PersistedManagerState> {
     return this.load();
   }
@@ -228,16 +188,6 @@ export class StateStore {
       storageRoot: this.paths.root,
       storageDurable: this.paths.platform !== 'unknown',
     };
-  }
-
-  /**
-   * The code a first visit has to type, before any password exists.
-   *
-   * It was named for the tests that first needed it, and is now read by the
-   * banner printed at startup as well, where the name was a lie.
-   */
-  public getInitialSetupCode(): string {
-    return this.state?.setupCode ?? this.initialSetupCode;
   }
 
   private stateFile(): string {
@@ -283,13 +233,12 @@ export class StateStore {
         throw new Error(`Invalid manager state field: ${key}`);
       }
     }
-    if (!isNullableString(input.adminPasswordHash) || !isNullableString(input.setupCodeHash)) {
+    if (!isNullableString(input.adminPasswordHash)) {
       throw new Error('Invalid manager state secret field');
     }
-    if (!isNullableString(input.setupAcceptedAt) || !isNullableString(input.setupCodeCreatedAt)) {
+    if (!isNullableString(input.setupAcceptedAt)) {
       throw new Error('Invalid manager state timestamp field');
     }
-    const setupCode = isNullableString(input.setupCode) ? input.setupCode : null;
     // State written before the access gateway existed has neither key, and a
     // missing one means the same as its default rather than a broken file.
     const accessPasswordHash = isNullableString(input.accessPasswordHash) ? input.accessPasswordHash : null;
@@ -297,12 +246,8 @@ export class StateStore {
     // Absent in a file written before passcodes existed, which is exactly the
     // case that has to keep its password field.
     const accessPasscode = input.accessPasscode === true;
-    return { ...input, setupCode, accessPasswordHash, accessPasscode, accessLanEnabled } as unknown as PersistedManagerState;
+    return { ...input, accessPasswordHash, accessPasscode, accessLanEnabled } as unknown as PersistedManagerState;
   }
-}
-
-function sha256(value: string): string {
-  return createHash('sha256').update(value, 'utf8').digest('hex');
 }
 
 function isNullableString(value: unknown): value is string | null {
@@ -315,8 +260,4 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isFileNotFound(error: unknown): boolean {
   return isRecord(error) && error.code === 'ENOENT';
-}
-
-export function hashSetupCode(code: string): string {
-  return sha256(code);
 }

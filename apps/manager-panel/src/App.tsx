@@ -1,14 +1,14 @@
-import { useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react';
 import {
   Archive, ArrowDown, ArrowUp, ArrowUpRight, BarChart3, Cloud, Copy, Database, Download,
   Globe2, LayoutDashboard, Maximize2, Minimize2, Moon, Package, Pencil, Plus,
   LogOut, RotateCcw, ScrollText, Search, Sun, Trash2, Upload, Users as UsersIcon, X, Rows3,
   BrainCircuit, CircleStop, Clock3, Cpu, Ellipsis, Play, QrCode as QrCodeIcon, RefreshCw, Settings2, ShieldCheck, Square,
-  Blocks, FileCode2, Gauge, History, KeyRound, TriangleAlert,
+  Blocks, ChevronDown, ChevronUp, FileCode2, Gauge, History, KeyRound, Monitor, Sparkles, TriangleAlert,
 } from 'lucide-react';
 import {
   Alert, AlertDescription, AuthLayout, Badge, BrandMark, Button, buttonVariants, Card, CardAction,
-  ConfirmDialog, DetailRow, EmptyState, StatTile, StatusHero, type StatusTone,
+  ConfirmDialog, DetailRow, EmptyState, StatTile, type StatusTone,
   CardContent, CardFooter, CardHeader,
   CardGrid, Checkbox, cn, DataTable, type DataTableColumn, type DataTableLabels,
   Dialog, DialogBody, DialogContent, DialogDescription,
@@ -25,10 +25,11 @@ import {
   TooltipContent, TooltipTrigger, useSidebar, useToast,
 } from '../../../packages/ui/src/index.js';
 import { failures, logCatalog, translator, type Fail, type Translate } from './i18n.js';
-import { browserEnvironment, browserStorage, readPreferences, savePreferences, type Preferences } from './preferences.js';
+import { browserEnvironment, browserStorage, readPreferences, savePreferences, type LocaleCode, type Preferences } from './preferences.js';
 import { authErrorKey } from './auth-error.js';
+import { availableUpdate, readDismissedUpdate, saveDismissedUpdate } from './updates.js';
 import { apiFetch, onSessionExpired, resetSessionWatch } from './session.js';
-import type { AccessGatewayState, BackupManifest, ConfigDocument, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LogEntry, LogSourceFilter, MetricsBucket, MetricsSnapshot, ProcessState, Profile, R2Config, R2SnapshotSummary, RestoreMode, RestorePreview, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, BackupManifest, ConfigDocument, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LogEntry, LogSourceFilter, MetricsBucket, MetricsSnapshot, ProcessState, Profile, R2Config, R2SnapshotSummary, RestoreMode, RestorePreview, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { backupSearchText, backupSortValue, formatBytes, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
 import { translateLogEntry, translateStep } from './log-format.js';
@@ -145,7 +146,6 @@ type AuthMode = 'checking' | 'setup' | 'login' | 'ready';
 function AuthGate() {
   const [mode, setMode] = useState<AuthMode>('checking');
   const [csrfToken, setCsrfToken] = useState<string | null>(null);
-  const [setupCodeRequired, setSetupCodeRequired] = useState(false);
   const [signedOut, setSignedOut] = useState(false);
   const [preferences, setPreferences] = useState(() => readPreferences(browserStorage(), browserEnvironment()));
   const t = translator(preferences.locale);
@@ -169,9 +169,8 @@ function AuthGate() {
 
   useEffect(() => {
     let cancelled = false;
-    void apiFetch('/api/v1/setup/status').then(async (response) => response.json() as Promise<{ setupRequired: boolean; setupCodeRequired: boolean }>).then(async (status) => {
+    void apiFetch('/api/v1/setup/status').then(async (response) => response.json() as Promise<{ setupRequired: boolean }>).then(async (status) => {
       if (cancelled) return;
-      setSetupCodeRequired(status.setupCodeRequired);
       if (status.setupRequired) { setMode('setup'); return; }
       // The session probe and the sign-in form are the calls where a refusal
       // is an ordinary answer rather than a session running out, so they go
@@ -220,7 +219,6 @@ function AuthGate() {
       : <AuthScreen
         t={t}
         mode={mode}
-        setupCodeRequired={setupCodeRequired}
         signedOut={signedOut}
         preferences={preferences}
         onPreferencesChange={changePreferences}
@@ -239,10 +237,9 @@ function AuthGate() {
   return <Toaster closeLabel={t('common.close')}>{body}</Toaster>;
 }
 
-function AuthScreen({ t, mode, setupCodeRequired, signedOut, preferences, onPreferencesChange, onSignedIn }: { t: Translate; mode: 'setup' | 'login'; setupCodeRequired: boolean; signedOut: boolean; preferences: Preferences; onPreferencesChange: (value: Partial<Preferences>) => void; onSignedIn: (csrfToken: string) => void }) {
+function AuthScreen({ t, mode, signedOut, preferences, onPreferencesChange, onSignedIn }: { t: Translate; mode: 'setup' | 'login'; signedOut: boolean; preferences: Preferences; onPreferencesChange: (value: Partial<Preferences>) => void; onSignedIn: (csrfToken: string) => void }) {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [setupCode, setSetupCode] = useState('');
   const [accepted, setAccepted] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -253,7 +250,7 @@ function AuthScreen({ t, mode, setupCodeRequired, signedOut, preferences, onPref
   // is noise that goes away on its own.
   const mismatch = setup && confirmPassword.length > 0 && !password.startsWith(confirmPassword);
   const ready = password.length >= MIN_MANAGER_PASSWORD
-    && (!setup || (accepted && password === confirmPassword && (!setupCodeRequired || setupCode.length > 0)));
+    && (!setup || (accepted && password === confirmPassword));
 
   const submit = async () => {
     setBusy(true); setError(null);
@@ -261,7 +258,7 @@ function AuthScreen({ t, mode, setupCodeRequired, signedOut, preferences, onPref
       // Not `apiFetch`: see the note on the session probe above.
       const response = await fetch(setup ? '/api/v1/setup/password' : '/api/v1/auth/login', {
         method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(setup ? { password, setupCode, termsAccepted: accepted, telemetryAccepted: accepted } : { password }),
+        body: JSON.stringify(setup ? { password, termsAccepted: accepted, telemetryAccepted: accepted } : { password }),
       });
       const payload = await response.json() as { session?: { csrfToken: string }; error?: { code?: string; message?: string } };
       if (!response.ok || !payload.session) {
@@ -285,7 +282,7 @@ function AuthScreen({ t, mode, setupCodeRequired, signedOut, preferences, onPref
         </Button>
       </>}
     >
-      <Card className="rounded-2xl shadow-[var(--elevation-3)]">
+      <Card className="rounded-2xl">
         <CardContent className="p-6">
           <form className="grid gap-5" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
             {signedOut ? <Alert><Clock3 /><AlertDescription>{t('setup.signedOut')}</AlertDescription></Alert> : null}
@@ -310,11 +307,6 @@ function AuthScreen({ t, mode, setupCodeRequired, signedOut, preferences, onPref
                   onChange={(event) => setConfirmPassword(event.target.value)}
                   required
                 />
-              </Field>
-            ) : null}
-            {setup && setupCodeRequired ? (
-              <Field label={t('setup.setupCode')} hint={t('setup.setupCodeHint')}>
-                <Input value={setupCode} onChange={(event) => setSetupCode(event.target.value)} autoComplete="off" required />
               </Field>
             ) : null}
             {setup ? (
@@ -449,6 +441,22 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
   const navigate: Navigate = (next) => { window.location.hash = next; setPage(next); window.scrollTo({ top: 0 }); };
   const changePreferences = onPreferencesChange;
   const liveLogs = useLiveLogs(logSource);
+  /*
+   * Whether anything has arrived in the log since it was last looked at.
+   *
+   * The first batch is whatever was already in the buffer when the page
+   * opened, not news, so the mark starts at the newest line of it; only what
+   * comes after that lights the dot. While the sheet is open the mark keeps
+   * up with the tail, so closing it always leaves the dot clear.
+   */
+  const [seenLogId, setSeenLogId] = useState<number | null>(null);
+  const newestLogId = liveLogs.entries.at(-1)?.id ?? null;
+  useEffect(() => {
+    if (newestLogId === null) return;
+    if (seenLogId === null || logsExpanded) setSeenLogId(newestLogId);
+  }, [newestLogId, logsExpanded, seenLogId]);
+  const hasNewLogs = seenLogId !== null && newestLogId !== null && newestLogId > seenLogId;
+  const { snapshot: systemSnapshot, remeasure } = useSystemSnapshot(csrfToken);
   const updateRuntime = async (path: string, body?: unknown) => {
     const init: RequestInit = { method: body === undefined ? 'POST' : 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken } };
     if (body !== undefined) init.body = JSON.stringify(body);
@@ -484,6 +492,27 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     else if (state.mode === 'off') toast({ title: t('console.tunnelOffDone'), tone: 'success' });
   };
   const activeInstallation = installations.find((item) => item.id === pendingInstallationId) ?? installations.find((item) => item.id === activeInstallationId) ?? installations.at(-1);
+  /*
+   * The version select opens on the version that is installed.
+   *
+   * It used to open on "latest" whatever was on the disk, so a machine pinned
+   * to an older release presented the newest one as the current choice, and
+   * the Install button beside it looked like it would reinstall what was
+   * already there. The ref is what is matched on, not the name of the option:
+   * "latest" moves, so an installed copy is only that option while the option
+   * still points at it, and otherwise the pinned entry for that ref is the
+   * honest answer. Keyed on the installed ref, so choosing a different version
+   * to install is not undone by the next poll.
+   */
+  const installedRef = activeInstallation?.status === 'ready' ? activeInstallation.resolvedRef : null;
+  useEffect(() => {
+    if (installedRef === null) return;
+    const pinned = versions.find((option) => option.ref === installedRef && option.selector !== 'latest' && option.selector !== 'release');
+    const moving = versions.find((option) => option.ref === installedRef);
+    setVersion(pinned?.selector ?? moving?.selector ?? activeInstallation?.selector ?? 'latest');
+    // The installed ref is the only thing that should move this control.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [installedRef, versions]);
   const removeInstallation = async (): Promise<string | null> => {
     const response = await apiFetch('/api/v1/installations', { method: 'DELETE', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
     if (!response.ok) {
@@ -496,20 +525,6 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     toast({ title: t('console.uninstallDone'), tone: 'success' });
     return null;
   };
-  const installation = <InstallationPanel t={t} fail={fail} catalog={catalog} version={version} onVersionChange={setVersion} versions={versions} installations={installations} activeInstallationId={activeInstallationId} pendingInstallationId={pendingInstallationId} onPendingInstallationId={setPendingInstallationId} csrfToken={csrfToken} installing={installing} onInstalling={setInstalling} running={processState.status === 'running'} onRemove={removeInstallation} />;
-  const hero = <OverviewHero
-    t={t}
-    fail={fail}
-    catalog={catalog}
-    process={processState}
-    tunnel={tunnelState}
-    installed={Boolean(activeInstallationId)}
-    installing={installing}
-    active={activeInstallation}
-    onStart={() => updateRuntime('/api/v1/process/start')}
-    onStop={() => updateRuntime('/api/v1/process/stop')}
-    onOpen={() => { window.open('http://127.0.0.1:8000', '_blank', 'noopener,noreferrer'); }}
-  />;
   const logProps = { t, catalog, source: logSource, onSourceChange: setLogSource, entries: liveLogs.entries, query: logQuery, onQueryChange: setLogQuery, compact: compactLogs, onToggleCompact: () => setCompactLogs((current) => !current), onLoadOlder: liveLogs.loadOlder, hasOlder: liveLogs.hasOlder, loadingOlder: liveLogs.loadingOlder };
   const logs = <LogsPanel {...logProps} expanded={logsExpanded} onToggleExpanded={() => setLogsExpanded((current) => !current)} />;
   const updateConfig = async (input: ConfigUpdateInput): Promise<string | null> => {
@@ -558,6 +573,31 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     const payload = await response.json() as { error?: { message?: string } };
     return response.ok ? null : fail.body(payload, t('console.managerPasswordSaveFailed'));
   };
+  const hero = <RuntimeCard
+    t={t}
+    fail={fail}
+    catalog={catalog}
+    process={processState}
+    tunnel={tunnelState}
+    security={accessSecurity}
+    installed={Boolean(activeInstallationId)}
+    installing={installing}
+    active={activeInstallation}
+    dataBytes={systemSnapshot?.storage.dataBytes ?? null}
+    profileName={profiles.find((profile) => profile.id === activeProfileId)?.name ?? null}
+    version={version}
+    onVersionChange={setVersion}
+    versions={versions}
+    onPendingInstallationId={setPendingInstallationId}
+    csrfToken={csrfToken}
+    onInstalling={setInstalling}
+    onRemove={removeInstallation}
+    onStart={() => updateRuntime('/api/v1/process/start')}
+    onStop={() => updateRuntime('/api/v1/process/stop')}
+    onSetPassword={setAccessPassword}
+    onShowAddresses={() => { document.querySelector('[data-tour="remote-access"]')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}
+    onOpenSettings={() => navigate('config')}
+  />;
 
   return (
     <>
@@ -568,20 +608,26 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
             <div className="site-header-inner">
               {/* The trigger is desktop-only: below `md` the destinations are
                   along the bottom of the screen, where a thumb already is. */}
-              <SidebarTrigger label={t('console.toggleNavigation')} className="-ml-2 hidden size-9 shrink-0 md:inline-flex" />
+              <SidebarTrigger label={t('console.toggleNavigation')} className="-ml-1 hidden size-8 shrink-0 md:inline-flex" />
               <BrandMark size={26} className="md:hidden" />
               <h1>{t(`nav.${page}`)}</h1>
-              <div className="ml-auto flex shrink-0 items-center gap-1.5">
-                <Button variant="outline" size="sm" className="log-header-button" onClick={() => setLogsExpanded(true)}><ScrollText />{t('console.openLogs')}</Button>
+              <div className="-mr-1 ml-auto flex shrink-0 items-center gap-1.5">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="log-header-button"
+                  aria-label={hasNewLogs ? `${t('console.openLogs')} · ${t('console.newLogs')}` : undefined}
+                  onClick={() => setLogsExpanded(true)}
+                ><ScrollText />{t('console.openLogs')}{hasNewLogs ? <span className="log-new-dot" aria-hidden="true" /> : null}</Button>
                 <LanguageControl t={t} preferences={preferences} onChange={changePreferences} />
-                <Button variant="ghost" size="icon-sm" className="size-9" aria-label={preferences.theme === 'dark' ? t('console.useLight') : t('console.useDark')} onClick={() => changePreferences({ theme: preferences.theme === 'dark' ? 'light' : 'dark' })}>
+                <Button variant="ghost" size="icon-sm" aria-label={preferences.theme === 'dark' ? t('console.useLight') : t('console.useDark')} onClick={() => changePreferences({ theme: preferences.theme === 'dark' ? 'light' : 'dark' })}>
                   {preferences.theme === 'dark' ? <Sun /> : <Moon />}
                 </Button>
               </div>
             </div>
           </header>
           <PageContainer>
-            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}<CardGrid>{installation}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} installed={Boolean(activeInstallationId)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><DataPanel t={t} navigate={navigate} activeProfile={profiles.find((profile) => profile.id === activeProfileId) ?? null} latestBackup={backups.at(-1) ?? null} /><SystemPanel t={t} csrfToken={csrfToken ?? ''} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} config={configDocument} security={accessSecurity} onConfigUpdate={updateConfig} onConfigReset={resetConfig} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} /> : <ResourcePanel page={page} t={t} />}
+            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} installed={Boolean(activeInstallationId)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} config={configDocument} security={accessSecurity} onConfigUpdate={updateConfig} onConfigReset={resetConfig} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} /> : <ResourcePanel page={page} t={t} />}
           </PageContainer>
           <MobileNav
             items={navigation.map(({ id, icon }) => ({ id, icon, href: `#${id}`, label: t(`nav.${id}`) }))}
@@ -612,12 +658,174 @@ function AppSidebar({ page, navigate, t }: { page: PageId; navigate: Navigate; t
   );
 }
 
+/**
+ * Which language is on, and one press to change it.
+ *
+ * This was a pair of buttons in a bordered track, which made it the tallest
+ * thing in a header of 32px controls and read as a setting with two answers
+ * when there are only ever two and one of them is already in force. The
+ * button shows the language being read; pressing it says so in the other.
+ */
 function LanguageControl({ t, preferences, onChange }: { t: Translate; preferences: Preferences; onChange: (value: Partial<Preferences>) => void }) {
-  return <div className="language-control" role="group" aria-label={t('dashboard.language')}>{(['en', 'vi'] as const).map((locale) => <button key={locale} type="button" aria-pressed={preferences.locale === locale} onClick={() => onChange({ locale })}>{locale.toUpperCase()}</button>)}</div>;
+  const next: LocaleCode = preferences.locale === 'vi' ? 'en' : 'vi';
+  const label = t(next === 'vi' ? 'console.switchToVietnamese' : 'console.switchToEnglish');
+  return <Button
+    variant="outline"
+    size="icon-sm"
+    className="language-toggle"
+    aria-label={label}
+    title={label}
+    onClick={() => onChange({ locale: next })}
+  >{preferences.locale.toUpperCase()}</Button>;
 }
 
 function PanelHeading({ icon, children, action }: { icon: ReactNode; children: ReactNode; action?: ReactNode }) {
   return <CardHeader><h2 className="panel-title">{icon}{children}</h2>{action ? <CardAction>{action}</CardAction> : null}</CardHeader>;
+}
+
+/**
+ * A state, said in a word and in a colour, wherever a state is reported.
+ *
+ * The dot is never the only carrier: the word beside it always says the same
+ * thing, because a colour alone is no use to a reader who cannot separate
+ * green from amber and no use at all to a screen reader. The colours are the
+ * semantic ones - green for up, amber for needs-attention, the accent for work
+ * in progress - rather than the accent doing all three jobs.
+ */
+function StatePill({ tone, children }: { tone: StatusTone; children: ReactNode }) {
+  return <span className={`state-pill state-pill-${tone}`}>
+    <span aria-hidden="true" className="state-dot" />
+    {children}
+  </span>;
+}
+
+/**
+ * A still of SillyTavern's layout, drawn rather than photographed.
+ *
+ * Deliberately a placeholder and not a screenshot: there is no headless
+ * browser here to photograph the real thing, and a stale picture of somebody
+ * else's chat would be worse than an honest diagram. What it carries is the
+ * shape - characters down the left, the conversation in the middle, the
+ * generation settings on the right - which is enough to recognise what is
+ * behind the button sitting on top of it.
+ */
+interface PreviewManifest {
+  readonly background: string | null;
+  readonly theme: {
+    readonly text: string | null; readonly quote: string | null; readonly tint: string | null;
+    readonly userTint: string | null; readonly botTint: string | null; readonly border: string | null;
+    readonly chatWidth: number | null;
+  } | null;
+  readonly recent: readonly { readonly name: string; readonly avatar: string | null; readonly at: string }[];
+}
+
+/** The width the still is drawn at before it is scaled into whatever box it gets. */
+const STILL_WIDTH = 640;
+
+/**
+ * SillyTavern's own front page, redrawn small.
+ *
+ * Not a screenshot - there is no headless browser here to take one - but not a
+ * generic drawing either: the wallpaper, the theme colours and the characters
+ * in the Recent Chats list are the reader's own, read off their profile. What
+ * is invented is only the shape, and the shape is the one SillyTavern actually
+ * opens with: nine icons along the top, both side drawers shut, a single
+ * column of chat down the middle at the width they set, the recent list, and
+ * the assistant's greeting under it.
+ *
+ * Drawn at a fixed size and scaled into its box, so the proportions stay right
+ * at any width instead of reflowing into a layout SillyTavern never has. The
+ * message bodies are blank bars because no chat file is ever read to draw
+ * this - a picture on a dashboard is not worth opening conversations for.
+ */
+function SillyTavernStill({ generation }: { generation: string }) {
+  const [manifest, setManifest] = useState<PreviewManifest | null>(null);
+  const frame = useRef<HTMLDivElement | null>(null);
+  const [scale, setScale] = useState(0.5);
+  // Read once per run of SillyTavern. None of it changes while it is up, and
+  // the wallpaper is a megabyte nobody needs fetched on a timer.
+  useEffect(() => {
+    const controller = new AbortController();
+    void apiFetch('/api/v1/preview', { credentials: 'same-origin', signal: controller.signal })
+      .then(async (response) => response.ok ? await response.json() as PreviewManifest : null)
+      .then((payload) => { if (payload && !controller.signal.aborted) setManifest(payload); })
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, [generation]);
+  useEffect(() => {
+    const element = frame.current;
+    if (!element) return undefined;
+    const fit = () => { if (element.clientWidth > 0) setScale(element.clientWidth / STILL_WIDTH); };
+    fit();
+    const observer = new ResizeObserver(fit);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  const image = (kind: 'background' | 'avatar' | 'logo', name?: string) =>
+    name === undefined
+      ? `/api/v1/preview/image?kind=${kind}`
+      : `/api/v1/preview/image?kind=${kind}&name=${encodeURIComponent(name)}`;
+  const theme = manifest?.theme ?? null;
+  const rows = manifest?.recent ?? [];
+  const width = theme?.chatWidth ?? 50;
+  const style = {
+    '--st-text': theme?.text ?? 'rgba(220, 224, 232, 1)',
+    '--st-quote': theme?.quote ?? 'rgba(165, 140, 115, 1)',
+    '--st-tint': theme?.tint ?? 'rgba(30, 30, 36, 0.85)',
+    '--st-bot-tint': theme?.botTint ?? 'rgba(34, 30, 32, 0.75)',
+    '--st-border': theme?.border ?? 'rgba(80, 80, 80, 0.89)',
+    '--st-column': `${Math.max(30, Math.min(92, width))}%`,
+    transform: `scale(${scale})`,
+  } as CSSProperties;
+
+  return <div className="st-still" ref={frame} aria-hidden="true">
+    {manifest?.background ? <img className="st-still-bg" src={image('background', manifest.background)} alt="" /> : null}
+    {/*
+      * One column, the width SillyTavern is set to, running the whole height
+      * of the window - the toolbar is the top of that column rather than a
+      * band across the window, and the wallpaper shows either side of it and
+      * through the empty part of the conversation below.
+      */}
+    <div className="st-still-scale" style={style}>
+      <div className="st-still-column">
+        <div className="st-still-top">{Array.from({ length: 9 }, (_, index) => <i key={index} />)}</div>
+        <div className="st-still-panel">
+          <div className="st-still-head">
+            <img className="st-still-logo" src={image('logo')} alt="" />
+            <b />
+            <span className="st-still-chips"><i /><i /><i /><i /></span>
+          </div>
+          <span className="st-still-section" />
+          {[0, 1, 2].map((index) => {
+            const row = rows[index];
+            return <div key={index} className="st-still-recent">
+              {row?.avatar ? <img src={image('avatar', row.avatar)} alt="" /> : <i className="st-still-blank" />}
+              <span className="st-still-lines">
+                <b style={{ width: `${40 + index * 14}%` }} />
+                <u style={{ width: `${86 - index * 11}%` }} />
+              </span>
+            </div>;
+          })}
+          <span className="st-still-more" />
+        </div>
+        <div className="st-still-message">
+          <img className="st-still-avatar" src={image('logo')} alt="" />
+          <span className="st-still-lines">
+            <b style={{ width: '34%' }} />
+            <u style={{ width: '82%' }} />
+            <u style={{ width: '58%' }} />
+          </span>
+        </div>
+        <div className="st-still-actions"><i /><i /><i /></div>
+        <div className="st-still-gap" />
+        <div className="st-still-foot">
+          <span className="st-still-links"><i /><i /><i /></span>
+          <em />
+        </div>
+      </div>
+    </div>
+  </div>;
 }
 
 function Unavailable({ t, children }: { t: Translate; children: ReactNode }) {
@@ -625,42 +833,80 @@ function Unavailable({ t, children }: { t: Translate; children: ReactNode }) {
 }
 
 /**
- * What the overview opens with.
+ * The card the overview opens with, and everything about the running copy.
  *
- * The page used to begin with four cards of equal weight, and finding out
- * whether SillyTavern was up meant reading a badge in the corner of the first
- * one. The state, and the single most useful thing to do about it, now sit
- * above everything else.
+ * The page used to begin with a status banner, and then, three cards later,
+ * offer a version select in a card of its own headed "SillyTavern" - so the
+ * thing that says whether SillyTavern is up and the thing that decides which
+ * SillyTavern is up were separated by two unrelated cards. Both are here: the
+ * state at the top, what it is running underneath it, and the preview of the
+ * thing itself beside them.
  *
- * Start is a plain button; Stop asks first, because whoever is reading a chat
- * through the public link is not in the room to be consulted.
+ * Start is a plain button; Stop is a destructive one and asks first, because
+ * whoever is reading a chat through the public link is not in the room to be
+ * consulted, and because the colour is the last chance to notice which of the
+ * two buttons the pointer is over.
  */
-function OverviewHero({ t, fail, catalog, process, tunnel, installed, installing, active, onStart, onStop, onOpen }: { t: Translate; fail: Fail; catalog: Record<string, unknown>; process: ProcessState; tunnel: TunnelState; installed: boolean; installing: boolean; active: Installation | undefined; onStart: () => Promise<void>; onStop: () => Promise<void>; onOpen: () => void }) {
+function RuntimeCard({
+  t, fail, catalog, process, tunnel, security, installed, installing, active, dataBytes, profileName,
+  version, onVersionChange, versions, onPendingInstallationId, csrfToken, onInstalling, onRemove,
+  onStart, onStop, onSetPassword, onShowAddresses, onOpenSettings,
+}: {
+  t: Translate; fail: Fail; catalog: Record<string, unknown>; process: ProcessState; tunnel: TunnelState;
+  security: AccessGatewayState; installed: boolean; installing: boolean;
+  active: Installation | undefined; dataBytes: number | null; profileName: string | null; version: string;
+  onVersionChange: (value: string) => void; versions: VersionOption[];
+  onPendingInstallationId: (value: string | null) => void; csrfToken: string | null;
+  onInstalling: (value: boolean) => void; onRemove: () => Promise<string | null>;
+  onStart: () => Promise<void>; onStop: () => Promise<void>;
+  onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>;
+  onShowAddresses: () => void;
+  onOpenSettings: () => void;
+}) {
   const [stopAsked, setStopAsked] = useState(false);
+  const [askedVersion, setAskedVersion] = useState<string | null>(null);
+  const [askedRemove, setAskedRemove] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [embedOpen, setEmbedOpen] = useState(false);
+  // Opened once, kept mounted: coming back to the console and going in again
+  // should not reload SillyTavern and lose whatever was half typed.
+  const [embedMounted, setEmbedMounted] = useState(false);
+  const [embedOpening, setEmbedOpening] = useState(false);
+  const [dismissedUpdate, setDismissedUpdate] = useState<string | null>(() => readDismissedUpdate(browserStorage()));
+  const { toast } = useToast();
+  const report = (message: string | null) => { if (message) toast({ title: message, tone: 'destructive' }); };
+
   const running = process.status === 'running';
   const pending = busy || process.status === 'starting' || process.status === 'stopping';
   const installingNow = installing || (active !== undefined && active.status !== 'ready' && active.status !== 'failed');
+  const installFailed = active?.status === 'failed';
 
   const tone: StatusTone = installingNow || process.status === 'starting' || process.status === 'stopping'
     ? 'working'
     : running ? 'online'
-      : process.status === 'error' || active?.status === 'failed' ? 'attention'
+      : process.status === 'error' || installFailed ? 'attention'
         : 'offline';
 
+  // The card is headed with the name of the thing; the state is a pill beside
+  // it, in a word. The heading used to be the whole sentence, which made the
+  // one fixed thing on the page - what this card is about - move and change
+  // length every time the state did.
+  const stateWord = installingNow ? t('console.stateInstalling')
+    : installFailed ? t('console.stateInstallFailed')
+      : process.status === 'starting' ? t('console.stateStarting')
+        : process.status === 'stopping' ? t('console.stateStopping')
+          : process.status === 'error' ? t('console.stateError')
+            : running ? t('console.stateRunning')
+              : installed ? t('console.stateStopped')
+                : t('console.stateNotInstalled');
+  // What is being waited for, while something is being waited for. This is
+  // where the sweep lives for a start or a stop - the two things somebody
+  // presses and then watches, and which used to report nothing at all until
+  // they finished.
+  const waitingFor = process.status === 'starting' ? t('console.waitingForSilly')
+    : process.status === 'stopping' ? t('console.stoppingSilly')
+      : null;
 
-  const installFailed = active?.status === 'failed';
-  const title = installingNow ? t('console.heroInstalling')
-    : installFailed ? t('console.heroInstallFailed')
-      : process.status === 'starting' ? t('console.heroStarting')
-        : process.status === 'stopping' ? t('console.heroStopping')
-          : process.status === 'error' ? t('console.heroFailed')
-            : running ? t('console.heroRunning')
-              : installed ? t('console.heroStopped')
-                : t('console.heroNotInstalled');
-
-  // What is worth saying under the title, in the order it becomes true: what
-  // the install is doing, then why it failed, then where it can be reached.
   // A refusal the manager wrote is said in the reader's language; a line from
   // git, npm or SillyTavern itself is shown as that program wrote it.
   const failure = installFailed && active?.error
@@ -668,85 +914,25 @@ function OverviewHero({ t, fail, catalog, process, tunnel, installed, installing
     : process.error
       ? fail.of(process.errorCode, process.error, t('console.heroFailed'))
       : null;
-  const detail = installingNow && active
-    ? `${translateStep(active.step, catalog, active.stepCode, active.stepParams)} · ${Math.round(active.progress)}%`
-    : failure ?? active?.resolvedRef ?? null;
+
+  const choices = versions.length > 0 ? versions : [{ selector: 'latest', label: `${t('dashboard.latest')} (latest)`, ref: 'latest', channel: 'release', tag: null, publishedAt: null }] satisfies VersionOption[];
+  const chosen = choices.find((choice) => choice.selector === version);
+  const chosenLabel = chosen?.label ?? version;
+  /*
+   * Whether pressing Install would do nothing. Compared on the ref each option
+   * resolves to, not on the name of the option: "latest" is a moving target,
+   * so matching on the word would lock the one choice most people leave
+   * selected and no upstream release could ever be installed.
+   */
+  const installedRef = active?.status === 'ready' ? active.resolvedRef : null;
+  const alreadyInstalled = installedRef !== null && chosen !== undefined && chosen.ref === installedRef;
+  const update = availableUpdate(choices, active ?? null);
+  const showUpdate = update !== null && update.ref !== dismissedUpdate && !installingNow;
 
   const run = async (work: () => Promise<void>) => {
     setBusy(true);
     try { await work(); } finally { setBusy(false); }
   };
-
-  // Before the first install there is no state to report and nothing here to
-  // press, and a banner saying "not installed" above a card headed SillyTavern
-  // with an Install button in it is a band of empty space in the way. The hero
-  // arrives with the thing it describes - or with the reason it is not there,
-  // because an install that failed leaves nothing installed and its error is
-  // the most important thing on the page.
-  if (!installed && !installingNow && !installFailed) return null;
-
-  return <>
-    <StatusHero
-      tone={tone}
-      title={title}
-      detail={detail}
-      {...(installingNow && active ? { progress: active.progress } : {})}
-      actions={installed ? <>
-        <Button variant="outline" onClick={onOpen} disabled={!running}><ArrowUpRight />{t('dashboard.open')}</Button>
-        {running
-          ? <Button variant="outline" onClick={() => setStopAsked(true)} disabled={pending}><Square />{t('dashboard.stop')}</Button>
-          : <Button onClick={() => void run(onStart)} disabled={pending || installingNow}><Play />{pending ? t('common.loading') : t('dashboard.start')}</Button>}
-      </> : null}
-    />
-    <ConfirmDialog
-      open={stopAsked}
-      onOpenChange={setStopAsked}
-      title={t('console.stopConfirm')}
-      description={t('console.stopConfirmBody')}
-      confirmLabel={t('dashboard.stop')}
-      cancelLabel={t('common.cancel')}
-      onConfirm={() => run(onStop)}
-    />
-  </>;
-}
-
-/**
- * Choosing a version and putting it on the disk.
- *
- * Starting and stopping used to sit in this card's footer, next to a version
- * select they had nothing to do with, so the button that ran SillyTavern was
- * beside the button that replaced it. Running belongs to the hero above, which
- * is where the state it changes is reported. What is left here is the install,
- * and the install now asks before it restarts something that is already up.
- */
-function InstallationPanel({ t, fail, catalog, version, onVersionChange, versions, installations, activeInstallationId, pendingInstallationId, onPendingInstallationId, csrfToken, installing, onInstalling, running, onRemove }: { t: Translate; fail: Fail; catalog: Record<string, unknown>; version: string; onVersionChange: (value: string) => void; versions: VersionOption[]; installations: Installation[]; activeInstallationId: string | null; pendingInstallationId: string | null; onPendingInstallationId: (value: string | null) => void; csrfToken: string | null; installing: boolean; onInstalling: (value: boolean) => void; running: boolean; onRemove: () => Promise<string | null> }) {
-  const [askedVersion, setAskedVersion] = useState<string | null>(null);
-  const [askedRemove, setAskedRemove] = useState(false);
-  const { toast } = useToast();
-  const report = (message: string | null) => { if (message) toast({ title: message, tone: 'destructive' }); };
-  const active = installations.find((item) => item.id === pendingInstallationId) ?? installations.find((item) => item.id === activeInstallationId) ?? installations.at(-1);
-  const installed = Boolean(activeInstallationId);
-  // A word, not the running commentary: the hero above is already saying what
-  // the install is doing and how far along it is.
-  const status = active?.status === 'ready' ? t('dashboard.ready')
-    : active?.status === 'failed' ? t('dashboard.installFailed')
-      : active ? t('common.loading')
-        : t('dashboard.notInstalled');
-  const canInstall = Boolean(csrfToken) && !installing;
-  const choices = versions.length > 0 ? versions : [{ selector: 'latest', label: `${t('dashboard.latest')} (latest)`, ref: 'latest', channel: 'release', tag: null, publishedAt: null }, { selector: 'release', label: 'release', ref: 'release', channel: 'release', tag: null, publishedAt: null }, { selector: 'staging', label: 'staging', ref: 'staging', channel: 'staging', tag: null, publishedAt: null }] satisfies VersionOption[];
-  const chosen = choices.find((choice) => choice.selector === version);
-  const chosenLabel = chosen?.label ?? version;
-  /*
-   * Whether pressing Install would do nothing.
-   *
-   * Compared on the ref each option resolves to, not on the name of the
-   * option. "latest" is a moving target: matching on the word would lock the
-   * one choice most people leave selected, so an upstream release could never
-   * be installed. Matching on the ref it currently points at disables the
-   * button only while the installed copy really is that ref.
-   */
-  const installedRef = active?.status === 'ready' ? active.resolvedRef : null;
-  const alreadyInstalled = installedRef !== null && chosen !== undefined && chosen.ref === installedRef;
 
   const install = async () => {
     if (!csrfToken) return;
@@ -763,22 +949,175 @@ function InstallationPanel({ t, fail, catalog, version, onVersionChange, version
   // The first install has nothing to interrupt. Every one after it replaces a
   // working copy and restarts it, which is worth a question.
   const requestInstall = () => { if (installed || running) setAskedVersion(version); else void install(); };
+  const takeUpdate = () => { if (update) { onVersionChange('latest'); setAskedVersion('latest'); } };
+  const dismissUpdate = () => {
+    if (!update) return;
+    saveDismissedUpdate(update.ref, browserStorage());
+    setDismissedUpdate(update.ref);
+  };
 
-  const remove = async () => { report(await onRemove()); };
+  /*
+   * Whether SillyTavern can be shown inside this page at all.
+   *
+   * It cannot be framed directly: it answers with `X-Frame-Options:
+   * SAMEORIGIN`, and the console is a different port and so a different
+   * origin. What is framed is the manager's own gateway, which proxies to it
+   * and says instead that this console may frame it - so the embed needs the
+   * gateway up, and the gateway needs its PIN set before it lets anyone past.
+   *
+   * Only from this machine. Reached over the network the console is on some
+   * other origin, which the gateway has not been told to allow, and the frame
+   * would come up blank with nothing on screen to explain why.
+   */
+  const onThisMachine = window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost';
+  const embedUrl = `http://${window.location.hostname}:${security.port}/`;
+  const canEmbed = running && onThisMachine;
+  /*
+   * Open it without asking for the PIN.
+   *
+   * Whoever is reading this page gave the console's password, and that is the
+   * stronger credential: it can stop SillyTavern, reach its data and change
+   * the PIN itself. The console asks the gateway for a session on their
+   * behalf; the cookie it sets is host-scoped, and cookies ignore ports, so
+   * the frame on the gateway's port arrives already signed in.
+   */
+  const openEmbed = async () => {
+    if (!csrfToken) return;
+    setEmbedOpening(true);
+    try {
+      const response = await apiFetch('/api/v1/access/embed-session', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      if (!response.ok) { report(fail.body(await response.json().catch(() => null), t('console.embedFailed'))); return; }
+      setEmbedMounted(true);
+      setEmbedOpen(true);
+    } catch { report(t('console.embedFailed')); } finally { setEmbedOpening(false); }
+  };
 
-  return <Card data-tour="installation">
-    <PanelHeading icon={<Package />} action={<Badge variant="outline" className={active?.status === 'ready' ? '' : 'status-attention'}>{status}</Badge>}>SillyTavern</PanelHeading>
-    <CardContent className="flex-1">
-      <label className="field-label" htmlFor="install-version">{t('dashboard.version')}</label>
-      <Select value={version} onValueChange={onVersionChange}><SelectTrigger id="install-version" className="w-full"><SelectValue /></SelectTrigger><SelectContent position="popper" align="start" className="version-select-content">{choices.map((choice) => <SelectItem key={choice.selector} value={choice.selector}>{choice.label}</SelectItem>)}</SelectContent></Select>
-      {active?.status === 'ready' ? <p className="install-result">{t('console.installComplete')} · {active.resolvedRef}</p> : null}
-    </CardContent>
-    <CardFooter className="flex-col items-stretch gap-2">
-      {alreadyInstalled
-        ? <Tooltip><TooltipTrigger asChild><span className="inline-flex"><Button variant="outline" className="w-full" disabled><Download />{t('console.versionInstalled')}</Button></span></TooltipTrigger><TooltipContent>{t('console.versionInstalledHint')}</TooltipContent></Tooltip>
-        : <Button variant="outline" className="w-full" onClick={requestInstall} disabled={!canInstall}><Download />{installing ? t('common.loading') : t('dashboard.install')}</Button>}
-      {installed ? <Button variant="ghost" size="sm" className="w-full text-muted-foreground" onClick={() => setAskedRemove(true)} disabled={installing}><Trash2 />{t('console.uninstall')}</Button> : null}
-    </CardFooter>
+  const localUrl = 'http://127.0.0.1:8000';
+  const sharedCount = (tunnel.url ? 1 : 0) + (security.lan ? 1 : 0);
+
+  return <>
+    <Card className="runtime-card" data-tour="installation">
+      <CardHeader className="runtime-head">
+        <h2 className="panel-title">
+          SillyTavern
+          <StatePill tone={tone}>{stateWord}</StatePill>
+        </h2>
+        <CardAction className="runtime-actions">
+          {installed ? <>
+            <Button variant="outline" size="sm" disabled={!running} onClick={() => { window.open(localUrl, '_blank', 'noopener,noreferrer'); }}><ArrowUpRight />{t('console.openInTab')}</Button>
+            {running
+              ? <Button variant="destructive" size="sm" onClick={() => setStopAsked(true)} disabled={pending}><Square />{t('dashboard.stop')}</Button>
+              : <Button size="sm" onClick={() => void run(onStart)} disabled={pending || installingNow}><Play />{pending ? t('common.loading') : t('dashboard.start')}</Button>}
+          </> : null}
+        </CardAction>
+      </CardHeader>
+
+      <CardContent className="runtime-body">
+        {/*
+          * The picture is of something that is running. With SillyTavern down
+          * there is nothing to show a picture of, and a still of a front page
+          * that is not being served reads as an invitation to click something
+          * that does nothing - so the box goes empty and says why.
+          */}
+        <div className="runtime-preview" data-live={running ? 'true' : 'false'}>
+          {running ? <SillyTavernStill generation={process.startedAt ?? 'up'} /> : null}
+          {canEmbed
+            ? <button type="button" className="runtime-preview-open" onClick={() => void openEmbed()}>
+              <span className="runtime-preview-cta"><Monitor aria-hidden="true" />{embedOpening ? t('common.loading') : t('console.useItHere')}</span>
+              <span className="runtime-preview-note">{t('console.useItHereHint')}</span>
+            </button>
+            : <div className="runtime-preview-idle">
+              <Monitor aria-hidden="true" />
+              <span>{running ? t('console.embedUnavailable') : t('console.stateOffline')}</span>
+            </div>}
+        </div>
+
+        <dl className="runtime-meta">
+          {/* Nothing is answering at any of these while SillyTavern is down,
+              so the row goes rather than standing there with a dash in it. */}
+          {running ? <div className="runtime-row">
+            <dt>{t('console.addressLabel')}</dt>
+            <dd>
+              <AddressLink t={t} href={localUrl}>127.0.0.1:8000</AddressLink>
+              {sharedCount > 0
+                ? <button type="button" className="runtime-shared" onClick={onShowAddresses}>{t('console.alsoOnline', { count: sharedCount })}</button>
+                : null}
+            </dd>
+          </div> : null}
+
+          <div className="runtime-row">
+            <dt><label htmlFor="install-version">{t('dashboard.version')}</label></dt>
+            <dd className="runtime-version">
+              <Select value={version} onValueChange={onVersionChange}>
+                <SelectTrigger id="install-version" size="sm" className="runtime-select"><SelectValue /></SelectTrigger>
+                <SelectContent position="popper" align="start" className="version-select-content">
+                  {choices.map((choice) => <SelectItem key={choice.selector} value={choice.selector}>{choice.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              {alreadyInstalled
+                ? <Tooltip><TooltipTrigger asChild><span className="inline-flex"><Button variant="outline" size="sm" disabled><Download />{t('console.versionInstalled')}</Button></span></TooltipTrigger><TooltipContent>{t('console.versionInstalledHint')}</TooltipContent></Tooltip>
+                : <Button variant="outline" size="sm" onClick={requestInstall} disabled={!csrfToken || installing}><Download />{installing ? t('common.loading') : t('dashboard.install')}</Button>}
+            </dd>
+          </div>
+
+          <div className="runtime-row">
+            <dt>{t('console.dataProfile')}</dt>
+            <dd>
+              <span>{profileName ?? t('console.noProfiles')}</span>
+              <span className="runtime-sep" aria-hidden="true">·</span>
+              {dataBytes === null ? <span className="thinking">{t('system.measuring')}</span> : <span className="runtime-bytes">{formatBytes(dataBytes)}</span>}
+            </dd>
+          </div>
+
+          {installingNow && active ? <div className="runtime-row">
+            <dt>{t('console.progressLabel')}</dt>
+            <dd className="runtime-progress">
+              <span className="thinking">{translateStep(active.step, catalog, active.stepCode, active.stepParams)} · {Math.round(active.progress)}%</span>
+              <span className="progress-track"><span className="progress-value" style={{ width: `${Math.max(0, Math.min(100, active.progress))}%` }} /></span>
+            </dd>
+          </div> : waitingFor ? <div className="runtime-row">
+            <dt>{t('console.progressLabel')}</dt>
+            <dd className="runtime-progress">
+              <span className="thinking">{waitingFor}</span>
+              <span className="progress-track"><span className="progress-indeterminate" /></span>
+            </dd>
+          </div> : null}
+
+          {failure ? <div className="runtime-row">
+            <dt>{t('console.problemLabel')}</dt>
+            <dd><span className="install-error" role="alert">{failure}</span></dd>
+          </div> : null}
+        </dl>
+      </CardContent>
+
+      {showUpdate && update ? <div className="runtime-update" role="status">
+        <Sparkles aria-hidden="true" />
+        <span>{t('console.updateAvailable', { version: update.label })}</span>
+        <div className="runtime-update-actions">
+          <Button variant="outline" size="sm" onClick={takeUpdate}><Download />{t('console.updateNow')}</Button>
+          <Button variant="ghost" size="sm" onClick={dismissUpdate}>{t('console.updateDismiss')}</Button>
+        </div>
+      </div> : null}
+
+      {installed ? <CardFooter className="runtime-foot">
+        <div className="runtime-foot-actions">
+          <Button variant="ghost" size="sm" onClick={onOpenSettings}><Settings2 />{t('nav.config')}</Button>
+          <Button variant="ghost" size="sm" onClick={() => setAskedRemove(true)} disabled={installing}><Trash2 />{t('console.uninstall')}</Button>
+        </div>
+      </CardFooter> : null}
+    </Card>
+
+    {embedMounted ? <EmbedStage t={t} open={embedOpen} url={embedUrl} onClose={() => setEmbedOpen(false)} /> : null}
+
+    <ConfirmDialog
+      open={stopAsked}
+      onOpenChange={setStopAsked}
+      title={t('console.stopConfirm')}
+      description={t('console.stopConfirmBody')}
+      confirmLabel={t('dashboard.stop')}
+      cancelLabel={t('common.cancel')}
+      onConfirm={() => run(onStop)}
+    />
     <ConfirmDialog
       open={askedVersion !== null}
       onOpenChange={(open) => { if (!open) setAskedVersion(null); }}
@@ -796,9 +1135,49 @@ function InstallationPanel({ t, fail, catalog, version, onVersionChange, version
       description={t('console.uninstallConfirmBody')}
       confirmLabel={t('console.uninstall')}
       cancelLabel={t('common.cancel')}
-      onConfirm={remove}
+      onConfirm={async () => { report(await onRemove()); }}
     />
-  </Card>;
+  </>;
+}
+
+/**
+ * SillyTavern itself, filling the window, without leaving the console.
+ *
+ * Hidden rather than unmounted when it is closed: an iframe that is taken out
+ * of the tree is reloaded when it comes back, which would throw away the chat
+ * that was open and everything typed into it. Escape closes it, and the way
+ * out is always on screen - a frame with no visible border is a page somebody
+ * can get stuck in.
+ */
+function EmbedStage({ t, open, url, onClose }: { t: Translate; open: boolean; url: string; onClose: () => void }) {
+  // SillyTavern's own interface is dense and fills whatever it is given, so
+  // the bar above it is worth being able to put away. Escape always works and
+  // a small handle stays in the corner, because a frame with no visible way
+  // out is a page somebody is stuck in.
+  const [barHidden, setBarHidden] = useState(false);
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, onClose]);
+  return <div className="embed-stage" hidden={!open} aria-hidden={!open}>
+    {barHidden
+      ? <button type="button" className="embed-handle" onClick={() => setBarHidden(false)} aria-label={t('console.showBar')} title={t('console.showBar')}><ChevronDown /></button>
+      : <div className="embed-bar">
+        <Button variant="outline" size="sm" onClick={onClose}><Minimize2 />{t('console.backToConsole')}</Button>
+        <div className="embed-bar-tail">
+          <Button variant="ghost" size="sm" asChild><a href={url} target="_blank" rel="noopener noreferrer"><ArrowUpRight />{t('console.openInTab')}</a></Button>
+          <Button variant="ghost" size="icon-sm" onClick={() => setBarHidden(true)} aria-label={t('console.hideBar')} title={t('console.hideBar')}><ChevronUp /></Button>
+        </div>
+      </div>}
+    <iframe
+      className="embed-frame"
+      src={url}
+      title="SillyTavern"
+      allow="clipboard-write; fullscreen; microphone"
+    />
+  </div>;
 }
 
 function AccessPanel({ t, process, tunnel, config, security, installed, onAction, onSetLan, onSetPassword }: { t: Translate; process: ProcessState; tunnel: TunnelState; config: ConfigDocument | null; security: AccessGatewayState; installed: boolean; onAction: (path: string, body?: unknown) => Promise<void>; onSetLan: (lan: boolean) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null> }) {
@@ -858,21 +1237,49 @@ function AccessPanel({ t, process, tunnel, config, security, installed, onAction
   const lanHost = `${config?.networkHost ?? window.location.hostname ?? 'localhost'}:${security.port}`;
   const localUrl = `http://${localHost}`;
   const lanUrl = `http://${lanHost}`;
-  const openLocal = () => { window.open(localUrl, '_blank', 'noopener,noreferrer'); };
-  const copyTunnel = async () => { if (tunnel.url) await navigator.clipboard?.writeText(tunnel.url); };
-  // The address another device can actually reach, best first. Nobody needs a
-  // code for 127.0.0.1 - the only device that can open it is this one.
-  const shareUrl = tunnel.url ?? (lan ? lanUrl : null);
-  const shareLabel = tunnel.url ? t('dashboard.publicAddress') : t('console.lanAddress');
-  const [qrOpen, setQrOpen] = useState(false);
-  return <Card data-tour="public-access">
-    <PanelHeading icon={<Globe2 />} action={<Badge variant="secondary" className={running ? 'status-online' : tunnel.error ? 'status-attention' : ''}>{running ? t('console.online') : t('dashboard.offline')}</Badge>}>{t('console.publicAccess')}</PanelHeading>
-    <CardContent className="flex-1 space-y-4">
-      <div className="access-row"><div><strong>{t('console.lanAccess')}</strong><span>{lan ? lanLabel : passwordReady ? lanLabel : t('console.passwordRequired')}</span></div><Switch id="listen-switch" checked={lan} onCheckedChange={toggleLan} disabled={!installed || securityBusy} aria-label={t('console.enableLan')} /></div>
-      <dl className="address-list"><div><dt>{t('console.lanAddress')}</dt><dd><AddressLink t={t} href={lanUrl}>{lanHost}</AddressLink></dd></div><div><dt>{t('console.local')}</dt><dd><AddressLink t={t} href={localUrl}>{localHost}</AddressLink></dd></div></dl>
-      <div className="access-row access-row-public"><div><strong>{t('console.quickTunnel')}</strong><span>{passwordReady ? t('console.passwordProtected') : t('console.passwordRequired')}</span></div><Switch id="tunnel-switch" checked={tunnelWanted} onCheckedChange={toggleTunnel} disabled={busy || (tunnelWanted ? false : !installed || !running)} aria-label={t('console.enableTunnel')} /></div>
-      <dl className="address-list"><div><dt>{t('dashboard.publicAddress')}</dt><dd>{tunnel.url ? <AddressLink t={t} href={tunnel.url}>{tunnel.url}</AddressLink> : '—'}</dd></div></dl>
-      {shareUrl ? <div className="access-qr"><Button variant="ghost" size="sm" onClick={() => setQrOpen((open) => !open)} aria-expanded={qrOpen}><QrCodeIcon />{qrOpen ? t('console.hideQr') : t('console.showQr')}</Button>{qrOpen ? <figure><QrCode value={shareUrl} label={`${shareLabel}: ${shareUrl}`} /><figcaption>{t('console.scanToOpen')} · {shareLabel}</figcaption></figure> : null}</div> : null}
+  /*
+   * What this card reports is whether the doors are answering, which is not
+   * the same question as whether either switch is on.
+   *
+   * Turning SillyTavern off does not turn the sharing off - nobody asked for
+   * that, and a switch that flips itself back is a switch nobody can trust -
+   * but it does leave the addresses with nothing behind them. Saying "online"
+   * then would be untrue and saying "off" would be a lie about the switches,
+   * so the third state says the actual situation: the doors are open and
+   * waiting for something to be behind them.
+   */
+  const shared = tunnelWanted || lan;
+  const accessTone: StatusTone = tunnel.error ? 'attention' : running && shared ? 'online' : shared ? 'attention' : 'offline';
+  const accessLabel = tunnel.error ? t('dashboard.offline')
+    : running && shared ? t('console.online')
+      : shared ? t('console.waitingForSillyShort')
+        : t('dashboard.offline');
+  return <Card data-tour="remote-access">
+    <PanelHeading icon={<Globe2 />} action={<StatePill tone={accessTone}>{accessLabel}</StatePill>}>{t('console.publicAccess')}</PanelHeading>
+    <CardContent className="flex-1">
+      {/*
+        * Two questions, asked in that order: what is open, and where does it
+        * answer. The switches used to sit between the addresses, each one
+        * followed by the address it turned on, so the reader met the whole
+        * card twice over to find the one line they came for.
+        *
+        * The tunnel is first because it is the one that reaches a phone that
+        * is not in the house.
+        */}
+      <div className="access-switches">
+        <div className="access-row"><div><strong>{t('console.quickTunnel')}</strong><span>{passwordReady ? t('console.passwordProtected') : t('console.passwordRequired')}</span></div><Switch id="tunnel-switch" checked={tunnelWanted} onCheckedChange={toggleTunnel} disabled={busy || (tunnelWanted ? false : !installed || !running)} aria-label={t('console.enableTunnel')} /></div>
+        <div className="access-row"><div><strong>{t('console.lanAccess')}</strong><span>{lan ? lanLabel : passwordReady ? lanLabel : t('console.passwordRequired')}</span></div><Switch id="listen-switch" checked={lan} onCheckedChange={toggleLan} disabled={!installed || securityBusy} aria-label={t('console.enableLan')} /></div>
+      </div>
+      {/* With SillyTavern down every one of these leads nowhere, so the whole
+          group goes rather than three rows of dashes. */}
+      {running ? <>
+        <div className="access-group-label">{t('console.addresses')}</div>
+        <div className="address-rows">
+          <AddressRow t={t} label={t('dashboard.publicAddress')} url={tunnel.url} display={tunnel.url ?? ''} disabledHint={t('console.tunnelOffShort')} />
+          <AddressRow t={t} label={t('console.lanAddress')} url={lan ? lanUrl : null} display={lanHost} disabledHint={t('console.lanOffShort')} />
+          <AddressRow t={t} label={t('console.local')} url={localUrl} display={localHost} />
+        </div>
+      </> : null}
       <ConfirmDialog
         open={closing !== null}
         onOpenChange={(open) => { if (!open) setClosing(null); }}
@@ -897,11 +1304,10 @@ function AccessPanel({ t, process, tunnel, config, security, installed, onAction
           return null;
         }}
       />
-      {busy || securityBusy ? <div className="operation-progress" role="status"><span>{t('common.loading')}</span><span className="progress-track"><span className="progress-indeterminate" /></span></div> : null}
+      {busy || securityBusy ? <div className="operation-progress" role="status"><span className="thinking">{t('common.loading')}</span><span className="progress-track"><span className="progress-indeterminate" /></span></div> : null}
       {security.error ? <p className="install-error" role="alert">{security.error}</p> : null}
       {tunnel.error ? <p className="install-error" role="alert">{tunnel.error}</p> : null}
     </CardContent>
-    <CardFooter className="gap-2"><Button variant="outline" onClick={openLocal} disabled={!running}><ArrowUpRight />{t('dashboard.open')}</Button><Button variant="ghost" onClick={() => void copyTunnel()} disabled={!tunnel.url}><Copy />{t('dashboard.copyLink')}</Button></CardFooter>
   </Card>;
 }
 
@@ -1043,7 +1449,69 @@ function PasscodeDialog({ t, open, onOpenChange, note, onSubmit }: { t: Translat
 
 /** An address that opens in its own tab rather than sitting there as text. */
 function AddressLink({ t, href, children }: { t: Translate; href: string; children: ReactNode }) {
-  return <a className="address-link" href={href} target="_blank" rel="noopener noreferrer" title={t('console.openInNewTab')}><code>{children}</code><ArrowUpRight aria-hidden="true" /></a>;
+  return <a className="address-link" href={href} target="_blank" rel="noopener noreferrer" title={t('console.openInNewTab')}><code>{children}</code></a>;
+}
+
+/**
+ * One address, and the one button that does everything else with it.
+ *
+ * The card used to carry an Open button and a Copy button in its footer, both
+ * of which acted on whichever address the card had decided was the important
+ * one, plus a Show QR toggle that pushed the rest of the card down when it was
+ * pressed. Each address now answers for itself: the address is the link, and
+ * the button beside it opens the sheet that holds the code, the copy and the
+ * open - for that address, not for whichever one the footer had in mind.
+ */
+function AddressRow({ t, label, url, display, disabledHint }: { t: Translate; label: string; url: string | null; display: string; disabledHint?: string }) {
+  const [open, setOpen] = useState(false);
+  return <div className="address-row">
+    <span className="address-name">{label}</span>
+    <span className="address-value">
+      {url ? <AddressLink t={t} href={url}>{display}</AddressLink> : <code className="address-absent">{disabledHint ?? '—'}</code>}
+    </span>
+    <Button
+      variant="ghost"
+      size="icon-sm"
+      aria-label={`${t('console.shareAddress')} · ${label}`}
+      title={t('console.shareAddress')}
+      disabled={url === null}
+      onClick={() => setOpen(true)}
+    ><QrCodeIcon /></Button>
+    {url ? <ShareDialog t={t} open={open} onOpenChange={setOpen} label={label} url={url} /> : null}
+  </div>;
+}
+
+/** The code, the address, and the two things anyone wants to do with it. */
+function ShareDialog({ t, open, onOpenChange, label, url }: { t: Translate; open: boolean; onOpenChange: (open: boolean) => void; label: string; url: string }) {
+  const [copied, setCopied] = useState(false);
+  const { toast } = useToast();
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      // A clipboard the browser will not hand over is not a failure worth a
+      // dialog of its own: the address is on screen and can be selected.
+      toast({ title: t('console.copyFailed'), tone: 'destructive' });
+    }
+  };
+  return <Dialog open={open} onOpenChange={onOpenChange}>
+    <DialogContent className="share-dialog">
+      <DialogHeader>
+        <DialogTitle>{label}</DialogTitle>
+        <DialogDescription>{t('console.scanToOpen')}</DialogDescription>
+      </DialogHeader>
+      <DialogBody className="share-body">
+        <QrCode value={url} label={`${label}: ${url}`} />
+        <code className="share-url">{url}</code>
+      </DialogBody>
+      <DialogFooter className="share-actions">
+        <Button variant="outline" onClick={() => void copy()}><Copy />{copied ? t('console.linkCopied') : t('dashboard.copyLink')}</Button>
+        <Button variant="outline" asChild><a href={url} target="_blank" rel="noopener noreferrer"><ArrowUpRight />{t('dashboard.open')}</a></Button>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>;
 }
 
 /**
@@ -1055,22 +1523,51 @@ function AddressLink({ t, href, children }: { t: Translate; href: string; childr
  * is advice printed on a page rather than offered where it can be acted on;
  * that belongs next to the setting itself.
  */
-function DataPanel({ t, navigate, activeProfile, latestBackup }: { t: Translate; navigate: Navigate; activeProfile: Profile | null; latestBackup: BackupManifest | null }) {
-  return <Card data-tour="data">
-    <PanelHeading icon={<Database />}>{t('console.data')}</PanelHeading>
+function DataPanel({ t, navigate, latestBackup, snapshot, onRemeasure }: { t: Translate; navigate: Navigate; latestBackup: BackupManifest | null; snapshot: SystemSnapshot | null; onRemeasure: () => Promise<void> }) {
+  /*
+   * Two figures, because they answer two different questions.
+   *
+   * One number for the whole installation invited the reading that the
+   * manager's own footprint and SillyTavern's data were separate things being
+   * added up, when the second is inside the first. Split, each half says what
+   * it is: what can be deleted to get room back, and what is actually being
+   * chatted with.
+   *
+   * The archive half is the remainder rather than a measurement of its own, so
+   * with more than one profile it also carries the profiles that are not
+   * running. That is the honest place to put them - they are stored, not in
+   * use - and it keeps the two halves adding up to the total on disk.
+   */
+  const storage = snapshot?.storage ?? null;
+  const dataBytes = storage?.dataBytes ?? null;
+  const totalBytes = storage?.managerBytes ?? null;
+  const archiveBytes = totalBytes === null || dataBytes === null ? null : Math.max(0, totalBytes - dataBytes);
+  const measured = archiveBytes !== null && dataBytes !== null;
+  return <Card data-tour="data" className="overview-pair">
+    <PanelHeading icon={<Database />}>{t('console.dataAndBackups')}</PanelHeading>
     <CardContent className="flex-1">
-      {latestBackup
-        ? <div className="grid gap-1">
-          <DetailRow label={t('console.activeProfile')}>{activeProfile?.name ?? t('console.noProfiles')}</DetailRow>
-          <DetailRow label={t('status.lastBackup')}>{new Date(latestBackup.createdAt).toLocaleString()}</DetailRow>
-        </div>
-        : <EmptyState
-          icon={<Archive />}
-          title={t('dashboard.noBackup')}
-          action={<Button size="sm" onClick={() => navigate('data')}><Archive />{t('dashboard.backupNow')}</Button>}
-        />}
+      <div className="grid gap-1">
+        <DetailRow label={t('console.sizeLabel')}>
+          {measured
+            ? <span className="size-split">
+              <span>{formatBytes(archiveBytes)} <em>({t('console.sizeBackups')})</em></span>
+              <span aria-hidden="true">+</span>
+              <span>{formatBytes(dataBytes)} <em>({t('console.sizeData')})</em></span>
+            </span>
+            : <span className="thinking">{t('system.measuring')}</span>}
+        </DetailRow>
+        {latestBackup
+          ? <DetailRow label={t('status.lastBackup')}>{new Date(latestBackup.createdAt).toLocaleString()}</DetailRow>
+          : <DetailRow label={t('status.lastBackup')}>
+            <Button variant="outline" size="sm" onClick={() => navigate('data')}><Archive />{t('dashboard.backupNow')}</Button>
+          </DetailRow>}
+      </div>
+      {storage ? <p className="system-note">
+        {storage.measuredAt ? <span>{t('system.sizesMeasuredAt')} {new Date(storage.measuredAt).toLocaleTimeString()}</span> : <span />}
+        <Button variant="ghost" size="sm" onClick={() => void onRemeasure()} disabled={storage.measuring}><RefreshCw />{storage.measuring ? t('system.measuring') : t('system.remeasure')}</Button>
+      </p> : null}
     </CardContent>
-    {latestBackup ? <CardFooter><Button variant="outline" className="w-full" onClick={() => navigate('data')}><Database />{t('nav.data')}<ArrowUpRight /></Button></CardFooter> : null}
+    <CardFooter><Button variant="outline" className="w-full" onClick={() => navigate('data')}><Database />{t('console.manageData')}<ArrowUpRight /></Button></CardFooter>
   </Card>;
 }
 
@@ -1233,11 +1730,8 @@ const SECRET_MASK = '********';
 interface R2FormState {
   readonly endpoint: string;
   readonly bucket: string;
-  readonly accountId: string;
   readonly accessKeyId: string;
   readonly secretAccessKey: string;
-  readonly enabled: boolean;
-  readonly localIntervalMinutes: number;
   readonly hotIntervalMinutes: number;
   readonly coldIntervalHours: number;
   readonly keepRecent: number;
@@ -1249,17 +1743,60 @@ function r2FormFrom(config: R2Config | null): R2FormState {
   return {
     endpoint: config?.endpoint ?? '',
     bucket: config?.bucket ?? '',
-    accountId: config?.accountId ?? '',
     accessKeyId: config?.accessKeyIdMasked ? SECRET_MASK : '',
     secretAccessKey: config?.secretAccessKeyConfigured ? SECRET_MASK : '',
-    enabled: config?.enabled ?? false,
-    localIntervalMinutes: config?.schedule.localIntervalMinutes ?? 60,
     hotIntervalMinutes: config?.schedule.hotIntervalMinutes ?? 5,
     coldIntervalHours: config?.schedule.coldIntervalHours ?? 6,
-    keepRecent: config?.retention.keepRecent ?? 48,
-    keepDaily: config?.retention.keepDaily ?? 14,
-    keepWeekly: config?.retention.keepWeekly ?? 8,
+    keepRecent: config?.retention.keepRecent ?? 24,
+    keepDaily: config?.retention.keepDaily ?? 30,
+    keepWeekly: config?.retention.keepWeekly ?? 0,
   };
+}
+
+/*
+ * The R2 schedule, asked as two plain questions.
+ *
+ * The dialog used to ask for six numbers, three of them retention: "keep
+ * recovery points", "then keep one a day", "then keep one a week". Each was
+ * accurate and together they were a puzzle - nobody could say how far back
+ * 48, 14 and 8 let them go without working it out. The question people have
+ * is how far back, so that is what is asked, and each answer is a set of the
+ * same numbers the server has always taken. The numbers are still there, under
+ * "Exact numbers", and a combination that matches no answer reads as Custom.
+ */
+const CUSTOM_CHOICE = 'custom';
+const R2_UPLOAD_CHOICES = [
+  { id: '5m', label: 'console.every5Minutes', hotIntervalMinutes: 5, coldIntervalHours: 6 },
+  { id: '15m', label: 'console.every15Minutes', hotIntervalMinutes: 15, coldIntervalHours: 12 },
+  { id: '1h', label: 'console.everyHour', hotIntervalMinutes: 60, coldIntervalHours: 24 },
+] as const;
+const R2_HISTORY_CHOICES = [
+  { id: '7d', label: 'console.r2Back7Days', keepRecent: 24, keepDaily: 7, keepWeekly: 0 },
+  { id: '30d', label: 'console.r2Back30Days', keepRecent: 24, keepDaily: 30, keepWeekly: 0 },
+  { id: '3m', label: 'console.r2Back3Months', keepRecent: 24, keepDaily: 14, keepWeekly: 13 },
+  { id: '1y', label: 'console.r2Back1Year', keepRecent: 24, keepDaily: 14, keepWeekly: 52 },
+] as const;
+/** How often the backup library takes a local copy. Not an R2 setting. */
+const LOCAL_BACKUP_CHOICES = [
+  { id: '1h', label: 'console.everyHour', intervalMinutes: 60 },
+  { id: '6h', label: 'console.every6Hours', intervalMinutes: 360 },
+  { id: '1d', label: 'console.everyDay', intervalMinutes: 1440 },
+] as const;
+type R2DialogTab = 'connection' | 'schedule';
+
+function uploadChoice(hotIntervalMinutes: number, coldIntervalHours: number) {
+  return R2_UPLOAD_CHOICES.find((choice) => choice.hotIntervalMinutes === hotIntervalMinutes && choice.coldIntervalHours === coldIntervalHours);
+}
+
+function historyChoice(keepRecent: number, keepDaily: number, keepWeekly: number) {
+  return R2_HISTORY_CHOICES.find((choice) => choice.keepRecent === keepRecent && choice.keepDaily === keepDaily && choice.keepWeekly === keepWeekly);
+}
+
+/** The schedule in one line, for the card: "Every 5 minutes · 30 days back". */
+function r2ScheduleSummary(t: Translate, config: R2Config): string {
+  const upload = uploadChoice(config.schedule.hotIntervalMinutes, config.schedule.coldIntervalHours);
+  const history = historyChoice(config.retention.keepRecent, config.retention.keepDaily, config.retention.keepWeekly);
+  return `${upload ? t(upload.label) : t('console.r2Custom')} · ${history ? t('console.r2BackFor', { period: t(history.label) }) : t('console.r2Custom')}`;
 }
 
 /**
@@ -1297,6 +1834,8 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
   const [stopping, setStopping] = useState(false);
   const uploadAbort = useRef<AbortController | null>(null);
   const [r2Config, setR2Config] = useState<R2Config | null>(null);
+  const [backupSchedule, setBackupSchedule] = useState<LocalBackupSchedule | null>(null);
+  const [scheduleSaving, setScheduleSaving] = useState(false);
   const [r2Snapshots, setR2Snapshots] = useState<R2SnapshotSummary[]>([]);
   const [r2Busy, setR2Busy] = useState<string | null>(null);
   const [profileOpen, setProfileOpen] = useState(false);
@@ -1308,6 +1847,8 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
   const [deleteTarget, setDeleteTarget] = useState<BackupManifest | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [r2Open, setR2Open] = useState(false);
+  const [r2Tab, setR2Tab] = useState<R2DialogTab>('connection');
+  const [r2Toggling, setR2Toggling] = useState(false);
   // Newest first: the archive somebody wants is nearly always the last one taken.
   const [backupQuery, setBackupQuery] = useState<TableQuery>(() => initialQuery({ sort: 'createdAt', direction: 'desc' }));
   const [snapshotQuery, setSnapshotQuery] = useState<TableQuery>(() => initialQuery({ pageSize: 5, sort: 'createdAt', direction: 'desc' }));
@@ -1318,7 +1859,7 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
   const failed = (title: string) => toast({ title, tone: 'destructive' });
   const jobStep = (job: Job) => translateStep(job.step, catalog, job.stepCode, job.stepParams);
   const refresh = async () => {
-    const [profileResponse, backupResponse, r2Response, snapshotResponse] = await Promise.all([apiFetch('/api/v1/profiles', { credentials: 'same-origin' }), apiFetch('/api/v1/backups', { credentials: 'same-origin' }), apiFetch('/api/v1/r2', { credentials: 'same-origin' }), apiFetch('/api/v1/r2/snapshots', { credentials: 'same-origin' }).catch(() => null)]);
+    const [profileResponse, backupResponse, r2Response, snapshotResponse, scheduleResponse] = await Promise.all([apiFetch('/api/v1/profiles', { credentials: 'same-origin' }), apiFetch('/api/v1/backups', { credentials: 'same-origin' }), apiFetch('/api/v1/r2', { credentials: 'same-origin' }), apiFetch('/api/v1/r2/snapshots', { credentials: 'same-origin' }).catch(() => null), apiFetch('/api/v1/backups/schedule', { credentials: 'same-origin' }).catch(() => null)]);
     // Listing recovery points needs the bucket, so it is the one call here that
     // fails when R2 is off or unreachable. That must not blank the page.
     if (snapshotResponse?.ok) setR2Snapshots((await snapshotResponse.json() as { snapshots: R2SnapshotSummary[] }).snapshots);
@@ -1326,6 +1867,7 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
     if (profileResponse.ok) { const payload = await profileResponse.json() as { profiles: Profile[]; activeProfileId: string | null }; onProfilesChange(payload.profiles, payload.activeProfileId); }
     if (backupResponse.ok) { const payload = await backupResponse.json() as { backups: BackupManifest[] }; onBackupsChange(payload.backups); }
     if (r2Response.ok) setR2Config((await r2Response.json() as { config: R2Config }).config);
+    if (scheduleResponse?.ok) setBackupSchedule((await scheduleResponse.json() as { schedule: LocalBackupSchedule }).schedule);
   };
   useEffect(() => { void refresh(); }, []);
 
@@ -1550,6 +2092,31 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
       return null;
     } catch { return t('console.r2SaveFailed'); }
   };
+  // The switch lives on the card, not at the bottom of the settings dialog:
+  // whether anything is being sent at all is the first thing to see, and
+  // turning it off should not mean opening the connection settings to do it.
+  const saveBackupSchedule = async (id: string) => {
+    const choice = LOCAL_BACKUP_CHOICES.find((item) => item.id === id);
+    if (!choice) return;
+    setScheduleSaving(true);
+    try {
+      const response = await apiFetch('/api/v1/backups/schedule', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ intervalMinutes: choice.intervalMinutes }) });
+      const payload = await response.json() as { schedule?: LocalBackupSchedule; error?: { message?: string } };
+      if (!response.ok || !payload.schedule) { failed(fail.body(payload, t('console.localScheduleFailed'))); return; }
+      setBackupSchedule(payload.schedule);
+      done(t('console.localScheduleSaved'));
+    } catch { failed(t('console.localScheduleFailed')); } finally { setScheduleSaving(false); }
+  };
+  const setR2Enabled = async (enabled: boolean) => {
+    setR2Toggling(true);
+    try {
+      const response = await apiFetch('/api/v1/r2', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ enabled }) });
+      const payload = await response.json() as { config?: R2Config; error?: { message?: string } };
+      if (!response.ok || !payload.config) { failed(fail.body(payload, t('console.r2SaveFailed'))); return; }
+      setR2Config(payload.config);
+      done(t(enabled ? 'console.r2TurnedOn' : 'console.r2TurnedOff'));
+    } catch { failed(t('console.r2SaveFailed')); } finally { setR2Toggling(false); }
+  };
   const testR2 = async () => {
     setR2Busy(t('console.r2Test'));
     try {
@@ -1617,6 +2184,7 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
   };
 
   const activeProfile = profiles.find((profile) => profile.id === activeProfileId) ?? profiles[0] ?? null;
+  const localChoice = backupSchedule ? LOCAL_BACKUP_CHOICES.find((choice) => choice.intervalMinutes === backupSchedule.intervalMinutes) : undefined;
   const backupColumns: DataTableColumn<BackupManifest>[] = [
     { id: 'name', header: t('common.name'), sortable: true, cell: (backup) => <span className="font-medium">{backup.name}</span> },
     { id: 'source', header: t('console.backupSource'), sortable: true, showFrom: 'md', cell: (backup) => <span className="text-muted-foreground">{backup.source === 'uploaded' ? t('console.uploadedBackup') : t('console.createdBackup')}</span> },
@@ -1643,13 +2211,19 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
   ];
   const snapshotColumns: DataTableColumn<R2SnapshotSummary>[] = [
     { id: 'createdAt', header: t('console.backupCreated'), sortable: true, cell: (snapshot) => <span className="whitespace-nowrap">{new Date(snapshot.createdAt).toLocaleString()}</span> },
-    { id: 'indexBytes', header: t('console.backupSize'), sortable: true, align: 'end', showFrom: 'sm', cell: (snapshot) => <span className="whitespace-nowrap text-muted-foreground">{formatBytes(snapshot.indexBytes)}</span> },
+    // The data the point holds, which is what bringing it back downloads. The
+    // index object alone - what this column used to show - is a few hundred
+    // kilobytes whatever the profile weighs.
+    { id: 'dataBytes', header: t('console.backupSize'), sortable: true, align: 'end', showFrom: 'sm', cell: (snapshot) => <span className="whitespace-nowrap text-muted-foreground">{snapshot.dataBytes === null ? '—' : formatBytes(snapshot.dataBytes)}</span> },
+    { id: 'fileCount', header: t('console.r2Files'), align: 'end', showFrom: 'md', cell: (snapshot) => <span className="whitespace-nowrap tabular-nums text-muted-foreground">{snapshot.fileCount === null ? '—' : snapshot.fileCount.toLocaleString()}</span> },
     {
       id: 'actions',
       header: <span className="sr-only">{t('console.backupActions')}</span>,
       align: 'end',
-      headClassName: 'w-24',
-      cell: (snapshot) => <Button variant="ghost" size="sm" onClick={() => void fetchSnapshot(snapshot)} disabled={r2Busy !== null}><Download />{t('console.r2Fetch')}</Button>,
+      headClassName: 'w-32',
+      // Not "Download": nothing leaves for the reader to carry off. The point
+      // comes back into this manager's backup library, to be restored from there.
+      cell: (snapshot) => <Button variant="ghost" size="sm" onClick={() => void fetchSnapshot(snapshot)} disabled={r2Busy !== null}><History />{t('console.r2Fetch')}</Button>,
     },
   ];
 
@@ -1671,6 +2245,19 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
     <Card>
       <PanelHeading icon={<Archive />}>{t('console.backupLibrary')}</PanelHeading>
       <CardContent className="grid gap-4">
+        {/* Here rather than in the R2 settings: it runs whether or not there is
+            a bucket, so it has to be reachable without one. */}
+        {backupSchedule ? <div>
+          <DetailRow label={t('console.localScheduleLabel')} hint={t('console.localScheduleHint')}>
+            <Select value={localChoice?.id ?? CUSTOM_CHOICE} onValueChange={(id) => void saveBackupSchedule(id)} disabled={scheduleSaving}>
+              <SelectTrigger size="sm" className="w-40"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {LOCAL_BACKUP_CHOICES.map((choice) => <SelectItem key={choice.id} value={choice.id}>{t(choice.label)}</SelectItem>)}
+                {localChoice ? null : <SelectItem value={CUSTOM_CHOICE} disabled>{t('console.everyMinutes', { minutes: backupSchedule.intervalMinutes })}</SelectItem>}
+              </SelectContent>
+            </Select>
+          </DetailRow>
+        </div> : null}
         {mixedProfile ? <Alert variant="destructive"><AlertDescription>{mixedProfile}</AlertDescription></Alert> : null}
         {busyAction ? <OperationProgress t={t} label={busyAction} progress={operationProgress} canStop={uploading || runningJobId !== null} stopping={stopping} onStop={() => void stopOperation()} warning={uploading ? t('console.uploadKeepTabOpen') : null} /> : null}
         <DataTable
@@ -1695,14 +2282,20 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
     </Card>
 
     <Card>
-      <PanelHeading icon={<Cloud />} action={<Badge variant="outline" className={r2Config?.enabled ? 'status-online' : ''}>{r2Config?.enabled ? t('console.r2On') : t('console.r2Off')}</Badge>}>{t('console.r2Title')}</PanelHeading>
+      <PanelHeading icon={<Cloud />}>{t('console.r2Title')}</PanelHeading>
       <CardContent className="grid gap-4">
         <div>
-          <DetailRow label={t('console.r2Connection')} hint={r2Config?.configured ? r2Config.bucket : t('console.r2SetupBody')}>
-            <Button variant="outline" size="sm" onClick={() => setR2Open(true)}>{r2Config?.configured ? t('console.r2Change') : t('console.r2Configure')}</Button>
+          <DetailRow label={t('console.r2Enabled')} hint={!r2Config?.configured ? t('console.r2NeedsSetup') : r2Config.enabled ? t('console.r2EnabledOnHint') : t('console.r2EnabledOffHint')}>
+            <Switch aria-label={t('console.r2Enabled')} checked={r2Config?.enabled ?? false} disabled={!r2Config?.configured || r2Toggling} onCheckedChange={(checked) => void setR2Enabled(checked)} />
           </DetailRow>
+          <DetailRow label={t('console.r2Connection')} hint={r2Config?.configured ? r2Config.bucket : t('console.r2SetupBody')}>
+            <Button variant="outline" size="sm" onClick={() => { setR2Tab('connection'); setR2Open(true); }}>{r2Config?.configured ? t('console.r2Change') : t('console.r2Configure')}</Button>
+          </DetailRow>
+          {r2Config?.configured ? <DetailRow label={t('console.r2Schedule')} hint={r2ScheduleSummary(t, r2Config)}>
+            <Button variant="outline" size="sm" onClick={() => { setR2Tab('schedule'); setR2Open(true); }}>{t('console.r2Change')}</Button>
+          </DetailRow> : null}
           {r2Config?.configured ? <DetailRow label={t('console.r2LastUpload')} hint={r2Config.lastUploadAt ? new Date(r2Config.lastUploadAt).toLocaleString() : '—'}>
-            <Button size="sm" onClick={() => void uploadR2()} disabled={r2Busy !== null}><Upload />{t('console.r2UploadLatest')}</Button>
+            <Button size="sm" onClick={() => void uploadR2()} disabled={r2Busy !== null || !r2Config.enabled}><Upload />{t('console.r2UploadLatest')}</Button>
             <DropdownMenu>
               <DropdownMenuTrigger asChild><Button variant="ghost" size="icon-sm" aria-label={t('console.r2More')} disabled={r2Busy !== null}><Ellipsis /></Button></DropdownMenuTrigger>
               <DropdownMenuContent align="end">
@@ -1780,7 +2373,7 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
       onConfirm={deleteBackup}
     />
     <RestoreDialog t={t} catalog={catalog} backup={selectedBackup} preview={selectedPreview} mode={restoreMode} onModeChange={setRestoreMode} onClose={closeRestore} onRestore={restoreSelected} />
-    <R2Dialog t={t} open={r2Open} onOpenChange={setR2Open} config={r2Config} onSave={saveR2} />
+    <R2Dialog t={t} open={r2Open} onOpenChange={setR2Open} tab={r2Tab} config={r2Config} onSave={saveR2} />
   </div>;
 }
 
@@ -1898,14 +2491,16 @@ function RestoreDialog({ t, catalog, backup, preview, mode, onModeChange, onClos
  * here now, split into the part that says where the data goes and the part that
  * says how often.
  */
-function R2Dialog({ t, open, onOpenChange, config, onSave }: { t: Translate; open: boolean; onOpenChange: (open: boolean) => void; config: R2Config | null; onSave: (form: R2FormState) => Promise<string | null> }) {
+function R2Dialog({ t, open, onOpenChange, tab, config, onSave }: { t: Translate; open: boolean; onOpenChange: (open: boolean) => void; tab: R2DialogTab; config: R2Config | null; onSave: (form: R2FormState) => Promise<string | null> }) {
   const [form, setForm] = useState<R2FormState>(() => r2FormFrom(config));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const enabledId = useId();
   useEffect(() => { if (open) { setForm(r2FormFrom(config)); setError(null); } }, [open, config]);
   const set = (patch: Partial<R2FormState>) => setForm((current) => ({ ...current, ...patch }));
   const number = (value: string, fallback: number) => { const parsed = Number.parseInt(value, 10); return Number.isFinite(parsed) ? parsed : fallback; };
+  // Set in `.env`: shown so the reader knows where it comes from, not editable,
+  // because the server would ignore the edit.
+  const fromEnvironment = new Set<string>(config?.environmentFields ?? []);
 
   const save = async () => {
     setBusy(true); setError(null);
@@ -1916,8 +2511,9 @@ function R2Dialog({ t, open, onOpenChange, config, onSave }: { t: Translate; ope
     } finally { setBusy(false); }
   };
 
-  const schedule: Array<{ label: string; value: number; apply: (value: number) => Partial<R2FormState>; min: number }> = [
-    { label: t('console.r2LocalEvery'), value: form.localIntervalMinutes, apply: (value) => ({ localIntervalMinutes: value }), min: 1 },
+  const upload = uploadChoice(form.hotIntervalMinutes, form.coldIntervalHours);
+  const history = historyChoice(form.keepRecent, form.keepDaily, form.keepWeekly);
+  const exact: Array<{ label: string; value: number; apply: (value: number) => Partial<R2FormState>; min: number }> = [
     { label: t('console.r2HotEvery'), value: form.hotIntervalMinutes, apply: (value) => ({ hotIntervalMinutes: value }), min: 1 },
     { label: t('console.r2ColdEvery'), value: form.coldIntervalHours, apply: (value) => ({ coldIntervalHours: value }), min: 1 },
     { label: t('console.r2KeepRecent'), value: form.keepRecent, apply: (value) => ({ keepRecent: value }), min: 1 },
@@ -1932,38 +2528,66 @@ function R2Dialog({ t, open, onOpenChange, config, onSave }: { t: Translate; ope
         <DialogDescription>{t('console.r2SetupBody')}</DialogDescription>
       </DialogHeader>
       <DialogBody>
-        <Tabs defaultValue="connection">
+        <Tabs defaultValue={tab}>
           <TabsList className="w-full">
             <TabsTrigger value="connection" className="flex-1">{t('console.r2Connection')}</TabsTrigger>
             <TabsTrigger value="schedule" className="flex-1">{t('console.r2Schedule')}</TabsTrigger>
           </TabsList>
           <TabsContent value="connection" className="grid gap-4 pt-4">
-            <Field label={t('console.r2Endpoint')}><Input value={form.endpoint} onChange={(event) => set({ endpoint: event.target.value })} placeholder="https://ACCOUNT_ID.r2.cloudflarestorage.com" autoComplete="off" /></Field>
-            <Field label={t('console.r2Bucket')}><Input value={form.bucket} onChange={(event) => set({ bucket: event.target.value })} autoComplete="off" /></Field>
-            <Field label={t('console.r2AccountId')}><Input value={form.accountId} onChange={(event) => set({ accountId: event.target.value })} autoComplete="off" /></Field>
-            <Field label={t('console.r2AccessKey')}><Input value={form.accessKeyId} onChange={(event) => set({ accessKeyId: event.target.value })} autoComplete="off" /></Field>
-            <Field label={t('console.r2SecretKey')}><PasswordInput revealLabel={t('setup.reveal')} hideLabel={t('setup.hide')} value={form.secretAccessKey} onChange={(event) => set({ secretAccessKey: event.target.value })} autoComplete="new-password" /></Field>
+            {fromEnvironment.size > 0 ? <Alert><AlertDescription>{t('console.r2FromEnv')}</AlertDescription></Alert> : null}
+            <Field label={t('console.r2Endpoint')}><Input value={form.endpoint} onChange={(event) => set({ endpoint: event.target.value })} placeholder="https://ACCOUNT_ID.r2.cloudflarestorage.com" autoComplete="off" disabled={fromEnvironment.has('endpoint')} /></Field>
+            <Field label={t('console.r2Bucket')}><Input value={form.bucket} onChange={(event) => set({ bucket: event.target.value })} autoComplete="off" disabled={fromEnvironment.has('bucket')} /></Field>
+            <Field label={t('console.r2AccessKey')}><Input value={form.accessKeyId} onChange={(event) => set({ accessKeyId: event.target.value })} autoComplete="off" disabled={fromEnvironment.has('accessKeyId')} /></Field>
+            <Field label={t('console.r2SecretKey')}><PasswordInput revealLabel={t('setup.reveal')} hideLabel={t('setup.hide')} value={form.secretAccessKey} onChange={(event) => set({ secretAccessKey: event.target.value })} autoComplete="new-password" disabled={fromEnvironment.has('secretAccessKey')} /></Field>
           </TabsContent>
-          <TabsContent value="schedule" className="grid gap-4 pt-4 sm:grid-cols-2">
-            {schedule.map((row) => <Field key={row.label} label={row.label}>
-              <Input type="number" min={row.min} value={row.value} onChange={(event) => set(row.apply(number(event.target.value, row.value)))} />
-            </Field>)}
+          <TabsContent value="schedule" className="grid gap-4 pt-4">
+            <ChoiceSelect
+              label={t('console.r2UploadEvery')}
+              hint={t('console.r2UploadEveryHint')}
+              value={upload?.id ?? CUSTOM_CHOICE}
+              choices={R2_UPLOAD_CHOICES.map((choice) => ({ id: choice.id, text: t(choice.label) }))}
+              customLabel={t('console.r2Custom')}
+              onChange={(id) => { const choice = R2_UPLOAD_CHOICES.find((item) => item.id === id); if (choice) set({ hotIntervalMinutes: choice.hotIntervalMinutes, coldIntervalHours: choice.coldIntervalHours }); }}
+            />
+            <ChoiceSelect
+              label={t('console.r2History')}
+              hint={t('console.r2HistoryHint')}
+              value={history?.id ?? CUSTOM_CHOICE}
+              choices={R2_HISTORY_CHOICES.map((choice) => ({ id: choice.id, text: t(choice.label) }))}
+              customLabel={t('console.r2Custom')}
+              onChange={(id) => { const choice = R2_HISTORY_CHOICES.find((item) => item.id === id); if (choice) set({ keepRecent: choice.keepRecent, keepDaily: choice.keepDaily, keepWeekly: choice.keepWeekly }); }}
+            />
+            <details className="r2-advanced">
+              <summary>{t('console.r2Advanced')}</summary>
+              <div className="grid gap-4 pt-3 sm:grid-cols-2">
+                {exact.map((row) => <Field key={row.label} label={row.label}>
+                  <Input type="number" min={row.min} value={row.value} onChange={(event) => set(row.apply(number(event.target.value, row.value)))} />
+                </Field>)}
+              </div>
+            </details>
           </TabsContent>
         </Tabs>
         {error ? <Alert variant="destructive" className="mt-4"><AlertDescription>{error}</AlertDescription></Alert> : null}
       </DialogBody>
-      <DialogFooter className="sm:justify-between">
-        <div className="flex items-center gap-2">
-          <Switch id={enabledId} checked={form.enabled} onCheckedChange={(checked) => set({ enabled: checked })} />
-          <Label htmlFor={enabledId}>{t('console.r2Enabled')}</Label>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={busy}>{t('common.cancel')}</Button>
-          <Button onClick={() => void save()} disabled={busy}>{t('common.save')}</Button>
-        </div>
+      <DialogFooter>
+        <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={busy}>{t('common.cancel')}</Button>
+        <Button onClick={() => void save()} disabled={busy}>{t('common.save')}</Button>
       </DialogFooter>
     </DialogContent>
   </Dialog>;
+}
+
+/** One plain question with a few answers, and "Custom" only when none of them fits. */
+function ChoiceSelect({ label, hint, value, choices, customLabel, onChange }: { label: string; hint: string; value: string; choices: ReadonlyArray<{ id: string; text: string }>; customLabel: string; onChange: (id: string) => void }) {
+  return <Field label={label} hint={hint}>
+    <Select value={value} onValueChange={onChange}>
+      <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+      <SelectContent>
+        {choices.map((choice) => <SelectItem key={choice.id} value={choice.id}>{choice.text}</SelectItem>)}
+        {value === CUSTOM_CHOICE ? <SelectItem value={CUSTOM_CHOICE} disabled>{customLabel}</SelectItem> : null}
+      </SelectContent>
+    </Select>
+  </Field>;
 }
 
 /**
@@ -1989,6 +2613,7 @@ function R2Usage({ t, config }: { t: Translate; config: R2Config }) {
       <span className={cn('text-xs', bar.filled >= 0.9 ? 'text-destructive' : 'text-muted-foreground')}>{bar.label}: {bar.text}</span>
       <span className="progress-track"><span className="progress-value" style={{ width: `${Math.max(1, bar.filled * 100)}%` }} /></span>
     </div>)}
+    <p className="text-xs text-muted-foreground">{t('console.r2UsageNote')}</p>
   </div>;
 }
 
@@ -2005,7 +2630,15 @@ function formatDuration(seconds: number): string {
   return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`;
 }
 
-function SystemPanel({ t, csrfToken }: { t: Translate; csrfToken: string }) {
+/**
+ * What this machine is doing, read once for everything that asks.
+ *
+ * The same snapshot answers three questions on the overview - how loaded the
+ * machine is, how much room is left, and how large the data has grown - and
+ * they are asked in three different cards. One poll serves all of them rather
+ * than each card opening its own.
+ */
+function useSystemSnapshot(csrfToken: string): { snapshot: SystemSnapshot | null; remeasure: () => Promise<void> } {
   const [snapshot, setSnapshot] = useState<SystemSnapshot | null>(null);
   const remeasure = async () => {
     try {
@@ -2031,14 +2664,27 @@ function SystemPanel({ t, csrfToken }: { t: Translate; csrfToken: string }) {
     void poll();
     return () => { controller.abort(); clearTimeout(timer); };
   }, []);
+  return { snapshot, remeasure };
+}
 
+/**
+ * How hard this machine is working, and nothing about what is stored on it.
+ *
+ * The card used to end with two directory sizes - what the manager keeps and
+ * what SillyTavern's data weighs - which put a number for the whole
+ * installation directly above a number for one profile inside it, with no way
+ * to tell that the second was part of the first. Both have moved to where the
+ * thing they measure is managed; this card is now three live readings and a
+ * core count nobody was acting on has gone with them.
+ */
+function SystemPanel({ t, snapshot }: { t: Translate; snapshot: SystemSnapshot | null }) {
   const rows: Array<{ key: string; label: string; value: string; ratio?: number }> = [];
   if (snapshot) {
     const { cpu, memory, storage } = snapshot;
     rows.push({
       key: 'cpu',
       label: t('system.cpu'),
-      value: `${cpu.usagePercent === null ? '—' : `${cpu.usagePercent}%`} · ${cpu.cores} ${t('system.cores')}`,
+      value: cpu.usagePercent === null ? '—' : `${cpu.usagePercent}%`,
       ...(cpu.usagePercent === null ? {} : { ratio: cpu.usagePercent / 100 }),
     });
     rows.push({
@@ -2056,21 +2702,9 @@ function SystemPanel({ t, csrfToken }: { t: Translate; csrfToken: string }) {
         ratio: storage.totalBytes > 0 ? used / storage.totalBytes : 0,
       });
     }
-    rows.push({
-      key: 'managerBytes',
-      label: t('system.managerFootprint'),
-      value: storage.managerBytes === null ? t('system.measuring') : formatBytes(storage.managerBytes),
-    });
-    rows.push({
-      key: 'dataBytes',
-      label: t('system.activeData'),
-      value: storage.dataBytes === null
-        ? t('system.measuring')
-        : `${formatBytes(storage.dataBytes)}${storage.dataFileCount === null ? '' : ` · ${storage.dataFileCount.toLocaleString()} ${t('console.files')}`}`,
-    });
   }
 
-  return <Card data-tour="system"><PanelHeading icon={<Cpu />}>{t('system.title')}</PanelHeading><CardContent className="flex-1">
+  return <Card data-tour="system" className="overview-pair"><PanelHeading icon={<Cpu />}>{t('system.title')}</PanelHeading><CardContent className="flex-1">
     {snapshot ? <dl className="system-list">{rows.map((row) => <div key={row.key}>
       <dt>{row.label}</dt>
       <dd>
@@ -2079,15 +2713,11 @@ function SystemPanel({ t, csrfToken }: { t: Translate; csrfToken: string }) {
       </dd>
     </div>)}</dl> : <dl className="system-list" aria-busy="true">{/* The shape the readings will take, rather than the word "Loading" in
         the middle of a card that is about to be full of numbers. */}
-      {['cpu', 'memory', 'disk', 'manager', 'data'].map((key) => <div key={key}>
+      {['cpu', 'memory', 'disk'].map((key) => <div key={key}>
         <dt><Skeleton className="h-3 w-20" /></dt>
         <dd><Skeleton className="h-4 w-36" /></dd>
       </div>)}
     </dl>}
-    {snapshot ? <p className="system-note">
-      {snapshot.storage.measuredAt ? <span>{t('system.sizesMeasuredAt')} {new Date(snapshot.storage.measuredAt).toLocaleTimeString()}</span> : <span />}
-      <Button variant="ghost" size="sm" onClick={() => void remeasure()} disabled={snapshot.storage.measuring}><RefreshCw />{snapshot.storage.measuring ? t('system.measuring') : t('system.remeasure')}</Button>
-    </p> : null}
   </CardContent></Card>;
 }
 
@@ -2204,7 +2834,7 @@ function MetricsPage({ t }: { t: Translate }) {
 function MetricsSkeleton() {
   return <div className="grid min-w-0 gap-4" aria-busy="true">
     <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-      {[0, 1, 2, 3].map((tile) => <Card key={tile} className="gap-0 py-4 shadow-none"><CardContent className="grid gap-2">
+      {[0, 1, 2, 3].map((tile) => <Card key={tile} className="gap-0 py-4"><CardContent className="grid gap-2">
         <Skeleton className="h-3 w-24" />
         <Skeleton className="h-7 w-28" />
       </CardContent></Card>)}
@@ -2248,9 +2878,31 @@ function TokenBreakdown({ t, open, onOpenChange, totals }: { t: Translate; open:
   </Dialog>;
 }
 
+/**
+ * How wide an element is right now, kept current as it changes.
+ *
+ * The activity chart was drawn once at 880 units and scaled to fit its card.
+ * On a phone that is a scale of about 0.4, which took its ten-pixel labels
+ * down to four - present, and unreadable. Drawn at the width it is shown at,
+ * one unit is one pixel and a label is the size the stylesheet says.
+ */
+function useElementWidth<T extends HTMLElement>(fallback: number): { ref: RefObject<T | null>; width: number } {
+  const ref = useRef<T | null>(null);
+  const [width, setWidth] = useState(fallback);
+  useEffect(() => {
+    const node = ref.current;
+    if (!node || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(([entry]) => { if (entry && entry.contentRect.width > 0) setWidth(Math.round(entry.contentRect.width)); });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+  return { ref, width };
+}
+
 function TrendChart({ t, daily, to, days }: { t: Translate; daily: readonly MetricsSnapshot['daily'][number][]; to: string; days: number }) {
   const [measure, setMeasure] = useState<'requests' | 'totalTokens'>('requests');
   const [selected, setSelected] = useState<string | null>(null);
+  const { ref, width: measured } = useElementWidth<HTMLDivElement>(880);
   const byDay = new Map(daily.map((bucket) => [bucket.key, bucket]));
   const end = new Date(to.slice(0, 10));
   const series = Array.from({ length: days }, (_, index) => {
@@ -2261,10 +2913,19 @@ function TrendChart({ t, daily, to, days }: { t: Translate; daily: readonly Metr
   const maximum = Math.max(1, ...series.map((bucket) => bucket[measure]));
   const scale = maximum <= 4 ? maximum : Math.ceil(maximum / 4) * 4;
   const ticks = scale < 4 ? Array.from({ length: scale + 1 }, (_, i) => i) : [0, scale / 4, scale / 2, scale * .75, scale];
-  const width = 880; const height = 250; const pad = { top: 12, right: 24, bottom: 30, left: 52 };
+  const width = Math.max(260, measured);
+  const compact = width < 560;
+  const height = compact ? 200 : 250;
+  const pad = { top: 12, right: compact ? 14 : 24, bottom: 28, left: compact ? 40 : 52 };
   const plotWidth = width - pad.left - pad.right; const plotHeight = height - pad.top - pad.bottom;
-  const xFor = (index: number) => pad.left + index * plotWidth / (series.length - 1);
+  const step = plotWidth / Math.max(1, series.length - 1);
+  const xFor = (index: number) => pad.left + index * step;
   const yFor = (value: number) => pad.top + plotHeight * (1 - value / scale);
+  // A date roughly every 64 pixels, whatever the width - five labels across a
+  // desktop card, three on a phone - and never one crowding the last.
+  const labelEvery = Math.max(1, Math.ceil(64 / step));
+  const labelled = (index: number) => index === 0 || index === days - 1 || (index % labelEvery === 0 && days - 1 - index >= labelEvery * 0.75 && index >= labelEvery * 0.75);
+  const anchor = (index: number) => index === 0 ? 'start' : index === days - 1 ? 'end' : 'middle';
   const points = series.map((bucket, index) => `${xFor(index)},${yFor(bucket[measure])}`).join(' ');
   const selection = series.find((bucket) => bucket.key === selected) ?? series.at(-1)!;
   return <Card>
@@ -2275,20 +2936,22 @@ function TrendChart({ t, daily, to, days }: { t: Translate; daily: readonly Metr
       </TabsList>
     </Tabs>}>{t('console.metricActivity')}</PanelHeading>
     <CardContent>
-      <div className="trend-selection" aria-live="polite"><time dateTime={selection.key}>{new Date(selection.key).toLocaleDateString(undefined, { day: 'numeric', month: 'short', timeZone: 'UTC' })}</time><strong>{selection[measure].toLocaleString()}</strong><span>{t(measure === 'requests' ? 'console.metricRequestsShort' : 'console.metricTokens')}</span></div>
-      {daily.length === 0 ? <EmptyState icon={<BarChart3 />} title={t('console.noMetrics')} /> : <div className="metrics-chart-shell">
-        <svg className="metrics-chart-svg" viewBox={`0 0 ${width} ${height}`} role="group" aria-label={t('console.metricActivity')}>
-          {ticks.map((value) => <g key={value}><line x1={pad.left} x2={width - pad.right} y1={yFor(value)} y2={yFor(value)} className="trend-grid-line" /><text x={pad.left - 10} y={yFor(value) + 4} textAnchor="end" className="trend-axis-label">{metricCompact(value)}</text></g>)}
-          <polygon points={`${pad.left},${yFor(0)} ${points} ${width - pad.right},${yFor(0)}`} className="trend-area" />
-          <polyline points={points} className="trend-line trend-line-request" />
-          {series.map((bucket, index) => <g key={bucket.key}>
-            {bucket.key === selection.key ? <line x1={xFor(index)} x2={xFor(index)} y1={pad.top} y2={yFor(0)} className="trend-cursor" /> : null}
-            {bucket[measure] > 0 ? <circle cx={xFor(index)} cy={yFor(bucket[measure])} r="3" className="trend-point trend-point-request" /> : null}
-            {index === 0 || index === days - 1 || index % Math.ceil(days / 5) === 0 ? <text x={xFor(index)} y={height - 5} textAnchor="middle" className="trend-axis-label">{bucket.key.slice(5).replace('-', '/')}</text> : null}
-            <rect x={xFor(index) - plotWidth / (days - 1) / 2} y={pad.top} width={plotWidth / (days - 1)} height={plotHeight} fill="transparent" tabIndex={0} role="button" aria-label={`${bucket.key}: ${bucket[measure]} ${t(measure === 'requests' ? 'console.metricRequestsShort' : 'console.metricTokens')}`} onPointerEnter={() => setSelected(bucket.key)} onFocus={() => setSelected(bucket.key)} onClick={() => setSelected(bucket.key)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setSelected(bucket.key); } }} />
-          </g>)}
-        </svg>
-      </div>}
+      <div ref={ref} className="min-w-0">
+        <div className="trend-selection" style={{ marginLeft: pad.left }} aria-live="polite"><time dateTime={selection.key}>{new Date(selection.key).toLocaleDateString(undefined, { day: 'numeric', month: 'short', timeZone: 'UTC' })}</time><strong>{selection[measure].toLocaleString()}</strong><span>{t(measure === 'requests' ? 'console.metricRequestsShort' : 'console.metricTokens')}</span></div>
+        {daily.length === 0 ? <EmptyState icon={<BarChart3 />} title={t('console.noMetrics')} /> : <div className="metrics-chart-shell">
+          <svg className="metrics-chart-svg" width={width} height={height} viewBox={`0 0 ${width} ${height}`} role="group" aria-label={t('console.metricActivity')}>
+            {ticks.map((value) => <g key={value}><line x1={pad.left} x2={width - pad.right} y1={yFor(value)} y2={yFor(value)} className="trend-grid-line" /><text x={pad.left - 8} y={yFor(value) + 4} textAnchor="end" className="trend-axis-label">{metricCompact(value)}</text></g>)}
+            <polygon points={`${pad.left},${yFor(0)} ${points} ${width - pad.right},${yFor(0)}`} className="trend-area" />
+            <polyline points={points} className="trend-line trend-line-request" />
+            {series.map((bucket, index) => <g key={bucket.key}>
+              {bucket.key === selection.key ? <line x1={xFor(index)} x2={xFor(index)} y1={pad.top} y2={yFor(0)} className="trend-cursor" /> : null}
+              {bucket[measure] > 0 ? <circle cx={xFor(index)} cy={yFor(bucket[measure])} r={compact ? 2.5 : 3} className="trend-point trend-point-request" /> : null}
+              {labelled(index) ? <text x={xFor(index)} y={height - 8} textAnchor={anchor(index)} className="trend-axis-label">{bucket.key.slice(5).replace('-', '/')}</text> : null}
+              <rect x={xFor(index) - step / 2} y={pad.top} width={step} height={plotHeight} fill="transparent" tabIndex={0} role="button" aria-label={`${bucket.key}: ${bucket[measure]} ${t(measure === 'requests' ? 'console.metricRequestsShort' : 'console.metricTokens')}`} onPointerEnter={() => setSelected(bucket.key)} onFocus={() => setSelected(bucket.key)} onClick={() => setSelected(bucket.key)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setSelected(bucket.key); } }} />
+            </g>)}
+          </svg>
+        </div>}
+      </div>
     </CardContent>
   </Card>;
 }
@@ -2426,7 +3089,15 @@ function ConfigPage({ t, config, security, onConfigUpdate, onConfigReset, onChan
    * The labels only appear from `sm` up. On a phone the row has a name, and a
    * pencil next to a name has never needed the word "edit" under it.
    */
-  const rowAction = (icon: ReactNode, label: string, full: string, onClick: () => void, options: { readonly variant?: 'outline'; readonly disabled?: boolean } = {}) =>
+  /*
+   * The visible word is the short one; the whole sentence stays as the
+   * accessible name and the tooltip. Two rows each carrying "Đổi mật khẩu" and
+   * "Đổi mã PIN" spelt out is the same verb four times on one card, and the
+   * row already says which door it is about. Signing out is the destructive
+   * one of the pair, and is coloured as such so the two are not one row of
+   * identical grey buttons.
+   */
+  const rowAction = (icon: ReactNode, label: string, full: string, onClick: () => void, options: { readonly variant?: 'outline' | 'destructive'; readonly disabled?: boolean } = {}) =>
     <Button variant={options.variant ?? 'outline'} size="sm" disabled={options.disabled ?? false} aria-label={full} title={full} onClick={onClick}>
       {icon}<span className="hidden sm:inline">{label}</span>
     </Button>;
@@ -2438,8 +3109,8 @@ function ConfigPage({ t, config, security, onConfigUpdate, onConfigReset, onChan
         <div>
           <DetailRow label={t('console.managerPasswordTitle')} hint={t('console.managerPasswordHint')}>
             <div className="flex items-center gap-1">
-              {rowAction(<Pencil />, t('console.changePassword'), t('console.changeManagerPassword'), () => setManagerPasswordOpen(true), { variant: 'outline' })}
-              {rowAction(<LogOut />, t('console.signOut'), t('console.signOutManager'), () => void onSignOut(), { variant: 'outline' })}
+              {rowAction(<Pencil />, t('common.edit'), t('console.changeManagerPassword'), () => setManagerPasswordOpen(true), { variant: 'outline' })}
+              {rowAction(<LogOut />, t('console.signOut'), t('console.signOutManager'), () => void onSignOut(), { variant: 'destructive' })}
             </div>
           </DetailRow>
           <DetailRow
@@ -2447,8 +3118,8 @@ function ConfigPage({ t, config, security, onConfigUpdate, onConfigReset, onChan
             hint={t('console.sillyPasswordHint')}
           >
             <div className="flex items-center gap-1">
-              {rowAction(<Pencil />, security.passwordConfigured ? t('console.changePassword') : t('console.setPassword'), security.passwordConfigured ? t('console.changeSillyPassword') : t('console.setSillyPassword'), () => setSillyPasswordOpen(true), { variant: 'outline' })}
-              {rowAction(<LogOut />, t('console.signOut'), security.sessions > 0 ? t('console.signOutDevices') : t('console.signOutDevicesNone'), () => setSignOutDevicesOpen(true), { variant: 'outline', disabled: security.sessions === 0 })}
+              {rowAction(<Pencil />, security.passwordConfigured ? t('common.edit') : t('console.setPasscode'), security.passwordConfigured ? t('console.changeSillyPassword') : t('console.setSillyPassword'), () => setSillyPasswordOpen(true), { variant: 'outline' })}
+              {rowAction(<LogOut />, t('console.signOut'), security.sessions > 0 ? t('console.signOutDevices') : t('console.signOutDevicesNone'), () => setSignOutDevicesOpen(true), { variant: 'destructive', disabled: security.sessions === 0 })}
             </div>
           </DetailRow>
         </div>

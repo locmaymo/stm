@@ -35,13 +35,6 @@ test('the addresses line up under one another', () => {
   assert.equal(new Set(columns).size, 1, `addresses start at ${columns.join(' and ')}`);
 });
 
-test('the setup code is printed only while it still opens something', () => {
-  const without = bootstrapBanner({ ...base, colour: false });
-  assert.equal(without.includes('Setup code'), false);
-  const with_ = bootstrapBanner({ ...base, setupCode: { label: 'Setup code', value: 'abc123' }, colour: false });
-  assert.ok(with_.includes('abc123'));
-});
-
 test('a narrow window gets the addresses rather than a wrapped code', () => {
   const banner = bootstrapBanner({
     ...base,

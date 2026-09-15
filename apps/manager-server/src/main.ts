@@ -45,9 +45,6 @@ console.log(bootstrapBanner({
     { label: 'On this computer', url },
     ...(lanUrl ? [{ label: 'On this Wi-Fi', url: lanUrl }] : []),
   ],
-  // Only until a password exists: after that the code opens nothing, and
-  // printing it every start would train people to ignore the banner.
-  ...(persisted.adminPasswordHash ? {} : { setupCode: { label: 'Setup code', value: manager.store.getInitialSetupCode() } }),
   ...(lanUrl ? { qr: { value: lanUrl, caption: 'Scan to open on a phone' } } : {}),
   stopHint: 'Press Ctrl+C to stop.',
   colour,

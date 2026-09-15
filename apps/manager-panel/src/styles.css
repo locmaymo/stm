@@ -89,6 +89,21 @@
   --attention: #b54708;
   --attention-background: #fdf0e3;
 
+  /* A link is read, not pressed, so it is a deeper and quieter blue than the
+     button sharing the page with it. The action blue at 13px over white
+     glares; this one carries the same meaning without the shine. */
+  --link: #133a9e;
+  --link-hover: #0d2870;
+  /* The sweep that says work is in progress.
+
+     The gap between the two is the whole effect. An earlier pair were both
+     dark slate, which kept every frame legible and made the band travelling
+     between them invisible - the animation ran and nobody could see it. The
+     resting colour is now as light as it can be while still passing contrast
+     on this ground, and the band goes to near-black, so the sweep reads. */
+  --sweep-base: #6a7588;
+  --sweep-peak: #080d16;
+
   --elevation-1: 0 1px 2px rgb(16 24 40 / 0.05);
   --elevation-2: 0 4px 12px -2px rgb(16 24 40 / 0.10), 0 2px 4px -2px rgb(16 24 40 / 0.06);
   --elevation-3: 0 16px 40px -12px rgb(16 24 40 / 0.20), 0 4px 10px -4px rgb(16 24 40 / 0.10);
@@ -131,6 +146,10 @@
   --success-background: #12291f;
   --attention: #f0b264;
   --attention-background: #2c2113;
+  --link: #86adf0;
+  --link-hover: #b4cffa;
+  --sweep-base: #78869c;
+  --sweep-peak: #ffffff;
 
   --elevation-1: 0 1px 2px rgb(0 0 0 / 0.30);
   --elevation-2: 0 4px 12px -2px rgb(0 0 0 / 0.45), 0 2px 4px -2px rgb(0 0 0 / 0.30);
@@ -161,8 +180,10 @@
   code { font-family: Consolas, "SFMono-Regular", monospace; }
 }
 
-/* The bar spans the window; its contents sit in the same column as the page
-   below, so the title and the page heading share one left edge at every width. */
+/* The bar spans the window and so do its contents: what names the page sits
+   against the left edge, what acts on the whole console against the right.
+   Holding them in the page column instead left both clusters stranded in the
+   middle of a wide screen with the window's own edges empty beside them. */
 .site-header {
   position: sticky;
   top: 0;
@@ -178,19 +199,35 @@
   align-items: center;
   gap: 10px;
   width: 100%;
-  max-width: var(--page-width);
   height: 100%;
-  margin: 0 auto;
-  padding: 0 var(--page-gutter);
+  padding: 0 10px;
+}
+
+@media (min-width: 640px) {
+  .site-header-inner { padding: 0 14px; }
 }
 .site-header h1 { min-width: 0; overflow: hidden; font-size: 15px; font-weight: 600; line-height: 1.5; text-overflow: ellipsis; white-space: nowrap; }
 .brand-header { height: var(--header-height); flex-shrink: 0; padding: 0 14px; flex-direction: row; align-items: center; border-bottom: 1px solid var(--border); }
 .brand { display: flex; min-width: 0; align-items: center; gap: 10px; font-weight: 650; }
-.language-control { display: inline-flex; gap: 2px; padding: 3px; border: 1px solid var(--border); border-radius: 8px; }
-.language-control button { min-width: 32px; height: 28px; padding: 0 6px; border-radius: 5px; color: var(--muted-foreground); font-size: 12px; font-weight: 600; }
-.language-control button[aria-pressed="true"] { background: var(--muted); color: var(--foreground); }
+/* One square that says which language is on and changes it when pressed, the
+   same size as the two controls beside it. The pair of buttons inside a track
+   it replaced was a third taller than its neighbours and read as a setting
+   with two states when only one of them was ever the answer. */
+.language-toggle { font-size: 12px; font-weight: 700; letter-spacing: 0.03em; }
+/* Something arrived in the log while the reader was looking elsewhere. */
+.log-header-button { position: relative; }
+.log-new-dot {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--primary);
+  box-shadow: 0 0 0 2px var(--background);
+}
 .auth-shell { display: flex; min-height: 100dvh; align-items: center; justify-content: center; padding: 24px; }
-[data-slot="card-grid"] > [data-slot="card"] { min-width: 0; gap: 16px; box-shadow: none; }
+[data-slot="card-grid"] > [data-slot="card"] { min-width: 0; gap: 16px; }
 .panel-title { display: flex; align-items: center; gap: 10px; font-size: 15px; font-weight: 600; line-height: 1.5; }
 .panel-title svg { width: 17px; height: 17px; color: var(--muted-foreground); flex-shrink: 0; }
 [data-slot="card-header"] { align-items: center; grid-template-rows: auto; }
@@ -198,28 +235,378 @@
 .status-attention { color: var(--attention); background: var(--attention-background); border-color: transparent; }
 .status-online { color: var(--primary); border-color: color-mix(in srgb, var(--primary) 35%, transparent); background: color-mix(in srgb, var(--primary) 10%, transparent); }
 .field-label { display: block; margin-bottom: 9px; font-size: 13px; color: var(--muted-foreground); }
-.address-list { display: grid; gap: 12px; font-size: 13px; }
-/* The label and the address share a line while both fit. Once the labels say
-   which network they mean, a card-width column often cannot hold both, and the
-   address drops to its own line rather than breaking through the middle of an
-   IP. */
-.address-list > div { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px 12px; }
-.address-list dt { min-width: 0; color: var(--muted-foreground); }
-.address-list dd { min-width: 0; margin-left: auto; overflow-wrap: anywhere; text-align: right; }
-.address-link { display: inline-flex; align-items: center; gap: 4px; color: inherit; text-decoration: none; border-radius: 4px; }
-.address-link:hover code, .address-link:focus-visible code { text-decoration: underline; }
-.address-link svg { width: 13px; height: 13px; flex-shrink: 0; color: var(--muted-foreground); }
-.access-qr { display: grid; justify-items: start; gap: 10px; }
-.access-qr figure { display: grid; justify-items: center; gap: 8px; margin: 0; }
-.access-qr figcaption { color: var(--muted-foreground); font-size: 12px; text-align: center; }
+/* An address says it is a link before the pointer reaches it: the link blue,
+   a weight that does not thin out at this size, and an underline at rest.
+   It used to be body-coloured with a small arrow beside it, which reads as a
+   label that happens to have an icon rather than as somewhere to go. */
+/* A link carries its meaning in weight and colour rather than in a rule
+   under it. At 13px in a monospace face an underline sits down among the
+   descenders of an address and reads as noise, and it was the thing that
+   made these look flimsy rather than deliberate. The weight is what lifts
+   the address off the label beside it; the rule comes back on hover, where
+   it confirms what the pointer is over. */
+.address-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 4px;
+  color: var(--link);
+  font-weight: 650;
+  text-decoration: none;
+}
+.address-link:hover, .address-link:focus-visible { color: var(--link-hover); text-decoration: underline; text-underline-offset: 3px; }
+.address-link code { font-size: 13px; font-weight: 650; letter-spacing: -0.005em; }
+.address-link svg { width: 13px; height: 13px; flex-shrink: 0; }
+/*
+ * The two cards that share a row keep a shared height.
+ *
+ * The grid is `items-start` on purpose - a card with a select at the top and
+ * buttons at the bottom should not be stretched to match a taller neighbour
+ * with a gap of dead space in the middle. These two are the exception: they
+ * are both lists of readings, they fill whatever height they are given, and
+ * side by side at different heights they read as two unrelated things.
+ */
+[data-slot="card-grid"] > .overview-pair { align-self: stretch; }
+/* Two figures that add up, written as a sum rather than as one number with a
+   note after it - what can be deleted, and what is in use. */
+.size-split { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 6px; justify-content: flex-end; }
+.size-split em { color: var(--muted-foreground); font-size: 12px; font-style: normal; }
+/* Every card on every page sits at one elevation, `--shadow-card`, which the
+   Card component itself applies. These two only tighten the gap between their
+   rows; an earlier version flattened them here and left the cards on the other
+   pages raised, so the same component read as two different surfaces
+   depending on which page it was on. */
+.runtime-card, [data-tour="remote-access"] { gap: 16px; }
+.runtime-head { row-gap: 6px; }
+/* One state, one colour, everywhere a state is reported. The colours are the
+   semantic set - green is up, amber wants attention, the accent is work under
+   way - rather than the accent standing in for all three. */
+.state-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+}
+.state-dot { width: 7px; height: 7px; flex-shrink: 0; border-radius: 999px; background: currentColor; }
+.state-pill-online { color: var(--success); background: var(--success-background); }
+.state-pill-offline { color: var(--muted-foreground); background: var(--muted); }
+.state-pill-attention { color: var(--attention); background: var(--attention-background); }
+.state-pill-working { color: var(--primary); background: color-mix(in srgb, var(--primary) 12%, transparent); }
+.state-pill-working .state-dot { animation: runtime-pulse 1.5s ease-in-out infinite; }
+@keyframes runtime-pulse { 50% { opacity: 0.25; } }
+@media (prefers-reduced-motion: reduce) { .state-pill-working .state-dot { animation: none; } }
+.runtime-actions { display: flex; align-items: center; gap: 8px; }
+/* The preview and the facts about the run, side by side. The preview is a
+   fixed column because it is a window onto something of a known shape; the
+   facts take whatever is left. */
+.runtime-body { display: grid; grid-template-columns: 20rem minmax(0, 1fr); gap: 24px; }
+.runtime-preview {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+  aspect-ratio: 16 / 10;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  /* Empty and grey while SillyTavern is down - the same neutral every other
+     empty surface in the console uses, rather than a black rectangle that
+     reads as a picture that failed to load. The near-black below is the
+     ground the still itself sits on, and only applies once there is one. */
+  background: color-mix(in srgb, var(--muted-foreground) 22%, var(--muted));
+}
+.runtime-preview[data-live="true"] { background: #14141a; }
+/*
+ * A drawing of SillyTavern's layout, not a photograph of it.
+ *
+ * There is no headless browser here to take a real screenshot, and a stale
+ * picture of somebody else's chat would be worse than an honest diagram. The
+ * shape is what carries the recognition: characters down the left, the
+ * conversation in the middle, the generation settings on the right. Nothing
+ * in it pretends to be text, so it cannot be misread as real content.
+ */
+/*
+ * SillyTavern's front page at thumbnail size.
+ *
+ * Drawn at a fixed 640x400 and scaled by the component, so the proportions
+ * are the ones SillyTavern uses rather than whatever a 320px box would reflow
+ * into. They are measured off the real page as fractions of it: a window
+ * about 2000x980 with the chat column half its width, a toolbar band about a
+ * thirty-fifth of the height, a character card about a twenty-second of the
+ * column, and the mark beside the version line about half a card.
+ *
+ * The heights below are set rather than left to the content, because content
+ * here is a handful of bars whose natural height means nothing - the point is
+ * that each band ends up the share of the frame it has on the real page.
+ *
+ * Colours come from the reader's own theme through the custom properties the
+ * component sets.
+ */
+.st-still { position: absolute; inset: 0; overflow: hidden; background: #14141a; }
+/* The wallpaper fills the frame and is cropped to it - a letterboxed picture
+   reads as a black border round the thumbnail rather than as a background. */
+.st-still-bg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; filter: blur(1.2px) brightness(0.9); }
+.st-still-scale {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 640px;
+  height: 400px;
+  transform-origin: top left;
+  /* Enough to read as a photograph of an interface rather than as a diagram,
+     not so much that anything looks like it was meant to be read. */
+  filter: blur(0.6px);
+}
+/*
+ * The chat column: one unbroken tinted rectangle over the wallpaper, running
+ * the full height of the window.
+ *
+ * This is the shape of the page. An earlier version left the column
+ * transparent and tinted only the panels inside it, so the wallpaper came
+ * through the gaps between them and the column stopped looking like one
+ * object - which is not what SillyTavern does. The tint is continuous from
+ * the toolbar to the bottom bar; the wallpaper is only ever visible to the
+ * left and right of it.
+ */
+.st-still-column {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: var(--st-column);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: color-mix(in srgb, var(--st-tint) 52%, transparent);
+  border-left: 1px solid color-mix(in srgb, var(--st-border) 35%, transparent);
+  border-right: 1px solid color-mix(in srgb, var(--st-border) 35%, transparent);
+}
+.st-still-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-evenly;
+  flex: 0 0 11px;
+  padding: 0 5px;
+  background: color-mix(in srgb, var(--st-tint) 72%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--st-border) 50%, transparent);
+}
+.st-still-top i { width: 7px; height: 7px; border-radius: 2px; background: color-mix(in srgb, var(--st-text) 70%, transparent); }
+.st-still-panel, .st-still-message {
+  margin: 0 5px;
+  padding: 5px;
+  border: 1px solid color-mix(in srgb, var(--st-border) 45%, transparent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--st-bot-tint) 78%, transparent);
+}
+/* The welcome panel is about a quarter of the window's height. */
+.st-still-panel { flex: 0 0 105px; display: grid; align-content: start; gap: 4px; }
+.st-still-head { display: flex; align-items: center; gap: 4px; }
+/* Half a character card, which is what it is on the real page. */
+.st-still-logo { width: 7px; height: 7px; flex-shrink: 0; border-radius: 2px; object-fit: cover; }
+.st-still-head b { height: 4px; width: 42%; border-radius: 999px; background: color-mix(in srgb, var(--st-text) 82%, transparent); }
+.st-still-chips { display: flex; gap: 3px; margin-left: auto; }
+.st-still-chips i { width: 14px; height: 6px; border-radius: 2px; background: color-mix(in srgb, var(--st-text) 30%, transparent); }
+.st-still-section { height: 4px; width: 19%; border-radius: 999px; background: color-mix(in srgb, var(--st-quote) 88%, transparent); }
+.st-still-recent { display: flex; align-items: center; gap: 4px; }
+.st-still-recent img, .st-still-blank, .st-still-avatar { width: 15px; height: 15px; flex-shrink: 0; border-radius: 3px; object-fit: cover; }
+.st-still-blank { background: color-mix(in srgb, var(--st-text) 22%, transparent); }
+.st-still-lines { display: grid; gap: 3px; flex: 1; min-width: 0; }
+.st-still-lines b { height: 4px; border-radius: 999px; background: color-mix(in srgb, var(--st-text) 76%, transparent); }
+.st-still-lines u { height: 3px; border-radius: 999px; background: color-mix(in srgb, var(--st-text) 36%, transparent); }
+.st-still-more { height: 3px; width: 7%; margin: 0 auto; border-radius: 999px; background: color-mix(in srgb, var(--st-text) 32%, transparent); }
+.st-still-message { flex: 0 0 37px; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 4px; align-items: start; }
+.st-still-actions { display: flex; flex: 0 0 12px; align-items: center; justify-content: center; gap: 4px; padding: 0 5px; }
+.st-still-actions i { height: 9px; flex: 0 1 60px; border-radius: 3px; background: color-mix(in srgb, var(--st-text) 28%, transparent); }
+/* The conversation itself: empty on a fresh page, and still part of the same
+   rectangle rather than a hole in it. */
+.st-still-gap { flex: 1 1 auto; min-height: 0; }
+.st-still-foot {
+  display: grid;
+  flex: 0 0 33px;
+  gap: 5px;
+  align-content: center;
+  justify-items: center;
+  background: color-mix(in srgb, var(--st-tint) 66%, transparent);
+  border-top: 1px solid color-mix(in srgb, var(--st-border) 40%, transparent);
+}
+.st-still-links { display: flex; gap: 11px; }
+.st-still-links i { width: 25px; height: 3px; border-radius: 999px; background: color-mix(in srgb, var(--st-text) 36%, transparent); }
+.st-still-foot em { width: 32%; height: 4px; border-radius: 999px; background: color-mix(in srgb, var(--st-quote) 72%, transparent); }
+
+/* The invitation sits over the drawing, so the drawing is the background it
+   reads against rather than a second panel beside it. */
+.runtime-preview-open, .runtime-preview-idle {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 16px;
+  border: 0;
+  font-family: inherit;
+  font-size: 12.5px;
+  text-align: center;
+  /* Over the still it needs a scrim to stay legible; over the empty grey box
+     it needs nothing, and a scrim there would only make the box darker. */
+  background: transparent;
+  color: var(--muted-foreground);
+}
+.runtime-preview[data-live="true"] .runtime-preview-open,
+.runtime-preview[data-live="true"] .runtime-preview-idle {
+  background: color-mix(in srgb, #0b0d12 62%, transparent);
+  color: #d7dde8;
+}
+.runtime-preview-open { transition: background 0.12s ease; }
+.runtime-preview-open:hover, .runtime-preview-open:focus-visible { background: color-mix(in srgb, #0b0d12 45%, transparent); }
+.runtime-preview-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 13px;
+  border-radius: 8px;
+  background: rgb(255 255 255 / 0.95);
+  color: #101828;
+  font-size: 13px;
+  font-weight: 600;
+}
+.runtime-preview-cta svg { width: 16px; height: 16px; }
+.runtime-preview-idle svg { width: 16px; height: 16px; }
+.runtime-preview-note { max-width: 24ch; text-wrap: balance; }
+.runtime-meta { display: grid; align-content: start; margin: 0; }
+.runtime-row {
+  display: grid;
+  grid-template-columns: 8.5rem minmax(0, 1fr);
+  gap: 4px 16px;
+  align-items: center;
+  min-height: 44px;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+}
+.runtime-row:first-child { border-top: 0; }
+/* A label that names a value must not be lighter than the value it names.
+   Muted colour separates it from the headings above; the weight is what keeps
+   it from being overpowered by a figure set in a monospace face below it. */
+.runtime-row dt { color: var(--muted-foreground); font-size: 13px; font-weight: 500; }
+.runtime-row dd { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 0; font-size: 13px; }
+.runtime-absent { color: var(--muted-foreground); }
+.runtime-version { gap: 8px; }
+.runtime-select { min-width: 12rem; }
+.runtime-progress { display: grid !important; gap: 6px; }
+.runtime-progress .progress-track { width: min(20rem, 100%); }
+/* Where the other addresses are, rather than a second copy of them. The
+   sharing addresses belong to the card that turns them on; saying them twice
+   is how one of the two ends up out of date. */
+.runtime-shared { color: var(--link); font-size: 12.5px; font-weight: 600; text-decoration: none; cursor: pointer; }
+.runtime-shared:hover { color: var(--link-hover); text-decoration: underline; text-underline-offset: 3px; }
+/* Said once per release, then not again until the next one. */
+.runtime-update {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  /* Lines up with the card's own content, which is padded by the card rather
+     than by the page, so this is 24px and not the page gutter. */
+  margin: 0 24px;
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--primary) 30%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--primary) 7%, transparent);
+  font-size: 13px;
+}
+.runtime-update > svg { width: 16px; height: 16px; flex-shrink: 0; color: var(--primary); }
+.runtime-update-actions { display: flex; gap: 6px; margin-left: auto; }
+.runtime-foot-actions { display: flex; gap: 4px; }
+.runtime-sep { color: var(--muted-foreground); }
+.runtime-bytes { font-family: var(--font-mono); }
+.runtime-foot { justify-content: space-between; gap: 12px; border-top: 1px solid var(--border); padding-top: 14px; color: var(--muted-foreground); font-size: 12.5px; }
+/* SillyTavern, filling the window, with the way out always on screen. */
+.embed-stage { position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column; background: var(--background); }
+.embed-stage[hidden] { display: none; }
+.embed-bar { display: flex; flex-shrink: 0; align-items: center; gap: 10px; height: 48px; padding: 0 12px; border-bottom: 1px solid var(--border); }
+.embed-bar-tail { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+/* The way back, when the bar is put away. Quiet until it is wanted. */
+.embed-handle { position: absolute; top: 6px; right: 12px; z-index: 2; display: grid; place-items: center; width: 30px; height: 22px; padding: 0; border: 1px solid var(--border); border-radius: 0 0 8px 8px; background: var(--popover); color: var(--muted-foreground); opacity: 0.45; transition: opacity 0.12s ease; }
+.embed-handle:hover, .embed-handle:focus-visible { opacity: 1; color: var(--foreground); }
+.embed-handle svg { width: 15px; height: 15px; }
+.embed-frame { flex: 1; width: 100%; min-height: 0; border: 0; }
+
+@media (max-width: 640px) {
+  /* The name, the state and the two run controls do not fit on one line on a
+     phone, and a card header that is a grid does not wrap - it overflows. The
+     actions take a line of their own and split it between them. */
+  .runtime-head { grid-template-columns: minmax(0, 1fr); }
+  .runtime-head [data-slot="card-action"] { grid-row: auto; grid-column: 1; justify-self: stretch; }
+  .runtime-actions > * { flex: 1; justify-content: center; }
+  .runtime-version { display: flex; width: 100%; }
+  .runtime-select { min-width: 0; flex: 1; }
+  .runtime-foot { flex-direction: column; align-items: stretch; gap: 10px; }
+  .runtime-foot-actions { justify-content: flex-end; }
+  .runtime-update-actions { width: 100%; }
+  .runtime-update-actions > * { flex: 1; justify-content: center; }
+}
+
+@media (max-width: 860px) {
+  .runtime-body { grid-template-columns: minmax(0, 1fr); }
+  .runtime-preview-open, .runtime-preview-idle { aspect-ratio: auto; min-height: 9rem; }
+  .address-name { width: 6.5rem; }
+  .runtime-row { grid-template-columns: minmax(0, 1fr); align-items: start; }
+  .runtime-update-actions { margin-left: 0; }
+}
+
+/* What is open, then where it answers. The label belongs only to the second
+   group: the switches above it are self-describing and a heading over them
+   would be naming the card again. */
+.access-group-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+  padding-bottom: 4px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.access-group-label::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+.address-rows { display: grid; }
+.address-row {
+  display: flex;
+  align-items: center;
+  gap: 6px 14px;
+  min-height: 42px;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+}
+.address-row:first-child { border-top: 0; }
+.address-name { flex: 0 0 auto; width: 10.5rem; color: var(--muted-foreground); font-size: 13px; font-weight: 500; }
+.address-value { min-width: 0; flex: 1; font-size: 13px; overflow-wrap: anywhere; }
+.address-absent { color: var(--muted-foreground); }
+.share-dialog { max-width: 22rem; }
+.share-body { display: grid; justify-items: center; gap: 12px; }
+.share-url { color: var(--muted-foreground); font-size: 12.5px; text-align: center; overflow-wrap: anywhere; }
+.share-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.share-actions > * { width: 100%; }
 .qr-code { border-radius: 8px; }
 .qr-quiet-zone { fill: #fff; }
 .qr-modules { fill: #000; }
 /* The run control carries its meaning in its colour, so it keeps that colour
    in both themes rather than following the surrounding foreground. */
-.access-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 14px; padding: 12px 0; border-top: 1px solid var(--border); }
+/* The switch stays on its label's line. Letting the row wrap dropped it onto a
+   line of its own as soon as the hint underneath grew wide enough to fill the
+   row, which on a phone is most of them. The text column shrinks instead. */
+.access-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 0; border-top: 1px solid var(--border); }
 .access-row:first-child { padding-top: 0; border-top: 0; }
-.access-row > div { display: grid; min-width: 0; gap: 2px; }
+.access-row > div { display: grid; min-width: 0; flex: 1 1 auto; gap: 2px; }
+.access-row [data-slot="switch"] { flex-shrink: 0; }
 .access-row strong { font-size: 13px; font-weight: 650; }
 .access-row span { color: var(--muted-foreground); font-size: 12px; }
 [data-tour="logs"] { grid-column: 1 / -1; height: 28rem; min-height: 0; overflow: hidden; padding-bottom: 0; }
@@ -240,7 +627,8 @@
 .log-jump svg { width: 14px; height: 14px; }
 .log-jump-dot { width: 7px; height: 7px; border-radius: 999px; background: var(--primary); }
 .log-history-hint { padding: 2px 0 8px; color: var(--muted-foreground); font-size: 12px; }
-.log-history-hint button { color: var(--primary); text-decoration: underline; cursor: pointer; }
+.log-history-hint button { color: var(--link); font-weight: 600; text-decoration: none; cursor: pointer; }
+.log-history-hint button:hover { color: var(--link-hover); }
 .log-view { min-width: 0; min-height: 0; flex: 1 1 0%; overflow: auto; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--background); scrollbar-gutter: stable; }
 .log-view::-webkit-scrollbar { width: 12px; height: 12px; }
 .log-view::-webkit-scrollbar-thumb { border: 3px solid var(--background); border-radius: 999px; background: var(--muted-foreground); }
@@ -263,6 +651,38 @@
 .progress-value { display: block; height: 100%; border-radius: inherit; background: var(--primary); transition: width .2s ease; }
 .progress-indeterminate { display: block; width: 35%; height: 100%; border-radius: inherit; background: var(--primary); animation: progress-slide 1.1s ease-in-out infinite; }
 @keyframes progress-slide { from { transform: translateX(-120%); } to { transform: translateX(320%); } }
+/*
+ * Work in progress, said in the sentence itself.
+ *
+ * One band of higher contrast travels along the words. Both ends of the
+ * gradient are the same colour and the travel is exactly one image width, so
+ * the loop has no seam to catch the eye on, and the band always deepens the
+ * text: a pale band sweeping pale text was legible in the dark theme and
+ * almost invisible in the light one.
+ */
+.thinking {
+  background-image: linear-gradient(100deg,
+    var(--sweep-base) 0%, var(--sweep-base) 32%,
+    var(--sweep-peak) 46%, var(--sweep-peak) 54%,
+    var(--sweep-base) 68%, var(--sweep-base) 100%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: text-sweep 1.9s linear infinite;
+}
+@keyframes text-sweep { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+/* Without a background there is nothing for `background-clip: text` to show,
+   so the clip has to be given up along with the animation. */
+@media (prefers-reduced-motion: reduce) {
+  .thinking {
+    animation: none;
+    background-image: none;
+    -webkit-background-clip: border-box;
+    background-clip: border-box;
+    color: var(--sweep-base);
+  }
+}
 .install-result { margin-top: 12px; color: var(--primary); font-size: 13px; }
 .install-error { margin-top: 12px; color: var(--destructive); font-size: 13px; overflow-wrap: anywhere; }
 .version-select-content { max-height: min(30rem, calc(100dvh - 10rem)); }
@@ -271,34 +691,64 @@
 .config-editor { display: block; width: 100%; min-height: 30rem; resize: vertical; padding: 14px; border: 1px solid var(--border); border-radius: 8px; outline: none; background: var(--background); color: var(--foreground); font-family: Consolas, "SFMono-Regular", monospace; font-size: 12px; line-height: 1.6; tab-size: 2; }
 .config-editor:focus { border-color: var(--primary); box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 20%, transparent); }
 .metrics-chart-shell { width: 100%; overflow: hidden; padding: 4px 0 0; }
-.metrics-chart-svg { display: block; width: 100%; height: auto; min-height: 220px; overflow: visible; }
+/* Drawn at the width it is shown at (see useElementWidth), so one unit is one
+   pixel and the labels below are the size written here on a phone too. */
+.metrics-chart-svg { display: block; width: 100%; height: auto; overflow: visible; }
 .trend-grid-line { stroke: var(--border); stroke-width: 1; stroke-dasharray: 3 5; }
 .trend-area { fill: color-mix(in srgb, var(--primary) 12%, transparent); stroke: none; }
 .trend-line { fill: none; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
 .trend-line-request { stroke: var(--primary); }
 .trend-point { stroke: var(--card); stroke-width: 2; }
 .trend-point-request { fill: var(--primary); }
-.trend-axis-label { fill: var(--muted-foreground); font-size: 10px; }
+.trend-axis-label { fill: var(--muted-foreground); font-size: 11px; font-variant-numeric: tabular-nums; }
 .trend-cursor { stroke: var(--primary); stroke-width: 1; stroke-dasharray: 3 4; opacity: .65; }
-.trend-selection { display: flex; align-items: baseline; gap: 8px; min-height: 25px; margin: -4px 0 2px 52px; color: var(--muted-foreground); font-size: 11px; }
+.trend-selection { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; min-height: 25px; margin: -4px 0 2px; color: var(--muted-foreground); font-size: 12px; }
+/* The numbers behind the plain choices, for the few who want them. */
+.r2-advanced { border-top: 1px solid var(--border); padding-top: 12px; }
+.r2-advanced > summary { cursor: pointer; width: fit-content; border-radius: 4px; color: var(--muted-foreground); font-size: 13px; }
+.r2-advanced > summary:hover, .r2-advanced > summary:focus-visible { color: var(--foreground); }
 .trend-selection strong { color: var(--foreground); font-size: 17px; font-weight: 650; }
 [data-slot="sheet-content"][data-mobile="true"], [data-slot="sidebar"][data-mobile="true"] { max-width: calc(100vw - 48px); }
 
 @media (max-width: 767px) {
-  /* Every control a thumb has to hit is at least 40px tall. Selecting the
-     element rather than a slot name is the point: a trigger rendered `asChild`
-     carries the slot of whatever wrapped it, so `[data-slot="button"]` quietly
-     missed every dropdown trigger, every tab and the sort control in a table
-     header - 16px of target on the column somebody most wants to sort by. */
-  button, [data-slot="select-trigger"] { min-height: 40px; }
-  /* The two that are drawn small deliberately keep their size and get a larger
-     invisible target instead. A radio has its label beside it, which is part
-     of the same target, so only the switch needs one. */
-  [data-slot="switch"], [data-slot="radio-group-item"] { min-height: 0; }
-  [data-slot="switch"] { position: relative; }
+  /*
+   * A thumb needs a target of about 40px. It does not need every control
+   * drawn 40px tall.
+   *
+   * Growing the elements themselves is what made the phone the clumsiest
+   * place to use this: a button that is 32px on a desktop came out taller on
+   * a screen a quarter the width, so a card header of two buttons and a badge
+   * no longer fitted on its line and broke out through the side of the card.
+   * The target is made out of an invisible margin around each control - which
+   * is what the switch has always done here - and the control keeps the size
+   * it was designed at.
+   */
+  button, [data-slot="select-trigger"] { min-height: 36px; }
+  /* Anything deliberately drawn small keeps the size it was drawn at and gets
+     an invisible margin of target instead, the way the switch always has. */
+  [data-slot="button"][data-size="sm"],
+  [data-slot="button"][data-size="xs"],
+  [data-slot="button"][data-size="icon-sm"],
+  [data-slot="button"][data-size="icon-xs"],
+  [data-slot="select-trigger"][data-size="sm"] { position: relative; min-height: 0; }
+  [data-slot="button"][data-size="sm"]::after,
+  [data-slot="button"][data-size="xs"]::after,
+  [data-slot="button"][data-size="icon-sm"]::after,
+  [data-slot="button"][data-size="icon-xs"]::after,
+  [data-slot="select-trigger"][data-size="sm"]::after { content: ""; position: absolute; inset: -4px -1px; }
+  [data-slot="switch"], [data-slot="radio-group-item"] { position: relative; min-height: 0; }
   [data-slot="switch"]::after { content: ""; position: absolute; inset: -12px -8px; }
   [data-slot="card-header"], [data-slot="card-content"], [data-slot="card-footer"] { padding-left: 18px; padding-right: 18px; }
   .site-header h1 { font-size: 14px; }
+  .runtime-update { margin: 0 18px; }
+  /* A card-width column cannot hold a name and a tunnel address on one line,
+     so the address takes the line below its name rather than breaking through
+     the middle of a hostname. The button stays on the name's line, where it
+     is still beside the thing it acts on. */
+  /* The name and the address stay on one line, as the short ones already
+     did; a long tunnel address wraps inside its own column rather than
+     pushing the whole value onto a line of its own. */
+  .address-name { width: 7.5rem; }
   .log-header-button { padding-left: 9px; padding-right: 9px; }
   [data-tour="logs"] { height: 24rem; }
   .logs-content { padding-left: 18px; padding-right: 18px; }

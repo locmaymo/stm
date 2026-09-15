@@ -22,7 +22,6 @@ console.log(bootstrapBanner({
     { label: 'On this computer', url: `http://127.0.0.1:${manager.port}` },
     ...(lanUrl ? [{ label: 'On this Wi-Fi', url: lanUrl }] : []),
   ],
-  ...(persisted.adminPasswordHash ? {} : { setupCode: { label: 'Setup code', value: manager.store.getInitialSetupCode() } }),
   ...(lanUrl ? { qr: { value: lanUrl, caption: 'Scan to open on a phone' } } : {}),
   stopHint: 'Press Ctrl+C to stop.',
   colour: Boolean(process.stdout.isTTY) && process.env.NO_COLOR === undefined && process.env.TERM !== 'dumb',

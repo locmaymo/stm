@@ -11,11 +11,15 @@ export function installFetchObserver(fetchFunction, options = {}) {
   const wrapped = function managerInstrumentedFetch(input, init) {
     const startedAt = performance.now();
     const details = inspectRequest(input, init);
+    // SillyTavern fetches far more than model replies: extension manifests
+    // and updates from GitHub, package metadata, fonts, model lists. Every one
+    // of those used to land in the usage log as a request to an unknown model.
+    const record = (event) => { if (isModelRequest(details, event)) persist(event); };
     let pending;
     try { pending = fetchFunction.call(this, input, init); }
-    catch (error) { persist(failedEvent(details, startedAt)); throw error; }
-    return Promise.resolve(pending).then((response) => observeResponse(response, details, startedAt, persist), (error) => {
-      persist(failedEvent(details, startedAt));
+    catch (error) { record(failedEvent(details, startedAt)); throw error; }
+    return Promise.resolve(pending).then((response) => observeResponse(response, details, startedAt, record), (error) => {
+      record(failedEvent(details, startedAt));
       throw error;
     });
   };
@@ -30,7 +34,11 @@ function inspectRequest(input, init) {
   let parsed;
   try { parsed = new URL(url); } catch { parsed = null; }
   const endpointHost = safeHost(parsed);
+  let method = 'GET';
+  try { method = String(init?.method ?? input?.method ?? 'GET').toUpperCase(); } catch { /* keep GET */ }
   const details = {
+    ignored: isInfrastructure(endpointHost, parsed),
+    completionRoute: method === 'POST' && isCompletionRoute(parsed),
     provider: providerFor(endpointHost, parsed),
     completionSource: completionSourceFor(endpointHost, parsed),
     model: modelFromUrl(parsed),
@@ -137,6 +145,65 @@ class Usage {
     this.reasoningTokens = lastNumber(text, ['reasoning_tokens', 'reasoningTokenCount', 'thoughtsTokenCount']) ?? this.reasoningTokens;
     this.model ??= firstString(text, 'model');
   }
+}
+
+/**
+ * Whether a request was a call to a model, which is the only thing worth counting.
+ *
+ * Two independent signs, either of which is enough: the request went to a
+ * route that only exists to generate text, or the answer came back reporting
+ * how many tokens it used. The second is what catches a proxy that serves a
+ * completion from a path nobody could predict. Neither says anything about a
+ * download from GitHub, which is the point.
+ */
+function isModelRequest(details, event) {
+  if (details.ignored) return false;
+  if (details.completionRoute) return true;
+  return event.inputTokens !== null || event.outputTokens !== null || event.totalTokens !== null;
+}
+
+/** Routes that generate text, across the APIs SillyTavern can talk to. */
+const COMPLETION_ROUTES = [
+  /\/chat\/completions\/?$/u, // OpenAI and everything compatible with it
+  /\/completions\/?$/u, // OpenAI legacy text completion
+  /\/responses\/?$/u, // OpenAI Responses
+  /\/messages\/?$/u, // Anthropic
+  /\/complete\/?$/u, // Anthropic legacy
+  /:(?:stream)?generatecontent$/u, // Google Gemini and Vertex
+  /:generate(?:text|message)$/u, // Google PaLM
+  /\/api\/(?:v1\/)?generate(?:\/stream)?\/?$/u, // KoboldAI, Ollama
+  /\/api\/extra\/generate\/stream\/?$/u, // KoboldCpp
+  /\/api\/chat\/?$/u, // Ollama
+  /\/completion\/?$/u, // llama.cpp server
+  /\/generate(?:_stream)?\/?$/u, // Text Generation Inference
+  /\/v[12]\/chat\/?$/u, // Cohere
+  /\/converse(?:-stream)?\/?$/u, // AWS Bedrock
+  /\/invoke(?:-with-response-stream)?\/?$/u, // AWS Bedrock
+  /\/predictions\/?$/u, // Replicate
+];
+
+function isCompletionRoute(url) {
+  const path = url?.pathname?.toLowerCase();
+  return Boolean(path) && COMPLETION_ROUTES.some((route) => route.test(path));
+}
+
+/**
+ * Hosts that serve code, packages and files, never a model reply.
+ *
+ * Checked before anything else, so a manifest that happens to contain the
+ * word "usage" cannot be counted either.
+ */
+const INFRASTRUCTURE_HOSTS = new Set([
+  'github.com', 'api.github.com', 'codeload.github.com', 'raw.githubusercontent.com',
+  'objects.githubusercontent.com', 'gist.githubusercontent.com', 'release-assets.githubusercontent.com',
+  'gitlab.com', 'bitbucket.org', 'registry.npmjs.org', 'cdn.jsdelivr.net', 'unpkg.com',
+  'fonts.googleapis.com', 'fonts.gstatic.com', 'huggingface.co', 'cdn-lfs.huggingface.co', 'cdn-lfs.hf.co',
+]);
+const FILE_EXTENSION = /\.(?:js|mjs|cjs|css|json|jsonl|md|txt|html?|xml|ya?ml|png|jpe?g|gif|webp|avif|svg|ico|zip|tgz|gz|tar|woff2?|ttf|onnx|bin|safetensors|gguf|wasm)$/u;
+
+function isInfrastructure(host, url) {
+  if (host && INFRASTRUCTURE_HOSTS.has(host)) return true;
+  return FILE_EXTENSION.test(url?.pathname?.toLowerCase() ?? '');
 }
 
 function lastNumber(text, keys) { let value = null; for (const key of keys) { const matches = [...text.matchAll(new RegExp(`"${key}"\\s*:\\s*(\\d+)`, 'gu'))]; const match = matches.at(-1); if (match) value = Number(match[1]); } return value; }

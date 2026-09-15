@@ -6,7 +6,7 @@ import { translator } from '../src/i18n.js';
 test('every refusal the sign-in screen can meet has a translation', () => {
   // These are the codes `handleLogin` and `handlePasswordSetup` answer with.
   const codes = [
-    'invalid_credentials', 'invalid_password', 'invalid_setup_code',
+    'invalid_credentials', 'invalid_password',
     'notice_acceptance_required', 'already_configured', 'setup_required', 'rate_limited',
   ];
   const en = translator('en');

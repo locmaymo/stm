@@ -32,7 +32,6 @@ export interface AdminSession {
 
 export interface SetupStatus {
   readonly setupRequired: boolean;
-  readonly setupCodeRequired: boolean;
   readonly termsVersion: string;
   readonly telemetryNoticeVersion: string;
   readonly notice: {
@@ -152,18 +151,31 @@ export interface BackupManifest {
   readonly fingerprint?: string;
 }
 
+/** A connection setting that can come from `.env` instead of the panel. */
+export type R2EnvironmentField = 'endpoint' | 'bucket' | 'accessKeyId' | 'secretAccessKey';
+
+/**
+ * How often the manager takes a local backup of the active profile.
+ *
+ * It used to sit in the R2 settings, which made it look like part of R2 and
+ * left anyone without a bucket unable to change it, though it ran for them all
+ * the same. It is the backup library's setting, and lives there.
+ */
+export interface LocalBackupSchedule {
+  readonly intervalMinutes: number;
+}
+
 export interface R2Config {
   readonly enabled: boolean;
   readonly endpoint: string | null;
   readonly bucket: string | null;
-  readonly accountId: string | null;
+  /** Set in `.env`, so the panel shows them and cannot change them. */
+  readonly environmentFields: readonly R2EnvironmentField[];
   readonly configured: boolean;
   readonly lastUploadAt: string | null;
   readonly accessKeyIdMasked: string | null;
   readonly secretAccessKeyConfigured: boolean;
   readonly schedule: {
-    /** The local ZIP recovery point, which R2 does not replace. */
-    readonly localIntervalMinutes: number;
     /**
      * How often the small, precious part of the profile is sent: chats,
      * settings, worlds and character cards. Only changed chunks go, so this can
@@ -254,7 +266,12 @@ export interface R2SnapshotSummary {
   readonly id: string;
   readonly profileId: string;
   readonly createdAt: string;
+  /** The index object alone, which is not what bringing the point back costs. */
   readonly indexBytes: number;
+  /** Files the point names, or null for a point written before this was recorded. */
+  readonly fileCount: number | null;
+  /** The data those files hold: what bringing the point back downloads. */
+  readonly dataBytes: number | null;
 }
 
 export interface R2Object {

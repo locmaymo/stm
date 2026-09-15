@@ -14,7 +14,7 @@ import type { BackupManifest, Installation, MetricsBucket, R2SnapshotSummary } f
  */
 
 export const BACKUP_SORT_FIELDS = ['name', 'createdAt', 'sizeBytes', 'fileCount', 'source'] as const;
-export const SNAPSHOT_SORT_FIELDS = ['createdAt', 'indexBytes'] as const;
+export const SNAPSHOT_SORT_FIELDS = ['createdAt', 'indexBytes', 'dataBytes'] as const;
 export const INSTALLATION_SORT_FIELDS = ['resolvedRef', 'channel', 'status', 'createdAt', 'activatedAt'] as const;
 export const METRICS_SORT_FIELDS = ['key', 'requests', 'totalTokens', 'inputTokens', 'outputTokens', 'averageLatencyMs'] as const;
 
@@ -55,6 +55,7 @@ export function snapshotSortValue(snapshot: R2SnapshotSummary, column: string): 
   switch (column) {
     case 'createdAt': return snapshot.createdAt;
     case 'indexBytes': return snapshot.indexBytes;
+    case 'dataBytes': return snapshot.dataBytes ?? -1;
     default: return undefined;
   }
 }

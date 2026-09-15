@@ -27,7 +27,7 @@ export interface StatTileProps extends Omit<ComponentProps<'div'>, 'title'> {
  */
 export function StatTile({ icon, label, value, hint, action, className, ...props }: StatTileProps) {
   return (
-    <Card className={cn('gap-0 py-4 shadow-none', className)} {...props}>
+    <Card className={cn('gap-0 py-4', className)} {...props}>
       <CardContent className="grid gap-1.5">
         <div className="flex min-w-0 items-center gap-2">
           <span className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-primary">

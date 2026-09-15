@@ -37,6 +37,7 @@ export function aggregateUsageEvents(events: Iterable<UsageEvent>, now = new Dat
   for (const event of events) {
     const timestamp = Date.parse(event.timestamp);
     if (!Number.isFinite(timestamp) || timestamp < from.getTime() || timestamp > end.getTime()) continue;
+    if (isNotModelRequest(event)) continue;
     const normalized = normalizeEvent(event);
     addEvent(totals, normalized);
     addBucket(daily, event.timestamp.slice(0, 10), normalized);
@@ -53,6 +54,21 @@ export function aggregateUsageEvents(events: Iterable<UsageEvent>, now = new Dat
     providers: [...providers.values()].sort((left, right) => right.requests - left.requests || left.key.localeCompare(right.key)),
     models: [...models.values()].sort((left, right) => right.requests - left.requests || left.key.localeCompare(right.key)),
   };
+}
+
+/**
+ * A line the log holds that was never a call to a model.
+ *
+ * The fetch observer used to record every request SillyTavern made, so the
+ * log written before it learned the difference has extension downloads and
+ * update checks in it. They are left in the file, which is the operator's,
+ * and skipped here: no model, no token count and no recognised API is what
+ * all of them have in common and no real completion does.
+ */
+function isNotModelRequest(event: UsageEvent): boolean {
+  return (event.model === null || event.model === '')
+    && (event.completionSource === null || event.completionSource === undefined)
+    && event.inputTokens === null && event.outputTokens === null && event.totalTokens === null;
 }
 
 type MutableTotals = { -readonly [Key in keyof MetricsTotals]: MetricsTotals[Key] };

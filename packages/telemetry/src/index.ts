@@ -10,6 +10,8 @@ const CURSOR_NAME = 'telemetry-cursor.json';
 const MAX_BATCH_EVENTS = 100;
 const MAX_OUTBOX_LINES = 1_000;
 const RETENTION_MS = 90 * 24 * 60 * 60 * 1_000;
+/** The longest a receiver that keeps failing is left alone before it is tried again. */
+const MAX_RETRY_DELAY_MS = 30 * 60 * 1_000;
 
 export const DEFAULT_TELEMETRY_ENDPOINT = 'https://stm-telemetry.phamloc.top/v1/telemetry';
 export const DEFAULT_TELEMETRY_ENROLLMENT_ENDPOINT = 'https://stm-telemetry.phamloc.top/v1/enroll';
@@ -57,6 +59,14 @@ export class TelemetryTransport {
   private closed = false;
   private signingKey: string | null = null;
   private startupFlush: Promise<void> = Promise.resolve();
+  /**
+   * When delivery may be tried again, after the receiver or enrollment failed.
+   *
+   * Without it a receiver that was down was asked every flush, forever. The
+   * events wait in the outbox either way; this only stops the asking.
+   */
+  private retryAt = 0;
+  private consecutiveFailures = 0;
 
   public constructor(options: TelemetryTransportOptions) {
     this.paths = options.paths;
@@ -104,8 +114,8 @@ export class TelemetryTransport {
   /** Test and operational hook for forcing a bounded read of new metrics. */
   public async pollNow(): Promise<void> { await this.poll(); }
 
-  /** Test and operational hook for forcing queueing and delivery. */
-  public async flushNow(): Promise<void> { await this.startupFlush; await this.flush(); }
+  /** Test and operational hook for forcing queueing and delivery, ignoring any back-off. */
+  public async flushNow(): Promise<void> { await this.startupFlush; this.retryAt = 0; await this.flush(); }
 
   private async poll(): Promise<void> {
     if (this.busy || this.closed) return;
@@ -158,8 +168,11 @@ export class TelemetryTransport {
     this.busy = true;
     try {
       await this.enqueuePending();
-      await this.deliver();
+      if (Date.now() < this.retryAt) return;
+      if (await this.deliver()) this.consecutiveFailures = 0;
+      else this.backOff();
     } catch (error: unknown) {
+      this.backOff();
       this.logger(`[telemetry] delivery skipped: ${error instanceof Error ? error.message : 'unknown error'}`);
     } finally {
       this.busy = false;
@@ -185,13 +198,21 @@ export class TelemetryTransport {
     await pruneOutbox(this.outboxPath);
   }
 
-  private async deliver(): Promise<void> {
-    if (!this.endpoint || !this.request) return;
+  /** Doubles from one flush interval up to half an hour, then stays there. */
+  private backOff(): void {
+    this.consecutiveFailures += 1;
+    const delay = Math.min(MAX_RETRY_DELAY_MS, this.flushIntervalMs * 2 ** Math.min(this.consecutiveFailures, 16));
+    this.retryAt = Date.now() + delay;
+  }
+
+  /** Returns false when the receiver refused or could not be reached. */
+  private async deliver(): Promise<boolean> {
+    if (!this.endpoint || !this.request) return true;
     const signingKey = await this.ensureSigningKey();
-    if (!signingKey) return;
+    if (!signingKey) return true;
     let lines: string[];
     try { lines = (await readFile(this.outboxPath, 'utf8')).split(/\r?\n/u).filter(Boolean); } catch (error: unknown) {
-      if (isNotFound(error)) return;
+      if (isNotFound(error)) return true;
       throw error;
     }
     const remaining: string[] = [];
@@ -223,9 +244,10 @@ export class TelemetryTransport {
     const delivered = lines.length - remaining.length;
     if (delivered === lines.length) {
       await writeFile(this.outboxPath, '', { encoding: 'utf8', mode: 0o600 });
-      return;
+      return true;
     }
     if (delivered > 0) await atomicWrite(this.outboxPath, `${remaining.join('\n')}\n`);
+    return false;
   }
 
   private async loadSigningKey(): Promise<void> {

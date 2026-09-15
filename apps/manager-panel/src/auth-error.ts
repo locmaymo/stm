@@ -16,7 +16,6 @@ import type { MessageKey } from './i18n.js';
 const AUTH_ERRORS: Readonly<Record<string, MessageKey>> = {
   invalid_credentials: 'setup.authError',
   invalid_password: 'setup.passwordRejected',
-  invalid_setup_code: 'setup.invalidSetupCode',
   notice_acceptance_required: 'setup.termsRequired',
   already_configured: 'setup.alreadyConfigured',
   setup_required: 'setup.setupNeeded',

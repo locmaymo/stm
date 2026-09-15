@@ -40,7 +40,7 @@ export function StatusHero({ tone, title, detail, progress, actions }: StatusHer
     <section
       data-slot="status-hero"
       data-tone={tone}
-      className="flex flex-col gap-4 rounded-xl border bg-card p-(--page-gutter) shadow-[var(--elevation-1)] sm:flex-row sm:items-center sm:gap-6"
+      className="flex flex-col gap-4 rounded-xl border bg-card p-(--page-gutter) shadow-card sm:flex-row sm:items-center sm:gap-6"
     >
       <div className="flex min-w-0 flex-1 items-start gap-3">
         <span aria-hidden="true" className={cn('mt-1.5 size-2.5 shrink-0 rounded-full', toneDot[tone])} />
