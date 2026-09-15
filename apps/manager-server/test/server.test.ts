@@ -212,10 +212,10 @@ test('config follows the active runtime, and sharing waits for an access passwor
   const blocked = await fetch(`${base}/api/v1/tunnel`, { method: 'PUT', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'quick' }) });
   assert.equal(blocked.status, 409);
   assert.equal((await blocked.json() as { error: { code: string } }).error.code, 'public_access_password_required');
-  const saved = await fetch(`${base}/api/v1/config`, { method: 'PUT', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ settings: { enableCorsProxy: true } }) });
+  const saved = await fetch(`${base}/api/v1/config`, { method: 'PUT', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ settings: { lazyLoadCharacters: true } }) });
   assert.equal(saved.status, 200);
-  const savedBody = await saved.json() as { config: { rawYaml: string; settings: { listen: boolean; basicAuthMode: boolean; enableCorsProxy: boolean } } };
-  assert.equal(savedBody.config.settings.enableCorsProxy, true);
+  const savedBody = await saved.json() as { config: { rawYaml: string; settings: { listen: boolean; basicAuthMode: boolean; lazyLoadCharacters: boolean } } };
+  assert.equal(savedBody.config.settings.lazyLoadCharacters, true);
   assert.equal(savedBody.config.settings.listen, false, 'SillyTavern stays on the loopback address');
   assert.equal(savedBody.config.settings.basicAuthMode, false, 'and its own half-usable protection stays off');
   assert.match(savedBody.config.rawYaml, /basicAuthUser:/u);
@@ -644,14 +644,14 @@ test('a legacy runtime that rewrites the profile config on stop does not lose th
   const profile = (await (await fetch(`${base}/api/v1/profiles`, { headers: { cookie } })).json() as { profiles: Array<{ configPath: string }> }).profiles[0];
   assert.ok(profile);
   profileConfigPath = profile.configPath;
-  const startingConfig = 'listen: false\nport: 8000\nenableCorsProxy: false\n';
+  const startingConfig = 'listen: false\nport: 8000\nperformance:\n  lazyLoadCharacters: false\n';
   await writeFile(profileConfigPath, startingConfig, 'utf8');
   await writeFile(runtimeConfigPath, startingConfig, 'utf8');
 
-  const saved = await fetch(`${base}/api/v1/config`, { method: 'PUT', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ settings: { enableCorsProxy: true } }) });
+  const saved = await fetch(`${base}/api/v1/config`, { method: 'PUT', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ settings: { lazyLoadCharacters: true } }) });
   assert.equal(saved.status, 200);
   for (const path of [profileConfigPath, runtimeConfigPath]) {
-    assert.match(await readFile(path, 'utf8'), /enableCorsProxy: true/u, `the save survived in ${path}`);
+    assert.match(await readFile(path, 'utf8'), /lazyLoadCharacters: true/u, `the save survived in ${path}`);
   }
 });
 

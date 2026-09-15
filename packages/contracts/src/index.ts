@@ -420,6 +420,22 @@ export interface TunnelState {
   readonly error: string | null;
 }
 
+/**
+ * What SillyTavern's configuration says, and the part of it worth offering.
+ *
+ * The first group is reported and never written: the manager owns those, and
+ * the console shows them so it is clear why they cannot be moved. SillyTavern
+ * stays on the loopback address behind the access gateway, on port 8000, with
+ * its own two password mechanisms off because the gateway replaces both.
+ *
+ * The second group is what somebody running SillyTavern actually reaches for.
+ * They are not the settings this page used to offer - HTTPS, the CORS proxy
+ * and switching CSRF protection off. Under the manager the first of those
+ * breaks the gateway, which speaks plain HTTP to the loopback address and is
+ * behind Cloudflare's TLS already; the last has nothing to gain and a name
+ * that ends in "NOT RECOMMENDED" in SillyTavern's own file. Anyone who really
+ * wants one of them still has config.yaml.
+ */
 export interface ConfigSettings {
   readonly listen: boolean;
   readonly listenAddress: {
@@ -433,7 +449,39 @@ export interface ConfigSettings {
   readonly sslEnabled: boolean;
   readonly enableCorsProxy: boolean;
   readonly disableCsrfProtection: boolean;
+  /** Parse character cards on demand rather than all at once. */
+  readonly lazyLoadCharacters: boolean;
+  /** Keep parsed cards on disk between runs. */
+  readonly useDiskCache: boolean;
+  /** How much memory parsed cards may use, as SillyTavern writes it: `100mb`. */
+  readonly memoryCacheCapacity: string;
+  /** Compress large uploads - the one that matters over a tunnel. */
+  readonly requestCompression: boolean;
+  readonly thumbnails: boolean;
+  readonly extensions: boolean;
+  readonly extensionAutoUpdate: boolean;
+  /** Extension models come from HuggingFace and are hundreds of megabytes. */
+  readonly extensionModelDownload: boolean;
+  readonly downloadableTokenizers: boolean;
+  /** SillyTavern's own per-chat backups, which the manager then backs up too. */
+  readonly chatBackups: boolean;
+  readonly chatBackupCount: number;
 }
+
+/** The settings the console may write. Everything else is read-only or YAML. */
+export type ConfigSettingsInput = Partial<Pick<ConfigSettings,
+  | 'lazyLoadCharacters'
+  | 'useDiskCache'
+  | 'memoryCacheCapacity'
+  | 'requestCompression'
+  | 'thumbnails'
+  | 'extensions'
+  | 'extensionAutoUpdate'
+  | 'extensionModelDownload'
+  | 'downloadableTokenizers'
+  | 'chatBackups'
+  | 'chatBackupCount'
+>>;
 
 export interface ConfigDocument {
   readonly schemaVersion: 1;
@@ -452,11 +500,7 @@ export interface ConfigDocument {
 
 export interface ConfigUpdateInput {
   readonly rawYaml?: string;
-  readonly settings?: Partial<{
-    sslEnabled: boolean;
-    enableCorsProxy: boolean;
-    disableCsrfProtection: boolean;
-  }>;
+  readonly settings?: ConfigSettingsInput;
 }
 
 export type AccessGatewayStatus = 'stopped' | 'running' | 'error';

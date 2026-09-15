@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { copyFile, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { parseDocument, type Document, type YAMLMap } from 'yaml';
-import { logEvent, logLineText, type ConfigDocument, type ConfigSettings, type ConfigUpdateInput, type Installation, type LogSink, type Profile } from '../../contracts/src/index.js';
+import { logEvent, logLineText, type ConfigDocument, type ConfigSettings, type ConfigSettingsInput, type ConfigUpdateInput, type Installation, type LogSink, type Profile } from '../../contracts/src/index.js';
 
 const CONFIG_SCHEMA_VERSION = 1 as const;
 const REDACTED_PASSWORD = '********';
@@ -171,6 +171,10 @@ function extractSettings(document: Document.Parsed): ConfigSettings {
     const value = getPath(document, path);
     return typeof value === 'string' ? value : fallback;
   };
+  const getNumber = (path: string[], fallback: number): number => {
+    const value = getPath(document, path);
+    return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+  };
   const portValue = getPath(document, ['port']);
   return {
     listen: getBoolean(['listen'], false),
@@ -185,14 +189,52 @@ function extractSettings(document: Document.Parsed): ConfigSettings {
     sslEnabled: getBoolean(['ssl', 'enabled'], false),
     enableCorsProxy: getBoolean(['enableCorsProxy'], false),
     disableCsrfProtection: getBoolean(['disableCsrfProtection'], false),
+    // Every fallback here is SillyTavern's own shipped value, so a config
+    // that never mentions a key reads back as what that key already does.
+    lazyLoadCharacters: getBoolean(['performance', 'lazyLoadCharacters'], false),
+    useDiskCache: getBoolean(['performance', 'useDiskCache'], true),
+    memoryCacheCapacity: getString(['performance', 'memoryCacheCapacity'], '100mb'),
+    requestCompression: getBoolean(['performance', 'requestCompression', 'enabled'], false),
+    thumbnails: getBoolean(['thumbnails', 'enabled'], true),
+    extensions: getBoolean(['extensions', 'enabled'], true),
+    extensionAutoUpdate: getBoolean(['extensions', 'autoUpdate'], true),
+    extensionModelDownload: getBoolean(['extensions', 'models', 'autoDownload'], true),
+    downloadableTokenizers: getBoolean(['enableDownloadableTokenizers'], true),
+    chatBackups: getBoolean(['backups', 'chat', 'enabled'], true),
+    chatBackupCount: getNumber(['backups', 'common', 'numberOfBackups'], 50),
   };
 }
 
+/** `0`, or a whole number of kb/mb/gb, which is how SillyTavern writes sizes. */
+const MEMORY_CACHE_PATTERN = /^(?:0|[1-9][0-9]{0,4}(?:kb|mb|gb))$/u;
+const MAX_CHAT_BACKUPS = 500;
+
+const SETTING_PATHS: { readonly [K in keyof Required<ConfigSettingsInput>]: readonly string[] } = {
+  lazyLoadCharacters: ['performance', 'lazyLoadCharacters'],
+  useDiskCache: ['performance', 'useDiskCache'],
+  memoryCacheCapacity: ['performance', 'memoryCacheCapacity'],
+  requestCompression: ['performance', 'requestCompression', 'enabled'],
+  thumbnails: ['thumbnails', 'enabled'],
+  extensions: ['extensions', 'enabled'],
+  extensionAutoUpdate: ['extensions', 'autoUpdate'],
+  extensionModelDownload: ['extensions', 'models', 'autoDownload'],
+  downloadableTokenizers: ['enableDownloadableTokenizers'],
+  chatBackups: ['backups', 'chat', 'enabled'],
+  chatBackupCount: ['backups', 'common', 'numberOfBackups'],
+};
+
 function applySettings(document: Document.Parsed, settings: ConfigUpdateInput['settings']): void {
   if (!settings) return;
-  if (settings.sslEnabled !== undefined) setPath(document, ['ssl', 'enabled'], settings.sslEnabled);
-  if (settings.enableCorsProxy !== undefined) setPath(document, ['enableCorsProxy'], settings.enableCorsProxy);
-  if (settings.disableCsrfProtection !== undefined) setPath(document, ['disableCsrfProtection'], settings.disableCsrfProtection);
+  if (settings.memoryCacheCapacity !== undefined && !MEMORY_CACHE_PATTERN.test(settings.memoryCacheCapacity)) {
+    throw new ConfigError('invalid_config', 'The character cache size must be 0 or a size like 100mb');
+  }
+  if (settings.chatBackupCount !== undefined && (!Number.isInteger(settings.chatBackupCount) || settings.chatBackupCount < 1 || settings.chatBackupCount > MAX_CHAT_BACKUPS)) {
+    throw new ConfigError('invalid_config', `The number of chat backups must be between 1 and ${MAX_CHAT_BACKUPS}`);
+  }
+  for (const [key, path] of Object.entries(SETTING_PATHS)) {
+    const value = settings[key as keyof ConfigSettingsInput];
+    if (value !== undefined) setPath(document, [...path], value);
+  }
 }
 
 /** Returns whether any managed setting had to be moved back to its default. */

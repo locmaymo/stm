@@ -1111,11 +1111,18 @@ function parseConfigUpdateInput(value: unknown): ConfigUpdateInput {
   if (typeof value.rawYaml === 'string') return { rawYaml: value.rawYaml };
   const settings = value.settings;
   if (!isRecord(settings)) throw new RequestError(400, 'invalid_input', 'Configuration settings are required');
-  return { settings: {
-    ...(typeof settings.sslEnabled === 'boolean' ? { sslEnabled: settings.sslEnabled } : {}),
-    ...(typeof settings.enableCorsProxy === 'boolean' ? { enableCorsProxy: settings.enableCorsProxy } : {}),
-    ...(typeof settings.disableCsrfProtection === 'boolean' ? { disableCsrfProtection: settings.disableCsrfProtection } : {}),
-  } };
+  const flags = [
+    'lazyLoadCharacters', 'useDiskCache', 'requestCompression', 'thumbnails',
+    'extensions', 'extensionAutoUpdate', 'extensionModelDownload',
+    'downloadableTokenizers', 'chatBackups',
+  ] as const;
+  const input: Record<string, unknown> = {};
+  for (const flag of flags) if (typeof settings[flag] === 'boolean') input[flag] = settings[flag];
+  if (typeof settings.memoryCacheCapacity === 'string') input.memoryCacheCapacity = settings.memoryCacheCapacity;
+  if (typeof settings.chatBackupCount === 'number') input.chatBackupCount = settings.chatBackupCount;
+  // The values themselves are checked where they are written, so one rule
+  // covers the console, a stray API call and a restored profile alike.
+  return { settings: input as NonNullable<ConfigUpdateInput['settings']> };
 }
 
 async function decorateConfig(document: Awaited<ReturnType<ConfigStore['read']>>): Promise<Awaited<ReturnType<ConfigStore['read']>>> {

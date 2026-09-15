@@ -4,6 +4,7 @@ import {
   Globe2, LayoutDashboard, Maximize2, Minimize2, Moon, Package, Pencil, Plus,
   LogOut, RotateCcw, ScrollText, Search, Sun, Trash2, Upload, Users as UsersIcon, X, Rows3,
   BrainCircuit, CircleStop, Clock3, Cpu, Ellipsis, Play, QrCode as QrCodeIcon, RefreshCw, Settings2, ShieldCheck, Square,
+  Blocks, Gauge, History,
 } from 'lucide-react';
 import {
   Alert, AlertDescription, AuthLayout, Badge, BrandMark, Button, buttonVariants, Card, CardAction,
@@ -27,7 +28,7 @@ import { failures, logCatalog, translator, type Fail, type Translate } from './i
 import { browserEnvironment, browserStorage, readPreferences, savePreferences, type Preferences } from './preferences.js';
 import { authErrorKey } from './auth-error.js';
 import { apiFetch, onSessionExpired, resetSessionWatch } from './session.js';
-import type { AccessGatewayState, BackupManifest, ConfigDocument, ConfigUpdateInput, Installation, Job, LogEntry, LogSourceFilter, MetricsBucket, MetricsSnapshot, ProcessState, Profile, R2Config, R2SnapshotSummary, RestoreMode, RestorePreview, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, BackupManifest, ConfigDocument, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LogEntry, LogSourceFilter, MetricsBucket, MetricsSnapshot, ProcessState, Profile, R2Config, R2SnapshotSummary, RestoreMode, RestorePreview, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { backupSearchText, backupSortValue, formatBytes, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
 import { translateLogEntry, translateStep } from './log-format.js';
@@ -2300,8 +2301,48 @@ function formatMetricRate(value: number | null): string { return value === null 
  * note. Success and failure are separate states now, and success is a toast,
  * because saving restarts SillyTavern and redraws the page underneath it.
  */
+type FlagKey = Exclude<Extract<keyof ConfigSettingsInput, string>, 'memoryCacheCapacity' | 'chatBackupCount'>;
+
+const MEMORY_CACHE_SIZES = ['0', '50mb', '100mb', '250mb', '500mb'] as const;
+const CHAT_BACKUP_COUNTS = ['5', '20', '50', '100', '200'] as const;
+
+/**
+ * The settings the console offers, lifted out of everything the file says.
+ *
+ * The rest of `ConfigSettings` is reported rather than editable - the port,
+ * the listen address, the two password mechanisms the gateway replaces - and
+ * sending any of it back would be asking the server to refuse it.
+ */
+function offeredSettings(settings: ConfigSettings): ConfigSettingsInput {
+  return {
+    lazyLoadCharacters: settings.lazyLoadCharacters,
+    useDiskCache: settings.useDiskCache,
+    memoryCacheCapacity: settings.memoryCacheCapacity,
+    requestCompression: settings.requestCompression,
+    thumbnails: settings.thumbnails,
+    extensions: settings.extensions,
+    extensionAutoUpdate: settings.extensionAutoUpdate,
+    extensionModelDownload: settings.extensionModelDownload,
+    downloadableTokenizers: settings.downloadableTokenizers,
+    chatBackups: settings.chatBackups,
+    chatBackupCount: settings.chatBackupCount,
+  };
+}
+
+/** `config.yaml`, or `config.yml` where that is what the version wrote. */
+function configFileName(path: string): string {
+  return path.split(/[\\/]/u).at(-1) ?? 'config.yaml';
+}
+
+/** A name over a run of rows, so one long list reads as three short ones. */
+function SettingsGroup({ icon, title }: { icon: ReactNode; title: string }) {
+  return <div className="flex items-center gap-2 border-t pt-4 pb-2 text-sm font-medium first:border-t-0 first:pt-0 [&_svg]:size-4 [&_svg]:text-muted-foreground">
+    {icon}{title}
+  </div>;
+}
+
 function ConfigPage({ t, config, security, onConfigUpdate, onChangeManagerPassword, onSetPassword, onSignOut, onSignOutDevices }: { t: Translate; config: ConfigDocument | null; security: AccessGatewayState; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onChangeManagerPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSignOut: () => Promise<void>; onSignOutDevices: () => Promise<string | null> }) {
-  const [form, setForm] = useState({ sslEnabled: false, enableCorsProxy: false, disableCsrfProtection: false });
+  const [form, setForm] = useState<ConfigSettingsInput>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [managerPasswordOpen, setManagerPasswordOpen] = useState(false);
@@ -2311,7 +2352,7 @@ function ConfigPage({ t, config, security, onConfigUpdate, onChangeManagerPasswo
   const { toast } = useToast();
   useEffect(() => {
     if (!config) return;
-    setForm({ sslEnabled: config.settings.sslEnabled, enableCorsProxy: config.settings.enableCorsProxy, disableCsrfProtection: config.settings.disableCsrfProtection });
+    setForm(offeredSettings(config.settings));
   }, [config]);
   const save = async (input: ConfigUpdateInput): Promise<string | null> => {
     setBusy(true); setError(null);
@@ -2327,11 +2368,30 @@ function ConfigPage({ t, config, security, onConfigUpdate, onChangeManagerPasswo
     if (!failure) toast({ title: t('console.managerPasswordSaved'), tone: 'success' });
     return failure;
   };
-  const switches: Array<{ label: string; hint: string; checked: boolean; apply: (value: boolean) => void }> = [
-    { label: t('console.ssl'), hint: t('console.sslHint'), checked: form.sslEnabled, apply: (value) => setForm((current) => ({ ...current, sslEnabled: value })) },
-    { label: t('console.corsProxy'), hint: t('console.corsProxyHint'), checked: form.enableCorsProxy, apply: (value) => setForm((current) => ({ ...current, enableCorsProxy: value })) },
-    { label: t('console.disableCsrf'), hint: t('console.disableCsrfHint'), checked: form.disableCsrfProtection, apply: (value) => setForm((current) => ({ ...current, disableCsrfProtection: value })) },
-  ];
+  const set = <K extends keyof ConfigSettingsInput>(key: K, value: ConfigSettingsInput[K]) =>
+    setForm((current) => ({ ...current, [key]: value }));
+  const flag = (key: FlagKey, options: { readonly disabled?: boolean } = {}) =>
+    <DetailRow key={key} label={t(`console.settings.${key}`)} hint={t(`console.settings.${key}Hint`)} className={options.disabled ? 'opacity-55' : ''}>
+      <Switch
+        checked={form[key] === true}
+        onCheckedChange={(value) => set(key, value)}
+        disabled={options.disabled ?? false}
+        aria-label={t(`console.settings.${key}`)}
+      />
+    </DetailRow>;
+  const choice = (key: 'memoryCacheCapacity' | 'chatBackupCount', values: readonly string[], options: { readonly disabled?: boolean } = {}) =>
+    <DetailRow label={t(`console.settings.${key}`)} hint={t(`console.settings.${key}Hint`)} className={options.disabled ? 'opacity-55' : ''}>
+      <Select
+        value={String(form[key] ?? '')}
+        onValueChange={(value) => set(key, (key === 'chatBackupCount' ? Number(value) : value) as never)}
+        disabled={options.disabled ?? false}
+      >
+        <SelectTrigger size="sm" className="w-32" aria-label={t(`console.settings.${key}`)}><SelectValue /></SelectTrigger>
+        <SelectContent>
+          {values.map((value) => <SelectItem key={value} value={value}>{value === '0' ? t('console.settings.cacheOff') : value}</SelectItem>)}
+        </SelectContent>
+      </Select>
+    </DetailRow>;
 
   /*
    * One card for both doors.
@@ -2385,27 +2445,48 @@ function ConfigPage({ t, config, security, onConfigUpdate, onChangeManagerPasswo
     <PasscodeDialog t={t} open={sillyPasswordOpen} onOpenChange={setSillyPasswordOpen} note={security.passwordConfigured ? t('console.passwordChangeSignsOut') : null} onSubmit={onSetPassword} />
     {!config
       ? <Card><CardContent className="px-0"><EmptyState icon={<Settings2 />} title={t('console.noConfiguration')} /></CardContent></Card>
-      : <Card>
-        <PanelHeading icon={<Settings2 />} action={<Badge variant="outline">{config.runtimeRef}</Badge>}>{t('console.configTitle')}</PanelHeading>
-        <CardContent className="grid gap-4">
-          <div>
-            {switches.map((row) => <DetailRow key={row.label} label={row.label} hint={row.hint}>
-              <Switch checked={row.checked} onCheckedChange={row.apply} aria-label={row.label} />
-            </DetailRow>)}
-            <DetailRow label={t('console.port')}><span className="tabular-nums">8000</span></DetailRow>
+      : <>
+        <Card>
+          <PanelHeading icon={<Settings2 />} action={<Badge variant="outline">{config.runtimeRef}</Badge>}>{t('console.configTitle')}</PanelHeading>
+          <CardContent className="grid gap-5">
+            <p className="text-xs text-muted-foreground">{t('console.managedNote')}</p>
+            <div>
+              <SettingsGroup icon={<Gauge />} title={t('console.performanceTitle')} />
+              {flag('lazyLoadCharacters')}
+              {flag('useDiskCache')}
+              {choice('memoryCacheCapacity', MEMORY_CACHE_SIZES)}
+              {flag('requestCompression')}
+              {flag('thumbnails')}
+            </div>
+            <div>
+              <SettingsGroup icon={<Blocks />} title={t('console.extensionsTitle')} />
+              {flag('extensions')}
+              {flag('extensionAutoUpdate', { disabled: form.extensions !== true })}
+              {flag('extensionModelDownload', { disabled: form.extensions !== true })}
+              {flag('downloadableTokenizers')}
+            </div>
+            <div>
+              <SettingsGroup icon={<History />} title={t('console.chatBackupsTitle')} />
+              {flag('chatBackups')}
+              {choice('chatBackupCount', CHAT_BACKUP_COUNTS, { disabled: form.chatBackups !== true })}
+            </div>
+            {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
+          </CardContent>
+          <CardFooter className="items-center justify-between gap-3">
+            <span className="text-xs text-muted-foreground">{t('console.restartAfterSave')}</span>
+            <Button onClick={() => void save({ settings: form })} disabled={busy}>{t('common.save')}</Button>
+          </CardFooter>
+        </Card>
+        <Card>
+          <CardContent>
             {/* The path is long enough to wrap the row onto three lines and
                 push the button under it, and it is only ever glanced at. */}
-            <DetailRow label={t('console.rawYaml')} hint={<span className="block truncate" title={config.path}>{config.path}</span>}>
-              <Button variant="ghost" size="sm" onClick={() => setYamlOpen(true)}><ScrollText />{t('common.edit')}</Button>
+            <DetailRow label={<code className="font-mono text-sm">{configFileName(config.path)}</code>} hint={<span className="block truncate" title={config.path}>{config.path}</span>}>
+              <Button variant="outline" size="sm" onClick={() => setYamlOpen(true)}><ScrollText />{t('common.edit')}</Button>
             </DetailRow>
-          </div>
-          {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
-        </CardContent>
-        <CardFooter className="items-center justify-between gap-3">
-          <span className="text-xs text-muted-foreground">{t('console.restartAfterSave')}</span>
-          <Button onClick={() => void save({ settings: { sslEnabled: form.sslEnabled, enableCorsProxy: form.enableCorsProxy, disableCsrfProtection: form.disableCsrfProtection } })} disabled={busy}>{t('common.save')}</Button>
-        </CardFooter>
-      </Card>}
+          </CardContent>
+        </Card>
+      </>}
     {config ? <YamlDialog t={t} open={yamlOpen} onOpenChange={setYamlOpen} initial={config.rawYaml} busy={busy} onApply={(rawYaml) => save({ rawYaml })} /> : null}
   </div>;
 }
@@ -2427,11 +2508,11 @@ function YamlDialog({ t, open, onOpenChange, initial, busy, onApply }: { t: Tran
   return <Dialog open={open} onOpenChange={onOpenChange}>
     <DialogContent className="sm:max-w-3xl">
       <DialogHeader>
-        <DialogTitle>{t('console.rawYaml')}</DialogTitle>
+        <DialogTitle className="font-mono">{t('console.configFile')}</DialogTitle>
         <DialogDescription>{t('console.rawYamlHint')}</DialogDescription>
       </DialogHeader>
       <DialogBody className="grid gap-3">
-        <textarea className="config-editor" value={rawYaml} onChange={(event) => setRawYaml(event.target.value)} spellCheck={false} aria-label={t('console.rawYaml')} />
+        <textarea className="config-editor" value={rawYaml} onChange={(event) => setRawYaml(event.target.value)} spellCheck={false} aria-label={t('console.configFile')} />
         {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
       </DialogBody>
       <DialogFooter>
