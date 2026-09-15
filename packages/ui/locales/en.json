@@ -260,7 +260,13 @@
     "uninstallDone": "SillyTavern was removed. Your data is still here.",
     "passwordSaved": "SillyTavern password saved.",
     "backupDone": "Backed up.",
-    "restoreDone": "Restored."
+    "restoreDone": "Restored.",
+    "startDone": "SillyTavern is running.",
+    "stopDone": "SillyTavern is stopped.",
+    "tunnelOnDone": "The public link is open.",
+    "tunnelOffDone": "The public link is closed.",
+    "lanOnDone": "Other devices on this Wi-Fi can reach it now.",
+    "lanOffDone": "Only this machine can reach it now."
   },
   "dashboard": {
     "start": "Start",

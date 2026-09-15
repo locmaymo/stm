@@ -432,7 +432,30 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange }: { csrfToken
       return;
     }
     const payload = await response.json() as ProcessState | TunnelState;
-    if (path.includes('/process')) setProcessState(payload as ProcessState); else setTunnelState(payload as TunnelState);
+    if (path.includes('/process')) { setProcessState(payload as ProcessState); reportProcess(payload as ProcessState); }
+    else { setTunnelState(payload as TunnelState); reportTunnel(payload as TunnelState); }
+  };
+
+  /*
+   * Say what actually happened, not what was asked for.
+   *
+   * Both of these requests answer with the state they ended in - start waits
+   * for SillyTavern to respond before it replies - so the confirmation can be
+   * read off that rather than assumed from the button that was pressed. A
+   * version that said "Started" whatever came back would be lying on the one
+   * occasion the reader most needs the truth.
+   */
+  const reportProcess = (state: ProcessState) => {
+    if (state.status === 'running') toast({ title: t('console.startDone'), tone: 'success' });
+    else if (state.status === 'stopped') toast({ title: t('console.stopDone'), tone: 'success' });
+    else if (state.status === 'error') toast({ title: fail.of(state.errorCode, state.error, t('console.heroFailed')), tone: 'destructive' });
+  };
+  const reportTunnel = (state: TunnelState) => {
+    if (state.error) { toast({ title: state.error, tone: 'destructive' }); return; }
+    // The address is the whole point of turning it on, so it comes with the
+    // confirmation rather than only in the card behind it.
+    if (state.url) toast({ title: t('console.tunnelOnDone'), description: state.url, tone: 'success' });
+    else if (state.mode === 'off') toast({ title: t('console.tunnelOffDone'), tone: 'success' });
   };
   const activeInstallation = installations.find((item) => item.id === pendingInstallationId) ?? installations.find((item) => item.id === activeInstallationId) ?? installations.at(-1);
   const removeInstallation = async (): Promise<string | null> => {
@@ -770,6 +793,7 @@ function AccessPanel({ t, process, tunnel, config, security, installed, onAction
       // currently broken is state, and stays on the card below.
       const failure = await onSetLan(next);
       if (failure) toast({ title: failure, tone: 'destructive' });
+      else toast({ title: next ? t('console.lanOnDone') : t('console.lanOffDone'), tone: 'success' });
     } finally { setSecurityBusy(false); }
   };
   const toggleLan = (next: boolean) => { if (next) void setLanTo(true); else setClosing('lan'); };
