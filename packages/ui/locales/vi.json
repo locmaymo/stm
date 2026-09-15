@@ -368,7 +368,8 @@
       "r2SnapshotUnreadable": "Không đọc được điểm khôi phục R2 gần nhất, nên lần này không có gì để so sánh: {reason}",
       "phaseListedObsolete": "Đã liệt kê các tệp không có trong bản sao lưu trong {seconds}s",
       "phaseWroteFiles": "Đã ghi {count} tệp trong {seconds}s",
-      "phaseRemovedObsolete": "Đã xoá {count} tệp không có trong bản sao lưu trong {seconds}s"
+      "phaseRemovedObsolete": "Đã xoá {count} tệp không có trong bản sao lưu trong {seconds}s",
+      "unknownArchive": "Tệp lưu trữ này không có thư mục nào mà một hồ sơ SillyTavern thường có."
     },
     "cloudflared": {
       "startingQuick": "Đang khởi động Quick Tunnel tới {target}",

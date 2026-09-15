@@ -368,7 +368,8 @@
       "r2SnapshotUnreadable": "The last R2 recovery point could not be read, so this run compares against nothing: {reason}",
       "phaseListedObsolete": "Listed the files the backup does not contain in {seconds}s",
       "phaseWroteFiles": "Wrote {count} files in {seconds}s",
-      "phaseRemovedObsolete": "Removed {count} files the backup does not contain in {seconds}s"
+      "phaseRemovedObsolete": "Removed {count} files the backup does not contain in {seconds}s",
+      "unknownArchive": "This archive holds none of the folders a SillyTavern profile usually has."
     },
     "cloudflared": {
       "startingQuick": "Starting Quick Tunnel to {target}",

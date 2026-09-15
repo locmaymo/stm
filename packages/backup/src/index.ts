@@ -959,7 +959,9 @@ function previewEntries(entries: ZipEntry[], fallbackLayout: ProfileLayout): Res
     topNames.add(entry.name.split('/')[0] ?? '');
   }
   const hasRecognized = [...topNames].some((name) => RECOGNIZED_DATA_NAMES.has(name));
-  const warnings = !hasRecognized && files.length > 0 ? ['The archive does not contain common SillyTavern data markers; review the preview before restoring.'] : [];
+  const warnings = !hasRecognized && files.length > 0
+    ? [logEvent('backup.unknownArchive', 'This archive holds none of the folders a SillyTavern profile usually has.')]
+    : [];
   return { layout: fallbackLayout, fileCount: files.length, totalBytes, files, warnings };
 }
 

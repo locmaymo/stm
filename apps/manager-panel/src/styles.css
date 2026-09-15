@@ -285,7 +285,18 @@
 [data-slot="sheet-content"][data-mobile="true"], [data-slot="sidebar"][data-mobile="true"] { max-width: calc(100vw - 48px); }
 
 @media (max-width: 767px) {
-  [data-slot="button"], [data-slot="select-trigger"] { min-height: 40px; }
+  /* Every control a thumb has to hit is at least 40px tall. Selecting the
+     element rather than a slot name is the point: a trigger rendered `asChild`
+     carries the slot of whatever wrapped it, so `[data-slot="button"]` quietly
+     missed every dropdown trigger, every tab and the sort control in a table
+     header - 16px of target on the column somebody most wants to sort by. */
+  button, [data-slot="select-trigger"] { min-height: 40px; }
+  /* The two that are drawn small deliberately keep their size and get a larger
+     invisible target instead. A radio has its label beside it, which is part
+     of the same target, so only the switch needs one. */
+  [data-slot="switch"], [data-slot="radio-group-item"] { min-height: 0; }
+  [data-slot="switch"] { position: relative; }
+  [data-slot="switch"]::after { content: ""; position: absolute; inset: -12px -8px; }
   [data-slot="card-header"], [data-slot="card-content"], [data-slot="card-footer"] { padding-left: 18px; padding-right: 18px; }
   .site-header h1 { font-size: 14px; }
   .log-header-button { padding-left: 9px; padding-right: 9px; }

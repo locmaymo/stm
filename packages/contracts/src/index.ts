@@ -264,7 +264,15 @@ export interface RestorePreview {
   readonly fileCount: number;
   readonly totalBytes: number;
   readonly files: readonly BackupFilePreview[];
-  readonly warnings: readonly string[];
+  /**
+   * What is worth knowing before restoring, as catalogued events.
+   *
+   * These were English sentences written by the server and printed into the
+   * restore dialog exactly as they arrived, so a reader who had the rest of
+   * the console in Vietnamese met one paragraph of English at the one moment
+   * that cannot be undone.
+   */
+  readonly warnings: readonly LogEvent[];
 }
 
 export type JobState = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled';

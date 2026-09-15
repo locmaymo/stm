@@ -14,6 +14,7 @@ import {
   DialogFooter, DialogHeader, DialogTitle,
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
   Field, initialQuery, Input, Label, MobileNav, PageContainer, PasswordInput,
+  Skeleton,
   RadioGroup, RadioGroupItem,
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
   Sidebar, SidebarContent, SidebarGroup, SidebarGroupContent, SidebarHeader,
@@ -1558,7 +1559,7 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
       cancelLabel={t('common.cancel')}
       onConfirm={deleteBackup}
     />
-    <RestoreDialog t={t} backup={selectedBackup} preview={selectedPreview} mode={restoreMode} onModeChange={setRestoreMode} onClose={closeRestore} onRestore={restoreSelected} />
+    <RestoreDialog t={t} catalog={catalog} backup={selectedBackup} preview={selectedPreview} mode={restoreMode} onModeChange={setRestoreMode} onClose={closeRestore} onRestore={restoreSelected} />
     <R2Dialog t={t} open={r2Open} onOpenChange={setR2Open} config={r2Config} onSave={saveR2} />
   </div>;
 }
@@ -1635,7 +1636,7 @@ function NameDialog({ t, open, onOpenChange, title, label, hint, initial = '', s
  * where the choice is made, and the choice is made in a dialog, because one of
  * them deletes everything that is there.
  */
-function RestoreDialog({ t, backup, preview, mode, onModeChange, onClose, onRestore }: { t: Translate; backup: BackupManifest | null; preview: RestorePreview | null; mode: RestoreMode; onModeChange: (mode: RestoreMode) => void; onClose: () => void; onRestore: () => Promise<void> }) {
+function RestoreDialog({ t, catalog, backup, preview, mode, onModeChange, onClose, onRestore }: { t: Translate; catalog: Record<string, unknown>; backup: BackupManifest | null; preview: RestorePreview | null; mode: RestoreMode; onModeChange: (mode: RestoreMode) => void; onClose: () => void; onRestore: () => Promise<void> }) {
   const group = useId();
   if (!backup || !preview) return null;
   const options: Array<{ value: RestoreMode; label: string; body: string }> = [
@@ -1658,7 +1659,7 @@ function RestoreDialog({ t, backup, preview, mode, onModeChange, onClose, onRest
             </div>
           </div>)}
         </RadioGroup>
-        {preview.warnings.length > 0 ? <Alert><AlertDescription>{preview.warnings.join(' ')}</AlertDescription></Alert> : null}
+        {preview.warnings.length > 0 ? <Alert><AlertDescription>{preview.warnings.map((warning) => translateStep(warning.message, catalog, warning.code, warning.params)).join(' ')}</AlertDescription></Alert> : null}
         <p className="text-xs text-muted-foreground">{t('console.restoreSafety')}</p>
       </DialogBody>
       <DialogFooter>
@@ -1856,7 +1857,13 @@ function SystemPanel({ t, csrfToken }: { t: Translate; csrfToken: string }) {
         <span>{row.value}</span>
         {row.ratio === undefined ? null : <span className="system-track"><span className="system-value" style={{ width: `${Math.round(Math.max(0, Math.min(1, row.ratio)) * 100)}%` }} /></span>}
       </dd>
-    </div>)}</dl> : <p className="resource-empty">{t('common.loading')}</p>}
+    </div>)}</dl> : <dl className="system-list" aria-busy="true">{/* The shape the readings will take, rather than the word "Loading" in
+        the middle of a card that is about to be full of numbers. */}
+      {['cpu', 'memory', 'disk', 'manager', 'data'].map((key) => <div key={key}>
+        <dt><Skeleton className="h-3 w-20" /></dt>
+        <dd><Skeleton className="h-4 w-36" /></dd>
+      </div>)}
+    </dl>}
     {snapshot ? <p className="system-note">
       {snapshot.storage.measuredAt ? <span>{t('system.sizesMeasuredAt')} {new Date(snapshot.storage.measuredAt).toLocaleTimeString()}</span> : <span />}
       <Button variant="ghost" size="sm" onClick={() => void remeasure()} disabled={snapshot.storage.measuring}><RefreshCw />{snapshot.storage.measuring ? t('system.measuring') : t('system.remeasure')}</Button>
@@ -1925,7 +1932,9 @@ function MetricsPage({ t }: { t: Translate }) {
       <Button variant="ghost" size="icon-sm" aria-label={t('common.refresh')} onClick={() => setRefresh((value) => value + 1)}><RefreshCw /></Button>
     </div>
     {!snapshot
-      ? <Card><CardContent className="px-0"><EmptyState icon={<BarChart3 />} title={t(error ? 'console.metricsLoadFailed' : 'common.loading')} /></CardContent></Card>
+      ? error
+        ? <Card><CardContent className="px-0"><EmptyState icon={<BarChart3 />} title={t('console.metricsLoadFailed')} /></CardContent></Card>
+        : <MetricsSkeleton />
       : <>
         {error ? <Alert variant="destructive"><AlertDescription>{t('console.metricsLoadFailed')}</AlertDescription></Alert> : null}
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -1962,6 +1971,28 @@ function MetricsPage({ t }: { t: Translate }) {
         </div>
         <TokenBreakdown t={t} open={breakdownOpen} onOpenChange={setBreakdownOpen} totals={snapshot.totals} />
       </>}
+  </div>;
+}
+
+/**
+ * The page, before the first answer arrives.
+ *
+ * A card with the word "Loading" in the middle of it tells a reader nothing
+ * about what is coming and moves everything when it does. These are the
+ * shapes the tiles, the chart and the tables will occupy, in their places.
+ */
+function MetricsSkeleton() {
+  return <div className="grid min-w-0 gap-4" aria-busy="true">
+    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      {[0, 1, 2, 3].map((tile) => <Card key={tile} className="gap-0 py-4 shadow-none"><CardContent className="grid gap-2">
+        <Skeleton className="h-3 w-24" />
+        <Skeleton className="h-7 w-28" />
+      </CardContent></Card>)}
+    </div>
+    <Card><CardContent className="py-6"><Skeleton className="h-56 w-full" /></CardContent></Card>
+    <Card><CardContent className="grid gap-3 py-6">
+      {[0, 1, 2, 3].map((row) => <Skeleton key={row} className="h-5 w-full" />)}
+    </CardContent></Card>
   </div>;
 }
 

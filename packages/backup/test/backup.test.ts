@@ -43,6 +43,32 @@ test('a backup carries the whole user directory, config included', async () => {
   assert.equal(preview.warnings.length, 0);
 });
 
+test('an archive that looks nothing like a profile says so in a translatable way', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-backup-odd-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const runtimePath = join(root, 'runtime');
+  const dataPath = join(runtimePath, 'data');
+  await mkdir(join(dataPath, 'holiday-photos'), { recursive: true });
+  await writeFile(join(dataPath, 'holiday-photos', 'beach.txt'), 'not a chat', 'utf8');
+  await writeFile(join(runtimePath, 'config.yaml'), 'listen: false\n', 'utf8');
+  const profile: Profile = {
+    id: 'profile-1', name: 'Default', installationId: 'installation-1', runtimePath,
+    configPath: join(runtimePath, 'config.yaml'), dataPath, layout: 'data', active: true,
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), activatedAt: new Date().toISOString(),
+  };
+  const store = new BackupStore({ paths });
+  const manifest = await store.create(profile);
+  const archive = await store.getArchivePath(manifest.id);
+  assert.ok(archive);
+  const preview = await store.preview(archive, profile.layout);
+  // The warning is a code the panel looks up, not a sentence in one language:
+  // it is read at the one moment that cannot be undone, and the reader may not
+  // have English.
+  assert.equal(preview.warnings.length, 1);
+  assert.equal(preview.warnings[0]?.code, 'backup.unknownArchive');
+  assert.ok((preview.warnings[0]?.message ?? '').length > 0, 'and still says something without a catalogue');
+});
+
 test('a replace restores every file the archive holds, credentials included', async () => {
   const fixture = await createFixture();
   const sourceStore = new BackupStore({ paths: fixture.paths });
