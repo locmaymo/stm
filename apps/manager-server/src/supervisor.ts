@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { describeExit, logEvent, logLineText, STOP_REASON_TEXT, stopReasonCode, type Installation, type LogSink, type ProcessState, type Profile, type StopReason } from '../../../packages/contracts/src/index.js';
-import { assertInstallationMarker, type RuntimeManager } from '../../../packages/sillytavern-runtime/src/index.js';
+import { assertInstallationMarker, RuntimeError, type RuntimeManager } from '../../../packages/sillytavern-runtime/src/index.js';
 
 export interface ProcessSupervisorOptions {
   readonly runtime: RuntimeManager;
@@ -67,7 +67,10 @@ export class ProcessSupervisor {
 
   public async startInstallation(installation: Installation, profile: Profile | null = null): Promise<ProcessState> {
     if (this.child) await this.stop('restart');
-    try { await assertInstallationMarker(installation); } catch (error: unknown) { return this.fail(installation.id, error instanceof Error ? error.message : 'The SillyTavern installation marker is invalid'); }
+    // The marker check refuses with a code of its own; keeping it is what lets
+    // the panel say which of the two went wrong in the reader's language.
+    try { await assertInstallationMarker(installation); }
+    catch (error: unknown) { return this.fail(installation.id, error instanceof Error ? error.message : 'The SillyTavern installation marker is invalid', error instanceof RuntimeError ? error.code : undefined); }
     this.current = { status: 'starting', installationId: installation.id, profileId: profile?.id ?? null, pid: null, startedAt: null, error: null };
     this.logger(logEvent('sillytavern.starting', `[sillytavern] starting ${installation.resolvedRef} on 127.0.0.1:8000`, { ref: installation.resolvedRef }));
     const args = [
@@ -119,7 +122,18 @@ export class ProcessSupervisor {
       const exit = describeExit(code, signal);
       if (this.child === child) {
         this.child = null;
-        this.current = { ...this.current, status: reason || code === 0 ? 'stopped' : 'error', pid: null, error: reason || code === 0 ? null : `SillyTavern exited on its own (${exit})` };
+        const crashed = !reason && code !== 0;
+        // Written out rather than spread, so a code left over from an earlier
+        // failure cannot survive into a state that is no longer a failure.
+        this.current = {
+          status: crashed ? 'error' : 'stopped',
+          installationId: this.current.installationId,
+          profileId: this.current.profileId,
+          pid: null,
+          startedAt: this.current.startedAt,
+          error: crashed ? `SillyTavern exited on its own (${exit})` : null,
+          ...(crashed ? { errorCode: 'sillytavern_exited' } : {}),
+        };
       }
       // "stopped (unknown)" was the same line for a crash, a version switch and
       // the Stop button, which left nothing to act on. A stop this manager
@@ -175,8 +189,8 @@ export class ProcessSupervisor {
     if (clean) this.logger(`[sillytavern] ${clean}`);
   }
 
-  private fail(installationId: string | null, error: string): ProcessState {
-    this.current = { status: 'error', installationId, profileId: null, pid: null, startedAt: null, error };
+  private fail(installationId: string | null, error: string, errorCode?: string): ProcessState {
+    this.current = { status: 'error', installationId, profileId: null, pid: null, startedAt: null, error, ...(errorCode ? { errorCode } : {}) };
     this.logger(logEvent('sillytavern.failed', `[sillytavern] ${error}`, { reason: error }));
     return this.getState();
   }

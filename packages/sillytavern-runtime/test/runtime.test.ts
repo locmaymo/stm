@@ -115,6 +115,29 @@ test('failed npm install never leaves an installation marker', async () => {
   const installation = await runtime.install('latest');
   assert.equal(installation.status, 'failed');
   await assert.rejects(() => stat(installation.markerPath));
+  // The panel says this one in the reader's language, so the code has to
+  // survive from the refusal to the record. A failure without one - a line npm
+  // printed on its way out - is shown as npm wrote it.
+  assert.equal(installation.errorCode, 'npm_failed');
+  assert.equal(installation.error, 'dependency install failed');
+});
+
+test('a failure that is not the manager refusing carries no code to translate', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-install-plain-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const archive = zip([{ name: 'SillyTavern-abc/package.json', body: '{"name":"SillyTavern","scripts":{"start":"node server.js"}}' }]);
+  const runtime = new RuntimeManager({
+    paths,
+    installDependencies: async () => { throw new Error('npm ERR! code ELIFECYCLE'); },
+    healthCheck: async () => undefined,
+    fetch: async (input) => input.toString().includes('/releases')
+      ? new Response(JSON.stringify([{ tag_name: '1.0.0', draft: false, prerelease: false }]), { status: 200 })
+      : new Response(new Uint8Array(archive), { status: 200, headers: { 'content-type': 'application/zip' } }),
+  });
+  const installation = await runtime.install('latest');
+  assert.equal(installation.status, 'failed');
+  assert.equal(installation.errorCode, undefined);
+  assert.equal(installation.error, 'npm ERR! code ELIFECYCLE');
 });
 
 test('health check prepares a data root for older SillyTavern runtimes', async () => {

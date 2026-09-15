@@ -100,6 +100,16 @@ export interface Installation {
   readonly stepCode?: string;
   readonly stepParams?: MessageParams;
   readonly error: string | null;
+  /**
+   * The manager's own code for that failure, when the manager is what failed.
+   *
+   * `error` is a sentence, and whose sentence it is varies: a refusal the
+   * manager wrote, a line git printed, whatever npm said on its way out. The
+   * panel translates the first kind and shows the other two as the program
+   * that produced them wrote them - translating another project's output makes
+   * it impossible to search for. A code is present only for the first kind.
+   */
+  readonly errorCode?: string;
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly activatedAt: string | null;
@@ -351,6 +361,8 @@ export interface ProcessState {
   readonly pid: number | null;
   readonly startedAt: string | null;
   readonly error: string | null;
+  /** Set when the manager is what failed; see `Installation.errorCode`. */
+  readonly errorCode?: string;
 }
 
 /**

@@ -23,7 +23,7 @@ import {
   Tabs, TabsContent, TabsList, TabsTrigger, type TableQuery, Toaster, Tooltip,
   TooltipContent, TooltipTrigger, useSidebar, useToast,
 } from '../../../packages/ui/src/index.js';
-import { logCatalog, translator, type Translate } from './i18n.js';
+import { failures, logCatalog, translator, type Fail, type Translate } from './i18n.js';
 import { browserEnvironment, browserStorage, readPreferences, savePreferences, type Preferences } from './preferences.js';
 import { authErrorKey } from './auth-error.js';
 import { apiFetch, onSessionExpired, resetSessionWatch } from './session.js';
@@ -51,18 +51,31 @@ const MIN_MANAGER_PASSWORD = 6;
 /** The access gateway holds SillyTavern open to a network, and asks for more. */
 const MIN_SILLY_PASSWORD = 8;
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
 const UPLOAD_CHUNK_BYTES = 4 * 1024 * 1024;
 const UPLOAD_RETRIES = 3;
 const UPLOAD_RATE_WINDOW_MS = 10_000;
 
-function apiErrorFromText(text: string, status: number, fallback: string): string {
+/**
+ * What to say about a reply that was not the JSON this panel expected.
+ *
+ * An upload passes through whatever sits in front of the manager, and a proxy
+ * that gives up answers in its own voice - its own JSON, or an HTML error
+ * page. The manager's own refusal is translated; the proxy's words are its
+ * own; and a reply with nothing in it at all leaves only the status code.
+ */
+function apiErrorFromText(text: string, status: number, fallback: string, fail: Fail, proxyHtml: string): string {
   try {
-    const payload = JSON.parse(text) as { error?: { message?: string }; Message?: string };
-    return payload.error?.message ?? payload.Message ?? `${fallback} (HTTP ${status})`;
+    const payload: unknown = JSON.parse(text);
+    const proxyMessage = isRecord(payload) && typeof payload.Message === 'string' ? payload.Message : null;
+    return fail.body(payload, proxyMessage ?? `${fallback} (HTTP ${status})`);
   } catch {
     const looksLikeHtml = /<!doctype\s+html|<html[\s>]/iu.test(text);
     return looksLikeHtml
-      ? `${fallback} (the Studio proxy returned an HTML error page; try again)`
+      ? proxyHtml
       : `${fallback} (HTTP ${status})`;
   }
 }
@@ -72,8 +85,15 @@ class StoppedError extends Error {
   public constructor() { super('stopped'); this.name = 'StoppedError'; }
 }
 
-async function uploadChunkWithRetry(url: string, body: Blob, headers: HeadersInit, signal?: AbortSignal): Promise<void> {
-  let lastError = 'Upload request failed';
+/** What a failed chunk should say, in the reader's language rather than this file's. */
+interface UploadMessages {
+  readonly fail: Fail;
+  readonly failed: string;
+  readonly proxyPage: string;
+}
+
+async function uploadChunkWithRetry(url: string, body: Blob, headers: HeadersInit, messages: UploadMessages, signal?: AbortSignal): Promise<void> {
+  let lastError = messages.failed;
   for (let attempt = 0; attempt <= UPLOAD_RETRIES; attempt += 1) {
     if (signal?.aborted) throw new StoppedError();
     let response: Response;
@@ -88,7 +108,7 @@ async function uploadChunkWithRetry(url: string, body: Blob, headers: HeadersIni
     }
     if (response.ok) return;
     const text = await response.text();
-    lastError = apiErrorFromText(text, response.status, 'Upload request failed');
+    lastError = apiErrorFromText(text, response.status, messages.failed, messages.fail, messages.proxyPage);
     const retryable = response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500;
     if (!retryable || attempt === UPLOAD_RETRIES) throw new Error(lastError);
     await new Promise((resolvePromise) => window.setTimeout(resolvePromise, 500 * (attempt + 1)));
@@ -192,6 +212,7 @@ function AuthScreen({ t, mode, setupCodeRequired, signedOut, preferences, onPref
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const setup = mode === 'setup';
+  const fail = failures(preferences.locale);
   // Shown once the second field stops being a prefix of the first, rather than
   // the moment the two differ - a mismatch warning under a half-typed password
   // is noise that goes away on its own.
@@ -210,7 +231,7 @@ function AuthScreen({ t, mode, setupCodeRequired, signedOut, preferences, onPref
       const payload = await response.json() as { session?: { csrfToken: string }; error?: { code?: string; message?: string } };
       if (!response.ok || !payload.session) {
         const key = authErrorKey(payload.error?.code);
-        setError(key ? t(key) : payload.error?.message ?? t('setup.authError'));
+        setError(key ? t(key) : fail.body(payload, t('setup.authError')));
         return;
       }
       onSignedIn(payload.session.csrfToken);
@@ -299,6 +320,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange }: { csrfToken
   const [accessSecurity, setAccessSecurity] = useState<AccessGatewayState>({ status: 'stopped', host: null, port: 8001, lan: false, passwordConfigured: false, error: null });
   const t = translator(preferences.locale);
   const catalog = logCatalog(preferences.locale);
+  const fail = failures(preferences.locale);
 
   useEffect(() => {
     const media = window.matchMedia('(max-width: 767px)');
@@ -405,16 +427,17 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange }: { csrfToken
     const response = await apiFetch('/api/v1/installations', { method: 'DELETE', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
     if (!response.ok) {
       const payload = await response.json() as { error?: { message?: string } };
-      return payload.error?.message ?? t('console.uninstallFailed');
+      return fail.body(payload, t('console.uninstallFailed'));
     }
     setInstallations([]);
     setActiveInstallationId(null);
     setPendingInstallationId(null);
     return null;
   };
-  const installation = <InstallationPanel t={t} catalog={catalog} version={version} onVersionChange={setVersion} versions={versions} installations={installations} activeInstallationId={activeInstallationId} pendingInstallationId={pendingInstallationId} onPendingInstallationId={setPendingInstallationId} csrfToken={csrfToken} installing={installing} onInstalling={setInstalling} running={processState.status === 'running'} onRemove={removeInstallation} />;
+  const installation = <InstallationPanel t={t} fail={fail} catalog={catalog} version={version} onVersionChange={setVersion} versions={versions} installations={installations} activeInstallationId={activeInstallationId} pendingInstallationId={pendingInstallationId} onPendingInstallationId={setPendingInstallationId} csrfToken={csrfToken} installing={installing} onInstalling={setInstalling} running={processState.status === 'running'} onRemove={removeInstallation} />;
   const hero = <OverviewHero
     t={t}
+    fail={fail}
     catalog={catalog}
     process={processState}
     tunnel={tunnelState}
@@ -430,7 +453,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange }: { csrfToken
   const updateConfig = async (input: ConfigUpdateInput): Promise<string | null> => {
     const response = await apiFetch('/api/v1/config', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify(input) });
     const payload = await response.json() as { config?: ConfigDocument; process?: ProcessState; tunnel?: TunnelState; error?: { message?: string } };
-    if (!response.ok || !payload.config) return payload.error?.message ?? t('console.configSaveFailed');
+    if (!response.ok || !payload.config) return fail.body(payload, t('console.configSaveFailed'));
     setConfigDocument(payload.config);
     if (payload.process) setProcessState(payload.process);
     if (payload.tunnel) setTunnelState(payload.tunnel);
@@ -439,21 +462,21 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange }: { csrfToken
   const setAccessPassword = async (password: string, confirmPassword: string): Promise<string | null> => {
     const response = await apiFetch('/api/v1/access/password', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ password, confirmPassword }) });
     const payload = await response.json() as AccessGatewayState & { error?: { message?: string } };
-    if (!response.ok) return payload.error?.message ?? t('console.passwordSaveFailed');
+    if (!response.ok) return fail.body(payload, t('console.passwordSaveFailed'));
     setAccessSecurity(payload);
     return null;
   };
   const setAccessLan = async (lan: boolean): Promise<string | null> => {
     const response = await apiFetch('/api/v1/access/network', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ lan }) });
     const payload = await response.json() as AccessGatewayState & { error?: { message?: string } };
-    if (!response.ok) return payload.error?.message ?? t('console.configSaveFailed');
+    if (!response.ok) return fail.body(payload, t('console.configSaveFailed'));
     setAccessSecurity(payload);
     return null;
   };
   const changeManagerPassword = async (password: string, confirmPassword: string): Promise<string | null> => {
     const response = await apiFetch('/api/v1/auth/password', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ password, confirmPassword }) });
     const payload = await response.json() as { error?: { message?: string } };
-    return response.ok ? null : payload.error?.message ?? t('console.managerPasswordSaveFailed');
+    return response.ok ? null : fail.body(payload, t('console.managerPasswordSaveFailed'));
   };
 
   return (
@@ -478,7 +501,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange }: { csrfToken
             </div>
           </header>
           <PageContainer>
-            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}<CardGrid>{installation}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} installed={Boolean(activeInstallationId)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><DataPanel t={t} navigate={navigate} activeProfile={profiles.find((profile) => profile.id === activeProfileId) ?? null} latestBackup={backups.at(-1) ?? null} /><SystemPanel t={t} csrfToken={csrfToken ?? ''} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} config={configDocument} onConfigUpdate={updateConfig} onChangeManagerPassword={changeManagerPassword} /> : <ResourcePanel page={page} t={t} />}
+            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}<CardGrid>{installation}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} installed={Boolean(activeInstallationId)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><DataPanel t={t} navigate={navigate} activeProfile={profiles.find((profile) => profile.id === activeProfileId) ?? null} latestBackup={backups.at(-1) ?? null} /><SystemPanel t={t} csrfToken={csrfToken ?? ''} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} config={configDocument} onConfigUpdate={updateConfig} onChangeManagerPassword={changeManagerPassword} /> : <ResourcePanel page={page} t={t} />}
           </PageContainer>
           <MobileNav
             items={navigation.map(({ id, icon }) => ({ id, icon, href: `#${id}`, label: t(`nav.${id}`) }))}
@@ -532,7 +555,7 @@ function Unavailable({ t, children }: { t: Translate; children: ReactNode }) {
  * Start is a plain button; Stop asks first, because whoever is reading a chat
  * through the public link is not in the room to be consulted.
  */
-function OverviewHero({ t, catalog, process, tunnel, installed, installing, active, onStart, onStop, onOpen }: { t: Translate; catalog: Record<string, unknown>; process: ProcessState; tunnel: TunnelState; installed: boolean; installing: boolean; active: Installation | undefined; onStart: () => Promise<void>; onStop: () => Promise<void>; onOpen: () => void }) {
+function OverviewHero({ t, fail, catalog, process, tunnel, installed, installing, active, onStart, onStop, onOpen }: { t: Translate; fail: Fail; catalog: Record<string, unknown>; process: ProcessState; tunnel: TunnelState; installed: boolean; installing: boolean; active: Installation | undefined; onStart: () => Promise<void>; onStop: () => Promise<void>; onOpen: () => void }) {
   const [stopAsked, setStopAsked] = useState(false);
   const [busy, setBusy] = useState(false);
   const running = process.status === 'running';
@@ -558,10 +581,16 @@ function OverviewHero({ t, catalog, process, tunnel, installed, installing, acti
 
   // What is worth saying under the title, in the order it becomes true: what
   // the install is doing, then why it failed, then where it can be reached.
+  // A refusal the manager wrote is said in the reader's language; a line from
+  // git, npm or SillyTavern itself is shown as that program wrote it.
+  const failure = installFailed && active?.error
+    ? fail.of(active.errorCode, active.error, t('console.heroInstallFailed'))
+    : process.error
+      ? fail.of(process.errorCode, process.error, t('console.heroFailed'))
+      : null;
   const detail = installingNow && active
     ? `${translateStep(active.step, catalog, active.stepCode, active.stepParams)} · ${Math.round(active.progress)}%`
-    : (installFailed ? active?.error ?? process.error : process.error)
-      ?? active?.resolvedRef ?? null;
+    : failure ?? active?.resolvedRef ?? null;
 
   const run = async (work: () => Promise<void>) => {
     setBusy(true);
@@ -610,7 +639,7 @@ function OverviewHero({ t, catalog, process, tunnel, installed, installing, acti
  * is where the state it changes is reported. What is left here is the install,
  * and the install now asks before it restarts something that is already up.
  */
-function InstallationPanel({ t, catalog, version, onVersionChange, versions, installations, activeInstallationId, pendingInstallationId, onPendingInstallationId, csrfToken, installing, onInstalling, running, onRemove }: { t: Translate; catalog: Record<string, unknown>; version: string; onVersionChange: (value: string) => void; versions: VersionOption[]; installations: Installation[]; activeInstallationId: string | null; pendingInstallationId: string | null; onPendingInstallationId: (value: string | null) => void; csrfToken: string | null; installing: boolean; onInstalling: (value: boolean) => void; running: boolean; onRemove: () => Promise<string | null> }) {
+function InstallationPanel({ t, fail, catalog, version, onVersionChange, versions, installations, activeInstallationId, pendingInstallationId, onPendingInstallationId, csrfToken, installing, onInstalling, running, onRemove }: { t: Translate; fail: Fail; catalog: Record<string, unknown>; version: string; onVersionChange: (value: string) => void; versions: VersionOption[]; installations: Installation[]; activeInstallationId: string | null; pendingInstallationId: string | null; onPendingInstallationId: (value: string | null) => void; csrfToken: string | null; installing: boolean; onInstalling: (value: boolean) => void; running: boolean; onRemove: () => Promise<string | null> }) {
   const [requestError, setRequestError] = useState<string | null>(null);
   const [askedVersion, setAskedVersion] = useState<string | null>(null);
   const [askedRemove, setAskedRemove] = useState(false);
@@ -645,7 +674,7 @@ function InstallationPanel({ t, catalog, version, onVersionChange, versions, ins
     try {
       const response = await apiFetch('/api/v1/installations', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ version }) });
       const payload = await response.json() as { installationId?: string; error?: { message?: string } };
-      if (!response.ok) { setRequestError(payload.error?.message ?? t('console.installRequestFailed')); onInstalling(false); return; }
+      if (!response.ok) { setRequestError(fail.body(payload, t('console.installRequestFailed'))); onInstalling(false); return; }
       if (!payload.installationId) { setRequestError(t('console.installRequestFailed')); onInstalling(false); return; }
       onPendingInstallationId(payload.installationId);
     } catch { setRequestError(t('console.installRequestFailed')); onInstalling(false); }
@@ -1068,7 +1097,7 @@ function r2FormFrom(config: R2Config | null): R2FormState {
  * Each card now asks one thing and keeps the rest behind a dialog, and the
  * archives are a table that can be searched, sorted and paged.
  */
-function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, onProfilesChange, onBackupsChange }: { t: Translate; catalog: Record<string, unknown>; csrfToken: string; profiles: Profile[]; activeProfileId: string | null; backups: BackupManifest[]; onProfilesChange: (profiles: Profile[], activeProfileId: string | null) => void; onBackupsChange: (backups: BackupManifest[]) => void }) {
+function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, backups, onProfilesChange, onBackupsChange }: { t: Translate; fail: Fail; catalog: Record<string, unknown>; csrfToken: string; profiles: Profile[]; activeProfileId: string | null; backups: BackupManifest[]; onProfilesChange: (profiles: Profile[], activeProfileId: string | null) => void; onBackupsChange: (backups: BackupManifest[]) => void }) {
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [restoreMode, setRestoreMode] = useState<RestoreMode>('replace');
@@ -1170,7 +1199,7 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
     setBusyAction(t('console.newProfile')); setError(null);
     try {
       const response = await apiFetch('/api/v1/profiles', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ name, layout: 'data' }) });
-      if (!response.ok) { const payload = await response.json() as { error?: { message?: string } }; return payload.error?.message ?? t('console.profileCreateFailed'); }
+      if (!response.ok) return fail.body(await response.json(), t('console.profileCreateFailed'));
       await refresh();
       return null;
     } catch { return t('console.profileCreateFailed'); } finally { setBusyAction(null); }
@@ -1179,7 +1208,7 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
     setBusyAction(t('console.switchProfile')); setError(null);
     try {
       const response = await apiFetch(`/api/v1/profiles/${id}/activate`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
-      if (!response.ok) { const payload = await response.json() as { error?: { message?: string } }; setError(payload.error?.message ?? t('console.profileActivateFailed')); return; }
+      if (!response.ok) { setError(fail.body(await response.json(), t('console.profileActivateFailed'))); return; }
       await refresh();
     } catch { setError(t('console.profileActivateFailed')); } finally { setBusyAction(null); }
   };
@@ -1188,7 +1217,7 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
     try {
       const response = await apiFetch('/api/v1/backups', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ ...(name ? { name } : {}) }) });
       const payload = await response.json() as { jobId?: string; error?: { message?: string } };
-      if (!response.ok || !payload.jobId) return payload.error?.message ?? t('console.backupCreateFailed');
+      if (!response.ok || !payload.jobId) return fail.body(payload, t('console.backupCreateFailed'));
       setRunningJobId(payload.jobId);
       await waitForOperation(payload.jobId, (job) => setOperationProgress({ percent: job.progress, step: jobStep(job) }));
       await refresh();
@@ -1217,7 +1246,7 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
     try {
       const response = await apiFetch(`/api/v1/backups/${backup.id}/preview`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       const payload = await response.json() as RestorePreview | { error?: { message?: string } };
-      if (!response.ok || !('files' in payload)) { setError(('error' in payload ? payload.error?.message : undefined) ?? t('console.backupPreviewFailed')); return; }
+      if (!response.ok || !('files' in payload)) { setError(fail.body(payload, t('console.backupPreviewFailed'))); return; }
       setRestoreMode('replace');
       setSelectedBackup(backup); setSelectedPreview(payload);
     } catch { setError(t('console.backupPreviewFailed')); } finally { setBusyAction(null); }
@@ -1233,7 +1262,7 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
     try {
       const response = await apiFetch(`/api/v1/backups/${backupId}/restore`, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ mode: restoreMode }) });
       const payload = await response.json() as { jobId?: string; error?: { message?: string } };
-      if (!response.ok || !payload.jobId) { setError(payload.error?.message ?? t('console.backupRestoreFailed')); return; }
+      if (!response.ok || !payload.jobId) { setError(fail.body(payload, t('console.backupRestoreFailed'))); return; }
       setRunningJobId(payload.jobId);
       await waitForOperation(payload.jobId, (job) => setOperationProgress({ percent: job.progress, step: jobStep(job) }));
       await refresh();
@@ -1262,6 +1291,7 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
           `/api/v1/backups/import/chunk?uploadId=${encodeURIComponent(uploadId)}&index=${index}`,
           file.slice(offset, end),
           { 'content-type': 'application/octet-stream', 'x-csrf-token': csrfToken, accept: 'application/json' },
+          { fail, failed: t('console.uploadFailed'), proxyPage: t('console.uploadProxyPage') },
           controller.signal,
         );
         index += 1;
@@ -1285,8 +1315,8 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
       const text = await response.text();
       let payload: (RestorePreview & { backup?: BackupManifest }) | { error?: { message?: string } };
       try { payload = JSON.parse(text) as (RestorePreview & { backup?: BackupManifest }) | { error?: { message?: string } }; }
-      catch { throw new Error(apiErrorFromText(text, response.status, t('console.backupPreviewFailed'))); }
-      if (!response.ok || !('files' in payload)) { setError(('error' in payload ? payload.error?.message : undefined) ?? t('console.backupPreviewFailed')); return; }
+      catch { throw new Error(apiErrorFromText(text, response.status, t('console.backupPreviewFailed'), fail, t('console.uploadProxyPage'))); }
+      if (!response.ok || !('files' in payload)) { setError(fail.body(payload, t('console.backupPreviewFailed'))); return; }
       if (!payload.backup) { setError(t('console.backupPreviewFailed')); return; }
       setRestoreMode('replace');
       setSelectedBackup(payload.backup); setSelectedPreview(payload);
@@ -1303,7 +1333,7 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
     setBusyAction(t('common.rename')); setError(null);
     try {
       const response = await apiFetch(`/api/v1/backups/${renameTarget.id}`, { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ name }) });
-      if (!response.ok) { const payload = await response.json() as { error?: { message?: string } }; return payload.error?.message ?? t('console.backupRenameFailed'); }
+      if (!response.ok) return fail.body(await response.json(), t('console.backupRenameFailed'));
       await refresh();
       return null;
     } catch { return t('console.backupRenameFailed'); } finally { setBusyAction(null); }
@@ -1314,7 +1344,7 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
     setBusyAction(t('common.delete')); setError(null);
     try {
       const response = await apiFetch(`/api/v1/backups/${backup.id}`, { method: 'DELETE', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
-      if (!response.ok) { const payload = await response.json() as { error?: { message?: string } }; setError(payload.error?.message ?? t('console.backupDeleteFailed')); return; }
+      if (!response.ok) { setError(fail.body(await response.json(), t('console.backupDeleteFailed'))); return; }
       if (selectedBackup?.id === backup.id) closeRestore();
       await refresh();
     } catch { setError(t('console.backupDeleteFailed')); } finally { setBusyAction(null); setDeleteOpen(false); }
@@ -1324,7 +1354,7 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
     try {
       const response = await apiFetch('/api/v1/r2', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify(form) });
       const payload = await response.json() as { config?: R2Config; error?: { message?: string } };
-      if (!response.ok || !payload.config) return payload.error?.message ?? t('console.r2SaveFailed');
+      if (!response.ok || !payload.config) return fail.body(payload, t('console.r2SaveFailed'));
       setR2Config(payload.config); setR2Message(t('console.r2Saved')); await refresh();
       return null;
     } catch { return t('console.r2SaveFailed'); }
@@ -1334,7 +1364,7 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
     try {
       const response = await apiFetch('/api/v1/r2/test', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       const payload = await response.json() as { error?: { message?: string } };
-      setR2Message(response.ok ? t('console.r2Tested') : payload.error?.message ?? t('console.r2TestFailed'));
+      setR2Message(response.ok ? t('console.r2Tested') : fail.body(payload, t('console.r2TestFailed')));
     } catch { setR2Message(t('console.r2TestFailed')); } finally { setR2Busy(null); }
   };
   const uploadR2 = async () => {
@@ -1343,7 +1373,7 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
     try {
       const response = await apiFetch('/api/v1/r2/sync', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       const payload = await response.json() as { jobId?: string; error?: { message?: string } };
-      if (!response.ok || !payload.jobId) { setR2Message(payload.error?.message ?? t('console.r2UploadFailed')); return; }
+      if (!response.ok || !payload.jobId) { setR2Message(fail.body(payload, t('console.r2UploadFailed'))); return; }
       // A first upload is gigabytes. It runs in the server and is followed the
       // same way a restore is, so the bar says how far it has got and the Stop
       // button reaches the work rather than only this page.
@@ -1368,7 +1398,7 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
     try {
       const response = await apiFetch(`/api/v1/r2/snapshots/${encodeURIComponent(snapshot.id)}/fetch`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       const payload = await response.json() as { jobId?: string; error?: { message?: string } };
-      if (!response.ok || !payload.jobId) { setR2Message(payload.error?.message ?? t('console.r2FetchFailed')); return; }
+      if (!response.ok || !payload.jobId) { setR2Message(fail.body(payload, t('console.r2FetchFailed'))); return; }
       setRunningJobId(payload.jobId);
       await waitForOperation(payload.jobId, (job) => setOperationProgress({ percent: job.progress, step: jobStep(job) }));
       setR2Message(t('console.r2Fetched')); await refresh();
@@ -1381,7 +1411,7 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
     try {
       const response = await apiFetch('/api/v1/r2/reconcile', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       const payload = await response.json() as { collectedBlobs?: number; error?: { message?: string } };
-      if (!response.ok) { setR2Message(payload.error?.message ?? t('console.r2ReconcileFailed')); return; }
+      if (!response.ok) { setR2Message(fail.body(payload, t('console.r2ReconcileFailed'))); return; }
       setR2Message(t('console.r2Reconciled')); await refresh();
     } catch { setR2Message(t('console.r2ReconcileFailed')); } finally { setR2Busy(null); }
   };
@@ -1390,7 +1420,7 @@ function DataPage({ t, catalog, csrfToken, profiles, activeProfileId, backups, o
     try {
       const response = await apiFetch('/api/v1/r2/legacy', { method: 'DELETE', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       const payload = await response.json() as { removed?: number; error?: { message?: string } };
-      if (!response.ok) { setR2Message(payload.error?.message ?? t('console.r2LegacyRemoveFailed')); return; }
+      if (!response.ok) { setR2Message(fail.body(payload, t('console.r2LegacyRemoveFailed'))); return; }
       setR2Message(t('console.r2LegacyRemoved')); await refresh();
     } catch { setR2Message(t('console.r2LegacyRemoveFailed')); } finally { setR2Busy(null); }
   };

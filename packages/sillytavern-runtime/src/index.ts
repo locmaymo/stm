@@ -313,10 +313,10 @@ export class RuntimeManager {
       status: 'queued', progress: 0, step: 'Waiting to start', stepCode: 'install.waiting', error: null, createdAt: now, updatedAt: now, activatedAt: null,
     };
     await this.upsert(initial);
-    const update = async (status: InstallationStatus, progress: number, step: LogEvent, error: string | null = null): Promise<Installation> => {
+    const update = async (status: InstallationStatus, progress: number, step: LogEvent, error: string | null = null, errorCode?: string): Promise<Installation> => {
       const current = await this.getInstallation(id);
       if (!current) throw new Error('Installation record disappeared');
-      const next: Installation = { ...current, status, progress, step: step.message, stepCode: step.code, ...(step.params ? { stepParams: step.params } : {}), error, updatedAt: this.now().toISOString() };
+      const next: Installation = { ...current, status, progress, step: step.message, stepCode: step.code, ...(step.params ? { stepParams: step.params } : {}), error, ...(errorCode ? { errorCode } : {}), updatedAt: this.now().toISOString() };
       await this.upsert(next); onProgress?.({ status, progress, step }); this.logger(logEvent(step.code, `[installer:${id}] ${step.message}`, step.params)); return next;
     };
 
@@ -370,7 +370,9 @@ export class RuntimeManager {
       return activated;
     } catch (error: unknown) {
       const message = error instanceof RuntimeError ? error.message : error instanceof Error ? error.message : 'Installation failed';
-      const failed = await update('failed', 100, logEvent('install.failed', 'Installation failed'), message);
+      // Only a refusal this manager wrote carries a code. A line from git or
+      // npm is that program's own words and is shown as it arrived.
+      const failed = await update('failed', 100, logEvent('install.failed', 'Installation failed'), message, error instanceof RuntimeError ? error.code : undefined);
       if (finalRoot && !this.useGit) await rm(finalRoot, { recursive: true, force: true });
       if (checkoutChanged && previous) {
         try { await this.activateInstallation(previous.id); this.logger(logEvent('installer.previousRestored', '[installer] previous runtime restored')); }
