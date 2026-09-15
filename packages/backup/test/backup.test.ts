@@ -43,6 +43,32 @@ test('a backup carries the whole user directory, config included', async () => {
   assert.equal(preview.warnings.length, 0);
 });
 
+test('an archive that looks nothing like a profile says so in a translatable way', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-backup-odd-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const runtimePath = join(root, 'runtime');
+  const dataPath = join(runtimePath, 'data');
+  await mkdir(join(dataPath, 'holiday-photos'), { recursive: true });
+  await writeFile(join(dataPath, 'holiday-photos', 'beach.txt'), 'not a chat', 'utf8');
+  await writeFile(join(runtimePath, 'config.yaml'), 'listen: false\n', 'utf8');
+  const profile: Profile = {
+    id: 'profile-1', name: 'Default', installationId: 'installation-1', runtimePath,
+    configPath: join(runtimePath, 'config.yaml'), dataPath, layout: 'data', active: true,
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), activatedAt: new Date().toISOString(),
+  };
+  const store = new BackupStore({ paths });
+  const manifest = await store.create(profile);
+  const archive = await store.getArchivePath(manifest.id);
+  assert.ok(archive);
+  const preview = await store.preview(archive, profile.layout);
+  // The warning is a code the panel looks up, not a sentence in one language:
+  // it is read at the one moment that cannot be undone, and the reader may not
+  // have English.
+  assert.equal(preview.warnings.length, 1);
+  assert.equal(preview.warnings[0]?.code, 'backup.unknownArchive');
+  assert.ok((preview.warnings[0]?.message ?? '').length > 0, 'and still says something without a catalogue');
+});
+
 test('a replace restores every file the archive holds, credentials included', async () => {
   const fixture = await createFixture();
   const sourceStore = new BackupStore({ paths: fixture.paths });
@@ -366,4 +392,31 @@ test('archives nothing points at are reclaimed, and the ones in the library are 
   assert.ok(await store.getArchivePath(kept.id));
   // Nothing left to reclaim on the next start.
   assert.equal(await store.sweepOrphanArchives(), 0);
+});
+
+test('the local backup schedule is kept with the library and survives a restart', async () => {
+  const fixture = await createFixture();
+  const store = new BackupStore({ paths: fixture.paths });
+  assert.equal((await store.getSchedule()).intervalMinutes, 60);
+  const created = await store.create(fixture.profile);
+  await store.setSchedule({ intervalMinutes: 360 });
+  await assert.rejects(() => store.setSchedule({ intervalMinutes: 0 }), (error: unknown) => error instanceof BackupError && error.code === 'invalid_backup_schedule');
+
+  const reopened = new BackupStore({ paths: fixture.paths });
+  assert.equal((await reopened.getSchedule()).intervalMinutes, 360);
+  // Saving the schedule wrote the library as it was then, backup included.
+  assert.deepEqual((await reopened.list()).map((backup) => backup.id), [created.id]);
+  // An interval handed over from the old R2 settings never overrides a choice made here.
+  await reopened.adoptLegacySchedule(30);
+  assert.equal((await reopened.getSchedule()).intervalMinutes, 360);
+});
+
+test('an interval from the old R2 settings is taken when none was chosen here', async () => {
+  const fixture = await createFixture();
+  await new BackupStore({ paths: fixture.paths }).adoptLegacySchedule(30);
+  assert.equal((await new BackupStore({ paths: fixture.paths }).getSchedule()).intervalMinutes, 30);
+  // One that was out of range is dropped, leaving the default.
+  const other = await createFixture();
+  await new BackupStore({ paths: other.paths }).adoptLegacySchedule(0);
+  assert.equal((await new BackupStore({ paths: other.paths }).getSchedule()).intervalMinutes, 60);
 });

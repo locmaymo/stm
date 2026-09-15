@@ -7,12 +7,14 @@ import { pipeline } from 'node:stream/promises';
 import { chmod, lstat, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
-import { logEvent, logLineText, type BackupFilePreview, type BackupManifest, type BackupSource, type LogEvent, type LogSink, type Profile, type ProfileLayout, type RestoreMode, type RestorePreview } from '../../contracts/src/index.js';
+import { logEvent, logLineText, type BackupFilePreview, type BackupManifest, type BackupSource, type LogEvent, type LogSink, type Profile, type ProfileLayout, type RestoreMode, type RestorePreview, type LocalBackupSchedule } from '../../contracts/src/index.js';
 import { createIoLimiter, ioConcurrency, runPooled } from '../../platform/src/index.js';
 import type { PlatformPaths } from '../../platform/src/index.js';
 
 const BACKUP_STATE_FILE = 'backups.json';
 const BACKUP_SCHEMA_VERSION = 1 as const;
+const DEFAULT_LOCAL_INTERVAL_MINUTES = 60;
+const MAX_LOCAL_INTERVAL_MINUTES = 7 * 24 * 60;
 const MAX_ZIP_DIRECTORY_BYTES = 64 * 1024 * 1024;
 const MAX_UPLOAD_BYTES = 8 * 1024 * 1024 * 1024;
 const MAX_UPLOAD_CHUNK_BYTES = 64 * 1024 * 1024;
@@ -72,6 +74,8 @@ export interface RestoreOptions {
 interface PersistedBackups {
   readonly schemaVersion: 1;
   readonly backups: BackupManifest[];
+  /** Absent until somebody chooses one, which reads as the default. */
+  readonly schedule?: LocalBackupSchedule;
 }
 
 interface ZipEntry {
@@ -100,6 +104,7 @@ export class BackupStore {
   private readonly now: () => Date;
   private readonly logger: LogSink;
   private manifests: BackupManifest[] | null = null;
+  private scheduleState: LocalBackupSchedule | null = null;
   private writeQueue: Promise<void> = Promise.resolve();
   private operationTail: Promise<void> = Promise.resolve();
   private cleanupTail: Promise<void> = Promise.resolve();
@@ -114,6 +119,39 @@ export class BackupStore {
   public async list(profileId?: string): Promise<BackupManifest[]> {
     const manifests = await this.load();
     return manifests.filter((manifest) => !profileId || manifest.profileId === profileId).map((manifest) => ({ ...manifest }));
+  }
+
+  /** How often the scheduler takes a local backup of the active profile. */
+  public async getSchedule(): Promise<LocalBackupSchedule> {
+    await this.load();
+    return this.scheduleState ? { ...this.scheduleState } : { intervalMinutes: DEFAULT_LOCAL_INTERVAL_MINUTES };
+  }
+
+  public async setSchedule(input: LocalBackupSchedule): Promise<LocalBackupSchedule> {
+    if (!Number.isInteger(input.intervalMinutes) || input.intervalMinutes < 1 || input.intervalMinutes > MAX_LOCAL_INTERVAL_MINUTES) {
+      throw new BackupError('invalid_backup_schedule', `The local backup interval must be a whole number of minutes from 1 to ${MAX_LOCAL_INTERVAL_MINUTES}`);
+    }
+    await this.load();
+    this.scheduleState = { intervalMinutes: input.intervalMinutes };
+    await this.save();
+    return { ...this.scheduleState };
+  }
+
+  /**
+   * Take the interval an older version kept with the R2 settings.
+   *
+   * Only when nothing has been chosen here, so handing it over again after an
+   * interrupted start can never undo a choice made since. A value that was out
+   * of range there is dropped rather than carried.
+   */
+  public async adoptLegacySchedule(intervalMinutes: number): Promise<void> {
+    await this.load();
+    if (this.scheduleState) return;
+    try {
+      await this.setSchedule({ intervalMinutes });
+    } catch (error: unknown) {
+      if (!(error instanceof BackupError)) throw error;
+    }
   }
 
   public async get(id: string): Promise<BackupManifest | null> {
@@ -720,6 +758,7 @@ export class BackupStore {
       const parsed: unknown = JSON.parse(await readFile(join(this.paths.state, BACKUP_STATE_FILE), 'utf8'));
       if (!isRecord(parsed) || parsed.schemaVersion !== BACKUP_SCHEMA_VERSION || !Array.isArray(parsed.backups)) throw new Error('Invalid backup state');
       this.manifests = parsed.backups.map(parseManifest);
+      this.scheduleState = parseSchedule(parsed.schedule);
     } catch (error: unknown) {
       if (!isFileNotFound(error)) throw error;
       this.manifests = [];
@@ -727,15 +766,21 @@ export class BackupStore {
     return this.manifests;
   }
 
-  private async save(backups: BackupManifest[]): Promise<void> {
+  /**
+   * Write the library down. Without a list, the one current when the write
+   * runs - not when it was asked for - so a schedule change queued behind a
+   * backup cannot put back the list from before that backup.
+   */
+  private async save(backups?: BackupManifest[]): Promise<void> {
     const operation = async (): Promise<void> => {
       await mkdir(this.paths.state, { recursive: true });
       const target = join(this.paths.state, BACKUP_STATE_FILE);
       const temporary = `${target}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
-      const payload: PersistedBackups = { schemaVersion: BACKUP_SCHEMA_VERSION, backups };
+      const list = backups ?? this.manifests ?? [];
+      const payload: PersistedBackups = { schemaVersion: BACKUP_SCHEMA_VERSION, backups: list, ...(this.scheduleState ? { schedule: this.scheduleState } : {}) };
       await writeFile(temporary, `${JSON.stringify(payload, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
       await rename(temporary, target);
-      this.manifests = backups;
+      this.manifests = list;
     };
     const previous = this.writeQueue;
     this.writeQueue = previous.then(operation, operation);
@@ -959,7 +1004,9 @@ function previewEntries(entries: ZipEntry[], fallbackLayout: ProfileLayout): Res
     topNames.add(entry.name.split('/')[0] ?? '');
   }
   const hasRecognized = [...topNames].some((name) => RECOGNIZED_DATA_NAMES.has(name));
-  const warnings = !hasRecognized && files.length > 0 ? ['The archive does not contain common SillyTavern data markers; review the preview before restoring.'] : [];
+  const warnings = !hasRecognized && files.length > 0
+    ? [logEvent('backup.unknownArchive', 'This archive holds none of the folders a SillyTavern profile usually has.')]
+    : [];
   return { layout: fallbackLayout, fileCount: files.length, totalBytes, files, warnings };
 }
 
@@ -1284,6 +1331,12 @@ function parseManifest(value: unknown): BackupManifest {
   if (!isRecord(value) || value.schemaVersion !== BACKUP_SCHEMA_VERSION || typeof value.id !== 'string' || typeof value.name !== 'string' || typeof value.createdAt !== 'string' || typeof value.profileId !== 'string' || typeof value.profileName !== 'string' || (value.layout !== 'data' && value.layout !== 'public') || typeof value.sizeBytes !== 'number' || typeof value.checksumSha256 !== 'string' || typeof value.fileCount !== 'number') throw new Error('Invalid backup manifest');
   const source: BackupSource = value.source === 'uploaded' ? 'uploaded' : 'created';
   return { ...value, source } as unknown as BackupManifest;
+}
+
+function parseSchedule(value: unknown): LocalBackupSchedule | null {
+  if (!isRecord(value)) return null;
+  const minutes = value.intervalMinutes;
+  return typeof minutes === 'number' && Number.isInteger(minutes) && minutes >= 1 && minutes <= MAX_LOCAL_INTERVAL_MINUTES ? { intervalMinutes: minutes } : null;
 }
 
 /** How many manager-written archives a profile keeps. One, unless asked otherwise. */

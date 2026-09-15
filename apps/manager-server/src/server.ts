@@ -4,19 +4,20 @@ import { readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import { createSocket } from 'node:dgram';
-import { extname, join, relative, resolve } from 'node:path';
-import { logEvent, logLineText, type ApiErrorBody, type ConfigUpdateInput, type HealthResponse, type Installation, type Job, type JobState, type LogEntry, type LogEvent, type LogLine, type LogSink, type LogSourceFilter, type ManagerPorts, type ProfileLayout, type SetupStatus, type VersionSelector } from '../../../packages/contracts/src/index.js';
+import { extname, join, relative, resolve, sep } from 'node:path';
+import { applyQuery, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, type ApiErrorBody, type ConfigUpdateInput, type HealthResponse, type Installation, type Job, type JobState, type LogEntry, type LogEvent, type LogLine, type LogSink, type LogSourceFilter, type ManagerPorts, type Profile, type ProfileLayout, type SetupStatus, type VersionSelector } from '../../../packages/contracts/src/index.js';
 import { getPlatformPaths, type PlatformPaths } from '../../../packages/platform/src/index.js';
 import { RuntimeError, RuntimeManager, type InstallationProgress } from '../../../packages/sillytavern-runtime/src/index.js';
-import { hashPassword, MIN_PASSWORD_LENGTH, validatePassword, verifyPassword } from './password.js';
+import { hashPassword, MIN_PASSWORD_LENGTH, validatePasscode, validatePassword, verifyPassword } from './password.js';
 import { RateLimiter } from './rate-limit.js';
 import { parseSessionCookie, SessionStore, clearSessionCookie, sessionCookie } from './sessions.js';
-import { hashSetupCode, StateStore } from './state.js';
+import { StateStore } from './state.js';
 import { LOG_LIMITS, LogBuffer } from './log-buffer.js';
 import { SystemStore } from './system.js';
 import { panelStaticRoot } from './bootstrap.js';
 import { ProcessSupervisor } from './supervisor.js';
 import { AccessGateway, ACCESS_GATEWAY_PORT } from './gateway.js';
+import { previewImage, previewLogo, previewManifest } from './preview.js';
 import { TunnelManager } from '../../../packages/tunnel/src/index.js';
 import { ProfileError, ProfileStore } from '../../../packages/profiles/src/index.js';
 import { BackupError, BackupStore } from '../../../packages/backup/src/index.js';
@@ -42,7 +43,6 @@ const NOTICE = {
   disclaimer: 'You are responsible for your SillyTavern data, credentials, providers, backups, and compliance with applicable service terms.',
 } as const;
 
-const ACCESS_PASSWORD_MIN_LENGTH = 8;
 
 const PROTECTED_PATHS = new Set([
   '/api/v1/versions',
@@ -53,6 +53,10 @@ const PROTECTED_PATHS = new Set([
   '/api/v1/access/security',
   '/api/v1/access/password',
   '/api/v1/access/network',
+  '/api/v1/access/sessions',
+  '/api/v1/access/embed-session',
+  '/api/v1/preview',
+  '/api/v1/preview/image',
   '/api/v1/auth/password',
   '/api/v1/metrics',
   '/api/v1/system',
@@ -71,7 +75,6 @@ export interface ManagerServerOptions {
   readonly rateLimiter?: RateLimiter;
   readonly managerVersion?: string;
   readonly secureCookies?: boolean;
-  readonly setupCodeRequired?: boolean;
   readonly staticRoot?: string;
   readonly logger?: LogSink;
   readonly runtime?: RuntimeManager;
@@ -121,6 +124,7 @@ interface RequestContext {
   readonly request: IncomingMessage;
   readonly response: ServerResponse;
   readonly pathname: string;
+  readonly searchParams: URLSearchParams;
   readonly originTrusted: boolean;
   readonly sessionToken: string | undefined;
 }
@@ -143,7 +147,24 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   const metrics = options.metrics ?? new MetricsStore(paths);
   const config = options.config ?? new ConfigStore({ logger: (line) => { jobs.append('manager', line); baseLogger(line); } });
   const accessPort = options.accessPort ?? (Number(env.STM_ACCESS_PORT ?? '') || ACCESS_GATEWAY_PORT);
-  const gateway = options.gateway ?? new AccessGateway({ port: accessPort, targetPort: SILLYTAVERN_PORT, logger: (line) => { jobs.append('manager', line); baseLogger(line); } });
+  // The console shows SillyTavern in a frame, and the console is the only
+  // page allowed to. Both spellings of the loopback address are named because
+  // which one is in the address bar is the reader's choice, not ours, and an
+  // origin is compared as written.
+  const consolePort = options.port ?? MANAGER_PORT;
+  const gateway = options.gateway ?? new AccessGateway({
+    port: accessPort,
+    targetPort: SILLYTAVERN_PORT,
+    frameAncestors: [`http://127.0.0.1:${consolePort}`, `http://localhost:${consolePort}`],
+    // The sign-in page shows SillyTavern's own mark, read from whatever
+    // version is installed rather than kept in this repository.
+    brandLogo: async () => {
+      const installation = await runtime.getActiveInstallation();
+      if (!installation || installation.status !== 'ready') return null;
+      return join(installation.runtimePath, 'public', 'img', 'logo.png');
+    },
+    logger: (line) => { jobs.append('manager', line); baseLogger(line); },
+  });
   const supervisor = options.supervisor ?? new ProcessSupervisor({
     runtime,
     profileResolver: (installation) => profiles.getActiveForInstallation(installation.id),
@@ -184,6 +205,18 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     },
     logger: (line) => { jobs.append('cloudflared', line); baseLogger(line); },
   });
+  // The local backup interval used to be stored with the R2 settings. Hand an
+  // old value over to the backup library before the scheduler first reads it.
+  // An unreadable R2 file must not stop the manager starting over this.
+  try {
+    const legacyLocalInterval = await r2.legacyLocalIntervalMinutes();
+    if (legacyLocalInterval !== null) {
+      await backups.adoptLegacySchedule(legacyLocalInterval);
+      await r2.forgetLegacyLocalInterval();
+    }
+  } catch {
+    // The default interval applies, and the R2 routes report the file's problem.
+  }
   const scheduler = new BackupScheduler({ backups, profiles, r2, logger: (line) => { jobs.append('backup', line); baseLogger(line); } });
   scheduler.start();
   // Uploads interrupted by a closed tab leave gigabyte part files whose id no
@@ -208,7 +241,6 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     },
   });
   const secureCookies = options.secureCookies ?? env.STM_SECURE_COOKIES === '1';
-  const setupCodeRequired = options.setupCodeRequired ?? requiresSetupCode(env);
   const staticRoot = options.staticRoot ? resolve(options.staticRoot) : panelStaticRoot(env);
   let persisted = await store.load();
   const testRuntime = process.env.NODE_ENV === 'test' || process.argv.includes('--test') || process.execArgv.includes('--test');
@@ -223,12 +255,15 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     ...(telemetryEndpoint ? { endpoint: telemetryEndpoint } : {}),
     ...(telemetryEnrollmentEndpoint ? { enrollmentEndpoint: telemetryEnrollmentEndpoint } : {}),
     ...(env.STM_TELEMETRY_ENROLLMENT_TOKEN ? { enrollmentToken: env.STM_TELEMETRY_ENROLLMENT_TOKEN } : {}),
-    logger: (line) => console.log(line),
+    // No logger. Whether the project's receiver is up is nothing the person
+    // running this can act on, and a receiver that is down printed the same
+    // line into their terminal every ten seconds.
   });
   try {
     await telemetry.start();
-  } catch (error: unknown) {
-    console.log(`[telemetry] disabled: ${error instanceof Error ? error.message : 'initialization failed'}`);
+  } catch {
+    // Telemetry that cannot start is telemetry that does not run. Nothing else
+    // depends on it, so there is nothing to report.
   }
 
   const environmentPassword = env.STM_ADMIN_PASSWORD;
@@ -241,10 +276,6 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     persisted = await store.getPersisted();
     logger(logEvent('setup.passwordBootstrapped', '[setup] admin password bootstrapped from STM_ADMIN_PASSWORD'));
   }
-  if (!persisted.adminPasswordHash && persisted.setupCodeHash) {
-    logger(logEvent('setup.setupCode', `[setup] one-time setup code: ${store.getSetupCodeForTests()}`, { code: store.getSetupCodeForTests() }));
-  }
-
   const shutdownToken = env.STM_SHUTDOWN_TOKEN?.trim() || null;
   const startedAt = Date.now();
   const server = createServer((request, response) => {
@@ -256,7 +287,6 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       rateLimiter,
       startedAt,
       secureCookies,
-      setupCodeRequired,
       staticRoot,
       platform: paths.platform,
       logger,
@@ -307,13 +337,13 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   server.keepAliveTimeout = 120_000;
   const defaultHost = paths.platform === 'docker' || paths.platform === 'modelscope' ? '0.0.0.0' : '127.0.0.1';
   const host = options.host ?? env.STM_HOST ?? defaultHost;
-  const port = options.port ?? MANAGER_PORT;
+  const port = consolePort;
   await listen(server, host, port);
   const address = server.address();
   const actualPort = address && typeof address !== 'string' ? address.port : port;
   // The door opens with the manager rather than with SillyTavern, so its
   // address is the same one every time and a saved bookmark keeps working.
-  gateway.setPassword(persisted.accessPasswordHash);
+  gateway.setPassword(persisted.accessPasswordHash, persisted.accessPasscode);
   await gateway.start(persisted.accessLanEnabled);
   // The tunnel publishes the gateway, not SillyTavern, so it can come back as
   // soon as the gateway is listening - it does not have to wait for SillyTavern
@@ -365,7 +395,6 @@ async function handleRequest(options: {
   readonly rateLimiter: RateLimiter;
   readonly startedAt: number;
   readonly secureCookies: boolean;
-  readonly setupCodeRequired: boolean;
   readonly staticRoot: string;
   readonly platform: PlatformPaths['platform'];
   readonly logger: LogSink;
@@ -383,13 +412,14 @@ async function handleRequest(options: {
   readonly shutdownToken: string | null;
   readonly onShutdownRequest: (() => void) | undefined;
 }): Promise<void> {
-  const { request, response, store, sessions, rateLimiter, startedAt, secureCookies, setupCodeRequired, staticRoot, platform, runtime, jobs, supervisor, tunnel, gateway, profiles, backups, r2, metrics, config, system, shutdownToken, onShutdownRequest } = options;
+  const { request, response, store, sessions, rateLimiter, startedAt, secureCookies, staticRoot, platform, runtime, jobs, supervisor, tunnel, gateway, profiles, backups, r2, metrics, config, system, shutdownToken, onShutdownRequest } = options;
   const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
   const pathname = url.pathname;
   const context: RequestContext = {
     request,
     response,
     pathname,
+    searchParams: url.searchParams,
     originTrusted: isTrustedOrigin(request, platform),
     sessionToken: parseSessionCookie(headerValue(request.headers.cookie), COOKIE_NAME),
   };
@@ -435,7 +465,6 @@ async function handleRequest(options: {
     const state = await store.getPersisted();
     const status: SetupStatus = {
       setupRequired: state.adminPasswordHash === null,
-      setupCodeRequired: setupCodeRequired && state.adminPasswordHash === null,
       termsVersion: TERMS_VERSION,
       telemetryNoticeVersion: TELEMETRY_NOTICE_VERSION,
       notice: NOTICE,
@@ -445,7 +474,7 @@ async function handleRequest(options: {
   }
 
   if (pathname === '/api/v1/setup/password' && method === 'POST') {
-    await handlePasswordSetup(context, store, sessions, rateLimiter, setupCodeRequired, secureCookies);
+    await handlePasswordSetup(context, store, sessions, rateLimiter, secureCookies);
     return;
   }
 
@@ -492,7 +521,7 @@ async function handleRequest(options: {
 }
 
 async function handleRuntimeRequest(context: RequestContext, store: StateStore, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, gateway: AccessGateway, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, metrics: MetricsStore, config: ConfigStore, system: SystemStore): Promise<void> {
-  const { pathname, request, response } = context;
+  const { pathname, request, response, searchParams } = context;
   const method = request.method ?? 'GET';
   if (pathname === '/api/v1/auth/password' && method === 'POST') {
     const body = await readJson(request);
@@ -536,6 +565,19 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     sendJson(response, 200, { config: await decorateConfig(saved), process, tunnel: tunnel.getState() });
     return;
   }
+  if (pathname === '/api/v1/config/reset' && method === 'POST') {
+    const profile = await profiles.getActive();
+    const installation = await runtime.getActiveInstallation();
+    if (!profile || !installation || installation.status !== 'ready') { sendError(response, 409, 'installation_required', 'Install SillyTavern before editing its configuration'); return; }
+    // Same order as a save, and for the same reason: a runtime that keeps its
+    // own copy of the config writes it back when it stops.
+    const wasRunning = supervisor.getState().status === 'running';
+    if (wasRunning) await supervisor.stop('configChange');
+    const restored = await config.restoreDefaults(profile, installation);
+    const process = wasRunning ? await supervisor.start() : supervisor.getState();
+    sendJson(response, 200, { config: await decorateConfig(restored), process, tunnel: tunnel.getState() });
+    return;
+  }
   if (pathname === '/api/v1/access/security' && method === 'GET') {
     sendJson(response, 200, gateway.getState());
     return;
@@ -546,14 +588,68 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       sendError(response, 400, 'password_confirmation_mismatch', 'Enter the same SillyTavern password twice');
       return;
     }
-    if (body.password.length < ACCESS_PASSWORD_MIN_LENGTH) { sendError(response, 400, 'invalid_password', `The SillyTavern password must be at least ${ACCESS_PASSWORD_MIN_LENGTH} characters`); return; }
+    const invalid = validatePasscode(body.password);
+    if (invalid) { sendError(response, 400, 'invalid_passcode', invalid); return; }
     const passwordHash = hashPassword(body.password);
-    await store.setAccessPassword(passwordHash);
+    await store.setAccessPassword(passwordHash, true);
     // Whoever was already inside is signed out, so a password changed because
     // it was shared too widely takes effect immediately rather than at the
     // next restart.
-    gateway.setPassword(passwordHash);
+    gateway.setPassword(passwordHash, true);
     if (gateway.getState().status !== 'running') await gateway.start();
+    sendJson(response, 200, gateway.getState());
+    return;
+  }
+  /*
+   * A way into SillyTavern for the console that is already signed in.
+   *
+   * The cookie is set here, on the manager's own origin, and the gateway on
+   * its own port reads it - which works because cookies are scoped by host and
+   * not by port, so one set for 127.0.0.1 is sent to every port on it. That is
+   * the whole trick: the embedded view needs no PIN because the session behind
+   * it was issued to somebody who had already given the console's password.
+   */
+  if (pathname === '/api/v1/access/embed-session' && method === 'POST') {
+    if (gateway.getState().status !== 'running') await gateway.start();
+    const { token, maxAgeSeconds } = gateway.issueSession();
+    response.setHeader('Set-Cookie', gateway.sessionCookie(request, token, maxAgeSeconds));
+    sendJson(response, 200, gateway.getState());
+    return;
+  }
+  /*
+   * The reader's own wallpaper and characters, for the still on the overview.
+   *
+   * Read-only, and only ever the two directories `preview.ts` names. The
+   * manifest is one request and each image is another, so the console can show
+   * the frame before the pictures arrive rather than waiting on all of them.
+   */
+  if (pathname === '/api/v1/preview' && method === 'GET') {
+    const profile = await profiles.getActive();
+    if (!profile) { sendJson(response, 200, { background: null, theme: null, recent: [] }); return; }
+    sendJson(response, 200, await previewManifest(userDataRoot(profile)));
+    return;
+  }
+  if (pathname === '/api/v1/preview/image' && method === 'GET') {
+    const kind = searchParams.get('kind');
+    const name = searchParams.get('name');
+    // The mark belongs to the installed copy of SillyTavern rather than to a
+    // profile, so it is fetched from the runtime and needs no name.
+    if (kind === 'logo') {
+      const installation = await runtime.getActiveInstallation();
+      const mark = installation && installation.status === 'ready' ? await previewLogo(installation.runtimePath) : null;
+      if (!mark) { sendError(response, 404, 'not_found', 'There is no SillyTavern mark to show'); return; }
+      sendImage(response, mark);
+      return;
+    }
+    if ((kind !== 'background' && kind !== 'avatar') || !name) { sendError(response, 400, 'invalid_input', 'A preview image needs a kind and a name'); return; }
+    const profile = await profiles.getActive();
+    const image = profile ? await previewImage(userDataRoot(profile), kind, name) : null;
+    if (!image) { sendError(response, 404, 'not_found', 'That preview image is not there'); return; }
+    sendImage(response, image);
+    return;
+  }
+  if (pathname === '/api/v1/access/sessions' && method === 'DELETE') {
+    gateway.signOutEveryone();
     sendJson(response, 200, gateway.getState());
     return;
   }
@@ -584,10 +680,8 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       ...(typeof body.enabled === 'boolean' ? { enabled: body.enabled } : {}),
       ...(typeof body.endpoint === 'string' || body.endpoint === null ? { endpoint: body.endpoint as string | null } : {}),
       ...(typeof body.bucket === 'string' || body.bucket === null ? { bucket: body.bucket as string | null } : {}),
-      ...(typeof body.accountId === 'string' || body.accountId === null ? { accountId: body.accountId as string | null } : {}),
       ...(typeof body.accessKeyId === 'string' || body.accessKeyId === null ? { accessKeyId: body.accessKeyId as string | null } : {}),
       ...(typeof body.secretAccessKey === 'string' || body.secretAccessKey === null ? { secretAccessKey: body.secretAccessKey as string | null } : {}),
-      ...(typeof body.localIntervalMinutes === 'number' ? { localIntervalMinutes: body.localIntervalMinutes } : {}),
       ...(typeof body.hotIntervalMinutes === 'number' ? { hotIntervalMinutes: body.hotIntervalMinutes } : {}),
       ...(typeof body.coldIntervalHours === 'number' ? { coldIntervalHours: body.coldIntervalHours } : {}),
       ...(typeof body.reconcileIntervalHours === 'number' ? { reconcileIntervalHours: body.reconcileIntervalHours } : {}),
@@ -618,7 +712,8 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
   }
   if (pathname === '/api/v1/r2/snapshots' && method === 'GET') {
     const profile = await profiles.getActive();
-    sendJson(response, 200, { snapshots: profile ? await r2.listSnapshots(profile.id) : [] });
+    const snapshots = profile ? await r2.listSnapshots(profile.id) : [];
+    sendList(response, 'snapshots', snapshots, searchParams, { searchText: snapshotSearchText, sortValue: snapshotSortValue });
     return;
   }
   const snapshotMatch = /^\/api\/v1\/r2\/snapshots\/([^/]+)\/fetch$/u.exec(pathname);
@@ -679,18 +774,17 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     return;
   }
   if (pathname === '/api/v1/logs' && method === 'GET') {
-    const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
-    const afterValue = Number(url.searchParams.get('after') ?? 0);
-    const sourceParam = url.searchParams.get('source') ?? 'all';
+    const afterValue = Number(searchParams.get('after') ?? 0);
+    const sourceParam = searchParams.get('source') ?? 'all';
     if (!Number.isSafeInteger(afterValue) || afterValue < 0) { sendError(response, 400, 'invalid_cursor', 'The log cursor is invalid'); return; }
     if (!isLogSourceFilter(sourceParam)) { sendError(response, 400, 'invalid_source', 'The log source is invalid'); return; }
     const source = sourceParam === 'all' ? null : sourceParam;
     // `before` reads backwards through what is still retained, so a reader that
     // scrolls up can pull in older lines instead of only following new ones.
-    const beforeParam = url.searchParams.get('before');
+    const beforeParam = searchParams.get('before');
     if (beforeParam !== null) {
       const beforeValue = Number(beforeParam);
-      const limitValue = Number(url.searchParams.get('limit') ?? LOG_LIMITS.historyEntries);
+      const limitValue = Number(searchParams.get('limit') ?? LOG_LIMITS.historyEntries);
       if (!Number.isSafeInteger(beforeValue) || beforeValue < 0) { sendError(response, 400, 'invalid_cursor', 'The log cursor is invalid'); return; }
       if (!Number.isSafeInteger(limitValue) || limitValue < 1) { sendError(response, 400, 'invalid_limit', 'The log limit is invalid'); return; }
       sendJson(response, 200, jobs.logHistory(beforeValue, source, limitValue));
@@ -700,8 +794,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     return;
   }
   if (pathname === '/api/v1/metrics' && method === 'GET') {
-    const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
-    const requestedDays = Number(url.searchParams.get('days') ?? 30);
+    const requestedDays = Number(searchParams.get('days') ?? 30);
     if (!Number.isInteger(requestedDays) || requestedDays < 1 || requestedDays > 90) {
       sendError(response, 400, 'invalid_metrics_range', 'Metrics range must be between 1 and 90 days');
       return;
@@ -716,7 +809,20 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
   }
   if (pathname === '/api/v1/installations' && method === 'GET') {
     const [installations, active] = await Promise.all([runtime.listInstallations(), runtime.getActiveInstallation()]);
-    sendJson(response, 200, { installations, activeInstallationId: active?.id ?? null });
+    // The active pointer travels with the page: it names a row that may not be
+    // on it, and the panel needs it to mark the row wherever it turns up.
+    sendList(response, 'installations', installations, searchParams, { searchText: installationSearchText, sortValue: installationSortValue }, { activeInstallationId: active?.id ?? null });
+    return;
+  }
+  if (pathname === '/api/v1/installations' && method === 'DELETE') {
+    await supervisor.stop('uninstall');
+    try {
+      await runtime.removeInstallations();
+    } catch (error: unknown) {
+      if (error instanceof RuntimeError) { sendError(response, 409, error.code, error.message); return; }
+      throw error;
+    }
+    sendJson(response, 200, { ok: true, installations: [], activeInstallationId: null });
     return;
   }
   if (pathname === '/api/v1/installations' && method === 'POST') {
@@ -727,20 +833,30 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       return;
     }
     const previousProfile = await profiles.getActive();
-    await supervisor.stop('install');
-    if (previousProfile) {
-      try {
-        await backups.createSafetyCopy(previousProfile, { name: `${previousProfile.name}-preswitch` });
-      } catch (error: unknown) {
-        await supervisor.start().catch(() => supervisor.getState());
-        sendError(response, 500, 'profile_snapshot_failed', error instanceof Error ? error.message : 'Could not create a profile safety snapshot');
-        return;
-      }
-    }
     let queuedId = '';
     let queued: { id: string; promise: Promise<Installation> };
     try {
-      queued = runtime.queueInstall(selector as VersionSelector, (progress) => jobs.updateFromProgress(queuedId, progress));
+      /*
+       * Stopping SillyTavern and copying the profile happen inside the job,
+       * not inside this request.
+       *
+       * They used to run before the response was written, so a 202 meaning
+       * "accepted, watch the progress" did not arrive until a full copy of the
+       * profile had been written to disk - minutes, on a large one, with the
+       * panel holding its confirmation dialog open and nothing on screen
+       * saying a backup was being taken. The order of the work is unchanged;
+       * only the reply no longer waits for it.
+       */
+      queued = runtime.queueInstall(
+        selector as VersionSelector,
+        (progress) => jobs.updateFromProgress(queuedId, progress),
+        async (report) => {
+          await supervisor.stop('install');
+          if (!previousProfile) return;
+          await report(4, logEvent('install.safetyCopy', 'Copying your data before switching version'));
+          await backups.createSafetyCopy(previousProfile, { name: `${previousProfile.name}-preswitch` });
+        },
+      );
     } catch (error: unknown) {
       await supervisor.start();
       if (error instanceof RuntimeError) { sendError(response, 409, error.code, error.message); return; }
@@ -813,7 +929,8 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
   }
   if (pathname === '/api/v1/backups' && method === 'GET') {
     const activeProfile = await profiles.getActive();
-    sendJson(response, 200, { backups: activeProfile ? await backups.list(activeProfile.id) : [] });
+    const list = activeProfile ? await backups.list(activeProfile.id) : [];
+    sendList(response, 'backups', list, searchParams, { searchText: backupSearchText, sortValue: backupSortValue });
     return;
   }
   if (pathname === '/api/v1/backups' && method === 'POST') {
@@ -831,17 +948,25 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     sendJson(response, 202, { jobId: job.id, job });
     return;
   }
+  if (pathname === '/api/v1/backups/schedule' && method === 'GET') {
+    sendJson(response, 200, { schedule: await backups.getSchedule() });
+    return;
+  }
+  if (pathname === '/api/v1/backups/schedule' && method === 'PUT') {
+    const body = await readJson(request);
+    if (!isRecord(body) || typeof body.intervalMinutes !== 'number') { sendError(response, 400, 'invalid_backup_schedule', 'intervalMinutes must be a number'); return; }
+    sendJson(response, 200, { schedule: await backups.setSchedule({ intervalMinutes: body.intervalMinutes }) });
+    return;
+  }
   if (pathname === '/api/v1/backups/import/chunk' && method === 'POST') {
-    const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
-    const uploadId = url.searchParams.get('uploadId') ?? '';
-    const index = Number(url.searchParams.get('index') ?? '');
+    const uploadId = searchParams.get('uploadId') ?? '';
+    const index = Number(searchParams.get('index') ?? '');
     const chunk = await backups.appendUploadChunk(uploadId, index, request);
     sendJson(response, 200, { ok: true, ...chunk });
     return;
   }
   if (pathname === '/api/v1/backups/import/chunk' && method === 'DELETE') {
-    const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
-    const uploadId = url.searchParams.get('uploadId') ?? '';
+    const uploadId = searchParams.get('uploadId') ?? '';
     await backups.removeUpload(uploadId);
     sendJson(response, 200, { ok: true });
     return;
@@ -1054,6 +1179,34 @@ async function restoreWithProcess(options: {
   }
 }
 
+/**
+ * Where SillyTavern keeps the reader's own files inside a profile.
+ *
+ * A profile written in the canonical layout holds them under default-user; the
+ * legacy public/ layout is already that root itself.
+ */
+/**
+ * An image the reader already owns, sent back to their own browser.
+ *
+ * Kept for a few minutes: it is their wallpaper and their character cards,
+ * which do not change while they are looking at the overview, and re-reading
+ * a megabyte off the disk on every visit to the page buys nothing.
+ */
+function sendImage(response: ServerResponse, image: { bytes: Buffer; contentType: string }): void {
+  response.writeHead(200, {
+    'content-type': image.contentType,
+    'content-length': image.bytes.byteLength,
+    'cache-control': 'private, max-age=300',
+    'x-content-type-options': 'nosniff',
+    'content-security-policy': "default-src 'none'",
+  });
+  response.end(image.bytes);
+}
+
+function userDataRoot(profile: Profile): string {
+  return profile.layout === 'data' ? join(profile.dataPath, 'default-user') : profile.dataPath;
+}
+
 function isProtectedPath(pathname: string): boolean {
   return PROTECTED_PATHS.has(pathname)
     || pathname.startsWith('/api/v1/installations/')
@@ -1071,16 +1224,33 @@ function parseConfigUpdateInput(value: unknown): ConfigUpdateInput {
   if (typeof value.rawYaml === 'string') return { rawYaml: value.rawYaml };
   const settings = value.settings;
   if (!isRecord(settings)) throw new RequestError(400, 'invalid_input', 'Configuration settings are required');
-  return { settings: {
-    ...(typeof settings.sslEnabled === 'boolean' ? { sslEnabled: settings.sslEnabled } : {}),
-    ...(typeof settings.enableCorsProxy === 'boolean' ? { enableCorsProxy: settings.enableCorsProxy } : {}),
-    ...(typeof settings.disableCsrfProtection === 'boolean' ? { disableCsrfProtection: settings.disableCsrfProtection } : {}),
-  } };
+  const flags = [
+    'lazyLoadCharacters', 'useDiskCache', 'requestCompression',
+    'extensions', 'extensionAutoUpdate', 'allowKeysExposure', 'chatBackups',
+  ] as const;
+  const input: Record<string, unknown> = {};
+  for (const flag of flags) if (typeof settings[flag] === 'boolean') input[flag] = settings[flag];
+  if (typeof settings.memoryCacheCapacity === 'string') input.memoryCacheCapacity = settings.memoryCacheCapacity;
+  if (typeof settings.chatBackupCount === 'number') input.chatBackupCount = settings.chatBackupCount;
+  // The values themselves are checked where they are written, so one rule
+  // covers the console, a stray API call and a restored profile alike.
+  return { settings: input as NonNullable<ConfigUpdateInput['settings']> };
 }
 
 async function decorateConfig(document: Awaited<ReturnType<ConfigStore['read']>>): Promise<Awaited<ReturnType<ConfigStore['read']>>> {
-  const host = preferredNetworkHost(Object.values(networkInterfaces()).flatMap((entries) => entries ?? []), await routedAddress());
+  const host = await networkHost();
   return host ? { ...document, networkHost: host } : document;
+}
+
+/**
+ * This machine's address on the network around it, or nothing when it has none.
+ *
+ * The panel asks for it with the configuration; the banner printed at startup
+ * asks for it too, and the two must not disagree about which of several
+ * adapters is the real one.
+ */
+export async function networkHost(): Promise<string | undefined> {
+  return preferredNetworkHost(Object.values(networkInterfaces()).flatMap((entries) => entries ?? []), await routedAddress());
 }
 
 /**
@@ -1157,7 +1327,6 @@ async function handlePasswordSetup(
   store: StateStore,
   sessions: SessionStore,
   rateLimiter: RateLimiter,
-  setupCodeRequired: boolean,
   secureCookies: boolean,
 ): Promise<void> {
   if (!checkRateLimit(context, rateLimiter)) {
@@ -1186,12 +1355,6 @@ async function handlePasswordSetup(
   if (body.termsAccepted !== true || body.telemetryAccepted !== true) {
     sendError(context.response, 400, 'notice_acceptance_required', 'Terms and the telemetry notice must be accepted');
     return;
-  }
-  if (setupCodeRequired) {
-    if (typeof body.setupCode !== 'string' || !constantTimeStringEqual(hashSetupCode(body.setupCode), state.setupCodeHash ?? '')) {
-      sendError(context.response, 403, 'invalid_setup_code', 'The setup code is invalid or expired');
-      return;
-    }
   }
   const saved = await store.saveAdminPassword(hashPassword(password));
   if (!saved) {
@@ -1317,6 +1480,38 @@ function sendJson(response: ServerResponse, statusCode: number, payload: unknown
   response.end(body);
 }
 
+/**
+ * Answer a list request, paged only if it asked to be.
+ *
+ * A caller that sends no paging parameters gets the whole list and a `page`
+ * block describing it as one page - which is what every caller in the panel
+ * did before this existed, and what the overview still does when it wants the
+ * most recent backup out of the list. Quietly starting to answer those with
+ * the first ten rows would hide data nobody asked to hide.
+ */
+function sendList<Row>(
+  response: ServerResponse,
+  key: string,
+  rows: readonly Row[],
+  searchParams: URLSearchParams,
+  options: { searchText: (row: Row) => string; sortValue: (row: Row, column: string) => string | number | boolean | null | undefined },
+  extra: Record<string, unknown> = {},
+): void {
+  const query = parseTableQuery(searchParams);
+  if (!query) {
+    sendJson(response, 200, {
+      [key]: rows,
+      // Unpaged, the page holds everything - but never a size of zero, which
+      // is a division waiting to happen in whatever reads this next.
+      page: { page: 1, pageSize: Math.max(rows.length, 1), total: rows.length, pageCount: 1 },
+      ...extra,
+    });
+    return;
+  }
+  const result = applyQuery(rows, query, options);
+  sendJson(response, 200, { [key]: result.rows, page: pageInfo(result, query.pageSize), ...extra });
+}
+
 function sendError(response: ServerResponse, statusCode: number, code: string, message: string): void {
   const body: ApiErrorBody = { error: { code, message } };
   sendJson(response, statusCode, body);
@@ -1336,9 +1531,6 @@ function constantTimeStringEqual(left: string, right: string): boolean {
   return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
 }
 
-function requiresSetupCode(env: NodeJS.ProcessEnv): boolean {
-  return env.STM_REQUIRE_SETUP_CODE === '1';
-}
 
 function listen(server: Server, host: string, port: number): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -1404,7 +1596,7 @@ async function servePanel(request: IncomingMessage, response: ServerResponse, pa
   response.statusCode = 200;
   response.setHeader('Content-Type', contentTypeFor(filePath));
   response.setHeader('X-Content-Type-Options', 'nosniff');
-  response.setHeader('Cache-Control', filePath.endsWith('index.html') ? 'no-cache' : 'public, max-age=31536000, immutable');
+  response.setHeader('Cache-Control', cacheControlFor(filePath));
   if (request.method === 'HEAD') {
     response.end();
     return;
@@ -1412,14 +1604,32 @@ async function servePanel(request: IncomingMessage, response: ServerResponse, pa
   response.end(body);
 }
 
+/**
+ * How long the browser may keep a static file.
+ *
+ * Only the bundler's output carries a content hash in its name, so only it can
+ * be kept forever. The brand icons and the manifest keep their names across
+ * every release, and a year-long `immutable` on those meant a changed icon was
+ * never picked up again on a machine that had loaded the old one once.
+ */
+function cacheControlFor(filePath: string): string {
+  if (filePath.endsWith('index.html')) return 'no-cache';
+  const inBundle = filePath.includes(`${sep}assets${sep}`);
+  return inBundle ? 'public, max-age=31536000, immutable' : 'public, max-age=3600';
+}
+
 function contentTypeFor(filePath: string): string {
   const extension = extname(filePath).toLowerCase();
   const types: Record<string, string> = {
     '.css': 'text/css; charset=utf-8',
     '.html': 'text/html; charset=utf-8',
+    '.ico': 'image/x-icon',
     '.js': 'text/javascript; charset=utf-8',
     '.json': 'application/json; charset=utf-8',
+    '.png': 'image/png',
     '.svg': 'image/svg+xml',
+    '.webmanifest': 'application/manifest+json; charset=utf-8',
+    '.webp': 'image/webp',
     '.woff': 'font/woff',
     '.woff2': 'font/woff2',
   };

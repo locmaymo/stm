@@ -63,6 +63,46 @@ test('fetch loader records only allowlisted metadata for JSON and streaming resp
   assert.equal(JSON.stringify(events).includes('must not persist'), false);
 });
 
+test('requests that are not model calls are left out of the usage log', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-instrumentation-noise-'));
+  const eventsPath = join(root, 'metrics', 'usage-events.jsonl');
+  const server = createServer((request, response) => {
+    response.writeHead(200, { 'content-type': 'application/json' });
+    if (request.url === '/proxy/custom-path') {
+      response.end(JSON.stringify({ usage: { prompt_tokens: 4, completion_tokens: 1, total_tokens: 5 } }));
+      return;
+    }
+    response.end(JSON.stringify({ name: 'extension', version: '1.0.0', usage: 'not a token count' }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const base = `http://127.0.0.1:${address.port}`;
+  const script = `
+    // An extension manifest, a model list, and a plugin call with no usage in its answer.
+    await (await fetch(${JSON.stringify(`${base}/SillyTavern/Extension/main/manifest.json`)})).text();
+    await (await fetch(${JSON.stringify(`${base}/v1/models`)})).text();
+    await (await fetch(${JSON.stringify(`${base}/api/plugins/update`)}, { method: 'POST', body: '{}' })).text();
+    // A proxy serving a completion from a path nobody could guess still counts.
+    await (await fetch(${JSON.stringify(`${base}/proxy/custom-path`)}, { method: 'POST', body: JSON.stringify({ model: 'proxied' }) })).text();
+    // A known completion route counts even when the answer carries no usage.
+    await (await fetch(${JSON.stringify(`${base}/v1/chat/completions`)}, { method: 'POST', body: JSON.stringify({ model: 'quiet' }) })).text();
+  `;
+  await runNode(['--import', instrumentationLoaderPath, '--input-type=module', '-e', script], { STM_METRICS_FILE: eventsPath });
+  server.close();
+  const events = (await readFile(eventsPath, 'utf8')).trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
+  assert.deepEqual(events.map((event) => event.model), ['proxied', 'quiet']);
+});
+
+test('usage logged before the observer knew better leaves out downloads it recorded', () => {
+  const now = new Date('2026-09-11T12:00:00.000Z');
+  const download: UsageEvent = { schemaVersion: 1, timestamp: now.toISOString(), provider: 'raw.githubusercontent.com', completionSource: null, model: null, endpointHost: 'raw.githubusercontent.com', stream: false, maxTokens: null, inputTokens: null, outputTokens: null, totalTokens: null, status: 200, durationMs: 80 };
+  const reply: UsageEvent = { ...download, provider: 'openai', completionSource: 'openai', model: 'gpt-test', endpointHost: 'api.openai.com', inputTokens: 3, outputTokens: 2, totalTokens: 5 };
+  const snapshot = aggregateUsageEvents([download, download, reply], now, 30);
+  assert.equal(snapshot.totals.requests, 1);
+  assert.equal(snapshot.models.some((bucket) => bucket.key === 'unknown'), false);
+});
+
 test('CJS node-fetch is wrapped for legacy SillyTavern runtimes', async () => {
   const root = await mkdtemp(join(tmpdir(), 'stm-instrumentation-cjs-'));
   const eventsPath = join(root, 'metrics', 'usage-events.jsonl');

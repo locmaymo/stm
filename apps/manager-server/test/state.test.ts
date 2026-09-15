@@ -7,16 +7,17 @@ import { getPlatformPaths } from '../../../packages/platform/src/index.js';
 import { StateStore } from '../src/state.js';
 import { hashPassword, verifyPassword } from '../src/password.js';
 
-test('state survives a restart and keeps the setup code stable until setup', async () => {
+test('state survives a restart and keeps the identity it was created with', async () => {
   const root = await mkdtemp(join(tmpdir(), 'stm-state-'));
   const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
-  const first = new StateStore({ paths, setupCode: 'stable-setup-code' });
-  await first.load();
-  assert.equal(first.getSetupCodeForTests(), 'stable-setup-code');
+  const first = new StateStore({ paths });
+  const created = await first.load();
 
-  const second = new StateStore({ paths, setupCode: 'different-process-code' });
-  await second.load();
-  assert.equal(second.getSetupCodeForTests(), 'stable-setup-code');
+  const second = new StateStore({ paths });
+  const reloaded = await second.load();
+  assert.equal(reloaded.installId, created.installId);
+  assert.equal(reloaded.createdAt, created.createdAt);
+  assert.equal(reloaded.adminPasswordHash, null);
 });
 
 test('manager password changes persist across a new state store', async () => {

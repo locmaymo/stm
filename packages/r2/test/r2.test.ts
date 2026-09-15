@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getPlatformPaths } from '../../platform/src/index.js';
@@ -96,6 +96,43 @@ test('R2 config masks credentials and preserves ******** updates', async () => {
   assert.equal(after.secretAccessKeyConfigured, true);
 });
 
+test('connection settings in .env win, and are never copied into the state file', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-r2-env-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const env = {
+    STM_R2_ENDPOINT: CREDENTIALS.endpoint,
+    STM_R2_BUCKET: CREDENTIALS.bucket,
+    STM_R2_ACCESS_KEY_ID: CREDENTIALS.accessKeyId,
+    STM_R2_SECRET_ACCESS_KEY: CREDENTIALS.secretAccessKey,
+  };
+  const manager = new R2Manager({ paths, env, logger: () => undefined });
+  const config = await manager.getConfig();
+  assert.equal(config.configured, true);
+  assert.equal(config.enabled, true);
+  assert.deepEqual(config.environmentFields, ['endpoint', 'bucket', 'accessKeyId', 'secretAccessKey']);
+
+  await manager.update({ bucket: 'someone-else', enabled: false });
+  const after = await manager.getConfig();
+  assert.equal(after.bucket, CREDENTIALS.bucket);
+  assert.equal(after.enabled, false);
+  const onDisk = await readFile(join(paths.state, 'r2-config.json'), 'utf8');
+  assert.equal(onDisk.includes(CREDENTIALS.secretAccessKey), false);
+  assert.equal(onDisk.includes(CREDENTIALS.accessKeyId), false);
+});
+
+test('a recovery point lists the data it holds, not just the size of its index', async () => {
+  const bucket = fakeBucket();
+  const { manager, root } = await createManager({ fetchImpl: bucket.fetchImpl });
+  const chat = await source(root, 'chats/one.jsonl', 'x'.repeat(5000));
+  const card = await source(root, 'characters/a.png', Buffer.alloc(3000, 1));
+  await manager.syncProfile({ profile: profile(), sources: [chat, card], fingerprint: 'sized' });
+  const [listed] = await manager.listSnapshots('profile-1');
+  assert.ok(listed);
+  assert.equal(listed.fileCount, 2);
+  assert.equal(listed.dataBytes, 8000);
+  assert.equal((await manager.readSnapshot('profile-1', listed.id)).files.length, 2);
+});
+
 test('settings written by the whole-archive version keep their credentials', async () => {
   const root = await mkdtemp(join(tmpdir(), 'stm-r2-old-'));
   const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
@@ -108,13 +145,18 @@ test('settings written by the whole-archive version keep their credentials', asy
     localIntervalMinutes: 30, r2IntervalHours: 24, fullIntervalDays: 7, maxBackups: 7, retentionDays: 30,
     lastUploadAt: '2026-09-01T00:00:00.000Z', lastFingerprint: 'old', estimatedBytes: 12345,
   }));
-  const config = await new R2Manager({ paths, env: {}, logger: () => undefined }).getConfig();
+  const manager = new R2Manager({ paths, env: {}, logger: () => undefined });
+  const config = await manager.getConfig();
   assert.equal(config.configured, true);
   assert.equal(config.accessKeyIdMasked, 'ac********34');
   assert.equal(config.enabled, true);
-  assert.equal(config.schedule.localIntervalMinutes, 30);
+  // Not an R2 setting: it is handed to the backup library once, then dropped.
+  assert.equal(await manager.legacyLocalIntervalMinutes(), 30);
+  await manager.forgetLegacyLocalInterval();
+  assert.equal(await manager.legacyLocalIntervalMinutes(), null);
+  assert.equal((await readFile(join(paths.state, 'r2-config.json'), 'utf8')).includes('localIntervalMinutes'), false);
   assert.equal(config.schedule.hotIntervalMinutes, 5);
-  assert.equal(config.retention.keepRecent, 48);
+  assert.equal(config.retention.keepRecent, 24);
   assert.equal(config.usage.storageBytes, 0);
 });
 

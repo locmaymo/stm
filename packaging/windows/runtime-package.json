@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "qrcode-generator": "^2.0.4",
     "yaml": "^2.9.0"
   }
 }

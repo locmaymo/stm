@@ -6,7 +6,7 @@ const root = process.cwd();
 const ignoredDirectories = new Set(['.git', 'node_modules', 'dist', 'build', 'coverage', '.tmp']);
 const textExtensions = new Set([
   '.css', '.editorconfig', '.gitattributes', '.html', '.js', '.json', '.mjs', '.md',
-  '.ps1', '.sh', '.toml', '.ts', '.tsx', '.yaml', '.yml',
+  '.ps1', '.sh', '.toml', '.ts', '.tsx', '.webmanifest', '.yaml', '.yml',
 ]);
 const mojibakePattern = /(?:\u00c3[\u0080-\u00bf]|\u00c2[\u0080-\u00bf]|\u00e2(?:\u20ac|\u2122|\u0153)|\u00f0[\u0080-\u00bf]{1,2}|\u00d0[\u0080-\u00bf]|\u00d1[\u0080-\u00bf])/u;
 const failures = [];
@@ -48,7 +48,8 @@ function checkText(filePath) {
   if (mojibakePattern.test(text)) {
     failures.push(`${relative}: possible mojibake marker detected`);
   }
-  if (path.extname(filePath).toLowerCase() === '.json') {
+  const extension = path.extname(filePath).toLowerCase();
+  if (extension === '.json' || extension === '.webmanifest') {
     try {
       JSON.parse(text);
     } catch (error) {

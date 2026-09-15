@@ -4,6 +4,10 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { createConnection } from 'node:net';
 import type { Duplex } from 'node:stream';
 import { AccessGateway, ACCESS_COOKIE_NAME, clientAddress } from '../src/gateway.js';
+import { rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { hashPassword } from '../src/password.js';
 
 const PASSWORD = 'correct horse battery staple';
@@ -46,10 +50,16 @@ async function startUpstream(handler?: (request: IncomingMessage, response: Serv
   };
 }
 
-async function startGateway(upstream: Upstream, options: { password?: string | null } = {}): Promise<{ gateway: AccessGateway; base: string }> {
-  const gateway = new AccessGateway({ port: 0, targetPort: upstream.port, logger: () => undefined });
+async function startGateway(upstream: Upstream, options: { password?: string | null; passcode?: boolean; brandLogo?: () => Promise<string | null>; frameAncestors?: readonly string[] } = {}): Promise<{ gateway: AccessGateway; base: string }> {
+  const gateway = new AccessGateway({
+    port: 0,
+    targetPort: upstream.port,
+    logger: () => undefined,
+    ...(options.brandLogo ? { brandLogo: options.brandLogo } : {}),
+    ...(options.frameAncestors ? { frameAncestors: options.frameAncestors } : {}),
+  });
   const password = options.password === undefined ? PASSWORD : options.password;
-  gateway.setPassword(password === null ? null : hashPassword(password));
+  gateway.setPassword(password === null ? null : hashPassword(password), options.passcode ?? false);
   const state = await gateway.start(false);
   assert.equal(state.status, 'running');
   return { gateway, base: `http://127.0.0.1:${state.port}` };
@@ -82,6 +92,43 @@ async function signIn(base: string, password = PASSWORD): Promise<string> {
   assert.ok(cookie, 'a session cookie is issued');
   return cookie.split(';', 1)[0] as string;
 }
+
+test('the console may hold SillyTavern in a frame, and nothing else may', async (t) => {
+  const upstream = await startUpstream((_request, response) => {
+    // What SillyTavern actually sends, and a policy of its own to check that
+    // the gateway narrows it rather than throwing it away.
+    response.writeHead(200, {
+      'content-type': 'text/html; charset=utf-8',
+      'x-frame-options': 'SAMEORIGIN',
+      'content-security-policy': "default-src 'self'",
+    });
+    response.end('<!doctype html><title>SillyTavern</title>');
+  });
+  const { gateway, base } = await startGateway(upstream, { frameAncestors: ['http://127.0.0.1:7860'] });
+  t.after(async () => { await gateway.close(); await upstream.close(); });
+
+  const cookie = await signIn(base);
+  const page = await fetch(`${base}/`, { headers: { cookie, accept: 'text/html' } });
+  assert.equal(page.status, 200);
+  assert.equal(page.headers.get('x-frame-options'), null, 'the header that cannot name one origin is gone');
+  const policy = page.headers.get('content-security-policy') ?? '';
+  assert.match(policy, /default-src 'self'/u, "SillyTavern's own policy still applies");
+  assert.match(policy, /frame-ancestors 'self' http:\/\/127\.0\.0\.1:7860/u, 'and only the console may frame it');
+
+  // The sign-in page is reached from inside that frame, so it has to agree.
+  const door = await fetch(`${base}/`, { headers: { accept: 'text/html' } });
+  assert.match(door.headers.get('content-security-policy') ?? '', /frame-ancestors 'self' http:\/\/127\.0\.0\.1:7860/u);
+});
+
+test('a gateway told of no console refuses every frame', async (t) => {
+  const upstream = await startUpstream();
+  const { gateway, base } = await startGateway(upstream);
+  t.after(async () => { await gateway.close(); await upstream.close(); });
+
+  const cookie = await signIn(base);
+  const page = await fetch(`${base}/`, { headers: { cookie, accept: 'text/html' } });
+  assert.match(page.headers.get('content-security-policy') ?? '', /frame-ancestors 'none'/u);
+});
 
 test('nothing reaches SillyTavern until the gateway password is given', async (t) => {
   const upstream = await startUpstream();
@@ -165,6 +212,25 @@ test('a session ends when it is signed out, and when the password is changed', a
   // change does nothing for the case it is made for.
   gateway.setPassword(hashPassword('a different password'));
   assert.equal((await fetch(`${base}/`, { headers: { cookie: second, accept: '*/*' } })).status, 401);
+});
+
+test('signing every device out ends the sessions and leaves the passcode alone', async (t) => {
+  const upstream = await startUpstream();
+  const { gateway, base } = await startGateway(upstream, { password: '417203', passcode: true });
+  t.after(async () => { await gateway.close(); await upstream.close(); });
+
+  const phone = await signIn(base, '417203');
+  const laptop = await signIn(base, '417203');
+  assert.equal(gateway.getState().sessions, 2);
+
+  assert.equal(gateway.signOutEveryone(), 2);
+  assert.equal(gateway.getState().sessions, 0);
+  for (const cookie of [phone, laptop]) {
+    assert.equal((await fetch(`${base}/`, { headers: { cookie, accept: '*/*' } })).status, 401);
+  }
+  // The point of this over changing the passcode: the one everybody already
+  // has still works, so getting one device out is not a message to the rest.
+  assert.ok(await signIn(base, '417203'));
 });
 
 test('a gateway with no password yet lets nobody in at all', async (t) => {
@@ -357,4 +423,124 @@ test('a large body arrives whole, in both directions', async (t) => {
   assert.ok((received as Buffer).equals(sent), 'byte for byte on the way in');
   assert.equal(returned.length, sent.length);
   assert.ok(returned.equals(sent), 'and on the way back');
+});
+
+test('a passcode door asks with a keypad and no password field at all', async (t) => {
+  const upstream = await startUpstream();
+  const { gateway, base } = await startGateway(upstream, { password: '417203', passcode: true });
+  t.after(async () => { await gateway.close(); await upstream.close(); });
+
+  const page = await (await fetch(`${base}/__stm/login`, { headers: { accept: 'text/html' } })).text();
+  /*
+   * The whole point: no `type="password"` anywhere on the page. A browser
+   * shown a password typed into a random `trycloudflare.com` subdomain warns
+   * the reader in red that they may have handed it to a phishing site, and the
+   * way to stop that is to stop asking for a password.
+   */
+  assert.equal(page.includes('type="password"'), false);
+  assert.ok(page.includes('inputmode="numeric"'), 'the field asks for digits');
+  assert.ok(page.includes('data-key="7"'), 'and there is a keypad to enter them with');
+  // Without a script the field is still a field and the form still posts.
+  assert.ok(page.includes(`action="/__stm/login"`));
+
+  assert.equal(gateway.getState().passcode, true);
+  const cookie = await signIn(base, '417203');
+  assert.ok(cookie);
+});
+
+test('the passcode door waits to be touched before it opens a keyboard', async (t) => {
+  const upstream = await startUpstream();
+  const { gateway, base } = await startGateway(upstream, { password: '417203', passcode: true });
+  t.after(async () => { await gateway.close(); await upstream.close(); });
+  const page = await (await fetch(`${base}/__stm/login`, { headers: { accept: 'text/html' } })).text();
+
+  // No autofocus in the markup: on a phone that is the system keypad sliding
+  // up over the keypad on screen before anything has been touched. The script
+  // focuses the field only where the pointer is a mouse.
+  assert.equal(page.includes('autofocus'), false);
+  assert.ok(page.includes("matchMedia('(pointer: fine)')"));
+  // The field lies over the dots, so touching them is touching it.
+  assert.ok(page.includes('class="field"'));
+  assert.ok(page.includes('caret-color:transparent'));
+  // Double-tapping a key is a second press, not a zoom, and a pinch does
+  // nothing either - including on iOS, which ignores the meta tag and has to
+  // be told through its own gesture events.
+  assert.ok(page.includes('touch-action:manipulation'));
+  assert.ok(page.includes('user-scalable=no'));
+  assert.ok(page.includes('gesturestart'));
+  /*
+   * And nothing in the form may be called `submit`. A control with that id or
+   * name becomes a property of the form and replaces the form's own submit()
+   * with itself, so the script that sends the form on the sixth digit calls a
+   * button instead and the door never opens.
+   */
+  assert.equal(/<(?:input|button)[^>]*(?:id|name)="submit"/u.test(page), false);
+});
+
+test("the door shows SillyTavern's own logo, read from the installation", async (t) => {
+  const upstream = await startUpstream();
+  const logo = join(tmpdir(), `stm-logo-${randomUUID()}.png`);
+  await writeFile(logo, Buffer.from('89504e470d0a1a0a', 'hex'));
+  const { gateway, base } = await startGateway(upstream, { password: '417203', passcode: true, brandLogo: async () => logo });
+  t.after(async () => { await gateway.close(); await upstream.close(); await rm(logo, { force: true }); });
+
+  const page = await (await fetch(`${base}/__stm/login`, { headers: { accept: 'text/html' } })).text();
+  assert.ok(page.includes('src="/__stm/logo.png"'));
+  // On a plate, because the artwork is white letters drawn for a dark theme
+  // and a light page swallowed them.
+  assert.ok(page.includes('class="mark"'));
+  // And on the tab from the first request, rather than appearing only once
+  // SillyTavern itself is reachable and can serve its own.
+  assert.ok(page.includes(`<link rel="icon" href="/__stm/logo.png"`));
+  // The picture is part of the door, so it is served before anybody is let in.
+  const served = await fetch(`${base}/__stm/logo.png`);
+  assert.equal(served.status, 200);
+  assert.equal(served.headers.get('content-type'), 'image/png');
+  assert.equal((await served.arrayBuffer()).byteLength, 8);
+});
+
+test('a door with nothing installed behind it simply has no picture', async (t) => {
+  const upstream = await startUpstream();
+  const { gateway, base } = await startGateway(upstream, { password: '417203', passcode: true });
+  t.after(async () => { await gateway.close(); await upstream.close(); });
+
+  const page = await (await fetch(`${base}/__stm/login`, { headers: { accept: 'text/html' } })).text();
+  assert.equal(page.includes('/__stm/logo.png'), false);
+  assert.equal((await fetch(`${base}/__stm/logo.png`)).status, 404);
+});
+
+test('a door set up before passcodes existed keeps its password field', async (t) => {
+  const upstream = await startUpstream();
+  const { gateway, base } = await startGateway(upstream);
+  t.after(async () => { await gateway.close(); await upstream.close(); });
+  const page = await (await fetch(`${base}/__stm/login`, { headers: { accept: 'text/html' } })).text();
+  assert.ok(page.includes('type="password"'), 'nobody is locked out by the change');
+  assert.equal(page.includes('data-key="7"'), false);
+});
+
+test('five wrong tries shut the door on everyone, not on one address', async (t) => {
+  const upstream = await startUpstream();
+  const { gateway, base } = await startGateway(upstream, { password: '417203', passcode: true });
+  t.after(async () => { await gateway.close(); await upstream.close(); });
+
+  /*
+   * Six digits is a million combinations. A phone is happy with that because a
+   * phone locks the device rather than the caller; a per-address limit alone
+   * gives an attacker with a hundred addresses a hundred times the attempts.
+   * Each wrong try here comes from a different address to prove the lock is
+   * not the per-address one.
+   */
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const response = await submitLogin(base, '000000');
+    assert.equal(response.status, 401, `attempt ${attempt}`);
+  }
+  const locked = await submitLogin(base, '417203');
+  assert.equal(locked.status, 429, 'the right passcode is refused while the door is shut');
+  assert.ok(Number(locked.headers.get('Retry-After')) > 0);
+
+  // Setting the passcode again is the way back in, which is available on the
+  // machine itself and nowhere else.
+  gateway.setPassword(hashPassword('417203'), true);
+  const after = await submitLogin(base, '417203');
+  assert.equal(after.status, 303);
 });

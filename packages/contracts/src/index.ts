@@ -1,3 +1,6 @@
+export * from './table-query.js';
+export * from './table-fields.js';
+
 export type PlatformKind = 'windows' | 'linux' | 'termux' | 'docker' | 'modelscope' | 'unknown';
 
 export interface ManagerPorts {
@@ -29,7 +32,6 @@ export interface AdminSession {
 
 export interface SetupStatus {
   readonly setupRequired: boolean;
-  readonly setupCodeRequired: boolean;
   readonly termsVersion: string;
   readonly telemetryNoticeVersion: string;
   readonly notice: {
@@ -97,6 +99,16 @@ export interface Installation {
   readonly stepCode?: string;
   readonly stepParams?: MessageParams;
   readonly error: string | null;
+  /**
+   * The manager's own code for that failure, when the manager is what failed.
+   *
+   * `error` is a sentence, and whose sentence it is varies: a refusal the
+   * manager wrote, a line git printed, whatever npm said on its way out. The
+   * panel translates the first kind and shows the other two as the program
+   * that produced them wrote them - translating another project's output makes
+   * it impossible to search for. A code is present only for the first kind.
+   */
+  readonly errorCode?: string;
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly activatedAt: string | null;
@@ -139,18 +151,31 @@ export interface BackupManifest {
   readonly fingerprint?: string;
 }
 
+/** A connection setting that can come from `.env` instead of the panel. */
+export type R2EnvironmentField = 'endpoint' | 'bucket' | 'accessKeyId' | 'secretAccessKey';
+
+/**
+ * How often the manager takes a local backup of the active profile.
+ *
+ * It used to sit in the R2 settings, which made it look like part of R2 and
+ * left anyone without a bucket unable to change it, though it ran for them all
+ * the same. It is the backup library's setting, and lives there.
+ */
+export interface LocalBackupSchedule {
+  readonly intervalMinutes: number;
+}
+
 export interface R2Config {
   readonly enabled: boolean;
   readonly endpoint: string | null;
   readonly bucket: string | null;
-  readonly accountId: string | null;
+  /** Set in `.env`, so the panel shows them and cannot change them. */
+  readonly environmentFields: readonly R2EnvironmentField[];
   readonly configured: boolean;
   readonly lastUploadAt: string | null;
   readonly accessKeyIdMasked: string | null;
   readonly secretAccessKeyConfigured: boolean;
   readonly schedule: {
-    /** The local ZIP recovery point, which R2 does not replace. */
-    readonly localIntervalMinutes: number;
     /**
      * How often the small, precious part of the profile is sent: chats,
      * settings, worlds and character cards. Only changed chunks go, so this can
@@ -241,7 +266,12 @@ export interface R2SnapshotSummary {
   readonly id: string;
   readonly profileId: string;
   readonly createdAt: string;
+  /** The index object alone, which is not what bringing the point back costs. */
   readonly indexBytes: number;
+  /** Files the point names, or null for a point written before this was recorded. */
+  readonly fileCount: number | null;
+  /** The data those files hold: what bringing the point back downloads. */
+  readonly dataBytes: number | null;
 }
 
 export interface R2Object {
@@ -261,7 +291,15 @@ export interface RestorePreview {
   readonly fileCount: number;
   readonly totalBytes: number;
   readonly files: readonly BackupFilePreview[];
-  readonly warnings: readonly string[];
+  /**
+   * What is worth knowing before restoring, as catalogued events.
+   *
+   * These were English sentences written by the server and printed into the
+   * restore dialog exactly as they arrived, so a reader who had the rest of
+   * the console in Vietnamese met one paragraph of English at the one moment
+   * that cannot be undone.
+   */
+  readonly warnings: readonly LogEvent[];
 }
 
 export type JobState = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled';
@@ -340,6 +378,8 @@ export interface ProcessState {
   readonly pid: number | null;
   readonly startedAt: string | null;
   readonly error: string | null;
+  /** Set when the manager is what failed; see `Installation.errorCode`. */
+  readonly errorCode?: string;
 }
 
 /**
@@ -354,6 +394,7 @@ export type StopReason =
   | 'requested'
   | 'restart'
   | 'install'
+  | 'uninstall'
   | 'restore'
   | 'profileSwitch'
   | 'configChange'
@@ -365,6 +406,7 @@ export const STOP_REASON_TEXT: Readonly<Record<StopReason, string>> = {
   requested: 'you asked it to stop',
   restart: 'restarting it',
   install: 'installing a different SillyTavern version',
+  uninstall: 'removing SillyTavern',
   restore: 'restoring a backup',
   profileSwitch: 'switching profile',
   configChange: 'applying a configuration change',
@@ -395,6 +437,22 @@ export interface TunnelState {
   readonly error: string | null;
 }
 
+/**
+ * What SillyTavern's configuration says, and the part of it worth offering.
+ *
+ * The first group is reported and never written: the manager owns those, and
+ * the console shows them so it is clear why they cannot be moved. SillyTavern
+ * stays on the loopback address behind the access gateway, on port 8000, with
+ * its own two password mechanisms off because the gateway replaces both.
+ *
+ * The second group is what somebody running SillyTavern actually reaches for.
+ * They are not the settings this page used to offer - HTTPS, the CORS proxy
+ * and switching CSRF protection off. Under the manager the first of those
+ * breaks the gateway, which speaks plain HTTP to the loopback address and is
+ * behind Cloudflare's TLS already; the last has nothing to gain and a name
+ * that ends in "NOT RECOMMENDED" in SillyTavern's own file. Anyone who really
+ * wants one of them still has config.yaml.
+ */
 export interface ConfigSettings {
   readonly listen: boolean;
   readonly listenAddress: {
@@ -408,7 +466,35 @@ export interface ConfigSettings {
   readonly sslEnabled: boolean;
   readonly enableCorsProxy: boolean;
   readonly disableCsrfProtection: boolean;
+  /** Parse character cards on demand rather than all at once. */
+  readonly lazyLoadCharacters: boolean;
+  /** Keep parsed cards on disk between runs. */
+  readonly useDiskCache: boolean;
+  /** How much memory parsed cards may use, as SillyTavern writes it: `100mb`. */
+  readonly memoryCacheCapacity: string;
+  /** Compress large uploads - the one that matters over a tunnel. */
+  readonly requestCompression: boolean;
+  readonly extensions: boolean;
+  readonly extensionAutoUpdate: boolean;
+  /** Whether a stored provider key can be read back out of SillyTavern. */
+  readonly allowKeysExposure: boolean;
+  /** SillyTavern's own per-chat backups, which the manager then backs up too. */
+  readonly chatBackups: boolean;
+  readonly chatBackupCount: number;
 }
+
+/** The settings the console may write. Everything else is read-only or YAML. */
+export type ConfigSettingsInput = Partial<Pick<ConfigSettings,
+  | 'lazyLoadCharacters'
+  | 'useDiskCache'
+  | 'memoryCacheCapacity'
+  | 'requestCompression'
+  | 'extensions'
+  | 'extensionAutoUpdate'
+  | 'allowKeysExposure'
+  | 'chatBackups'
+  | 'chatBackupCount'
+>>;
 
 export interface ConfigDocument {
   readonly schemaVersion: 1;
@@ -427,11 +513,7 @@ export interface ConfigDocument {
 
 export interface ConfigUpdateInput {
   readonly rawYaml?: string;
-  readonly settings?: Partial<{
-    sslEnabled: boolean;
-    enableCorsProxy: boolean;
-    disableCsrfProtection: boolean;
-  }>;
+  readonly settings?: ConfigSettingsInput;
 }
 
 export type AccessGatewayStatus = 'stopped' | 'running' | 'error';
@@ -454,6 +536,22 @@ export interface AccessGatewayState {
   /** Whether it is reachable from the local network rather than this machine. */
   readonly lan: boolean;
   readonly passwordConfigured: boolean;
+  /**
+   * Whether that credential is a six-digit passcode rather than a password.
+   *
+   * The public sign-in page needs to know which of the two to ask for, and it
+   * only ever sees the hash. A door set up before passcodes existed keeps the
+   * field it was set up with rather than locking its owner out.
+   */
+  readonly passcode: boolean;
+  /**
+   * How many browsers hold a session through this door right now.
+   *
+   * The settings page offers to end all of them at once, and a count is what
+   * makes that offer mean something: it is the difference between "sign out
+   * every device" and "sign out the three devices that are signed in".
+   */
+  readonly sessions: number;
   readonly error: string | null;
 }
 

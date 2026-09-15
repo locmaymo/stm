@@ -30,6 +30,9 @@ const MAX_ZIP_DIRECTORY_BYTES = 64 * 1024 * 1024;
 const GIT_REPOSITORY = `https://github.com/${REPOSITORY}.git`;
 const DEPENDENCY_MARKER = '.stm-dependencies.json';
 
+/** How work running before the download says what it is doing. */
+export type BeforeInstallReport = (progress: number, step: LogEvent) => Promise<void>;
+
 export interface InstallationProgress {
   readonly status: InstallationStatus;
   readonly progress: number;
@@ -227,6 +230,43 @@ export class RuntimeManager {
     }
   }
 
+  /**
+   * Take SillyTavern off the disk, leaving every profile where it is.
+   *
+   * This is the way back from a runtime that will not start or will not
+   * install over itself: remove it and install again. It deletes the checkout
+   * and forgets every installation record, and it touches nothing under a
+   * profile - the next install rebinds the profile that is already there, with
+   * its characters and chats untouched.
+   *
+   * Callers must stop SillyTavern first, and must not call it while an install
+   * is in flight; both are refused here rather than left to race.
+   */
+  public async removeInstallations(): Promise<void> {
+    if (this.inFlightId) throw new RuntimeError('installation_busy', 'An installation is already in progress');
+    const installations = await this.listInstallations();
+    const roots = new Set<string>();
+    for (const installation of installations) {
+      roots.add(resolve(installation.runtimePath));
+      // A pre-shared-checkout install kept its runtime under its own folder;
+      // that folder is the installation's and goes with it.
+      if (!this.useGit) roots.add(resolve(this.paths.profiles, installation.id));
+    }
+    roots.add(resolve(this.runtimePathFor(installations[0]?.id ?? 'runtime')));
+    for (const root of roots) {
+      // Never step outside the profiles tree, whatever a record claims its
+      // runtime path was.
+      const base = resolve(this.paths.profiles);
+      if (root !== base && !root.startsWith(`${base}/`) && !root.startsWith(`${base}\\`)) continue;
+      if (root === base) continue;
+      await rm(root, { recursive: true, force: true });
+    }
+    await this.writeInstallations([]);
+    await rm(join(this.paths.state, ACTIVE_FILE), { force: true });
+    this.versionsCache = null;
+    this.logger(logEvent('installer.removed', '[installer] SillyTavern was removed; profiles were left alone'));
+  }
+
   public async activateInstallation(id: string): Promise<Installation> {
     const installation = await this.getInstallation(id);
     if (!installation || installation.status !== 'ready') throw new RuntimeError('installation_not_ready', 'The selected SillyTavern installation is not ready');
@@ -251,7 +291,7 @@ export class RuntimeManager {
   public queueInstall(
     selector: VersionSelector,
     onProgress?: (progress: InstallationProgress) => void,
-    beforeInstall?: () => Promise<void>,
+    beforeInstall?: (report: BeforeInstallReport) => Promise<void>,
   ): { id: string; promise: Promise<Installation> } {
     if (this.inFlightId) throw new RuntimeError('installation_busy', 'An installation is already in progress');
     const id = randomUUID();
@@ -264,7 +304,7 @@ export class RuntimeManager {
     id: string,
     selector: VersionSelector,
     onProgress?: (progress: InstallationProgress) => void,
-    beforeInstall?: () => Promise<void>,
+    beforeInstall?: (report: BeforeInstallReport) => Promise<void>,
   ): Promise<Installation> {
     const now = this.now().toISOString();
     const initial: Installation = {
@@ -273,10 +313,10 @@ export class RuntimeManager {
       status: 'queued', progress: 0, step: 'Waiting to start', stepCode: 'install.waiting', error: null, createdAt: now, updatedAt: now, activatedAt: null,
     };
     await this.upsert(initial);
-    const update = async (status: InstallationStatus, progress: number, step: LogEvent, error: string | null = null): Promise<Installation> => {
+    const update = async (status: InstallationStatus, progress: number, step: LogEvent, error: string | null = null, errorCode?: string): Promise<Installation> => {
       const current = await this.getInstallation(id);
       if (!current) throw new Error('Installation record disappeared');
-      const next: Installation = { ...current, status, progress, step: step.message, stepCode: step.code, ...(step.params ? { stepParams: step.params } : {}), error, updatedAt: this.now().toISOString() };
+      const next: Installation = { ...current, status, progress, step: step.message, stepCode: step.code, ...(step.params ? { stepParams: step.params } : {}), error, ...(errorCode ? { errorCode } : {}), updatedAt: this.now().toISOString() };
       await this.upsert(next); onProgress?.({ status, progress, step }); this.logger(logEvent(step.code, `[installer:${id}] ${step.message}`, step.params)); return next;
     };
 
@@ -287,7 +327,7 @@ export class RuntimeManager {
     try {
       const resolved = await this.resolveSelector(selector);
       await update('queued', 2, logEvent('install.resolved', `Resolved ${resolved.ref}`, { ref: resolved.ref }));
-      await beforeInstall?.();
+      await beforeInstall?.((progress, step) => update('queued', progress, step).then(() => undefined));
       await rm(stagingRoot, { recursive: true, force: true });
       await mkdir(stagingRoot, { recursive: true });
       let extractedPath: string;
@@ -330,7 +370,9 @@ export class RuntimeManager {
       return activated;
     } catch (error: unknown) {
       const message = error instanceof RuntimeError ? error.message : error instanceof Error ? error.message : 'Installation failed';
-      const failed = await update('failed', 100, logEvent('install.failed', 'Installation failed'), message);
+      // Only a refusal this manager wrote carries a code. A line from git or
+      // npm is that program's own words and is shown as it arrived.
+      const failed = await update('failed', 100, logEvent('install.failed', 'Installation failed'), message, error instanceof RuntimeError ? error.code : undefined);
       if (finalRoot && !this.useGit) await rm(finalRoot, { recursive: true, force: true });
       if (checkoutChanged && previous) {
         try { await this.activateInstallation(previous.id); this.logger(logEvent('installer.previousRestored', '[installer] previous runtime restored')); }
@@ -458,15 +500,30 @@ export class RuntimeManager {
       const installations = await this.loadInstallations();
       const index = installations.findIndex((item) => item.id === installation.id);
       if (index < 0) installations.push(installation); else installations[index] = installation;
-      await mkdir(this.paths.state, { recursive: true });
-      const target = join(this.paths.state, INSTALLATIONS_FILE);
-      const temporary = `${target}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
-      await writeFile(temporary, `${JSON.stringify({ schemaVersion: 1, installations }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-      await rename(temporary, target);
+      await this.persistInstallations(installations);
     };
     const previous = this.writeQueue;
     this.writeQueue = previous.then(operation, operation);
     await this.writeQueue;
+  }
+
+  /** Replace the whole record list, through the same queue as a single write. */
+  private async writeInstallations(installations: Installation[]): Promise<void> {
+    const operation = async () => {
+      this.installations = installations;
+      await this.persistInstallations(installations);
+    };
+    const previous = this.writeQueue;
+    this.writeQueue = previous.then(operation, operation);
+    await this.writeQueue;
+  }
+
+  private async persistInstallations(installations: Installation[]): Promise<void> {
+    await mkdir(this.paths.state, { recursive: true });
+    const target = join(this.paths.state, INSTALLATIONS_FILE);
+    const temporary = `${target}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+    await writeFile(temporary, `${JSON.stringify({ schemaVersion: 1, installations }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+    await rename(temporary, target);
   }
 
   private async writeActiveInstallation(id: string): Promise<void> {

@@ -34,11 +34,11 @@ test('config document retains Basic Auth keys and masks a custom password', asyn
 
 test('settings update atomically without disturbing comments or unknown keys', async () => {
   const { store, profile, installation, configPath } = await fixture();
-  const document = await store.update(profile, installation, { settings: { enableCorsProxy: true } });
-  assert.equal(document.settings.enableCorsProxy, true);
+  const document = await store.update(profile, installation, { settings: { lazyLoadCharacters: true } });
+  assert.equal(document.settings.lazyLoadCharacters, true);
   const raw = await readFile(configPath, 'utf8');
   assert.match(raw, /# keep this comment/u);
-  assert.match(raw, /enableCorsProxy: true/u);
+  assert.match(raw, /lazyLoadCharacters: true/u);
   assert.match(raw, /username: user/u);
   assert.equal((parseYaml(raw) as { basicAuthUser: { password: string } }).basicAuthUser.password, 'old-secret');
   assert.equal(await readFile(`${configPath}.bak`, 'utf8').then((value) => value.includes('# keep this comment')), true);
@@ -97,11 +97,52 @@ test('a runtime is not left opening its own browser window', async () => {
   assert.equal(raw.browserLaunch.enabled, false);
 });
 
+test('the settings the console offers land on the keys SillyTavern reads', async () => {
+  const { store, profile, installation, configPath } = await fixture();
+
+  // A config that mentions none of them reads back as SillyTavern's own
+  // defaults, so nothing appears to have been turned off by being absent.
+  const before = await store.read(profile, installation);
+  assert.equal(before.settings.useDiskCache, true);
+  assert.equal(before.settings.memoryCacheCapacity, '100mb');
+  assert.equal(before.settings.chatBackupCount, 50);
+  assert.equal(before.settings.lazyLoadCharacters, false);
+
+  const saved = await store.update(profile, installation, {
+    settings: { requestCompression: true, memoryCacheCapacity: '250mb', allowKeysExposure: true, chatBackupCount: 20 },
+  });
+  assert.equal(saved.settings.requestCompression, true);
+  assert.equal(saved.settings.memoryCacheCapacity, '250mb');
+  assert.equal(saved.settings.allowKeysExposure, true);
+  assert.equal(saved.settings.chatBackupCount, 20);
+
+  const raw = parseYaml(await readFile(configPath, 'utf8')) as {
+    performance: { requestCompression: { enabled: boolean }; memoryCacheCapacity: string };
+    allowKeysExposure: boolean;
+    backups: { common: { numberOfBackups: number } };
+  };
+  assert.equal(raw.performance.requestCompression.enabled, true);
+  assert.equal(raw.performance.memoryCacheCapacity, '250mb');
+  assert.equal(raw.allowKeysExposure, true);
+  assert.equal(raw.backups.common.numberOfBackups, 20);
+});
+
+test('a size or a count that SillyTavern could not read is refused', async () => {
+  const { store, profile, installation, configPath } = await fixture();
+  const original = await readFile(configPath, 'utf8');
+
+  for (const settings of [{ memoryCacheCapacity: 'lots' }, { memoryCacheCapacity: '100 mb' }, { chatBackupCount: 0 }, { chatBackupCount: 5000 }, { chatBackupCount: 2.5 }]) {
+    await assert.rejects(store.update(profile, installation, { settings }), (error: unknown) => error instanceof ConfigError && error.code === 'invalid_config');
+  }
+  // And a refusal leaves the file exactly as it was.
+  assert.equal(await readFile(configPath, 'utf8'), original);
+});
+
 test('keys a version does not understand are not invented for it', async () => {
   const { store, profile, installation, configPath } = await fixture();
   await writeFile(configPath, 'listen: false\nport: 8000\n', 'utf8');
   assert.equal(await store.applyManagedDefaults(profile, installation), false);
-  await store.update(profile, installation, { settings: { enableCorsProxy: true } });
+  await store.update(profile, installation, { settings: { lazyLoadCharacters: true } });
   const raw = parseYaml(await readFile(configPath, 'utf8'));
   assert.equal(raw.enableUserAccounts, undefined);
   assert.equal(raw.basicAuthMode, undefined);

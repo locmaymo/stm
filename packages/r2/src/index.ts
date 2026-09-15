@@ -1,7 +1,7 @@
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { mkdir, open, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { formatBytes, logEvent, logLineText, type LogSink, type Profile, type R2Config, type R2Object, type R2SnapshotSummary, type R2Usage, type TransferProgress } from '../../contracts/src/index.js';
+import { formatBytes, logEvent, logLineText, type LogSink, type Profile, type R2Config, type R2EnvironmentField, type R2Object, type R2SnapshotSummary, type R2Usage, type TransferProgress } from '../../contracts/src/index.js';
 import { ioConcurrency, runPooled } from '../../platform/src/index.js';
 import type { PlatformPaths } from '../../platform/src/index.js';
 import { BlobLedger } from './ledger.js';
@@ -20,6 +20,13 @@ import {
 } from './sync.js';
 
 const R2_STATE_FILE = 'r2-config.json';
+/** The connection settings `.env` may provide, and the variable for each. */
+const ENVIRONMENT_FIELDS: ReadonlyArray<{ readonly field: R2EnvironmentField; readonly variable: string }> = [
+  { field: 'endpoint', variable: 'STM_R2_ENDPOINT' },
+  { field: 'bucket', variable: 'STM_R2_BUCKET' },
+  { field: 'accessKeyId', variable: 'STM_R2_ACCESS_KEY_ID' },
+  { field: 'secretAccessKey', variable: 'STM_R2_SECRET_ACCESS_KEY' },
+];
 const R2_LEDGER_FILE = 'r2-blobs.log';
 const R2_SCHEMA_VERSION = 2 as const;
 const MASKED_SECRET = '********';
@@ -39,13 +46,15 @@ const LIST_PAGE_KEYS = 1000;
  * work is acceptable to lose rather than by what the quota can bear.
  */
 const DEFAULTS = {
-  localIntervalMinutes: 60,
   hotIntervalMinutes: 5,
   coldIntervalHours: 6,
   reconcileIntervalHours: 24,
-  keepRecent: 48,
-  keepDaily: 14,
-  keepWeekly: 8,
+  // Thirty days back: the newest day closely, then one point a day. The panel
+  // offers retention as a few plain choices rather than three numbers, so the
+  // default has to be one of those choices.
+  keepRecent: 24,
+  keepDaily: 30,
+  keepWeekly: 0,
   // Four fifths of what Cloudflare gives away, in the same decimal units it
   // quotes: 10 GB of storage, a million charged writes, ten million reads.
   maxStorageBytes: 8_000_000_000,
@@ -70,10 +79,8 @@ interface StoredR2Config {
   readonly enabled: boolean;
   readonly endpoint: string | null;
   readonly bucket: string | null;
-  readonly accountId: string | null;
   readonly accessKeyId: string | null;
   readonly secretAccessKey: string | null;
-  readonly localIntervalMinutes: number;
   readonly hotIntervalMinutes: number;
   readonly coldIntervalHours: number;
   readonly reconcileIntervalHours: number;
@@ -112,10 +119,8 @@ export interface R2UpdateInput {
   readonly enabled?: boolean;
   readonly endpoint?: string | null;
   readonly bucket?: string | null;
-  readonly accountId?: string | null;
   readonly accessKeyId?: string | null;
   readonly secretAccessKey?: string | null;
-  readonly localIntervalMinutes?: number;
   readonly hotIntervalMinutes?: number;
   readonly coldIntervalHours?: number;
   readonly reconcileIntervalHours?: number;
@@ -211,6 +216,8 @@ export class R2Manager {
   private readonly fetchImpl: typeof fetch;
   private readonly ledger: BlobLedger;
   private configState: StoredR2Config | null = null;
+  /** The local backup interval an older version kept in this file, until it is handed over. */
+  private legacyLocalInterval: number | null = null;
   private writeQueue: Promise<void> = Promise.resolve();
   /**
    * Held for a sync or a reconcile, never both.
@@ -244,17 +251,19 @@ export class R2Manager {
     return this.toPublic(await this.load());
   }
 
-  public async update(input: R2UpdateInput): Promise<R2Config> {
+  public async update(requested: R2UpdateInput): Promise<R2Config> {
     const current = await this.load();
+    // A connection field set in `.env` belongs to `.env`. The panel shows it
+    // and cannot change it, so a stale form cannot quietly replace it either.
+    const locked = new Set<string>(this.environmentFields());
+    const input = Object.fromEntries(Object.entries(requested).filter(([key]) => !locked.has(key))) as R2UpdateInput;
     const next: StoredR2Config = {
       ...current,
       ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
       ...(input.endpoint !== undefined ? { endpoint: normalizeNullable(input.endpoint) } : {}),
       ...(input.bucket !== undefined ? { bucket: normalizeNullable(input.bucket) } : {}),
-      ...(input.accountId !== undefined ? { accountId: normalizeNullable(input.accountId) } : {}),
       ...(input.accessKeyId !== undefined ? { accessKeyId: preserveSecret(input.accessKeyId, current.accessKeyId) } : {}),
       ...(input.secretAccessKey !== undefined ? { secretAccessKey: preserveSecret(input.secretAccessKey, current.secretAccessKey) } : {}),
-      ...(input.localIntervalMinutes !== undefined ? { localIntervalMinutes: integerInRange(input.localIntervalMinutes, 1, 7 * 24 * 60, 'local interval') } : {}),
       ...(input.hotIntervalMinutes !== undefined ? { hotIntervalMinutes: integerInRange(input.hotIntervalMinutes, 1, 7 * 24 * 60, 'frequent upload interval') } : {}),
       ...(input.coldIntervalHours !== undefined ? { coldIntervalHours: integerInRange(input.coldIntervalHours, 1, 30 * 24, 'full upload interval') } : {}),
       ...(input.reconcileIntervalHours !== undefined ? { reconcileIntervalHours: integerInRange(input.reconcileIntervalHours, 1, 30 * 24, 'reconcile interval') } : {}),
@@ -354,7 +363,7 @@ export class R2Manager {
       const createdAt = this.now().toISOString();
       const snapshot: R2Snapshot = {
         schemaVersion: 1,
-        id: snapshotId(createdAt),
+        id: snapshotId(createdAt, files),
         createdAt,
         profileId: input.profile.id,
         profileName: input.profile.name,
@@ -384,7 +393,14 @@ export class R2Manager {
       if (dropped.size > 0) this.logger(logEvent('r2.skippedMissingFiles', `[r2] skipped ${dropped.size} file(s) removed while the upload was running`, { count: dropped.size }));
       this.logger(logEvent('r2.synced', `[r2] sent ${uploadedChunks} changed chunk(s), ${formatBytes(uploadedBytes)}, of ${files.length} file(s)`, { chunks: uploadedChunks, bytes: formatBytes(uploadedBytes), files: files.length }));
       return {
-        snapshot: { id: snapshot.id, profileId: snapshot.profileId, createdAt: snapshot.createdAt, indexBytes: body.byteLength },
+        snapshot: {
+          id: snapshot.id,
+          profileId: snapshot.profileId,
+          createdAt: snapshot.createdAt,
+          indexBytes: body.byteLength,
+          fileCount: files.length,
+          dataBytes: files.reduce((sum, file) => sum + file.sizeBytes, 0),
+        },
         fileCount: files.length,
         uploadedChunks,
         uploadedBytes,
@@ -713,13 +729,12 @@ export class R2Manager {
       enabled: config.enabled,
       endpoint: config.endpoint,
       bucket: config.bucket,
-      accountId: config.accountId,
+      environmentFields: this.environmentFields(),
       configured: Boolean(config.endpoint && config.bucket && config.accessKeyId && config.secretAccessKey),
       lastUploadAt: config.lastUploadAt,
       accessKeyIdMasked: config.accessKeyId ? maskSecret(config.accessKeyId) : null,
       secretAccessKeyConfigured: Boolean(config.secretAccessKey),
       schedule: {
-        localIntervalMinutes: config.localIntervalMinutes,
         hotIntervalMinutes: config.hotIntervalMinutes,
         coldIntervalHours: config.coldIntervalHours,
         reconcileIntervalHours: config.reconcileIntervalHours,
@@ -729,6 +744,25 @@ export class R2Manager {
       usage: toPublicUsage(config.usage),
       lastFingerprint: config.lastFingerprint,
     };
+  }
+
+  /**
+   * The local backup interval this file still holds from an older version.
+   *
+   * It is not an R2 setting and never was: it decides how often a ZIP is taken
+   * on this machine, bucket or no bucket. The backup library owns it now, and
+   * the server hands this value over once, then calls forgetLegacyLocalInterval.
+   */
+  public async legacyLocalIntervalMinutes(): Promise<number | null> {
+    await this.load();
+    return this.legacyLocalInterval;
+  }
+
+  public async forgetLegacyLocalInterval(): Promise<void> {
+    const config = await this.load();
+    if (this.legacyLocalInterval === null) return;
+    this.legacyLocalInterval = null;
+    await this.save(config);
   }
 
   /** When the cold tier is next owed a run, which the scheduler asks about. */
@@ -752,23 +786,43 @@ export class R2Manager {
     await mkdir(this.paths.state, { recursive: true });
     try {
       const parsed: unknown = JSON.parse(await readFile(join(this.paths.state, R2_STATE_FILE), 'utf8'));
-      this.configState = parseStoredConfig(parsed);
+      this.legacyLocalInterval = isRecord(parsed) && typeof parsed.localIntervalMinutes === 'number' ? parsed.localIntervalMinutes : null;
+      const stored = this.withEnvironment(parseStoredConfig(parsed));
+      validateStoredConfig(stored);
+      this.configState = stored;
     } catch (error: unknown) {
       if (!isFileNotFound(error)) throw error;
-      const fromEnvironment: StoredR2Config = {
-        ...defaultStoredConfig(this.now()),
-        enabled: Boolean(this.env.STM_R2_ENDPOINT && this.env.STM_R2_BUCKET && this.env.STM_R2_ACCESS_KEY_ID && this.env.STM_R2_SECRET_ACCESS_KEY),
-        endpoint: nullableEnvironment(this.env.STM_R2_ENDPOINT),
-        bucket: nullableEnvironment(this.env.STM_R2_BUCKET),
-        accountId: nullableEnvironment(this.env.STM_R2_ACCOUNT_ID),
-        accessKeyId: nullableEnvironment(this.env.STM_R2_ACCESS_KEY_ID),
-        secretAccessKey: nullableEnvironment(this.env.STM_R2_SECRET_ACCESS_KEY),
+      // A complete connection in `.env` is somebody asking for R2 backups, so
+      // the first start takes it as switched on. The panel can still turn it off.
+      const seeded: StoredR2Config = {
+        ...this.withEnvironment(defaultStoredConfig(this.now())),
+        enabled: this.environmentFields().length === ENVIRONMENT_FIELDS.length,
       };
-      validateStoredConfig(fromEnvironment);
-      await this.save(fromEnvironment);
+      validateStoredConfig(seeded);
+      await this.save(seeded);
     }
     if (!this.configState) throw new Error('R2 configuration could not be loaded');
     return this.configState;
+  }
+
+  /**
+   * The connection fields `.env` sets.
+   *
+   * `.env` is read on every start rather than copied once into the state file.
+   * Copying it meant editing `.env` afterwards changed nothing, and the secret
+   * ended up written in a second place the operator never put it.
+   */
+  private environmentFields(): R2EnvironmentField[] {
+    return ENVIRONMENT_FIELDS.filter(({ variable }) => nullableEnvironment(this.env[variable]) !== null).map(({ field }) => field);
+  }
+
+  private withEnvironment(config: StoredR2Config): StoredR2Config {
+    const next: Record<string, unknown> = { ...config };
+    for (const { field, variable } of ENVIRONMENT_FIELDS) {
+      const value = nullableEnvironment(this.env[variable]);
+      if (value !== null) next[field] = value;
+    }
+    return next as unknown as StoredR2Config;
   }
 
   private async save(config: StoredR2Config): Promise<void> {
@@ -776,7 +830,10 @@ export class R2Manager {
       await mkdir(this.paths.state, { recursive: true });
       const target = join(this.paths.state, R2_STATE_FILE);
       const temporary = `${target}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
-      await writeFile(temporary, `${JSON.stringify(config, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+      // What `.env` supplies stays in `.env`: the file records nothing for it.
+      const onDisk: Record<string, unknown> = { ...config };
+      for (const field of this.environmentFields()) onDisk[field] = null;
+      await writeFile(temporary, `${JSON.stringify(onDisk, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
       await rename(temporary, target);
       this.configState = config;
     };
@@ -877,8 +934,28 @@ function toSnapshotSummary(object: S3ObjectRecord): R2SnapshotSummary | null {
   if (separator <= 0 || !rest.endsWith('.json.gz')) return null;
   const identifier = rest.slice(separator + 1, -'.json.gz'.length);
   if (!identifier) return null;
-  return { id: identifier, profileId: rest.slice(0, separator), createdAt: snapshotTimestamp(identifier), indexBytes: object.sizeBytes };
+  const totals = SNAPSHOT_TOTALS.exec(identifier);
+  return {
+    id: identifier,
+    profileId: rest.slice(0, separator),
+    createdAt: snapshotTimestamp(identifier),
+    indexBytes: object.sizeBytes,
+    fileCount: totals ? Number(totals[1]) : null,
+    dataBytes: totals ? Number(totals[2]) : null,
+  };
 }
+
+/**
+ * How many files a recovery point names and how much data they hold, read
+ * from its name.
+ *
+ * A listing is all the panel can afford to ask for - reading every index to
+ * learn its size is a charged read each. The object's own size is the index,
+ * a couple of hundred kilobytes, which the table used to show as the size of a
+ * recovery point that then took hundreds of megabytes to bring back. Points
+ * written before this carry no totals, and say so rather than guess.
+ */
+const SNAPSHOT_TOTALS = /\.f(\d+)\.b(\d+)$/u;
 
 /**
  * Snapshot names are timestamps with the punctuation a key cannot carry.
@@ -886,12 +963,13 @@ function toSnapshotSummary(object: S3ObjectRecord): R2SnapshotSummary | null {
  * Naming them this way means a listing comes back in chronological order and
  * retention never has to read a single index to know what is oldest.
  */
-function snapshotId(createdAt: string): string {
-  return createdAt.replace(/[:.]/gu, '-');
+function snapshotId(createdAt: string, files: readonly HashedFile[]): string {
+  const dataBytes = files.reduce((sum, file) => sum + file.sizeBytes, 0);
+  return `${createdAt.replace(/[:.]/gu, '-')}.f${files.length}.b${dataBytes}`;
 }
 
 function snapshotTimestamp(identifier: string): string {
-  const match = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/u.exec(identifier);
+  const match = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z(?:\.f\d+\.b\d+)?$/u.exec(identifier);
   return match ? `${match[1]}T${match[2]}:${match[3]}:${match[4]}.${match[5]}Z` : identifier;
 }
 
@@ -1048,19 +1126,23 @@ function parseStoredConfig(value: unknown): StoredR2Config {
       enabled: typeof value.enabled === 'boolean' ? value.enabled : false,
       endpoint: typeof value.endpoint === 'string' ? value.endpoint : null,
       bucket: typeof value.bucket === 'string' ? value.bucket : null,
-      accountId: typeof value.accountId === 'string' ? value.accountId : null,
       accessKeyId: typeof value.accessKeyId === 'string' ? value.accessKeyId : null,
       secretAccessKey: typeof value.secretAccessKey === 'string' ? value.secretAccessKey : null,
-      localIntervalMinutes: typeof value.localIntervalMinutes === 'number' ? value.localIntervalMinutes : defaults.localIntervalMinutes,
     };
     validateStoredConfig(migrated);
     return migrated;
   }
   if (value.schemaVersion !== R2_SCHEMA_VERSION) throw new Error('Unsupported R2 configuration schema');
   const usage = isRecord(value.usage) ? value.usage : {};
+  // Account ID was asked for and never used: the endpoint already names the
+  // account. A file that still has one keeps nothing of it.
+  const current: Record<string, unknown> = { ...value };
+  delete current.accountId;
+  // The local backup interval moved to the backup library; see legacyLocalIntervalMinutes.
+  delete current.localIntervalMinutes;
   const config: StoredR2Config = {
     ...defaults,
-    ...value,
+    ...current,
     schemaVersion: R2_SCHEMA_VERSION,
     usage: { ...defaults.usage, ...usage } as StoredUsage,
   } as StoredR2Config;
@@ -1074,7 +1156,6 @@ function defaultStoredConfig(now: Date): StoredR2Config {
     enabled: false,
     endpoint: null,
     bucket: null,
-    accountId: null,
     accessKeyId: null,
     secretAccessKey: null,
     ...DEFAULTS,

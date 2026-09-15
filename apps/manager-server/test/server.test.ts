@@ -10,20 +10,27 @@ import type { AccessGatewayState, Installation, ProcessState, VersionOption } fr
 import type { RuntimeManager } from '../../../packages/sillytavern-runtime/src/index.js';
 import type { ProcessSupervisor } from '../src/supervisor.js';
 
-async function createServer(options: { setupCodeRequired?: boolean; bootstrapPassword?: string; platform?: 'linux' | 'modelscope' } = {}): Promise<ManagerServer> {
-  const root = await mkdtemp(join(tmpdir(), 'stm-manager-'));
+async function createServer(options: {
+  bootstrapPassword?: string;
+  platform?: 'linux' | 'modelscope';
+  /** An existing data directory, for starting the same manager again. */
+  root?: string;
+  /** Runs before the server starts, for leaving files an older version wrote. */
+  prepare?: (paths: ReturnType<typeof getPlatformPaths>) => Promise<void>;
+} = {}): Promise<ManagerServer> {
+  const root = options.root ?? await mkdtemp(join(tmpdir(), 'stm-manager-'));
   const basePaths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
   const paths = options.platform === 'modelscope' ? { ...basePaths, platform: 'modelscope' as const } : basePaths;
   const staticRoot = join(root, 'panel');
   await mkdir(staticRoot, { recursive: true });
   await writeFile(join(staticRoot, 'index.html'), '<!doctype html><title>Manager panel</title>', 'utf8');
-  const store = new StateStore({ paths, setupCode: 'setup-test-code' });
+  await options.prepare?.(paths);
+  const store = new StateStore({ paths });
   return startManagerServer({
     host: '127.0.0.1',
     port: 0,
     paths,
     store,
-    setupCodeRequired: options.setupCodeRequired ?? true,
     env: options.bootstrapPassword ? { STM_ADMIN_PASSWORD: options.bootstrapPassword } : {},
     secureCookies: false,
     accessPort: 0,
@@ -44,6 +51,17 @@ test('ModelScope proxy origins are accepted while unrelated origins remain block
   assert.equal(unrelated.status, 403);
   assert.equal((await unrelated.json() as { error: { code: string } }).error.code, 'origin_rejected');
 });
+
+/** Set the password on a fresh manager, or sign in to one that has it. */
+async function signIn(base: string, password = 'correct horse battery staple'): Promise<{ cookie: string; csrfToken: string }> {
+  const status = await (await fetch(`${base}/api/v1/setup/status`)).json() as { setupRequired: boolean };
+  const response = status.setupRequired
+    ? await fetch(`${base}/api/v1/setup/password`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password, termsAccepted: true, telemetryAccepted: true }) })
+    : await fetch(`${base}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password }) });
+  assert.equal(response.ok, true, `signing in answered ${response.status}`);
+  const body = await response.json() as { session: { csrfToken: string } };
+  return { cookie: cookieFrom(response), csrfToken: body.session.csrfToken };
+}
 
 function serverUrl(manager: ManagerServer): string {
   const address = manager.server.address();
@@ -74,12 +92,12 @@ test('setup, login, CSRF, health, and logout work on the manager port', async (t
 
   const setupStatus = await fetch(`${base}/api/v1/setup/status`);
   assert.equal(setupStatus.status, 200);
-  assert.equal((await setupStatus.json() as { setupRequired: boolean; setupCodeRequired: boolean }).setupCodeRequired, true);
+  assert.equal((await setupStatus.json() as { setupRequired: boolean }).setupRequired, true);
 
   const setup = await fetch(`${base}/api/v1/setup/password`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ password: 'correct horse battery staple', setupCode: 'setup-test-code', termsAccepted: true, telemetryAccepted: true }),
+    body: JSON.stringify({ password: 'correct horse battery staple', termsAccepted: true, telemetryAccepted: true }),
   });
   assert.equal(setup.status, 201);
   const setupBody = await setup.json() as { session: { csrfToken: string } };
@@ -132,7 +150,7 @@ test('STM_ADMIN_PASSWORD bootstraps a fresh installation without exposing the pa
 });
 
 test('a fresh manager without an environment secret accepts first-run password setup', async (t) => {
-  const manager = await createServer({ setupCodeRequired: false });
+  const manager = await createServer();
   t.after(() => manager.close());
   const base = serverUrl(manager);
   const setup = await fetch(`${base}/api/v1/setup/password`, {
@@ -212,10 +230,10 @@ test('config follows the active runtime, and sharing waits for an access passwor
   const blocked = await fetch(`${base}/api/v1/tunnel`, { method: 'PUT', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'quick' }) });
   assert.equal(blocked.status, 409);
   assert.equal((await blocked.json() as { error: { code: string } }).error.code, 'public_access_password_required');
-  const saved = await fetch(`${base}/api/v1/config`, { method: 'PUT', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ settings: { enableCorsProxy: true } }) });
+  const saved = await fetch(`${base}/api/v1/config`, { method: 'PUT', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ settings: { lazyLoadCharacters: true } }) });
   assert.equal(saved.status, 200);
-  const savedBody = await saved.json() as { config: { rawYaml: string; settings: { listen: boolean; basicAuthMode: boolean; enableCorsProxy: boolean } } };
-  assert.equal(savedBody.config.settings.enableCorsProxy, true);
+  const savedBody = await saved.json() as { config: { rawYaml: string; settings: { listen: boolean; basicAuthMode: boolean; lazyLoadCharacters: boolean } } };
+  assert.equal(savedBody.config.settings.lazyLoadCharacters, true);
   assert.equal(savedBody.config.settings.listen, false, 'SillyTavern stays on the loopback address');
   assert.equal(savedBody.config.settings.basicAuthMode, false, 'and its own half-usable protection stays off');
   assert.match(savedBody.config.rawYaml, /basicAuthUser:/u);
@@ -226,7 +244,7 @@ test('only one concurrent first-run setup can create the admin', async (t) => {
   const manager = await createServer();
   t.after(() => manager.close());
   const base = serverUrl(manager);
-  const payload = JSON.stringify({ password: 'correct horse battery staple', setupCode: 'setup-test-code', termsAccepted: true, telemetryAccepted: true });
+  const payload = JSON.stringify({ password: 'correct horse battery staple', termsAccepted: true, telemetryAccepted: true });
   const responses = await Promise.all([
     fetch(`${base}/api/v1/setup/password`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: payload }),
     fetch(`${base}/api/v1/setup/password`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: payload }),
@@ -493,12 +511,22 @@ test('one password opens SillyTavern on any version, and nothing is shared befor
     assert.equal((await response.json() as { error: { code: string } }).error.code, 'public_access_password_required');
   }
 
-  const saved = await fetch(`${base}/api/v1/access/password`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ password: 'a-real-secret', confirmPassword: 'a-real-secret' }) });
+  // Anything but six digits is refused: the sign-in page on the far end has a
+  // keypad and nothing else to type with.
+  for (const rejected of ['a-real-secret', '12345', '1234567', '12345a']) {
+    const response = await fetch(`${base}/api/v1/access/password`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ password: rejected, confirmPassword: rejected }) });
+    assert.equal(response.status, 400, rejected);
+    assert.equal((await response.json() as { error: { code: string } }).error.code, 'invalid_passcode', rejected);
+  }
+
+  const saved = await fetch(`${base}/api/v1/access/password`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ password: '417203', confirmPassword: '417203' }) });
   assert.equal(saved.status, 200);
-  assert.equal((await saved.json() as AccessGatewayState).passwordConfigured, true);
-  // The password belongs to the manager, so it never lands in SillyTavern's
+  const savedState = await saved.json() as AccessGatewayState;
+  assert.equal(savedState.passwordConfigured, true);
+  assert.equal(savedState.passcode, true, 'the sign-in page is told to ask for a passcode');
+  // The passcode belongs to the manager, so it never lands in SillyTavern's
   // own configuration where a restore or a version switch could carry it off.
-  assert.equal((await readFile(profile.configPath, 'utf8')).includes('a-real-secret'), false);
+  assert.equal((await readFile(profile.configPath, 'utf8')).includes('417203'), false);
 
   const opened = await fetch(`${base}/api/v1/access/network`, { method: 'PUT', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ lan: true }) });
   assert.equal(opened.status, 200);
@@ -634,14 +662,14 @@ test('a legacy runtime that rewrites the profile config on stop does not lose th
   const profile = (await (await fetch(`${base}/api/v1/profiles`, { headers: { cookie } })).json() as { profiles: Array<{ configPath: string }> }).profiles[0];
   assert.ok(profile);
   profileConfigPath = profile.configPath;
-  const startingConfig = 'listen: false\nport: 8000\nenableCorsProxy: false\n';
+  const startingConfig = 'listen: false\nport: 8000\nperformance:\n  lazyLoadCharacters: false\n';
   await writeFile(profileConfigPath, startingConfig, 'utf8');
   await writeFile(runtimeConfigPath, startingConfig, 'utf8');
 
-  const saved = await fetch(`${base}/api/v1/config`, { method: 'PUT', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ settings: { enableCorsProxy: true } }) });
+  const saved = await fetch(`${base}/api/v1/config`, { method: 'PUT', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ settings: { lazyLoadCharacters: true } }) });
   assert.equal(saved.status, 200);
   for (const path of [profileConfigPath, runtimeConfigPath]) {
-    assert.match(await readFile(path, 'utf8'), /enableCorsProxy: true/u, `the save survived in ${path}`);
+    assert.match(await readFile(path, 'utf8'), /lazyLoadCharacters: true/u, `the save survived in ${path}`);
   }
 });
 
@@ -667,4 +695,213 @@ test('the LAN address offered is one another device can actually reach', () => {
   // A routable address on a network that is not one of the private ranges is
   // still the right answer when it is all there is.
   assert.equal(preferredNetworkHost([{ family: 'IPv4', internal: false, address: '100.103.121.60' }]), '100.103.121.60');
+});
+
+test('a list answers the page it was asked for, and the whole list when it was not', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-paging-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const now = new Date().toISOString();
+  const base = {
+    selector: 'latest' as const, channel: 'release' as const, runtimePath: join(root, 'rt'),
+    markerPath: join(root, 'rt', '.stm-installation.json'), status: 'ready' as const, progress: 100,
+    step: 'Installation ready', error: null, createdAt: now, updatedAt: now,
+  };
+  // Named so that sorting by ref has a different answer from the order they
+  // are listed in, and so that "1.9.0" against "1.18.0" catches a plain string
+  // comparison pretending to be a version sort.
+  const installations: Installation[] = [
+    { ...base, id: 'i-a', resolvedRef: '1.18.0', activatedAt: now },
+    { ...base, id: 'i-b', resolvedRef: '1.9.0', activatedAt: null },
+    { ...base, id: 'i-c', resolvedRef: '1.12.3', activatedAt: null },
+  ];
+  const fakeRuntime = {
+    listVersions: async () => [],
+    listInstallations: async () => installations,
+    getActiveInstallation: async () => installations[0],
+    getInstallation: async (id: string) => installations.find((item) => item.id === id) ?? null,
+  } as unknown as RuntimeManager;
+  const manager = await startManagerServer({ host: '127.0.0.1', port: 0, paths, env: { STM_ADMIN_PASSWORD: 'correct horse battery staple' }, secureCookies: false,
+    accessPort: 0, runtime: fakeRuntime, logger: () => undefined });
+  t.after(() => manager.close());
+  const url = serverUrl(manager);
+  const login = await fetch(`${url}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'correct horse battery staple' }) });
+  const cookie = cookieFrom(login);
+  const listed = async (query: string) => await (await fetch(`${url}/api/v1/installations${query}`, { headers: { cookie } })).json() as {
+    installations: Installation[]; activeInstallationId: string | null; page: { page: number; pageSize: number; total: number; pageCount: number };
+  };
+
+  // No parameters: the whole list, described as one page, exactly as the panel
+  // has always received it.
+  const all = await listed('');
+  assert.deepEqual(all.installations.map((row) => row.id), ['i-a', 'i-b', 'i-c']);
+  assert.deepEqual(all.page, { page: 1, pageSize: 3, total: 3, pageCount: 1 });
+  assert.equal(all.activeInstallationId, 'i-a');
+
+  const second = await listed('?page=2&pageSize=2');
+  assert.deepEqual(second.installations.map((row) => row.id), ['i-c']);
+  assert.deepEqual(second.page, { page: 2, pageSize: 2, total: 3, pageCount: 2 });
+  // The active pointer names a row that is not on this page, and still travels
+  // with it - the panel needs it to mark the row wherever it turns up.
+  assert.equal(second.activeInstallationId, 'i-a');
+
+  const sorted = await listed('?sort=resolvedRef&direction=asc&pageSize=50');
+  assert.deepEqual(sorted.installations.map((row) => row.resolvedRef), ['1.9.0', '1.12.3', '1.18.0']);
+  const reversed = await listed('?sort=resolvedRef&direction=desc&pageSize=50');
+  assert.deepEqual(reversed.installations.map((row) => row.resolvedRef), ['1.18.0', '1.12.3', '1.9.0']);
+
+  const searched = await listed('?q=1.12');
+  assert.deepEqual(searched.installations.map((row) => row.id), ['i-c']);
+  assert.equal(searched.page.total, 1);
+
+  // A page past the end is the last page, not an empty table with no way back.
+  assert.equal((await listed('?page=99&pageSize=2')).page.page, 2);
+  // And a caller cannot ask the manager to walk everything it has at once.
+  assert.equal((await listed('?pageSize=100000')).page.pageSize, 200);
+});
+
+test('an empty list still answers with one page', async (t) => {
+  const manager = await createServer({ bootstrapPassword: 'correct horse battery staple' });
+  t.after(() => manager.close());
+  const url = serverUrl(manager);
+  const login = await fetch(`${url}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'correct horse battery staple' }) });
+  const cookie = cookieFrom(login);
+  const payload = await (await fetch(`${url}/api/v1/backups?page=1&pageSize=10`, { headers: { cookie } })).json() as {
+    backups: unknown[]; page: { page: number; total: number; pageCount: number };
+  };
+  assert.deepEqual(payload.backups, []);
+  // One page, so the table has somewhere to draw its empty state.
+  assert.deepEqual(payload.page, { page: 1, pageSize: 10, total: 0, pageCount: 1 });
+
+  // The same list without a query: still one page, and never a page size of
+  // zero for whatever divides by it.
+  const unpaged = await (await fetch(`${url}/api/v1/backups`, { headers: { cookie } })).json() as { page: { pageSize: number; pageCount: number } };
+  assert.equal(unpaged.page.pageSize, 1);
+  assert.equal(unpaged.page.pageCount, 1);
+});
+
+test('SillyTavern can be removed, and the request does not wait for the safety copy', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-uninstall-api-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const runtimePath = join(root, 'runtime');
+  await mkdir(runtimePath, { recursive: true });
+  const now = new Date().toISOString();
+  const installation: Installation = { id: 'install-1', selector: 'latest', resolvedRef: '1.2.3', channel: 'release', runtimePath, markerPath: join(runtimePath, '.stm-installation.json'), status: 'ready', progress: 100, step: 'Installation ready', error: null, createdAt: now, updatedAt: now, activatedAt: now };
+  let removed = false;
+  let stopped: string | undefined;
+  const processState: ProcessState = { status: 'running', installationId: installation.id, profileId: 'profile-1', pid: 1, startedAt: now, error: null };
+  const fakeSupervisor = {
+    getState: () => processState,
+    start: async () => processState,
+    stop: async (reason: string) => { stopped = reason; return { ...processState, status: 'stopped' }; },
+    close: async () => undefined,
+  } as unknown as ProcessSupervisor;
+
+  // A safety copy that never finishes. If the request waited for it, the
+  // response below would never arrive - which is exactly what it used to do.
+  let beforeInstall: ((report: (progress: number, step: unknown) => Promise<void>) => Promise<void>) | undefined;
+  const fakeRuntime = {
+    listVersions: async () => [],
+    listInstallations: async () => removed ? [] : [installation],
+    getActiveInstallation: async () => removed ? null : installation,
+    getInstallation: async (id: string) => !removed && id === installation.id ? installation : null,
+    removeInstallations: async () => { removed = true; },
+    queueInstall: (_selector: string, _onProgress: unknown, before?: typeof beforeInstall) => {
+      beforeInstall = before;
+      return { id: 'install-2', promise: new Promise<Installation>(() => undefined) };
+    },
+  } as unknown as RuntimeManager;
+
+  const manager = await startManagerServer({ host: '127.0.0.1', port: 0, paths, env: { STM_ADMIN_PASSWORD: 'correct horse battery staple' }, secureCookies: false,
+    accessPort: 0, runtime: fakeRuntime, supervisor: fakeSupervisor, logger: () => undefined });
+  t.after(() => manager.close());
+  const url = serverUrl(manager);
+  const login = await fetch(`${url}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'correct horse battery staple' }) });
+  const cookie = cookieFrom(login);
+  const csrf = (await login.json() as { session: { csrfToken: string } }).session.csrfToken;
+
+  const queued = await fetch(`${url}/api/v1/installations`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ version: 'latest' }) });
+  assert.equal(queued.status, 202, 'the install is accepted without waiting for the copy');
+  assert.equal((await queued.json() as { installationId: string }).installationId, 'install-2');
+  assert.equal(typeof beforeInstall, 'function', 'stopping and copying were handed to the job');
+
+  const uninstall = await fetch(`${url}/api/v1/installations`, { method: 'DELETE', headers: { cookie, 'x-csrf-token': csrf } });
+  assert.equal(uninstall.status, 200);
+  assert.deepEqual(await uninstall.json(), { ok: true, installations: [], activeInstallationId: null });
+  assert.equal(stopped, 'uninstall', 'SillyTavern is stopped before its files go');
+  assert.deepEqual((await (await fetch(`${url}/api/v1/installations`, { headers: { cookie } })).json() as { installations: unknown[] }).installations, []);
+
+  // Without the CSRF header it is refused, like every other change.
+  const unguarded = await fetch(`${url}/api/v1/installations`, { method: 'DELETE', headers: { cookie } });
+  assert.equal(unguarded.status, 403);
+});
+
+test('the local backup schedule is read and changed over HTTP, and survives a restart', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-manager-schedule-'));
+  const first = await createServer({ root });
+  let firstClosed = false;
+  t.after(async () => { if (!firstClosed) await first.close(); });
+  const base = serverUrl(first);
+
+  assert.equal((await fetch(`${base}/api/v1/backups/schedule`)).status, 401);
+  const { cookie, csrfToken } = await signIn(base);
+  const put = (body: unknown, headers: Record<string, string> = { 'x-csrf-token': csrfToken }) => fetch(`${base}/api/v1/backups/schedule`, {
+    method: 'PUT',
+    headers: { cookie, 'content-type': 'application/json', ...headers },
+    body: JSON.stringify(body),
+  });
+  const read = async () => {
+    const response = await fetch(`${base}/api/v1/backups/schedule`, { headers: { cookie } });
+    assert.equal(response.status, 200);
+    return (await response.json() as { schedule: { intervalMinutes: number } }).schedule.intervalMinutes;
+  };
+
+  assert.equal(await read(), 60);
+
+  // A change without the CSRF token is refused and changes nothing.
+  assert.notEqual((await put({ intervalMinutes: 360 }, {})).status, 200);
+  assert.equal(await read(), 60);
+
+  const saved = await put({ intervalMinutes: 360 });
+  assert.equal(saved.status, 200);
+  assert.equal((await saved.json() as { schedule: { intervalMinutes: number } }).schedule.intervalMinutes, 360);
+
+  for (const invalid of [{ intervalMinutes: 0 }, { intervalMinutes: 7 * 24 * 60 + 1 }, { intervalMinutes: 1.5 }, { intervalMinutes: '360' }, {}]) {
+    const refused = await put(invalid);
+    assert.equal(refused.status, 400, JSON.stringify(invalid));
+    assert.equal((await refused.json() as { error: { code: string } }).error.code, 'invalid_backup_schedule');
+  }
+  assert.equal(await read(), 360);
+
+  // Kept with the backup library, and nowhere in the R2 settings.
+  const library = JSON.parse(await readFile(join(first.store.paths.state, 'backups.json'), 'utf8')) as { schedule?: { intervalMinutes: number } };
+  assert.equal(library.schedule?.intervalMinutes, 360);
+  const r2 = await (await fetch(`${base}/api/v1/r2`, { headers: { cookie } })).json() as { config: { schedule: Record<string, unknown> } };
+  assert.equal('localIntervalMinutes' in r2.config.schedule, false);
+
+  await first.close();
+  firstClosed = true;
+  const second = await createServer({ root });
+  t.after(() => second.close());
+  const again = await signIn(serverUrl(second));
+  const reread = await fetch(`${serverUrl(second)}/api/v1/backups/schedule`, { headers: { cookie: again.cookie } });
+  assert.equal((await reread.json() as { schedule: { intervalMinutes: number } }).schedule.intervalMinutes, 360);
+});
+
+test('an interval an older version kept with the R2 settings moves to the backup library on start', async (t) => {
+  const manager = await createServer({
+    prepare: async (paths) => {
+      await mkdir(paths.state, { recursive: true });
+      await writeFile(join(paths.state, 'r2-config.json'), JSON.stringify({
+        schemaVersion: 2, enabled: false, endpoint: null, bucket: null, accessKeyId: null, secretAccessKey: null, localIntervalMinutes: 30,
+      }), 'utf8');
+    },
+  });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const { cookie } = await signIn(base);
+
+  const response = await fetch(`${base}/api/v1/backups/schedule`, { headers: { cookie } });
+  assert.equal((await response.json() as { schedule: { intervalMinutes: number } }).schedule.intervalMinutes, 30);
+  // Handed over once: the R2 file no longer carries it.
+  assert.equal((await readFile(join(manager.store.paths.state, 'r2-config.json'), 'utf8')).includes('localIntervalMinutes'), false);
 });

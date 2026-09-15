@@ -90,9 +90,12 @@ export class BackupScheduler {
     try {
       const profile = await this.profiles.getActive();
       if (!profile) return;
-      const config = await this.r2.getConfig();
       const fingerprint = await this.backups.fingerprint(profile);
-      await this.runLocalSnapshot(profile, fingerprint, config.schedule.localIntervalMinutes);
+      await this.runLocalSnapshot(profile, fingerprint, (await this.backups.getSchedule()).intervalMinutes);
+      // R2 is asked only after the local copy is taken. A bucket that is off,
+      // not set up or unreadable has no say over backups on this machine; it
+      // used to, because this interval was read out of the R2 settings.
+      const config = await this.r2.getConfig();
       if (!config.enabled || !config.configured) return;
       await this.runRemoteSync(profile, fingerprint, config);
     } catch (error: unknown) {
