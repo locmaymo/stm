@@ -183,25 +183,34 @@ function AuthGate() {
     setMode('ready');
   };
 
-  if (mode === 'ready') {
-    if (!csrfToken) return <div className="auth-shell" role="status" aria-busy="true" />;
-    return <ConsoleApp csrfToken={csrfToken} preferences={preferences} onPreferencesChange={changePreferences} />;
-  }
   // Until the session check answers there is nothing to ask for. Falling
   // through to the form showed a flash of the login screen on every reload of
   // an already signed-in console.
-  if (mode === 'checking') return <div className="auth-shell" role="status" aria-busy="true" />;
-  return (
-    <AuthScreen
-      t={t}
-      mode={mode}
-      setupCodeRequired={setupCodeRequired}
-      signedOut={signedOut}
-      preferences={preferences}
-      onPreferencesChange={changePreferences}
-      onSignedIn={signedIn}
-    />
-  );
+  const waiting = <div className="auth-shell" role="status" aria-busy="true" />;
+  const body = mode === 'checking'
+    ? waiting
+    : mode === 'ready'
+      ? csrfToken ? <ConsoleApp csrfToken={csrfToken} preferences={preferences} onPreferencesChange={changePreferences} /> : waiting
+      : <AuthScreen
+        t={t}
+        mode={mode}
+        setupCodeRequired={setupCodeRequired}
+        signedOut={signedOut}
+        preferences={preferences}
+        onPreferencesChange={changePreferences}
+        onSignedIn={signedIn}
+      />;
+
+  /*
+   * Results are reported from here down, so the provider is here.
+   *
+   * It used to be inside the console, which meant the console's own handlers -
+   * start, stop, remove SillyTavern - got the no-op fallback instead of the
+   * real one and reported nothing at all. This is also where the language
+   * lives, so the close button is labelled in the reader's language and
+   * follows them when they change it.
+   */
+  return <Toaster closeLabel={t('common.close')}>{body}</Toaster>;
 }
 
 function AuthScreen({ t, mode, setupCodeRequired, signedOut, preferences, onPreferencesChange, onSignedIn }: { t: Translate; mode: 'setup' | 'login'; setupCodeRequired: boolean; signedOut: boolean; preferences: Preferences; onPreferencesChange: (value: Partial<Preferences>) => void; onSignedIn: (csrfToken: string) => void }) {
@@ -321,6 +330,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange }: { csrfToken
   const t = translator(preferences.locale);
   const catalog = logCatalog(preferences.locale);
   const fail = failures(preferences.locale);
+  const { toast } = useToast();
 
   useEffect(() => {
     const media = window.matchMedia('(max-width: 767px)');
@@ -417,10 +427,12 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange }: { csrfToken
     const init: RequestInit = { method: body === undefined ? 'POST' : 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken } };
     if (body !== undefined) init.body = JSON.stringify(body);
     const response = await apiFetch(path, init);
-    if (response.ok) {
-      const payload = await response.json() as ProcessState | TunnelState;
-      if (path.includes('/process')) setProcessState(payload as ProcessState); else setTunnelState(payload as TunnelState);
+    if (!response.ok) {
+      toast({ title: fail.body(await response.json().catch(() => null), t('console.actionFailed')), tone: 'destructive' });
+      return;
     }
+    const payload = await response.json() as ProcessState | TunnelState;
+    if (path.includes('/process')) setProcessState(payload as ProcessState); else setTunnelState(payload as TunnelState);
   };
   const activeInstallation = installations.find((item) => item.id === pendingInstallationId) ?? installations.find((item) => item.id === activeInstallationId) ?? installations.at(-1);
   const removeInstallation = async (): Promise<string | null> => {
@@ -432,6 +444,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange }: { csrfToken
     setInstallations([]);
     setActiveInstallationId(null);
     setPendingInstallationId(null);
+    toast({ title: t('console.uninstallDone'), tone: 'success' });
     return null;
   };
   const installation = <InstallationPanel t={t} fail={fail} catalog={catalog} version={version} onVersionChange={setVersion} versions={versions} installations={installations} activeInstallationId={activeInstallationId} pendingInstallationId={pendingInstallationId} onPendingInstallationId={setPendingInstallationId} csrfToken={csrfToken} installing={installing} onInstalling={setInstalling} running={processState.status === 'running'} onRemove={removeInstallation} />;
@@ -464,6 +477,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange }: { csrfToken
     const payload = await response.json() as AccessGatewayState & { error?: { message?: string } };
     if (!response.ok) return fail.body(payload, t('console.passwordSaveFailed'));
     setAccessSecurity(payload);
+    toast({ title: t('console.passwordSaved'), tone: 'success' });
     return null;
   };
   const setAccessLan = async (lan: boolean): Promise<string | null> => {
@@ -480,7 +494,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange }: { csrfToken
   };
 
   return (
-    <Toaster>
+    <>
       <SidebarProvider style={{ '--sidebar-width': '15rem', '--sidebar-width-icon': '3.75rem' } as CSSProperties}>
         <AppSidebar page={page} navigate={navigate} t={t} />
         <SidebarInset className="min-w-0">
@@ -512,7 +526,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange }: { csrfToken
         </SidebarInset>
         <LogsSheet {...logProps} open={logsExpanded} onClose={() => setLogsExpanded(false)} />
       </SidebarProvider>
-    </Toaster>
+    </>
   );
 }
 
@@ -640,9 +654,10 @@ function OverviewHero({ t, fail, catalog, process, tunnel, installed, installing
  * and the install now asks before it restarts something that is already up.
  */
 function InstallationPanel({ t, fail, catalog, version, onVersionChange, versions, installations, activeInstallationId, pendingInstallationId, onPendingInstallationId, csrfToken, installing, onInstalling, running, onRemove }: { t: Translate; fail: Fail; catalog: Record<string, unknown>; version: string; onVersionChange: (value: string) => void; versions: VersionOption[]; installations: Installation[]; activeInstallationId: string | null; pendingInstallationId: string | null; onPendingInstallationId: (value: string | null) => void; csrfToken: string | null; installing: boolean; onInstalling: (value: boolean) => void; running: boolean; onRemove: () => Promise<string | null> }) {
-  const [requestError, setRequestError] = useState<string | null>(null);
   const [askedVersion, setAskedVersion] = useState<string | null>(null);
   const [askedRemove, setAskedRemove] = useState(false);
+  const { toast } = useToast();
+  const report = (message: string | null) => { if (message) toast({ title: message, tone: 'destructive' }); };
   const active = installations.find((item) => item.id === pendingInstallationId) ?? installations.find((item) => item.id === activeInstallationId) ?? installations.at(-1);
   const installed = Boolean(activeInstallationId);
   // A word, not the running commentary: the hero above is already saying what
@@ -669,25 +684,21 @@ function InstallationPanel({ t, fail, catalog, version, onVersionChange, version
 
   const install = async () => {
     if (!csrfToken) return;
-    setRequestError(null);
     onInstalling(true);
     try {
       const response = await apiFetch('/api/v1/installations', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ version }) });
       const payload = await response.json() as { installationId?: string; error?: { message?: string } };
-      if (!response.ok) { setRequestError(fail.body(payload, t('console.installRequestFailed'))); onInstalling(false); return; }
-      if (!payload.installationId) { setRequestError(t('console.installRequestFailed')); onInstalling(false); return; }
+      if (!response.ok) { report(fail.body(payload, t('console.installRequestFailed'))); onInstalling(false); return; }
+      if (!payload.installationId) { report(t('console.installRequestFailed')); onInstalling(false); return; }
       onPendingInstallationId(payload.installationId);
-    } catch { setRequestError(t('console.installRequestFailed')); onInstalling(false); }
+    } catch { report(t('console.installRequestFailed')); onInstalling(false); }
   };
 
   // The first install has nothing to interrupt. Every one after it replaces a
   // working copy and restarts it, which is worth a question.
   const requestInstall = () => { if (installed || running) setAskedVersion(version); else void install(); };
 
-  const remove = async () => {
-    setRequestError(null);
-    setRequestError(await onRemove());
-  };
+  const remove = async () => { report(await onRemove()); };
 
   return <Card data-tour="installation">
     <PanelHeading icon={<Package />} action={<Badge variant="outline" className={active?.status === 'ready' ? '' : 'status-attention'}>{status}</Badge>}>SillyTavern</PanelHeading>
@@ -695,7 +706,6 @@ function InstallationPanel({ t, fail, catalog, version, onVersionChange, version
       <label className="field-label" htmlFor="install-version">{t('dashboard.version')}</label>
       <Select value={version} onValueChange={onVersionChange}><SelectTrigger id="install-version" className="w-full"><SelectValue /></SelectTrigger><SelectContent position="popper" align="start" className="version-select-content">{choices.map((choice) => <SelectItem key={choice.selector} value={choice.selector}>{choice.label}</SelectItem>)}</SelectContent></Select>
       {active?.status === 'ready' ? <p className="install-result">{t('console.installComplete')} · {active.resolvedRef}</p> : null}
-      {requestError ? <p className="install-error" role="alert">{requestError}</p> : null}
     </CardContent>
     <CardFooter className="flex-col items-stretch gap-2">
       {alreadyInstalled
@@ -728,8 +738,8 @@ function InstallationPanel({ t, fail, catalog, version, onVersionChange, version
 function AccessPanel({ t, process, tunnel, config, security, installed, onAction, onSetLan, onSetPassword }: { t: Translate; process: ProcessState; tunnel: TunnelState; config: ConfigDocument | null; security: AccessGatewayState; installed: boolean; onAction: (path: string, body?: unknown) => Promise<void>; onSetLan: (lan: boolean) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null> }) {
   const [busy, setBusy] = useState(false);
   const [securityBusy, setSecurityBusy] = useState(false);
-  const [securityMessage, setSecurityMessage] = useState<string | null>(null);
   const running = process.status === 'running';
+  const { toast } = useToast();
   /**
    * Whether the tunnel is meant to be open, rather than whether it is up.
    *
@@ -754,8 +764,13 @@ function AccessPanel({ t, process, tunnel, config, security, installed, onAction
   const setTunnel = async (on: boolean) => { await runAction('/api/v1/tunnel', { mode: on ? 'quick' : 'off' }); };
   const toggleTunnel = (next: boolean) => { if (next) void setTunnel(true); else setClosing('tunnel'); };
   const setLanTo = async (next: boolean) => {
-    setSecurityBusy(true); setSecurityMessage(null);
-    try { setSecurityMessage(await onSetLan(next)); } finally { setSecurityBusy(false); }
+    setSecurityBusy(true);
+    try {
+      // A refusal is a result: said once, then gone. Whether the gateway is
+      // currently broken is state, and stays on the card below.
+      const failure = await onSetLan(next);
+      if (failure) toast({ title: failure, tone: 'destructive' });
+    } finally { setSecurityBusy(false); }
   };
   const toggleLan = (next: boolean) => { if (next) void setLanTo(true); else setClosing('lan'); };
   // This machine reaches SillyTavern directly, because the loopback address is
@@ -793,7 +808,6 @@ function AccessPanel({ t, process, tunnel, config, security, installed, onAction
       <PasswordDialog t={t} open={passwordOpen} onOpenChange={setPasswordOpen} title={t('console.passwordSettings')} description={t('console.sillyPasswordHelp')} note={passwordReady ? t('console.passwordChangeSignsOut') : null} minLength={MIN_SILLY_PASSWORD} hint={t('console.sillyPasswordMin')} submitLabel={passwordReady ? t('console.changePassword') : t('console.savePassword')} onSubmit={onSetPassword} />
       {busy || securityBusy ? <div className="operation-progress" role="status"><span>{t('common.loading')}</span><span className="progress-track"><span className="progress-indeterminate" /></span></div> : null}
       {security.error ? <p className="install-error" role="alert">{security.error}</p> : null}
-      {securityMessage ? <p className="install-error" role="alert">{securityMessage}</p> : null}
       {tunnel.error ? <p className="install-error" role="alert">{tunnel.error}</p> : null}
     </CardContent>
     <CardFooter className="gap-2"><Button variant="outline" onClick={openLocal} disabled={!running}><ArrowUpRight />{t('dashboard.open')}</Button><Button variant="ghost" onClick={() => void copyTunnel()} disabled={!tunnel.url}><Copy />{t('dashboard.copyLink')}</Button></CardFooter>
@@ -1099,7 +1113,14 @@ function r2FormFrom(config: R2Config | null): R2FormState {
  */
 function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, backups, onProfilesChange, onBackupsChange }: { t: Translate; fail: Fail; catalog: Record<string, unknown>; csrfToken: string; profiles: Profile[]; activeProfileId: string | null; backups: BackupManifest[]; onProfilesChange: (profiles: Profile[], activeProfileId: string | null) => void; onBackupsChange: (backups: BackupManifest[]) => void }) {
   const [busyAction, setBusyAction] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  /*
+   * The one thing on this page that is state rather than a result.
+   *
+   * A restore stopped halfway leaves the profile part old and part new. That
+   * is true until somebody does something about it, so it stays on the page;
+   * everything else here happened once and is said once, in a toast.
+   */
+  const [mixedProfile, setMixedProfile] = useState<string | null>(null);
   const [restoreMode, setRestoreMode] = useState<RestoreMode>('replace');
   const [selectedBackup, setSelectedBackup] = useState<BackupManifest | null>(null);
   const [selectedPreview, setSelectedPreview] = useState<RestorePreview | null>(null);
@@ -1112,7 +1133,6 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
   const [r2Config, setR2Config] = useState<R2Config | null>(null);
   const [r2Snapshots, setR2Snapshots] = useState<R2SnapshotSummary[]>([]);
   const [r2Busy, setR2Busy] = useState<string | null>(null);
-  const [r2Message, setR2Message] = useState<string | null>(null);
   const [profileOpen, setProfileOpen] = useState(false);
   const [backupOpen, setBackupOpen] = useState(false);
   const [renameTarget, setRenameTarget] = useState<BackupManifest | null>(null);
@@ -1127,6 +1147,9 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
   const [snapshotQuery, setSnapshotQuery] = useState<TableQuery>(() => initialQuery({ pageSize: 5, sort: 'createdAt', direction: 'desc' }));
   const busy = busyAction !== null;
   const labels = tableLabels(t);
+  const { toast } = useToast();
+  const done = (title: string) => toast({ title, tone: 'success' });
+  const failed = (title: string) => toast({ title, tone: 'destructive' });
   const jobStep = (job: Job) => translateStep(job.step, catalog, job.stepCode, job.stepParams);
   const refresh = async () => {
     const [profileResponse, backupResponse, r2Response, snapshotResponse] = await Promise.all([apiFetch('/api/v1/profiles', { credentials: 'same-origin' }), apiFetch('/api/v1/backups', { credentials: 'same-origin' }), apiFetch('/api/v1/r2', { credentials: 'same-origin' }), apiFetch('/api/v1/r2/snapshots', { credentials: 'same-origin' }).catch(() => null)]);
@@ -1158,7 +1181,7 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
         await waitForOperation(running.id, (job) => { if (!cancelled) setOperationProgress({ percent: job.progress, step: jobStep(job) }); });
         if (!cancelled) await refresh();
       } catch (error: unknown) {
-        if (!cancelled) setError(error instanceof Error ? error.message : t('console.backupRestoreFailed'));
+        if (!cancelled) failed(error instanceof Error ? error.message : t('console.backupRestoreFailed'));
       } finally {
         if (!cancelled) { setBusyAction(null); setOperationProgress(null); setRunningJobId(null); }
       }
@@ -1196,7 +1219,7 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
   }, [uploading]);
 
   const createProfile = async (name: string): Promise<string | null> => {
-    setBusyAction(t('console.newProfile')); setError(null);
+    setBusyAction(t('console.newProfile'));
     try {
       const response = await apiFetch('/api/v1/profiles', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ name, layout: 'data' }) });
       if (!response.ok) return fail.body(await response.json(), t('console.profileCreateFailed'));
@@ -1205,15 +1228,15 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
     } catch { return t('console.profileCreateFailed'); } finally { setBusyAction(null); }
   };
   const activate = async (id: string) => {
-    setBusyAction(t('console.switchProfile')); setError(null);
+    setBusyAction(t('console.switchProfile'));
     try {
       const response = await apiFetch(`/api/v1/profiles/${id}/activate`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
-      if (!response.ok) { setError(fail.body(await response.json(), t('console.profileActivateFailed'))); return; }
+      if (!response.ok) { failed(fail.body(await response.json(), t('console.profileActivateFailed'))); return; }
       await refresh();
-    } catch { setError(t('console.profileActivateFailed')); } finally { setBusyAction(null); }
+    } catch { failed(t('console.profileActivateFailed')); } finally { setBusyAction(null); }
   };
   const createBackup = async (name: string): Promise<string | null> => {
-    setBusyAction(t('dashboard.backupNow')); setOperationProgress({ percent: 0, step: t('dashboard.backupNow') }); setError(null);
+    setBusyAction(t('dashboard.backupNow')); setOperationProgress({ percent: 0, step: t('dashboard.backupNow') });
     try {
       const response = await apiFetch('/api/v1/backups', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ ...(name ? { name } : {}) }) });
       const payload = await response.json() as { jobId?: string; error?: { message?: string } };
@@ -1221,6 +1244,7 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
       setRunningJobId(payload.jobId);
       await waitForOperation(payload.jobId, (job) => setOperationProgress({ percent: job.progress, step: jobStep(job) }));
       await refresh();
+      done(t('console.backupDone'));
       return null;
     } catch (error: unknown) {
       // Stopping is an answer rather than a failure: the dialog closes and the
@@ -1242,14 +1266,14 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
     }
   };
   const previewBackup = async (backup: BackupManifest) => {
-    setBusyAction(t('console.restore')); setError(null);
+    setBusyAction(t('console.restore'));
     try {
       const response = await apiFetch(`/api/v1/backups/${backup.id}/preview`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       const payload = await response.json() as RestorePreview | { error?: { message?: string } };
-      if (!response.ok || !('files' in payload)) { setError(fail.body(payload, t('console.backupPreviewFailed'))); return; }
+      if (!response.ok || !('files' in payload)) { failed(fail.body(payload, t('console.backupPreviewFailed'))); return; }
       setRestoreMode('replace');
       setSelectedBackup(backup); setSelectedPreview(payload);
-    } catch { setError(t('console.backupPreviewFailed')); } finally { setBusyAction(null); }
+    } catch { failed(t('console.backupPreviewFailed')); } finally { setBusyAction(null); }
   };
   const closeRestore = () => { setSelectedBackup(null); setSelectedPreview(null); };
   const restoreSelected = async () => {
@@ -1258,24 +1282,26 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
     // The question has been answered, so the dialog goes before the work
     // starts: what happens next belongs on the page, where the Stop button is.
     closeRestore();
-    setBusyAction(t('console.restore')); setOperationProgress({ percent: 0, step: t('console.restore') }); setError(null);
+    setBusyAction(t('console.restore')); setOperationProgress({ percent: 0, step: t('console.restore') }); setMixedProfile(null);
     try {
       const response = await apiFetch(`/api/v1/backups/${backupId}/restore`, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ mode: restoreMode }) });
       const payload = await response.json() as { jobId?: string; error?: { message?: string } };
-      if (!response.ok || !payload.jobId) { setError(fail.body(payload, t('console.backupRestoreFailed'))); return; }
+      if (!response.ok || !payload.jobId) { failed(fail.body(payload, t('console.backupRestoreFailed'))); return; }
       setRunningJobId(payload.jobId);
       await waitForOperation(payload.jobId, (job) => setOperationProgress({ percent: job.progress, step: jobStep(job) }));
       await refresh();
+      done(t('console.restoreDone'));
     } catch (error: unknown) {
       // A restore that was stopped part of the way through left the profile
-      // part old and part new. Say so, and say where the way back is.
-      if (error instanceof StoppedError) { setError(t('console.restoreStoppedPartway')); await refresh(); }
-      else setError(error instanceof Error ? error.message : t('console.backupRestoreFailed'));
+      // part old and part new. That is not a result to glance at: it stays on
+      // the page, and says where the way back is.
+      if (error instanceof StoppedError) { setMixedProfile(t('console.restoreStoppedPartway')); await refresh(); }
+      else failed(error instanceof Error ? error.message : t('console.backupRestoreFailed'));
     } finally { setBusyAction(null); setOperationProgress(null); setRunningJobId(null); }
   };
   const inspectUpload = async (file: File | undefined) => {
     if (!file) return;
-    setBusyAction(t('console.importZip')); setOperationProgress({ percent: 0, step: t('console.importZip') }); setError(null); setUploading(true);
+    setBusyAction(t('console.importZip')); setOperationProgress({ percent: 0, step: t('console.importZip') }); setUploading(true);
     const controller = new AbortController();
     uploadAbort.current = controller;
     const uploadId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -1316,8 +1342,8 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
       let payload: (RestorePreview & { backup?: BackupManifest }) | { error?: { message?: string } };
       try { payload = JSON.parse(text) as (RestorePreview & { backup?: BackupManifest }) | { error?: { message?: string } }; }
       catch { throw new Error(apiErrorFromText(text, response.status, t('console.backupPreviewFailed'), fail, t('console.uploadProxyPage'))); }
-      if (!response.ok || !('files' in payload)) { setError(fail.body(payload, t('console.backupPreviewFailed'))); return; }
-      if (!payload.backup) { setError(t('console.backupPreviewFailed')); return; }
+      if (!response.ok || !('files' in payload)) { failed(fail.body(payload, t('console.backupPreviewFailed'))); return; }
+      if (!payload.backup) { failed(t('console.backupPreviewFailed')); return; }
       setRestoreMode('replace');
       setSelectedBackup(payload.backup); setSelectedPreview(payload);
       await refresh();
@@ -1325,12 +1351,12 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
       // The part file on the server is worth nothing without the rest of it,
       // whether the upload failed or the operator stopped it.
       await apiFetch(`/api/v1/backups/import/chunk?uploadId=${encodeURIComponent(uploadId)}`, { method: 'DELETE', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } }).catch(() => undefined);
-      setError(error instanceof StoppedError ? null : error instanceof Error ? error.message : t('console.backupPreviewFailed'));
+      if (!(error instanceof StoppedError)) failed(error instanceof Error ? error.message : t('console.backupPreviewFailed'));
     } finally { uploadAbort.current = null; setBusyAction(null); setOperationProgress(null); setUploading(false); }
   };
   const renameBackup = async (name: string): Promise<string | null> => {
     if (!renameTarget) return null;
-    setBusyAction(t('common.rename')); setError(null);
+    setBusyAction(t('common.rename'));
     try {
       const response = await apiFetch(`/api/v1/backups/${renameTarget.id}`, { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ name }) });
       if (!response.ok) return fail.body(await response.json(), t('console.backupRenameFailed'));
@@ -1341,47 +1367,46 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
   const deleteBackup = async () => {
     if (!deleteTarget) return;
     const backup = deleteTarget;
-    setBusyAction(t('common.delete')); setError(null);
+    setBusyAction(t('common.delete'));
     try {
       const response = await apiFetch(`/api/v1/backups/${backup.id}`, { method: 'DELETE', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
-      if (!response.ok) { setError(fail.body(await response.json(), t('console.backupDeleteFailed'))); return; }
+      if (!response.ok) { failed(fail.body(await response.json(), t('console.backupDeleteFailed'))); return; }
       if (selectedBackup?.id === backup.id) closeRestore();
       await refresh();
-    } catch { setError(t('console.backupDeleteFailed')); } finally { setBusyAction(null); setDeleteOpen(false); }
+    } catch { failed(t('console.backupDeleteFailed')); } finally { setBusyAction(null); setDeleteOpen(false); }
   };
   const saveR2 = async (form: R2FormState): Promise<string | null> => {
-    setR2Message(null);
     try {
       const response = await apiFetch('/api/v1/r2', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify(form) });
       const payload = await response.json() as { config?: R2Config; error?: { message?: string } };
       if (!response.ok || !payload.config) return fail.body(payload, t('console.r2SaveFailed'));
-      setR2Config(payload.config); setR2Message(t('console.r2Saved')); await refresh();
+      setR2Config(payload.config); await refresh(); done(t('console.r2Saved'));
       return null;
     } catch { return t('console.r2SaveFailed'); }
   };
   const testR2 = async () => {
-    setR2Busy(t('console.r2Test')); setR2Message(null);
+    setR2Busy(t('console.r2Test'));
     try {
       const response = await apiFetch('/api/v1/r2/test', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       const payload = await response.json() as { error?: { message?: string } };
-      setR2Message(response.ok ? t('console.r2Tested') : fail.body(payload, t('console.r2TestFailed')));
-    } catch { setR2Message(t('console.r2TestFailed')); } finally { setR2Busy(null); }
+      if (response.ok) done(t('console.r2Tested')); else failed(fail.body(payload, t('console.r2TestFailed')));
+    } catch { failed(t('console.r2TestFailed')); } finally { setR2Busy(null); }
   };
   const uploadR2 = async () => {
-    setR2Busy(t('console.r2UploadLatest')); setR2Message(null);
+    setR2Busy(t('console.r2UploadLatest'));
     setOperationProgress({ percent: 0, step: t('console.r2UploadLatest') });
     try {
       const response = await apiFetch('/api/v1/r2/sync', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       const payload = await response.json() as { jobId?: string; error?: { message?: string } };
-      if (!response.ok || !payload.jobId) { setR2Message(fail.body(payload, t('console.r2UploadFailed'))); return; }
+      if (!response.ok || !payload.jobId) { failed(fail.body(payload, t('console.r2UploadFailed'))); return; }
       // A first upload is gigabytes. It runs in the server and is followed the
       // same way a restore is, so the bar says how far it has got and the Stop
       // button reaches the work rather than only this page.
       setRunningJobId(payload.jobId);
       await waitForOperation(payload.jobId, (job) => setOperationProgress({ percent: job.progress, step: jobStep(job) }));
-      setR2Message(t('console.r2Uploaded')); await refresh();
+      await refresh(); done(t('console.r2Uploaded'));
     } catch (error: unknown) {
-      setR2Message(error instanceof StoppedError ? null : error instanceof Error ? error.message : t('console.r2UploadFailed'));
+      if (!(error instanceof StoppedError)) failed(error instanceof Error ? error.message : t('console.r2UploadFailed'));
     } finally { setR2Busy(null); setOperationProgress(null); setRunningJobId(null); }
   };
   /**
@@ -1393,36 +1418,36 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
    * look at it first.
    */
   const fetchSnapshot = async (snapshot: R2SnapshotSummary) => {
-    setR2Busy(t('console.r2Fetch')); setR2Message(null);
+    setR2Busy(t('console.r2Fetch'));
     setOperationProgress({ percent: 0, step: t('console.r2Fetch') });
     try {
       const response = await apiFetch(`/api/v1/r2/snapshots/${encodeURIComponent(snapshot.id)}/fetch`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       const payload = await response.json() as { jobId?: string; error?: { message?: string } };
-      if (!response.ok || !payload.jobId) { setR2Message(fail.body(payload, t('console.r2FetchFailed'))); return; }
+      if (!response.ok || !payload.jobId) { failed(fail.body(payload, t('console.r2FetchFailed'))); return; }
       setRunningJobId(payload.jobId);
       await waitForOperation(payload.jobId, (job) => setOperationProgress({ percent: job.progress, step: jobStep(job) }));
-      setR2Message(t('console.r2Fetched')); await refresh();
+      await refresh(); toast({ title: t('console.r2Fetched'), tone: 'success', duration: 8000 });
     } catch (error: unknown) {
-      setR2Message(error instanceof StoppedError ? null : error instanceof Error ? error.message : t('console.r2FetchFailed'));
+      if (!(error instanceof StoppedError)) failed(error instanceof Error ? error.message : t('console.r2FetchFailed'));
     } finally { setR2Busy(null); setOperationProgress(null); setRunningJobId(null); }
   };
   const reconcileR2 = async () => {
-    setR2Busy(t('console.r2Reconcile')); setR2Message(null);
+    setR2Busy(t('console.r2Reconcile'));
     try {
       const response = await apiFetch('/api/v1/r2/reconcile', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       const payload = await response.json() as { collectedBlobs?: number; error?: { message?: string } };
-      if (!response.ok) { setR2Message(fail.body(payload, t('console.r2ReconcileFailed'))); return; }
-      setR2Message(t('console.r2Reconciled')); await refresh();
-    } catch { setR2Message(t('console.r2ReconcileFailed')); } finally { setR2Busy(null); }
+      if (!response.ok) { failed(fail.body(payload, t('console.r2ReconcileFailed'))); return; }
+      await refresh(); done(t('console.r2Reconciled'));
+    } catch { failed(t('console.r2ReconcileFailed')); } finally { setR2Busy(null); }
   };
   const removeLegacy = async () => {
-    setR2Busy(t('console.r2LegacyRemove')); setR2Message(null);
+    setR2Busy(t('console.r2LegacyRemove'));
     try {
       const response = await apiFetch('/api/v1/r2/legacy', { method: 'DELETE', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       const payload = await response.json() as { removed?: number; error?: { message?: string } };
-      if (!response.ok) { setR2Message(fail.body(payload, t('console.r2LegacyRemoveFailed'))); return; }
-      setR2Message(t('console.r2LegacyRemoved')); await refresh();
-    } catch { setR2Message(t('console.r2LegacyRemoveFailed')); } finally { setR2Busy(null); }
+      if (!response.ok) { failed(fail.body(payload, t('console.r2LegacyRemoveFailed'))); return; }
+      await refresh(); done(t('console.r2LegacyRemoved'));
+    } catch { failed(t('console.r2LegacyRemoveFailed')); } finally { setR2Busy(null); }
   };
 
   const activeProfile = profiles.find((profile) => profile.id === activeProfileId) ?? profiles[0] ?? null;
@@ -1480,7 +1505,7 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
     <Card>
       <PanelHeading icon={<Archive />}>{t('console.backupLibrary')}</PanelHeading>
       <CardContent className="grid gap-4">
-        {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
+        {mixedProfile ? <Alert variant="destructive"><AlertDescription>{mixedProfile}</AlertDescription></Alert> : null}
         {busyAction ? <OperationProgress t={t} label={busyAction} progress={operationProgress} canStop={uploading || runningJobId !== null} stopping={stopping} onStop={() => void stopOperation()} warning={uploading ? t('console.uploadKeepTabOpen') : null} /> : null}
         <DataTable
           rows={backups}
@@ -1527,7 +1552,6 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
             </DropdownMenu>
           </DetailRow> : null}
         </div>
-        {r2Message ? <Alert><AlertDescription>{r2Message}</AlertDescription></Alert> : null}
         {r2Busy ? <OperationProgress t={t} label={r2Busy} progress={operationProgress} canStop={runningJobId !== null} stopping={stopping} onStop={() => void stopOperation()} warning={null} /> : null}
         {r2Config?.configured ? <>
           <R2Usage t={t} config={r2Config} />

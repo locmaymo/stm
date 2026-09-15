@@ -255,7 +255,12 @@
     "deleteBackupTitle": "Xoá {name}?",
     "r2More": "Thao tác R2 khác",
     "uploadProxyPage": "Máy chủ đứng trước trình quản lý trả về trang lỗi thay vì câu trả lời. Hãy thử lại.",
-    "uploadFailed": "Tải lên không thành công."
+    "uploadFailed": "Tải lên không thành công.",
+    "actionFailed": "Không thực hiện được.",
+    "uninstallDone": "Đã gỡ SillyTavern. Dữ liệu của bạn vẫn còn.",
+    "passwordSaved": "Đã lưu mật khẩu SillyTavern.",
+    "backupDone": "Đã sao lưu.",
+    "restoreDone": "Đã khôi phục."
   },
   "dashboard": {
     "start": "Chạy",

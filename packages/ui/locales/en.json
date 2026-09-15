@@ -255,7 +255,12 @@
     "deleteBackupTitle": "Delete {name}?",
     "r2More": "More R2 actions",
     "uploadProxyPage": "The server in front of the manager returned an error page instead of an answer. Try again.",
-    "uploadFailed": "The upload did not go through."
+    "uploadFailed": "The upload did not go through.",
+    "actionFailed": "That did not work.",
+    "uninstallDone": "SillyTavern was removed. Your data is still here.",
+    "passwordSaved": "SillyTavern password saved.",
+    "backupDone": "Backed up.",
+    "restoreDone": "Restored."
   },
   "dashboard": {
     "start": "Start",

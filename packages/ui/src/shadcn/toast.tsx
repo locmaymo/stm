@@ -63,7 +63,8 @@ const toneIcon: Record<ToastTone, React.ComponentType<{ className?: string }>> =
   destructive: CircleAlert,
 }
 
-export function Toaster({ children }: { children?: React.ReactNode }) {
+/** `closeLabel` is the only text this component owns, so it is handed one. */
+export function Toaster({ children, closeLabel = "Close" }: { children?: React.ReactNode; closeLabel?: string }) {
   const [items, setItems] = React.useState<readonly ToastRecord[]>([])
   const nextId = React.useRef(1)
 
@@ -138,7 +139,7 @@ export function Toaster({ children }: { children?: React.ReactNode }) {
                 ) : null}
               </div>
               <ToastPrimitive.Close
-                aria-label="Close"
+                aria-label={closeLabel}
                 className="grid size-6 place-items-center rounded-md text-muted-foreground opacity-70 outline-none hover:bg-accent hover:opacity-100 focus-visible:ring-[3px] focus-visible:ring-ring/50"
               >
                 <XIcon className="size-3.5" />
