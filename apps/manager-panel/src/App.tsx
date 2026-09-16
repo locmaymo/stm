@@ -4,7 +4,7 @@ import {
   Globe2, LayoutDashboard, Maximize2, Minimize2, Moon, Package, Pencil, Plus,
   LogOut, RotateCcw, ScrollText, Search, Sun, Trash2, Upload, Users as UsersIcon, X, Rows3,
   BrainCircuit, CircleStop, Clock3, Cpu, Ellipsis, Play, QrCode as QrCodeIcon, RefreshCw, Settings2, ShieldCheck, Square,
-  Blocks, FileCode2, Gauge, History, KeyRound, Monitor, Sparkles, TriangleAlert,
+  Blocks, FileCode2, LoaderCircle, Gauge, History, KeyRound, Monitor, Sparkles, TriangleAlert,
 } from 'lucide-react';
 import {
   Alert, AlertDescription, AuthLayout, Badge, BrandMark, Button, buttonVariants, Card, CardAction,
@@ -630,7 +630,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
             </div>
           </header>
           <PageContainer>
-            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} installed={Boolean(activeInstallationId)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} config={configDocument} security={accessSecurity} onConfigUpdate={updateConfig} onConfigReset={resetConfig} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} /> : <ResourcePanel page={page} t={t} />}
+            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} installed={Boolean(activeInstallationId)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} config={configDocument} security={accessSecurity} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} /> : <ResourcePanel page={page} t={t} />}
           </PageContainer>
           <MobileNav
             items={navigation.map(({ id, icon }) => ({ id, icon, href: `#${id}`, label: t(`nav.${id}`) }))}
@@ -869,6 +869,7 @@ function RuntimeCard({
   const [stopAsked, setStopAsked] = useState(false);
   const [askedVersion, setAskedVersion] = useState<string | null>(null);
   const [askedRemove, setAskedRemove] = useState(false);
+  const [removing, setRemoving] = useState(false);
   const [busy, setBusy] = useState(false);
   const [embedOpen, setEmbedOpen] = useState(false);
   // Opened once, kept mounted: coming back to the console and going in again
@@ -1100,6 +1101,12 @@ function RuntimeCard({
               <TaskLine task={t('console.taskInstall')} step={translateStep(active.step, catalog, active.stepCode, active.stepParams)} percent={active.progress} />
               <TaskBar percent={active.progress} />
             </dd>
+          </div> : removing ? <div className="runtime-row">
+            <dt>{t('console.progressLabel')}</dt>
+            <dd className="runtime-progress">
+              <TaskLine task={t('console.taskUninstall')} step={process.status === 'stopping' && waitingFor ? waitingFor : t('console.uninstallRemoving')} />
+              <TaskBar />
+            </dd>
           </div> : waitingFor ? <div className="runtime-row">
             <dt>{t('console.progressLabel')}</dt>
             <dd className="runtime-progress">
@@ -1127,7 +1134,7 @@ function RuntimeCard({
       {installed ? <CardFooter className="runtime-foot">
         <div className="runtime-foot-actions">
           <Button variant="ghost" size="sm" onClick={onOpenSettings}><Settings2 />{t('nav.config')}</Button>
-          <Button variant="ghost" size="sm" onClick={() => setAskedRemove(true)} disabled={installing}><Trash2 />{t('console.uninstall')}</Button>
+          <Button variant="ghost" size="sm" onClick={() => setAskedRemove(true)} disabled={installing || removing}><Trash2 />{t('console.uninstall')}</Button>
         </div>
       </CardFooter> : null}
     </Card>
@@ -1160,7 +1167,7 @@ function RuntimeCard({
       description={t('console.uninstallConfirmBody')}
       confirmLabel={t('console.uninstall')}
       cancelLabel={t('common.cancel')}
-      onConfirm={async () => { report(await onRemove()); }}
+      onConfirm={async () => { setRemoving(true); try { report(await onRemove()); } finally { setRemoving(false); } }}
     />
   </>;
 }
@@ -3041,7 +3048,7 @@ function SettingsGroup({ icon, title }: { icon: ReactNode; title: string }) {
   </div>;
 }
 
-function ConfigPage({ t, config, security, onConfigUpdate, onConfigReset, onChangeManagerPassword, onSetPassword, onSignOut, onSignOutDevices }: { t: Translate; config: ConfigDocument | null; security: AccessGatewayState; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onConfigReset: () => Promise<string | null>; onChangeManagerPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSignOut: () => Promise<void>; onSignOutDevices: () => Promise<string | null> }) {
+function ConfigPage({ t, config, security, process, catalog, onConfigUpdate, onConfigReset, onChangeManagerPassword, onSetPassword, onSignOut, onSignOutDevices }: { t: Translate; config: ConfigDocument | null; security: AccessGatewayState; process: ProcessState; catalog: Record<string, unknown>; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onConfigReset: () => Promise<string | null>; onChangeManagerPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSignOut: () => Promise<void>; onSignOutDevices: () => Promise<string | null> }) {
   const [form, setForm] = useState<ConfigSettingsInput>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -3205,9 +3212,16 @@ function ConfigPage({ t, config, security, onConfigUpdate, onConfigReset, onChan
               </div>
             </div>
             {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
+            {/* Saving stops SillyTavern, writes the file and starts it again,
+                which takes as long as a start does. The dialog is gone by
+                then, so the progress is here, step by step. */}
+            {busy ? <div className="grid gap-2 rounded-lg border bg-muted/40 p-3" role="status">
+              <TaskLine task={t('console.taskSettings')} step={(process.status === 'starting' || process.status === 'stopping') && process.stepCode ? translateStep('', catalog, process.stepCode, process.stepParams) : t('console.settingsWriting')} />
+              <TaskBar />
+            </div> : null}
           </CardContent>
           <CardFooter className="justify-end">
-            <Button onClick={() => setSaveOpen(true)} disabled={busy}>{t('console.saveChanges')}</Button>
+            <Button onClick={() => setSaveOpen(true)} disabled={busy}>{busy ? <LoaderCircle className="animate-spin" /> : null}{t('console.saveChanges')}</Button>
           </CardFooter>
         </Card>
         <ConfirmDialog

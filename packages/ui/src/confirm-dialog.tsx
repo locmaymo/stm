@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react';
-import { TriangleAlert } from 'lucide-react';
+import { LoaderCircle, TriangleAlert } from 'lucide-react';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -36,7 +36,19 @@ export interface ConfirmDialogProps {
  *
  * Cancel is focused when the dialog opens, so a stray Enter closes the
  * question rather than answering it.
+ *
+ * Once answered, the question goes. The confirm button spins for a moment so
+ * it is plain the work has started, and the dialog closes after at most
+ * `CLOSE_AFTER_MS` whether or not the work has finished. It used to stay open
+ * until the work was done, which for saving the settings or removing
+ * SillyTavern meant a restart or a directory of thousands of files later,
+ * with nothing on screen but a dialog that would not go away. The work goes on
+ * behind it and reports on the page and in a toast, which is where every
+ * caller already reports.
  */
+/** Long enough to see the button acknowledge the press, short enough not to wait on. */
+const CLOSE_AFTER_MS = 450;
+
 export function ConfirmDialog({
   open,
   onOpenChange,
@@ -51,14 +63,15 @@ export function ConfirmDialog({
   const [working, setWorking] = useState(false);
   const pending = busy || working;
 
-  const confirm = async () => {
+  const confirm = () => {
     setWorking(true);
-    try {
-      await onConfirm();
+    // A failure is the caller's to report; it must not leave the dialog stuck.
+    const work = Promise.resolve().then(onConfirm).catch(() => undefined);
+    const soon = new Promise<void>((resolve) => { setTimeout(resolve, CLOSE_AFTER_MS); });
+    void Promise.race([work, soon]).then(() => {
       onOpenChange(false);
-    } finally {
       setWorking(false);
-    }
+    });
   };
 
   return (
@@ -79,12 +92,12 @@ export function ConfirmDialog({
             className={cn(tone === 'destructive' && buttonVariants({ variant: 'destructive' }))}
             disabled={pending}
             onClick={(event) => {
-              // The dialog closes once the work has actually finished, so a
-              // failure can still be reported against the question that caused it.
+              // Closed by `confirm`, once the press has visibly been taken.
               event.preventDefault();
-              void confirm();
+              confirm();
             }}
           >
+            {working ? <LoaderCircle aria-hidden="true" className="animate-spin" /> : null}
             {confirmLabel}
           </AlertDialogAction>
         </AlertDialogFooter>
