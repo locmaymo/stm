@@ -787,6 +787,10 @@
 }
 .task-stripes[data-indeterminate] { width: 100%; opacity: 0.75; }
 @keyframes task-stripes { from { background-position: 0 0; } to { background-position: 12px 0; } }
+.backup-kind { display: inline-flex; align-items: center; height: 20px; padding: 0 8px; border-radius: 999px; background: var(--muted); color: var(--muted-foreground); font-size: 11.5px; font-weight: 600; white-space: nowrap; }
+.backup-kind[data-kind="manual"] { background: color-mix(in srgb, var(--primary) 12%, transparent); color: var(--primary); }
+.backup-kind[data-kind="before-restore"], .backup-kind[data-kind="before-switch"] { background: var(--attention-background); color: var(--attention); }
+.backup-kind[data-kind="r2"] { background: var(--success-background); color: var(--success); }
 .install-result { margin-top: 12px; color: var(--primary); font-size: 13px; }
 .install-error { margin-top: 12px; color: var(--destructive); font-size: 13px; overflow-wrap: anywhere; }
 .version-select-content { max-height: min(30rem, calc(100dvh - 10rem)); }

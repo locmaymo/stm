@@ -122,7 +122,7 @@ export class BackupScheduler {
     const latest = created[0];
     const due = !latest || (latest.fingerprint !== fingerprint && elapsed(this.now(), latest.createdAt) >= intervalMinutes * 60 * 1000);
     if (!due) return undefined;
-    const manifest = await this.backups.create(profile, { name: `${profile.name}-scheduled` });
+    const manifest = await this.backups.create(profile, { kind: 'scheduled' });
     this.logger(logEvent('backup.scheduledSnapshot', `[backup] scheduled local snapshot ${manifest.name}`, { name: manifest.name }));
     return manifest;
   }

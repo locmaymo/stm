@@ -854,7 +854,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
           await supervisor.stop('install');
           if (!previousProfile) return;
           await report(4, logEvent('install.safetyCopy', 'Copying your data before switching version'));
-          await backups.createSafetyCopy(previousProfile, { name: `${previousProfile.name}-preswitch` });
+          await backups.createSafetyCopy(previousProfile, { kind: 'before-switch' });
         },
       );
     } catch (error: unknown) {
@@ -916,7 +916,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     await supervisor.stop('profileSwitch');
     let snapshot: Awaited<ReturnType<BackupStore['create']>> | null = null;
     try {
-      if (current && current.id !== profile.id) snapshot = await backups.createSafetyCopy(current, { name: `${current.name}-preswitch` });
+      if (current && current.id !== profile.id) snapshot = await backups.createSafetyCopy(current, { kind: 'before-switch' });
       await runtime.activateInstallation(installation.id);
       const activated = await profiles.activate(profile.id);
       const process = await supervisor.start();
@@ -1181,7 +1181,7 @@ export async function restoreWithProcess(options: {
     // An unchanged profile can reuse the backup it already has.
     onProgress?.(15, logEvent('job.creatingSafetySnapshot', 'Creating safety snapshot'));
     const safetySnapshot = safetyCopy = await backups.createSafetyCopy(profile, {
-      name: `${profile.name}-prerestore`,
+      kind: 'before-restore',
       ...(signal ? { signal } : {}),
       onProgress: ({ completed, total }) => onProgress?.(15 + (total > 0 ? (completed / total) * 10 : 0), logEvent('job.backingUpCurrentData', `Backing up current data (${completed}/${total})`, { completed, total })),
     });

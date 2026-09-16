@@ -1,4 +1,4 @@
-import type { BackupManifest, Installation, MetricsBucket, R2SnapshotSummary } from './index.js';
+import { backupKind, type BackupManifest, type Installation, type MetricsBucket, type R2SnapshotSummary } from './index.js';
 
 /**
  * What each list can be searched and sorted by.
@@ -13,7 +13,7 @@ import type { BackupManifest, Installation, MetricsBucket, R2SnapshotSummary } f
  * its natural order, not an error page.
  */
 
-export const BACKUP_SORT_FIELDS = ['name', 'createdAt', 'sizeBytes', 'fileCount', 'source'] as const;
+export const BACKUP_SORT_FIELDS = ['name', 'createdAt', 'sizeBytes', 'fileCount', 'source', 'kind'] as const;
 export const SNAPSHOT_SORT_FIELDS = ['createdAt', 'indexBytes', 'dataBytes'] as const;
 export const INSTALLATION_SORT_FIELDS = ['resolvedRef', 'channel', 'status', 'createdAt', 'activatedAt'] as const;
 export const METRICS_SORT_FIELDS = ['key', 'requests', 'totalTokens', 'inputTokens', 'outputTokens', 'averageLatencyMs'] as const;
@@ -43,6 +43,7 @@ export function backupSortValue(backup: BackupManifest, column: string): SortVal
     case 'sizeBytes': return backup.sizeBytes;
     case 'fileCount': return backup.fileCount;
     case 'source': return backup.source;
+    case 'kind': return backupKind(backup);
     default: return undefined;
   }
 }

@@ -304,6 +304,19 @@ test('a safety copy reuses an unchanged profile’s newest backup instead of wri
   assert.notEqual(afterChange.id, first.id);
 });
 
+test('a backup records why it was taken, and is named for it when nobody named it', async () => {
+  const fixture = await createFixture();
+  const store = new BackupStore({ paths: fixture.paths, now: () => new Date(2026, 8, 16, 14, 30) });
+  const scheduled = await store.create(fixture.profile, { kind: 'scheduled' });
+  assert.equal(scheduled.kind, 'scheduled');
+  assert.equal(scheduled.name, `${fixture.profile.name}_auto_2026-09-16_14-30.zip`);
+  const reopened = new BackupStore({ paths: fixture.paths });
+  assert.equal((await reopened.get(scheduled.id))?.kind, 'scheduled');
+  const uploaded = join(fixture.root, 'uploaded.zip');
+  await writeStoredZip(uploaded, 'chats/imported.json', '{"message":"imported"}');
+  assert.equal((await store.importArchive(fixture.profile, uploaded, 'from-my-laptop.zip')).manifest.kind, 'uploaded');
+});
+
 test('a new backup supersedes the manager’s older ones but never an uploaded archive', async () => {
   const fixture = await createFixture();
   const store = new BackupStore({ paths: fixture.paths });

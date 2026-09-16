@@ -136,6 +136,58 @@ export type RestoreMode = 'merge' | 'replace';
 
 export type BackupSource = 'created' | 'uploaded';
 
+/**
+ * Why an archive exists, which is what a reader sorts a backup library by.
+ *
+ * `source` only said whether this machine wrote it, so a backup somebody took
+ * on purpose, one the schedule took, and the safety copy a restore took were
+ * the same row with different suffixes on their names.
+ */
+export type BackupKind = 'manual' | 'scheduled' | 'before-restore' | 'before-switch' | 'r2' | 'uploaded';
+
+export const BACKUP_KINDS: readonly BackupKind[] = ['manual', 'scheduled', 'before-restore', 'before-switch', 'r2', 'uploaded'];
+
+/**
+ * The kind of an archive, including one written before kinds were recorded.
+ *
+ * Those are read off the suffix their name was given, which is all an older
+ * library has; their names are left as they are.
+ */
+export function backupKind(backup: Pick<BackupManifest, 'kind' | 'name' | 'source'>): BackupKind {
+  if (backup.kind) return backup.kind;
+  const name = backup.name.replace(/\.zip$/u, '');
+  if (/-r2-[^-]/u.test(name)) return 'r2';
+  if (backup.source === 'uploaded') return 'uploaded';
+  if (name.endsWith('-scheduled')) return 'scheduled';
+  if (name.endsWith('-prerestore')) return 'before-restore';
+  if (name.endsWith('-preswitch')) return 'before-switch';
+  return 'manual';
+}
+
+/** The word a default name carries for each kind: short, lower case, no spaces. */
+const KIND_SLUG: Record<Exclude<BackupKind, 'uploaded'>, string> = {
+  manual: 'manual',
+  scheduled: 'auto',
+  'before-restore': 'before-restore',
+  'before-switch': 'before-switch',
+  r2: 'r2',
+};
+
+/**
+ * A name for an archive nobody named: `Main_auto_2026-09-16_14-30.zip`.
+ *
+ * Profile, kind, then the date and time in the machine's own clock, so the
+ * names sort by time within a kind, read at a glance, and survive as file
+ * names on every system a download might land on. The older names ended in a
+ * UTC timestamp or an opaque R2 id, which read as noise and sorted by neither.
+ */
+export function defaultBackupName(profileName: string, kind: Exclude<BackupKind, 'uploaded'>, at: Date): string {
+  const pad = (value: number) => String(value).padStart(2, '0');
+  const date = `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`;
+  const time = `${pad(at.getHours())}-${pad(at.getMinutes())}`;
+  return `${profileName}_${KIND_SLUG[kind]}_${date}_${time}.zip`;
+}
+
 export interface BackupManifest {
   readonly schemaVersion: 1;
   readonly id: string;
@@ -148,6 +200,8 @@ export interface BackupManifest {
   readonly checksumSha256: string;
   readonly fileCount: number;
   readonly source: BackupSource;
+  /** Absent on archives written before kinds were recorded; see `backupKind`. */
+  readonly kind?: BackupKind;
   readonly fingerprint?: string;
 }
 

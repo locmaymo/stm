@@ -12,7 +12,7 @@ function scheduler(intervalMinutes: number) {
     fingerprint: async () => 'changed',
     getSchedule: async () => ({ intervalMinutes }),
     list: async () => [],
-    create: async (_profile: unknown, options: { name: string }) => { created.push(options.name); return { name: options.name }; },
+    create: async (_profile: unknown, options: { kind: string }) => { created.push(options.kind); return { name: options.kind }; },
   } as unknown as BackupStore;
   const profiles = { getActive: async () => ({ id: 'p1', name: 'Main' }) } as unknown as ProfileStore;
   const r2 = { getConfig: async () => ({ enabled: false, configured: false }) } as unknown as R2Manager;
@@ -22,7 +22,7 @@ function scheduler(intervalMinutes: number) {
 test('a scheduled local backup is taken when one is due', async () => {
   const { created, instance } = scheduler(60);
   await instance.tick();
-  assert.deepEqual(created, ['Main-scheduled']);
+  assert.deepEqual(created, ['scheduled']);
 });
 
 test('a local schedule that was turned off takes nothing', async () => {

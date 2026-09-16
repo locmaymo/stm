@@ -30,7 +30,7 @@ import { authErrorKey } from './auth-error.js';
 import { availableUpdate, readDismissedUpdate, saveDismissedUpdate } from './updates.js';
 import { apiFetch, onSessionExpired, resetSessionWatch } from './session.js';
 import type { AccessGatewayState, BackupManifest, ConfigDocument, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LogEntry, LogSourceFilter, MetricsBucket, MetricsSnapshot, ProcessState, Profile, R2Config, R2SnapshotSummary, RestoreMode, RestorePreview, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
-import { backupSearchText, backupSortValue, formatBytes, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
+import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
 import { translateLogEntry, translateStep } from './log-format.js';
 import { QrCode } from './qr-code.js';
@@ -1704,6 +1704,26 @@ function LogsContent({ t, catalog, source, onSourceChange, entries, query, onQue
   </div>;
 }
 
+const BACKUP_KIND_LABEL = {
+  manual: 'console.backupKindManual',
+  scheduled: 'console.backupKindScheduled',
+  'before-restore': 'console.backupKindBeforeRestore',
+  'before-switch': 'console.backupKindBeforeSwitch',
+  r2: 'console.backupKindR2',
+  uploaded: 'console.backupKindUploaded',
+} as const satisfies Record<BackupKind, string>;
+
+/**
+ * Why a backup exists, as a small coloured label.
+ *
+ * The one someone took on purpose is the accent, the safety copies are amber
+ * because they are what to reach for after a restore went wrong, and the ones
+ * that happen on their own stay quiet.
+ */
+function BackupKindBadge({ t, kind }: { t: Translate; kind: BackupKind }) {
+  return <span className="backup-kind" data-kind={kind}>{t(BACKUP_KIND_LABEL[kind])}</span>;
+}
+
 /** The labels every table in the console borrows, in the reader's language. */
 function tableLabels(t: Translate): DataTableLabels {
   return {
@@ -1843,6 +1863,7 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
   const [profileOpen, setProfileOpen] = useState(false);
   const [backupOpen, setBackupOpen] = useState(false);
   const [renameTarget, setRenameTarget] = useState<BackupManifest | null>(null);
+  const [kindFilter, setKindFilter] = useState<BackupKind | 'all'>('all');
   // Which archive is being deleted, and whether the question is on screen. The
   // two are separate because the dialog fades out: clearing the row at the same
   // moment left the title reading "Delete ?" for the length of the animation.
@@ -2195,8 +2216,10 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
   const activeProfile = profiles.find((profile) => profile.id === activeProfileId) ?? profiles[0] ?? null;
   const localChoice = backupSchedule ? LOCAL_BACKUP_CHOICES.find((choice) => choice.intervalMinutes === backupSchedule.intervalMinutes) : undefined;
   const backupColumns: DataTableColumn<BackupManifest>[] = [
-    { id: 'name', header: t('common.name'), sortable: true, cell: (backup) => <span className="font-medium">{backup.name}</span> },
-    { id: 'source', header: t('console.backupSource'), sortable: true, showFrom: 'md', cell: (backup) => <span className="text-muted-foreground">{backup.source === 'uploaded' ? t('console.uploadedBackup') : t('console.createdBackup')}</span> },
+    // The kind rides under the name on a phone, where there is no room for a
+    // column of its own, and has its column from `md` up.
+    { id: 'name', header: t('common.name'), sortable: true, cell: (backup) => <span className="grid min-w-0 justify-items-start gap-1"><span className="font-medium break-all">{backup.name}</span><span className="md:hidden"><BackupKindBadge t={t} kind={backupKind(backup)} /></span></span> },
+    { id: 'kind', header: t('console.backupKind'), sortable: true, showFrom: 'md', cell: (backup) => <BackupKindBadge t={t} kind={backupKind(backup)} /> },
     { id: 'createdAt', header: t('console.backupCreated'), sortable: true, showFrom: 'sm', cell: (backup) => <span className="whitespace-nowrap text-muted-foreground">{new Date(backup.createdAt).toLocaleString()}</span> },
     { id: 'sizeBytes', header: t('console.backupSize'), sortable: true, align: 'end', showFrom: 'sm', cell: (backup) => <span className="whitespace-nowrap text-muted-foreground">{formatBytes(backup.sizeBytes)}</span> },
     {
@@ -2270,7 +2293,7 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
         {mixedProfile ? <Alert variant="destructive"><AlertDescription>{mixedProfile}</AlertDescription></Alert> : null}
         {busyAction ? <OperationProgress t={t} label={busyAction} progress={operationProgress} canStop={uploading || runningJobId !== null} stopping={stopping} onStop={() => void stopOperation()} warning={uploading ? t('console.uploadKeepTabOpen') : null} /> : null}
         <DataTable
-          rows={backups}
+          rows={kindFilter === 'all' ? backups : backups.filter((backup) => backupKind(backup) === kindFilter)}
           columns={backupColumns}
           rowKey={(backup) => backup.id}
           query={backupQuery}
@@ -2280,6 +2303,13 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
           sortValue={backupSortValue}
           empty={<EmptyState icon={<Archive />} title={t('dashboard.noBackup')} />}
           toolbar={<div className="flex flex-1 flex-wrap items-center justify-end gap-2">
+            <Select value={kindFilter} onValueChange={(value) => { setKindFilter(value as BackupKind | 'all'); setBackupQuery((current) => ({ ...current, page: 1 })); }}>
+              <SelectTrigger size="sm" className="mr-auto w-44" aria-label={t('console.backupKind')}><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">{t('console.backupKindAll')}</SelectItem>
+                {BACKUP_KINDS.map((kind) => <SelectItem key={kind} value={kind}>{t(BACKUP_KIND_LABEL[kind])}</SelectItem>)}
+              </SelectContent>
+            </Select>
             <Button size="sm" onClick={() => setBackupOpen(true)} disabled={busy || activeProfileId === null}><Archive />{t('dashboard.backupNow')}</Button>
             <label className={cn(buttonVariants({ variant: 'outline', size: 'sm' }), 'cursor-pointer')}>
               <Upload aria-hidden="true" />{t('console.importZip')}
