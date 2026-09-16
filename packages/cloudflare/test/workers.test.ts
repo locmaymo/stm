@@ -66,9 +66,10 @@ async function fakeCloudflare(initial: Partial<Account> = {}): Promise<{ account
       assert.equal(url.hostname, `${WORKER_SCRIPT_NAME}.${account.subdomain}.workers.dev`);
       if (!account.deployed) return new Response('', { status: 404 });
       // An older deployment is simulated by reporting the version it was given.
-      const env = { BUCKET: bucket, ...Object.fromEntries(account.secrets) };
+      const bound = (account.deployed.metadata.bindings as Array<{ type: string; name: string; text?: string }>).find((binding) => binding.name === 'BUCKET_NAME')?.text;
+      const env = { BUCKET: bucket, ...(bound ? { BUCKET_NAME: bound } : {}), ...Object.fromEntries(account.secrets) };
       const response = await workerFetch(realWorker, env)(input, init);
-      if (url.pathname === '/v1/version' && response.ok) return Response.json({ version: account.deployed.version });
+      if (url.pathname === '/v1/version' && response.ok) return Response.json({ ...(await response.json() as object), version: account.deployed.version });
       return response;
     }
     return await apiFetch(input, init);
@@ -86,6 +87,7 @@ test('the first session deploys the Worker, keeps secrets across deploys, and ke
   // The key goes up in the same deployment as the code, never as a second version after it.
   assert.deepEqual(account.deployed?.metadata.bindings, [
     { type: 'r2_bucket', name: 'BUCKET', bucket_name: 'sillytavern-manager-backup' },
+    { type: 'plain_text', name: 'BUCKET_NAME', text: 'sillytavern-manager-backup' },
     { type: 'secret_text', name: 'STM_KEY_install0001', text: `${session.expiresAt}.${session.key}` },
   ]);
   assert.deepEqual(account.deployed?.metadata.keep_bindings, ['secret_text']);
@@ -124,6 +126,23 @@ test('an older Worker is replaced', async () => {
   await worker.open(ACCOUNT, 'sillytavern-manager-backup', 'install0001');
   assert.ok(account.calls.includes(`PUT /workers/scripts/${WORKER_SCRIPT_NAME}`));
   assert.equal(account.deployed?.version, WORKER_VERSION);
+});
+
+test('a Worker bound to another bucket is redeployed onto this one', async () => {
+  const { account, api, fetchImpl } = await fakeCloudflare();
+  const worker = new BackupWorker({ api, fetchImpl, sleep: noSleep });
+  await worker.open(ACCOUNT, 'sillytavern-manager-backup', 'install0001');
+  account.calls.length = 0;
+  await worker.open(ACCOUNT, 'stm', 'install0001');
+  assert.ok(account.calls.includes(`PUT /workers/scripts/${WORKER_SCRIPT_NAME}`));
+  assert.deepEqual((account.deployed?.metadata.bindings as unknown[]).slice(0, 2), [
+    { type: 'r2_bucket', name: 'BUCKET', bucket_name: 'stm' },
+    { type: 'plain_text', name: 'BUCKET_NAME', text: 'stm' },
+  ]);
+  // Bound where it should be, the next session only gets a key.
+  account.calls.length = 0;
+  await worker.open(ACCOUNT, 'stm', 'install0001');
+  assert.deepEqual(account.calls, ['GET /workers/subdomain', `PUT /workers/scripts/${WORKER_SCRIPT_NAME}/secrets`]);
 });
 
 test('an account without a workers.dev subdomain gets one', async () => {

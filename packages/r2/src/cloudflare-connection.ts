@@ -50,6 +50,18 @@ interface StoredConnection {
   readonly lastError: string | null;
 }
 
+/**
+ * A bucket this manager already backs up to by other means, such as S3 keys.
+ *
+ * Signing in to the same account should carry on in that bucket, where the
+ * recovery points already are, rather than start again in a new one.
+ */
+export interface KnownBucket {
+  readonly accountId: string;
+  readonly bucket: string;
+  readonly jurisdiction: R2Jurisdiction;
+}
+
 export interface CloudflareConnectionOptions {
   readonly paths: PlatformPaths;
   readonly client: OAuthClientSettings;
@@ -136,7 +148,7 @@ export class CloudflareConnection {
    * The refresh token is on disk before anything else is asked of Cloudflare,
    * so a failure later in setup never loses the grant the user just gave.
    */
-  public async completeConnect(callback: { state: string; code?: string | null; error?: string | null; errorDescription?: string | null }): Promise<CloudflareConnectionStatus> {
+  public async completeConnect(callback: { state: string; code?: string | null; error?: string | null; errorDescription?: string | null }, known: KnownBucket | null = null): Promise<CloudflareConnectionStatus> {
     const pending = this.pending;
     if (!matchesPending(pending, callback.state, this.now())) throw new R2Error('cloudflare_state_mismatch', 'This sign-in link has expired or was not started here. Connect again.');
     this.pending = null;
@@ -165,21 +177,25 @@ export class CloudflareConnection {
     const kept = previous.account ? accounts.find((account) => account.id === previous.account?.id) : undefined;
     const only = accounts.length === 1 ? accounts[0] : undefined;
     const chosen = kept ?? only;
-    if (chosen) return await this.chooseAccount(chosen.id);
+    if (chosen) return await this.chooseAccount(chosen.id, known);
     await this.save({ ...(await this.load()), account: null, bucket: null });
     if (accounts.length === 0) throw new R2Error('cloudflare_no_account', 'The grant does not reach any Cloudflare account. Connect again and select an account.');
     return await this.status();
   }
 
-  /** Use this account, finding or creating the backup bucket in it. */
-  public async chooseAccount(accountId: string): Promise<CloudflareConnectionStatus> {
+  /**
+   * Use this account, and the bucket backups already go to when it is in this
+   * account; otherwise the manager's own bucket, created if it is not there.
+   */
+  public async chooseAccount(accountId: string, known: KnownBucket | null = null): Promise<CloudflareConnectionStatus> {
     const stored = await this.load();
     if (!stored.refreshToken) throw new R2Error('cloudflare_not_connected', 'Connect to Cloudflare first');
     if (this.offeredAccounts.length === 0) this.offeredAccounts = await this.api.listAccounts();
     const account = this.offeredAccounts.find((entry) => entry.id === accountId);
     if (!account) throw new R2Error('cloudflare_unknown_account', 'That account is not one this sign-in can reach');
-    const { bucket } = await this.api.ensureBackupBucket(account.id);
-    if (stored.account?.id !== account.id) this.resetSession();
+    const existing = known?.accountId === account.id ? await this.api.findBucket(account.id, known.bucket, { jurisdiction: known.jurisdiction }) : null;
+    const bucket = existing ?? (await this.api.ensureBackupBucket(account.id)).bucket;
+    if (stored.account?.id !== account.id || stored.bucket?.name !== bucket.name || stored.bucket.jurisdiction !== bucket.jurisdiction) this.resetSession();
     await this.save({ ...(await this.load()), account, bucket: { name: bucket.name, jurisdiction: bucket.jurisdiction }, lastError: null });
     this.offeredAccounts = [];
     return await this.status();

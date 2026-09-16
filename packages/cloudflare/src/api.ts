@@ -150,22 +150,24 @@ export class CloudflareApi {
    * after, so it looks again rather than reporting an error.
    */
   public async ensureBackupBucket(accountId: string, signal?: AbortSignal): Promise<{ bucket: R2Bucket; created: boolean }> {
-    const existing = await this.findBucket(accountId, BACKUP_BUCKET_NAME, signal);
+    const existing = await this.findBucket(accountId, BACKUP_BUCKET_NAME, signal ? { signal } : {});
     if (existing) return { bucket: existing, created: false };
     try {
       return { bucket: await this.createBucket(accountId, BACKUP_BUCKET_NAME, signal ? { signal } : {}), created: true };
     } catch (error: unknown) {
       if (!(error instanceof CloudflareApiError) || error.status !== 409) throw error;
-      const raced = await this.findBucket(accountId, BACKUP_BUCKET_NAME, signal);
+      const raced = await this.findBucket(accountId, BACKUP_BUCKET_NAME, signal ? { signal } : {});
       if (raced) return { bucket: raced, created: false };
       throw error;
     }
   }
 
-  private async findBucket(accountId: string, name: string, signal?: AbortSignal): Promise<R2Bucket | null> {
+  /** A bucket by its exact name, or null when this account has none by that name. */
+  public async findBucket(accountId: string, name: string, options: { jurisdiction?: R2Jurisdiction; signal?: AbortSignal } = {}): Promise<R2Bucket | null> {
+    const jurisdiction = options.jurisdiction ?? 'default';
     // name_contains narrows the listing to a page; the exact match is still ours to make.
-    const buckets = await this.listBuckets(accountId, signal ? { nameContains: name, signal } : { nameContains: name });
-    return buckets.find((bucket) => bucket.name === name && bucket.jurisdiction === 'default') ?? null;
+    const buckets = await this.listBuckets(accountId, { nameContains: name, jurisdiction, ...(options.signal ? { signal: options.signal } : {}) });
+    return buckets.find((bucket) => bucket.name === name && bucket.jurisdiction === jurisdiction) ?? null;
   }
 
   /**
@@ -249,6 +251,18 @@ export function parseRateLimit(value: string | null): { remaining: number; reset
 export function s3Endpoint(accountId: string, jurisdiction: R2Jurisdiction = 'default'): string {
   if (!/^[0-9a-f]{32}$/u.test(accountId)) throw new CloudflareApiError('cloudflare_invalid_account', 400, 'The Cloudflare account ID is not valid');
   return jurisdiction === 'default' ? `https://${accountId}.r2.cloudflarestorage.com` : `https://${accountId}.${jurisdiction}.r2.cloudflarestorage.com`;
+}
+
+/**
+ * The account and jurisdiction an R2 S3 endpoint belongs to, or null for any
+ * other S3 service. The inverse of `s3Endpoint`.
+ */
+export function parseS3Endpoint(endpoint: string): { accountId: string; jurisdiction: R2Jurisdiction } | null {
+  let url: URL;
+  try { url = new URL(endpoint); } catch { return null; }
+  const match = /^([0-9a-f]{32})(?:\.(eu|us|fedramp|fedramp-high))?\.r2\.cloudflarestorage\.com$/u.exec(url.hostname.toLowerCase());
+  if (!match?.[1] || (url.pathname !== '/' && url.pathname !== '')) return null;
+  return { accountId: match[1], jurisdiction: (match[2] ?? 'default') as R2Jurisdiction };
 }
 
 function errorCode(status: number): string {

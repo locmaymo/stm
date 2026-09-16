@@ -1353,7 +1353,7 @@ async function handleCloudflareRequest(context: RequestContext, cloudflare: Clou
     const body = await readJson(request);
     const accountId = isRecord(body) && typeof body.accountId === 'string' ? body.accountId : '';
     if (!/^[0-9a-f]{32}$/u.test(accountId)) { sendError(response, 400, 'invalid_account', 'A Cloudflare account ID is required'); return; }
-    const status = await cloudflare.chooseAccount(accountId);
+    const status = await cloudflare.chooseAccount(accountId, await r2.keysBucket());
     if (status.state === 'connected') await r2.update({ mode: 'cloudflare', enabled: true });
     sendJson(response, 200, { cloudflare: status, config: await r2.getConfig() });
     return;
@@ -1395,7 +1395,7 @@ async function handleCloudflareCallback(context: RequestContext, sessions: Sessi
       code: searchParams.get('code'),
       error: searchParams.get('error'),
       errorDescription: searchParams.get('error_description'),
-    });
+    }, await r2.keysBucket());
     if (status.state === 'connected') await r2.update({ mode: 'cloudflare', enabled: true });
     redirect(status.state);
   } catch (error: unknown) {

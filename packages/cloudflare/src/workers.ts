@@ -31,6 +31,12 @@ const READY_STREAK = 3;
  */
 export const WORKER_KEY_SETTLE_MS = 2 * 60 * 1000;
 
+/** What a deployed Worker says it is: its code version and the bucket it is bound to. */
+interface WorkerDeployment {
+  readonly version: number;
+  readonly bucket: string | null;
+}
+
 /** Everything needed to send one request to the Worker. The key lives only in memory. */
 export interface WorkerSession {
   readonly baseUrl: string;
@@ -86,27 +92,30 @@ export class BackupWorker {
       await this.deploy(accountId, bucket, secret);
     }
     const session: WorkerSession = { baseUrl: `https://${WORKER_SCRIPT_NAME}.${subdomain}.workers.dev`, keyId, key, issuedAt, expiresAt, rotateAt: issuedAt + WORKER_ROTATE_AFTER_MS };
-    const deployed = await this.waitForVersion(session);
-    if (deployed !== WORKER_VERSION) {
+    const deployed = await this.waitForDeployment(session);
+    // One script per account, bound to one bucket when it was deployed. Only
+    // the current code bound to this bucket may carry this bucket's data.
+    if (deployed?.version !== WORKER_VERSION || deployed.bucket !== bucket) {
       await this.deploy(accountId, bucket, secret);
-      const replaced = await this.waitForVersion(session, WORKER_VERSION);
-      if (replaced !== WORKER_VERSION) throw new CloudflareApiError('worker_not_ready', 503, 'The backup Worker did not come up after it was deployed');
+      const replaced = await this.waitForDeployment(session, { version: WORKER_VERSION, bucket });
+      if (replaced?.version !== WORKER_VERSION || replaced.bucket !== bucket) throw new CloudflareApiError('worker_not_ready', 503, 'The backup Worker did not come up after it was deployed');
     }
     return session;
   }
 
-  private async checkVersion(session: WorkerSession): Promise<{ ok: boolean; status: number; version: number | null }> {
+  private async checkVersion(session: WorkerSession): Promise<{ ok: boolean; status: number; deployment: WorkerDeployment | null }> {
     try {
       const response = await this.fetchImpl(`${session.baseUrl}/v1/version`, { headers: signWorkerRequest(session, 'GET', '/v1/version', this.now()) });
       if (!response.ok) {
         await response.body?.cancel().catch(() => undefined);
-        return { ok: false, status: response.status, version: null };
+        return { ok: false, status: response.status, deployment: null };
       }
       const parsed: unknown = await response.json().catch(() => null);
-      return { ok: true, status: response.status, version: isRecord(parsed) && typeof parsed.version === 'number' ? parsed.version : null };
+      const deployment = isRecord(parsed) && typeof parsed.version === 'number' ? { version: parsed.version, bucket: typeof parsed.bucket === 'string' ? parsed.bucket : null } : null;
+      return { ok: true, status: response.status, deployment };
     } catch {
       // Not reachable yet, or workers.dev is blocked where the manager runs.
-      return { ok: false, status: 0, version: null };
+      return { ok: false, status: 0, deployment: null };
     }
   }
 
@@ -142,7 +151,7 @@ export class BackupWorker {
     form.set('metadata', new Blob([JSON.stringify({
       main_module: 'worker.js',
       compatibility_date: WORKER_COMPATIBILITY_DATE,
-      bindings: [{ type: 'r2_bucket', name: 'BUCKET', bucket_name: bucket }, { type: 'secret_text', ...secret }],
+      bindings: [{ type: 'r2_bucket', name: 'BUCKET', bucket_name: bucket }, { type: 'plain_text', name: 'BUCKET_NAME', text: bucket }, { type: 'secret_text', ...secret }],
       // Every other installation's key is a secret on this script too.
       // Replacing the code must not take them with it.
       keep_bindings: ['secret_text'],
@@ -157,23 +166,23 @@ export class BackupWorker {
   }
 
   /**
-   * The version the Worker reports once it reliably accepts the new key, or null.
+   * The version and bucket the Worker reports once it reliably accepts the new key, or null.
    *
    * A secret or a deployment takes seconds to reach every edge; until then some
    * requests still land on the previous version and are refused. Only a run of
    * successes in a row counts as ready.
    */
-  private async waitForVersion(session: WorkerSession, wanted?: number): Promise<number | null> {
-    let seen: number | null = null;
+  private async waitForDeployment(session: WorkerSession, wanted?: WorkerDeployment): Promise<WorkerDeployment | null> {
+    let seen: WorkerDeployment | null = null;
     let streak = 0;
+    const same = (left: WorkerDeployment | null, right: WorkerDeployment | null): boolean => left?.version === right?.version && left?.bucket === right?.bucket;
     for (let attempt = 0; attempt < READY_ATTEMPTS; attempt += 1) {
       const answers = await Promise.all(Array.from({ length: READY_BURST }, async () => await this.checkVersion(session)));
-      const versions = new Set(answers.map((answer) => answer.version));
-      const [only] = versions;
-      if (answers.every((answer) => answer.ok) && versions.size === 1 && only !== undefined) {
-        streak = only === seen ? streak + 1 : 1;
-        seen = only;
-        if ((wanted === undefined || seen === wanted) && streak >= READY_STREAK) return seen;
+      const [first] = answers;
+      if (first?.deployment && answers.every((answer) => answer.ok && same(answer.deployment, first.deployment))) {
+        streak = same(first.deployment, seen) ? streak + 1 : 1;
+        seen = first.deployment;
+        if ((wanted === undefined || same(seen, wanted)) && streak >= READY_STREAK) return seen;
       } else {
         streak = 0;
         // The route answers everywhere but the script has no version endpoint: an older deploy.

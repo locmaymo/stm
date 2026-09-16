@@ -140,6 +140,22 @@ test('a different bucket gets every chunk, because the ledger described the old 
   assert.equal((await manager.getConfig()).usage.snapshotCount, 1);
 });
 
+test('keysBucket parses an R2 S3 endpoint into an account, bucket and jurisdiction', async () => {
+  const accountId = '0123456789abcdef0123456789abcdef';
+  const { manager } = await createManager();
+  // Default endpoint: jurisdiction is 'default'.
+  await manager.update({ endpoint: `https://${accountId}.r2.cloudflarestorage.com`, bucket: 'stm' });
+  const kb = await manager.keysBucket();
+  assert.deepEqual(kb, { accountId, bucket: 'stm', jurisdiction: 'default' });
+  // EU jurisdiction endpoint.
+  await manager.update({ endpoint: `https://${accountId}.eu.r2.cloudflarestorage.com` });
+  const kbEu = await manager.keysBucket();
+  assert.equal(kbEu?.jurisdiction, 'eu');
+  // Non-R2 endpoint returns null.
+  await manager.update({ endpoint: 'https://s3.amazonaws.com', bucket: 'other' });
+  assert.equal(await manager.keysBucket(), null);
+});
+
 test('a recovery point lists the data it holds, not just the size of its index', async () => {
   const bucket = fakeBucket();
   const { manager, root } = await createManager({ fetchImpl: bucket.fetchImpl });

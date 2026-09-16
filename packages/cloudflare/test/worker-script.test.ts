@@ -9,7 +9,7 @@ const SESSION = { keyId: 'install0001', key: 'k'.repeat(43) };
 
 async function setup(stored: Record<string, string> = { STM_KEY_install0001: `${Date.now() + 60_000}.${SESSION.key}` }): Promise<{ worker: WorkerModule; env: Record<string, unknown>; bucket: MemoryBucket }> {
   const bucket = new MemoryBucket();
-  return { worker: await loadWorker(), env: { BUCKET: bucket, ...stored }, bucket };
+  return { worker: await loadWorker(), env: { BUCKET: bucket, BUCKET_NAME: 'sillytavern-manager-backup', ...stored }, bucket };
 }
 
 function signed(method: string, path: string, options: { session?: { keyId: string; key: string }; at?: number; body?: BodyInit } = {}): Request {
@@ -17,11 +17,11 @@ function signed(method: string, path: string, options: { session?: { keyId: stri
   return new Request(`${BASE}${path}`, { method, headers, ...(options.body ? { body: options.body, duplex: 'half' } : {}) } as RequestInit);
 }
 
-test('a signed request reads the version', async () => {
+test('a signed request reads the version and the bucket it is bound to', async () => {
   const { worker, env } = await setup();
   const response = await worker.fetch(signed('GET', '/v1/version'), env);
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { version: WORKER_VERSION });
+  assert.deepEqual(await response.json(), { version: WORKER_VERSION, bucket: 'sillytavern-manager-backup' });
 });
 
 test('objects under the prefix go up, come back and go away', async () => {

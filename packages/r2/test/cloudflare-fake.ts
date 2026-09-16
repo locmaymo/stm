@@ -13,7 +13,8 @@ export interface FakeCloudflareState {
   expiresIn: number;
   buckets: Map<string, MemoryBucket>;
   secrets: Map<string, string>;
-  deployed: boolean;
+  /** The bucket the deployed Worker is bound to, or null before the first deploy. */
+  deployed: string | null;
   workersDevBlocked: boolean;
   revoked: string[];
   calls: string[];
@@ -35,7 +36,7 @@ export async function fakeCloudflare(overrides: Partial<FakeCloudflareState> = {
     expiresIn: 3600,
     buckets: new Map(),
     secrets: new Map(),
-    deployed: false,
+    deployed: null,
     workersDevBlocked: false,
     revoked: [],
     calls: [],
@@ -57,9 +58,9 @@ export async function fakeCloudflare(overrides: Partial<FakeCloudflareState> = {
     if (url.hostname.endsWith('.workers.dev')) {
       state.calls.push(`worker ${method} ${url.pathname}`);
       if (state.workersDevBlocked) throw new TypeError('fetch failed');
-      const bucket = state.buckets.get('sillytavern-manager-backup');
+      const bucket = state.deployed ? state.buckets.get(state.deployed) : undefined;
       if (!state.deployed || !bucket) return new Response('', { status: 404 });
-      return await workerFetch(worker, { BUCKET: bucket, ...Object.fromEntries(state.secrets) })(input, init);
+      return await workerFetch(worker, { BUCKET: bucket, BUCKET_NAME: state.deployed, ...Object.fromEntries(state.secrets) })(input, init);
     }
     const body = new URLSearchParams(typeof init?.body === 'string' ? init.body : '');
     if (url.toString() === CLOUDFLARE_OAUTH.token) {
@@ -111,9 +112,9 @@ export async function fakeCloudflare(overrides: Partial<FakeCloudflareState> = {
     if (rest === '/workers/subdomain') return ok({ subdomain: 'acme' });
     if (rest === `/workers/scripts/${WORKER_SCRIPT_NAME}` && method === 'PUT') {
       const form = init?.body as FormData;
-      const metadata = JSON.parse(await (form.get('metadata') as Blob).text()) as { bindings: Array<{ type: string; name: string; text?: string }> };
+      const metadata = JSON.parse(await (form.get('metadata') as Blob).text()) as { bindings: Array<{ type: string; name: string; text?: string; bucket_name?: string }> };
       for (const binding of metadata.bindings) if (binding.type === 'secret_text' && binding.text) state.secrets.set(binding.name, binding.text);
-      state.deployed = true;
+      state.deployed = metadata.bindings.find((binding) => binding.type === 'r2_bucket')?.bucket_name ?? null;
       return ok({});
     }
     if (rest === `/workers/scripts/${WORKER_SCRIPT_NAME}/subdomain`) return ok({ enabled: true });

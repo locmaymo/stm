@@ -95,7 +95,7 @@ test('signing in to Cloudflare connects the backup bucket end to end, and discon
   const objects = await fetch(`${base}/api/v1/r2/objects`, { headers: { cookie: auth.cookie } });
   assert.equal(objects.status, 200);
   assert.deepEqual(await objects.json(), { objects: [] });
-  assert.equal(state?.deployed, true);
+  assert.equal(state?.deployed, 'sillytavern-manager-backup');
   assert.equal((await (await fetch(`${base}/api/v1/r2/cloudflare`, { headers: { cookie: auth.cookie } })).json() as { cloudflare: { dataPath: string } }).cloudflare.dataPath, 'worker');
 
   const disconnected = await fetch(`${base}/api/v1/r2/cloudflare/disconnect`, { method: 'POST', headers: { cookie: auth.cookie, 'x-csrf-token': auth.csrf, origin: base } });

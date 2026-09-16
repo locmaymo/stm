@@ -72,7 +72,7 @@ test('backups go through the Worker, which is deployed and keyed on first use', 
   await store.putObject('sillytavern-manager/blobs/a', new Uint8Array([1, 2]), 'application/octet-stream');
   assert.deepEqual([...(await store.getObject('sillytavern-manager/blobs/a'))], [1, 2]);
   assert.equal((await store.listObjects('sillytavern-manager/', 10)).objects.length, 1);
-  assert.equal(cloudflare.state.deployed, true);
+  assert.equal(cloudflare.state.deployed, 'sillytavern-manager-backup');
   assert.ok(cloudflare.state.calls.some((call) => call.startsWith('worker PUT /v1/o/')));
   assert.ok(!cloudflare.state.calls.some((call) => call.includes('/objects/')), 'no object went over the REST API');
   assert.deepEqual(billed, ['charged', 'read', 'charged']);
@@ -87,7 +87,7 @@ test('without the Workers scope, backups go over REST and say why', async () => 
   const store = connection.objectStore(() => undefined);
   await store.putObject('sillytavern-manager/blobs/a', new Uint8Array([3]), 'application/octet-stream');
   assert.deepEqual([...(await store.getObject('sillytavern-manager/blobs/a'))], [3]);
-  assert.equal(cloudflare.state.deployed, false);
+  assert.equal(cloudflare.state.deployed, null);
   const status = await connection.status();
   assert.equal(status.dataPath, 'rest');
   assert.equal(status.restReason, 'workers_not_granted');

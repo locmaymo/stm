@@ -20,9 +20,11 @@
  *   sent.
  *
  * Bump `WORKER_VERSION` whenever the source changes; a manager that finds an
- * older version deployed replaces it.
+ * older version deployed replaces it. The version answer also names the bucket
+ * the deployment is bound to, so a manager whose bucket changed redeploys
+ * instead of writing into the old one.
  */
-export const WORKER_VERSION = 1;
+export const WORKER_VERSION = 2;
 export const WORKER_SCRIPT_NAME = 'sillytavern-manager-backup';
 export const WORKER_OBJECT_PREFIX = 'sillytavern-manager/';
 export const WORKER_COMPATIBILITY_DATE = '2026-09-01';
@@ -39,7 +41,7 @@ export default {
     try {
       const url = new URL(request.url);
       if (!(await authorized(request, url, env))) return json({ error: 'unauthorized' }, 401);
-      if (url.pathname === '/v1/version' && request.method === 'GET') return json({ version: VERSION });
+      if (url.pathname === '/v1/version' && request.method === 'GET') return json({ version: VERSION, bucket: typeof env.BUCKET_NAME === 'string' ? env.BUCKET_NAME : null });
       if (url.pathname === '/v1/list' && request.method === 'GET') return await list(url, env);
       if (url.pathname.startsWith('/v1/o/')) return await object(request, url, env);
       return json({ error: 'not_found' }, 404);

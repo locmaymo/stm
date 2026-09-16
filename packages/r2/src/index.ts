@@ -2,10 +2,10 @@ import { randomBytes } from 'node:crypto';
 import { mkdir, open, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { formatBytes, logEvent, logLineText, type LogSink, type Profile, type R2CloudflareUsage, type R2Config, type R2ConnectionMode, type R2UsageResponse, type R2UsageWarning, type R2EnvironmentField, type R2Object, type R2SnapshotSummary, type R2Usage, type TransferProgress } from '../../contracts/src/index.js';
-import { R2_FREE_TIER, readR2Usage } from '../../cloudflare/src/index.js';
+import { parseS3Endpoint, R2_FREE_TIER, readR2Usage } from '../../cloudflare/src/index.js';
 import { ioConcurrency, runPooled } from '../../platform/src/index.js';
 import type { PlatformPaths } from '../../platform/src/index.js';
-import type { CloudflareConnection } from './cloudflare-connection.js';
+import type { CloudflareConnection, KnownBucket } from './cloudflare-connection.js';
 import { BlobLedger } from './ledger.js';
 import { S3ObjectStore, type R2Credentials } from './s3.js';
 import { R2Error, type Billing, type ObjectRecord, type ObjectStore } from './store.js';
@@ -26,6 +26,7 @@ import {
 export { R2Error } from './store.js';
 export type { ObjectRecord, ObjectStore } from './store.js';
 export { CloudflareConnection } from './cloudflare-connection.js';
+export type { KnownBucket } from './cloudflare-connection.js';
 
 const R2_STATE_FILE = 'r2-config.json';
 /** The connection settings `.env` may provide, and the variable for each. */
@@ -281,6 +282,18 @@ export class R2Manager {
     return await this.toPublic(next);
   }
 
+  /**
+   * The R2 bucket the S3 settings name, when they name one.
+   *
+   * Signing in to Cloudflare carries on in this bucket if it is in the account
+   * signed in to, so switching to a sign-in keeps the recovery points in view.
+   */
+  public async keysBucket(): Promise<KnownBucket | null> {
+    const config = await this.load();
+    const parsed = config.endpoint && config.bucket ? parseS3Endpoint(config.endpoint) : null;
+    return parsed && config.bucket ? { accountId: parsed.accountId, jurisdiction: parsed.jurisdiction, bucket: config.bucket } : null;
+  }
+
   public async testConnection(): Promise<R2ConnectionResult> {
     const config = await this.load();
     try {
@@ -529,22 +542,7 @@ export class R2Manager {
       const config = await this.requireUsable();
       const client = this.client(config);
       const objects = await this.listAll(config, OBJECT_PREFIX, client);
-      const blobs = new Map<string, ObjectRecord>();
-      const snapshotKeys: string[] = [];
-      let legacyObjectCount = 0;
-      let legacyBytes = 0;
-      for (const object of objects) {
-        if (object.key.startsWith(BLOB_PREFIX)) {
-          const hash = object.key.slice(object.key.lastIndexOf('/') + 1);
-          if (/^[0-9a-f]{64}$/u.test(hash)) blobs.set(hash, object);
-          continue;
-        }
-        if (object.key.startsWith(SNAPSHOT_PREFIX)) { snapshotKeys.push(object.key); continue; }
-        // Whole-ZIP archives from the version before this one. They are not
-        // read and not deleted behind the operator's back; the panel offers it.
-        legacyObjectCount += 1;
-        legacyBytes += object.sizeBytes;
-      }
+      const { blobs, snapshotKeys, legacyObjectCount, legacyBytes } = summarizeObjects(objects);
 
       const snapshots: R2Snapshot[] = [];
       for (const key of snapshotKeys) {
@@ -736,7 +734,12 @@ export class R2Manager {
     return config;
   }
 
-  /** Where objects go right now, as the chunk ledger needs to know it. */
+  /**
+   * Where objects go right now, as the chunk ledger needs to know it.
+   *
+   * An R2 bucket is named the same way whether it is reached with S3 keys or
+   * through a sign-in, so moving between the two on one bucket keeps the ledger.
+   */
   private async storageTarget(config: StoredR2Config): Promise<string> {
     if (config.mode === 'cloudflare') {
       const target = await this.cloudflare?.target();
@@ -744,28 +747,30 @@ export class R2Manager {
       return `cloudflare:${target.account.id}/${target.jurisdiction}/${target.bucket}`;
     }
     const credentials = toCredentials(config);
-    return `s3:${credentials.endpoint.replace(/\/+$/u, '')}/${credentials.bucket}`;
+    return canonicalTarget(`s3:${credentials.endpoint.replace(/\/+$/u, '')}/${credentials.bucket}`);
   }
 
   /**
    * The config for a run, with the ledger made to describe the bucket being written.
    *
-   * A different bucket starts from nothing: no chunk is assumed present and no
-   * recovery point is assumed to be there to compare with, so the first run
-   * sends everything. A config from before this was recorded is taken to
+   * A different bucket is read before anything is sent to it: the ledger is
+   * rebuilt from the chunks it already holds, so a bucket that has this
+   * profile's data costs a listing rather than every chunk again, and an empty
+   * one gets everything. A config from before this was recorded is taken to
    * describe the keys bucket it was already using, so upgrading costs nothing.
    */
   private async onTarget(config: StoredR2Config): Promise<StoredR2Config> {
     await this.ledger.load();
     const target = await this.storageTarget(config);
-    if (config.ledgerTarget === target) return config;
-    if (config.ledgerTarget === null && config.mode === 'keys') {
+    const recorded = config.ledgerTarget === null ? null : canonicalTarget(config.ledgerTarget);
+    if (recorded === target || (recorded === null && config.mode === 'keys')) {
+      if (config.ledgerTarget === target) return config;
       const adopted = { ...config, ledgerTarget: target };
       await this.save(adopted);
       return adopted;
     }
-    await this.ledger.reconcile([]);
-    const fresh = defaultStoredConfig(this.now());
+    const found = summarizeObjects(await this.listAll(config, OBJECT_PREFIX));
+    await this.ledger.reconcile(found.blobs.keys());
     const switched: StoredR2Config = {
       ...config,
       ledgerTarget: target,
@@ -773,10 +778,18 @@ export class R2Manager {
       lastColdUploadAt: null,
       lastFingerprint: null,
       lastSnapshot: null,
-      usage: { ...fresh.usage, writeOperations: config.usage.writeOperations, readOperations: config.usage.readOperations, periodStartedAt: config.usage.periodStartedAt },
+      usage: {
+        ...config.usage,
+        storageBytes: found.totalBytes,
+        blobCount: found.blobs.size,
+        snapshotCount: found.snapshotKeys.length,
+        legacyObjectCount: found.legacyObjectCount,
+        legacyBytes: found.legacyBytes,
+        lastReconciledAt: null,
+      },
     };
     await this.save(switched);
-    this.logger(logEvent('r2.targetChanged', '[r2] backups now go to a different bucket; the first run there sends everything'));
+    this.logger(logEvent('r2.targetChanged', `[r2] backups now go to a different bucket, which already holds ${found.blobs.size} chunk(s); only what it is missing is sent`, { chunks: found.blobs.size }));
     return switched;
   }
 
@@ -1102,6 +1115,39 @@ function monthStart(now: Date): string {
 
 function throwIfStopped(signal?: AbortSignal): void {
   if (signal?.aborted) throw new R2Error('r2_upload_stopped', 'The upload was stopped');
+}
+
+/** What a listing of the manager's prefix holds, sorted by kind. */
+function summarizeObjects(objects: readonly ObjectRecord[]): { blobs: Map<string, ObjectRecord>; snapshotKeys: string[]; legacyObjectCount: number; legacyBytes: number; totalBytes: number } {
+  const blobs = new Map<string, ObjectRecord>();
+  const snapshotKeys: string[] = [];
+  let legacyObjectCount = 0;
+  let legacyBytes = 0;
+  let totalBytes = 0;
+  for (const object of objects) {
+    totalBytes += object.sizeBytes;
+    if (object.key.startsWith(BLOB_PREFIX)) {
+      const hash = object.key.slice(object.key.lastIndexOf('/') + 1);
+      if (/^[0-9a-f]{64}$/u.test(hash)) blobs.set(hash, object);
+      continue;
+    }
+    if (object.key.startsWith(SNAPSHOT_PREFIX)) { snapshotKeys.push(object.key); continue; }
+    // Whole-ZIP archives from the version before this one. They are not
+    // read and not deleted behind the operator's back; the panel offers it.
+    legacyObjectCount += 1;
+    legacyBytes += object.sizeBytes;
+  }
+  return { blobs, snapshotKeys, legacyObjectCount, legacyBytes, totalBytes };
+}
+
+/**
+ * A ledger target in the form that names an R2 bucket the same way however it
+ * is reached: an S3 endpoint on R2 becomes the account, jurisdiction and bucket.
+ */
+function canonicalTarget(target: string): string {
+  const match = /^s3:(.+)\/([^/]+)$/u.exec(target);
+  const parsed = match?.[1] ? parseS3Endpoint(match[1]) : null;
+  return parsed && match?.[2] ? `cloudflare:${parsed.accountId}/${parsed.jurisdiction}/${match[2]}` : target;
 }
 
 function toCredentials(config: StoredR2Config): R2Credentials {
