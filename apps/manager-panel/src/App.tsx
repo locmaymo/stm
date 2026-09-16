@@ -1929,7 +1929,10 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   const [r2Toggling, setR2Toggling] = useState(false);
   const [cloudflareBusy, setCloudflareBusy] = useState(false);
   const [cloudflareAccount, setCloudflareAccount] = useState('');
+  const [cloudflareBuckets, setCloudflareBuckets] = useState<Array<{ name: string; jurisdiction: string }> | null>(null);
+  const [cloudflareBucket, setCloudflareBucket] = useState('');
   const [disconnectOpen, setDisconnectOpen] = useState(false);
+  const [switchToKeysOpen, setSwitchToKeysOpen] = useState(false);
   // Newest first: the archive somebody wants is nearly always the last one taken.
   const [backupQuery, setBackupQuery] = useState<TableQuery>(() => initialQuery({ sort: 'createdAt', direction: 'desc' }));
   const [snapshotQuery, setSnapshotQuery] = useState<TableQuery>(() => initialQuery({ pageSize: 5, sort: 'createdAt', direction: 'desc' }));
@@ -2309,14 +2312,39 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       else window.location.assign(payload.url);
     } catch { tab?.close(); failed(t('console.cfConnectFailed')); } finally { setCloudflareBusy(false); }
   };
+  const fetchCloudflareBuckets = async (accountId: string) => {
+    // After the user picks an account, load that account's bucket list so they can choose one.
+    setCloudflareBusy(true);
+    try {
+      // Temporarily set the account so chooseAccount can list buckets.
+      const response = await apiFetch('/api/v1/r2/cloudflare/account', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ accountId }) });
+      const payload = await response.json() as { config?: R2Config; cloudflare?: R2Config['cloudflare']; error?: { message?: string } };
+      if (!response.ok) { failed(fail.body(payload, t('console.cfConnectFailed'))); return; }
+      if (payload.config) setR2Config(payload.config);
+      // Now fetch the bucket list.
+      const bucketsResponse = await apiFetch('/api/v1/r2/cloudflare/buckets', { credentials: 'same-origin' });
+      if (bucketsResponse.ok) {
+        const bucketsPayload = await bucketsResponse.json() as { buckets: Array<{ name: string; jurisdiction: string }> };
+        setCloudflareBuckets(bucketsPayload.buckets);
+        setCloudflareBucket('');
+      }
+      if (payload.config) { done(t('console.cfConnected', { bucket: payload.config.cloudflare?.bucket ?? '' })); await refresh(); }
+    } catch { failed(t('console.cfConnectFailed')); } finally { setCloudflareBusy(false); }
+  };
   const chooseCloudflareAccount = async () => {
+    if (!cloudflareAccount) return;
+    await fetchCloudflareBuckets(cloudflareAccount);
+  };
+  const chooseCloudflareAccountWithBucket = async (bucketName: string) => {
     if (!cloudflareAccount) return;
     setCloudflareBusy(true);
     try {
-      const response = await apiFetch('/api/v1/r2/cloudflare/account', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ accountId: cloudflareAccount }) });
+      const response = await apiFetch('/api/v1/r2/cloudflare/account', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ accountId: cloudflareAccount, bucketName }) });
       const payload = await response.json() as { config?: R2Config; error?: { message?: string } };
       if (!response.ok || !payload.config) { failed(fail.body(payload, t('console.cfConnectFailed'))); return; }
       setR2Config(payload.config);
+      setCloudflareBuckets(null);
+      setCloudflareBucket('');
       done(t('console.cfConnected', { bucket: payload.config.cloudflare?.bucket ?? '' }));
       await refresh();
     } catch { failed(t('console.cfConnectFailed')); } finally { setCloudflareBusy(false); }
@@ -2343,6 +2371,11 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       done(t('console.cfConnected', { bucket: payload.config.cloudflare?.bucket ?? '' }));
       await refresh();
     } catch { failed(t('console.r2SaveFailed')); } finally { setCloudflareBusy(false); }
+  };
+  // When the user edits S3 keys while OAuth is active, confirm the mode switch first.
+  const switchToKeysAndSave = async (form: R2FormState) => {
+    setSwitchToKeysOpen(false);
+    await saveR2({ ...form, ...({} as Record<string, unknown>) });
   };
   const testR2 = async () => {
     setR2Busy(t('console.r2Test'));
@@ -2535,20 +2568,49 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
           {cloudflare ? <CloudflareRow
             t={t}
             status={cloudflare}
-            usingKeys={r2Config?.mode === 'keys'}
+            mode={r2Config?.mode ?? 'keys'}
             busy={cloudflareBusy}
             account={cloudflareAccount}
+            buckets={cloudflareBuckets}
+            bucket={cloudflareBucket}
             onAccountChange={setCloudflareAccount}
+            onBucketChange={setCloudflareBucket}
             onConnect={() => void connectCloudflare()}
             onChooseAccount={() => void chooseCloudflareAccount()}
+            onChooseBucket={() => void chooseCloudflareAccountWithBucket(cloudflareBucket)}
+            onUseDefaultBucket={() => void chooseCloudflareAccountWithBucket('')}
             onDisconnect={() => setDisconnectOpen(true)}
             onUseForBackups={() => void backUpToCloudflare()}
           /> : null}
+          {/* S3 keys row — shown as the active connection when mode=keys, or as
+              an alternative when OAuth is connected. In the latter case, clicking
+              Set up / Change would switch the mode; we ask before doing that. */}
+          <DetailRow
+            label={r2Config?.mode === 'keys' || !cloudflare ? t('console.r2Connection') : t('console.r2KeysRow')}
+            hint={
+              r2Config?.mode === 'keys' && keysConfigured ? r2Config.bucket
+                : r2Config?.mode === 'cloudflare' && cloudflare?.state === 'connected' ? t('console.r2KeysHintInactive')
+                : keysConfigured ? r2Config?.bucket
+                : cloudflare ? t('console.r2KeysHint')
+                : t('console.r2SetupBody')
+            }
+          >
+            <Button
+              variant="outline" size="sm"
+              onClick={() => {
+                // If OAuth is active and keys would take over, confirm first.
+                if (r2Config?.mode === 'cloudflare' && cloudflare?.state === 'connected') {
+                  setSwitchToKeysOpen(true);
+                } else {
+                  setR2Tab('connection'); setR2Open(true);
+                }
+              }}
+            >
+              {keysConfigured ? t('console.r2Change') : t('console.r2Configure')}
+            </Button>
+          </DetailRow>
           <DetailRow label={t('console.r2Enabled')} hint={!r2Config?.configured ? t('console.r2NeedsSetup') : r2Config.enabled ? t('console.r2EnabledOnHint') : t('console.r2EnabledOffHint')}>
             <Switch aria-label={t('console.r2Enabled')} checked={r2Config?.enabled ?? false} disabled={!r2Config?.configured || r2Toggling} onCheckedChange={(checked) => void setR2Enabled(checked)} />
-          </DetailRow>
-          <DetailRow label={cloudflare ? t('console.r2KeysRow') : t('console.r2Connection')} hint={keysConfigured ? r2Config?.bucket : cloudflare ? t('console.r2KeysHint') : t('console.r2SetupBody')}>
-            <Button variant="outline" size="sm" onClick={() => { setR2Tab('connection'); setR2Open(true); }}>{keysConfigured ? t('console.r2Change') : t('console.r2Configure')}</Button>
           </DetailRow>
           {r2Config?.configured ? <DetailRow label={t('console.r2Schedule')} hint={r2ScheduleSummary(t, r2Config)}>
             <Button variant="outline" size="sm" onClick={() => { setR2Tab('schedule'); setR2Open(true); }}>{t('console.r2Change')}</Button>
@@ -2644,6 +2706,15 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       confirmLabel={t('console.cfDisconnect')}
       cancelLabel={t('common.cancel')}
       onConfirm={disconnectCloudflare}
+    />
+    <ConfirmDialog
+      open={switchToKeysOpen}
+      onOpenChange={setSwitchToKeysOpen}
+      title={t('console.r2SwitchToKeysTitle')}
+      description={t('console.r2SwitchToKeysBody')}
+      confirmLabel={t('console.r2SwitchToKeysConfirm')}
+      cancelLabel={t('common.cancel')}
+      onConfirm={() => { setSwitchToKeysOpen(false); setR2Tab('connection'); setR2Open(true); }}
     />
   </div>;
 }
@@ -2892,50 +2963,83 @@ function cloudflareErrorText(t: Translate, code: string): string {
   return t('console.cfErrorGeneric', { code: code || 'unknown' });
 }
 
+/** Cloudflare's own logo mark, used on the connect button. */
+function CloudflareLogo({ size = 16 }: { size?: number }) {
+  return <svg width={size} height={size} viewBox="0 0 109 82" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <path d="M76.1 55.5c.5-1.6.3-3-.5-4.1-.8-1-2-1.6-3.5-1.7l-39.5-.5c-.3 0-.6-.2-.8-.4-.2-.2-.2-.5-.1-.8.2-.5.8-.9 1.4-.9l39.8-.5c4.7-.2 9.8-4 11.6-8.6l2.3-5.9c.1-.3.1-.5 0-.8C84.5 14.9 74.5 7 62.5 7 52.2 7 43.4 13 39.3 21.6c-2.2-1.6-4.9-2.5-7.9-2.5-6.8 0-12.4 5.1-13.4 11.7C8.9 31.8 3 38.1 3 45.7c0 1 .1 2 .3 2.9.1.5.5.9 1 .9H75.1c.6 0 1.1-.4 1.2-.9l-.2-3.1z" fill="#F6821F"/>
+    <path d="M91.2 31.8c-.4 0-.7 0-1.1.1-.2 0-.3.2-.4.3l-1.2 4.1c-.5 1.6-.3 3 .5 4.1.8 1 2 1.6 3.5 1.7l7.5.5c.3 0 .6.2.8.4.2.2.2.5.1.8-.2.5-.8.9-1.4.9l-7.8.5c-4.8.2-9.8 4-11.6 8.6l-.6 1.7c-.1.3 0 .6.3.7.1 0 .2.1.3.1H106c.5 0 .9-.3 1-.7.5-1.7.8-3.5.8-5.4-.1-9.4-7.8-17.4-16.6-17.4z" fill="#FBAD41"/>
+  </svg>;
+}
+
 /**
  * Signing in to Cloudflare instead of copying keys, in whatever state it is in.
  *
- * One row, because it is one question - which account the backups go to - and
- * its answer changes: nothing yet, pick an account, this account, or sign in
- * again. Manual keys stay on the row below for anyone who wants them.
+ * One row, because it is one question — which account the backups go to — and
+ * its answer changes across four states. When buckets have been loaded for
+ * the chosen account, an extra row lets the user pick one.
  */
-function CloudflareRow({ t, status, usingKeys, busy, account, onAccountChange, onConnect, onChooseAccount, onDisconnect, onUseForBackups }: {
+function CloudflareRow({ t, status, mode, busy, account, buckets, bucket, onAccountChange, onBucketChange, onConnect, onChooseAccount, onChooseBucket, onUseDefaultBucket, onDisconnect, onUseForBackups }: {
   t: Translate;
   status: NonNullable<R2Config['cloudflare']>;
-  usingKeys: boolean;
+  mode: R2Config['mode'];
   busy: boolean;
   account: string;
+  buckets: Array<{ name: string; jurisdiction: string }> | null;
+  bucket: string;
   onAccountChange: (id: string) => void;
+  onBucketChange: (name: string) => void;
   onConnect: () => void;
   onChooseAccount: () => void;
+  onChooseBucket: () => void;
+  onUseDefaultBucket: () => void;
   onDisconnect: () => void;
   onUseForBackups: () => void;
 }) {
   if (status.state === 'disconnected') {
     return <DetailRow label={t('console.cfRow')} hint={t('console.cfConnectHint')}>
-      <Button size="sm" onClick={onConnect} disabled={busy}><Cloud />{t('console.cfConnect')}</Button>
+      <Button size="sm" onClick={onConnect} disabled={busy} style={{ backgroundColor: '#F6821F', color: '#fff', borderColor: '#F6821F' }} className="hover:opacity-90">
+        <CloudflareLogo />{t('console.cfConnect')}
+      </Button>
     </DetailRow>;
   }
   if (status.state === 'reconnect_required') {
     return <DetailRow label={t('console.cfRow')} hint={t('console.cfReconnectHint')}>
-      <Button size="sm" onClick={onConnect} disabled={busy}><RefreshCw />{t('console.cfReconnect')}</Button>
+      <Button size="sm" onClick={onConnect} disabled={busy} style={{ backgroundColor: '#F6821F', color: '#fff', borderColor: '#F6821F' }} className="hover:opacity-90">
+        <RefreshCw />{t('console.cfReconnect')}
+      </Button>
       <Button variant="ghost" size="sm" onClick={onDisconnect} disabled={busy}>{t('console.cfDisconnect')}</Button>
     </DetailRow>;
   }
   if (status.state === 'choose_account') {
-    return <DetailRow label={t('console.cfRow')} hint={t('console.cfChooseAccount')}>
-      <Select value={account} onValueChange={onAccountChange}>
-        <SelectTrigger className="w-48"><SelectValue /></SelectTrigger>
-        <SelectContent>
-          {status.accounts.map((entry) => <SelectItem key={entry.id} value={entry.id}>{entry.name}</SelectItem>)}
-        </SelectContent>
-      </Select>
-      <Button size="sm" onClick={onChooseAccount} disabled={busy || !account}>{t('console.cfUseAccount')}</Button>
-    </DetailRow>;
+    // Two-step: first pick an account, then pick or confirm a bucket.
+    return <>
+      <DetailRow label={t('console.cfRow')} hint={t('console.cfChooseAccount')}>
+        <Select value={account} onValueChange={onAccountChange}>
+          <SelectTrigger className="w-48"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            {status.accounts.map((entry) => <SelectItem key={entry.id} value={entry.id}>{entry.name}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        <Button size="sm" onClick={onChooseAccount} disabled={busy || !account}>{t('console.cfUseAccount')}</Button>
+      </DetailRow>
+      {buckets !== null ? <DetailRow label={t('console.cfBucketRow')} hint={t('console.cfBucketHint')}>
+        <Select value={bucket} onValueChange={onBucketChange}>
+          <SelectTrigger className="w-52"><SelectValue placeholder={t('console.cfBucketDefault')} /></SelectTrigger>
+          <SelectContent>
+            {buckets.map((b) => <SelectItem key={b.name} value={b.name}>{b.name}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        <Button size="sm" onClick={bucket ? onChooseBucket : onUseDefaultBucket} disabled={busy}>
+          {t('console.cfUseBucket')}
+        </Button>
+      </DetailRow> : null}
+    </>;
   }
+  // connected state
   const described = t('console.cfConnectedAs', { account: status.account?.name ?? '', bucket: status.bucket ?? '' });
-  return <DetailRow label={t('console.cfRow')} hint={usingKeys ? `${described} · ${t('console.cfUsingKeys')}` : described}>
-    {usingKeys ? <Button size="sm" onClick={onUseForBackups} disabled={busy}>{t('console.cfUseForBackups')}</Button> : null}
+  const activeLabel = mode === 'cloudflare' ? described : `${described} · ${t('console.cfUsingKeys')}`;
+  return <DetailRow label={t('console.cfRow')} hint={activeLabel}>
+    {mode === 'keys' ? <Button size="sm" onClick={onUseForBackups} disabled={busy}>{t('console.cfUseForBackups')}</Button> : null}
     <Button variant="outline" size="sm" onClick={onDisconnect} disabled={busy}>{t('console.cfDisconnect')}</Button>
   </DetailRow>;
 }

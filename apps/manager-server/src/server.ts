@@ -1349,11 +1349,22 @@ async function handleCloudflareRequest(context: RequestContext, cloudflare: Clou
     sendJson(response, 200, { url: cloudflare.beginConnect(returnOrigin) });
     return;
   }
+  if (pathname === '/api/v1/r2/cloudflare/buckets' && method === 'GET') {
+    // List the buckets in the signed-in account so the user can pick one.
+    const target = await cloudflare.target();
+    if (!target) { sendError(response, 400, 'cloudflare_not_connected', 'Sign in to Cloudflare first'); return; }
+    const buckets = await cloudflare.cloudflareApi().listBuckets(target.account.id);
+    sendJson(response, 200, { buckets: buckets.map((b) => ({ name: b.name, jurisdiction: b.jurisdiction })) });
+    return;
+  }
   if (pathname === '/api/v1/r2/cloudflare/account' && method === 'POST') {
     const body = await readJson(request);
     const accountId = isRecord(body) && typeof body.accountId === 'string' ? body.accountId : '';
     if (!/^[0-9a-f]{32}$/u.test(accountId)) { sendError(response, 400, 'invalid_account', 'A Cloudflare account ID is required'); return; }
-    const status = await cloudflare.chooseAccount(accountId, await r2.keysBucket());
+    // When the user picked a specific bucket, use it instead of the default.
+    const bucketName = isRecord(body) && typeof body.bucketName === 'string' && body.bucketName ? body.bucketName : null;
+    const known = bucketName ? { accountId, bucket: bucketName, jurisdiction: 'default' as const } : await r2.keysBucket();
+    const status = await cloudflare.chooseAccount(accountId, known);
     if (status.state === 'connected') await r2.update({ mode: 'cloudflare', enabled: true });
     sendJson(response, 200, { cloudflare: status, config: await r2.getConfig() });
     return;
