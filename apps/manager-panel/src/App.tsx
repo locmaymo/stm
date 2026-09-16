@@ -29,7 +29,7 @@ import { browserEnvironment, browserStorage, readPreferences, savePreferences, t
 import { authErrorKey } from './auth-error.js';
 import { availableUpdate, readDismissedUpdate, saveDismissedUpdate } from './updates.js';
 import { apiFetch, onSessionExpired, resetSessionWatch } from './session.js';
-import type { AccessGatewayState, BackupManifest, ConfigDocument, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LogEntry, LogSourceFilter, MetricsBucket, MetricsSnapshot, ProcessState, Profile, R2Config, R2SnapshotSummary, RestoreMode, RestorePreview, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, BackupManifest, ConfigDocument, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LogEntry, LogSourceFilter, MetricsBucket, MetricsSnapshot, ProcessState, Profile, R2CloudflareUsage, R2Config, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
 import { translateLogEntry, translateStep } from './log-format.js';
@@ -1927,6 +1927,9 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   const [r2Open, setR2Open] = useState(false);
   const [r2Tab, setR2Tab] = useState<R2DialogTab>('connection');
   const [r2Toggling, setR2Toggling] = useState(false);
+  const [cloudflareBusy, setCloudflareBusy] = useState(false);
+  const [cloudflareAccount, setCloudflareAccount] = useState('');
+  const [disconnectOpen, setDisconnectOpen] = useState(false);
   // Newest first: the archive somebody wants is nearly always the last one taken.
   const [backupQuery, setBackupQuery] = useState<TableQuery>(() => initialQuery({ sort: 'createdAt', direction: 'desc' }));
   const [snapshotQuery, setSnapshotQuery] = useState<TableQuery>(() => initialQuery({ pageSize: 5, sort: 'createdAt', direction: 'desc' }));
@@ -1948,6 +1951,31 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
     if (scheduleResponse?.ok) setBackupSchedule((await scheduleResponse.json() as { schedule: LocalBackupSchedule }).schedule);
   };
   useEffect(() => { void refresh(); }, []);
+
+  /*
+   * Coming back from Cloudflare.
+   *
+   * The server finished the sign-in before the browser got here and says how it
+   * went in the address. That is said once, then taken out of the address so a
+   * reload does not say it again.
+   */
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const outcome = params.get('cloudflare');
+    if (!outcome) return;
+    const code = params.get('cloudflare_error') ?? '';
+    window.history.replaceState(null, '', `${window.location.pathname}${window.location.hash}`);
+    if (outcome === 'connected') {
+      void apiFetch('/api/v1/r2', { credentials: 'same-origin' })
+        .then(async (response) => (response.ok ? (await response.json() as { config: R2Config }).config : null))
+        .then((config) => toast({ title: t('console.cfConnected', { bucket: config?.cloudflare?.bucket ?? '' }), tone: 'success', duration: 8000 }))
+        .catch(() => undefined);
+    } else if (outcome === 'choose_account') {
+      toast({ title: t('console.cfChooseNow'), tone: 'success', duration: 8000 });
+    } else {
+      failed(cloudflareErrorText(t, code));
+    }
+  }, []);
 
   /*
    * The R2 card follows the scheduler the same way the list does.
@@ -2227,7 +2255,12 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   };
   const saveR2 = async (form: R2FormState): Promise<string | null> => {
     try {
-      const response = await apiFetch('/api/v1/r2', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify(form) });
+      // Changing the keys is choosing them over a Cloudflare sign-in; changing
+      // only the schedule is not.
+      const saved = r2FormFrom(r2Config);
+      const keysChanged = (['endpoint', 'bucket', 'accessKeyId', 'secretAccessKey'] as const).some((field) => form[field] !== saved[field]);
+      const body = keysChanged && r2Config?.cloudflare ? { ...form, mode: 'keys' } : form;
+      const response = await apiFetch('/api/v1/r2', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify(body) });
       const payload = await response.json() as { config?: R2Config; error?: { message?: string } };
       if (!response.ok || !payload.config) return fail.body(payload, t('console.r2SaveFailed'));
       setR2Config(payload.config); await refresh(); done(t('console.r2Saved'));
@@ -2260,6 +2293,56 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       setR2Config(payload.config);
       done(t(enabled ? 'console.r2TurnedOn' : 'console.r2TurnedOff'));
     } catch { failed(t('console.r2SaveFailed')); } finally { setR2Toggling(false); }
+  };
+  const connectCloudflare = async () => {
+    // Cloudflare's sign-in refuses to load in a frame. When the panel is shown
+    // inside another page, the sign-in gets a tab of its own, opened now while
+    // the click still counts as one so it is not taken for a pop-up.
+    const framed = window.self !== window.top;
+    const tab = framed ? window.open('', '_blank') : null;
+    setCloudflareBusy(true);
+    try {
+      const response = await apiFetch('/api/v1/r2/cloudflare/connect', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      const payload = await response.json() as { url?: string; error?: { message?: string } };
+      if (!response.ok || !payload.url) { tab?.close(); failed(fail.body(payload, t('console.cfConnectFailed'))); return; }
+      if (tab) tab.location.href = payload.url;
+      else window.location.assign(payload.url);
+    } catch { tab?.close(); failed(t('console.cfConnectFailed')); } finally { setCloudflareBusy(false); }
+  };
+  const chooseCloudflareAccount = async () => {
+    if (!cloudflareAccount) return;
+    setCloudflareBusy(true);
+    try {
+      const response = await apiFetch('/api/v1/r2/cloudflare/account', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ accountId: cloudflareAccount }) });
+      const payload = await response.json() as { config?: R2Config; error?: { message?: string } };
+      if (!response.ok || !payload.config) { failed(fail.body(payload, t('console.cfConnectFailed'))); return; }
+      setR2Config(payload.config);
+      done(t('console.cfConnected', { bucket: payload.config.cloudflare?.bucket ?? '' }));
+      await refresh();
+    } catch { failed(t('console.cfConnectFailed')); } finally { setCloudflareBusy(false); }
+  };
+  const disconnectCloudflare = async () => {
+    setCloudflareBusy(true);
+    try {
+      const response = await apiFetch('/api/v1/r2/cloudflare/disconnect', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      const payload = await response.json() as { revoked?: boolean; config?: R2Config; error?: { message?: string } };
+      if (!response.ok || !payload.config) { failed(fail.body(payload, t('console.cfDisconnectFailed'))); return; }
+      setR2Config(payload.config);
+      if (payload.revoked) done(t('console.cfDisconnected'));
+      else toast({ title: t('console.cfDisconnectedNotRevoked'), tone: 'destructive', duration: 12000 });
+      await refresh();
+    } catch { failed(t('console.cfDisconnectFailed')); } finally { setCloudflareBusy(false); }
+  };
+  const backUpToCloudflare = async () => {
+    setCloudflareBusy(true);
+    try {
+      const response = await apiFetch('/api/v1/r2', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ mode: 'cloudflare', enabled: true }) });
+      const payload = await response.json() as { config?: R2Config; error?: { message?: string } };
+      if (!response.ok || !payload.config) { failed(fail.body(payload, t('console.r2SaveFailed'))); return; }
+      setR2Config(payload.config);
+      done(t('console.cfConnected', { bucket: payload.config.cloudflare?.bucket ?? '' }));
+      await refresh();
+    } catch { failed(t('console.r2SaveFailed')); } finally { setCloudflareBusy(false); }
   };
   const testR2 = async () => {
     setR2Busy(t('console.r2Test'));
@@ -2356,6 +2439,10 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       </DropdownMenu>,
     },
   ];
+  const cloudflare = r2Config?.cloudflare ?? null;
+  // Backups go through the signed-in account, as opposed to it merely being connected.
+  const signedIn = r2Config?.mode === 'cloudflare' && cloudflare?.state === 'connected';
+  const keysConfigured = Boolean(r2Config?.endpoint && r2Config.bucket && r2Config.accessKeyIdMasked && r2Config.secretAccessKeyConfigured);
   const snapshotColumns: DataTableColumn<R2SnapshotSummary>[] = [
     { id: 'createdAt', header: t('console.backupCreated'), sortable: true, cell: (snapshot) => <span className="whitespace-nowrap">{new Date(snapshot.createdAt).toLocaleString()}</span> },
     // The data the point holds, which is what bringing it back downloads. The
@@ -2445,11 +2532,23 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       <PanelHeading icon={<Cloud />}>{t('console.r2Title')}</PanelHeading>
       <CardContent className="grid gap-4">
         <div>
+          {cloudflare ? <CloudflareRow
+            t={t}
+            status={cloudflare}
+            usingKeys={r2Config?.mode === 'keys'}
+            busy={cloudflareBusy}
+            account={cloudflareAccount}
+            onAccountChange={setCloudflareAccount}
+            onConnect={() => void connectCloudflare()}
+            onChooseAccount={() => void chooseCloudflareAccount()}
+            onDisconnect={() => setDisconnectOpen(true)}
+            onUseForBackups={() => void backUpToCloudflare()}
+          /> : null}
           <DetailRow label={t('console.r2Enabled')} hint={!r2Config?.configured ? t('console.r2NeedsSetup') : r2Config.enabled ? t('console.r2EnabledOnHint') : t('console.r2EnabledOffHint')}>
             <Switch aria-label={t('console.r2Enabled')} checked={r2Config?.enabled ?? false} disabled={!r2Config?.configured || r2Toggling} onCheckedChange={(checked) => void setR2Enabled(checked)} />
           </DetailRow>
-          <DetailRow label={t('console.r2Connection')} hint={r2Config?.configured ? r2Config.bucket : t('console.r2SetupBody')}>
-            <Button variant="outline" size="sm" onClick={() => { setR2Tab('connection'); setR2Open(true); }}>{r2Config?.configured ? t('console.r2Change') : t('console.r2Configure')}</Button>
+          <DetailRow label={cloudflare ? t('console.r2KeysRow') : t('console.r2Connection')} hint={keysConfigured ? r2Config?.bucket : cloudflare ? t('console.r2KeysHint') : t('console.r2SetupBody')}>
+            <Button variant="outline" size="sm" onClick={() => { setR2Tab('connection'); setR2Open(true); }}>{keysConfigured ? t('console.r2Change') : t('console.r2Configure')}</Button>
           </DetailRow>
           {r2Config?.configured ? <DetailRow label={t('console.r2Schedule')} hint={r2ScheduleSummary(t, r2Config)}>
             <Button variant="outline" size="sm" onClick={() => { setR2Tab('schedule'); setR2Open(true); }}>{t('console.r2Change')}</Button>
@@ -2472,8 +2571,11 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
           </DetailRow> : null}
         </div>
         {r2Busy ? <OperationProgress t={t} label={r2Busy} progress={operationProgress} canStop={runningJobId !== null} stopping={stopping} onStop={() => void stopOperation()} warning={null} /> : null}
+        {signedIn && cloudflare?.restReason ? <Alert><TriangleAlert /><AlertDescription>{t(cloudflare.restReason === 'workers_not_granted' ? 'console.cfSlowNotGranted' : 'console.cfSlowUnavailable')}</AlertDescription></Alert> : null}
+        {signedIn && r2Config?.lastUploadAt === null && r2Snapshots.length > 0 ? <Alert><Cloud /><AlertDescription>{t('console.cfNewMachine', { count: r2Snapshots.length })}</AlertDescription></Alert> : null}
         {r2Config?.configured ? <>
           <R2Usage t={t} config={r2Config} />
+          {signedIn ? <CloudflareUsagePanel t={t} lastUploadAt={r2Config.lastUploadAt} /> : null}
           <div className="grid gap-2">
             <h3 className="text-sm font-medium">{t('console.r2Snapshots')}</h3>
             <DataTable
@@ -2534,6 +2636,15 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
     />
     <RestoreDialog t={t} catalog={catalog} displayName={displayName} backup={selectedBackup} preview={selectedPreview} mode={restoreMode} onModeChange={setRestoreMode} onClose={closeRestore} onRestore={restoreSelected} />
     <R2Dialog t={t} open={r2Open} onOpenChange={setR2Open} tab={r2Tab} config={r2Config} onSave={saveR2} />
+    <ConfirmDialog
+      open={disconnectOpen}
+      onOpenChange={setDisconnectOpen}
+      title={t('console.cfDisconnectTitle')}
+      description={t('console.cfDisconnectBody')}
+      confirmLabel={t('console.cfDisconnect')}
+      cancelLabel={t('common.cancel')}
+      onConfirm={disconnectCloudflare}
+    />
   </div>;
 }
 
@@ -2771,6 +2882,136 @@ function R2Dialog({ t, open, onOpenChange, tab, config, onSave }: { t: Translate
       </DialogFooter>
     </DialogContent>
   </Dialog>;
+}
+
+function cloudflareErrorText(t: Translate, code: string): string {
+  if (code === 'login_required') return t('console.cfErrorLoginRequired');
+  if (code === 'cloudflare_state_mismatch') return t('console.cfErrorStateMismatch');
+  if (code === 'cloudflare_authorization_denied') return t('console.cfErrorDenied');
+  if (code === 'cloudflare_not_available') return t('console.cfErrorUnavailable');
+  return t('console.cfErrorGeneric', { code: code || 'unknown' });
+}
+
+/**
+ * Signing in to Cloudflare instead of copying keys, in whatever state it is in.
+ *
+ * One row, because it is one question - which account the backups go to - and
+ * its answer changes: nothing yet, pick an account, this account, or sign in
+ * again. Manual keys stay on the row below for anyone who wants them.
+ */
+function CloudflareRow({ t, status, usingKeys, busy, account, onAccountChange, onConnect, onChooseAccount, onDisconnect, onUseForBackups }: {
+  t: Translate;
+  status: NonNullable<R2Config['cloudflare']>;
+  usingKeys: boolean;
+  busy: boolean;
+  account: string;
+  onAccountChange: (id: string) => void;
+  onConnect: () => void;
+  onChooseAccount: () => void;
+  onDisconnect: () => void;
+  onUseForBackups: () => void;
+}) {
+  if (status.state === 'disconnected') {
+    return <DetailRow label={t('console.cfRow')} hint={t('console.cfConnectHint')}>
+      <Button size="sm" onClick={onConnect} disabled={busy}><Cloud />{t('console.cfConnect')}</Button>
+    </DetailRow>;
+  }
+  if (status.state === 'reconnect_required') {
+    return <DetailRow label={t('console.cfRow')} hint={t('console.cfReconnectHint')}>
+      <Button size="sm" onClick={onConnect} disabled={busy}><RefreshCw />{t('console.cfReconnect')}</Button>
+      <Button variant="ghost" size="sm" onClick={onDisconnect} disabled={busy}>{t('console.cfDisconnect')}</Button>
+    </DetailRow>;
+  }
+  if (status.state === 'choose_account') {
+    return <DetailRow label={t('console.cfRow')} hint={t('console.cfChooseAccount')}>
+      <Select value={account} onValueChange={onAccountChange}>
+        <SelectTrigger className="w-48"><SelectValue /></SelectTrigger>
+        <SelectContent>
+          {status.accounts.map((entry) => <SelectItem key={entry.id} value={entry.id}>{entry.name}</SelectItem>)}
+        </SelectContent>
+      </Select>
+      <Button size="sm" onClick={onChooseAccount} disabled={busy || !account}>{t('console.cfUseAccount')}</Button>
+    </DetailRow>;
+  }
+  const described = t('console.cfConnectedAs', { account: status.account?.name ?? '', bucket: status.bucket ?? '' });
+  return <DetailRow label={t('console.cfRow')} hint={usingKeys ? `${described} · ${t('console.cfUsingKeys')}` : described}>
+    {usingKeys ? <Button size="sm" onClick={onUseForBackups} disabled={busy}>{t('console.cfUseForBackups')}</Button> : null}
+    <Button variant="outline" size="sm" onClick={onDisconnect} disabled={busy}>{t('console.cfDisconnect')}</Button>
+  </DetailRow>;
+}
+
+/**
+ * What Cloudflare itself says was used, beside the manager's own count.
+ *
+ * The manager's count only sees its own requests. Cloudflare sees the bucket
+ * from every machine and the account as a whole, which is what the free tier is
+ * measured against. It is asked for when the page opens, after each backup, and
+ * on request; the server keeps it for fifteen minutes in between.
+ */
+function CloudflareUsagePanel({ t, lastUploadAt }: { t: Translate; lastUploadAt: string | null }) {
+  const [response, setResponse] = useState<R2UsageResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const load = async (refresh: boolean) => {
+    setLoading(true);
+    try {
+      const reply = await apiFetch(`/api/v1/r2/usage${refresh ? '?refresh=1' : ''}`, { credentials: 'same-origin' });
+      if (reply.ok) setResponse(await reply.json() as R2UsageResponse);
+    } catch {
+      // Kept as it was; the refresh button tries again.
+    } finally { setLoading(false); }
+  };
+  useEffect(() => { void load(false); }, [lastUploadAt]);
+
+  if (!response) return null;
+  if (response.unavailable === 'analytics_not_granted') return <p className="text-xs text-muted-foreground">{t('console.cfUsageNotGranted')}</p>;
+  const usage = response.usage;
+  if (!usage) return response.error ? <p className="text-xs text-muted-foreground">{t('console.cfUsageFailed', { error: response.error })}</p> : null;
+
+  const bars = cloudflareBars(t, usage);
+  return <div className="grid gap-3">
+    <div className="flex items-center justify-between gap-2">
+      <h3 className="text-sm font-medium">{t('console.cfUsageTitle')}</h3>
+      <Button variant="ghost" size="sm" onClick={() => void load(true)} disabled={loading}><RefreshCw className={cn(loading && 'animate-spin')} />{t('console.cfUsageRefresh')}</Button>
+    </div>
+    {usage.warnings.length > 0 ? <Alert variant="destructive"><TriangleAlert /><AlertDescription>
+      {usage.warnings.map((warning) => <span className="block" key={`${warning.scope}-${warning.metric}`}>{warningText(t, warning)}</span>)}
+    </AlertDescription></Alert> : null}
+    <span className="text-xs font-medium">{t('console.cfUsageAccount')}</span>
+    {bars.map((bar) => <div className="grid gap-1" key={bar.label}>
+      <span className={cn('text-xs', bar.filled >= 0.8 ? 'text-destructive' : 'text-muted-foreground')}>{bar.label}: {bar.text}</span>
+      <span className="progress-track"><span className="progress-value" style={{ width: `${Math.max(1, bar.filled * 100)}%` }} /></span>
+    </div>)}
+    <span className="text-xs font-medium">{t('console.cfUsageBucket')}</span>
+    <span className="text-xs text-muted-foreground">{t('console.cfBucketFigures', {
+      storage: usage.bucket.storageBytes === null ? t('console.cfNotReported') : formatBytes(usage.bucket.storageBytes),
+      objects: (usage.bucket.objectCount ?? 0).toLocaleString(),
+      classA: usage.bucket.operations.classA.toLocaleString(),
+      classB: usage.bucket.operations.classB.toLocaleString(),
+    })}</span>
+    <p className="text-xs text-muted-foreground">
+      {t('console.cfUsageNote')} {t('console.cfUsageUpdated', { time: new Date(usage.fetchedAt).toLocaleTimeString() })}
+      {response.error ? ` ${t('console.cfUsageFailed', { error: response.error })}` : ''}
+    </p>
+  </div>;
+}
+
+function cloudflareBars(t: Translate, usage: R2CloudflareUsage): Array<{ label: string; text: string; filled: number }> {
+  const storage = usage.account.storageBytes;
+  return [
+    {
+      label: t('console.cfStorage'),
+      text: storage === null ? t('console.cfNotReported') : t('console.cfOfFree', { used: formatBytes(storage), limit: formatBytes(usage.freeTier.storageBytes) }),
+      filled: ratio(storage ?? 0, usage.freeTier.storageBytes),
+    },
+    { label: t('console.cfClassA'), text: t('console.cfOfFree', { used: usage.account.operations.classA.toLocaleString(), limit: usage.freeTier.classA.toLocaleString() }), filled: ratio(usage.account.operations.classA, usage.freeTier.classA) },
+    { label: t('console.cfClassB'), text: t('console.cfOfFree', { used: usage.account.operations.classB.toLocaleString(), limit: usage.freeTier.classB.toLocaleString() }), filled: ratio(usage.account.operations.classB, usage.freeTier.classB) },
+  ];
+}
+
+function warningText(t: Translate, warning: R2UsageWarning): string {
+  const metric = t(warning.metric === 'storage' ? 'console.cfStorage' : warning.metric === 'classA' ? 'console.cfClassA' : 'console.cfClassB');
+  const percent = `${Math.round((warning.used / warning.limit) * 100)}%`;
+  return t(warning.scope === 'account' ? 'console.cfWarningAccount' : 'console.cfWarningBucket', { metric, percent });
 }
 
 /** One plain question with a few answers, and "Custom" only when none of them fits. */
