@@ -4,7 +4,7 @@ import {
   Globe2, LayoutDashboard, Maximize2, Minimize2, Moon, Package, Pencil, Plus,
   LogOut, RotateCcw, ScrollText, Search, Sun, Trash2, Upload, Users as UsersIcon, X, Rows3,
   BrainCircuit, CircleStop, Clock3, Cpu, Ellipsis, Play, QrCode as QrCodeIcon, RefreshCw, Settings2, ShieldCheck, Square,
-  Blocks, ChevronDown, ChevronUp, FileCode2, Gauge, History, KeyRound, Monitor, Sparkles, TriangleAlert,
+  Blocks, FileCode2, Gauge, History, KeyRound, Monitor, Sparkles, TriangleAlert,
 } from 'lucide-react';
 import {
   Alert, AlertDescription, AuthLayout, Badge, BrandMark, Button, buttonVariants, Card, CardAction,
@@ -35,6 +35,7 @@ import { useLiveLogs } from './use-live-logs.js';
 import { translateLogEntry, translateStep } from './log-format.js';
 import { QrCode } from './qr-code.js';
 import { LOCAL_HOST, reachableAddresses, shortenHost } from './addresses.js';
+import { EmbedStage } from './embed-stage.js';
 
 const navigation = [
   { id: 'overview', icon: LayoutDashboard },
@@ -974,6 +975,8 @@ function RuntimeCard({
   const onThisMachine = window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost';
   const embedUrl = `http://${window.location.hostname}:${security.port}/`;
   const canEmbed = running && onThisMachine;
+  // A frame kept loaded across a stop would come back to an error page.
+  useEffect(() => { if (!running) { setEmbedOpen(false); setEmbedMounted(false); } }, [running]);
   /*
    * Open it without asking for the PIN.
    *
@@ -984,6 +987,8 @@ function RuntimeCard({
    * the frame on the gateway's port arrives already signed in.
    */
   const openEmbed = async () => {
+    // Put away rather than closed: it is still loaded, so it only has to be shown.
+    if (embedMounted) { setEmbedOpen(true); return; }
     if (!csrfToken) return;
     setEmbedOpening(true);
     try {
@@ -1031,8 +1036,8 @@ function RuntimeCard({
               of explaining why it will not. */}
           {canEmbed
             ? <button type="button" className="runtime-preview-open" onClick={() => void openEmbed()}>
-              <span className="runtime-preview-cta"><Monitor aria-hidden="true" />{embedOpening ? t('common.loading') : t('console.useItHere')}</span>
-              <span className="runtime-preview-note">{t('console.useItHereHint')}</span>
+              <span className="runtime-preview-cta"><Monitor aria-hidden="true" />{embedOpening ? t('common.loading') : embedMounted ? t('console.embedResume') : t('console.useItHere')}</span>
+              <span className="runtime-preview-note">{embedMounted ? t('console.embedResumeHint') : t('console.useItHereHint')}</span>
             </button>
             : running
               ? <button type="button" className="runtime-preview-open" onClick={openPrimary}>
@@ -1123,7 +1128,7 @@ function RuntimeCard({
       </CardFooter> : null}
     </Card>
 
-    {embedMounted ? <EmbedStage t={t} open={embedOpen} url={embedUrl} onClose={() => setEmbedOpen(false)} /> : null}
+    {embedMounted ? <EmbedStage t={t} open={embedOpen} url={embedUrl} onMinimize={() => setEmbedOpen(false)} onClose={() => { setEmbedOpen(false); setEmbedMounted(false); }} /> : null}
 
     <ConfirmDialog
       open={stopAsked}
@@ -1154,46 +1159,6 @@ function RuntimeCard({
       onConfirm={async () => { report(await onRemove()); }}
     />
   </>;
-}
-
-/**
- * SillyTavern itself, filling the window, without leaving the console.
- *
- * Hidden rather than unmounted when it is closed: an iframe that is taken out
- * of the tree is reloaded when it comes back, which would throw away the chat
- * that was open and everything typed into it. Escape closes it, and the way
- * out is always on screen - a frame with no visible border is a page somebody
- * can get stuck in.
- */
-function EmbedStage({ t, open, url, onClose }: { t: Translate; open: boolean; url: string; onClose: () => void }) {
-  // SillyTavern's own interface is dense and fills whatever it is given, so
-  // the bar above it is worth being able to put away. Escape always works and
-  // a small handle stays in the corner, because a frame with no visible way
-  // out is a page somebody is stuck in.
-  const [barHidden, setBarHidden] = useState(false);
-  useEffect(() => {
-    if (!open) return undefined;
-    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
-  return <div className="embed-stage" hidden={!open} aria-hidden={!open}>
-    {barHidden
-      ? <button type="button" className="embed-handle" onClick={() => setBarHidden(false)} aria-label={t('console.showBar')} title={t('console.showBar')}><ChevronDown /></button>
-      : <div className="embed-bar">
-        <Button variant="outline" size="sm" onClick={onClose}><Minimize2 />{t('console.backToConsole')}</Button>
-        <div className="embed-bar-tail">
-          <Button variant="ghost" size="sm" asChild><a href={url} target="_blank" rel="noopener noreferrer"><ArrowUpRight />{t('console.openInTab')}</a></Button>
-          <Button variant="ghost" size="icon-sm" onClick={() => setBarHidden(true)} aria-label={t('console.hideBar')} title={t('console.hideBar')}><ChevronUp /></Button>
-        </div>
-      </div>}
-    <iframe
-      className="embed-frame"
-      src={url}
-      title="SillyTavern"
-      allow="clipboard-write; fullscreen; microphone"
-    />
-  </div>;
 }
 
 function AccessPanel({ t, process, tunnel, config, security, installed, onAction, onSetLan, onSetPassword }: { t: Translate; process: ProcessState; tunnel: TunnelState; config: ConfigDocument | null; security: AccessGatewayState; installed: boolean; onAction: (path: string, body?: unknown) => Promise<void>; onSetLan: (lan: boolean) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null> }) {

@@ -537,16 +537,80 @@
 .runtime-sep { color: var(--muted-foreground); }
 .runtime-bytes { font-family: var(--font-mono); }
 .runtime-foot { justify-content: space-between; gap: 12px; border-top: 1px solid var(--border); padding-top: 14px; color: var(--muted-foreground); font-size: 12.5px; }
-/* SillyTavern, filling the window, with the way out always on screen. */
+/* SillyTavern in a window of its own, with the way out always on screen. */
 .embed-stage { position: fixed; inset: 0; z-index: 60; display: flex; flex-direction: column; background: var(--background); }
 .embed-stage[hidden] { display: none; }
-.embed-bar { display: flex; flex-shrink: 0; align-items: center; gap: 10px; height: 48px; padding: 0 12px; border-bottom: 1px solid var(--border); }
-.embed-bar-tail { display: flex; align-items: center; gap: 4px; margin-left: auto; }
-/* The way back, when the bar is put away. Quiet until it is wanted. */
-.embed-handle { position: absolute; top: 6px; right: 12px; z-index: 2; display: grid; place-items: center; width: 30px; height: 22px; padding: 0; border: 1px solid var(--border); border-radius: 0 0 8px 8px; background: var(--popover); color: var(--muted-foreground); opacity: 0.45; transition: opacity 0.12s ease; }
-.embed-handle:hover, .embed-handle:focus-visible { opacity: 1; color: var(--foreground); }
-.embed-handle svg { width: 15px; height: 15px; }
+.embed-bar { display: flex; flex-shrink: 0; align-items: center; gap: 12px; height: 44px; padding: env(safe-area-inset-top) 12px 0; box-sizing: content-box; border-bottom: 1px solid var(--border); background: var(--card); }
+/* The three lights of a window. Their symbols wait until the group is pointed
+   at, the way they do on a desktop; a touch screen cannot point, so there they
+   are always drawn, and the lights are larger and further apart. */
+.embed-lights { display: flex; align-items: center; gap: 8px; }
+.embed-light { position: relative; display: grid; place-items: center; width: 14px; height: 14px; min-height: 0 !important; padding: 0; border: 0; border-radius: 999px; color: rgb(0 0 0 / 0.6); box-shadow: inset 0 0 0 0.5px rgb(0 0 0 / 0.2); }
+.embed-light::after { content: ""; position: absolute; inset: -9px -5px; }
+.embed-light svg { width: 10px; height: 10px; stroke-width: 3; opacity: 0; transition: opacity 0.1s ease; }
+.embed-lights:hover .embed-light svg, .embed-light:focus-visible svg { opacity: 1; }
+.embed-light-close { background: #ff5f57; }
+.embed-light-minimize { background: #febc2e; }
+.embed-light-zoom { background: #28c840; }
+@media (pointer: coarse) {
+  .embed-lights { gap: 16px; }
+  .embed-light { width: 20px; height: 20px; }
+  .embed-light svg { width: 12px; height: 12px; opacity: 1; }
+}
+.embed-title { flex: 1; min-width: 0; overflow: hidden; color: var(--muted-foreground); font-size: 13px; font-weight: 600; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
+.embed-bar-link { display: inline-flex; align-items: center; gap: 5px; padding: 5px 8px; border-radius: 6px; color: var(--muted-foreground); font-size: 12.5px; font-weight: 500; text-decoration: none; }
+.embed-bar-link:hover, .embed-bar-link:focus-visible { background: var(--accent); color: var(--foreground); }
+.embed-bar-link svg { width: 14px; height: 14px; }
+@media (max-width: 480px) { .embed-bar-link span { display: none; } }
 .embed-frame { flex: 1; width: 100%; min-height: 0; border: 0; }
+/* While the handle is dragged the frame must not take the pointer from it. */
+.embed-stage[data-dragging] .embed-frame { pointer-events: none; }
+/*
+ * The floating way back, drawn after a phone's assistive button: a dark
+ * rounded square with a ring in it, faded until it is touched so it sits over
+ * SillyTavern without hiding what is under it.
+ */
+.embed-handle {
+  position: absolute;
+  z-index: 3;
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  min-height: 0 !important;
+  padding: 0;
+  border: 0;
+  border-radius: 14px;
+  background: rgb(20 22 28 / 0.72);
+  box-shadow: 0 6px 18px rgb(0 0 0 / 0.35);
+  opacity: 0.5;
+  touch-action: none;
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  transition: opacity 0.15s ease, top 0.2s ease, left 0.2s ease, right 0.2s ease;
+  cursor: grab;
+}
+.embed-handle span { width: 24px; height: 24px; border-radius: 999px; background: rgb(255 255 255 / 0.85); box-shadow: 0 0 0 5px rgb(255 255 255 / 0.22); }
+.embed-handle:hover, .embed-handle:focus-visible, .embed-handle[data-active] { opacity: 1; }
+/* Following the finger, not easing after it. */
+.embed-handle[data-active] { transition: opacity 0.15s ease; cursor: grabbing; }
+.embed-menu-scrim { position: absolute; inset: 0; z-index: 2; }
+.embed-menu {
+  position: absolute;
+  z-index: 3;
+  display: grid;
+  min-width: 11rem;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--popover);
+  color: var(--popover-foreground);
+  box-shadow: var(--elevation-3);
+}
+.embed-menu > * { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 0 10px; border: 0; border-radius: 8px; background: transparent; color: inherit; font: inherit; font-size: 13.5px; text-align: left; text-decoration: none; }
+.embed-menu > *:hover, .embed-menu > *:focus-visible { background: var(--accent); }
+.embed-menu svg { width: 16px; height: 16px; color: var(--muted-foreground); }
+.embed-menu .embed-menu-danger, .embed-menu .embed-menu-danger svg { color: var(--destructive); }
 
 @media (max-width: 640px) {
   /* The name, the state and the two run controls do not fit on one line on a
