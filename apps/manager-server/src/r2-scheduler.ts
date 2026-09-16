@@ -90,6 +90,8 @@ export class BackupScheduler {
     try {
       const profile = await this.profiles.getActive();
       if (!profile) return;
+      // Safety copies expire on a clock, not only when something new is written.
+      await this.backups.pruneCreated(profile.id);
       const fingerprint = await this.backups.fingerprint(profile);
       await this.runLocalSnapshot(profile, fingerprint, (await this.backups.getSchedule()).intervalMinutes);
       // R2 is asked only after the local copy is taken. A bucket that is off,

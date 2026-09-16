@@ -1198,12 +1198,17 @@ export async function restoreWithProcess(options: {
     onProgress?.(100, logEvent('job.restoreComplete', 'Restore complete'));
     return { preview, safetySnapshot, process };
   } catch (error) {
+    // Nothing was written, or what was written has been put back: the profile
+    // is what the safety copy holds, so the copy is no longer a safety copy.
+    const settle = async () => { if (safetyCopy) await backups.reclassifyAsScheduled(safetyCopy.id).catch(() => undefined); };
+    if (!writing) await settle();
     if (writing && signal?.aborted && safetyCopy) {
       try {
         onProgress?.(88, logEvent('job.rollingBack', 'Putting the data back as it was before the restore'));
         const safetyPath = await backups.getArchivePath(safetyCopy.id);
         if (!safetyPath) throw new Error('the safety copy is missing');
         await backups.restore(profile, safetyPath, { mode: 'replace' });
+        await settle();
       } catch (rollbackError: unknown) {
         await supervisor.start().catch(() => supervisor.getState());
         throw new RestoreRollbackError(rollbackError instanceof Error ? rollbackError.message : 'unknown error');

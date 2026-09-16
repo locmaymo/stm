@@ -9,9 +9,11 @@ const profile = { id: 'p1', name: 'Main' } as never;
 function fakes(options: { rollbackFails?: boolean } = {}) {
   const controller = new AbortController();
   const restores: Array<{ path: string; mode: string }> = [];
+  const reclassified: string[] = [];
   let starts = 0;
   const backups = {
     reserve: () => () => undefined,
+    reclassifyAsScheduled: async (id: string) => { reclassified.push(id); },
     createSafetyCopy: async () => ({ id: 'safety', name: 'Main-prerestore' }),
     getArchivePath: async (id: string) => `/archives/${id}.zip`,
     restore: async (_profile: unknown, path: string, restoreOptions: { mode: string }) => {
@@ -30,18 +32,22 @@ function fakes(options: { rollbackFails?: boolean } = {}) {
     start: async () => { starts += 1; return { status: 'running' }; },
     getState: () => ({ status: 'stopped' }),
   } as unknown as ProcessSupervisor;
-  return { controller, restores, backups, supervisor, starts: () => starts };
+  return { controller, restores, reclassified, backups, supervisor, starts: () => starts };
 }
 
 test('a restore stopped while writing puts the safety copy back before SillyTavern starts', async () => {
-  const { controller, restores, backups, supervisor, starts } = fakes();
+  const { controller, restores, reclassified, backups, supervisor, starts } = fakes();
   await assert.rejects(() => restoreWithProcess({ profile, backups, supervisor, archivePath: '/archives/chosen.zip', mode: 'merge', signal: controller.signal }), /stopped/u);
   assert.deepEqual(restores, [{ path: '/archives/chosen.zip', mode: 'merge' }, { path: '/archives/safety.zip', mode: 'replace' }]);
   assert.equal(starts(), 1);
+  // Put back, the safety copy is just the newest automatic backup.
+  assert.deepEqual(reclassified, ['safety']);
 });
 
 test('a stopped restore that cannot be put back says so', async () => {
-  const { controller, backups, supervisor, starts } = fakes({ rollbackFails: true });
+  const { controller, reclassified, backups, supervisor, starts } = fakes({ rollbackFails: true });
   await assert.rejects(() => restoreWithProcess({ profile, backups, supervisor, archivePath: '/archives/chosen.zip', mode: 'replace', signal: controller.signal }), RestoreRollbackError);
   assert.equal(starts(), 1);
+  // Mixed data: the safety copy is the way back and must stay one.
+  assert.deepEqual(reclassified, []);
 });

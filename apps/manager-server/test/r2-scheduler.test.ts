@@ -9,6 +9,7 @@ function scheduler(intervalMinutes: number) {
   const created: string[] = [];
   const backups = {
     isOperationRunning: () => false,
+    pruneCreated: async () => 0,
     fingerprint: async () => 'changed',
     getSchedule: async () => ({ intervalMinutes }),
     list: async () => [],

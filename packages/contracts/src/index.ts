@@ -202,6 +202,11 @@ export interface BackupManifest {
   readonly source: BackupSource;
   /** Absent on archives written before kinds were recorded; see `backupKind`. */
   readonly kind?: BackupKind;
+  /**
+   * The manager chose the name, so the panel may show it in the reader's own
+   * language instead. Gone once somebody renames it.
+   */
+  readonly autoNamed?: boolean;
   readonly fingerprint?: string;
 }
 

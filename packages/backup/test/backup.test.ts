@@ -317,21 +317,54 @@ test('a backup records why it was taken, and is named for it when nobody named i
   assert.equal((await store.importArchive(fixture.profile, uploaded, 'from-my-laptop.zip')).manifest.kind, 'uploaded');
 });
 
-test('a new backup supersedes the manager’s older ones but never an uploaded archive', async () => {
+test('each kind of backup is kept by its own rule', async () => {
   const fixture = await createFixture();
-  const store = new BackupStore({ paths: fixture.paths });
+  let clock = new Date(2026, 8, 1, 9, 0).getTime();
+  const store = new BackupStore({ paths: fixture.paths, now: () => new Date(clock) });
+  const change = async (label: string) => { clock += 60_000; await writeFile(join(fixture.profile.dataPath, 'chats', `${label}.json`), `{"message":"${label}"}`, 'utf8'); };
   const uploaded = join(fixture.root, 'uploaded.zip');
   await writeStoredZip(uploaded, 'chats/imported.json', '{"message":"imported"}');
   const kept = await store.importArchive(fixture.profile, uploaded, 'from-my-laptop.zip');
 
-  const first = await store.create(fixture.profile, { name: 'Default-scheduled' });
-  await writeFile(join(fixture.profile.dataPath, 'chats', 'new.json'), '{"message":"added"}', 'utf8');
-  const second = await store.create(fixture.profile, { name: 'Default-prerestore' });
+  const manual = await store.create(fixture.profile, { name: 'before the big change' });
+  await change('a');
+  const firstAuto = await store.create(fixture.profile, { kind: 'scheduled' });
+  await change('b');
+  const safety = await store.create(fixture.profile, { kind: 'before-restore' });
+  await change('c');
+  const secondAuto = await store.create(fixture.profile, { kind: 'scheduled' });
+  await change('d');
+  const newerSafety = await store.create(fixture.profile, { kind: 'before-switch' });
 
-  const remaining = await store.list(fixture.profile.id);
-  assert.deepEqual(remaining.map((manifest) => manifest.id).sort(), [kept.manifest.id, second.id].sort());
-  assert.equal(await store.getArchivePath(first.id), null);
-  assert.ok(await store.getArchivePath(kept.manifest.id));
+  // A manual backup and an upload outlive every automatic one; automatic and
+  // safety copies each keep only their newest.
+  const ids = async () => (await store.list(fixture.profile.id)).map((manifest) => manifest.id).sort();
+  assert.deepEqual(await ids(), [kept.manifest.id, manual.id, secondAuto.id, newerSafety.id].sort());
+  assert.equal(await store.getArchivePath(firstAuto.id), null);
+  assert.equal(await store.getArchivePath(safety.id), null);
+
+  // A week on, with a newer backup to fall back on, the safety copy goes too.
+  await change('e');
+  await store.create(fixture.profile, { kind: 'scheduled' });
+  clock += 8 * 24 * 60 * 60 * 1000;
+  await store.pruneCreated(fixture.profile.id);
+  assert.equal((await store.list(fixture.profile.id)).some((manifest) => manifest.id === newerSafety.id), false);
+  assert.ok((await store.list(fixture.profile.id)).some((manifest) => manifest.id === manual.id));
+});
+
+test('a safety copy that guarded nothing becomes the newest automatic backup', async () => {
+  const fixture = await createFixture();
+  let clock = new Date(2026, 8, 16, 16, 5).getTime();
+  const store = new BackupStore({ paths: fixture.paths, now: () => new Date(clock) });
+  const older = await store.create(fixture.profile, { kind: 'scheduled' });
+  clock = new Date(2026, 8, 16, 16, 35).getTime();
+  await writeFile(join(fixture.profile.dataPath, 'chats', 'new.json'), '{"message":"added"}', 'utf8');
+  const safety = await store.create(fixture.profile, { kind: 'before-restore' });
+  await store.reclassifyAsScheduled(safety.id);
+  const list = await store.list(fixture.profile.id);
+  assert.deepEqual(list.map((manifest) => [manifest.id, manifest.kind]), [[safety.id, 'scheduled']]);
+  assert.equal(list[0]?.name, `${fixture.profile.name}_auto_2026-09-16_16-35.zip`);
+  assert.equal(await store.getArchivePath(older.id), null);
 });
 
 test('reserving the operation slot holds off a scheduled backup before the work starts', async () => {
