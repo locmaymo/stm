@@ -18,6 +18,7 @@ import {
   type R2Jurisdiction,
   type WorkerSession,
 } from '../../cloudflare/src/index.js';
+import type { CloudflareConnectionState, CloudflareConnectionStatus } from '../../contracts/src/index.js';
 import type { PlatformPaths } from '../../platform/src/index.js';
 import { RequestPacer, RestObjectStore } from './rest.js';
 import { R2Error, type Billing, type ObjectRecord, type ObjectStore } from './store.js';
@@ -32,23 +33,8 @@ const WORKER_RETRY_MS = 60 * 60 * 1000;
 /** After a rotation failed, how long the current key is used before trying again. */
 const ROTATION_RETRY_MS = 10 * 60 * 1000;
 
-export type CloudflareConnectionState = 'disconnected' | 'choose_account' | 'connected' | 'reconnect_required';
 export type CloudflareDataPath = 'worker' | 'rest';
-
-export interface CloudflareConnectionStatus {
-  readonly state: CloudflareConnectionState;
-  readonly account: CloudflareAccount | null;
-  readonly bucket: string | null;
-  /** Offered while the user has to pick which account backups go to. */
-  readonly accounts: readonly CloudflareAccount[];
-  /** Which way data went last, once anything has; null before the first transfer. */
-  readonly dataPath: CloudflareDataPath | null;
-  /** Why data goes over the slow REST API instead of the Worker, when it does. */
-  readonly restReason: 'workers_not_granted' | 'worker_unavailable' | null;
-  readonly analyticsGranted: boolean;
-  readonly connectedAt: string | null;
-  readonly lastError: string | null;
-}
+export type { CloudflareConnectionState, CloudflareConnectionStatus };
 
 interface StoredConnection {
   readonly schemaVersion: 1;

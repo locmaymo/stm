@@ -1,12 +1,13 @@
 import { randomBytes } from 'node:crypto';
 import { mkdir, open, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { formatBytes, logEvent, logLineText, type LogSink, type Profile, type R2Config, type R2EnvironmentField, type R2Object, type R2SnapshotSummary, type R2Usage, type TransferProgress } from '../../contracts/src/index.js';
+import { formatBytes, logEvent, logLineText, type LogSink, type Profile, type R2Config, type R2ConnectionMode, type R2EnvironmentField, type R2Object, type R2SnapshotSummary, type R2Usage, type TransferProgress } from '../../contracts/src/index.js';
 import { ioConcurrency, runPooled } from '../../platform/src/index.js';
 import type { PlatformPaths } from '../../platform/src/index.js';
+import type { CloudflareConnection } from './cloudflare-connection.js';
 import { BlobLedger } from './ledger.js';
 import { S3ObjectStore, type R2Credentials } from './s3.js';
-import { R2Error, type ObjectRecord, type ObjectStore } from './store.js';
+import { R2Error, type Billing, type ObjectRecord, type ObjectStore } from './store.js';
 import {
   blobKey,
   decodeBlob,
@@ -23,6 +24,7 @@ import {
 
 export { R2Error } from './store.js';
 export type { ObjectRecord, ObjectStore } from './store.js';
+export { CloudflareConnection } from './cloudflare-connection.js';
 
 const R2_STATE_FILE = 'r2-config.json';
 /** The connection settings `.env` may provide, and the variable for each. */
@@ -81,6 +83,15 @@ interface StoredUsage {
 
 interface StoredR2Config {
   readonly schemaVersion: 2;
+  readonly mode: R2ConnectionMode;
+  /**
+   * Which bucket the chunk ledger describes.
+   *
+   * The ledger is what lets a backup skip chunks the bucket already holds. Kept
+   * across a switch to another bucket, it would skip chunks the new bucket has
+   * never seen, and every recovery point written there would point at nothing.
+   */
+  readonly ledgerTarget: string | null;
   readonly enabled: boolean;
   readonly endpoint: string | null;
   readonly bucket: string | null;
@@ -118,9 +129,12 @@ export interface R2ManagerOptions {
   readonly now?: () => Date;
   readonly logger?: LogSink;
   readonly fetchImpl?: typeof fetch;
+  /** The signed-in connection, when this manager has a Cloudflare OAuth client. */
+  readonly cloudflare?: CloudflareConnection;
 }
 
 export interface R2UpdateInput {
+  readonly mode?: R2ConnectionMode;
   readonly enabled?: boolean;
   readonly endpoint?: string | null;
   readonly bucket?: string | null;
@@ -190,6 +204,7 @@ export class R2Manager {
   private readonly logger: LogSink;
   private readonly fetchImpl: typeof fetch;
   private readonly ledger: BlobLedger;
+  private readonly cloudflare: CloudflareConnection | null;
   private configState: StoredR2Config | null = null;
   /** The local backup interval an older version kept in this file, until it is handed over. */
   private legacyLocalInterval: number | null = null;
@@ -220,10 +235,11 @@ export class R2Manager {
     this.logger = options.logger ?? ((line) => console.log(logLineText(line)));
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.ledger = new BlobLedger({ path: join(this.paths.state, R2_LEDGER_FILE) });
+    this.cloudflare = options.cloudflare ?? null;
   }
 
   public async getConfig(): Promise<R2Config> {
-    return this.toPublic(await this.load());
+    return await this.toPublic(await this.load());
   }
 
   public async update(requested: R2UpdateInput): Promise<R2Config> {
@@ -232,8 +248,11 @@ export class R2Manager {
     // and cannot change it, so a stale form cannot quietly replace it either.
     const locked = new Set<string>(this.environmentFields());
     const input = Object.fromEntries(Object.entries(requested).filter(([key]) => !locked.has(key))) as R2UpdateInput;
+    if (input.mode !== undefined && input.mode !== 'keys' && input.mode !== 'cloudflare') throw new R2Error('invalid_r2_mode', 'The R2 connection mode is not valid');
+    if (input.mode === 'cloudflare' && !this.cloudflare) throw new R2Error('cloudflare_not_available', 'This manager has no Cloudflare sign-in configured');
     const next: StoredR2Config = {
       ...current,
+      ...(input.mode !== undefined ? { mode: input.mode } : {}),
       ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
       ...(input.endpoint !== undefined ? { endpoint: normalizeNullable(input.endpoint) } : {}),
       ...(input.bucket !== undefined ? { bucket: normalizeNullable(input.bucket) } : {}),
@@ -251,7 +270,7 @@ export class R2Manager {
     };
     validateStoredConfig(next);
     await this.save(next);
-    return this.toPublic(next);
+    return await this.toPublic(next);
   }
 
   public async testConnection(): Promise<R2ConnectionResult> {
@@ -291,8 +310,7 @@ export class R2Manager {
    */
   public async syncProfile(input: R2SyncInput): Promise<R2SyncResult> {
     return await this.exclusive(async () => {
-      const config = await this.requireUsable();
-      await this.ledger.load();
+      const config = await this.onTarget(await this.requireUsable());
       const usage = await this.currentPeriod(config);
       if (usage.storageBytes >= config.maxStorageBytes) {
         throw new R2Error('r2_storage_ceiling', `The bucket is holding ${formatBytes(usage.storageBytes)}, at or above the ${formatBytes(config.maxStorageBytes)} ceiling. Lower retention or raise the ceiling.`);
@@ -535,6 +553,7 @@ export class R2Manager {
         collectedBytes += object.sizeBytes;
       }
       for (const hash of collected) blobs.delete(hash);
+      await this.ledger.load();
       await this.ledger.reconcile(blobs.keys());
 
       const snapshotBytesTotal = objects.filter((object) => object.key.startsWith(SNAPSHOT_PREFIX)).reduce((sum, object) => sum + object.sizeBytes, 0);
@@ -551,7 +570,7 @@ export class R2Manager {
         legacyBytes,
         lastReconciledAt: this.now().toISOString(),
       };
-      await this.save({ ...config, usage });
+      await this.save({ ...(await this.load()), ledgerTarget: await this.storageTarget(config), usage });
       await this.recordCharges();
       this.logger(logEvent('r2.reconciled', `[r2] ${blobs.size} stored chunk(s), ${formatBytes(usage.storageBytes)}; collected ${collectedBlobs}`, { chunks: blobs.size, size: formatBytes(usage.storageBytes), collected: collectedBlobs }));
       return { blobCount: blobs.size, collectedBlobs, collectedBytes, usage: toPublicUsage(usage) };
@@ -652,8 +671,58 @@ export class R2Manager {
   private async requireUsable(): Promise<StoredR2Config> {
     const config = await this.load();
     if (!config.enabled) throw new R2Error('r2_disabled', 'R2 backup is switched off');
-    toCredentials(config);
+    if (config.mode === 'cloudflare') {
+      const status = await this.cloudflare?.status();
+      if (status?.state === 'reconnect_required') throw new R2Error('cloudflare_reconnect_required', 'Reconnect to Cloudflare to continue backing up');
+      if (status?.state !== 'connected') throw new R2Error('r2_not_configured', 'Connect to Cloudflare and choose an account first');
+    } else {
+      toCredentials(config);
+    }
     return config;
+  }
+
+  /** Where objects go right now, as the chunk ledger needs to know it. */
+  private async storageTarget(config: StoredR2Config): Promise<string> {
+    if (config.mode === 'cloudflare') {
+      const target = await this.cloudflare?.target();
+      if (!target) throw new R2Error('r2_not_configured', 'Connect to Cloudflare and choose an account first');
+      return `cloudflare:${target.account.id}/${target.jurisdiction}/${target.bucket}`;
+    }
+    const credentials = toCredentials(config);
+    return `s3:${credentials.endpoint.replace(/\/+$/u, '')}/${credentials.bucket}`;
+  }
+
+  /**
+   * The config for a run, with the ledger made to describe the bucket being written.
+   *
+   * A different bucket starts from nothing: no chunk is assumed present and no
+   * recovery point is assumed to be there to compare with, so the first run
+   * sends everything. A config from before this was recorded is taken to
+   * describe the keys bucket it was already using, so upgrading costs nothing.
+   */
+  private async onTarget(config: StoredR2Config): Promise<StoredR2Config> {
+    await this.ledger.load();
+    const target = await this.storageTarget(config);
+    if (config.ledgerTarget === target) return config;
+    if (config.ledgerTarget === null && config.mode === 'keys') {
+      const adopted = { ...config, ledgerTarget: target };
+      await this.save(adopted);
+      return adopted;
+    }
+    await this.ledger.reconcile([]);
+    const fresh = defaultStoredConfig(this.now());
+    const switched: StoredR2Config = {
+      ...config,
+      ledgerTarget: target,
+      lastUploadAt: null,
+      lastColdUploadAt: null,
+      lastFingerprint: null,
+      lastSnapshot: null,
+      usage: { ...fresh.usage, writeOperations: config.usage.writeOperations, readOperations: config.usage.readOperations, periodStartedAt: config.usage.periodStartedAt },
+    };
+    await this.save(switched);
+    this.logger(logEvent('r2.targetChanged', '[r2] backups now go to a different bucket; the first run there sends everything'));
+    return switched;
   }
 
   /** The usage counters, with the charged-write count reset when the month turns over. */
@@ -664,10 +733,15 @@ export class R2Manager {
   }
 
   private client(config: StoredR2Config): ObjectStore {
-    return new S3ObjectStore(toCredentials(config), this.fetchImpl, (kind) => {
+    const count = (kind: Billing): void => {
       if (kind === 'charged') this.charges.write += 1;
       else if (kind === 'read') this.charges.read += 1;
-    });
+    };
+    if (config.mode === 'cloudflare') {
+      if (!this.cloudflare) throw new R2Error('cloudflare_not_available', 'This manager has no Cloudflare sign-in configured');
+      return this.cloudflare.objectStore(count);
+    }
+    return new S3ObjectStore(toCredentials(config), this.fetchImpl, count);
   }
 
   /**
@@ -699,13 +773,18 @@ export class R2Manager {
     return await run;
   }
 
-  private toPublic(config: StoredR2Config): R2Config {
+  private async toPublic(config: StoredR2Config): Promise<R2Config> {
+    const cloudflare = this.cloudflare ? await this.cloudflare.status() : null;
     return {
+      mode: config.mode,
+      cloudflare,
       enabled: config.enabled,
       endpoint: config.endpoint,
       bucket: config.bucket,
       environmentFields: this.environmentFields(),
-      configured: Boolean(config.endpoint && config.bucket && config.accessKeyId && config.secretAccessKey),
+      configured: config.mode === 'cloudflare'
+        ? cloudflare?.state === 'connected'
+        : Boolean(config.endpoint && config.bucket && config.accessKeyId && config.secretAccessKey),
       lastUploadAt: config.lastUploadAt,
       accessKeyIdMasked: config.accessKeyId ? maskSecret(config.accessKeyId) : null,
       secretAccessKeyConfigured: Boolean(config.secretAccessKey),
@@ -1016,6 +1095,8 @@ function parseStoredConfig(value: unknown): StoredR2Config {
 function defaultStoredConfig(now: Date): StoredR2Config {
   return {
     schemaVersion: R2_SCHEMA_VERSION,
+    mode: 'keys',
+    ledgerTarget: null,
     enabled: false,
     endpoint: null,
     bucket: null,

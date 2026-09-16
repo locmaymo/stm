@@ -225,7 +225,41 @@ export interface LocalBackupSchedule {
   readonly intervalMinutes: number;
 }
 
+/**
+ * How the bucket was connected.
+ *
+ * `keys` is an endpoint, bucket and S3 key pair entered by hand or set in
+ * `.env`, which stays available for anyone who does not want to sign in.
+ * `cloudflare` is a bucket the manager set up after signing in to Cloudflare.
+ */
+export type R2ConnectionMode = 'keys' | 'cloudflare';
+
+export type CloudflareConnectionState = 'disconnected' | 'choose_account' | 'connected' | 'reconnect_required';
+
+export interface CloudflareAccountRef {
+  readonly id: string;
+  readonly name: string;
+}
+
+export interface CloudflareConnectionStatus {
+  readonly state: CloudflareConnectionState;
+  readonly account: CloudflareAccountRef | null;
+  readonly bucket: string | null;
+  /** Offered while the user has to pick which account backups go to. */
+  readonly accounts: readonly CloudflareAccountRef[];
+  /** Which way data went last, once anything has; null before the first transfer. */
+  readonly dataPath: 'worker' | 'rest' | null;
+  /** Why data goes over the slow REST API instead of the Worker, when it does. */
+  readonly restReason: 'workers_not_granted' | 'worker_unavailable' | null;
+  readonly analyticsGranted: boolean;
+  readonly connectedAt: string | null;
+  readonly lastError: string | null;
+}
+
 export interface R2Config {
+  readonly mode: R2ConnectionMode;
+  /** Null when this manager has no Cloudflare OAuth client configured. */
+  readonly cloudflare: CloudflareConnectionStatus | null;
   readonly enabled: boolean;
   readonly endpoint: string | null;
   readonly bucket: string | null;

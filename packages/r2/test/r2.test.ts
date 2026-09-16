@@ -120,6 +120,26 @@ test('connection settings in .env win, and are never copied into the state file'
   assert.equal(onDisk.includes(CREDENTIALS.accessKeyId), false);
 });
 
+test('a different bucket gets every chunk, because the ledger described the old one', async () => {
+  const first = fakeBucket();
+  const second = fakeBucket();
+  const fetchImpl: typeof fetch = async (input, init) => (new URL(String(input)).pathname.split('/')[1] === 'stm-other-bucket' ? second.fetchImpl : first.fetchImpl)(input, init);
+  const { manager, root } = await createManager({ fetchImpl });
+  const chat = await source(root, 'chats/one.jsonl', 'x'.repeat(5000));
+  const card = await source(root, 'characters/a.png', Buffer.alloc(3000, 1));
+  await manager.syncProfile({ profile: profile(), sources: [chat, card], fingerprint: 'one' });
+  assert.equal(first.requests.put, 3);
+  // Same bucket: the ledger knows both chunks, so only the new index goes up.
+  await manager.syncProfile({ profile: profile(), sources: [chat, card], fingerprint: 'two' });
+  assert.equal(first.requests.put, 4);
+
+  await manager.update({ bucket: 'stm-other-bucket' });
+  await manager.syncProfile({ profile: profile(), sources: [chat, card], fingerprint: 'three' });
+  assert.equal(second.requests.put, 3, 'both chunks and the index go to the new bucket');
+  assert.equal(first.requests.put, 4);
+  assert.equal((await manager.getConfig()).usage.snapshotCount, 1);
+});
+
 test('a recovery point lists the data it holds, not just the size of its index', async () => {
   const bucket = fakeBucket();
   const { manager, root } = await createManager({ fetchImpl: bucket.fetchImpl });

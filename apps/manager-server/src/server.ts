@@ -21,7 +21,8 @@ import { previewImage, previewLogo, previewManifest } from './preview.js';
 import { TunnelManager } from '../../../packages/tunnel/src/index.js';
 import { ProfileError, ProfileStore } from '../../../packages/profiles/src/index.js';
 import { BackupError, BackupStore } from '../../../packages/backup/src/index.js';
-import { R2Error, R2Manager, type R2UpdateInput } from '../../../packages/r2/src/index.js';
+import { CloudflareConnection, R2Error, R2Manager, type R2UpdateInput } from '../../../packages/r2/src/index.js';
+import { CloudflareApiError, CloudflareOAuthError, CloudflareRateLimitError, DEFAULT_SCOPES } from '../../../packages/cloudflare/src/index.js';
 import { BackupScheduler, syncProfileToR2 } from './r2-scheduler.js';
 import { fetchSnapshotToLibrary } from './r2-restore.js';
 import { TransferMeter } from './progress.js';
@@ -43,6 +44,26 @@ const NOTICE = {
   disclaimer: 'You are responsible for your SillyTavern data, credentials, providers, backups, and compliance with applicable service terms.',
 } as const;
 
+
+/**
+ * The Cloudflare OAuth client this project registered.
+ *
+ * A public client: it has no secret, so shipping its ID is how it is meant to be
+ * used. Anyone running their own manager can register a client in their own
+ * Cloudflare account and point `STM_CLOUDFLARE_OAUTH_CLIENT_ID` at it, or set it
+ * empty to turn signing in to Cloudflare off and keep to S3 keys.
+ */
+const DEFAULT_CLOUDFLARE_CLIENT_ID = 'b55fd7c6239ab201abe3cbdf58012dbc';
+/**
+ * Where Cloudflare sends the browser back to.
+ *
+ * Cloudflare only accepts a redirect it has registered, matched exactly, and a
+ * manager can be on any port and any address. The registered one is a page on
+ * the project's domain that forwards to the origin the sign-in started from.
+ */
+const DEFAULT_CLOUDFLARE_REDIRECT_URI = 'https://stm.phamloc.top/oauth/cloudflare/callback';
+/** Where the relay, or Cloudflare itself for a loopback client, sends the browser on this manager. */
+export const CLOUDFLARE_CALLBACK_PATH = '/oauth/cloudflare/callback';
 
 const PROTECTED_PATHS = new Set([
   '/api/v1/versions',
@@ -87,6 +108,8 @@ export interface ManagerServerOptions {
   readonly profileStore?: ProfileStore;
   readonly backupStore?: BackupStore;
   readonly r2?: R2Manager;
+  /** Null turns signing in to Cloudflare off; absent builds it from the environment. */
+  readonly cloudflare?: CloudflareConnection | null;
   readonly metrics?: MetricsStore;
   readonly config?: ConfigStore;
   readonly telemetry?: TelemetryTransport;
@@ -143,7 +166,8 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   const runtime = options.runtime ?? new RuntimeManager({ paths, logger: (line) => { jobs.append('installer', line); baseLogger(line); } });
   const profiles = options.profileStore ?? new ProfileStore({ paths, logger: (line) => { jobs.append('manager', line); baseLogger(line); } });
   const backups = options.backupStore ?? new BackupStore({ paths, logger: (line) => { jobs.append('backup', line); baseLogger(line); } });
-  const r2 = options.r2 ?? new R2Manager({ paths, env, logger: (line) => { jobs.append('backup', line); baseLogger(line); } });
+  const cloudflare = options.cloudflare !== undefined ? options.cloudflare : cloudflareConnectionFromEnvironment(paths, env);
+  const r2 = options.r2 ?? new R2Manager({ paths, env, ...(cloudflare ? { cloudflare } : {}), logger: (line) => { jobs.append('backup', line); baseLogger(line); } });
   const metrics = options.metrics ?? new MetricsStore(paths);
   const config = options.config ?? new ConfigStore({ logger: (line) => { jobs.append('manager', line); baseLogger(line); } });
   const accessPort = options.accessPort ?? (Number(env.STM_ACCESS_PORT ?? '') || ACCESS_GATEWAY_PORT);
@@ -298,6 +322,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       profiles,
       backups,
       r2,
+      cloudflare,
       metrics,
       config,
       system,
@@ -318,6 +343,17 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       }
       if (error instanceof ConfigError) {
         sendError(response, error.code === 'config_missing' ? 409 : 400, error.code, error.message);
+        return;
+      }
+      if (error instanceof CloudflareRateLimitError) {
+        response.setHeader('retry-after', String(error.retryAfterSeconds));
+        sendError(response, 429, error.code, error.message);
+        return;
+      }
+      if (error instanceof CloudflareApiError || error instanceof CloudflareOAuthError) {
+        // Cloudflare answered, and not with what was needed: a gateway problem,
+        // not a fault in this manager.
+        sendError(response, 502, error.code, error.message);
         return;
       }
       logger(logEvent('manager.requestFailed', `[manager] request failed: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
@@ -406,13 +442,14 @@ async function handleRequest(options: {
   readonly profiles: ProfileStore;
   readonly backups: BackupStore;
   readonly r2: R2Manager;
+  readonly cloudflare: CloudflareConnection | null;
   readonly metrics: MetricsStore;
   readonly config: ConfigStore;
   readonly system: SystemStore;
   readonly shutdownToken: string | null;
   readonly onShutdownRequest: (() => void) | undefined;
 }): Promise<void> {
-  const { request, response, store, sessions, rateLimiter, startedAt, secureCookies, staticRoot, platform, runtime, jobs, supervisor, tunnel, gateway, profiles, backups, r2, metrics, config, system, shutdownToken, onShutdownRequest } = options;
+  const { request, response, store, sessions, rateLimiter, startedAt, secureCookies, staticRoot, platform, runtime, jobs, supervisor, tunnel, gateway, profiles, backups, r2, cloudflare, metrics, config, system, shutdownToken, onShutdownRequest } = options;
   const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
   const pathname = url.pathname;
   const context: RequestContext = {
@@ -424,6 +461,10 @@ async function handleRequest(options: {
     sessionToken: parseSessionCookie(headerValue(request.headers.cookie), COOKIE_NAME),
   };
 
+  if (pathname === CLOUDFLARE_CALLBACK_PATH && (request.method ?? 'GET') === 'GET') {
+    await handleCloudflareCallback(context, sessions, cloudflare, r2, options.logger);
+    return;
+  }
   if (!pathname.startsWith('/api/v1/')) {
     await servePanel(request, response, pathname, staticRoot);
     return;
@@ -513,14 +554,14 @@ async function handleRequest(options: {
     if (method !== 'GET' && !requireCsrf(context, session.csrfToken)) {
       return;
     }
-    await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, gateway, profiles, backups, r2, metrics, config, system);
+    await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, gateway, profiles, backups, r2, cloudflare, metrics, config, system);
     return;
   }
 
   sendError(response, 404, 'not_found', 'Route not found');
 }
 
-async function handleRuntimeRequest(context: RequestContext, store: StateStore, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, gateway: AccessGateway, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, metrics: MetricsStore, config: ConfigStore, system: SystemStore): Promise<void> {
+async function handleRuntimeRequest(context: RequestContext, store: StateStore, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, gateway: AccessGateway, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, cloudflare: CloudflareConnection | null, metrics: MetricsStore, config: ConfigStore, system: SystemStore): Promise<void> {
   const { pathname, request, response, searchParams } = context;
   const method = request.method ?? 'GET';
   if (pathname === '/api/v1/auth/password' && method === 'POST') {
@@ -677,6 +718,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     const body = await readJson(request);
     if (!isRecord(body)) { sendError(response, 400, 'invalid_input', 'A JSON object is required'); return; }
     const input: R2UpdateInput = {
+      ...(body.mode === 'keys' || body.mode === 'cloudflare' ? { mode: body.mode } : {}),
       ...(typeof body.enabled === 'boolean' ? { enabled: body.enabled } : {}),
       ...(typeof body.endpoint === 'string' || body.endpoint === null ? { endpoint: body.endpoint as string | null } : {}),
       ...(typeof body.bucket === 'string' || body.bucket === null ? { bucket: body.bucket as string | null } : {}),
@@ -692,6 +734,10 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       ...(typeof body.maxWriteOperations === 'number' ? { maxWriteOperations: body.maxWriteOperations } : {}),
     };
     sendJson(response, 200, { config: await r2.update(input) });
+    return;
+  }
+  if (pathname.startsWith('/api/v1/r2/cloudflare')) {
+    await handleCloudflareRequest(context, cloudflare, r2);
     return;
   }
   if (pathname === '/api/v1/r2/test' && method === 'POST') {
@@ -1265,6 +1311,94 @@ function sendImage(response: ServerResponse, image: { bytes: Buffer; contentType
 
 function userDataRoot(profile: Profile): string {
   return profile.layout === 'data' ? join(profile.dataPath, 'default-user') : profile.dataPath;
+}
+
+function cloudflareConnectionFromEnvironment(paths: PlatformPaths, env: NodeJS.ProcessEnv): CloudflareConnection | null {
+  const clientId = (env.STM_CLOUDFLARE_OAUTH_CLIENT_ID ?? DEFAULT_CLOUDFLARE_CLIENT_ID).trim();
+  if (!clientId) return null;
+  const redirectUri = env.STM_CLOUDFLARE_OAUTH_REDIRECT_URI?.trim() || DEFAULT_CLOUDFLARE_REDIRECT_URI;
+  const scopes = env.STM_CLOUDFLARE_OAUTH_SCOPES?.split(/[\s,]+/u).filter(Boolean) ?? Object.values(DEFAULT_SCOPES);
+  return new CloudflareConnection({ paths, client: { clientId, redirectUri, scopes } });
+}
+
+/**
+ * Connect, choose an account, disconnect, and read where things stand.
+ *
+ * Whatever changes the connection also says what backups use: connecting makes
+ * the signed-in bucket the one backed up to, and disconnecting it switches R2
+ * backups off rather than leaving them failing on a schedule.
+ */
+async function handleCloudflareRequest(context: RequestContext, cloudflare: CloudflareConnection | null, r2: R2Manager): Promise<void> {
+  const { pathname, request, response } = context;
+  const method = request.method ?? 'GET';
+  if (!cloudflare) { sendError(response, 404, 'cloudflare_not_available', 'This manager has no Cloudflare sign-in configured'); return; }
+  if (pathname === '/api/v1/r2/cloudflare' && method === 'GET') {
+    sendJson(response, 200, { cloudflare: await cloudflare.status() });
+    return;
+  }
+  if (pathname === '/api/v1/r2/cloudflare/connect' && method === 'POST') {
+    // The origin the panel is open on, so the relay can send the browser back
+    // to the same place - this machine, the LAN address or the tunnel.
+    const origin = headerValue(request.headers.origin) ?? `http://${headerValue(request.headers.host) ?? 'localhost'}`;
+    let returnOrigin: string;
+    try { returnOrigin = new URL(origin).origin; } catch { sendError(response, 400, 'invalid_origin', 'The panel origin could not be read'); return; }
+    sendJson(response, 200, { url: cloudflare.beginConnect(returnOrigin) });
+    return;
+  }
+  if (pathname === '/api/v1/r2/cloudflare/account' && method === 'POST') {
+    const body = await readJson(request);
+    const accountId = isRecord(body) && typeof body.accountId === 'string' ? body.accountId : '';
+    if (!/^[0-9a-f]{32}$/u.test(accountId)) { sendError(response, 400, 'invalid_account', 'A Cloudflare account ID is required'); return; }
+    const status = await cloudflare.chooseAccount(accountId);
+    if (status.state === 'connected') await r2.update({ mode: 'cloudflare', enabled: true });
+    sendJson(response, 200, { cloudflare: status, config: await r2.getConfig() });
+    return;
+  }
+  if (pathname === '/api/v1/r2/cloudflare/disconnect' && method === 'POST') {
+    const result = await cloudflare.disconnect();
+    if ((await r2.getConfig()).mode === 'cloudflare') await r2.update({ enabled: false });
+    sendJson(response, 200, { ...result, config: await r2.getConfig() });
+    return;
+  }
+  sendError(response, 404, 'not_found', 'Route not found');
+}
+
+/**
+ * Where the browser lands after Cloudflare, straight or through the relay.
+ *
+ * It is a page load, not an API call, so it answers with a redirect to the
+ * panel carrying the outcome. The session cookie is `SameSite=Lax`, which a
+ * top-level navigation back from Cloudflare still carries, so only a signed-in
+ * admin can finish connecting this manager.
+ */
+async function handleCloudflareCallback(context: RequestContext, sessions: SessionStore, cloudflare: CloudflareConnection | null, r2: R2Manager, logger: LogSink): Promise<void> {
+  const { response, searchParams } = context;
+  const redirect = (outcome: string, code?: string): void => {
+    const query = new URLSearchParams({ cloudflare: outcome, ...(code ? { cloudflare_error: code } : {}) });
+    response.writeHead(303, {
+      location: `/?${query.toString()}#data`,
+      'cache-control': 'no-store',
+      // The address this was reached at holds the authorization code.
+      'referrer-policy': 'no-referrer',
+    });
+    response.end();
+  };
+  if (!cloudflare) { redirect('error', 'cloudflare_not_available'); return; }
+  if (!sessions.get(context.sessionToken)) { redirect('error', 'login_required'); return; }
+  try {
+    const status = await cloudflare.completeConnect({
+      state: searchParams.get('state') ?? '',
+      code: searchParams.get('code'),
+      error: searchParams.get('error'),
+      errorDescription: searchParams.get('error_description'),
+    });
+    if (status.state === 'connected') await r2.update({ mode: 'cloudflare', enabled: true });
+    redirect(status.state);
+  } catch (error: unknown) {
+    const code = isRecord(error) && typeof error.code === 'string' ? error.code : 'cloudflare_connect_failed';
+    logger(logEvent('r2.cloudflareConnectFailed', `[r2] connecting to Cloudflare failed: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
+    redirect('error', code);
+  }
 }
 
 function isProtectedPath(pathname: string): boolean {
