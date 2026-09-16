@@ -751,10 +751,10 @@ const PAGE_STYLE = `*{box-sizing:border-box}[hidden]{display:none!important}html
  * a screen reader both still work.
  *
  * With the script, the field is laid over the dots rather than hidden, with
- * its text and caret made transparent. Touching the dots is then touching the
- * field and brings up the device's keyboard; touching the keypad leaves focus
- * where it is and does not, because somebody pressing the keypad on the screen
- * has already picked which keyboard they are using. The submit button goes
+ * its text and caret made transparent, and it stops asking for an on-screen
+ * keyboard (`inputmode="none"`): the keypad drawn here is the keyboard, and a
+ * device keypad sliding up over it is two keyboards for six digits. A
+ * hardware keyboard ignores the hint and still types. The submit button goes
  * away with the script too - six digits sends the form, the way a lock screen
  * does - and comes back the moment there is no script to send it. Its id is
  * `send` and not `submit` on purpose: a control named `submit` inside a form
@@ -824,7 +824,7 @@ function keypad(text: GatewayText, blocked: boolean): string {
  * as soon as the sixth digit lands - which is what a phone's lock screen does
  * and what anybody who has used one expects.
  */
-const PASSCODE_SCRIPT = `(function(){var i=document.getElementById('password'),p=document.getElementById('pad'),d=document.getElementById('dots'),f=document.getElementById('form'),b=document.getElementById('send');if(!i||!p||!d||!f)return;p.hidden=false;d.hidden=false;if(b)b.hidden=true;i.classList.remove('code');i.classList.add('veil');var s=false;function draw(){var n=i.value.length;var c=d.children;for(var k=0;k<c.length;k++){c[k].className=k<n?'on':''}if(n===6&&!s){s=true;f.submit()}}function set(v){i.value=v.slice(0,6);draw()}i.addEventListener('input',function(){set(i.value.replace(/[^0-9]/g,''))});p.addEventListener('mousedown',function(e){e.preventDefault()});p.addEventListener('click',function(e){var t=e.target.closest('button');if(!t)return;var k=t.getAttribute('data-key');if(k==='clear')set('');else if(k==='back')set(i.value.slice(0,-1));else set(i.value+k)});if(window.matchMedia&&window.matchMedia('(pointer: fine)').matches)i.focus();draw()})();`;
+const PASSCODE_SCRIPT = `(function(){var i=document.getElementById('password'),p=document.getElementById('pad'),d=document.getElementById('dots'),f=document.getElementById('form'),b=document.getElementById('send');if(!i||!p||!d||!f)return;p.hidden=false;d.hidden=false;if(b)b.hidden=true;i.classList.remove('code');i.classList.add('veil');i.setAttribute('inputmode','none');var s=false;function draw(){var n=i.value.length;var c=d.children;for(var k=0;k<c.length;k++){c[k].className=k<n?'on':''}if(n===6&&!s){s=true;f.submit()}}function set(v){i.value=v.slice(0,6);draw()}i.addEventListener('input',function(){set(i.value.replace(/[^0-9]/g,''))});p.addEventListener('mousedown',function(e){e.preventDefault()});p.addEventListener('click',function(e){var t=e.target.closest('button');if(!t)return;var k=t.getAttribute('data-key');if(k==='clear')set('');else if(k==='back')set(i.value.slice(0,-1));else set(i.value+k)});if(window.matchMedia&&window.matchMedia('(pointer: fine)').matches)i.focus();draw()})();`;
 
 /** The same page with nothing to sign into - SillyTavern is not answering. */
 function errorPage(message: string): string {

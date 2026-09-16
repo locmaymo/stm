@@ -26,16 +26,14 @@ export interface PasscodeInputProps extends Omit<ComponentProps<'div'>, 'onChang
  *
  * The digits are dots and the keys are buttons, and the field behind them is
  * an ordinary input - not hidden away, but laid over the dots with its text
- * and its caret made transparent. That placement is the whole interaction:
+ * and its caret made transparent, so a physical keyboard, a paste and a
+ * screen reader all still have a field to type into.
  *
- *   - tapping the dots is tapping the field, so the device's own keyboard
- *     comes up, which is what tapping a place to type has always meant;
- *   - tapping a key on the keypad does not touch the field's focus, so the
- *     device's keyboard stays away. Somebody using the keypad drawn on the
- *     screen has already chosen their keyboard.
- *
- * It read the other way round first, and a system keypad sliding up over the
- * keypad being pressed is a funny thing to watch once and no fun after that.
+ * The field asks for no on-screen keyboard at all (`inputMode="none"`). A
+ * dialog focuses the first thing in it as it opens, and on a phone that used
+ * to bring the device's keypad up over the one drawn here - two keyboards for
+ * six digits. The keypad on the screen is the keyboard; a hardware keyboard
+ * is not affected by the hint and still types.
  *
  * The public sign-in page draws the same thing in plain HTML, because it is
  * served by the gateway with no bundler and has to work before any script
@@ -97,7 +95,7 @@ export function PasscodeInput({
              a field it considers too small to read, and a login screen that
              jumps when it is touched feels broken. */
           className="absolute inset-0 z-10 w-full cursor-pointer rounded-lg bg-transparent text-base text-transparent caret-transparent outline-none selection:bg-transparent focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:cursor-not-allowed"
-          inputMode="numeric"
+          inputMode="none"
           autoComplete="one-time-code"
           value={value}
           disabled={disabled}

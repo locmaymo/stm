@@ -1404,7 +1404,10 @@ function PasscodeDialog({ t, open, onOpenChange, note, onSubmit }: { t: Translat
   const mismatch = stage === 'confirm' && confirmed.length === PASSCODE_DIGITS && confirmed !== entered;
 
   return <Dialog open={open} onOpenChange={close}>
-    <DialogContent className="sm:max-w-sm">
+    {/* A dialog focuses its first field as it opens. On a touch screen that
+        field is the one under the dots, and focus there is what used to bring
+        the device's keypad up over the one drawn below it. */}
+    <DialogContent className="sm:max-w-sm" onOpenAutoFocus={(event) => { if (!window.matchMedia('(pointer: fine)').matches) event.preventDefault(); }}>
       <DialogHeader>
         <DialogTitle>{t('console.passwordSettings')}</DialogTitle>
         <DialogDescription>{stage === 'enter' ? t('console.passcodeChoose') : t('console.passcodeRepeat')}</DialogDescription>
