@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { getPlatformPaths } from '../../platform/src/index.js';
-import { RuntimeError, RuntimeManager, extractZipSafely } from '../src/index.js';
+import { RuntimeError, RuntimeManager, extractZipSafely, gitFetchAttempts } from '../src/index.js';
 import { logLineText } from '../../contracts/src/index.js';
 
 const exec = promisify(execFile);
@@ -233,6 +233,37 @@ test('shared Git checkout switches refs without creating one runtime per version
   assert.equal(second.runtimePath, third.runtimePath);
   assert.equal((await readFile(join(third.runtimePath, 'server.js'), 'utf8')).replaceAll('\r\n', '\n'), 'module.exports = "one";\n');
   assert.equal((await runtime.listInstallations()).filter((item) => item.status === 'ready').length, 3);
+});
+
+test('a version change falls back to a complete pack when a fetch keeps failing', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-runtime-refetch-'));
+  const repository = join(root, 'source');
+  await exec('git', ['init', repository]);
+  await exec('git', ['-C', repository, 'config', 'user.email', 'stm@test.local']);
+  await exec('git', ['-C', repository, 'config', 'user.name', 'STM Test']);
+  await writeFile(join(repository, 'server.js'), 'module.exports = "one";\n', 'utf8');
+  await exec('git', ['-C', repository, 'add', '.']); await exec('git', ['-C', repository, 'commit', '-m', 'one']); await exec('git', ['-C', repository, 'tag', '1.0.0']);
+  await writeFile(join(repository, 'server.js'), 'module.exports = "two";\n', 'utf8');
+  await exec('git', ['-C', repository, 'add', '.']); await exec('git', ['-C', repository, 'commit', '-m', 'two']); await exec('git', ['-C', repository, 'tag', '2.0.0']);
+  const work = join(root, 'work');
+  await exec('git', ['init', work]);
+  await exec('git', ['-C', work, 'remote', 'add', 'origin', repository]);
+  const first = gitFetchAttempts(work, 'tags', '1.0.0', 'refs/stm/tags/1.0.0');
+  assert.equal(first.length, 3);
+  assert.equal(first[0]?.note, null);
+  assert.deepEqual(first[0]?.args, first[1]?.args);
+  await exec('git', [...(first[0]?.args ?? [])]);
+  // The checkout now holds objects, so a plain fetch of another version asks
+  // for a thin pack - the shape a Studio volume cannot reread. The last attempt
+  // asks for the whole pack instead, and that is the one that has to work.
+  const change = gitFetchAttempts(work, 'tags', '2.0.0', 'refs/stm/tags/2.0.0');
+  const last = change.at(-1);
+  assert.ok(last);
+  assert.ok(last.args.includes('--refetch'));
+  assert.ok(last.note);
+  await exec('git', [...last.args]);
+  const revision = await exec('git', ['-C', work, 'rev-parse', '--verify', 'refs/stm/tags/2.0.0^{commit}']);
+  assert.match(revision.stdout.trim(), /^[0-9a-f]{40,64}$/u);
 });
 
 test('migrates an older per-installation runtime onto the shared checkout', async () => {

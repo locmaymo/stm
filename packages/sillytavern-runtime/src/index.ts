@@ -436,17 +436,21 @@ export class RuntimeManager {
     if (!revision && !moving) revision = await runGit(this.gitCommand, ['-C', runtimePath, 'rev-parse', '--verify', `${localRef}^{commit}`], () => undefined).then((value) => value.trim()).catch(() => undefined);
     if (!revision) {
       onLine(`Fetching ${ref}`);
-      const fetchArgs = ['-C', runtimePath, 'fetch', '--depth=1', '--no-tags', 'origin', `+refs/${moving ? 'heads' : 'tags'}/${ref}:${localRef}`] as const;
-      try {
-        await runGit(this.gitCommand, fetchArgs, onLine);
-      } catch (error: unknown) {
-        // Persistent Studio filesystems can leave an interrupted packfile
-        // behind after a sleep or SIGTERM. Remove only Git's temporary pack
-        // files and retry once before reporting the installation as failed.
-        onLine('Git fetch failed; cleaning temporary pack files and retrying');
-        await removeTemporaryGitPacks(runtimePath);
-        await runGit(this.gitCommand, fetchArgs, onLine).catch(() => { throw error; });
+      let failure: unknown;
+      for (const attempt of gitFetchAttempts(runtimePath, moving ? 'heads' : 'tags', ref, localRef)) {
+        if (attempt.note) {
+          // An interrupted or refused fetch leaves a half-written packfile
+          // behind. Remove only Git's temporary pack files; the objects that
+          // earlier fetches wrote are still good.
+          onLine(attempt.note);
+          await removeTemporaryGitPacks(runtimePath);
+        }
+        try { await runGit(this.gitCommand, attempt.args, onLine); failure = undefined; break; }
+        catch (error: unknown) { failure ??= error; }
       }
+      // The first failure is the one that says what went wrong; a later attempt
+      // only ever reports that the same fetch failed again.
+      if (failure !== undefined) throw failure;
       revision = (await runGit(this.gitCommand, ['-C', runtimePath, 'rev-parse', '--verify', `${localRef}^{commit}`], () => undefined)).trim();
     } else onLine(`Using cached source ${ref}`);
     if (!/^[a-f0-9]{40,64}$/u.test(revision)) throw new RuntimeError('invalid_revision', 'Git returned an invalid revision');
@@ -609,6 +613,40 @@ async function stopChild(child: ChildProcess): Promise<void> {
   child.kill('SIGTERM');
   await new Promise<void>((resolvePromise) => { const timer = setTimeout(resolvePromise, 2_000); child.once('exit', () => { clearTimeout(timer); resolvePromise(); }); });
   if (child.exitCode === null) child.kill('SIGKILL');
+}
+
+export interface GitFetchAttempt {
+  readonly args: readonly string[];
+  /** What the log says before this attempt; the first attempt is already announced. */
+  readonly note: string | null;
+}
+
+/**
+ * Every way this manager knows to fetch one ref, in the order it tries them.
+ *
+ * A fetch into a checkout that already holds objects offers those objects to
+ * the server, which answers with a thin pack; Git then rereads the temporary
+ * packfile it has just written in order to rewrite its header and checksum.
+ * The network-backed volume a ModelScope Studio keeps its data on can fail that
+ * reread even though the write went through, and says so in the only words it
+ * has:
+ *
+ *   fatal: Failed to checksum '.git/objects/pack/tmp_pack_XXXXXX': No such file or directory
+ *
+ * The first install never meets this, because an empty checkout has nothing to
+ * offer and the pack it gets back is already complete - only a change of
+ * version does. `--refetch` offers nothing either, so the pack arrives complete
+ * and Git leaves its temporary file alone. That costs the whole download again,
+ * which is why it comes last rather than first.
+ */
+export function gitFetchAttempts(runtimePath: string, namespace: 'heads' | 'tags', ref: string, localRef: string): readonly GitFetchAttempt[] {
+  const fetchArgs = (...extra: readonly string[]): readonly string[] =>
+    ['-C', runtimePath, 'fetch', '--depth=1', '--no-tags', ...extra, 'origin', `+refs/${namespace}/${ref}:${localRef}`];
+  return [
+    { args: fetchArgs(), note: null },
+    { args: fetchArgs(), note: 'Git fetch failed; cleaning temporary pack files and retrying' },
+    { args: fetchArgs('--refetch'), note: 'Git fetch failed again; asking for a complete pack, which this filesystem can write without rereading it' },
+  ];
 }
 
 async function removeTemporaryGitPacks(runtimePath: string): Promise<void> {
