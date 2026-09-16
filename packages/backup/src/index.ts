@@ -7,13 +7,19 @@ import { pipeline } from 'node:stream/promises';
 import { chmod, lstat, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
-import { logEvent, logLineText, type BackupFilePreview, type BackupManifest, type BackupSource, type LogEvent, type LogSink, type Profile, type ProfileLayout, type RestoreMode, type RestorePreview, type LocalBackupSchedule } from '../../contracts/src/index.js';
+import { BACKUP_KINDS, backupKind, defaultBackupName, logEvent, logLineText, type BackupFilePreview, type BackupKind, type BackupManifest, type BackupSource, type LogEvent, type LogSink, type Profile, type ProfileLayout, type RestoreMode, type RestorePreview, type LocalBackupSchedule } from '../../contracts/src/index.js';
 import { createIoLimiter, ioConcurrency, runPooled } from '../../platform/src/index.js';
 import type { PlatformPaths } from '../../platform/src/index.js';
 
 const BACKUP_STATE_FILE = 'backups.json';
 const BACKUP_SCHEMA_VERSION = 1 as const;
-const DEFAULT_LOCAL_INTERVAL_MINUTES = 60;
+/**
+ * Half an hour: short enough that a lost evening of chat is at most thirty
+ * minutes of it, long enough that a full archive of a large profile is not
+ * rewritten while the last one is still being written. The frequent copy is
+ * R2's job, which sends only what changed.
+ */
+const DEFAULT_LOCAL_INTERVAL_MINUTES = 30;
 const MAX_LOCAL_INTERVAL_MINUTES = 7 * 24 * 60;
 const MAX_ZIP_DIRECTORY_BYTES = 64 * 1024 * 1024;
 const MAX_UPLOAD_BYTES = 8 * 1024 * 1024 * 1024;
@@ -31,6 +37,12 @@ const RECOGNIZED_DATA_NAMES = new Set(['settings.json', 'characters', 'chats', '
 const OVERWRITE_ATTEMPTS = 4;
 const READ_CHUNK_BYTES = 64 * 1024;
 const DEFAULT_LOCAL_RETENTION = 1;
+/**
+ * How long a safety copy outlives the change it guarded, once there is a
+ * newer backup to fall back on. A week is long enough to notice that a
+ * restore brought back the wrong thing.
+ */
+const SAFETY_COPY_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_LOCAL_RETENTION = 50;
 const STAGING_PREFIX = '.stm-restore-';
 const TRASH_PREFIX = '.stm-trash-';
@@ -43,6 +55,8 @@ export interface BackupStoreOptions {
 
 export interface CreateBackupOptions {
   readonly name?: string;
+  /** Why it is being written; a manual backup unless said otherwise. */
+  readonly kind?: 'manual' | 'scheduled' | 'before-restore' | 'before-switch';
   readonly onProgress?: (progress: { completed: number; total: number }) => void;
   /** Aborted when the operator stops the operation from the panel. */
   readonly signal?: AbortSignal;
@@ -56,6 +70,9 @@ export interface ImportEntry {
 
 export interface ImportEntriesOptions {
   readonly name?: string;
+  readonly kind?: 'r2' | 'uploaded';
+  /** When what is imported was taken, for its default name. */
+  readonly takenAt?: string;
   readonly entries: AsyncIterable<ImportEntry>;
   /** How many entries are coming, so progress can be a fraction rather than a count. */
   readonly total?: number;
@@ -127,9 +144,10 @@ export class BackupStore {
     return this.scheduleState ? { ...this.scheduleState } : { intervalMinutes: DEFAULT_LOCAL_INTERVAL_MINUTES };
   }
 
+  /** `intervalMinutes: 0` turns the schedule off; backups can still be taken by hand. */
   public async setSchedule(input: LocalBackupSchedule): Promise<LocalBackupSchedule> {
-    if (!Number.isInteger(input.intervalMinutes) || input.intervalMinutes < 1 || input.intervalMinutes > MAX_LOCAL_INTERVAL_MINUTES) {
-      throw new BackupError('invalid_backup_schedule', `The local backup interval must be a whole number of minutes from 1 to ${MAX_LOCAL_INTERVAL_MINUTES}`);
+    if (!Number.isInteger(input.intervalMinutes) || input.intervalMinutes < 0 || input.intervalMinutes > MAX_LOCAL_INTERVAL_MINUTES) {
+      throw new BackupError('invalid_backup_schedule', `The local backup interval must be 0 (off) or a whole number of minutes from 1 to ${MAX_LOCAL_INTERVAL_MINUTES}`);
     }
     await this.load();
     this.scheduleState = { intervalMinutes: input.intervalMinutes };
@@ -146,7 +164,8 @@ export class BackupStore {
    */
   public async adoptLegacySchedule(intervalMinutes: number): Promise<void> {
     await this.load();
-    if (this.scheduleState) return;
+    // The old setting had no "off", so a zero there was never a choice.
+    if (this.scheduleState || intervalMinutes < 1) return;
     try {
       await this.setSchedule({ intervalMinutes });
     } catch (error: unknown) {
@@ -322,7 +341,7 @@ export class BackupStore {
       const manifest: BackupManifest = {
         schemaVersion: BACKUP_SCHEMA_VERSION,
         id,
-        name: normalizeBackupName(options.name, profile.name, createdAt),
+        name: normalizeBackupName(options.name, profile.name, createdAt, options.kind ?? 'manual'),
         createdAt,
         profileId: profile.id,
         profileName: profile.name,
@@ -330,6 +349,8 @@ export class BackupStore {
         sizeBytes: archive.sizeBytes,
         checksumSha256: archive.checksumSha256,
         fileCount: sources.length - skipped.length,
+        kind: options.kind ?? 'manual',
+        ...(options.name?.trim() ? {} : { autoNamed: true }),
         source: 'created',
         fingerprint,
       };
@@ -349,17 +370,33 @@ export class BackupStore {
    *
    * The scheduler writes one whenever the data changes and a restore writes
    * another before it touches anything, and nothing removed them - a profile of
-   * a couple of gigabytes turned into tens of them inside a day. One is what
-   * the job needs: it is the undo for the next restore and the copy an
-   * unchanged profile reuses instead of writing a second one. Archives the
-   * operator uploaded are their own files and are never swept.
+   * a couple of gigabytes turned into tens of them inside a day.
+   *
+   * Each kind is kept by its own rule, because they were all kept by one: the
+   * newest archive of any kind survived, so the automatic backup taken half an
+   * hour after a backup somebody took on purpose deleted it.
+   *
+   *   - Manual backups are the operator's, and only the operator removes them.
+   *     So are uploads and recovery points brought back from R2.
+   *   - Automatic backups keep the newest `STM_LOCAL_BACKUPS` (one by default).
+   *   - Safety copies - before a restore, before a profile switch - keep the
+   *     newest one, the undo for the last such change, and even that goes once
+   *     it is a week old and a newer backup exists to fall back on.
    */
   public async pruneCreated(profileId: string): Promise<number> {
     const manifests = await this.load();
-    const superseded = manifests
+    const newestFirst = manifests
       .filter((manifest) => manifest.profileId === profileId && manifest.source === 'created')
-      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
-      .slice(localRetention());
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+    const scheduled = newestFirst.filter((manifest) => backupKind(manifest) === 'scheduled');
+    const safety = newestFirst.filter((manifest) => { const kind = backupKind(manifest); return kind === 'before-restore' || kind === 'before-switch'; });
+    const now = this.now().getTime();
+    const expired = safety.filter((manifest, index) => {
+      if (index > 0) return true;
+      const newer = newestFirst.some((other) => other.createdAt > manifest.createdAt);
+      return newer && now - Date.parse(manifest.createdAt) > SAFETY_COPY_MAX_AGE_MS;
+    });
+    const superseded = [...scheduled.slice(localRetention()), ...expired];
     if (superseded.length === 0) return 0;
     const removed = new Set(superseded.map((manifest) => manifest.id));
     // Leave the library first: an interrupted sweep should leave a stray file,
@@ -371,7 +408,7 @@ export class BackupStore {
   }
 
   /** Move an uploaded archive into the active profile's durable library. */
-  public async importArchive(profile: Profile, archivePath: string, originalName?: string): Promise<{ manifest: BackupManifest; preview: RestorePreview }> {
+  public async importArchive(profile: Profile, archivePath: string, originalName?: string, options: { readonly kind?: 'r2' | 'uploaded'; readonly takenAt?: string } = {}): Promise<{ manifest: BackupManifest; preview: RestorePreview }> {
     const id = randomUUID();
     const createdAt = this.now().toISOString();
     const preview = await this.preview(archivePath, profile.layout);
@@ -382,7 +419,7 @@ export class BackupStore {
     const manifest: BackupManifest = {
       schemaVersion: BACKUP_SCHEMA_VERSION,
       id,
-      name: normalizeBackupName(originalName, profile.name, createdAt),
+      name: normalizeBackupName(originalName, profile.name, options.takenAt ?? createdAt, options.kind === 'r2' ? 'r2' : 'manual'),
       createdAt,
       profileId: profile.id,
       profileName: profile.name,
@@ -391,6 +428,8 @@ export class BackupStore {
       checksumSha256: await checksumFile(target),
       fileCount: preview.fileCount,
       source: 'uploaded',
+      kind: options.kind ?? 'uploaded',
+      ...(options.kind === 'r2' && !originalName?.trim() ? { autoNamed: true } : {}),
     };
     await this.save([...await this.load(), manifest]);
     this.logger(logEvent('backup.imported', `[backup] imported ${manifest.name} (${manifest.fileCount} files)`, { name: manifest.name, files: manifest.fileCount }));
@@ -423,7 +462,7 @@ export class BackupStore {
       }
       await writer.finish();
       writer = null;
-      return await this.importArchive(profile, temporary, options.name);
+      return await this.importArchive(profile, temporary, options.name, { ...(options.kind ? { kind: options.kind } : {}), ...(options.takenAt ? { takenAt: options.takenAt } : {}) });
     } catch (error) {
       await writer?.abort();
       await rm(temporary, { force: true });
@@ -431,11 +470,32 @@ export class BackupStore {
     }
   }
 
+  /**
+   * Call a safety copy what it turned out to be: an ordinary automatic backup.
+   *
+   * A restore that stopped before writing anything, or that was put back after
+   * being stopped, leaves the profile exactly as its safety copy holds it. The
+   * copy then guards nothing, and left as a safety copy it would sit in the
+   * library beside the automatic backups that follow. As an automatic backup
+   * it is the newest one, and the next one supersedes it.
+   */
+  public async reclassifyAsScheduled(id: string): Promise<void> {
+    const manifests = await this.load();
+    const current = manifests.find((manifest) => manifest.id === id);
+    if (!current || current.source !== 'created') return;
+    const kind = backupKind(current);
+    if (kind !== 'before-restore' && kind !== 'before-switch') return;
+    const next: BackupManifest = { ...current, kind: 'scheduled', ...(current.autoNamed ? { name: normalizeBackupName(undefined, current.profileName, current.createdAt, 'scheduled') } : {}) };
+    await this.save(manifests.map((manifest) => manifest.id === id ? next : manifest));
+    await this.pruneCreated(current.profileId);
+  }
+
   public async rename(id: string, name: string): Promise<BackupManifest> {
     const manifests = await this.load();
     const current = manifests.find((manifest) => manifest.id === id);
     if (!current) throw new BackupError('backup_not_found', 'Backup not found');
-    const next = { ...current, name: normalizeBackupName(name, current.profileName, current.createdAt) };
+    const { autoNamed: _auto, ...named } = current;
+    const next = { ...named, name: normalizeBackupName(name, current.profileName, current.createdAt, 'manual') };
     await this.save(manifests.map((manifest) => manifest.id === id ? next : manifest));
     this.logger(logEvent('backup.renamed', `[backup] renamed ${current.name} to ${next.name}`, { from: current.name, to: next.name }));
     return { ...next };
@@ -1316,8 +1376,9 @@ async function removeTree(path: string): Promise<void> {
   }
 }
 
-function normalizeBackupName(value: string | undefined, profileName: string, createdAt: string): string {
-  const base = (value?.trim() || `${profileName}-${createdAt.slice(0, 19).replaceAll(/[:T]/gu, '-')}`).replaceAll(/[\\/:*?"<>|]/gu, '-').slice(0, 120);
+/** A name somebody gave, or the default for its kind, made safe to be a file name. */
+function normalizeBackupName(value: string | undefined, profileName: string, createdAt: string, kind: Exclude<BackupKind, 'uploaded'>): string {
+  const base = (value?.trim() || defaultBackupName(profileName, kind, new Date(createdAt))).replaceAll(/[\\/:*?"<>|]/gu, '-').slice(0, 120);
   return base.endsWith('.zip') ? base : `${base}.zip`;
 }
 
@@ -1330,13 +1391,15 @@ async function checksumFile(path: string): Promise<string> {
 function parseManifest(value: unknown): BackupManifest {
   if (!isRecord(value) || value.schemaVersion !== BACKUP_SCHEMA_VERSION || typeof value.id !== 'string' || typeof value.name !== 'string' || typeof value.createdAt !== 'string' || typeof value.profileId !== 'string' || typeof value.profileName !== 'string' || (value.layout !== 'data' && value.layout !== 'public') || typeof value.sizeBytes !== 'number' || typeof value.checksumSha256 !== 'string' || typeof value.fileCount !== 'number') throw new Error('Invalid backup manifest');
   const source: BackupSource = value.source === 'uploaded' ? 'uploaded' : 'created';
-  return { ...value, source } as unknown as BackupManifest;
+  const kind = typeof value.kind === 'string' && (BACKUP_KINDS as readonly string[]).includes(value.kind) ? value.kind : undefined;
+  const { kind: _stored, autoNamed, ...rest } = value;
+  return { ...rest, source, ...(kind ? { kind } : {}), ...(autoNamed === true ? { autoNamed: true } : {}) } as unknown as BackupManifest;
 }
 
 function parseSchedule(value: unknown): LocalBackupSchedule | null {
   if (!isRecord(value)) return null;
   const minutes = value.intervalMinutes;
-  return typeof minutes === 'number' && Number.isInteger(minutes) && minutes >= 1 && minutes <= MAX_LOCAL_INTERVAL_MINUTES ? { intervalMinutes: minutes } : null;
+  return typeof minutes === 'number' && Number.isInteger(minutes) && minutes >= 0 && minutes <= MAX_LOCAL_INTERVAL_MINUTES ? { intervalMinutes: minutes } : null;
 }
 
 /** How many manager-written archives a profile keeps. One, unless asked otherwise. */

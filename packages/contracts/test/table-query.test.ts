@@ -142,3 +142,20 @@ test('a provider row sorts by every number the panel puts in a column', () => {
   assert.equal(metricsSearchText(bucket({ key: 'claude', completionSource: 'chat' })), 'claude chat');
   assert.equal(metricsSearchText(bucket({ key: 'claude' })).trim(), 'claude');
 });
+
+test('an archive nobody named is called by its profile, kind, date and time', async () => {
+  const { defaultBackupName } = await import('../src/index.js');
+  assert.equal(defaultBackupName('Main', 'scheduled', new Date(2026, 8, 16, 14, 5)), 'Main_auto_2026-09-16_14-05.zip');
+  assert.equal(defaultBackupName('Main', 'before-restore', new Date(2026, 0, 2, 9, 30)), 'Main_before-restore_2026-01-02_09-30.zip');
+});
+
+test('an archive from before kinds were recorded is classified by its old name', async () => {
+  const { backupKind } = await import('../src/index.js');
+  assert.equal(backupKind({ name: 'Main-scheduled.zip', source: 'created' }), 'scheduled');
+  assert.equal(backupKind({ name: 'Main-prerestore.zip', source: 'created' }), 'before-restore');
+  assert.equal(backupKind({ name: 'Main-preswitch.zip', source: 'created' }), 'before-switch');
+  assert.equal(backupKind({ name: 'Main-r2-abc123.zip', source: 'uploaded' }), 'r2');
+  assert.equal(backupKind({ name: 'export.zip', source: 'uploaded' }), 'uploaded');
+  assert.equal(backupKind({ name: 'before update.zip', source: 'created' }), 'manual');
+  assert.equal(backupKind({ name: 'x.zip', source: 'created', kind: 'r2' }), 'r2');
+});

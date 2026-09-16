@@ -90,6 +90,8 @@ export class BackupScheduler {
     try {
       const profile = await this.profiles.getActive();
       if (!profile) return;
+      // Safety copies expire on a clock, not only when something new is written.
+      await this.backups.pruneCreated(profile.id);
       const fingerprint = await this.backups.fingerprint(profile);
       await this.runLocalSnapshot(profile, fingerprint, (await this.backups.getSchedule()).intervalMinutes);
       // R2 is asked only after the local copy is taken. A bucket that is off,
@@ -114,13 +116,15 @@ export class BackupScheduler {
    * being gone.
    */
   private async runLocalSnapshot(profile: Profile, fingerprint: string, intervalMinutes: number): Promise<BackupManifest | undefined> {
+    // Turned off by the operator. R2, if it is on, still runs after this.
+    if (intervalMinutes === 0) return undefined;
     const created = (await this.backups.list(profile.id))
       .filter((backup) => backup.source === 'created')
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
     const latest = created[0];
     const due = !latest || (latest.fingerprint !== fingerprint && elapsed(this.now(), latest.createdAt) >= intervalMinutes * 60 * 1000);
     if (!due) return undefined;
-    const manifest = await this.backups.create(profile, { name: `${profile.name}-scheduled` });
+    const manifest = await this.backups.create(profile, { kind: 'scheduled' });
     this.logger(logEvent('backup.scheduledSnapshot', `[backup] scheduled local snapshot ${manifest.name}`, { name: manifest.name }));
     return manifest;
   }

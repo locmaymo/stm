@@ -854,7 +854,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
           await supervisor.stop('install');
           if (!previousProfile) return;
           await report(4, logEvent('install.safetyCopy', 'Copying your data before switching version'));
-          await backups.createSafetyCopy(previousProfile, { name: `${previousProfile.name}-preswitch` });
+          await backups.createSafetyCopy(previousProfile, { kind: 'before-switch' });
         },
       );
     } catch (error: unknown) {
@@ -916,7 +916,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     await supervisor.stop('profileSwitch');
     let snapshot: Awaited<ReturnType<BackupStore['create']>> | null = null;
     try {
-      if (current && current.id !== profile.id) snapshot = await backups.createSafetyCopy(current, { name: `${current.name}-preswitch` });
+      if (current && current.id !== profile.id) snapshot = await backups.createSafetyCopy(current, { kind: 'before-switch' });
       await runtime.activateInstallation(installation.id);
       const activated = await profiles.activate(profile.id);
       const process = await supervisor.start();
@@ -938,9 +938,27 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     if (!profile) { sendError(response, 409, 'profile_required', 'Create or activate a profile before creating a backup'); return; }
     const body = await readJson(request);
     const name = isRecord(body) && typeof body.name === 'string' ? body.name : undefined;
+    /*
+     * Two things are asked for here. `scheduled` is "Back up now": the
+     * automatic backup, taken without waiting for the schedule, which replaces
+     * the previous automatic one like any other. Anything else is a manual
+     * backup, kept until somebody deletes it.
+     *
+     * An automatic backup of data that has not changed since the newest backup
+     * would be an identical archive, so it is not written; the reply says so.
+     */
+    const kind = isRecord(body) && body.kind === 'scheduled' ? 'scheduled' : 'manual';
+    if (kind === 'scheduled') {
+      const fingerprint = await backups.fingerprint(profile);
+      const newest = (await backups.list(profile.id))
+        .filter((manifest) => manifest.source === 'created')
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
+      if (newest?.fingerprint === fingerprint) { sendJson(response, 200, { unchanged: true, backup: newest }); return; }
+    }
     const { job, signal } = jobs.createOperation('backup', logEvent('job.preparingBackup', 'Preparing backup'));
     void backups.create(profile, {
-      ...(name ? { name } : {}),
+      ...(name && kind === 'manual' ? { name } : {}),
+      kind,
       signal,
       onProgress: ({ completed, total }) => jobs.updateOperation(job.id, total > 0 ? (completed / total) * 90 : 50, logEvent('job.compressingFiles', `Compressing files (${completed}/${total})`, { completed, total })),
     }).then((manifest) => { jobs.updateOperation(job.id, 95, logEvent('job.savingLibrary', 'Saving backup library')); jobs.finishOperation(job.id, 'succeeded', null); return manifest; })
@@ -1053,7 +1071,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       const { job, signal } = jobs.createOperation('restore', logEvent('job.preparingRestore', 'Preparing restore'));
       void restoreWithProcess({ profile, backups, archivePath, mode, supervisor, signal, onProgress: (progress, step) => jobs.updateOperation(job.id, progress, step) })
         .then(() => jobs.finishOperation(job.id, 'succeeded', null))
-        .catch((error: unknown) => jobs.finishOperation(job.id, 'failed', error instanceof Error ? error.message : 'Restore failed'));
+        .catch((error: unknown) => jobs.finishOperation(job.id, 'failed', error instanceof Error ? error.message : 'Restore failed', { evenIfCanceled: error instanceof RestoreRollbackError, stepCode: error instanceof RestoreRollbackError ? 'job.rollbackFailed' : undefined }));
       sendJson(response, 202, { jobId: job.id, job });
       return;
     }
@@ -1132,7 +1150,30 @@ const RESTORE_STEP_PROGRESS: Record<string, number> = {
   'restore.finalizing': 88,
 };
 
-async function restoreWithProcess(options: {
+/**
+ * A restore was stopped partway and could not be put back the way it was.
+ *
+ * The one outcome of a stop that leaves the profile mixed, so it is reported
+ * as a failure even though the operator asked for the stop.
+ */
+export class RestoreRollbackError extends Error {
+  public constructor(reason: string) {
+    super(`The restore was stopped, and the data could not be put back as it was: ${reason}`);
+    this.name = 'RestoreRollbackError';
+  }
+}
+
+/**
+ * Stop SillyTavern, take the safety copy, restore, and start it again.
+ *
+ * Stopped before any file is written, there is nothing to undo: the safety
+ * copy is abandoned and the profile is untouched. Stopped while files are
+ * being written, the profile is part old and part new, so the safety copy is
+ * restored over it before SillyTavern comes back - a stop always leaves the
+ * data the way it was before Restore was pressed. That undo is not itself
+ * stoppable; stopping it would leave exactly the mixture it exists to remove.
+ */
+export async function restoreWithProcess(options: {
   readonly profile: Awaited<ReturnType<ProfileStore['getActive']>> & {};
   readonly backups: BackupStore;
   readonly archivePath: string;
@@ -1148,6 +1189,8 @@ async function restoreWithProcess(options: {
   const releaseOperationSlot = backups.reserve();
   onProgress?.(5, logEvent('job.stoppingSillyTavern', 'Stopping SillyTavern'));
   await supervisor.stop('restore');
+  let safetyCopy: Awaited<ReturnType<BackupStore['create']>> | null = null;
+  let writing = false;
   try {
     // A safety copy has to exist before the restore overwrites anything, but it
     // does not have to be a second copy of every file. Writing one compressed
@@ -1155,12 +1198,13 @@ async function restoreWithProcess(options: {
     // measured 639 seconds on a ModelScope volume for the same data. It only
     // An unchanged profile can reuse the backup it already has.
     onProgress?.(15, logEvent('job.creatingSafetySnapshot', 'Creating safety snapshot'));
-    const safetySnapshot = await backups.createSafetyCopy(profile, {
-      name: `${profile.name}-prerestore`,
+    const safetySnapshot = safetyCopy = await backups.createSafetyCopy(profile, {
+      kind: 'before-restore',
       ...(signal ? { signal } : {}),
       onProgress: ({ completed, total }) => onProgress?.(15 + (total > 0 ? (completed / total) * 10 : 0), logEvent('job.backingUpCurrentData', `Backing up current data (${completed}/${total})`, { completed, total })),
     });
     onProgress?.(25, logEvent('job.restoringData', 'Restoring data'));
+    writing = true;
     const preview = await backups.restore(profile, archivePath, {
       mode,
       ...(signal ? { signal } : {}),
@@ -1172,6 +1216,22 @@ async function restoreWithProcess(options: {
     onProgress?.(100, logEvent('job.restoreComplete', 'Restore complete'));
     return { preview, safetySnapshot, process };
   } catch (error) {
+    // Nothing was written, or what was written has been put back: the profile
+    // is what the safety copy holds, so the copy is no longer a safety copy.
+    const settle = async () => { if (safetyCopy) await backups.reclassifyAsScheduled(safetyCopy.id).catch(() => undefined); };
+    if (!writing) await settle();
+    if (writing && signal?.aborted && safetyCopy) {
+      try {
+        onProgress?.(88, logEvent('job.rollingBack', 'Putting the data back as it was before the restore'));
+        const safetyPath = await backups.getArchivePath(safetyCopy.id);
+        if (!safetyPath) throw new Error('the safety copy is missing');
+        await backups.restore(profile, safetyPath, { mode: 'replace' });
+        await settle();
+      } catch (rollbackError: unknown) {
+        await supervisor.start().catch(() => supervisor.getState());
+        throw new RestoreRollbackError(rollbackError instanceof Error ? rollbackError.message : 'unknown error');
+      }
+    }
     await supervisor.start().catch(() => supervisor.getState());
     throw error;
   } finally {
@@ -1750,12 +1810,13 @@ class JobStore {
     this.jobs.set(id, { ...current, progress: Math.max(0, Math.min(100, Math.round(progress))), step: step.message, stepCode: step.code, ...(step.params ? { stepParams: step.params } : {}), updatedAt: new Date().toISOString() });
   }
 
-  public finishOperation(id: string, state: 'succeeded' | 'failed', error: string | null): void {
+  /** `evenIfCanceled` keeps a failure that happened after a stop reported as one. */
+  public finishOperation(id: string, state: 'succeeded' | 'failed', error: string | null, options: { readonly evenIfCanceled?: boolean; readonly stepCode?: string | undefined } = {}): void {
     const current = this.jobs.get(id);
     if (!current) return;
-    const settled: JobState = state === 'failed' && this.wasCanceled(id) ? 'canceled' : state;
+    const settled: JobState = state === 'failed' && this.wasCanceled(id) && !options.evenIfCanceled ? 'canceled' : state;
     const step = settled === 'succeeded' ? 'Completed' : settled === 'canceled' ? 'Stopped' : 'Failed';
-    const stepCode = settled === 'succeeded' ? 'job.completed' : settled === 'canceled' ? 'job.stopped' : 'job.failed';
+    const stepCode = options.stepCode ?? (settled === 'succeeded' ? 'job.completed' : settled === 'canceled' ? 'job.stopped' : 'job.failed');
     this.controllers.delete(id);
     this.jobs.set(id, { ...current, state: settled, progress: settled === 'succeeded' ? 100 : current.progress, step, stepCode, error: settled === 'canceled' ? null : error, updatedAt: new Date().toISOString() });
   }

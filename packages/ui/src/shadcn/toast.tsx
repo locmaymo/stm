@@ -103,7 +103,10 @@ export function Toaster({ children, closeLabel = "Close" }: { children?: React.R
               }}
               className={cn(
                 "group pointer-events-auto grid grid-cols-[auto_1fr_auto] items-start gap-x-3 gap-y-1 rounded-lg border bg-popover p-3.5 text-popover-foreground shadow-[var(--elevation-2)]",
-                "data-[state=closed]:animate-out data-[state=closed]:fade-out-80 data-[state=open]:animate-in data-[state=open]:slide-in-from-bottom-2 sm:data-[state=open]:slide-in-from-right-4",
+                // Compact on a phone: one line of padding less, and it drops in from
+                // the top rather than rising from the bottom.
+                "max-sm:gap-x-2.5 max-sm:rounded-xl max-sm:px-3 max-sm:py-2.5",
+                "data-[state=closed]:animate-out data-[state=closed]:fade-out-80 data-[state=open]:animate-in data-[state=open]:slide-in-from-top-2 sm:data-[state=open]:slide-in-from-right-4",
                 "data-[swipe=end]:animate-out data-[swipe=end]:fade-out-80",
                 tone === "success" && "border-[var(--success)]/35",
                 tone === "attention" && "border-[var(--attention)]/40",
@@ -149,9 +152,16 @@ export function Toaster({ children, closeLabel = "Close" }: { children?: React.R
         })}
         <ToastPrimitive.Viewport
           data-slot="toast-viewport"
-          // Bottom on a phone, where the thumb is and where it does not cover
-          // the header; bottom right from small up.
-          className="pointer-events-none fixed inset-x-3 bottom-3 z-[100] m-0 flex max-h-screen w-auto list-none flex-col gap-2 p-0 outline-none sm:inset-x-auto sm:right-4 sm:bottom-4 sm:w-[22rem]"
+          /*
+           * On a phone, just under the header; bottom right from small up.
+           *
+           * They used to rise from the bottom of a phone, which is where the
+           * tab bar is - so every confirmation covered the navigation for as
+           * long as it stayed, and an error stayed for ten seconds. Under the
+           * header they cover the top of the page instead, the way a phone's
+           * own notifications do, and only the newest two are shown there.
+           */
+          className="pointer-events-none fixed inset-x-3 top-[calc(var(--header-height,3.5rem)+env(safe-area-inset-top)+0.5rem)] z-[100] m-0 flex max-h-screen w-auto list-none flex-col gap-2 p-0 outline-none max-sm:flex-col-reverse max-sm:[&>li:nth-last-child(n+3)]:hidden sm:inset-x-auto sm:top-auto sm:right-4 sm:bottom-4 sm:w-[22rem]"
         />
       </ToastPrimitive.Provider>
     </ToastContext.Provider>

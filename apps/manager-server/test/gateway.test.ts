@@ -440,6 +440,8 @@ test('a passcode door asks with a keypad and no password field at all', async (t
   assert.equal(page.includes('type="password"'), false);
   assert.ok(page.includes('inputmode="numeric"'), 'the field asks for digits');
   assert.ok(page.includes('data-key="7"'), 'and there is a keypad to enter them with');
+  // Once the keypad is drawn it is the keyboard, and the device's own stays down.
+  assert.ok(page.includes(`i.setAttribute('inputmode','none')`), 'the keypad replaces the on-screen keyboard');
   // Without a script the field is still a field and the form still posts.
   assert.ok(page.includes(`action="/__stm/login"`));
 

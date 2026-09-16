@@ -4,7 +4,7 @@ import {
   Globe2, LayoutDashboard, Maximize2, Minimize2, Moon, Package, Pencil, Plus,
   LogOut, RotateCcw, ScrollText, Search, Sun, Trash2, Upload, Users as UsersIcon, X, Rows3,
   BrainCircuit, CircleStop, Clock3, Cpu, Ellipsis, Play, QrCode as QrCodeIcon, RefreshCw, Settings2, ShieldCheck, Square,
-  Blocks, ChevronDown, ChevronUp, FileCode2, Gauge, History, KeyRound, Monitor, Sparkles, TriangleAlert,
+  Blocks, BookmarkPlus, FileCode2, LoaderCircle, Gauge, History, KeyRound, Monitor, CircleArrowUp, TriangleAlert,
 } from 'lucide-react';
 import {
   Alert, AlertDescription, AuthLayout, Badge, BrandMark, Button, buttonVariants, Card, CardAction,
@@ -30,10 +30,12 @@ import { authErrorKey } from './auth-error.js';
 import { availableUpdate, readDismissedUpdate, saveDismissedUpdate } from './updates.js';
 import { apiFetch, onSessionExpired, resetSessionWatch } from './session.js';
 import type { AccessGatewayState, BackupManifest, ConfigDocument, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LogEntry, LogSourceFilter, MetricsBucket, MetricsSnapshot, ProcessState, Profile, R2Config, R2SnapshotSummary, RestoreMode, RestorePreview, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
-import { backupSearchText, backupSortValue, formatBytes, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
+import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
 import { translateLogEntry, translateStep } from './log-format.js';
 import { QrCode } from './qr-code.js';
+import { LOCAL_HOST, reachableAddresses, shortenHost } from './addresses.js';
+import { EmbedStage } from './embed-stage.js';
 
 const navigation = [
   { id: 'overview', icon: LayoutDashboard },
@@ -95,6 +97,11 @@ function apiErrorFromText(text: string, status: number, fallback: string, fail: 
 /** Thrown when the operator stops the work themselves, which is not an error. */
 class StoppedError extends Error {
   public constructor() { super('stopped'); this.name = 'StoppedError'; }
+}
+
+/** A stopped restore that could not be put back, so the profile is left mixed. */
+class RollbackFailedError extends Error {
+  public constructor(message: string) { super(message); this.name = 'RollbackFailedError'; }
 }
 
 /** What a failed chunk should say, in the reader's language rather than this file's. */
@@ -416,6 +423,39 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     return () => { cancelled = true; };
   }, []);
 
+  /*
+   * The backup list, kept current without being asked.
+   *
+   * Archives appear without anybody pressing anything - the schedule, the
+   * safety copy a restore or a profile switch takes, a copy that became an
+   * automatic backup - and the list used to show them only after a reload or
+   * a trip to another page and back. The list is the manager's own file, read
+   * from memory, so asking every few seconds costs nothing worth saving; it is
+   * skipped while the tab is hidden, and a reply identical to what is on
+   * screen changes nothing.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    let last = '';
+    const poll = async () => {
+      if (document.hidden) return;
+      try {
+        const response = await apiFetch('/api/v1/backups', { credentials: 'same-origin' });
+        if (!response.ok || cancelled) return;
+        const text = await response.text();
+        if (cancelled || text === last) return;
+        last = text;
+        setBackups((JSON.parse(text) as { backups: BackupManifest[] }).backups);
+      } catch {
+        // The next poll tries again.
+      }
+    };
+    const timer = window.setInterval(() => { void poll(); }, 4000);
+    const onVisible = () => { if (!document.hidden) void poll(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { cancelled = true; window.clearInterval(timer); document.removeEventListener('visibilitychange', onVisible); };
+  }, []);
+
   useEffect(() => {
     if (!installing) return undefined;
     if (!pendingInstallationId) return undefined;
@@ -580,6 +620,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     process={processState}
     tunnel={tunnelState}
     security={accessSecurity}
+    networkHost={configDocument?.networkHost ?? null}
     installed={Boolean(activeInstallationId)}
     installing={installing}
     active={activeInstallation}
@@ -627,7 +668,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
             </div>
           </header>
           <PageContainer>
-            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} installed={Boolean(activeInstallationId)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} config={configDocument} security={accessSecurity} onConfigUpdate={updateConfig} onConfigReset={resetConfig} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} /> : <ResourcePanel page={page} t={t} />}
+            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} installed={Boolean(activeInstallationId)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} locale={preferences.locale} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} config={configDocument} security={accessSecurity} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} /> : <ResourcePanel page={page} t={t} />}
           </PageContainer>
           <MobileNav
             items={navigation.map(({ id, icon }) => ({ id, icon, href: `#${id}`, label: t(`nav.${id}`) }))}
@@ -848,12 +889,12 @@ function Unavailable({ t, children }: { t: Translate; children: ReactNode }) {
  * two buttons the pointer is over.
  */
 function RuntimeCard({
-  t, fail, catalog, process, tunnel, security, installed, installing, active, dataBytes, profileName,
+  t, fail, catalog, process, tunnel, security, networkHost, installed, installing, active, dataBytes, profileName,
   version, onVersionChange, versions, onPendingInstallationId, csrfToken, onInstalling, onRemove,
   onStart, onStop, onSetPassword, onShowAddresses, onOpenSettings,
 }: {
   t: Translate; fail: Fail; catalog: Record<string, unknown>; process: ProcessState; tunnel: TunnelState;
-  security: AccessGatewayState; installed: boolean; installing: boolean;
+  security: AccessGatewayState; networkHost: string | null; installed: boolean; installing: boolean;
   active: Installation | undefined; dataBytes: number | null; profileName: string | null; version: string;
   onVersionChange: (value: string) => void; versions: VersionOption[];
   onPendingInstallationId: (value: string | null) => void; csrfToken: string | null;
@@ -866,6 +907,7 @@ function RuntimeCard({
   const [stopAsked, setStopAsked] = useState(false);
   const [askedVersion, setAskedVersion] = useState<string | null>(null);
   const [askedRemove, setAskedRemove] = useState(false);
+  const [removing, setRemoving] = useState(false);
   const [busy, setBusy] = useState(false);
   const [embedOpen, setEmbedOpen] = useState(false);
   // Opened once, kept mounted: coming back to the console and going in again
@@ -903,9 +945,13 @@ function RuntimeCard({
   // where the sweep lives for a start or a stop - the two things somebody
   // presses and then watches, and which used to report nothing at all until
   // they finished.
-  const waitingFor = process.status === 'starting' ? t('console.waitingForSilly')
-    : process.status === 'stopping' ? t('console.stoppingSilly')
+  // Read off SillyTavern's own output while it starts, so a slow start says
+  // what it is slow at - compiling, migrating, loading plugins.
+  const processStep = process.stepCode ? translateStep('', catalog, process.stepCode, process.stepParams) : '';
+  const waitingFor = process.status === 'starting' ? processStep || t('console.waitingForSilly')
+    : process.status === 'stopping' ? processStep || t('console.stoppingSilly')
       : null;
+  const waitingTask = process.status === 'starting' ? t('console.taskStart') : t('console.taskStop');
 
   // A refusal the manager wrote is said in the reader's language; a line from
   // git, npm or SillyTavern itself is shown as that program wrote it.
@@ -972,6 +1018,8 @@ function RuntimeCard({
   const onThisMachine = window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost';
   const embedUrl = `http://${window.location.hostname}:${security.port}/`;
   const canEmbed = running && onThisMachine;
+  // A frame kept loaded across a stop would come back to an error page.
+  useEffect(() => { if (!running) { setEmbedOpen(false); setEmbedMounted(false); } }, [running]);
   /*
    * Open it without asking for the PIN.
    *
@@ -982,6 +1030,8 @@ function RuntimeCard({
    * the frame on the gateway's port arrives already signed in.
    */
   const openEmbed = async () => {
+    // Put away rather than closed: it is still loaded, so it only has to be shown.
+    if (embedMounted) { setEmbedOpen(true); return; }
     if (!csrfToken) return;
     setEmbedOpening(true);
     try {
@@ -992,8 +1042,11 @@ function RuntimeCard({
     } catch { report(t('console.embedFailed')); } finally { setEmbedOpening(false); }
   };
 
-  const localUrl = 'http://127.0.0.1:8000';
-  const sharedCount = (tunnel.url ? 1 : 0) + (security.lan ? 1 : 0);
+  const addresses = reachableAddresses(tunnel, security, networkHost ?? window.location.hostname);
+  // There is always at least the loopback address.
+  const primary = addresses[0]!;
+  const otherCount = addresses.length - 1;
+  const openPrimary = () => { window.open(primary.url, '_blank', 'noopener,noreferrer'); };
 
   return <>
     <Card className="runtime-card" data-tour="installation">
@@ -1004,7 +1057,7 @@ function RuntimeCard({
         </h2>
         <CardAction className="runtime-actions">
           {installed ? <>
-            <Button variant="outline" size="sm" disabled={!running} onClick={() => { window.open(localUrl, '_blank', 'noopener,noreferrer'); }}><ArrowUpRight />{t('console.openInTab')}</Button>
+            <Button variant="outline" size="sm" disabled={!running} onClick={openPrimary}><ArrowUpRight />{t('console.openInTab')}</Button>
             {running
               ? <Button variant="destructive" size="sm" onClick={() => setStopAsked(true)} disabled={pending}><Square />{t('dashboard.stop')}</Button>
               : <Button size="sm" onClick={() => void run(onStart)} disabled={pending || installingNow}><Play />{pending ? t('common.loading') : t('dashboard.start')}</Button>}
@@ -1021,15 +1074,23 @@ function RuntimeCard({
           */}
         <div className="runtime-preview" data-live={running ? 'true' : 'false'}>
           {running ? <SillyTavernStill generation={process.startedAt ?? 'up'} /> : null}
+          {/* From another device the frame cannot be shown, so the same
+              invitation opens SillyTavern in a tab at the best address instead
+              of explaining why it will not. */}
           {canEmbed
             ? <button type="button" className="runtime-preview-open" onClick={() => void openEmbed()}>
-              <span className="runtime-preview-cta"><Monitor aria-hidden="true" />{embedOpening ? t('common.loading') : t('console.useItHere')}</span>
-              <span className="runtime-preview-note">{t('console.useItHereHint')}</span>
+              <span className="runtime-preview-cta"><Monitor aria-hidden="true" />{embedOpening ? t('common.loading') : embedMounted ? t('console.embedResume') : t('console.useItHere')}</span>
+              <span className="runtime-preview-note">{embedMounted ? t('console.embedResumeHint') : t('console.useItHereHint')}</span>
             </button>
-            : <div className="runtime-preview-idle">
-              <Monitor aria-hidden="true" />
-              <span>{running ? t('console.embedUnavailable') : t('console.stateOffline')}</span>
-            </div>}
+            : running
+              ? <button type="button" className="runtime-preview-open" onClick={openPrimary}>
+                <span className="runtime-preview-cta"><ArrowUpRight aria-hidden="true" />{t('console.useItHere')}</span>
+                <span className="runtime-preview-note">{t('console.useItInTabHint')}</span>
+              </button>
+              : <div className="runtime-preview-idle">
+                <Monitor aria-hidden="true" />
+                <span>{t('console.stateOffline')}</span>
+              </div>}
         </div>
 
         <dl className="runtime-meta">
@@ -1038,9 +1099,12 @@ function RuntimeCard({
           {running ? <div className="runtime-row">
             <dt>{t('console.addressLabel')}</dt>
             <dd>
-              <AddressLink t={t} href={localUrl}>127.0.0.1:8000</AddressLink>
-              {sharedCount > 0
-                ? <button type="button" className="runtime-shared" onClick={onShowAddresses}>{t('console.alsoOnline', { count: sharedCount })}</button>
+              <AddressLink t={t} href={primary.url}>
+                <span className="address-full">{primary.host}</span>
+                <span className="address-short">{shortenHost(primary.host)}</span>
+              </AddressLink>
+              {otherCount > 0
+                ? <button type="button" className="runtime-shared" onClick={onShowAddresses}>{t('console.alsoOnline', { count: otherCount })}</button>
                 : null}
             </dd>
           </div> : null}
@@ -1056,7 +1120,7 @@ function RuntimeCard({
               </Select>
               {alreadyInstalled
                 ? <Tooltip><TooltipTrigger asChild><span className="inline-flex"><Button variant="outline" size="sm" disabled><Download />{t('console.versionInstalled')}</Button></span></TooltipTrigger><TooltipContent>{t('console.versionInstalledHint')}</TooltipContent></Tooltip>
-                : <Button variant="outline" size="sm" onClick={requestInstall} disabled={!csrfToken || installing}><Download />{installing ? t('common.loading') : t('dashboard.install')}</Button>}
+                : <Button variant="success" size="sm" onClick={requestInstall} disabled={!csrfToken || installing}><Download />{installing ? t('common.loading') : t('dashboard.install')}</Button>}
             </dd>
           </div>
 
@@ -1072,14 +1136,20 @@ function RuntimeCard({
           {installingNow && active ? <div className="runtime-row">
             <dt>{t('console.progressLabel')}</dt>
             <dd className="runtime-progress">
-              <span className="thinking">{translateStep(active.step, catalog, active.stepCode, active.stepParams)} · {Math.round(active.progress)}%</span>
-              <span className="progress-track"><span className="progress-value" style={{ width: `${Math.max(0, Math.min(100, active.progress))}%` }} /></span>
+              <TaskLine task={t('console.taskInstall')} step={translateStep(active.step, catalog, active.stepCode, active.stepParams)} percent={active.progress} />
+              <TaskBar percent={active.progress} />
+            </dd>
+          </div> : removing ? <div className="runtime-row">
+            <dt>{t('console.progressLabel')}</dt>
+            <dd className="runtime-progress">
+              <TaskLine task={t('console.taskUninstall')} step={process.status === 'stopping' && waitingFor ? waitingFor : t('console.uninstallRemoving')} />
+              <TaskBar />
             </dd>
           </div> : waitingFor ? <div className="runtime-row">
             <dt>{t('console.progressLabel')}</dt>
             <dd className="runtime-progress">
-              <span className="thinking">{waitingFor}</span>
-              <span className="progress-track"><span className="progress-indeterminate" /></span>
+              <TaskLine task={waitingTask} step={waitingFor} />
+              <TaskBar />
             </dd>
           </div> : null}
 
@@ -1091,10 +1161,10 @@ function RuntimeCard({
       </CardContent>
 
       {showUpdate && update ? <div className="runtime-update" role="status">
-        <Sparkles aria-hidden="true" />
+        <CircleArrowUp aria-hidden="true" />
         <span>{t('console.updateAvailable', { version: update.label })}</span>
         <div className="runtime-update-actions">
-          <Button variant="outline" size="sm" onClick={takeUpdate}><Download />{t('console.updateNow')}</Button>
+          <Button variant="success" size="sm" onClick={takeUpdate}><Download />{t('console.updateNow')}</Button>
           <Button variant="ghost" size="sm" onClick={dismissUpdate}>{t('console.updateDismiss')}</Button>
         </div>
       </div> : null}
@@ -1102,12 +1172,12 @@ function RuntimeCard({
       {installed ? <CardFooter className="runtime-foot">
         <div className="runtime-foot-actions">
           <Button variant="ghost" size="sm" onClick={onOpenSettings}><Settings2 />{t('nav.config')}</Button>
-          <Button variant="ghost" size="sm" onClick={() => setAskedRemove(true)} disabled={installing}><Trash2 />{t('console.uninstall')}</Button>
+          <Button variant="ghost" size="sm" onClick={() => setAskedRemove(true)} disabled={installing || removing}><Trash2 />{t('console.uninstall')}</Button>
         </div>
       </CardFooter> : null}
     </Card>
 
-    {embedMounted ? <EmbedStage t={t} open={embedOpen} url={embedUrl} onClose={() => setEmbedOpen(false)} /> : null}
+    {embedMounted ? <EmbedStage t={t} open={embedOpen} url={embedUrl} openUrl={primary.url} onMinimize={() => setEmbedOpen(false)} onClose={() => { setEmbedOpen(false); setEmbedMounted(false); }} /> : null}
 
     <ConfirmDialog
       open={stopAsked}
@@ -1135,49 +1205,9 @@ function RuntimeCard({
       description={t('console.uninstallConfirmBody')}
       confirmLabel={t('console.uninstall')}
       cancelLabel={t('common.cancel')}
-      onConfirm={async () => { report(await onRemove()); }}
+      onConfirm={async () => { setRemoving(true); try { report(await onRemove()); } finally { setRemoving(false); } }}
     />
   </>;
-}
-
-/**
- * SillyTavern itself, filling the window, without leaving the console.
- *
- * Hidden rather than unmounted when it is closed: an iframe that is taken out
- * of the tree is reloaded when it comes back, which would throw away the chat
- * that was open and everything typed into it. Escape closes it, and the way
- * out is always on screen - a frame with no visible border is a page somebody
- * can get stuck in.
- */
-function EmbedStage({ t, open, url, onClose }: { t: Translate; open: boolean; url: string; onClose: () => void }) {
-  // SillyTavern's own interface is dense and fills whatever it is given, so
-  // the bar above it is worth being able to put away. Escape always works and
-  // a small handle stays in the corner, because a frame with no visible way
-  // out is a page somebody is stuck in.
-  const [barHidden, setBarHidden] = useState(false);
-  useEffect(() => {
-    if (!open) return undefined;
-    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
-  return <div className="embed-stage" hidden={!open} aria-hidden={!open}>
-    {barHidden
-      ? <button type="button" className="embed-handle" onClick={() => setBarHidden(false)} aria-label={t('console.showBar')} title={t('console.showBar')}><ChevronDown /></button>
-      : <div className="embed-bar">
-        <Button variant="outline" size="sm" onClick={onClose}><Minimize2 />{t('console.backToConsole')}</Button>
-        <div className="embed-bar-tail">
-          <Button variant="ghost" size="sm" asChild><a href={url} target="_blank" rel="noopener noreferrer"><ArrowUpRight />{t('console.openInTab')}</a></Button>
-          <Button variant="ghost" size="icon-sm" onClick={() => setBarHidden(true)} aria-label={t('console.hideBar')} title={t('console.hideBar')}><ChevronUp /></Button>
-        </div>
-      </div>}
-    <iframe
-      className="embed-frame"
-      src={url}
-      title="SillyTavern"
-      allow="clipboard-write; fullscreen; microphone"
-    />
-  </div>;
 }
 
 function AccessPanel({ t, process, tunnel, config, security, installed, onAction, onSetLan, onSetPassword }: { t: Translate; process: ProcessState; tunnel: TunnelState; config: ConfigDocument | null; security: AccessGatewayState; installed: boolean; onAction: (path: string, body?: unknown) => Promise<void>; onSetLan: (lan: boolean) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null> }) {
@@ -1233,7 +1263,7 @@ function AccessPanel({ t, process, tunnel, config, security, installed, onAction
   // This machine reaches SillyTavern directly, because the loopback address is
   // already a boundary. Everything else goes through the gateway and its
   // password: the LAN address and the tunnel both point there.
-  const localHost = '127.0.0.1:8000';
+  const localHost = LOCAL_HOST;
   const lanHost = `${config?.networkHost ?? window.location.hostname ?? 'localhost'}:${security.port}`;
   const localUrl = `http://${localHost}`;
   const lanUrl = `http://${lanHost}`;
@@ -1304,7 +1334,7 @@ function AccessPanel({ t, process, tunnel, config, security, installed, onAction
           return null;
         }}
       />
-      {busy || securityBusy ? <div className="operation-progress" role="status"><span className="thinking">{t('common.loading')}</span><span className="progress-track"><span className="progress-indeterminate" /></span></div> : null}
+      {busy || securityBusy ? <div className="operation-progress" role="status"><span className="thinking">{t('common.loading')}</span><TaskBar /></div> : null}
       {security.error ? <p className="install-error" role="alert">{security.error}</p> : null}
       {tunnel.error ? <p className="install-error" role="alert">{tunnel.error}</p> : null}
     </CardContent>
@@ -1404,7 +1434,10 @@ function PasscodeDialog({ t, open, onOpenChange, note, onSubmit }: { t: Translat
   const mismatch = stage === 'confirm' && confirmed.length === PASSCODE_DIGITS && confirmed !== entered;
 
   return <Dialog open={open} onOpenChange={close}>
-    <DialogContent className="sm:max-w-sm">
+    {/* A dialog focuses its first field as it opens. On a touch screen that
+        field is the one under the dots, and focus there is what used to bring
+        the device's keypad up over the one drawn below it. */}
+    <DialogContent className="sm:max-w-sm" onOpenAutoFocus={(event) => { if (!window.matchMedia('(pointer: fine)').matches) event.preventDefault(); }}>
       <DialogHeader>
         <DialogTitle>{t('console.passwordSettings')}</DialogTitle>
         <DialogDescription>{stage === 'enter' ? t('console.passcodeChoose') : t('console.passcodeRepeat')}</DialogDescription>
@@ -1704,6 +1737,48 @@ function LogsContent({ t, catalog, source, onSourceChange, entries, query, onQue
   </div>;
 }
 
+const BACKUP_KIND_LABEL = {
+  manual: 'console.backupKindManual',
+  scheduled: 'console.backupKindScheduled',
+  'before-restore': 'console.backupKindBeforeRestore',
+  'before-switch': 'console.backupKindBeforeSwitch',
+  r2: 'console.backupKindR2',
+  uploaded: 'console.backupKindUploaded',
+} as const satisfies Record<BackupKind, string>;
+
+/**
+ * Why a backup exists, as a small coloured label.
+ *
+ * The one someone took on purpose is the accent, the safety copies are amber
+ * because they are what to reach for after a restore went wrong, and the ones
+ * that happen on their own stay quiet.
+ */
+function BackupKindBadge({ t, kind }: { t: Translate; kind: BackupKind }) {
+  return <span className="backup-kind" data-kind={kind}>{t(BACKUP_KIND_LABEL[kind])}</span>;
+}
+
+/** A name the manager chose itself, including the suffix-style names older versions chose. */
+function isManagerName(backup: BackupManifest): boolean {
+  if (backup.autoNamed) return true;
+  if (backup.kind) return false;
+  return /-(scheduled|prerestore|preswitch)\.zip$|-r2-[^.]+\.zip$|-\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}\.zip$/u.test(backup.name);
+}
+
+/**
+ * What a backup is called on screen.
+ *
+ * A name somebody typed is theirs and is shown as typed. A name the manager
+ * made up is only ever a kind and a time, so it is said as that - in the
+ * reader's language and date format, "Tự động · 16/09/2026 16:35" - and
+ * changes with the language. The file keeps its plain ASCII name, which is
+ * what a download is saved as.
+ */
+export function backupDisplayName(t: Translate, locale: string, backup: BackupManifest): string {
+  if (!isManagerName(backup)) return backup.name;
+  const when = new Date(backup.createdAt).toLocaleString(locale, { dateStyle: 'short', timeStyle: 'short' });
+  return `${t(BACKUP_KIND_LABEL[backupKind(backup)])} · ${when}`;
+}
+
 /** The labels every table in the console borrows, in the reader's language. */
 function tableLabels(t: Translate): DataTableLabels {
   return {
@@ -1776,8 +1851,10 @@ const R2_HISTORY_CHOICES = [
   { id: '3m', label: 'console.r2Back3Months', keepRecent: 24, keepDaily: 14, keepWeekly: 13 },
   { id: '1y', label: 'console.r2Back1Year', keepRecent: 24, keepDaily: 14, keepWeekly: 52 },
 ] as const;
-/** How often the backup library takes a local copy. Not an R2 setting. */
+/** How often the backup library takes a local copy. Not an R2 setting. Off is `0`, set by the switch. */
+const DEFAULT_LOCAL_INTERVAL = 30;
 const LOCAL_BACKUP_CHOICES = [
+  { id: '30m', label: 'console.every30Minutes', intervalMinutes: 30 },
   { id: '1h', label: 'console.everyHour', intervalMinutes: 60 },
   { id: '6h', label: 'console.every6Hours', intervalMinutes: 360 },
   { id: '1d', label: 'console.everyDay', intervalMinutes: 1440 },
@@ -1814,7 +1891,7 @@ function r2ScheduleSummary(t: Translate, config: R2Config): string {
  * Each card now asks one thing and keeps the rest behind a dialog, and the
  * archives are a table that can be searched, sorted and paged.
  */
-function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, backups, onProfilesChange, onBackupsChange }: { t: Translate; fail: Fail; catalog: Record<string, unknown>; csrfToken: string; profiles: Profile[]; activeProfileId: string | null; backups: BackupManifest[]; onProfilesChange: (profiles: Profile[], activeProfileId: string | null) => void; onBackupsChange: (backups: BackupManifest[]) => void }) {
+function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfileId, backups, onProfilesChange, onBackupsChange }: { t: Translate; locale: string; fail: Fail; catalog: Record<string, unknown>; csrfToken: string; profiles: Profile[]; activeProfileId: string | null; backups: BackupManifest[]; onProfilesChange: (profiles: Profile[], activeProfileId: string | null) => void; onBackupsChange: (backups: BackupManifest[]) => void }) {
   const [busyAction, setBusyAction] = useState<string | null>(null);
   /*
    * The one thing on this page that is state rather than a result.
@@ -1841,6 +1918,7 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
   const [profileOpen, setProfileOpen] = useState(false);
   const [backupOpen, setBackupOpen] = useState(false);
   const [renameTarget, setRenameTarget] = useState<BackupManifest | null>(null);
+  const [kindFilter, setKindFilter] = useState<BackupKind | 'all'>('all');
   // Which archive is being deleted, and whether the question is on screen. The
   // two are separate because the dialog fades out: clearing the row at the same
   // moment left the title reading "Delete ?" for the length of the animation.
@@ -1871,25 +1949,63 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
   };
   useEffect(() => { void refresh(); }, []);
 
+  /*
+   * The R2 card follows the scheduler the same way the list does.
+   *
+   * Reading the settings is local and free. Listing recovery points is a
+   * charged request to the bucket, so it is made only when the last upload
+   * time says there is a new one to list.
+   */
+  const lastUploadSeen = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      if (document.hidden) return;
+      try {
+        const response = await apiFetch('/api/v1/r2', { credentials: 'same-origin' });
+        if (!response.ok || cancelled) return;
+        const config = (await response.json() as { config: R2Config }).config;
+        if (cancelled) return;
+        setR2Config(config);
+        const previous = lastUploadSeen.current;
+        lastUploadSeen.current = config.lastUploadAt;
+        if (previous !== undefined && previous !== config.lastUploadAt && config.configured) {
+          const snapshots = await apiFetch('/api/v1/r2/snapshots', { credentials: 'same-origin' });
+          if (snapshots.ok && !cancelled) setR2Snapshots((await snapshots.json() as { snapshots: R2SnapshotSummary[] }).snapshots);
+        }
+      } catch {
+        // The next poll tries again.
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => { void poll(); }, 10_000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, []);
+
   // A restore runs in the server for minutes. Reloading the page must show the
   // one already in flight rather than an idle screen the operator would be
   // tempted to start a second restore from.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
+      let kind: Job['kind'] | null = null;
       try {
         const response = await apiFetch('/api/v1/jobs/active', { credentials: 'same-origin' });
         if (!response.ok) return;
         const payload = await response.json() as { job: Job | null };
         if (cancelled || !payload.job) return;
         const running = payload.job;
+        kind = running.kind;
         setBusyAction(running.kind === 'restore' ? t('console.restore') : t('dashboard.backupNow'));
         setOperationProgress({ percent: running.progress, step: jobStep(running) });
         setRunningJobId(running.id);
         await waitForOperation(running.id, (job) => { if (!cancelled) setOperationProgress({ percent: job.progress, step: jobStep(job) }); });
         if (!cancelled) await refresh();
       } catch (error: unknown) {
-        if (!cancelled) failed(error instanceof Error ? error.message : t('console.backupRestoreFailed'));
+        if (cancelled) return;
+        if (error instanceof StoppedError) done(t(kind === 'restore' ? 'console.restoreStopped' : 'console.backupStopped'));
+        else if (error instanceof RollbackFailedError) setMixedProfile(t('console.restoreStoppedPartway'));
+        else failed(error instanceof Error ? error.message : t('console.backupRestoreFailed'));
       } finally {
         if (!cancelled) { setBusyAction(null); setOperationProgress(null); setRunningJobId(null); }
       }
@@ -1906,16 +2022,24 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
    * back from a restore that got part of the way through.
    */
   const stopOperation = async () => {
+    if (stopping) return;
+    // "Stopping" from the press until the work has actually ended, not only
+    // for as long as the request takes: a restore putting the data back runs
+    // on for minutes, and a button that came back pressable in that time
+    // invited pressing it again and again.
     setStopping(true);
     try {
       uploadAbort.current?.abort();
-      if (runningJobId) await apiFetch(`/api/v1/jobs/${encodeURIComponent(runningJobId)}/cancel`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      if (runningJobId) {
+        const response = await apiFetch(`/api/v1/jobs/${encodeURIComponent(runningJobId)}/cancel`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+        // Refused because it had already finished is not worth a second press either.
+        if (!response.ok && response.status !== 409) setStopping(false);
+      }
     } catch {
-      // The poll below reports what actually happened either way.
-    } finally {
       setStopping(false);
     }
   };
+  useEffect(() => { if (busyAction === null && r2Busy === null) setStopping(false); }, [busyAction, r2Busy]);
 
   // Chunks are held in the browser until the last one lands, so a reload or a
   // navigation away throws the whole upload out. Warn before that happens.
@@ -1943,23 +2067,39 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
       await refresh();
     } catch { failed(t('console.profileActivateFailed')); } finally { setBusyAction(null); }
   };
-  const createBackup = async (name: string): Promise<string | null> => {
-    setBusyAction(t('dashboard.backupNow')); setOperationProgress({ percent: 0, step: t('dashboard.backupNow') });
+  /**
+   * Start a backup and follow it on the page.
+   *
+   * "Back up now" is the automatic backup taken early - no name, no dialog,
+   * and it replaces the previous automatic one. "Manual backup" asks for a
+   * name and is kept. Either way the answer returns as soon as the server has
+   * accepted the job, so the dialog closes at once and the progress is shown
+   * where the Stop button is.
+   */
+  const startBackup = async (kind: 'scheduled' | 'manual', name = ''): Promise<string | null> => {
+    const label = kind === 'scheduled' ? t('dashboard.backupNow') : t('console.manualBackup');
+    setBusyAction(label); setOperationProgress(null);
+    let jobId: string;
     try {
-      const response = await apiFetch('/api/v1/backups', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ ...(name ? { name } : {}) }) });
-      const payload = await response.json() as { jobId?: string; error?: { message?: string } };
-      if (!response.ok || !payload.jobId) return fail.body(payload, t('console.backupCreateFailed'));
-      setRunningJobId(payload.jobId);
-      await waitForOperation(payload.jobId, (job) => setOperationProgress({ percent: job.progress, step: jobStep(job) }));
-      await refresh();
-      done(t('console.backupDone'));
-      return null;
-    } catch (error: unknown) {
-      // Stopping is an answer rather than a failure: the dialog closes and the
-      // list says what is actually there.
-      if (error instanceof StoppedError) { await refresh(); return null; }
-      return error instanceof Error ? error.message : t('console.backupCreateFailed');
-    } finally { setBusyAction(null); setOperationProgress(null); setRunningJobId(null); }
+      const response = await apiFetch('/api/v1/backups', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ kind, ...(name ? { name } : {}) }) });
+      const payload = await response.json() as { jobId?: string; unchanged?: boolean; error?: { message?: string } };
+      if (response.ok && payload.unchanged) { setBusyAction(null); toast({ title: t('console.backupUpToDate'), tone: 'default' }); return null; }
+      if (!response.ok || !payload.jobId) { setBusyAction(null); return fail.body(payload, t('console.backupCreateFailed')); }
+      jobId = payload.jobId;
+    } catch { setBusyAction(null); return t('console.backupCreateFailed'); }
+    setRunningJobId(jobId);
+    void (async () => {
+      try {
+        await waitForOperation(jobId, (job) => setOperationProgress({ percent: job.progress, step: jobStep(job) }));
+        await refresh();
+        done(t('console.backupDone'));
+      } catch (error: unknown) {
+        // Stopping is an answer rather than a failure; the list says what is there.
+        if (error instanceof StoppedError) { await refresh(); done(t('console.backupStopped')); }
+        else failed(error instanceof Error ? error.message : t('console.backupCreateFailed'));
+      } finally { setBusyAction(null); setOperationProgress(null); setRunningJobId(null); }
+    })();
+    return null;
   };
   const waitForOperation = async (jobId: string, onUpdate: (job: Job) => void): Promise<void> => {
     for (;;) {
@@ -1969,6 +2109,7 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
       onUpdate(job);
       if (job.state === 'succeeded') return;
       if (job.state === 'canceled') throw new StoppedError();
+      if (job.state === 'failed' && job.stepCode === 'job.rollbackFailed') throw new RollbackFailedError(job.error ?? t('console.backupRestoreFailed'));
       if (job.state === 'failed') throw new Error(job.error ?? t('console.backupRestoreFailed'));
       await new Promise((resolvePromise) => window.setTimeout(resolvePromise, 700));
     }
@@ -1990,7 +2131,7 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
     // The question has been answered, so the dialog goes before the work
     // starts: what happens next belongs on the page, where the Stop button is.
     closeRestore();
-    setBusyAction(t('console.restore')); setOperationProgress({ percent: 0, step: t('console.restore') }); setMixedProfile(null);
+    setBusyAction(t('console.restore')); setOperationProgress(null); setMixedProfile(null);
     try {
       const response = await apiFetch(`/api/v1/backups/${backupId}/restore`, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ mode: restoreMode }) });
       const payload = await response.json() as { jobId?: string; error?: { message?: string } };
@@ -2000,16 +2141,17 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
       await refresh();
       done(t('console.restoreDone'));
     } catch (error: unknown) {
-      // A restore that was stopped part of the way through left the profile
-      // part old and part new. That is not a result to glance at: it stays on
-      // the page, and says where the way back is.
-      if (error instanceof StoppedError) { setMixedProfile(t('console.restoreStoppedPartway')); await refresh(); }
+      // A stopped restore is put back by the server before it reports, so a
+      // stop is a result to glance at. Only a stop that could not be put back
+      // leaves the profile mixed, and that stays on the page.
+      if (error instanceof StoppedError) { done(t('console.restoreStopped')); await refresh(); }
+      else if (error instanceof RollbackFailedError) { setMixedProfile(t('console.restoreStoppedPartway')); await refresh(); }
       else failed(error instanceof Error ? error.message : t('console.backupRestoreFailed'));
     } finally { setBusyAction(null); setOperationProgress(null); setRunningJobId(null); }
   };
   const inspectUpload = async (file: File | undefined) => {
     if (!file) return;
-    setBusyAction(t('console.importZip')); setOperationProgress({ percent: 0, step: t('console.importZip') }); setUploading(true);
+    setBusyAction(t('console.importZip')); setOperationProgress(null); setUploading(true);
     const controller = new AbortController();
     uploadAbort.current = controller;
     const uploadId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -2095,12 +2237,14 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
   // The switch lives on the card, not at the bottom of the settings dialog:
   // whether anything is being sent at all is the first thing to see, and
   // turning it off should not mean opening the connection settings to do it.
-  const saveBackupSchedule = async (id: string) => {
-    const choice = LOCAL_BACKUP_CHOICES.find((item) => item.id === id);
-    if (!choice) return;
+  // Turning the schedule off stores 0, which forgets the interval; turning it
+  // back on brings back the one last seen here, or the default.
+  const lastInterval = useRef(DEFAULT_LOCAL_INTERVAL);
+  useEffect(() => { if (backupSchedule && backupSchedule.intervalMinutes > 0) lastInterval.current = backupSchedule.intervalMinutes; }, [backupSchedule]);
+  const saveBackupSchedule = async (intervalMinutes: number) => {
     setScheduleSaving(true);
     try {
-      const response = await apiFetch('/api/v1/backups/schedule', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ intervalMinutes: choice.intervalMinutes }) });
+      const response = await apiFetch('/api/v1/backups/schedule', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ intervalMinutes }) });
       const payload = await response.json() as { schedule?: LocalBackupSchedule; error?: { message?: string } };
       if (!response.ok || !payload.schedule) { failed(fail.body(payload, t('console.localScheduleFailed'))); return; }
       setBackupSchedule(payload.schedule);
@@ -2127,7 +2271,7 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
   };
   const uploadR2 = async () => {
     setR2Busy(t('console.r2UploadLatest'));
-    setOperationProgress({ percent: 0, step: t('console.r2UploadLatest') });
+    setOperationProgress(null);
     try {
       const response = await apiFetch('/api/v1/r2/sync', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       const payload = await response.json() as { jobId?: string; error?: { message?: string } };
@@ -2152,7 +2296,7 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
    */
   const fetchSnapshot = async (snapshot: R2SnapshotSummary) => {
     setR2Busy(t('console.r2Fetch'));
-    setOperationProgress({ percent: 0, step: t('console.r2Fetch') });
+    setOperationProgress(null);
     try {
       const response = await apiFetch(`/api/v1/r2/snapshots/${encodeURIComponent(snapshot.id)}/fetch`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       const payload = await response.json() as { jobId?: string; error?: { message?: string } };
@@ -2185,9 +2329,12 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
 
   const activeProfile = profiles.find((profile) => profile.id === activeProfileId) ?? profiles[0] ?? null;
   const localChoice = backupSchedule ? LOCAL_BACKUP_CHOICES.find((choice) => choice.intervalMinutes === backupSchedule.intervalMinutes) : undefined;
+  const displayName = (backup: BackupManifest) => backupDisplayName(t, locale, backup);
   const backupColumns: DataTableColumn<BackupManifest>[] = [
-    { id: 'name', header: t('common.name'), sortable: true, cell: (backup) => <span className="font-medium">{backup.name}</span> },
-    { id: 'source', header: t('console.backupSource'), sortable: true, showFrom: 'md', cell: (backup) => <span className="text-muted-foreground">{backup.source === 'uploaded' ? t('console.uploadedBackup') : t('console.createdBackup')}</span> },
+    // The kind rides under the name on a phone, where there is no room for a
+    // column of its own, and has its column from `md` up.
+    { id: 'name', header: t('common.name'), sortable: true, cell: (backup) => <span className="grid min-w-0 justify-items-start gap-1"><span className="font-medium break-all" title={backup.name}>{displayName(backup)}</span><span className="md:hidden"><BackupKindBadge t={t} kind={backupKind(backup)} /></span></span> },
+    { id: 'kind', header: t('console.backupKind'), sortable: true, showFrom: 'md', cell: (backup) => <BackupKindBadge t={t} kind={backupKind(backup)} /> },
     { id: 'createdAt', header: t('console.backupCreated'), sortable: true, showFrom: 'sm', cell: (backup) => <span className="whitespace-nowrap text-muted-foreground">{new Date(backup.createdAt).toLocaleString()}</span> },
     { id: 'sizeBytes', header: t('console.backupSize'), sortable: true, align: 'end', showFrom: 'sm', cell: (backup) => <span className="whitespace-nowrap text-muted-foreground">{formatBytes(backup.sizeBytes)}</span> },
     {
@@ -2248,30 +2395,43 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
         {/* Here rather than in the R2 settings: it runs whether or not there is
             a bucket, so it has to be reachable without one. */}
         {backupSchedule ? <div>
-          <DetailRow label={t('console.localScheduleLabel')} hint={t('console.localScheduleHint')}>
-            <Select value={localChoice?.id ?? CUSTOM_CHOICE} onValueChange={(id) => void saveBackupSchedule(id)} disabled={scheduleSaving}>
-              <SelectTrigger size="sm" className="w-40"><SelectValue /></SelectTrigger>
+          {/* On or off is a switch, the way every other on-or-off in the console
+              is; how often is a separate question, asked only while it is on. */}
+          <DetailRow label={t('console.localScheduleLabel')} {...(backupSchedule.intervalMinutes === 0 ? { hint: t('console.localScheduleOffHint') } : {})}>
+            <Switch aria-label={t('console.localScheduleLabel')} checked={backupSchedule.intervalMinutes > 0} disabled={scheduleSaving} onCheckedChange={(on) => void saveBackupSchedule(on ? lastInterval.current : 0)} />
+          </DetailRow>
+          {backupSchedule.intervalMinutes > 0 ? <DetailRow label={t('console.localScheduleEvery')}>
+            <Select value={localChoice?.id ?? CUSTOM_CHOICE} onValueChange={(id) => { const choice = LOCAL_BACKUP_CHOICES.find((item) => item.id === id); if (choice) void saveBackupSchedule(choice.intervalMinutes); }} disabled={scheduleSaving}>
+              <SelectTrigger size="sm" className="w-40" aria-label={t('console.localScheduleEvery')}><SelectValue /></SelectTrigger>
               <SelectContent>
                 {LOCAL_BACKUP_CHOICES.map((choice) => <SelectItem key={choice.id} value={choice.id}>{t(choice.label)}</SelectItem>)}
                 {localChoice ? null : <SelectItem value={CUSTOM_CHOICE} disabled>{t('console.everyMinutes', { minutes: backupSchedule.intervalMinutes })}</SelectItem>}
               </SelectContent>
             </Select>
-          </DetailRow>
+          </DetailRow> : null}
         </div> : null}
         {mixedProfile ? <Alert variant="destructive"><AlertDescription>{mixedProfile}</AlertDescription></Alert> : null}
         {busyAction ? <OperationProgress t={t} label={busyAction} progress={operationProgress} canStop={uploading || runningJobId !== null} stopping={stopping} onStop={() => void stopOperation()} warning={uploading ? t('console.uploadKeepTabOpen') : null} /> : null}
         <DataTable
-          rows={backups}
+          rows={kindFilter === 'all' ? backups : backups.filter((backup) => backupKind(backup) === kindFilter)}
           columns={backupColumns}
           rowKey={(backup) => backup.id}
           query={backupQuery}
           onQueryChange={setBackupQuery}
           labels={labels}
-          searchText={backupSearchText}
-          sortValue={backupSortValue}
+          searchText={(backup) => `${displayName(backup)} ${backupSearchText(backup)}`}
+          sortValue={(backup, column) => column === 'name' ? displayName(backup) : backupSortValue(backup, column)}
           empty={<EmptyState icon={<Archive />} title={t('dashboard.noBackup')} />}
           toolbar={<div className="flex flex-1 flex-wrap items-center justify-end gap-2">
-            <Button size="sm" onClick={() => setBackupOpen(true)} disabled={busy || activeProfileId === null}><Archive />{t('dashboard.backupNow')}</Button>
+            <Select value={kindFilter} onValueChange={(value) => { setKindFilter(value as BackupKind | 'all'); setBackupQuery((current) => ({ ...current, page: 1 })); }}>
+              <SelectTrigger size="sm" className="mr-auto w-44" aria-label={t('console.backupKind')}><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">{t('console.backupKindAll')}</SelectItem>
+                {BACKUP_KINDS.map((kind) => <SelectItem key={kind} value={kind}>{t(BACKUP_KIND_LABEL[kind])}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <Button size="sm" onClick={() => void startBackup('scheduled').then((failure) => { if (failure) failed(failure); })} disabled={busy || activeProfileId === null}><Archive />{t('dashboard.backupNow')}</Button>
+            <Button variant="outline" size="sm" onClick={() => setBackupOpen(true)} disabled={busy || activeProfileId === null}><BookmarkPlus />{t('console.manualBackup')}</Button>
             <label className={cn(buttonVariants({ variant: 'outline', size: 'sm' }), 'cursor-pointer')}>
               <Upload aria-hidden="true" />{t('console.importZip')}
               <input type="file" accept=".zip,application/zip" className="sr-only" disabled={busy} onChange={(event) => void inspectUpload(event.target.files?.[0])} />
@@ -2346,12 +2506,12 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
       t={t}
       open={backupOpen}
       onOpenChange={setBackupOpen}
-      title={t('dashboard.backupNow')}
+      title={t('console.manualBackup')}
       label={t('common.name')}
       hint={t('console.backupNameHint')}
-      submitLabel={t('dashboard.backupNow')}
+      submitLabel={t('console.manualBackup')}
       optional
-      onSubmit={createBackup}
+      onSubmit={(name) => startBackup('manual', name)}
     />
     <NameDialog
       t={t}
@@ -2359,20 +2519,20 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
       onOpenChange={(next) => { if (!next) setRenameTarget(null); }}
       title={t('console.renameBackupTitle')}
       label={t('common.name')}
-      initial={renameTarget?.name.replace(/\.zip$/u, '') ?? ''}
+      initial={renameTarget ? displayName(renameTarget).replace(/\.zip$/u, '') : ''}
       submitLabel={t('common.rename')}
       onSubmit={renameBackup}
     />
     <ConfirmDialog
       open={deleteOpen}
       onOpenChange={setDeleteOpen}
-      title={t('console.deleteBackupTitle', { name: deleteTarget?.name ?? '' })}
+      title={t('console.deleteBackupTitle', { name: deleteTarget ? displayName(deleteTarget) : '' })}
       description={t('console.deleteBackupBody')}
       confirmLabel={t('common.delete')}
       cancelLabel={t('common.cancel')}
       onConfirm={deleteBackup}
     />
-    <RestoreDialog t={t} catalog={catalog} backup={selectedBackup} preview={selectedPreview} mode={restoreMode} onModeChange={setRestoreMode} onClose={closeRestore} onRestore={restoreSelected} />
+    <RestoreDialog t={t} catalog={catalog} displayName={displayName} backup={selectedBackup} preview={selectedPreview} mode={restoreMode} onModeChange={setRestoreMode} onClose={closeRestore} onRestore={restoreSelected} />
     <R2Dialog t={t} open={r2Open} onOpenChange={setR2Open} tab={r2Tab} config={r2Config} onSave={saveR2} />
   </div>;
 }
@@ -2387,12 +2547,41 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
 function OperationProgress({ t, label, progress, canStop, stopping, onStop, warning }: { t: Translate; label: string; progress: { percent: number; step: string } | null; canStop: boolean; stopping: boolean; onStop: () => void; warning: string | null }) {
   return <div className="grid gap-2 rounded-lg border bg-muted/40 p-3" role="status">
     <div className="flex flex-wrap items-center justify-between gap-2">
-      <span className="min-w-0 text-sm">{progress ? `${progress.step} · ${progress.percent}%` : label}</span>
-      {canStop ? <Button variant="outline" size="sm" onClick={onStop} disabled={stopping}><CircleStop />{stopping ? t('console.stopping') : t('common.stop')}</Button> : null}
+      <TaskLine task={label} step={progress?.step ?? t('console.taskPreparing')} {...(progress ? { percent: progress.percent } : {})} />
+      {canStop ? <Button variant="destructive" size="sm" onClick={onStop} disabled={stopping} aria-busy={stopping}>{stopping ? <LoaderCircle className="animate-spin" /> : <CircleStop />}{stopping ? t('console.stopping') : t('common.stop')}</Button> : null}
     </div>
-    <span className="progress-track">{progress ? <span className="progress-value" style={{ width: `${Math.max(2, Math.min(100, progress.percent))}%` }} /> : <span className="progress-indeterminate" />}</span>
+    <TaskBar {...(progress ? { percent: Math.max(2, progress.percent) } : {})} />
     {warning ? <span className="text-xs text-destructive">{warning}</span> : null}
   </div>;
+}
+
+/**
+ * What kind of work this is, what it is doing, and how far it has got.
+ *
+ * The kind is a small label of its own - Install, Start, Backup, Restore - so
+ * a glance says which of the manager's few jobs is running before the sentence
+ * says which part of it. The sentence carries the sweep, the way a reply being
+ * written does, because a sentence that is visibly still being worked on is
+ * easier to wait on than a bar alone.
+ */
+function TaskLine({ task, step, percent }: { task: string; step: string; percent?: number }) {
+  return <span className="task-line">
+    <span className="task-kind">{task}</span>
+    <span className="thinking task-step">{step}</span>
+    {percent === undefined ? null : <span className="task-percent">{Math.round(percent)}%</span>}
+  </span>;
+}
+
+/**
+ * A bar for work in progress: striped and moving, filled to the share done
+ * when that is known and all the way when it is not. The meters that are
+ * readings rather than work - CPU, memory, storage, the R2 allowance - keep
+ * their plain bars.
+ */
+function TaskBar({ percent }: { percent?: number }) {
+  return <span className="progress-track task-track">
+    <span className="task-stripes" data-indeterminate={percent === undefined || undefined} style={percent === undefined ? undefined : { width: `${Math.max(0, Math.min(100, percent))}%` }} />
+  </span>;
 }
 
 /**
@@ -2449,17 +2638,24 @@ function NameDialog({ t, open, onOpenChange, title, label, hint, initial = '', s
  * where the choice is made, and the choice is made in a dialog, because one of
  * them deletes everything that is there.
  */
-function RestoreDialog({ t, catalog, backup, preview, mode, onModeChange, onClose, onRestore }: { t: Translate; catalog: Record<string, unknown>; backup: BackupManifest | null; preview: RestorePreview | null; mode: RestoreMode; onModeChange: (mode: RestoreMode) => void; onClose: () => void; onRestore: () => Promise<void> }) {
+function RestoreDialog({ t, catalog, displayName, backup, preview, mode, onModeChange, onClose, onRestore }: { t: Translate; catalog: Record<string, unknown>; displayName: (backup: BackupManifest) => string; backup: BackupManifest | null; preview: RestorePreview | null; mode: RestoreMode; onModeChange: (mode: RestoreMode) => void; onClose: () => void; onRestore: () => Promise<void> }) {
   const group = useId();
   if (!backup || !preview) return null;
-  const options: Array<{ value: RestoreMode; label: string; body: string }> = [
-    { value: 'replace', label: t('console.replaceRestore'), body: t('console.restoreReplaceBody') },
-    { value: 'merge', label: t('console.mergeRestore'), body: t('console.restoreMergeBody') },
+  /*
+   * Replace is the one to reach for, and says so.
+   *
+   * It leaves the profile exactly as the backup was. Merge keeps whatever the
+   * backup does not mention, so the result is a mixture nobody took a backup
+   * of - occasionally what is wanted, usually not.
+   */
+  const options: Array<{ value: RestoreMode; label: string; body: string; recommended: boolean }> = [
+    { value: 'replace', label: t('console.replaceRestore'), body: t('console.restoreReplaceBody'), recommended: true },
+    { value: 'merge', label: t('console.mergeRestore'), body: t('console.restoreMergeBody'), recommended: false },
   ];
   return <Dialog open onOpenChange={(next) => { if (!next) onClose(); }}>
     <DialogContent className="sm:max-w-lg">
       <DialogHeader>
-        <DialogTitle>{t('console.restoreTitle', { name: backup.name })}</DialogTitle>
+        <DialogTitle>{t('console.restoreTitle', { name: displayName(backup) })}</DialogTitle>
         <DialogDescription>{t('console.restoreCounts', { files: preview.fileCount, size: formatBytes(preview.totalBytes) })}</DialogDescription>
       </DialogHeader>
       <DialogBody className="grid gap-4">
@@ -2467,7 +2663,7 @@ function RestoreDialog({ t, catalog, backup, preview, mode, onModeChange, onClos
           {options.map((option) => <div key={option.value} className="flex items-start gap-3 rounded-lg border p-3 has-[[data-state=checked]]:border-primary has-[[data-state=checked]]:bg-primary/5">
             <RadioGroupItem id={`${group}-${option.value}`} value={option.value} className="mt-0.5" />
             <div className="grid gap-1">
-              <Label htmlFor={`${group}-${option.value}`} className="font-medium">{option.label}</Label>
+              <Label htmlFor={`${group}-${option.value}`} className="flex flex-wrap items-center gap-2 font-medium">{option.label}{option.recommended ? <Badge variant="secondary" className="bg-(--success-background) text-(--success)">{t('console.restoreRecommended')}</Badge> : null}</Label>
               <p className="text-xs text-muted-foreground">{option.body}</p>
             </div>
           </div>)}
@@ -3016,7 +3212,7 @@ function SettingsGroup({ icon, title }: { icon: ReactNode; title: string }) {
   </div>;
 }
 
-function ConfigPage({ t, config, security, onConfigUpdate, onConfigReset, onChangeManagerPassword, onSetPassword, onSignOut, onSignOutDevices }: { t: Translate; config: ConfigDocument | null; security: AccessGatewayState; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onConfigReset: () => Promise<string | null>; onChangeManagerPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSignOut: () => Promise<void>; onSignOutDevices: () => Promise<string | null> }) {
+function ConfigPage({ t, config, security, process, catalog, onConfigUpdate, onConfigReset, onChangeManagerPassword, onSetPassword, onSignOut, onSignOutDevices }: { t: Translate; config: ConfigDocument | null; security: AccessGatewayState; process: ProcessState; catalog: Record<string, unknown>; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onConfigReset: () => Promise<string | null>; onChangeManagerPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSignOut: () => Promise<void>; onSignOutDevices: () => Promise<string | null> }) {
   const [form, setForm] = useState<ConfigSettingsInput>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -3180,9 +3376,16 @@ function ConfigPage({ t, config, security, onConfigUpdate, onConfigReset, onChan
               </div>
             </div>
             {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
+            {/* Saving stops SillyTavern, writes the file and starts it again,
+                which takes as long as a start does. The dialog is gone by
+                then, so the progress is here, step by step. */}
+            {busy ? <div className="grid gap-2 rounded-lg border bg-muted/40 p-3" role="status">
+              <TaskLine task={t('console.taskSettings')} step={(process.status === 'starting' || process.status === 'stopping') && process.stepCode ? translateStep('', catalog, process.stepCode, process.stepParams) : t('console.settingsWriting')} />
+              <TaskBar />
+            </div> : null}
           </CardContent>
           <CardFooter className="justify-end">
-            <Button onClick={() => setSaveOpen(true)} disabled={busy}>{t('console.saveChanges')}</Button>
+            <Button onClick={() => setSaveOpen(true)} disabled={busy}>{busy ? <LoaderCircle className="animate-spin" /> : null}{t('console.saveChanges')}</Button>
           </CardFooter>
         </Card>
         <ConfirmDialog

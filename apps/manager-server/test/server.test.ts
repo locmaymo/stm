@@ -335,6 +335,10 @@ test('local backup endpoints create, preview, download, and restore a profile ar
   }
   assert.ok(manifest);
   assert.equal(manifest.fileCount, 2);
+  // "Back up now" on data that has not changed writes nothing.
+  const early = await fetch(`${base}/api/v1/backups`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'scheduled' }) });
+  assert.equal(early.status, 200);
+  assert.equal((await early.json() as { unchanged?: boolean }).unchanged, true);
   const preview = await fetch(`${base}/api/v1/backups/${manifest.id}/preview`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf } });
   assert.equal(preview.status, 200);
   assert.equal((await preview.json() as { fileCount: number }).fileCount, 2);
@@ -855,17 +859,17 @@ test('the local backup schedule is read and changed over HTTP, and survives a re
     return (await response.json() as { schedule: { intervalMinutes: number } }).schedule.intervalMinutes;
   };
 
-  assert.equal(await read(), 60);
+  assert.equal(await read(), 30);
 
   // A change without the CSRF token is refused and changes nothing.
   assert.notEqual((await put({ intervalMinutes: 360 }, {})).status, 200);
-  assert.equal(await read(), 60);
+  assert.equal(await read(), 30);
 
   const saved = await put({ intervalMinutes: 360 });
   assert.equal(saved.status, 200);
   assert.equal((await saved.json() as { schedule: { intervalMinutes: number } }).schedule.intervalMinutes, 360);
 
-  for (const invalid of [{ intervalMinutes: 0 }, { intervalMinutes: 7 * 24 * 60 + 1 }, { intervalMinutes: 1.5 }, { intervalMinutes: '360' }, {}]) {
+  for (const invalid of [{ intervalMinutes: -1 }, { intervalMinutes: 7 * 24 * 60 + 1 }, { intervalMinutes: 1.5 }, { intervalMinutes: '360' }, {}]) {
     const refused = await put(invalid);
     assert.equal(refused.status, 400, JSON.stringify(invalid));
     assert.equal((await refused.json() as { error: { code: string } }).error.code, 'invalid_backup_schedule');
