@@ -4,7 +4,7 @@ import {
   Globe2, LayoutDashboard, Maximize2, Minimize2, Moon, Package, Pencil, Plus,
   LogOut, RotateCcw, ScrollText, Search, Sun, Trash2, Upload, Users as UsersIcon, X, Rows3,
   BrainCircuit, CircleStop, Clock3, Cpu, Ellipsis, Play, QrCode as QrCodeIcon, RefreshCw, Settings2, ShieldCheck, Square,
-  Blocks, BookmarkPlus, FileCode2, LoaderCircle, Gauge, History, KeyRound, Monitor, Sparkles, TriangleAlert,
+  Blocks, BookmarkPlus, FileCode2, LoaderCircle, Gauge, History, KeyRound, Monitor, CircleArrowUp, TriangleAlert,
 } from 'lucide-react';
 import {
   Alert, AlertDescription, AuthLayout, Badge, BrandMark, Button, buttonVariants, Card, CardAction,
@@ -1120,7 +1120,7 @@ function RuntimeCard({
               </Select>
               {alreadyInstalled
                 ? <Tooltip><TooltipTrigger asChild><span className="inline-flex"><Button variant="outline" size="sm" disabled><Download />{t('console.versionInstalled')}</Button></span></TooltipTrigger><TooltipContent>{t('console.versionInstalledHint')}</TooltipContent></Tooltip>
-                : <Button variant="outline" size="sm" onClick={requestInstall} disabled={!csrfToken || installing}><Download />{installing ? t('common.loading') : t('dashboard.install')}</Button>}
+                : <Button variant="success" size="sm" onClick={requestInstall} disabled={!csrfToken || installing}><Download />{installing ? t('common.loading') : t('dashboard.install')}</Button>}
             </dd>
           </div>
 
@@ -1161,10 +1161,10 @@ function RuntimeCard({
       </CardContent>
 
       {showUpdate && update ? <div className="runtime-update" role="status">
-        <Sparkles aria-hidden="true" />
+        <CircleArrowUp aria-hidden="true" />
         <span>{t('console.updateAvailable', { version: update.label })}</span>
         <div className="runtime-update-actions">
-          <Button variant="outline" size="sm" onClick={takeUpdate}><Download />{t('console.updateNow')}</Button>
+          <Button variant="success" size="sm" onClick={takeUpdate}><Download />{t('console.updateNow')}</Button>
           <Button variant="ghost" size="sm" onClick={dismissUpdate}>{t('console.updateDismiss')}</Button>
         </div>
       </div> : null}
