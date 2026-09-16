@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getPlatformPaths } from '../../../packages/platform/src/index.js';
 import { isLogEvent, logLineText, type Installation, type LogLine, type Profile } from '../../../packages/contracts/src/index.js';
-import { ProcessSupervisor } from '../src/supervisor.js';
+import { ProcessSupervisor, startupPhase } from '../src/supervisor.js';
 import { TunnelManager } from '../../../packages/tunnel/src/index.js';
 
 test('process supervisor starts the marker-verified active runtime and captures output', async () => {
@@ -122,4 +122,12 @@ test('a process nobody asked to stop reports that it exited on its own', async (
   assert.equal(exited?.params?.detail, 'exit code 3');
   assert.match(supervisor.getState().error ?? '', /exited on its own/u);
   await supervisor.close();
+});
+
+test('a start says which part of the SillyTavern startup it is in', () => {
+  assert.deepEqual(startupPhase('Compiling frontend libraries...'), { code: 'process.compilingFrontend' });
+  assert.deepEqual(startupPhase('webpack 5.105.4 compiled successfully in 754 ms'), { code: 'process.frontendCompiled' });
+  assert.deepEqual(startupPhase('SillyTavern 1.18.0'), { code: 'process.loadingVersion', params: { version: '1.18.0' } });
+  assert.deepEqual(startupPhase('SillyTavern is listening on IPv4: 127.0.0.1:8000'), { code: 'process.listening' });
+  assert.equal(startupPhase('Preferring IPv4 for DNS resolution'), null);
 });

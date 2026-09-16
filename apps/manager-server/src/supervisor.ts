@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { describeExit, logEvent, logLineText, STOP_REASON_TEXT, stopReasonCode, type Installation, type LogSink, type ProcessState, type Profile, type StopReason } from '../../../packages/contracts/src/index.js';
+import { describeExit, logEvent, logLineText, STOP_REASON_TEXT, stopReasonCode, type Installation, type LogSink, type MessageParams, type ProcessState, type Profile, type StopReason } from '../../../packages/contracts/src/index.js';
 import { assertInstallationMarker, RuntimeError, type RuntimeManager } from '../../../packages/sillytavern-runtime/src/index.js';
 
 export interface ProcessSupervisorOptions {
@@ -71,7 +71,7 @@ export class ProcessSupervisor {
     // the panel say which of the two went wrong in the reader's language.
     try { await assertInstallationMarker(installation); }
     catch (error: unknown) { return this.fail(installation.id, error instanceof Error ? error.message : 'The SillyTavern installation marker is invalid', error instanceof RuntimeError ? error.code : undefined); }
-    this.current = { status: 'starting', installationId: installation.id, profileId: profile?.id ?? null, pid: null, startedAt: null, error: null };
+    this.current = { status: 'starting', installationId: installation.id, profileId: profile?.id ?? null, pid: null, startedAt: null, error: null, stepCode: 'process.preparingProfile' };
     this.logger(logEvent('sillytavern.starting', `[sillytavern] starting ${installation.resolvedRef} on 127.0.0.1:8000`, { ref: installation.resolvedRef }));
     const args = [
       ...(this.instrumentationPath ? ['--import', this.instrumentationPath] : []),
@@ -89,6 +89,7 @@ export class ProcessSupervisor {
     if (profile?.layout === 'data' && runtimeLayout === 'data') args.push('--dataRoot', profile.dataPath, '--configPath', profile.configPath);
     this.activeProfile = profile;
     this.activeRuntimeLayout = runtimeLayout;
+    this.setStep('process.launching', { ref: installation.resolvedRef });
     const child = spawn(this.nodePath, args, {
       cwd: installation.runtimePath,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -111,7 +112,7 @@ export class ProcessSupervisor {
     child.stdout?.on('data', consume);
     child.stderr?.on('data', consume);
     child.once('error', (error) => {
-      this.current = { ...this.current, status: 'error', error: error.message };
+      this.current = { ...withoutStep(this.current), status: 'error', error: error.message };
       this.logger(logEvent('sillytavern.spawnFailed', `[sillytavern] ${error.message}`, { reason: error.message }));
     });
     child.once('close', (code, signal) => {
@@ -145,7 +146,7 @@ export class ProcessSupervisor {
     const spawnedAt = Date.now();
     try {
       await this.readinessCheck(child);
-      this.current = { ...this.current, status: 'running' };
+      this.current = withoutStep({ ...this.current, status: 'running' });
       // Most of this is SillyTavern loading its dependency tree, which on a
       // hosted volume is thousands of small reads rather than any real work.
       // Saying how long it took makes that visible instead of inferred.
@@ -162,7 +163,7 @@ export class ProcessSupervisor {
     const child = this.child;
     if (!child) { this.current = { ...this.current, status: 'stopped', pid: null }; return this.getState(); }
     this.stopReason = reason;
-    this.current = { ...this.current, status: 'stopping' };
+    this.current = { ...withoutStep(this.current), status: 'stopping', stepCode: 'process.stopping' };
     child.kill('SIGTERM');
     await new Promise<void>((resolve) => {
       const timer = setTimeout(resolve, 2_000);
@@ -170,11 +171,12 @@ export class ProcessSupervisor {
     });
     if (this.child === child && child.exitCode === null) child.kill('SIGKILL');
     if (this.activeProfile && this.profileLifecycle) {
+      this.setStep('process.savingData');
       await this.profileLifecycle.persist(this.activeProfile, this.activeProfile.runtimePath, this.activeRuntimeLayout).catch((error: unknown) => { const reason = error instanceof Error ? error.message : 'unknown error'; this.logger(logEvent('profiles.legacySyncFailed', `[profiles] legacy sync failed: ${reason}`, { reason })); });
     }
     this.child = null;
     this.activeProfile = null;
-    this.current = { ...this.current, status: 'stopped', pid: null, error: null };
+    this.current = withoutStep({ ...this.current, status: 'stopped', pid: null, error: null });
     return this.getState();
   }
 
@@ -186,7 +188,17 @@ export class ProcessSupervisor {
 
   private handleLine(line: string): void {
     const clean = line.replace(/\u001b\[[0-?]*[ -\/]*[@-~]/gu, '').trim();
-    if (clean) this.logger(`[sillytavern] ${clean}`);
+    if (!clean) return;
+    this.logger(`[sillytavern] ${clean}`);
+    if (this.current.status !== 'starting') return;
+    const phase = startupPhase(clean);
+    if (phase) this.setStep(phase.code, phase.params);
+  }
+
+  private setStep(code: string, params?: MessageParams): void {
+    if (this.current.status !== 'starting' && this.current.status !== 'stopping') return;
+    const next: ProcessState = withoutStep(this.current);
+    this.current = { ...next, stepCode: code, ...(params ? { stepParams: params } : {}) };
   }
 
   private fail(installationId: string | null, error: string, errorCode?: string): ProcessState {
@@ -194,6 +206,34 @@ export class ProcessSupervisor {
     this.logger(logEvent('sillytavern.failed', `[sillytavern] ${error}`, { reason: error }));
     return this.getState();
   }
+}
+
+function withoutStep(state: ProcessState): ProcessState {
+  const { stepCode: _code, stepParams: _params, ...rest } = state;
+  return rest;
+}
+
+/**
+ * The part of a start a line of SillyTavern's output announces, if any.
+ *
+ * Matched on the words SillyTavern prints, which are its own and not a
+ * contract: a line that stops matching only means the console keeps showing
+ * the step before it, never that the start is reported wrongly.
+ */
+export function startupPhase(line: string): { code: string; params?: MessageParams } | null {
+  if (/^Node version:/u.test(line)) return { code: 'process.nodeStarted' };
+  if (/^Using config path:/u.test(line)) return { code: 'process.readingConfig' };
+  if (/^Using data root:/u.test(line)) return { code: 'process.openingData' };
+  if (/Preparing to migrate user data|^Migrating /u.test(line)) return { code: 'process.migratingData' };
+  if (/^Content file .* copied/u.test(line)) return { code: 'process.copyingContent' };
+  const version = /^SillyTavern (\d[\w.-]*)$/u.exec(line);
+  if (version) return { code: 'process.loadingVersion', params: { version: version[1] ?? '' } };
+  if (/^Compiling frontend libraries/u.test(line)) return { code: 'process.compilingFrontend' };
+  if (/^webpack .*compiled/u.test(line)) return { code: 'process.frontendCompiled' };
+  if (/Auto-updating server plugins|^Initializing plugin|server plugin\(s\) are currently loaded/u.test(line)) return { code: 'process.loadingPlugins' };
+  if (/is listening on/u.test(line)) return { code: 'process.listening' };
+  if (/^Go to: /u.test(line)) return { code: 'process.waitingForAnswer' };
+  return null;
 }
 
 async function waitForHttpReady(url: string, child: ChildProcess, timeoutMs: number): Promise<void> {

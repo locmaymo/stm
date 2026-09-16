@@ -381,6 +381,16 @@ export interface ProcessState {
   readonly error: string | null;
   /** Set when the manager is what failed; see `Installation.errorCode`. */
   readonly errorCode?: string;
+  /**
+   * What a start or a stop is doing right now, as a `logs.process.*` code.
+   *
+   * Read off SillyTavern's own output while it starts - compiling the
+   * frontend, loading plugins, opening the port - so the console can say
+   * which of those it is waiting on instead of one sentence for all of them.
+   * Only present while the state is `starting` or `stopping`.
+   */
+  readonly stepCode?: string;
+  readonly stepParams?: MessageParams;
 }
 
 /**

@@ -734,18 +734,26 @@
  * text: a pale band sweeping pale text was legible in the dark theme and
  * almost invisible in the light one.
  */
+/*
+ * The band is a fixed width in the type's own units rather than a share of
+ * the sentence. As a share, a short sentence was lit end to end at once and
+ * read as a blink; at a few letters wide it travels across the words one at a
+ * time, whatever their length. The tile repeats, so a long sentence has the
+ * next band arriving as the last one leaves.
+ */
 .thinking {
   background-image: linear-gradient(100deg,
-    var(--sweep-base) 0%, var(--sweep-base) 32%,
-    var(--sweep-peak) 46%, var(--sweep-peak) 54%,
-    var(--sweep-base) 68%, var(--sweep-base) 100%);
-  background-size: 200% 100%;
+    var(--sweep-base) 0%, var(--sweep-base) 40%,
+    var(--sweep-peak) 48%, var(--sweep-peak) 52%,
+    var(--sweep-base) 60%, var(--sweep-base) 100%);
+  background-size: 16em 100%;
+  background-repeat: repeat-x;
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
-  animation: text-sweep 1.9s linear infinite;
+  animation: text-sweep 2.4s linear infinite;
 }
-@keyframes text-sweep { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+@keyframes text-sweep { from { background-position: 16em 0; } to { background-position: 0 0; } }
 /* Without a background there is nothing for `background-clip: text` to show,
    so the clip has to be given up along with the animation. */
 @media (prefers-reduced-motion: reduce) {
@@ -757,6 +765,24 @@
     color: var(--sweep-base);
   }
 }
+.task-line { display: flex; min-width: 0; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; font-size: 13px; }
+.task-kind { flex-shrink: 0; padding: 1px 7px; border-radius: 999px; background: color-mix(in srgb, var(--primary) 12%, transparent); color: var(--primary); font-size: 11px; font-weight: 650; letter-spacing: 0.02em; }
+.task-step { min-width: 0; }
+.task-percent { color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.task-track { height: 6px; }
+/* Stripes that travel, so a bar that has not moved for a while still says it is alive. */
+.task-stripes {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background-color: var(--primary);
+  background-image: linear-gradient(45deg, rgb(255 255 255 / 0.28) 25%, transparent 25%, transparent 50%, rgb(255 255 255 / 0.28) 50%, rgb(255 255 255 / 0.28) 75%, transparent 75%, transparent);
+  background-size: 12px 12px;
+  animation: task-stripes 0.8s linear infinite;
+  transition: width 0.3s ease;
+}
+.task-stripes[data-indeterminate] { width: 100%; opacity: 0.75; }
+@keyframes task-stripes { from { background-position: 0 0; } to { background-position: 12px 0; } }
 .install-result { margin-top: 12px; color: var(--primary); font-size: 13px; }
 .install-error { margin-top: 12px; color: var(--destructive); font-size: 13px; overflow-wrap: anywhere; }
 .version-select-content { max-height: min(30rem, calc(100dvh - 10rem)); }

@@ -906,9 +906,13 @@ function RuntimeCard({
   // where the sweep lives for a start or a stop - the two things somebody
   // presses and then watches, and which used to report nothing at all until
   // they finished.
-  const waitingFor = process.status === 'starting' ? t('console.waitingForSilly')
-    : process.status === 'stopping' ? t('console.stoppingSilly')
+  // Read off SillyTavern's own output while it starts, so a slow start says
+  // what it is slow at - compiling, migrating, loading plugins.
+  const processStep = process.stepCode ? translateStep('', catalog, process.stepCode, process.stepParams) : '';
+  const waitingFor = process.status === 'starting' ? processStep || t('console.waitingForSilly')
+    : process.status === 'stopping' ? processStep || t('console.stoppingSilly')
       : null;
+  const waitingTask = process.status === 'starting' ? t('console.taskStart') : t('console.taskStop');
 
   // A refusal the manager wrote is said in the reader's language; a line from
   // git, npm or SillyTavern itself is shown as that program wrote it.
@@ -1093,14 +1097,14 @@ function RuntimeCard({
           {installingNow && active ? <div className="runtime-row">
             <dt>{t('console.progressLabel')}</dt>
             <dd className="runtime-progress">
-              <span className="thinking">{translateStep(active.step, catalog, active.stepCode, active.stepParams)} · {Math.round(active.progress)}%</span>
-              <span className="progress-track"><span className="progress-value" style={{ width: `${Math.max(0, Math.min(100, active.progress))}%` }} /></span>
+              <TaskLine task={t('console.taskInstall')} step={translateStep(active.step, catalog, active.stepCode, active.stepParams)} percent={active.progress} />
+              <TaskBar percent={active.progress} />
             </dd>
           </div> : waitingFor ? <div className="runtime-row">
             <dt>{t('console.progressLabel')}</dt>
             <dd className="runtime-progress">
-              <span className="thinking">{waitingFor}</span>
-              <span className="progress-track"><span className="progress-indeterminate" /></span>
+              <TaskLine task={waitingTask} step={waitingFor} />
+              <TaskBar />
             </dd>
           </div> : null}
 
@@ -1285,7 +1289,7 @@ function AccessPanel({ t, process, tunnel, config, security, installed, onAction
           return null;
         }}
       />
-      {busy || securityBusy ? <div className="operation-progress" role="status"><span className="thinking">{t('common.loading')}</span><span className="progress-track"><span className="progress-indeterminate" /></span></div> : null}
+      {busy || securityBusy ? <div className="operation-progress" role="status"><span className="thinking">{t('common.loading')}</span><TaskBar /></div> : null}
       {security.error ? <p className="install-error" role="alert">{security.error}</p> : null}
       {tunnel.error ? <p className="install-error" role="alert">{tunnel.error}</p> : null}
     </CardContent>
@@ -1929,7 +1933,7 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
     } catch { failed(t('console.profileActivateFailed')); } finally { setBusyAction(null); }
   };
   const createBackup = async (name: string): Promise<string | null> => {
-    setBusyAction(t('dashboard.backupNow')); setOperationProgress({ percent: 0, step: t('dashboard.backupNow') });
+    setBusyAction(t('dashboard.backupNow')); setOperationProgress(null);
     try {
       const response = await apiFetch('/api/v1/backups', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ ...(name ? { name } : {}) }) });
       const payload = await response.json() as { jobId?: string; error?: { message?: string } };
@@ -1975,7 +1979,7 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
     // The question has been answered, so the dialog goes before the work
     // starts: what happens next belongs on the page, where the Stop button is.
     closeRestore();
-    setBusyAction(t('console.restore')); setOperationProgress({ percent: 0, step: t('console.restore') }); setMixedProfile(null);
+    setBusyAction(t('console.restore')); setOperationProgress(null); setMixedProfile(null);
     try {
       const response = await apiFetch(`/api/v1/backups/${backupId}/restore`, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ mode: restoreMode }) });
       const payload = await response.json() as { jobId?: string; error?: { message?: string } };
@@ -1994,7 +1998,7 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
   };
   const inspectUpload = async (file: File | undefined) => {
     if (!file) return;
-    setBusyAction(t('console.importZip')); setOperationProgress({ percent: 0, step: t('console.importZip') }); setUploading(true);
+    setBusyAction(t('console.importZip')); setOperationProgress(null); setUploading(true);
     const controller = new AbortController();
     uploadAbort.current = controller;
     const uploadId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -2112,7 +2116,7 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
   };
   const uploadR2 = async () => {
     setR2Busy(t('console.r2UploadLatest'));
-    setOperationProgress({ percent: 0, step: t('console.r2UploadLatest') });
+    setOperationProgress(null);
     try {
       const response = await apiFetch('/api/v1/r2/sync', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       const payload = await response.json() as { jobId?: string; error?: { message?: string } };
@@ -2137,7 +2141,7 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
    */
   const fetchSnapshot = async (snapshot: R2SnapshotSummary) => {
     setR2Busy(t('console.r2Fetch'));
-    setOperationProgress({ percent: 0, step: t('console.r2Fetch') });
+    setOperationProgress(null);
     try {
       const response = await apiFetch(`/api/v1/r2/snapshots/${encodeURIComponent(snapshot.id)}/fetch`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       const payload = await response.json() as { jobId?: string; error?: { message?: string } };
@@ -2372,12 +2376,41 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
 function OperationProgress({ t, label, progress, canStop, stopping, onStop, warning }: { t: Translate; label: string; progress: { percent: number; step: string } | null; canStop: boolean; stopping: boolean; onStop: () => void; warning: string | null }) {
   return <div className="grid gap-2 rounded-lg border bg-muted/40 p-3" role="status">
     <div className="flex flex-wrap items-center justify-between gap-2">
-      <span className="min-w-0 text-sm">{progress ? `${progress.step} · ${progress.percent}%` : label}</span>
+      <TaskLine task={label} step={progress?.step ?? t('console.taskPreparing')} {...(progress ? { percent: progress.percent } : {})} />
       {canStop ? <Button variant="outline" size="sm" onClick={onStop} disabled={stopping}><CircleStop />{stopping ? t('console.stopping') : t('common.stop')}</Button> : null}
     </div>
-    <span className="progress-track">{progress ? <span className="progress-value" style={{ width: `${Math.max(2, Math.min(100, progress.percent))}%` }} /> : <span className="progress-indeterminate" />}</span>
+    <TaskBar {...(progress ? { percent: Math.max(2, progress.percent) } : {})} />
     {warning ? <span className="text-xs text-destructive">{warning}</span> : null}
   </div>;
+}
+
+/**
+ * What kind of work this is, what it is doing, and how far it has got.
+ *
+ * The kind is a small label of its own - Install, Start, Backup, Restore - so
+ * a glance says which of the manager's few jobs is running before the sentence
+ * says which part of it. The sentence carries the sweep, the way a reply being
+ * written does, because a sentence that is visibly still being worked on is
+ * easier to wait on than a bar alone.
+ */
+function TaskLine({ task, step, percent }: { task: string; step: string; percent?: number }) {
+  return <span className="task-line">
+    <span className="task-kind">{task}</span>
+    <span className="thinking task-step">{step}</span>
+    {percent === undefined ? null : <span className="task-percent">{Math.round(percent)}%</span>}
+  </span>;
+}
+
+/**
+ * A bar for work in progress: striped and moving, filled to the share done
+ * when that is known and all the way when it is not. The meters that are
+ * readings rather than work - CPU, memory, storage, the R2 allowance - keep
+ * their plain bars.
+ */
+function TaskBar({ percent }: { percent?: number }) {
+  return <span className="progress-track task-track">
+    <span className="task-stripes" data-indeterminate={percent === undefined || undefined} style={percent === undefined ? undefined : { width: `${Math.max(0, Math.min(100, percent))}%` }} />
+  </span>;
 }
 
 /**
