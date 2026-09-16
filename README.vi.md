@@ -208,4 +208,10 @@ npm run release:npm
 
 ## License
 
-Xem license của repository và [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) để biết các thông báo license của UI component được sử dụng.
+Copyright (C) 2026 Phạm Quang Lộc
+
+SillyTavern Manager là phần mềm tự do: bạn có thể phân phối lại và/hoặc sửa đổi theo các điều khoản của [GNU Affero General Public License phiên bản 3](LICENSE) (AGPL-3.0-only) do Free Software Foundation công bố.
+
+License này áp dụng cho mọi phiên bản của dự án, bao gồm tất cả commit và bản phát hành được công bố trước khi thêm file `LICENSE`, chẳng hạn v0.1.0.
+
+Mã nguồn của bên thứ ba giữ license riêng; xem [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Logo SillyTavern Vietnam (STVN) và các logo của bên thứ ba được mô tả ở đó không thuộc phạm vi AGPL-3.0.

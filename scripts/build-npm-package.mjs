@@ -16,6 +16,7 @@ for (const file of ['loader.mjs', 'observer.mjs', 'node-fetch-hook.mjs']) {
   await cp(join(repositoryRoot, 'packages', 'instrumentation', 'src', file), join(packageRoot, 'packages', 'instrumentation', 'src', file));
 }
 await cp(join(repositoryRoot, 'packaging', 'npm', 'cli.mjs'), join(packageRoot, 'cli.mjs'));
+await cp(join(repositoryRoot, 'LICENSE'), join(packageRoot, 'LICENSE'));
 const rootPackage = JSON.parse(await readFile(join(repositoryRoot, 'package.json'), 'utf8'));
 const packageManifest = JSON.parse(await readFile(join(repositoryRoot, 'packaging', 'npm', 'package.json'), 'utf8'));
 packageManifest.version = rootPackage.version;

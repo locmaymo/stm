@@ -28,6 +28,7 @@ await cp(join(repositoryRoot, 'packaging', 'windows', 'runtime-package.json'), j
 run('npm', ['install', '--omit=dev', '--ignore-scripts', '--no-package-lock', '--prefix', appRoot]);
 await cp(process.execPath, join(runtimeRoot, 'node.exe'));
 await cp(join(repositoryRoot, 'THIRD_PARTY_NOTICES.md'), join(releaseRoot, 'THIRD_PARTY_NOTICES.md'));
+await cp(join(repositoryRoot, 'LICENSE'), join(releaseRoot, 'LICENSE'));
 // Sorts first in Explorer, so it is the file someone sees before the exe.
 await cp(join(repositoryRoot, 'packaging', 'windows', 'FIRST-RUN.txt'), join(releaseRoot, 'Read me first.txt'));
 const packageJson = JSON.parse(await readFile(join(repositoryRoot, 'package.json'), 'utf8'));
