@@ -1,10 +1,12 @@
-import { createHash, createHmac, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { mkdir, open, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { formatBytes, logEvent, logLineText, type LogSink, type Profile, type R2Config, type R2EnvironmentField, type R2Object, type R2SnapshotSummary, type R2Usage, type TransferProgress } from '../../contracts/src/index.js';
 import { ioConcurrency, runPooled } from '../../platform/src/index.js';
 import type { PlatformPaths } from '../../platform/src/index.js';
 import { BlobLedger } from './ledger.js';
+import { S3ObjectStore, type R2Credentials } from './s3.js';
+import { R2Error, type ObjectRecord, type ObjectStore } from './store.js';
 import {
   blobKey,
   decodeBlob,
@@ -18,6 +20,9 @@ import {
   type HashedFile,
   type R2Snapshot,
 } from './sync.js';
+
+export { R2Error } from './store.js';
+export type { ObjectRecord, ObjectStore } from './store.js';
 
 const R2_STATE_FILE = 'r2-config.json';
 /** The connection settings `.env` may provide, and the variable for each. */
@@ -176,36 +181,6 @@ export interface R2ConnectionResult {
   readonly ok: true;
   readonly objectCount: number;
   readonly totalBytes: number;
-}
-
-interface R2Credentials {
-  readonly endpoint: string;
-  readonly bucket: string;
-  readonly accessKeyId: string;
-  readonly secretAccessKey: string;
-}
-
-interface S3ObjectRecord {
-  readonly key: string;
-  readonly sizeBytes: number;
-  readonly lastModified: string | null;
-  readonly etag: string | null;
-}
-
-export class R2Error extends Error {
-  public readonly code: string;
-  public constructor(code: string, message: string) {
-    super(message);
-    this.code = code;
-  }
-}
-
-class R2HttpError extends R2Error {
-  public readonly status: number;
-  public constructor(status: number, message: string) {
-    super('r2_request_failed', message);
-    this.status = status;
-  }
 }
 
 export class R2Manager {
@@ -522,7 +497,7 @@ export class R2Manager {
       const config = await this.requireUsable();
       const client = this.client(config);
       const objects = await this.listAll(config, OBJECT_PREFIX, client);
-      const blobs = new Map<string, S3ObjectRecord>();
+      const blobs = new Map<string, ObjectRecord>();
       const snapshotKeys: string[] = [];
       let legacyObjectCount = 0;
       let legacyBytes = 0;
@@ -630,7 +605,7 @@ export class R2Manager {
   }
 
   /** Upload every chunk of one file the bucket is missing, or report the file is gone. */
-  private async uploadChunks(client: R2Client, entry: PlannedFile): Promise<{ hashes: string[]; bytes: number } | null> {
+  private async uploadChunks(client: ObjectStore, entry: PlannedFile): Promise<{ hashes: string[]; bytes: number } | null> {
     let handle;
     try {
       handle = await open(entry.source.path, 'r');
@@ -662,9 +637,9 @@ export class R2Manager {
     }
   }
 
-  private async listAll(config: StoredR2Config, prefix: string, client?: R2Client): Promise<S3ObjectRecord[]> {
+  private async listAll(config: StoredR2Config, prefix: string, client?: ObjectStore): Promise<ObjectRecord[]> {
     const target = client ?? this.client(config);
-    const objects: S3ObjectRecord[] = [];
+    const objects: ObjectRecord[] = [];
     let cursor: string | undefined;
     do {
       const page = await target.listObjects(prefix, LIST_PAGE_KEYS, cursor);
@@ -688,8 +663,8 @@ export class R2Manager {
     return { ...config.usage, writeOperations: 0, periodStartedAt: period };
   }
 
-  private client(config: StoredR2Config): R2Client {
-    return new R2Client(toCredentials(config), this.fetchImpl, (kind) => {
+  private client(config: StoredR2Config): ObjectStore {
+    return new S3ObjectStore(toCredentials(config), this.fetchImpl, (kind) => {
       if (kind === 'charged') this.charges.write += 1;
       else if (kind === 'read') this.charges.read += 1;
     });
@@ -928,7 +903,7 @@ function isoWeek(timestamp: string): string {
   return `${target.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
 }
 
-function toSnapshotSummary(object: S3ObjectRecord): R2SnapshotSummary | null {
+function toSnapshotSummary(object: ObjectRecord): R2SnapshotSummary | null {
   const rest = object.key.slice(SNAPSHOT_PREFIX.length);
   const separator = rest.indexOf('/');
   if (separator <= 0 || !rest.endsWith('.json.gz')) return null;
@@ -979,118 +954,6 @@ function monthStart(now: Date): string {
 
 function throwIfStopped(signal?: AbortSignal): void {
   if (signal?.aborted) throw new R2Error('r2_upload_stopped', 'The upload was stopped');
-}
-
-class R2Client {
-  private readonly region = 'auto';
-  private readonly service = 's3';
-
-  public constructor(
-    private readonly credentials: R2Credentials,
-    private readonly fetchImpl: typeof fetch,
-    /** Told about every request that Cloudflare charges for, as it is made. */
-    private readonly onRequest: (billing: 'charged' | 'read' | 'free') => void,
-  ) {}
-
-  public async listObjects(prefix: string, maxKeys: number, cursor?: string): Promise<{ objects: S3ObjectRecord[]; cursor: string | undefined }> {
-    const query = new URLSearchParams([['list-type', '2'], ['prefix', prefix], ['max-keys', String(maxKeys)]]);
-    if (cursor) query.set('continuation-token', cursor);
-    const response = await this.request('GET', '', null, query, {}, 'charged');
-    const body = await response.text();
-    const objects: S3ObjectRecord[] = [];
-    for (const match of body.matchAll(/<Contents>([\s\S]*?)<\/Contents>/gu)) {
-      const content = match[1] ?? '';
-      const key = decodeXml(readXmlTag(content, 'Key') ?? '');
-      if (!key) continue;
-      const size = Number(readXmlTag(content, 'Size') ?? 0);
-      objects.push({ key, sizeBytes: Number.isFinite(size) ? size : 0, lastModified: readXmlTag(content, 'LastModified'), etag: readXmlTag(content, 'ETag') });
-    }
-    // A store of tens of thousands of chunks does not fit one page, and a
-    // listing that stopped at the first one made every chunk past it look
-    // absent - which would have meant uploading them all again, every time.
-    const truncated = readXmlTag(body, 'IsTruncated') === 'true';
-    const next = readXmlTag(body, 'NextContinuationToken');
-    return { objects, cursor: truncated && next ? decodeXml(next) : undefined };
-  }
-
-  public async putObject(key: string, body: Uint8Array, contentType: string): Promise<void> {
-    await this.request('PUT', key, body, undefined, { 'content-type': contentType, 'content-length': String(body.byteLength) }, 'charged');
-  }
-
-  public async getObject(key: string): Promise<Buffer> {
-    const response = await this.request('GET', key, null, undefined, {}, 'read');
-    return Buffer.from(await response.arrayBuffer());
-  }
-
-  public async deleteObject(key: string): Promise<void> {
-    await this.request('DELETE', key, null, undefined, {}, 'free');
-  }
-
-  private async request(method: string, key: string, body: BodyInit | Uint8Array | null, query?: URLSearchParams, extraHeaders: Record<string, string> = {}, billing: 'charged' | 'read' | 'free' = 'read'): Promise<Response> {
-    const url = objectUrl(this.credentials.endpoint, this.credentials.bucket, key, query);
-    const payloadHash = 'UNSIGNED-PAYLOAD';
-    const amzDate = formatAmzDate(new Date());
-    const headers: Record<string, string> = { host: url.host, 'x-amz-content-sha256': payloadHash, 'x-amz-date': amzDate, ...extraHeaders };
-    const { authorization } = signRequest({ method, url, headers, payloadHash, accessKeyId: this.credentials.accessKeyId, secretAccessKey: this.credentials.secretAccessKey, region: this.region, service: this.service });
-    headers.authorization = authorization;
-    const init = { method, headers, ...(body === null ? {} : { body: body as BodyInit }), duplex: 'half' } as RequestInit & { duplex: 'half' };
-    this.onRequest(billing);
-    const response = await this.fetchImpl(url, init);
-    if (!response.ok) {
-      const message = (await response.text()).slice(0, 500);
-      throw new R2HttpError(response.status, `R2 request failed (${response.status}): ${message || response.statusText}`);
-    }
-    return response;
-  }
-}
-
-function signRequest(options: { method: string; url: URL; headers: Record<string, string>; payloadHash: string; accessKeyId: string; secretAccessKey: string; region: string; service: string }): { authorization: string } {
-  const normalizedHeaders = Object.entries(options.headers).map(([name, value]) => [name.toLowerCase(), value.trim().replace(/\s+/gu, ' ')] as const).sort(([left], [right]) => left.localeCompare(right));
-  const canonicalHeaders = normalizedHeaders.map(([name, value]) => `${name}:${value}\n`).join('');
-  const signedHeaders = normalizedHeaders.map(([name]) => name).join(';');
-  const canonicalQuery = canonicalQueryString(options.url.searchParams);
-  const canonicalRequest = [options.method, options.url.pathname || '/', canonicalQuery, canonicalHeaders, signedHeaders, options.payloadHash].join('\n');
-  const date = options.headers['x-amz-date']?.slice(0, 8) ?? formatAmzDate(new Date()).slice(0, 8);
-  const scope = `${date}/${options.region}/${options.service}/aws4_request`;
-  const stringToSign = `AWS4-HMAC-SHA256\n${options.headers['x-amz-date']}\n${scope}\n${sha256(canonicalRequest)}`;
-  const dateKey = hmacDigest(`AWS4${options.secretAccessKey}`, date);
-  const regionKey = hmacDigest(dateKey, options.region);
-  const serviceKey = hmacDigest(regionKey, options.service);
-  const signingKey = hmacDigest(serviceKey, 'aws4_request');
-  const signature = hmacHex(signingKey, stringToSign);
-  return { authorization: `AWS4-HMAC-SHA256 Credential=${options.accessKeyId}/${scope}, SignedHeaders=${signedHeaders}, Signature=${signature}` };
-}
-
-function objectUrl(endpoint: string, bucket: string, key: string, query?: URLSearchParams): URL {
-  const base = endpoint.endsWith('/') ? endpoint.slice(0, -1) : endpoint;
-  const encodedKey = key.split('/').map((segment) => encodeURIComponent(segment)).join('/');
-  const url = new URL(`${base}/${encodeURIComponent(bucket)}${encodedKey ? `/${encodedKey}` : ''}`);
-  if (query) url.search = canonicalQueryString(query);
-  return url;
-}
-
-function canonicalQueryString(query: URLSearchParams): string {
-  return [...query.entries()].map(([key, value]) => [rfc3986(key), rfc3986(value)] as const).sort(([leftKey, leftValue], [rightKey, rightValue]) => leftKey.localeCompare(rightKey) || leftValue.localeCompare(rightValue)).map(([key, value]) => `${key}=${value}`).join('&');
-}
-
-function rfc3986(value: string): string {
-  return encodeURIComponent(value).replace(/[!'()*]/gu, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
-}
-
-function formatAmzDate(date: Date): string {
-  return date.toISOString().replace(/[-:]/gu, '').replace(/\.\d{3}Z$/u, 'Z');
-}
-
-function sha256(value: string): string {
-  return createHash('sha256').update(value, 'utf8').digest('hex');
-}
-
-function hmacDigest(key: string | Buffer, value: string): Buffer {
-  return createHmac('sha256', key).update(value, 'utf8').digest();
-}
-
-function hmacHex(key: string | Buffer, value: string): string {
-  return hmacDigest(key, value).toString('hex');
 }
 
 function toCredentials(config: StoredR2Config): R2Credentials {
@@ -1202,17 +1065,11 @@ function maskSecret(value: string): string {
   return `${value.slice(0, 2)}${MASKED_SECRET}${value.slice(-2)}`;
 }
 
-function toPublicObject(object: S3ObjectRecord): R2Object {
+function toPublicObject(object: ObjectRecord): R2Object {
   return { key: object.key, sizeBytes: object.sizeBytes, lastModified: object.lastModified, etag: object.etag };
 }
 
-function readXmlTag(value: string, tag: string): string | null {
-  return new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, 'u').exec(value)?.[1] ?? null;
-}
 
-function decodeXml(value: string): string {
-  return value.replace(/&lt;/gu, '<').replace(/&gt;/gu, '>').replace(/&quot;/gu, '"').replace(/&apos;/gu, "'").replace(/&amp;/gu, '&');
-}
 
 function nullableEnvironment(value: string | undefined): string | null {
   return value?.trim() || null;
