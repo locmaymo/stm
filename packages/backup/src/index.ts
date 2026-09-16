@@ -13,7 +13,13 @@ import type { PlatformPaths } from '../../platform/src/index.js';
 
 const BACKUP_STATE_FILE = 'backups.json';
 const BACKUP_SCHEMA_VERSION = 1 as const;
-const DEFAULT_LOCAL_INTERVAL_MINUTES = 60;
+/**
+ * Half an hour: short enough that a lost evening of chat is at most thirty
+ * minutes of it, long enough that a full archive of a large profile is not
+ * rewritten while the last one is still being written. The frequent copy is
+ * R2's job, which sends only what changed.
+ */
+const DEFAULT_LOCAL_INTERVAL_MINUTES = 30;
 const MAX_LOCAL_INTERVAL_MINUTES = 7 * 24 * 60;
 const MAX_ZIP_DIRECTORY_BYTES = 64 * 1024 * 1024;
 const MAX_UPLOAD_BYTES = 8 * 1024 * 1024 * 1024;

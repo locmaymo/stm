@@ -855,11 +855,11 @@ test('the local backup schedule is read and changed over HTTP, and survives a re
     return (await response.json() as { schedule: { intervalMinutes: number } }).schedule.intervalMinutes;
   };
 
-  assert.equal(await read(), 60);
+  assert.equal(await read(), 30);
 
   // A change without the CSRF token is refused and changes nothing.
   assert.notEqual((await put({ intervalMinutes: 360 }, {})).status, 200);
-  assert.equal(await read(), 60);
+  assert.equal(await read(), 30);
 
   const saved = await put({ intervalMinutes: 360 });
   assert.equal(saved.status, 200);

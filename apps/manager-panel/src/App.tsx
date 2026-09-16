@@ -1779,6 +1779,7 @@ const R2_HISTORY_CHOICES = [
 /** How often the backup library takes a local copy. Not an R2 setting. `0` is off. */
 const LOCAL_BACKUP_CHOICES = [
   { id: 'off', label: 'console.localScheduleOff', intervalMinutes: 0 },
+  { id: '30m', label: 'console.every30Minutes', intervalMinutes: 30 },
   { id: '1h', label: 'console.everyHour', intervalMinutes: 60 },
   { id: '6h', label: 'console.every6Hours', intervalMinutes: 360 },
   { id: '1d', label: 'console.everyDay', intervalMinutes: 1440 },

@@ -397,7 +397,7 @@ test('archives nothing points at are reclaimed, and the ones in the library are 
 test('the local backup schedule is kept with the library and survives a restart', async () => {
   const fixture = await createFixture();
   const store = new BackupStore({ paths: fixture.paths });
-  assert.equal((await store.getSchedule()).intervalMinutes, 60);
+  assert.equal((await store.getSchedule()).intervalMinutes, 30);
   const created = await store.create(fixture.profile);
   await store.setSchedule({ intervalMinutes: 360 });
   await assert.rejects(() => store.setSchedule({ intervalMinutes: -1 }), (error: unknown) => error instanceof BackupError && error.code === 'invalid_backup_schedule');
@@ -418,7 +418,7 @@ test('an interval from the old R2 settings is taken when none was chosen here', 
   // One that was out of range is dropped, leaving the default.
   const other = await createFixture();
   await new BackupStore({ paths: other.paths }).adoptLegacySchedule(0);
-  assert.equal((await new BackupStore({ paths: other.paths }).getSchedule()).intervalMinutes, 60);
+  assert.equal((await new BackupStore({ paths: other.paths }).getSchedule()).intervalMinutes, 30);
 });
 
 test('the local backup schedule can be turned off, and stays off', async () => {

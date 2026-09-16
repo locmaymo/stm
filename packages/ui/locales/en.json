@@ -169,6 +169,7 @@
     "r2UploadEveryHint": "How often chats and settings go up. Images and larger files go a few times a day.",
     "every5Minutes": "Every 5 minutes",
     "every15Minutes": "Every 15 minutes",
+    "every30Minutes": "Every 30 minutes",
     "everyHour": "Every hour",
     "every6Hours": "Every 6 hours",
     "everyDay": "Once a day",
