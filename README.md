@@ -171,6 +171,19 @@ Local backup is always available. The archive is a streaming ZIP compatible with
 
 Restore previews the archive before writing. Replace is the default mode; merge is available when needed. A safety snapshot is created before a replace or profile switch. Cloudflare R2 is optional and recommended for protection against a failed disk, a deleted hosted workspace, or a lost machine.
 
+### Cloudflare R2
+
+On the **Data** page, **Connect Cloudflare** is the one step. Sign in to Cloudflare, pick the account, allow the permissions, and the manager finds or creates a bucket named <code>sillytavern-manager-backup</code> in that account and starts backing up to it. There are no keys to create or paste.
+
+- **Allow Workers** (optional, recommended). The manager deploys a small Worker, also named <code>sillytavern-manager-backup</code>, that carries backup data to the bucket. It is fast and does not use your Cloudflare API rate limit. Without it, backups go through Cloudflare's API, which is slower, and a first backup can take a long time.
+- **Allow Account Analytics** (optional). The panel then shows storage and Class A/B operations as Cloudflare counts them, for the backup bucket and for the whole account against the free tier. These are usage figures, not your bill.
+- **A new machine** connects to the same account and finds the same bucket; the recovery points already in it can be brought back and restored.
+- **Disconnect** removes this installation's Worker key and revokes the sign-in. The bucket and its recovery points stay in your account. You can also revoke access at any time under **Manage OAuth authorizations** in your Cloudflare profile.
+
+Only the Cloudflare refresh token is stored, in its own file readable by your user alone. Worker keys live in memory, change every day, and each installation has its own.
+
+**S3 keys instead.** If you would rather not sign in, choose **S3 keys (manual)** and enter the endpoint, bucket and key pair from the R2 page of the Cloudflare dashboard, or set them in <code>.env</code> (see <code>.env.example</code>). Any S3-compatible storage works this way.
+
 ## Telemetry and privacy
 
 Telemetry is part of this free project. The manager sends only an allowlisted summary such as platform, application version, provider, model, endpoint hostname, streaming flag, max tokens, input/output/total tokens, cache usage, reasoning-token usage, status, and duration.
