@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex">
+  <title>SillyTavern Manager · Cloudflare</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main>
+    <section id="working">
+      <h1>Returning to SillyTavern Manager…</h1>
+      <p lang="vi">Đang quay lại SillyTavern Manager…</p>
+    </section>
+    <section id="confirm" hidden>
+      <h1>Continue to your manager?</h1>
+      <p>Cloudflare sign-in finished. It will be completed on:</p>
+      <p lang="vi">Đăng nhập Cloudflare đã xong. Việc kết nối sẽ được hoàn tất tại:</p>
+      <p class="destination"><code id="destination"></code></p>
+      <p>Only continue if this is the address you opened SillyTavern Manager on.</p>
+      <p lang="vi">Chỉ tiếp tục nếu đây đúng là địa chỉ bạn đang mở SillyTavern Manager.</p>
+      <button id="continue" type="button">Continue · Tiếp tục</button>
+    </section>
+    <section id="invalid" hidden>
+      <h1>This link cannot be used</h1>
+      <p>It did not come from a SillyTavern Manager sign-in. Start again from <strong>Connect Cloudflare</strong> in the manager.</p>
+      <p lang="vi">Liên kết này không đến từ lần đăng nhập của SillyTavern Manager. Hãy bắt đầu lại từ nút <strong>Kết nối Cloudflare</strong> trong manager.</p>
+    </section>
+    <noscript><p>JavaScript is needed to return to the manager. · Cần bật JavaScript để quay lại manager.</p></noscript>
+  </main>
+  <script type="module" src="/relay.js"></script>
+</body>
+</html>

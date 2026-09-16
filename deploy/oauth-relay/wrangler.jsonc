@@ -1,0 +1,20 @@
+{
+  // The static page Cloudflare's OAuth client redirects to. It forwards the
+  // browser back to whichever SillyTavern Manager started the sign-in.
+  // Deploy from this directory: npx wrangler deploy
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "stm-oauth-relay",
+  "compatibility_date": "2026-09-01",
+  "assets": {
+    "directory": "./public",
+    // /oauth/cloudflare/callback serves callback.html with no redirect, so the
+    // registered redirect URI is answered exactly as registered.
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "404-page"
+  },
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    { "pattern": "stm.phamloc.top", "custom_domain": true }
+  ]
+}
