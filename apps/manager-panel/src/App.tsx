@@ -423,6 +423,39 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     return () => { cancelled = true; };
   }, []);
 
+  /*
+   * The backup list, kept current without being asked.
+   *
+   * Archives appear without anybody pressing anything - the schedule, the
+   * safety copy a restore or a profile switch takes, a copy that became an
+   * automatic backup - and the list used to show them only after a reload or
+   * a trip to another page and back. The list is the manager's own file, read
+   * from memory, so asking every few seconds costs nothing worth saving; it is
+   * skipped while the tab is hidden, and a reply identical to what is on
+   * screen changes nothing.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    let last = '';
+    const poll = async () => {
+      if (document.hidden) return;
+      try {
+        const response = await apiFetch('/api/v1/backups', { credentials: 'same-origin' });
+        if (!response.ok || cancelled) return;
+        const text = await response.text();
+        if (cancelled || text === last) return;
+        last = text;
+        setBackups((JSON.parse(text) as { backups: BackupManifest[] }).backups);
+      } catch {
+        // The next poll tries again.
+      }
+    };
+    const timer = window.setInterval(() => { void poll(); }, 4000);
+    const onVisible = () => { if (!document.hidden) void poll(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { cancelled = true; window.clearInterval(timer); document.removeEventListener('visibilitychange', onVisible); };
+  }, []);
+
   useEffect(() => {
     if (!installing) return undefined;
     if (!pendingInstallationId) return undefined;
@@ -1893,6 +1926,39 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
     if (scheduleResponse?.ok) setBackupSchedule((await scheduleResponse.json() as { schedule: LocalBackupSchedule }).schedule);
   };
   useEffect(() => { void refresh(); }, []);
+
+  /*
+   * The R2 card follows the scheduler the same way the list does.
+   *
+   * Reading the settings is local and free. Listing recovery points is a
+   * charged request to the bucket, so it is made only when the last upload
+   * time says there is a new one to list.
+   */
+  const lastUploadSeen = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      if (document.hidden) return;
+      try {
+        const response = await apiFetch('/api/v1/r2', { credentials: 'same-origin' });
+        if (!response.ok || cancelled) return;
+        const config = (await response.json() as { config: R2Config }).config;
+        if (cancelled) return;
+        setR2Config(config);
+        const previous = lastUploadSeen.current;
+        lastUploadSeen.current = config.lastUploadAt;
+        if (previous !== undefined && previous !== config.lastUploadAt && config.configured) {
+          const snapshots = await apiFetch('/api/v1/r2/snapshots', { credentials: 'same-origin' });
+          if (snapshots.ok && !cancelled) setR2Snapshots((await snapshots.json() as { snapshots: R2SnapshotSummary[] }).snapshots);
+        }
+      } catch {
+        // The next poll tries again.
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => { void poll(); }, 10_000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, []);
 
   // A restore runs in the server for minutes. Reloading the page must show the
   // one already in flight rather than an idle screen the operator would be
