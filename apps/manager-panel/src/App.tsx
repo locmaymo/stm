@@ -668,7 +668,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
             </div>
           </header>
           <PageContainer>
-            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} installed={Boolean(activeInstallationId)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} config={configDocument} security={accessSecurity} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} /> : <ResourcePanel page={page} t={t} />}
+            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} installed={Boolean(activeInstallationId)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} locale={preferences.locale} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} config={configDocument} security={accessSecurity} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} /> : <ResourcePanel page={page} t={t} />}
           </PageContainer>
           <MobileNav
             items={navigation.map(({ id, icon }) => ({ id, icon, href: `#${id}`, label: t(`nav.${id}`) }))}
@@ -1757,6 +1757,28 @@ function BackupKindBadge({ t, kind }: { t: Translate; kind: BackupKind }) {
   return <span className="backup-kind" data-kind={kind}>{t(BACKUP_KIND_LABEL[kind])}</span>;
 }
 
+/** A name the manager chose itself, including the suffix-style names older versions chose. */
+function isManagerName(backup: BackupManifest): boolean {
+  if (backup.autoNamed) return true;
+  if (backup.kind) return false;
+  return /-(scheduled|prerestore|preswitch)\.zip$|-r2-[^.]+\.zip$|-\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}\.zip$/u.test(backup.name);
+}
+
+/**
+ * What a backup is called on screen.
+ *
+ * A name somebody typed is theirs and is shown as typed. A name the manager
+ * made up is only ever a kind and a time, so it is said as that - in the
+ * reader's language and date format, "Tự động · 16/09/2026 16:35" - and
+ * changes with the language. The file keeps its plain ASCII name, which is
+ * what a download is saved as.
+ */
+export function backupDisplayName(t: Translate, locale: string, backup: BackupManifest): string {
+  if (!isManagerName(backup)) return backup.name;
+  const when = new Date(backup.createdAt).toLocaleString(locale, { dateStyle: 'short', timeStyle: 'short' });
+  return `${t(BACKUP_KIND_LABEL[backupKind(backup)])} · ${when}`;
+}
+
 /** The labels every table in the console borrows, in the reader's language. */
 function tableLabels(t: Translate): DataTableLabels {
   return {
@@ -1829,9 +1851,9 @@ const R2_HISTORY_CHOICES = [
   { id: '3m', label: 'console.r2Back3Months', keepRecent: 24, keepDaily: 14, keepWeekly: 13 },
   { id: '1y', label: 'console.r2Back1Year', keepRecent: 24, keepDaily: 14, keepWeekly: 52 },
 ] as const;
-/** How often the backup library takes a local copy. Not an R2 setting. `0` is off. */
+/** How often the backup library takes a local copy. Not an R2 setting. Off is `0`, set by the switch. */
+const DEFAULT_LOCAL_INTERVAL = 30;
 const LOCAL_BACKUP_CHOICES = [
-  { id: 'off', label: 'console.localScheduleOff', intervalMinutes: 0 },
   { id: '30m', label: 'console.every30Minutes', intervalMinutes: 30 },
   { id: '1h', label: 'console.everyHour', intervalMinutes: 60 },
   { id: '6h', label: 'console.every6Hours', intervalMinutes: 360 },
@@ -1869,7 +1891,7 @@ function r2ScheduleSummary(t: Translate, config: R2Config): string {
  * Each card now asks one thing and keeps the rest behind a dialog, and the
  * archives are a table that can be searched, sorted and paged.
  */
-function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, backups, onProfilesChange, onBackupsChange }: { t: Translate; fail: Fail; catalog: Record<string, unknown>; csrfToken: string; profiles: Profile[]; activeProfileId: string | null; backups: BackupManifest[]; onProfilesChange: (profiles: Profile[], activeProfileId: string | null) => void; onBackupsChange: (backups: BackupManifest[]) => void }) {
+function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfileId, backups, onProfilesChange, onBackupsChange }: { t: Translate; locale: string; fail: Fail; catalog: Record<string, unknown>; csrfToken: string; profiles: Profile[]; activeProfileId: string | null; backups: BackupManifest[]; onProfilesChange: (profiles: Profile[], activeProfileId: string | null) => void; onBackupsChange: (backups: BackupManifest[]) => void }) {
   const [busyAction, setBusyAction] = useState<string | null>(null);
   /*
    * The one thing on this page that is state rather than a result.
@@ -2000,16 +2022,24 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
    * back from a restore that got part of the way through.
    */
   const stopOperation = async () => {
+    if (stopping) return;
+    // "Stopping" from the press until the work has actually ended, not only
+    // for as long as the request takes: a restore putting the data back runs
+    // on for minutes, and a button that came back pressable in that time
+    // invited pressing it again and again.
     setStopping(true);
     try {
       uploadAbort.current?.abort();
-      if (runningJobId) await apiFetch(`/api/v1/jobs/${encodeURIComponent(runningJobId)}/cancel`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      if (runningJobId) {
+        const response = await apiFetch(`/api/v1/jobs/${encodeURIComponent(runningJobId)}/cancel`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+        // Refused because it had already finished is not worth a second press either.
+        if (!response.ok && response.status !== 409) setStopping(false);
+      }
     } catch {
-      // The poll below reports what actually happened either way.
-    } finally {
       setStopping(false);
     }
   };
+  useEffect(() => { if (busyAction === null && r2Busy === null) setStopping(false); }, [busyAction, r2Busy]);
 
   // Chunks are held in the browser until the last one lands, so a reload or a
   // navigation away throws the whole upload out. Warn before that happens.
@@ -2191,12 +2221,14 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
   // The switch lives on the card, not at the bottom of the settings dialog:
   // whether anything is being sent at all is the first thing to see, and
   // turning it off should not mean opening the connection settings to do it.
-  const saveBackupSchedule = async (id: string) => {
-    const choice = LOCAL_BACKUP_CHOICES.find((item) => item.id === id);
-    if (!choice) return;
+  // Turning the schedule off stores 0, which forgets the interval; turning it
+  // back on brings back the one last seen here, or the default.
+  const lastInterval = useRef(DEFAULT_LOCAL_INTERVAL);
+  useEffect(() => { if (backupSchedule && backupSchedule.intervalMinutes > 0) lastInterval.current = backupSchedule.intervalMinutes; }, [backupSchedule]);
+  const saveBackupSchedule = async (intervalMinutes: number) => {
     setScheduleSaving(true);
     try {
-      const response = await apiFetch('/api/v1/backups/schedule', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ intervalMinutes: choice.intervalMinutes }) });
+      const response = await apiFetch('/api/v1/backups/schedule', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ intervalMinutes }) });
       const payload = await response.json() as { schedule?: LocalBackupSchedule; error?: { message?: string } };
       if (!response.ok || !payload.schedule) { failed(fail.body(payload, t('console.localScheduleFailed'))); return; }
       setBackupSchedule(payload.schedule);
@@ -2281,10 +2313,11 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
 
   const activeProfile = profiles.find((profile) => profile.id === activeProfileId) ?? profiles[0] ?? null;
   const localChoice = backupSchedule ? LOCAL_BACKUP_CHOICES.find((choice) => choice.intervalMinutes === backupSchedule.intervalMinutes) : undefined;
+  const displayName = (backup: BackupManifest) => backupDisplayName(t, locale, backup);
   const backupColumns: DataTableColumn<BackupManifest>[] = [
     // The kind rides under the name on a phone, where there is no room for a
     // column of its own, and has its column from `md` up.
-    { id: 'name', header: t('common.name'), sortable: true, cell: (backup) => <span className="grid min-w-0 justify-items-start gap-1"><span className="font-medium break-all">{backup.name}</span><span className="md:hidden"><BackupKindBadge t={t} kind={backupKind(backup)} /></span></span> },
+    { id: 'name', header: t('common.name'), sortable: true, cell: (backup) => <span className="grid min-w-0 justify-items-start gap-1"><span className="font-medium break-all" title={backup.name}>{displayName(backup)}</span><span className="md:hidden"><BackupKindBadge t={t} kind={backupKind(backup)} /></span></span> },
     { id: 'kind', header: t('console.backupKind'), sortable: true, showFrom: 'md', cell: (backup) => <BackupKindBadge t={t} kind={backupKind(backup)} /> },
     { id: 'createdAt', header: t('console.backupCreated'), sortable: true, showFrom: 'sm', cell: (backup) => <span className="whitespace-nowrap text-muted-foreground">{new Date(backup.createdAt).toLocaleString()}</span> },
     { id: 'sizeBytes', header: t('console.backupSize'), sortable: true, align: 'end', showFrom: 'sm', cell: (backup) => <span className="whitespace-nowrap text-muted-foreground">{formatBytes(backup.sizeBytes)}</span> },
@@ -2346,15 +2379,20 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
         {/* Here rather than in the R2 settings: it runs whether or not there is
             a bucket, so it has to be reachable without one. */}
         {backupSchedule ? <div>
-          <DetailRow label={t('console.localScheduleLabel')} hint={backupSchedule.intervalMinutes === 0 ? t('console.localScheduleOffHint') : t('console.localScheduleHint')}>
-            <Select value={localChoice?.id ?? CUSTOM_CHOICE} onValueChange={(id) => void saveBackupSchedule(id)} disabled={scheduleSaving}>
-              <SelectTrigger size="sm" className="w-40"><SelectValue /></SelectTrigger>
+          {/* On or off is a switch, the way every other on-or-off in the console
+              is; how often is a separate question, asked only while it is on. */}
+          <DetailRow label={t('console.localScheduleLabel')} {...(backupSchedule.intervalMinutes === 0 ? { hint: t('console.localScheduleOffHint') } : {})}>
+            <Switch aria-label={t('console.localScheduleLabel')} checked={backupSchedule.intervalMinutes > 0} disabled={scheduleSaving} onCheckedChange={(on) => void saveBackupSchedule(on ? lastInterval.current : 0)} />
+          </DetailRow>
+          {backupSchedule.intervalMinutes > 0 ? <DetailRow label={t('console.localScheduleEvery')}>
+            <Select value={localChoice?.id ?? CUSTOM_CHOICE} onValueChange={(id) => { const choice = LOCAL_BACKUP_CHOICES.find((item) => item.id === id); if (choice) void saveBackupSchedule(choice.intervalMinutes); }} disabled={scheduleSaving}>
+              <SelectTrigger size="sm" className="w-40" aria-label={t('console.localScheduleEvery')}><SelectValue /></SelectTrigger>
               <SelectContent>
                 {LOCAL_BACKUP_CHOICES.map((choice) => <SelectItem key={choice.id} value={choice.id}>{t(choice.label)}</SelectItem>)}
                 {localChoice ? null : <SelectItem value={CUSTOM_CHOICE} disabled>{t('console.everyMinutes', { minutes: backupSchedule.intervalMinutes })}</SelectItem>}
               </SelectContent>
             </Select>
-          </DetailRow>
+          </DetailRow> : null}
         </div> : null}
         {mixedProfile ? <Alert variant="destructive"><AlertDescription>{mixedProfile}</AlertDescription></Alert> : null}
         {busyAction ? <OperationProgress t={t} label={busyAction} progress={operationProgress} canStop={uploading || runningJobId !== null} stopping={stopping} onStop={() => void stopOperation()} warning={uploading ? t('console.uploadKeepTabOpen') : null} /> : null}
@@ -2365,8 +2403,8 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
           query={backupQuery}
           onQueryChange={setBackupQuery}
           labels={labels}
-          searchText={backupSearchText}
-          sortValue={backupSortValue}
+          searchText={(backup) => `${displayName(backup)} ${backupSearchText(backup)}`}
+          sortValue={(backup, column) => column === 'name' ? displayName(backup) : backupSortValue(backup, column)}
           empty={<EmptyState icon={<Archive />} title={t('dashboard.noBackup')} />}
           toolbar={<div className="flex flex-1 flex-wrap items-center justify-end gap-2">
             <Select value={kindFilter} onValueChange={(value) => { setKindFilter(value as BackupKind | 'all'); setBackupQuery((current) => ({ ...current, page: 1 })); }}>
@@ -2464,20 +2502,20 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
       onOpenChange={(next) => { if (!next) setRenameTarget(null); }}
       title={t('console.renameBackupTitle')}
       label={t('common.name')}
-      initial={renameTarget?.name.replace(/\.zip$/u, '') ?? ''}
+      initial={renameTarget ? displayName(renameTarget).replace(/\.zip$/u, '') : ''}
       submitLabel={t('common.rename')}
       onSubmit={renameBackup}
     />
     <ConfirmDialog
       open={deleteOpen}
       onOpenChange={setDeleteOpen}
-      title={t('console.deleteBackupTitle', { name: deleteTarget?.name ?? '' })}
+      title={t('console.deleteBackupTitle', { name: deleteTarget ? displayName(deleteTarget) : '' })}
       description={t('console.deleteBackupBody')}
       confirmLabel={t('common.delete')}
       cancelLabel={t('common.cancel')}
       onConfirm={deleteBackup}
     />
-    <RestoreDialog t={t} catalog={catalog} backup={selectedBackup} preview={selectedPreview} mode={restoreMode} onModeChange={setRestoreMode} onClose={closeRestore} onRestore={restoreSelected} />
+    <RestoreDialog t={t} catalog={catalog} displayName={displayName} backup={selectedBackup} preview={selectedPreview} mode={restoreMode} onModeChange={setRestoreMode} onClose={closeRestore} onRestore={restoreSelected} />
     <R2Dialog t={t} open={r2Open} onOpenChange={setR2Open} tab={r2Tab} config={r2Config} onSave={saveR2} />
   </div>;
 }
@@ -2493,7 +2531,7 @@ function OperationProgress({ t, label, progress, canStop, stopping, onStop, warn
   return <div className="grid gap-2 rounded-lg border bg-muted/40 p-3" role="status">
     <div className="flex flex-wrap items-center justify-between gap-2">
       <TaskLine task={label} step={progress?.step ?? t('console.taskPreparing')} {...(progress ? { percent: progress.percent } : {})} />
-      {canStop ? <Button variant="outline" size="sm" onClick={onStop} disabled={stopping}><CircleStop />{stopping ? t('console.stopping') : t('common.stop')}</Button> : null}
+      {canStop ? <Button variant="destructive" size="sm" onClick={onStop} disabled={stopping} aria-busy={stopping}>{stopping ? <LoaderCircle className="animate-spin" /> : <CircleStop />}{stopping ? t('console.stopping') : t('common.stop')}</Button> : null}
     </div>
     <TaskBar {...(progress ? { percent: Math.max(2, progress.percent) } : {})} />
     {warning ? <span className="text-xs text-destructive">{warning}</span> : null}
@@ -2583,7 +2621,7 @@ function NameDialog({ t, open, onOpenChange, title, label, hint, initial = '', s
  * where the choice is made, and the choice is made in a dialog, because one of
  * them deletes everything that is there.
  */
-function RestoreDialog({ t, catalog, backup, preview, mode, onModeChange, onClose, onRestore }: { t: Translate; catalog: Record<string, unknown>; backup: BackupManifest | null; preview: RestorePreview | null; mode: RestoreMode; onModeChange: (mode: RestoreMode) => void; onClose: () => void; onRestore: () => Promise<void> }) {
+function RestoreDialog({ t, catalog, displayName, backup, preview, mode, onModeChange, onClose, onRestore }: { t: Translate; catalog: Record<string, unknown>; displayName: (backup: BackupManifest) => string; backup: BackupManifest | null; preview: RestorePreview | null; mode: RestoreMode; onModeChange: (mode: RestoreMode) => void; onClose: () => void; onRestore: () => Promise<void> }) {
   const group = useId();
   if (!backup || !preview) return null;
   /*
@@ -2600,7 +2638,7 @@ function RestoreDialog({ t, catalog, backup, preview, mode, onModeChange, onClos
   return <Dialog open onOpenChange={(next) => { if (!next) onClose(); }}>
     <DialogContent className="sm:max-w-lg">
       <DialogHeader>
-        <DialogTitle>{t('console.restoreTitle', { name: backup.name })}</DialogTitle>
+        <DialogTitle>{t('console.restoreTitle', { name: displayName(backup) })}</DialogTitle>
         <DialogDescription>{t('console.restoreCounts', { files: preview.fileCount, size: formatBytes(preview.totalBytes) })}</DialogDescription>
       </DialogHeader>
       <DialogBody className="grid gap-4">
