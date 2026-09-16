@@ -1,7 +1,7 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
-import { access, chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
 import { Readable } from 'node:stream';
 import type { ReadableStream } from 'node:stream/web';
@@ -45,6 +45,41 @@ function cloudflaredAsset(platform: NodeJS.Platform = process.platform, architec
   if (platform === 'win32') return { file: `cloudflared-windows-${mapped}.exe`, exe: 'cloudflared.exe' };
   if (platform === 'darwin') throw new Error('Install cloudflared with `brew install cloudflared`, then set STM_CLOUDFLARED_PATH.');
   return { file: `cloudflared-linux-${mapped}`, exe: 'cloudflared' };
+}
+
+/** An ELF executable with a fixed load address, which Android's loader will not run. */
+const ELF_TYPE_FIXED_ADDRESS = 2;
+
+/**
+ * Whether this device's loader can run the file at `path`.
+ *
+ * Android runs position-independent executables only, and Cloudflare's own
+ * Linux builds are not position-independent. One downloaded onto Termux exits
+ * immediately with
+ *
+ *   error: "<path>/cloudflared" has unexpected e_type: 2
+ *
+ * which reads like a broken download and is not one: no retry can fix it, and
+ * nothing else in the manager can tell the difference. Termux packages its own
+ * build of cloudflared, so the answer there is to use that one - which first
+ * means recognising the downloaded file as unusable instead of running it every
+ * minute forever.
+ */
+async function loaderCanRun(path: string, termux: boolean): Promise<boolean> {
+  if (!termux) return true;
+  const header = Buffer.alloc(18);
+  try {
+    const handle = await open(path, 'r');
+    try { await handle.read(header, 0, header.length, 0); } finally { await handle.close(); }
+  } catch {
+    // Unreadable is not the same as unusable. Leave the answer to the loader.
+    return true;
+  }
+  // A wrapper script, or anything else that is not an ELF binary, is the
+  // loader's business rather than this check's.
+  if (!header.subarray(0, 4).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46]))) return true;
+  const type = header[5] === 2 ? header.readUInt16BE(16) : header.readUInt16LE(16);
+  return type !== ELF_TYPE_FIXED_ADDRESS;
 }
 
 /**
@@ -335,6 +370,9 @@ export class TunnelManager {
   public async ensureBinary(): Promise<string> {
     const existing = await this.findBinary();
     if (existing) return existing;
+    // Cloudflare publishes no build Android can run, so downloading one here
+    // only buys the same failure every minute. Termux has its own.
+    if (this.paths.platform === 'termux') throw new Error('Install cloudflared with `pkg install cloudflared`, then turn the tunnel on again.');
     const asset = cloudflaredAsset();
     const target = join(this.paths.bin, asset.exe);
     const temporary = `${target}.${randomUUID()}.part`;
@@ -355,18 +393,35 @@ export class TunnelManager {
   }
 
   private async findBinary(): Promise<string | null> {
-    const candidates = [this.configuredBinaryPath, join(this.paths.bin, process.platform === 'win32' ? 'cloudflared.exe' : 'cloudflared'), process.platform === 'win32' ? 'cloudflared.exe' : 'cloudflared'];
-    for (const candidate of candidates) {
+    const exe = process.platform === 'win32' ? 'cloudflared.exe' : 'cloudflared';
+    const managed = join(this.paths.bin, exe);
+    const termux = this.paths.platform === 'termux';
+    for (const candidate of [this.configuredBinaryPath, managed, exe]) {
       if (!candidate) continue;
-      if (candidate.includes('/') || candidate.includes('\\')) {
-        try { await access(candidate); return candidate; } catch { continue; }
+      const path = await this.locate(candidate);
+      if (!path) continue;
+      if (!await loaderCanRun(path, termux)) {
+        this.logger(logEvent('cloudflared.unusableBinary', `[cloudflared] ${path} cannot run on this device; Termux packages a build that can (pkg install cloudflared)`, { path }));
+        // A download that cannot run is worse than no download: it stands in
+        // front of the build Termux packages. Remove only what this manager
+        // put there, never an operator's own binary.
+        if (path === managed) await rm(managed, { force: true }).catch(() => undefined);
+        continue;
       }
-      try {
-        await execFileAsync(process.platform === 'win32' ? 'where.exe' : 'which', [candidate], { env: this.env });
-        return candidate;
-      } catch { continue; }
+      return candidate;
     }
     return null;
+  }
+
+  /** Where a candidate actually is, whether it is a path or a name on PATH. */
+  private async locate(candidate: string): Promise<string | null> {
+    if (candidate.includes('/') || candidate.includes('\\')) {
+      try { await access(candidate); return candidate; } catch { return null; }
+    }
+    try {
+      const { stdout } = await execFileAsync(process.platform === 'win32' ? 'where.exe' : 'which', [candidate], { env: this.env });
+      return stdout.split(/\r?\n/u).map((line) => line.trim()).find((line) => line.length > 0) ?? null;
+    } catch { return null; }
   }
 
   private fail(mode: Exclude<TunnelMode, 'off'>, error: string): TunnelState {

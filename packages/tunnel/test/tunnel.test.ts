@@ -85,6 +85,50 @@ test('a binary already on disk is used without a download', async () => {
   assert.equal(await tunnel.ensureBinary(), join(paths.bin, binaryName));
 });
 
+/**
+ * A Linux binary with the load address Cloudflare's own builds use (2, fixed)
+ * or the one Android insists on (3, position-independent).
+ */
+function elfBinary(type: 2 | 3): Buffer {
+  const header = Buffer.alloc(64);
+  header.set([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1, 0], 0);
+  header.writeUInt16LE(type, 16);
+  header.writeUInt16LE(183, 18);
+  return header;
+}
+
+test('on Termux a downloaded cloudflared Android cannot run is dropped, not rerun forever', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-tunnel-termux-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root, PREFIX: '/data/data/com.termux/files/usr' } });
+  await mkdir(paths.bin, { recursive: true });
+  await writeFile(join(paths.bin, binaryName), elfBinary(2), { mode: 0o755 });
+  const fetchImpl = (async () => { throw new Error('nothing Cloudflare publishes runs here, so nothing may be downloaded'); }) as unknown as typeof globalThis.fetch;
+  const tunnel = new TunnelManager({ paths, fetchImpl, env: { PATH: '' }, logger: () => undefined });
+
+  // The message has to name the way out; a retry never finds one.
+  await assert.rejects(() => tunnel.ensureBinary(), /pkg install cloudflared/u);
+  assert.deepEqual(await readdir(paths.bin), []);
+});
+
+test('on Termux the packaged cloudflared is used as it is', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-tunnel-termux-ok-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root, PREFIX: '/data/data/com.termux/files/usr' } });
+  const packaged = join(root, binaryName);
+  await writeFile(packaged, elfBinary(3), { mode: 0o755 });
+  const fetchImpl = (async () => { throw new Error('the network must not be reached'); }) as unknown as typeof globalThis.fetch;
+  const tunnel = new TunnelManager({ paths, fetchImpl, binaryPath: packaged, env: { PATH: '' }, logger: () => undefined });
+  assert.equal(await tunnel.ensureBinary(), packaged);
+});
+
+test('a fixed-address binary is left alone off Android, where the loader runs it', async () => {
+  const paths = await createPaths();
+  await mkdir(paths.bin, { recursive: true });
+  await writeFile(join(paths.bin, binaryName), elfBinary(2), { mode: 0o755 });
+  const fetchImpl = (async () => { throw new Error('the network must not be reached'); }) as unknown as typeof globalThis.fetch;
+  const tunnel = new TunnelManager({ paths, fetchImpl, env: { PATH: '' }, logger: () => undefined });
+  assert.equal(await tunnel.ensureBinary(), join(paths.bin, binaryName));
+});
+
 test('a failed download reports the status and leaves nothing behind', async () => {
   const paths = await createPaths();
   const fetchImpl = (async () => new Response('nope', { status: 503 })) as unknown as typeof globalThis.fetch;

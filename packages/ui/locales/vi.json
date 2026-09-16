@@ -572,6 +572,7 @@
       "startingNamed": "Đang khởi động Named Tunnel tới {target}",
       "downloading": "Đang tải {file}",
       "installed": "Đã cài vào {path}",
+      "unusableBinary": "{path} không chạy được trên thiết bị này; Termux có sẵn bản chạy được (pkg install cloudflared)",
       "spawnFailed": "{reason}",
       "failed": "{reason}",
       "stoppedRequested": "Đã dừng: bạn yêu cầu dừng",
