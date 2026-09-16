@@ -96,6 +96,8 @@ export interface ManagerServerOptions {
   readonly rateLimiter?: RateLimiter;
   readonly managerVersion?: string;
   readonly secureCookies?: boolean;
+  /** Null keeps to the request headers; absent reads the environment. */
+  readonly publicOrigin?: string | null;
   readonly staticRoot?: string;
   readonly logger?: LogSink;
   readonly runtime?: RuntimeManager;
@@ -149,6 +151,8 @@ interface RequestContext {
   readonly pathname: string;
   readonly searchParams: URLSearchParams;
   readonly originTrusted: boolean;
+  /** The address the panel is reached at from outside, when the request cannot say. */
+  readonly publicOrigin: string | null;
   readonly sessionToken: string | undefined;
 }
 
@@ -265,6 +269,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     },
   });
   const secureCookies = options.secureCookies ?? env.STM_SECURE_COOKIES === '1';
+  const publicOrigin = options.publicOrigin !== undefined ? options.publicOrigin : publicOriginFromEnvironment(env, consolePort);
   const staticRoot = options.staticRoot ? resolve(options.staticRoot) : panelStaticRoot(env);
   let persisted = await store.load();
   const testRuntime = process.env.NODE_ENV === 'test' || process.argv.includes('--test') || process.execArgv.includes('--test');
@@ -311,6 +316,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       rateLimiter,
       startedAt,
       secureCookies,
+      publicOrigin,
       staticRoot,
       platform: paths.platform,
       logger,
@@ -431,6 +437,7 @@ async function handleRequest(options: {
   readonly rateLimiter: RateLimiter;
   readonly startedAt: number;
   readonly secureCookies: boolean;
+  readonly publicOrigin: string | null;
   readonly staticRoot: string;
   readonly platform: PlatformPaths['platform'];
   readonly logger: LogSink;
@@ -449,7 +456,7 @@ async function handleRequest(options: {
   readonly shutdownToken: string | null;
   readonly onShutdownRequest: (() => void) | undefined;
 }): Promise<void> {
-  const { request, response, store, sessions, rateLimiter, startedAt, secureCookies, staticRoot, platform, runtime, jobs, supervisor, tunnel, gateway, profiles, backups, r2, cloudflare, metrics, config, system, shutdownToken, onShutdownRequest } = options;
+  const { request, response, store, sessions, rateLimiter, startedAt, secureCookies, publicOrigin, staticRoot, platform, runtime, jobs, supervisor, tunnel, gateway, profiles, backups, r2, cloudflare, metrics, config, system, shutdownToken, onShutdownRequest } = options;
   const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
   const pathname = url.pathname;
   const context: RequestContext = {
@@ -457,7 +464,8 @@ async function handleRequest(options: {
     response,
     pathname,
     searchParams: url.searchParams,
-    originTrusted: isTrustedOrigin(request, platform),
+    originTrusted: isTrustedOrigin(request, platform, publicOrigin),
+    publicOrigin,
     sessionToken: parseSessionCookie(headerValue(request.headers.cookie), COOKIE_NAME),
   };
 
@@ -1342,8 +1350,10 @@ async function handleCloudflareRequest(context: RequestContext, cloudflare: Clou
   }
   if (pathname === '/api/v1/r2/cloudflare/connect' && method === 'POST') {
     // The origin the panel is open on, so the relay can send the browser back
-    // to the same place - this machine, the LAN address or the tunnel.
-    const origin = headerValue(request.headers.origin) ?? `http://${headerValue(request.headers.host) ?? 'localhost'}`;
+    // to the same place - this machine, the LAN address or the tunnel. A
+    // port-forwarding proxy leaves the loopback address it connects to in both
+    // headers, so a known outside address is taken over what they say.
+    const origin = context.publicOrigin ?? headerValue(request.headers.origin) ?? `http://${headerValue(request.headers.host) ?? 'localhost'}`;
     let returnOrigin: string;
     try { returnOrigin = new URL(origin).origin; } catch { sendError(response, 400, 'invalid_origin', 'The panel origin could not be read'); return; }
     sendJson(response, 200, { url: cloudflare.beginConnect(returnOrigin) });
@@ -1634,7 +1644,7 @@ function checkRateLimit(context: RequestContext, rateLimiter: RateLimiter): bool
   return true;
 }
 
-function isTrustedOrigin(request: IncomingMessage, platform: PlatformPaths['platform']): boolean {
+function isTrustedOrigin(request: IncomingMessage, platform: PlatformPaths['platform'], publicOrigin: string | null): boolean {
   const origin = headerValue(request.headers.origin);
   if (!origin) {
     return true;
@@ -1646,10 +1656,41 @@ function isTrustedOrigin(request: IncomingMessage, platform: PlatformPaths['plat
     const parsed = new URL(origin);
     const host = headerValue(request.headers.host);
     if (host && parsed.host === host) return true;
+    // A port-forwarding proxy rewrites `Host` to the loopback address it
+    // connects to, so the panel's own origin no longer matches it.
+    if (publicOrigin && parsed.origin === publicOrigin) return true;
     return platform === 'modelscope' && isModelScopeOrigin(parsed.hostname);
   } catch {
     return false;
   }
+}
+
+/**
+ * The address the panel is reached at from outside, when the request cannot say.
+ *
+ * A manager behind a port-forwarding proxy sees `Host` rewritten to the loopback
+ * address the proxy connects to; GitHub Codespaces rewrites `Origin` to match,
+ * which leaves nothing in the request that names the address the browser used.
+ * The Cloudflare sign-in would then be sent back to a loopback address that is
+ * not the reader's machine. `STM_PUBLIC_ORIGIN` settles it for any proxy, and a
+ * Codespace already names itself in the environment.
+ */
+export function publicOriginFromEnvironment(env: NodeJS.ProcessEnv, port: number): string | null {
+  const configured = env.STM_PUBLIC_ORIGIN?.trim();
+  if (configured) {
+    let parsed: URL;
+    try { parsed = new URL(configured); } catch { throw new Error(`STM_PUBLIC_ORIGIN is not a valid URL: ${configured}`); }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new Error(`STM_PUBLIC_ORIGIN must be an http or https address: ${configured}`);
+    }
+    return parsed.origin;
+  }
+  const codespace = env.CODESPACE_NAME?.trim();
+  const forwardingDomain = env.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN?.trim();
+  if (codespace && forwardingDomain) {
+    return `https://${codespace}-${port.toString(10)}.${forwardingDomain}`;
+  }
+  return null;
 }
 
 function isModelScopeOrigin(hostname: string): boolean {
