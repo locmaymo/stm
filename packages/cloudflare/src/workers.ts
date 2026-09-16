@@ -1,0 +1,203 @@
+import { createHmac, randomBytes } from 'node:crypto';
+import { CloudflareApi, CloudflareApiError, segment } from './api.js';
+import { WORKER_COMPATIBILITY_DATE, WORKER_SCRIPT_NAME, WORKER_SOURCE, WORKER_VERSION } from './worker-script.js';
+
+/**
+ * How long one key is good for.
+ *
+ * The manager rotates at a day. Rotating replaces the secret, and the old key is
+ * refused from that moment (measured live), so the extra hour is not an overlap
+ * for runs in progress - the store re-signs those with the new key. It is room
+ * for a manager that could not reach Cloudflare when rotation was due.
+ */
+export const WORKER_KEY_TTL_MS = 25 * 60 * 60 * 1000;
+export const WORKER_ROTATE_AFTER_MS = 24 * 60 * 60 * 1000;
+/**
+ * How long a new key or deployment takes to reach every edge that may answer.
+ *
+ * Measured live on a first deploy: after one check passed, half of 30 parallel
+ * requests were still refused a second later, 3 of 30 at five seconds, none at
+ * nine. Requests one after another tend to reach the same edge, so each check
+ * is a burst in parallel, and only bursts that all pass, several in a row, count.
+ * Rotating a key or redeploying an existing script showed no refusals at all.
+ */
+const READY_ATTEMPTS = 40;
+const READY_DELAY_MS = 1_000;
+const READY_BURST = 8;
+const READY_STREAK = 3;
+/**
+ * For this long after a key is issued, a refusal may be an edge that has not
+ * caught up rather than a wrong key, and the request is tried again.
+ */
+export const WORKER_KEY_SETTLE_MS = 2 * 60 * 1000;
+
+/** Everything needed to send one request to the Worker. The key lives only in memory. */
+export interface WorkerSession {
+  readonly baseUrl: string;
+  readonly keyId: string;
+  readonly key: string;
+  readonly issuedAt: number;
+  readonly expiresAt: number;
+  readonly rotateAt: number;
+}
+
+export interface BackupWorkerOptions {
+  readonly api: CloudflareApi;
+  readonly fetchImpl?: typeof fetch;
+  readonly now?: () => number;
+  readonly sleep?: (milliseconds: number) => Promise<void>;
+}
+
+/**
+ * Deploys, keys and checks the backup Worker in one account.
+ *
+ * Every call to `open` issues a new key for this installation, so a restart or a
+ * rotation needs no key from before - which is why no key is ever written to
+ * disk. A deploy keeps the other installations' secrets, so opening a session on
+ * one machine does not end another's.
+ */
+export class BackupWorker {
+  private readonly api: CloudflareApi;
+  private readonly fetchImpl: typeof fetch;
+  private readonly now: () => number;
+  private readonly sleep: (milliseconds: number) => Promise<void>;
+
+  public constructor(options: BackupWorkerOptions) {
+    this.api = options.api;
+    this.fetchImpl = options.fetchImpl ?? fetch;
+    this.now = options.now ?? Date.now;
+    this.sleep = options.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
+  }
+
+  public async open(accountId: string, bucket: string, keyId: string): Promise<WorkerSession> {
+    if (!/^[a-z0-9]{8,64}$/u.test(keyId)) throw new CloudflareApiError('worker_invalid_key_id', 400, 'The Worker key ID is not valid');
+    const subdomain = await this.subdomain(accountId);
+    const key = randomBytes(32).toString('base64url');
+    const issuedAt = this.now();
+    const expiresAt = issuedAt + WORKER_KEY_TTL_MS;
+    const secret = { name: secretName(keyId), text: `${expiresAt}.${key}` };
+    try {
+      await this.putKey(accountId, secret);
+    } catch (error: unknown) {
+      // No script yet. The key goes up with it, in the same deployment: a
+      // deploy followed by a separate secret is two versions, and edges still
+      // serving the first one refuse the key.
+      if (!(error instanceof CloudflareApiError) || error.status !== 404) throw error;
+      await this.deploy(accountId, bucket, secret);
+    }
+    const session: WorkerSession = { baseUrl: `https://${WORKER_SCRIPT_NAME}.${subdomain}.workers.dev`, keyId, key, issuedAt, expiresAt, rotateAt: issuedAt + WORKER_ROTATE_AFTER_MS };
+    const deployed = await this.waitForVersion(session);
+    if (deployed !== WORKER_VERSION) {
+      await this.deploy(accountId, bucket, secret);
+      const replaced = await this.waitForVersion(session, WORKER_VERSION);
+      if (replaced !== WORKER_VERSION) throw new CloudflareApiError('worker_not_ready', 503, 'The backup Worker did not come up after it was deployed');
+    }
+    return session;
+  }
+
+  private async checkVersion(session: WorkerSession): Promise<{ ok: boolean; status: number; version: number | null }> {
+    try {
+      const response = await this.fetchImpl(`${session.baseUrl}/v1/version`, { headers: signWorkerRequest(session, 'GET', '/v1/version', this.now()) });
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined);
+        return { ok: false, status: response.status, version: null };
+      }
+      const parsed: unknown = await response.json().catch(() => null);
+      return { ok: true, status: response.status, version: isRecord(parsed) && typeof parsed.version === 'number' ? parsed.version : null };
+    } catch {
+      // Not reachable yet, or workers.dev is blocked where the manager runs.
+      return { ok: false, status: 0, version: null };
+    }
+  }
+
+  /** Remove this installation's key, which is what Disconnect means for the Worker. */
+  public async removeKey(accountId: string, keyId: string): Promise<void> {
+    try {
+      await this.api.call('DELETE', `/accounts/${segment(accountId)}/workers/scripts/${WORKER_SCRIPT_NAME}/secrets/${secretName(keyId)}`);
+    } catch (error: unknown) {
+      if (!(error instanceof CloudflareApiError) || error.status !== 404) throw error;
+    }
+  }
+
+  /**
+   * The account's `workers.dev` subdomain, claimed if the account never had one.
+   *
+   * The name is the account's, visible in the dashboard and in every Worker URL,
+   * so an existing one is always used as it is.
+   */
+  private async subdomain(accountId: string): Promise<string> {
+    try {
+      const { result } = await this.api.call('GET', `/accounts/${segment(accountId)}/workers/subdomain`);
+      if (isRecord(result) && typeof result.subdomain === 'string' && result.subdomain) return result.subdomain;
+    } catch (error: unknown) {
+      if (!(error instanceof CloudflareApiError) || error.status !== 404) throw error;
+    }
+    const { result } = await this.api.call('PUT', `/accounts/${segment(accountId)}/workers/subdomain`, { body: { subdomain: `stm-${accountId.slice(0, 12)}` } });
+    if (isRecord(result) && typeof result.subdomain === 'string' && result.subdomain) return result.subdomain;
+    throw new CloudflareApiError('worker_no_subdomain', 502, 'Cloudflare did not return a workers.dev subdomain');
+  }
+
+  private async deploy(accountId: string, bucket: string, secret: { name: string; text: string }): Promise<void> {
+    const form = new FormData();
+    form.set('metadata', new Blob([JSON.stringify({
+      main_module: 'worker.js',
+      compatibility_date: WORKER_COMPATIBILITY_DATE,
+      bindings: [{ type: 'r2_bucket', name: 'BUCKET', bucket_name: bucket }, { type: 'secret_text', ...secret }],
+      // Every other installation's key is a secret on this script too.
+      // Replacing the code must not take them with it.
+      keep_bindings: ['secret_text'],
+    })], { type: 'application/json' }));
+    form.set('worker.js', new Blob([WORKER_SOURCE], { type: 'application/javascript+module' }), 'worker.js');
+    await this.api.call('PUT', `/accounts/${segment(accountId)}/workers/scripts/${WORKER_SCRIPT_NAME}`, { form });
+    await this.api.call('POST', `/accounts/${segment(accountId)}/workers/scripts/${WORKER_SCRIPT_NAME}/subdomain`, { body: { enabled: true, previews_enabled: false } });
+  }
+
+  private async putKey(accountId: string, secret: { name: string; text: string }): Promise<void> {
+    await this.api.call('PUT', `/accounts/${segment(accountId)}/workers/scripts/${WORKER_SCRIPT_NAME}/secrets`, { body: { ...secret, type: 'secret_text' } });
+  }
+
+  /**
+   * The version the Worker reports once it reliably accepts the new key, or null.
+   *
+   * A secret or a deployment takes seconds to reach every edge; until then some
+   * requests still land on the previous version and are refused. Only a run of
+   * successes in a row counts as ready.
+   */
+  private async waitForVersion(session: WorkerSession, wanted?: number): Promise<number | null> {
+    let seen: number | null = null;
+    let streak = 0;
+    for (let attempt = 0; attempt < READY_ATTEMPTS; attempt += 1) {
+      const answers = await Promise.all(Array.from({ length: READY_BURST }, async () => await this.checkVersion(session)));
+      const versions = new Set(answers.map((answer) => answer.version));
+      const [only] = versions;
+      if (answers.every((answer) => answer.ok) && versions.size === 1 && only !== undefined) {
+        streak = only === seen ? streak + 1 : 1;
+        seen = only;
+        if ((wanted === undefined || seen === wanted) && streak >= READY_STREAK) return seen;
+      } else {
+        streak = 0;
+        // The route answers everywhere but the script has no version endpoint: an older deploy.
+        if (wanted === undefined && answers.every((answer) => answer.status === 404)) return null;
+      }
+      await this.sleep(READY_DELAY_MS);
+    }
+    if (seen !== null && wanted === undefined) return seen;
+    if (seen === null && wanted === undefined) throw new CloudflareApiError('worker_unreachable', 503, 'The backup Worker could not be reached on workers.dev');
+    return seen;
+  }
+}
+
+/** The headers that prove a request comes from the installation holding the key. */
+export function signWorkerRequest(session: Pick<WorkerSession, 'keyId' | 'key'>, method: string, pathAndQuery: string, now: number): Record<string, string> {
+  const timestamp = String(now);
+  const signature = createHmac('sha256', session.key).update(`${method}\n${pathAndQuery}\n${timestamp}`, 'utf8').digest('hex');
+  return { 'x-stm-key-id': session.keyId, 'x-stm-timestamp': timestamp, 'x-stm-signature': signature };
+}
+
+function secretName(keyId: string): string {
+  return `STM_KEY_${keyId}`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}

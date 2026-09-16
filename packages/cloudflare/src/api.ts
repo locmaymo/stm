@@ -67,14 +67,16 @@ export interface CloudflareApiOptions {
   readonly now?: () => number;
 }
 
-interface RequestOptions {
+export interface RequestOptions {
   readonly query?: Record<string, string | undefined>;
   readonly body?: unknown;
+  /** Sent as multipart instead of JSON, which is how Worker scripts are uploaded. */
+  readonly form?: FormData;
   readonly headers?: Record<string, string>;
   readonly signal?: AbortSignal | undefined;
 }
 
-interface Envelope {
+export interface Envelope {
   readonly result: unknown;
   readonly resultInfo: Record<string, unknown> | null;
 }
@@ -166,6 +168,11 @@ export class CloudflareApi {
     return buckets.find((bucket) => bucket.name === name && bucket.jurisdiction === 'default') ?? null;
   }
 
+  /** For the Worker calls in `workers.ts`, which share this token, error handling and rate limit. */
+  public async call(method: string, path: string, options: RequestOptions = {}): Promise<Envelope> {
+    return await this.request(method, path, options);
+  }
+
   private async request(method: string, path: string, options: RequestOptions = {}): Promise<Envelope> {
     const url = new URL(`${this.baseUrl}${path}`);
     for (const [key, value] of Object.entries(options.query ?? {})) if (value !== undefined) url.searchParams.set(key, value);
@@ -174,7 +181,7 @@ export class CloudflareApi {
     const response = await this.fetchImpl(url, {
       method,
       headers,
-      ...(options.body !== undefined ? { body: JSON.stringify(options.body) } : {}),
+      ...(options.form ? { body: options.form } : options.body !== undefined ? { body: JSON.stringify(options.body) } : {}),
       ...(options.signal ? { signal: options.signal } : {}),
     });
     this.observeRateLimit(response.headers);
@@ -248,7 +255,7 @@ function toBucket(value: unknown): R2Bucket | null {
   };
 }
 
-function segment(value: string): string {
+export function segment(value: string): string {
   if (!/^[0-9a-f]{32}$/u.test(value)) throw new CloudflareApiError('cloudflare_invalid_account', 400, 'The Cloudflare account ID is not valid');
   return value;
 }
