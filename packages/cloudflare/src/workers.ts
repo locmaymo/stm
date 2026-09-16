@@ -22,6 +22,14 @@ export const WORKER_ROTATE_AFTER_MS = 24 * 60 * 60 * 1000;
  * Rotating a key or redeploying an existing script showed no refusals at all.
  */
 const READY_ATTEMPTS = 40;
+/**
+ * Replacing a script takes longer to reach every edge than adding a secret to
+ * one, and until it has, edges answer with the version before it. Measured on a
+ * live account, a replacement that changed the bucket binding was still mixed
+ * at forty seconds, so waiting for a named deployment gets more patience than
+ * waiting to see what is there.
+ */
+const READY_ATTEMPTS_AFTER_DEPLOY = 120;
 const READY_DELAY_MS = 1_000;
 const READY_BURST = 8;
 const READY_STREAK = 3;
@@ -176,7 +184,8 @@ export class BackupWorker {
     let seen: WorkerDeployment | null = null;
     let streak = 0;
     const same = (left: WorkerDeployment | null, right: WorkerDeployment | null): boolean => left?.version === right?.version && left?.bucket === right?.bucket;
-    for (let attempt = 0; attempt < READY_ATTEMPTS; attempt += 1) {
+    const attempts = wanted === undefined ? READY_ATTEMPTS : READY_ATTEMPTS_AFTER_DEPLOY;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
       const answers = await Promise.all(Array.from({ length: READY_BURST }, async () => await this.checkVersion(session)));
       const [first] = answers;
       if (first?.deployment && answers.every((answer) => answer.ok && same(answer.deployment, first.deployment))) {

@@ -62,6 +62,12 @@ export interface KnownBucket {
   readonly jurisdiction: R2Jurisdiction;
 }
 
+/** One bucket in the signed-in account, as the panel lists them. */
+export interface CloudflareBucketRef {
+  readonly name: string;
+  readonly jurisdiction: R2Jurisdiction;
+}
+
 export interface CloudflareConnectionOptions {
   readonly paths: PlatformPaths;
   readonly client: OAuthClientSettings;
@@ -201,6 +207,31 @@ export class CloudflareConnection {
     return await this.status();
   }
 
+  /** Every R2 bucket in the signed-in account, for choosing which one to back up to. */
+  public async listBuckets(): Promise<CloudflareBucketRef[]> {
+    const stored = await this.requireConnected();
+    const buckets = await this.api.listBuckets(stored.account.id);
+    return buckets.map((bucket) => ({ name: bucket.name, jurisdiction: bucket.jurisdiction }));
+  }
+
+  /**
+   * Back up to this bucket instead of the one chosen when the account was.
+   *
+   * Only a bucket the account already has: creating one is what connecting
+   * does, and a typo here would otherwise make an empty bucket nobody wanted.
+   * The Worker is bound to a bucket when it is deployed, so the session is
+   * dropped and the next request redeploys it against the new one.
+   */
+  public async chooseBucket(name: string): Promise<CloudflareConnectionStatus> {
+    const stored = await this.requireConnected();
+    if (stored.bucket.name === name) return await this.status();
+    const bucket = await this.api.findBucket(stored.account.id, name);
+    if (!bucket) throw new R2Error('cloudflare_unknown_bucket', `This Cloudflare account has no bucket named ${name}`);
+    this.resetSession();
+    await this.save({ ...(await this.load()), bucket: { name: bucket.name, jurisdiction: bucket.jurisdiction }, lastError: null });
+    return await this.status();
+  }
+
   /**
    * Sign out: this installation's Worker key goes, then the grant is revoked.
    *
@@ -268,6 +299,9 @@ export class CloudflareConnection {
     if (this.now() < this.workerUnavailableUntil) return 'rest';
     try {
       await this.workerSession();
+      // The Worker carries the data again, so a note about it not doing so is
+      // no longer true. Written only when there is one, since this runs per request.
+      if (stored.lastError !== null) await this.save({ ...(await this.load()), lastError: null });
       return 'worker';
     } catch (error: unknown) {
       if (error instanceof CloudflareApiError && (error.code === 'worker_unreachable' || error.code === 'worker_not_ready' || error.status === 403)) {

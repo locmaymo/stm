@@ -8,6 +8,7 @@ import { getPlatformPaths } from '../../platform/src/index.js';
 import { CloudflareConnection } from '../src/cloudflare-connection.js';
 import { R2Error, type Billing } from '../src/store.js';
 import { ACCOUNT_ID, fakeCloudflare, OTHER_ACCOUNT_ID, type FakeCloudflareState } from './cloudflare-fake.js';
+import { MemoryBucket } from '../../cloudflare/test/worker-harness.js';
 
 const CLIENT = { clientId: 'client-1', redirectUri: 'https://stm.example.com/oauth/cloudflare/callback', scopes: Object.values(DEFAULT_SCOPES) };
 
@@ -62,6 +63,25 @@ test('with several accounts the user chooses, and only an offered account can be
   assert.equal(cloudflare.state.buckets.size, 0);
   await assert.rejects(connection.chooseAccount('00000000000000000000000000000000'), (error: unknown) => error instanceof R2Error && error.code === 'cloudflare_unknown_account');
   assert.equal((await connection.chooseAccount(OTHER_ACCOUNT_ID)).account?.name, 'Team');
+});
+
+test('the buckets in the account are offered, and backups follow the one chosen', async () => {
+  const { connection, cloudflare } = await setup();
+  await connect(connection);
+  cloudflare.state.buckets.set('stm', new MemoryBucket());
+  assert.deepEqual((await connection.listBuckets()).map((bucket) => bucket.name).sort(), ['sillytavern-manager-backup', 'stm']);
+
+  await assert.rejects(connection.chooseBucket('not-here'), (error: unknown) => error instanceof R2Error && error.code === 'cloudflare_unknown_bucket');
+  const status = await connection.chooseBucket('stm');
+  assert.equal(status.bucket, 'stm');
+  assert.equal((await connection.target())?.bucket, 'stm');
+
+  // The Worker was bound to the bucket chosen with the account; the next
+  // request has to reach the new one, which means deploying again.
+  const store = connection.objectStore(() => undefined);
+  await store.putObject('sillytavern-manager/blobs/a', new Uint8Array([7]), 'application/octet-stream');
+  assert.equal(cloudflare.state.deployed, 'stm');
+  assert.equal([...(cloudflare.state.buckets.get('stm')?.objects.keys() ?? [])].length, 1);
 });
 
 test('backups go through the Worker, which is deployed and keyed on first use', async () => {
