@@ -1,4 +1,4 @@
-import type { ComponentType, ReactNode } from 'react';
+import { useEffect, useState, type ComponentType, type ReactNode } from 'react';
 import { cn } from './shadcn/utils.js';
 
 export interface MobileNavItem {
@@ -15,6 +15,50 @@ export interface MobileNavProps {
   readonly label: string;
 }
 
+/** Past this the gap is an on-screen keyboard, which the bar should stay under. */
+const MAX_TOOLBAR_GAP = 120;
+
+/**
+ * How far the bottom of what is visible sits above the bottom of the layout.
+ *
+ * A fixed bar is pinned to the layout viewport, and Chrome on Android lets
+ * that fall out of step with the screen when its toolbar slides - most often
+ * after a dialog has locked and released the page's scroll. The bar then sits
+ * below the visible area until the page is scrolled to its very end. Lifting
+ * it by the gap keeps it on the glass whichever way the two disagree.
+ */
+export function useViewportBottomGap(): number {
+  const [gap, setGap] = useState(0);
+  useEffect(() => {
+    const viewport = typeof window === 'undefined' ? undefined : window.visualViewport;
+    if (!viewport) return undefined;
+    let frame = 0;
+    const measure = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const active = document.activeElement;
+        const typing = active instanceof HTMLElement && (active.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/u.test(active.tagName));
+        // A pinched page is meant to move under the bar, and a keyboard is
+        // meant to cover it.
+        if (viewport.scale > 1.01 || typing) { setGap(0); return; }
+        const next = Math.round(window.innerHeight - (viewport.height + viewport.offsetTop));
+        setGap(next > 0 && next <= MAX_TOOLBAR_GAP ? next : 0);
+      });
+    };
+    measure();
+    viewport.addEventListener('resize', measure);
+    viewport.addEventListener('scroll', measure);
+    window.addEventListener('scroll', measure, { passive: true });
+    return () => {
+      cancelAnimationFrame(frame);
+      viewport.removeEventListener('resize', measure);
+      viewport.removeEventListener('scroll', measure);
+      window.removeEventListener('scroll', measure);
+    };
+  }, []);
+  return gap;
+}
+
 /**
  * The four destinations, along the bottom, on a phone.
  *
@@ -25,10 +69,12 @@ export interface MobileNavProps {
  * this replaces the sheet below `md`, and the trigger for it goes with it.
  */
 export function MobileNav({ items, current, onNavigate, label }: MobileNavProps) {
+  const gap = useViewportBottomGap();
   return (
     <nav
       aria-label={label}
       data-slot="mobile-nav"
+      style={gap > 0 ? { transform: `translateY(-${gap}px)` } : undefined}
       className="fixed inset-x-0 bottom-0 z-40 border-t bg-card/95 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden"
     >
       <ul className="flex items-stretch">

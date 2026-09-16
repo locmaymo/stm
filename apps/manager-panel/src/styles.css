@@ -174,7 +174,10 @@
 @layer base {
   * { @apply border-border outline-ring/50; }
   html { min-width: 320px; }
-  body { @apply bg-background text-foreground font-sans; margin: 0; font-size: 14px; line-height: 1.5; font-synthesis: none; }
+  /* `clip` rather than `hidden`, so the sticky header keeps the viewport as
+     its scroller. Anything a few pixels too wide used to make the whole page
+     pan sideways on a phone, and the tab bar with it. */
+  body { @apply bg-background text-foreground font-sans; margin: 0; font-size: 14px; line-height: 1.5; font-synthesis: none; overflow-x: clip; }
   button:not(:disabled), a { cursor: pointer; }
   button:focus-visible, a:focus-visible, [tabindex="0"]:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
   code { font-family: Consolas, "SFMono-Regular", monospace; }
@@ -724,6 +727,11 @@
    * it was designed at.
    */
   button, [data-slot="select-trigger"] { min-height: 36px; }
+  /* A checkbox is a button to Radix, and the rule above stretched it into a
+     tall pill beside the terms. It keeps its square and gets the invisible
+     margin of target instead. */
+  [data-slot="checkbox"] { position: relative; min-height: 0; }
+  [data-slot="checkbox"]::after { content: ""; position: absolute; inset: -10px; }
   /* Anything deliberately drawn small keeps the size it was drawn at and gets
      an invisible margin of target instead, the way the switch always has. */
   [data-slot="button"][data-size="sm"],
