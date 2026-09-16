@@ -938,9 +938,27 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     if (!profile) { sendError(response, 409, 'profile_required', 'Create or activate a profile before creating a backup'); return; }
     const body = await readJson(request);
     const name = isRecord(body) && typeof body.name === 'string' ? body.name : undefined;
+    /*
+     * Two things are asked for here. `scheduled` is "Back up now": the
+     * automatic backup, taken without waiting for the schedule, which replaces
+     * the previous automatic one like any other. Anything else is a manual
+     * backup, kept until somebody deletes it.
+     *
+     * An automatic backup of data that has not changed since the newest backup
+     * would be an identical archive, so it is not written; the reply says so.
+     */
+    const kind = isRecord(body) && body.kind === 'scheduled' ? 'scheduled' : 'manual';
+    if (kind === 'scheduled') {
+      const fingerprint = await backups.fingerprint(profile);
+      const newest = (await backups.list(profile.id))
+        .filter((manifest) => manifest.source === 'created')
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
+      if (newest?.fingerprint === fingerprint) { sendJson(response, 200, { unchanged: true, backup: newest }); return; }
+    }
     const { job, signal } = jobs.createOperation('backup', logEvent('job.preparingBackup', 'Preparing backup'));
     void backups.create(profile, {
-      ...(name ? { name } : {}),
+      ...(name && kind === 'manual' ? { name } : {}),
+      kind,
       signal,
       onProgress: ({ completed, total }) => jobs.updateOperation(job.id, total > 0 ? (completed / total) * 90 : 50, logEvent('job.compressingFiles', `Compressing files (${completed}/${total})`, { completed, total })),
     }).then((manifest) => { jobs.updateOperation(job.id, 95, logEvent('job.savingLibrary', 'Saving backup library')); jobs.finishOperation(job.id, 'succeeded', null); return manifest; })

@@ -4,7 +4,7 @@ import {
   Globe2, LayoutDashboard, Maximize2, Minimize2, Moon, Package, Pencil, Plus,
   LogOut, RotateCcw, ScrollText, Search, Sun, Trash2, Upload, Users as UsersIcon, X, Rows3,
   BrainCircuit, CircleStop, Clock3, Cpu, Ellipsis, Play, QrCode as QrCodeIcon, RefreshCw, Settings2, ShieldCheck, Square,
-  Blocks, FileCode2, LoaderCircle, Gauge, History, KeyRound, Monitor, Sparkles, TriangleAlert,
+  Blocks, BookmarkPlus, FileCode2, LoaderCircle, Gauge, History, KeyRound, Monitor, Sparkles, TriangleAlert,
 } from 'lucide-react';
 import {
   Alert, AlertDescription, AuthLayout, Badge, BrandMark, Button, buttonVariants, Card, CardAction,
@@ -2067,23 +2067,39 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       await refresh();
     } catch { failed(t('console.profileActivateFailed')); } finally { setBusyAction(null); }
   };
-  const createBackup = async (name: string): Promise<string | null> => {
-    setBusyAction(t('dashboard.backupNow')); setOperationProgress(null);
+  /**
+   * Start a backup and follow it on the page.
+   *
+   * "Back up now" is the automatic backup taken early - no name, no dialog,
+   * and it replaces the previous automatic one. "Manual backup" asks for a
+   * name and is kept. Either way the answer returns as soon as the server has
+   * accepted the job, so the dialog closes at once and the progress is shown
+   * where the Stop button is.
+   */
+  const startBackup = async (kind: 'scheduled' | 'manual', name = ''): Promise<string | null> => {
+    const label = kind === 'scheduled' ? t('dashboard.backupNow') : t('console.manualBackup');
+    setBusyAction(label); setOperationProgress(null);
+    let jobId: string;
     try {
-      const response = await apiFetch('/api/v1/backups', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ ...(name ? { name } : {}) }) });
-      const payload = await response.json() as { jobId?: string; error?: { message?: string } };
-      if (!response.ok || !payload.jobId) return fail.body(payload, t('console.backupCreateFailed'));
-      setRunningJobId(payload.jobId);
-      await waitForOperation(payload.jobId, (job) => setOperationProgress({ percent: job.progress, step: jobStep(job) }));
-      await refresh();
-      done(t('console.backupDone'));
-      return null;
-    } catch (error: unknown) {
-      // Stopping is an answer rather than a failure: the dialog closes and the
-      // list says what is actually there.
-      if (error instanceof StoppedError) { await refresh(); return null; }
-      return error instanceof Error ? error.message : t('console.backupCreateFailed');
-    } finally { setBusyAction(null); setOperationProgress(null); setRunningJobId(null); }
+      const response = await apiFetch('/api/v1/backups', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ kind, ...(name ? { name } : {}) }) });
+      const payload = await response.json() as { jobId?: string; unchanged?: boolean; error?: { message?: string } };
+      if (response.ok && payload.unchanged) { setBusyAction(null); toast({ title: t('console.backupUpToDate'), tone: 'default' }); return null; }
+      if (!response.ok || !payload.jobId) { setBusyAction(null); return fail.body(payload, t('console.backupCreateFailed')); }
+      jobId = payload.jobId;
+    } catch { setBusyAction(null); return t('console.backupCreateFailed'); }
+    setRunningJobId(jobId);
+    void (async () => {
+      try {
+        await waitForOperation(jobId, (job) => setOperationProgress({ percent: job.progress, step: jobStep(job) }));
+        await refresh();
+        done(t('console.backupDone'));
+      } catch (error: unknown) {
+        // Stopping is an answer rather than a failure; the list says what is there.
+        if (error instanceof StoppedError) { await refresh(); done(t('console.backupStopped')); }
+        else failed(error instanceof Error ? error.message : t('console.backupCreateFailed'));
+      } finally { setBusyAction(null); setOperationProgress(null); setRunningJobId(null); }
+    })();
+    return null;
   };
   const waitForOperation = async (jobId: string, onUpdate: (job: Job) => void): Promise<void> => {
     for (;;) {
@@ -2414,7 +2430,8 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
                 {BACKUP_KINDS.map((kind) => <SelectItem key={kind} value={kind}>{t(BACKUP_KIND_LABEL[kind])}</SelectItem>)}
               </SelectContent>
             </Select>
-            <Button size="sm" onClick={() => setBackupOpen(true)} disabled={busy || activeProfileId === null}><Archive />{t('dashboard.backupNow')}</Button>
+            <Button size="sm" onClick={() => void startBackup('scheduled').then((failure) => { if (failure) failed(failure); })} disabled={busy || activeProfileId === null}><Archive />{t('dashboard.backupNow')}</Button>
+            <Button variant="outline" size="sm" onClick={() => setBackupOpen(true)} disabled={busy || activeProfileId === null}><BookmarkPlus />{t('console.manualBackup')}</Button>
             <label className={cn(buttonVariants({ variant: 'outline', size: 'sm' }), 'cursor-pointer')}>
               <Upload aria-hidden="true" />{t('console.importZip')}
               <input type="file" accept=".zip,application/zip" className="sr-only" disabled={busy} onChange={(event) => void inspectUpload(event.target.files?.[0])} />
@@ -2489,12 +2506,12 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       t={t}
       open={backupOpen}
       onOpenChange={setBackupOpen}
-      title={t('dashboard.backupNow')}
+      title={t('console.manualBackup')}
       label={t('common.name')}
       hint={t('console.backupNameHint')}
-      submitLabel={t('dashboard.backupNow')}
+      submitLabel={t('console.manualBackup')}
       optional
-      onSubmit={createBackup}
+      onSubmit={(name) => startBackup('manual', name)}
     />
     <NameDialog
       t={t}

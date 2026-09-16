@@ -335,6 +335,10 @@ test('local backup endpoints create, preview, download, and restore a profile ar
   }
   assert.ok(manifest);
   assert.equal(manifest.fileCount, 2);
+  // "Back up now" on data that has not changed writes nothing.
+  const early = await fetch(`${base}/api/v1/backups`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ kind: 'scheduled' }) });
+  assert.equal(early.status, 200);
+  assert.equal((await early.json() as { unchanged?: boolean }).unchanged, true);
   const preview = await fetch(`${base}/api/v1/backups/${manifest.id}/preview`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf } });
   assert.equal(preview.status, 200);
   assert.equal((await preview.json() as { fileCount: number }).fileCount, 2);
