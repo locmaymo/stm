@@ -162,6 +162,7 @@ export type R2EnvironmentField = 'endpoint' | 'bucket' | 'accessKeyId' | 'secret
  * the same. It is the backup library's setting, and lives there.
  */
 export interface LocalBackupSchedule {
+  /** Minutes between scheduled backups; `0` means the schedule is off. */
   readonly intervalMinutes: number;
 }
 

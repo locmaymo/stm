@@ -114,6 +114,8 @@ export class BackupScheduler {
    * being gone.
    */
   private async runLocalSnapshot(profile: Profile, fingerprint: string, intervalMinutes: number): Promise<BackupManifest | undefined> {
+    // Turned off by the operator. R2, if it is on, still runs after this.
+    if (intervalMinutes === 0) return undefined;
     const created = (await this.backups.list(profile.id))
       .filter((backup) => backup.source === 'created')
       .sort((left, right) => right.createdAt.localeCompare(left.createdAt));

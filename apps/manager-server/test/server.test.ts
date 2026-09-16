@@ -865,7 +865,7 @@ test('the local backup schedule is read and changed over HTTP, and survives a re
   assert.equal(saved.status, 200);
   assert.equal((await saved.json() as { schedule: { intervalMinutes: number } }).schedule.intervalMinutes, 360);
 
-  for (const invalid of [{ intervalMinutes: 0 }, { intervalMinutes: 7 * 24 * 60 + 1 }, { intervalMinutes: 1.5 }, { intervalMinutes: '360' }, {}]) {
+  for (const invalid of [{ intervalMinutes: -1 }, { intervalMinutes: 7 * 24 * 60 + 1 }, { intervalMinutes: 1.5 }, { intervalMinutes: '360' }, {}]) {
     const refused = await put(invalid);
     assert.equal(refused.status, 400, JSON.stringify(invalid));
     assert.equal((await refused.json() as { error: { code: string } }).error.code, 'invalid_backup_schedule');

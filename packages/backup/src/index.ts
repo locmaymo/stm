@@ -127,9 +127,10 @@ export class BackupStore {
     return this.scheduleState ? { ...this.scheduleState } : { intervalMinutes: DEFAULT_LOCAL_INTERVAL_MINUTES };
   }
 
+  /** `intervalMinutes: 0` turns the schedule off; backups can still be taken by hand. */
   public async setSchedule(input: LocalBackupSchedule): Promise<LocalBackupSchedule> {
-    if (!Number.isInteger(input.intervalMinutes) || input.intervalMinutes < 1 || input.intervalMinutes > MAX_LOCAL_INTERVAL_MINUTES) {
-      throw new BackupError('invalid_backup_schedule', `The local backup interval must be a whole number of minutes from 1 to ${MAX_LOCAL_INTERVAL_MINUTES}`);
+    if (!Number.isInteger(input.intervalMinutes) || input.intervalMinutes < 0 || input.intervalMinutes > MAX_LOCAL_INTERVAL_MINUTES) {
+      throw new BackupError('invalid_backup_schedule', `The local backup interval must be 0 (off) or a whole number of minutes from 1 to ${MAX_LOCAL_INTERVAL_MINUTES}`);
     }
     await this.load();
     this.scheduleState = { intervalMinutes: input.intervalMinutes };
@@ -146,7 +147,8 @@ export class BackupStore {
    */
   public async adoptLegacySchedule(intervalMinutes: number): Promise<void> {
     await this.load();
-    if (this.scheduleState) return;
+    // The old setting had no "off", so a zero there was never a choice.
+    if (this.scheduleState || intervalMinutes < 1) return;
     try {
       await this.setSchedule({ intervalMinutes });
     } catch (error: unknown) {
@@ -1336,7 +1338,7 @@ function parseManifest(value: unknown): BackupManifest {
 function parseSchedule(value: unknown): LocalBackupSchedule | null {
   if (!isRecord(value)) return null;
   const minutes = value.intervalMinutes;
-  return typeof minutes === 'number' && Number.isInteger(minutes) && minutes >= 1 && minutes <= MAX_LOCAL_INTERVAL_MINUTES ? { intervalMinutes: minutes } : null;
+  return typeof minutes === 'number' && Number.isInteger(minutes) && minutes >= 0 && minutes <= MAX_LOCAL_INTERVAL_MINUTES ? { intervalMinutes: minutes } : null;
 }
 
 /** How many manager-written archives a profile keeps. One, unless asked otherwise. */

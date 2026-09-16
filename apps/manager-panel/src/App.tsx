@@ -1779,8 +1779,9 @@ const R2_HISTORY_CHOICES = [
   { id: '3m', label: 'console.r2Back3Months', keepRecent: 24, keepDaily: 14, keepWeekly: 13 },
   { id: '1y', label: 'console.r2Back1Year', keepRecent: 24, keepDaily: 14, keepWeekly: 52 },
 ] as const;
-/** How often the backup library takes a local copy. Not an R2 setting. */
+/** How often the backup library takes a local copy. Not an R2 setting. `0` is off. */
 const LOCAL_BACKUP_CHOICES = [
+  { id: 'off', label: 'console.localScheduleOff', intervalMinutes: 0 },
   { id: '1h', label: 'console.everyHour', intervalMinutes: 60 },
   { id: '6h', label: 'console.every6Hours', intervalMinutes: 360 },
   { id: '1d', label: 'console.everyDay', intervalMinutes: 1440 },
@@ -2251,7 +2252,7 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
         {/* Here rather than in the R2 settings: it runs whether or not there is
             a bucket, so it has to be reachable without one. */}
         {backupSchedule ? <div>
-          <DetailRow label={t('console.localScheduleLabel')} hint={t('console.localScheduleHint')}>
+          <DetailRow label={t('console.localScheduleLabel')} hint={backupSchedule.intervalMinutes === 0 ? t('console.localScheduleOffHint') : t('console.localScheduleHint')}>
             <Select value={localChoice?.id ?? CUSTOM_CHOICE} onValueChange={(id) => void saveBackupSchedule(id)} disabled={scheduleSaving}>
               <SelectTrigger size="sm" className="w-40"><SelectValue /></SelectTrigger>
               <SelectContent>
@@ -2455,9 +2456,16 @@ function NameDialog({ t, open, onOpenChange, title, label, hint, initial = '', s
 function RestoreDialog({ t, catalog, backup, preview, mode, onModeChange, onClose, onRestore }: { t: Translate; catalog: Record<string, unknown>; backup: BackupManifest | null; preview: RestorePreview | null; mode: RestoreMode; onModeChange: (mode: RestoreMode) => void; onClose: () => void; onRestore: () => Promise<void> }) {
   const group = useId();
   if (!backup || !preview) return null;
-  const options: Array<{ value: RestoreMode; label: string; body: string }> = [
-    { value: 'replace', label: t('console.replaceRestore'), body: t('console.restoreReplaceBody') },
-    { value: 'merge', label: t('console.mergeRestore'), body: t('console.restoreMergeBody') },
+  /*
+   * Replace is the one to reach for, and says so.
+   *
+   * It leaves the profile exactly as the backup was. Merge keeps whatever the
+   * backup does not mention, so the result is a mixture nobody took a backup
+   * of - occasionally what is wanted, usually not.
+   */
+  const options: Array<{ value: RestoreMode; label: string; body: string; recommended: boolean }> = [
+    { value: 'replace', label: t('console.replaceRestore'), body: t('console.restoreReplaceBody'), recommended: true },
+    { value: 'merge', label: t('console.mergeRestore'), body: t('console.restoreMergeBody'), recommended: false },
   ];
   return <Dialog open onOpenChange={(next) => { if (!next) onClose(); }}>
     <DialogContent className="sm:max-w-lg">
@@ -2470,7 +2478,7 @@ function RestoreDialog({ t, catalog, backup, preview, mode, onModeChange, onClos
           {options.map((option) => <div key={option.value} className="flex items-start gap-3 rounded-lg border p-3 has-[[data-state=checked]]:border-primary has-[[data-state=checked]]:bg-primary/5">
             <RadioGroupItem id={`${group}-${option.value}`} value={option.value} className="mt-0.5" />
             <div className="grid gap-1">
-              <Label htmlFor={`${group}-${option.value}`} className="font-medium">{option.label}</Label>
+              <Label htmlFor={`${group}-${option.value}`} className="flex flex-wrap items-center gap-2 font-medium">{option.label}{option.recommended ? <Badge variant="secondary" className="bg-(--success-background) text-(--success)">{t('console.restoreRecommended')}</Badge> : null}</Label>
               <p className="text-xs text-muted-foreground">{option.body}</p>
             </div>
           </div>)}

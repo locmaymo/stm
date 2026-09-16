@@ -400,7 +400,7 @@ test('the local backup schedule is kept with the library and survives a restart'
   assert.equal((await store.getSchedule()).intervalMinutes, 60);
   const created = await store.create(fixture.profile);
   await store.setSchedule({ intervalMinutes: 360 });
-  await assert.rejects(() => store.setSchedule({ intervalMinutes: 0 }), (error: unknown) => error instanceof BackupError && error.code === 'invalid_backup_schedule');
+  await assert.rejects(() => store.setSchedule({ intervalMinutes: -1 }), (error: unknown) => error instanceof BackupError && error.code === 'invalid_backup_schedule');
 
   const reopened = new BackupStore({ paths: fixture.paths });
   assert.equal((await reopened.getSchedule()).intervalMinutes, 360);
@@ -419,4 +419,14 @@ test('an interval from the old R2 settings is taken when none was chosen here', 
   const other = await createFixture();
   await new BackupStore({ paths: other.paths }).adoptLegacySchedule(0);
   assert.equal((await new BackupStore({ paths: other.paths }).getSchedule()).intervalMinutes, 60);
+});
+
+test('the local backup schedule can be turned off, and stays off', async () => {
+  const fixture = await createFixture();
+  const store = new BackupStore({ paths: fixture.paths });
+  assert.deepEqual(await store.setSchedule({ intervalMinutes: 0 }), { intervalMinutes: 0 });
+  const reopened = new BackupStore({ paths: fixture.paths });
+  assert.equal((await reopened.getSchedule()).intervalMinutes, 0);
+  await reopened.adoptLegacySchedule(30);
+  assert.equal((await reopened.getSchedule()).intervalMinutes, 0);
 });
