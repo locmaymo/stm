@@ -10,7 +10,12 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
     proxy: {
-      '/api': 'http://127.0.0.1:7860',
+      // `changeOrigin: false` keeps the Host header as `localhost:5173`, which
+      // matches the browser's own Origin header. The manager compares the two
+      // to reject cross-site requests; with the default `changeOrigin: true`
+      // the proxy rewrites Host to the backend's address and every request -
+      // including sign-in - is refused as a foreign origin.
+      '/api': { target: 'http://127.0.0.1:7860', changeOrigin: false },
     },
   },
   build: {

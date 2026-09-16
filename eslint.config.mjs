@@ -24,6 +24,20 @@ export default [
   },
   js.configs.recommended,
   {
+    // The OAuth relay is a static page served from the project's domain and
+    // runs in the browser, not in Node.
+    files: ['deploy/oauth-relay/public/**/*.js'],
+    languageOptions: {
+      globals: {
+        URL: 'readonly',
+        URLSearchParams: 'readonly',
+        atob: 'readonly',
+        document: 'readonly',
+        window: 'readonly',
+      },
+    },
+  },
+  {
     // The Windows launcher has to be CommonJS: Node runs a single-executable
     // entry point as CommonJS, so an ES module entry never gets as far as
     // running at all.

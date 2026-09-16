@@ -225,7 +225,41 @@ export interface LocalBackupSchedule {
   readonly intervalMinutes: number;
 }
 
+/**
+ * How the bucket was connected.
+ *
+ * `keys` is an endpoint, bucket and S3 key pair entered by hand or set in
+ * `.env`, which stays available for anyone who does not want to sign in.
+ * `cloudflare` is a bucket the manager set up after signing in to Cloudflare.
+ */
+export type R2ConnectionMode = 'keys' | 'cloudflare';
+
+export type CloudflareConnectionState = 'disconnected' | 'choose_account' | 'connected' | 'reconnect_required';
+
+export interface CloudflareAccountRef {
+  readonly id: string;
+  readonly name: string;
+}
+
+export interface CloudflareConnectionStatus {
+  readonly state: CloudflareConnectionState;
+  readonly account: CloudflareAccountRef | null;
+  readonly bucket: string | null;
+  /** Offered while the user has to pick which account backups go to. */
+  readonly accounts: readonly CloudflareAccountRef[];
+  /** Which way data went last, once anything has; null before the first transfer. */
+  readonly dataPath: 'worker' | 'rest' | null;
+  /** Why data goes over the slow REST API instead of the Worker, when it does. */
+  readonly restReason: 'workers_not_granted' | 'worker_unavailable' | null;
+  readonly analyticsGranted: boolean;
+  readonly connectedAt: string | null;
+  readonly lastError: string | null;
+}
+
 export interface R2Config {
+  readonly mode: R2ConnectionMode;
+  /** Null when this manager has no Cloudflare OAuth client configured. */
+  readonly cloudflare: CloudflareConnectionStatus | null;
   readonly enabled: boolean;
   readonly endpoint: string | null;
   readonly bucket: string | null;
@@ -273,6 +307,59 @@ export interface R2Config {
   };
   readonly usage: R2Usage;
   readonly lastFingerprint: string | null;
+}
+
+export interface R2OperationCounts {
+  readonly classA: number;
+  readonly classB: number;
+  readonly free: number;
+  /** Action types Cloudflare's pricing page does not list. Shown, not guessed into a class. */
+  readonly unclassified: number;
+}
+
+export interface R2UsageScope {
+  /** Object data plus metadata at the latest sample; null when Cloudflare had none. */
+  readonly storageBytes: number | null;
+  readonly objectCount: number | null;
+  readonly measuredAt: string | null;
+  /** Month to date, from the start of the calendar month in UTC. */
+  readonly operations: R2OperationCounts;
+}
+
+export interface R2UsageWarning {
+  /**
+   * `account` is measured against Cloudflare's free tier, which the whole
+   * account shares; `bucket` against the ceilings set in the manager.
+   */
+  readonly scope: 'account' | 'bucket';
+  readonly metric: 'storage' | 'classA' | 'classB';
+  readonly used: number;
+  readonly limit: number;
+}
+
+/**
+ * What Cloudflare's analytics say a signed-in bucket and its account used.
+ *
+ * Usage, not billing. There is no API for the bill or for what is left of the
+ * free tier; a billing period need not start on the first of the month; storage
+ * is billed as an average over the month while this is the size now; and the
+ * figures lag by some minutes. Warnings are early signs, not a statement of cost.
+ */
+export interface R2CloudflareUsage {
+  readonly fetchedAt: string;
+  readonly periodStart: string;
+  readonly periodEnd: string;
+  readonly bucket: R2UsageScope & { readonly name: string };
+  readonly account: R2UsageScope;
+  readonly freeTier: { readonly storageBytes: number; readonly classA: number; readonly classB: number };
+  readonly warnings: readonly R2UsageWarning[];
+}
+
+export interface R2UsageResponse {
+  readonly usage: R2CloudflareUsage | null;
+  /** Why there are no figures from Cloudflare, when there are none. */
+  readonly unavailable: 'keys_mode' | 'not_connected' | 'analytics_not_granted' | 'query_failed' | null;
+  readonly error: string | null;
 }
 
 export interface R2Usage {

@@ -1,10 +1,14 @@
-import { createHash, createHmac, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { mkdir, open, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { formatBytes, logEvent, logLineText, type LogSink, type Profile, type R2Config, type R2EnvironmentField, type R2Object, type R2SnapshotSummary, type R2Usage, type TransferProgress } from '../../contracts/src/index.js';
+import { formatBytes, logEvent, logLineText, type LogSink, type Profile, type R2CloudflareUsage, type R2Config, type R2ConnectionMode, type R2UsageResponse, type R2UsageWarning, type R2EnvironmentField, type R2Object, type R2SnapshotSummary, type R2Usage, type TransferProgress } from '../../contracts/src/index.js';
+import { parseS3Endpoint, R2_FREE_TIER, readR2Usage } from '../../cloudflare/src/index.js';
 import { ioConcurrency, runPooled } from '../../platform/src/index.js';
 import type { PlatformPaths } from '../../platform/src/index.js';
+import type { CloudflareConnection, KnownBucket } from './cloudflare-connection.js';
 import { BlobLedger } from './ledger.js';
+import { S3ObjectStore, type R2Credentials } from './s3.js';
+import { R2Error, type Billing, type ObjectRecord, type ObjectStore } from './store.js';
 import {
   blobKey,
   decodeBlob,
@@ -18,6 +22,11 @@ import {
   type HashedFile,
   type R2Snapshot,
 } from './sync.js';
+
+export { R2Error } from './store.js';
+export type { ObjectRecord, ObjectStore } from './store.js';
+export { CloudflareConnection } from './cloudflare-connection.js';
+export type { KnownBucket } from './cloudflare-connection.js';
 
 const R2_STATE_FILE = 'r2-config.json';
 /** The connection settings `.env` may provide, and the variable for each. */
@@ -33,6 +42,12 @@ const MASKED_SECRET = '********';
 const OBJECT_PREFIX = 'sillytavern-manager/';
 const BLOB_PREFIX = `${OBJECT_PREFIX}blobs/`;
 const SNAPSHOT_PREFIX = `${OBJECT_PREFIX}snapshots/`;
+/** How long Cloudflare's usage figures are reused before asking again. */
+const CLOUD_USAGE_TTL_MS = 15 * 60 * 1000;
+/** How old those figures may be and still count towards the ceilings before a backup. */
+const CLOUD_USAGE_GUARD_MAX_AGE_MS = 60 * 60 * 1000;
+/** A figure this close to its limit is worth saying something about. */
+const WARNING_RATIO = 0.8;
 /** One listing page. R2 caps it here too, so asking for more changes nothing. */
 const LIST_PAGE_KEYS = 1000;
 
@@ -76,6 +91,15 @@ interface StoredUsage {
 
 interface StoredR2Config {
   readonly schemaVersion: 2;
+  readonly mode: R2ConnectionMode;
+  /**
+   * Which bucket the chunk ledger describes.
+   *
+   * The ledger is what lets a backup skip chunks the bucket already holds. Kept
+   * across a switch to another bucket, it would skip chunks the new bucket has
+   * never seen, and every recovery point written there would point at nothing.
+   */
+  readonly ledgerTarget: string | null;
   readonly enabled: boolean;
   readonly endpoint: string | null;
   readonly bucket: string | null;
@@ -113,9 +137,12 @@ export interface R2ManagerOptions {
   readonly now?: () => Date;
   readonly logger?: LogSink;
   readonly fetchImpl?: typeof fetch;
+  /** The signed-in connection, when this manager has a Cloudflare OAuth client. */
+  readonly cloudflare?: CloudflareConnection;
 }
 
 export interface R2UpdateInput {
+  readonly mode?: R2ConnectionMode;
   readonly enabled?: boolean;
   readonly endpoint?: string | null;
   readonly bucket?: string | null;
@@ -178,36 +205,6 @@ export interface R2ConnectionResult {
   readonly totalBytes: number;
 }
 
-interface R2Credentials {
-  readonly endpoint: string;
-  readonly bucket: string;
-  readonly accessKeyId: string;
-  readonly secretAccessKey: string;
-}
-
-interface S3ObjectRecord {
-  readonly key: string;
-  readonly sizeBytes: number;
-  readonly lastModified: string | null;
-  readonly etag: string | null;
-}
-
-export class R2Error extends Error {
-  public readonly code: string;
-  public constructor(code: string, message: string) {
-    super(message);
-    this.code = code;
-  }
-}
-
-class R2HttpError extends R2Error {
-  public readonly status: number;
-  public constructor(status: number, message: string) {
-    super('r2_request_failed', message);
-    this.status = status;
-  }
-}
-
 export class R2Manager {
   readonly paths: PlatformPaths;
   private readonly env: NodeJS.ProcessEnv;
@@ -215,6 +212,7 @@ export class R2Manager {
   private readonly logger: LogSink;
   private readonly fetchImpl: typeof fetch;
   private readonly ledger: BlobLedger;
+  private readonly cloudflare: CloudflareConnection | null;
   private configState: StoredR2Config | null = null;
   /** The local backup interval an older version kept in this file, until it is handed over. */
   private legacyLocalInterval: number | null = null;
@@ -236,6 +234,7 @@ export class R2Manager {
    * to the manager, because the manager is what outlives a request.
    */
   private charges = { write: 0, read: 0 };
+  private cloudUsage: { readonly at: number; readonly usage: R2CloudflareUsage } | null = null;
   private chargesWrittenAt = 0;
 
   public constructor(options: R2ManagerOptions) {
@@ -245,10 +244,11 @@ export class R2Manager {
     this.logger = options.logger ?? ((line) => console.log(logLineText(line)));
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.ledger = new BlobLedger({ path: join(this.paths.state, R2_LEDGER_FILE) });
+    this.cloudflare = options.cloudflare ?? null;
   }
 
   public async getConfig(): Promise<R2Config> {
-    return this.toPublic(await this.load());
+    return await this.toPublic(await this.load());
   }
 
   public async update(requested: R2UpdateInput): Promise<R2Config> {
@@ -257,8 +257,11 @@ export class R2Manager {
     // and cannot change it, so a stale form cannot quietly replace it either.
     const locked = new Set<string>(this.environmentFields());
     const input = Object.fromEntries(Object.entries(requested).filter(([key]) => !locked.has(key))) as R2UpdateInput;
+    if (input.mode !== undefined && input.mode !== 'keys' && input.mode !== 'cloudflare') throw new R2Error('invalid_r2_mode', 'The R2 connection mode is not valid');
+    if (input.mode === 'cloudflare' && !this.cloudflare) throw new R2Error('cloudflare_not_available', 'This manager has no Cloudflare sign-in configured');
     const next: StoredR2Config = {
       ...current,
+      ...(input.mode !== undefined ? { mode: input.mode } : {}),
       ...(input.enabled !== undefined ? { enabled: input.enabled } : {}),
       ...(input.endpoint !== undefined ? { endpoint: normalizeNullable(input.endpoint) } : {}),
       ...(input.bucket !== undefined ? { bucket: normalizeNullable(input.bucket) } : {}),
@@ -276,7 +279,19 @@ export class R2Manager {
     };
     validateStoredConfig(next);
     await this.save(next);
-    return this.toPublic(next);
+    return await this.toPublic(next);
+  }
+
+  /**
+   * The R2 bucket the S3 settings name, when they name one.
+   *
+   * Signing in to Cloudflare carries on in this bucket if it is in the account
+   * signed in to, so switching to a sign-in keeps the recovery points in view.
+   */
+  public async keysBucket(): Promise<KnownBucket | null> {
+    const config = await this.load();
+    const parsed = config.endpoint && config.bucket ? parseS3Endpoint(config.endpoint) : null;
+    return parsed && config.bucket ? { accountId: parsed.accountId, jurisdiction: parsed.jurisdiction, bucket: config.bucket } : null;
   }
 
   public async testConnection(): Promise<R2ConnectionResult> {
@@ -316,14 +331,19 @@ export class R2Manager {
    */
   public async syncProfile(input: R2SyncInput): Promise<R2SyncResult> {
     return await this.exclusive(async () => {
-      const config = await this.requireUsable();
-      await this.ledger.load();
+      const config = await this.onTarget(await this.requireUsable());
       const usage = await this.currentPeriod(config);
-      if (usage.storageBytes >= config.maxStorageBytes) {
-        throw new R2Error('r2_storage_ceiling', `The bucket is holding ${formatBytes(usage.storageBytes)}, at or above the ${formatBytes(config.maxStorageBytes)} ceiling. Lower retention or raise the ceiling.`);
+      // Cloudflare sees what this manager's own count cannot: another machine
+      // on the same bucket, or objects put there some other way. The larger of
+      // the two is the one to hold the ceiling against.
+      const cloud = config.mode === 'cloudflare' ? await this.recentCloudUsage() : null;
+      const storageUsed = Math.max(usage.storageBytes, cloud?.bucket.storageBytes ?? 0);
+      const writesUsed = Math.max(usage.writeOperations, cloud?.bucket.operations.classA ?? 0);
+      if (storageUsed >= config.maxStorageBytes) {
+        throw new R2Error('r2_storage_ceiling', `The bucket is holding ${formatBytes(storageUsed)}, at or above the ${formatBytes(config.maxStorageBytes)} ceiling. Lower retention or raise the ceiling.`);
       }
-      if (usage.writeOperations >= config.maxWriteOperations) {
-        throw new R2Error('r2_operation_ceiling', `${usage.writeOperations} charged writes have been used this month, at or above the ${config.maxWriteOperations} ceiling.`);
+      if (writesUsed >= config.maxWriteOperations) {
+        throw new R2Error('r2_operation_ceiling', `${writesUsed} charged writes have been used this month, at or above the ${config.maxWriteOperations} ceiling.`);
       }
 
       const planned = planUpload(input.sources, this.ledger);
@@ -522,22 +542,7 @@ export class R2Manager {
       const config = await this.requireUsable();
       const client = this.client(config);
       const objects = await this.listAll(config, OBJECT_PREFIX, client);
-      const blobs = new Map<string, S3ObjectRecord>();
-      const snapshotKeys: string[] = [];
-      let legacyObjectCount = 0;
-      let legacyBytes = 0;
-      for (const object of objects) {
-        if (object.key.startsWith(BLOB_PREFIX)) {
-          const hash = object.key.slice(object.key.lastIndexOf('/') + 1);
-          if (/^[0-9a-f]{64}$/u.test(hash)) blobs.set(hash, object);
-          continue;
-        }
-        if (object.key.startsWith(SNAPSHOT_PREFIX)) { snapshotKeys.push(object.key); continue; }
-        // Whole-ZIP archives from the version before this one. They are not
-        // read and not deleted behind the operator's back; the panel offers it.
-        legacyObjectCount += 1;
-        legacyBytes += object.sizeBytes;
-      }
+      const { blobs, snapshotKeys, legacyObjectCount, legacyBytes } = summarizeObjects(objects);
 
       const snapshots: R2Snapshot[] = [];
       for (const key of snapshotKeys) {
@@ -560,6 +565,7 @@ export class R2Manager {
         collectedBytes += object.sizeBytes;
       }
       for (const hash of collected) blobs.delete(hash);
+      await this.ledger.load();
       await this.ledger.reconcile(blobs.keys());
 
       const snapshotBytesTotal = objects.filter((object) => object.key.startsWith(SNAPSHOT_PREFIX)).reduce((sum, object) => sum + object.sizeBytes, 0);
@@ -576,7 +582,7 @@ export class R2Manager {
         legacyBytes,
         lastReconciledAt: this.now().toISOString(),
       };
-      await this.save({ ...config, usage });
+      await this.save({ ...(await this.load()), ledgerTarget: await this.storageTarget(config), usage });
       await this.recordCharges();
       this.logger(logEvent('r2.reconciled', `[r2] ${blobs.size} stored chunk(s), ${formatBytes(usage.storageBytes)}; collected ${collectedBlobs}`, { chunks: blobs.size, size: formatBytes(usage.storageBytes), collected: collectedBlobs }));
       return { blobCount: blobs.size, collectedBlobs, collectedBytes, usage: toPublicUsage(usage) };
@@ -624,13 +630,54 @@ export class R2Manager {
     await this.recordCharges();
   }
 
+  /**
+   * What Cloudflare's analytics say the signed-in bucket and its account used
+   * this month, with warnings for anything close to a limit.
+   *
+   * Asked for at most every fifteen minutes unless `refresh` says otherwise: the
+   * analytics API has a limit of its own, and the figures lag anyway. A query
+   * that fails still returns the last figures, with the error beside them.
+   */
+  public async cloudflareUsage(options: { readonly refresh?: boolean } = {}): Promise<R2UsageResponse> {
+    const config = await this.load();
+    if (config.mode !== 'cloudflare' || !this.cloudflare) return { usage: null, unavailable: 'keys_mode', error: null };
+    const status = await this.cloudflare.status();
+    if (status.state !== 'connected') return { usage: null, unavailable: 'not_connected', error: null };
+    if (!status.analyticsGranted) return { usage: null, unavailable: 'analytics_not_granted', error: null };
+    const cached = this.cloudUsage;
+    if (cached && !options.refresh && this.now().getTime() - cached.at < CLOUD_USAGE_TTL_MS) return { usage: cached.usage, unavailable: null, error: null };
+    try {
+      const target = await this.cloudflare.target();
+      if (!target) return { usage: null, unavailable: 'not_connected', error: null };
+      const now = this.now();
+      // Analytics name a bucket bound to a jurisdiction with the jurisdiction in front.
+      const bucketName = target.jurisdiction === 'default' ? target.bucket : `${target.jurisdiction}_${target.bucket}`;
+      const report = await readR2Usage(this.cloudflare.cloudflareApi(), target.account.id, bucketName, now);
+      const usage: R2CloudflareUsage = { ...report, fetchedAt: now.toISOString(), freeTier: { ...R2_FREE_TIER }, warnings: usageWarnings(report, config) };
+      this.cloudUsage = { at: now.getTime(), usage };
+      return { usage, unavailable: null, error: null };
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'The usage figures could not be read';
+      return { usage: cached?.usage ?? null, unavailable: cached ? null : 'query_failed', error: message };
+    }
+  }
+
+  /** Cloudflare's figures if they are recent enough to hold a ceiling against, fetched if not. */
+  private async recentCloudUsage(): Promise<R2CloudflareUsage | null> {
+    const cached = this.cloudUsage;
+    if (cached && this.now().getTime() - cached.at < CLOUD_USAGE_GUARD_MAX_AGE_MS) return cached.usage;
+    // A backup never waits on, or fails because of, the analytics being down.
+    const fetched = await this.cloudflareUsage().catch(() => null);
+    return fetched?.usage && this.now().getTime() - Date.parse(fetched.usage.fetchedAt) < CLOUD_USAGE_GUARD_MAX_AGE_MS ? fetched.usage : null;
+  }
+
   public async markFingerprint(fingerprint: string): Promise<void> {
     const config = await this.load();
     await this.save({ ...config, lastFingerprint: fingerprint });
   }
 
   /** Upload every chunk of one file the bucket is missing, or report the file is gone. */
-  private async uploadChunks(client: R2Client, entry: PlannedFile): Promise<{ hashes: string[]; bytes: number } | null> {
+  private async uploadChunks(client: ObjectStore, entry: PlannedFile): Promise<{ hashes: string[]; bytes: number } | null> {
     let handle;
     try {
       handle = await open(entry.source.path, 'r');
@@ -662,9 +709,9 @@ export class R2Manager {
     }
   }
 
-  private async listAll(config: StoredR2Config, prefix: string, client?: R2Client): Promise<S3ObjectRecord[]> {
+  private async listAll(config: StoredR2Config, prefix: string, client?: ObjectStore): Promise<ObjectRecord[]> {
     const target = client ?? this.client(config);
-    const objects: S3ObjectRecord[] = [];
+    const objects: ObjectRecord[] = [];
     let cursor: string | undefined;
     do {
       const page = await target.listObjects(prefix, LIST_PAGE_KEYS, cursor);
@@ -677,8 +724,73 @@ export class R2Manager {
   private async requireUsable(): Promise<StoredR2Config> {
     const config = await this.load();
     if (!config.enabled) throw new R2Error('r2_disabled', 'R2 backup is switched off');
-    toCredentials(config);
+    if (config.mode === 'cloudflare') {
+      const status = await this.cloudflare?.status();
+      if (status?.state === 'reconnect_required') throw new R2Error('cloudflare_reconnect_required', 'Reconnect to Cloudflare to continue backing up');
+      if (status?.state !== 'connected') throw new R2Error('r2_not_configured', 'Connect to Cloudflare and choose an account first');
+    } else {
+      toCredentials(config);
+    }
     return config;
+  }
+
+  /**
+   * Where objects go right now, as the chunk ledger needs to know it.
+   *
+   * An R2 bucket is named the same way whether it is reached with S3 keys or
+   * through a sign-in, so moving between the two on one bucket keeps the ledger.
+   */
+  private async storageTarget(config: StoredR2Config): Promise<string> {
+    if (config.mode === 'cloudflare') {
+      const target = await this.cloudflare?.target();
+      if (!target) throw new R2Error('r2_not_configured', 'Connect to Cloudflare and choose an account first');
+      return `cloudflare:${target.account.id}/${target.jurisdiction}/${target.bucket}`;
+    }
+    const credentials = toCredentials(config);
+    return canonicalTarget(`s3:${credentials.endpoint.replace(/\/+$/u, '')}/${credentials.bucket}`);
+  }
+
+  /**
+   * The config for a run, with the ledger made to describe the bucket being written.
+   *
+   * A different bucket is read before anything is sent to it: the ledger is
+   * rebuilt from the chunks it already holds, so a bucket that has this
+   * profile's data costs a listing rather than every chunk again, and an empty
+   * one gets everything. A config from before this was recorded is taken to
+   * describe the keys bucket it was already using, so upgrading costs nothing.
+   */
+  private async onTarget(config: StoredR2Config): Promise<StoredR2Config> {
+    await this.ledger.load();
+    const target = await this.storageTarget(config);
+    const recorded = config.ledgerTarget === null ? null : canonicalTarget(config.ledgerTarget);
+    if (recorded === target || (recorded === null && config.mode === 'keys')) {
+      if (config.ledgerTarget === target) return config;
+      const adopted = { ...config, ledgerTarget: target };
+      await this.save(adopted);
+      return adopted;
+    }
+    const found = summarizeObjects(await this.listAll(config, OBJECT_PREFIX));
+    await this.ledger.reconcile(found.blobs.keys());
+    const switched: StoredR2Config = {
+      ...config,
+      ledgerTarget: target,
+      lastUploadAt: null,
+      lastColdUploadAt: null,
+      lastFingerprint: null,
+      lastSnapshot: null,
+      usage: {
+        ...config.usage,
+        storageBytes: found.totalBytes,
+        blobCount: found.blobs.size,
+        snapshotCount: found.snapshotKeys.length,
+        legacyObjectCount: found.legacyObjectCount,
+        legacyBytes: found.legacyBytes,
+        lastReconciledAt: null,
+      },
+    };
+    await this.save(switched);
+    this.logger(logEvent('r2.targetChanged', `[r2] backups now go to a different bucket, which already holds ${found.blobs.size} chunk(s); only what it is missing is sent`, { chunks: found.blobs.size }));
+    return switched;
   }
 
   /** The usage counters, with the charged-write count reset when the month turns over. */
@@ -688,11 +800,16 @@ export class R2Manager {
     return { ...config.usage, writeOperations: 0, periodStartedAt: period };
   }
 
-  private client(config: StoredR2Config): R2Client {
-    return new R2Client(toCredentials(config), this.fetchImpl, (kind) => {
+  private client(config: StoredR2Config): ObjectStore {
+    const count = (kind: Billing): void => {
       if (kind === 'charged') this.charges.write += 1;
       else if (kind === 'read') this.charges.read += 1;
-    });
+    };
+    if (config.mode === 'cloudflare') {
+      if (!this.cloudflare) throw new R2Error('cloudflare_not_available', 'This manager has no Cloudflare sign-in configured');
+      return this.cloudflare.objectStore(count);
+    }
+    return new S3ObjectStore(toCredentials(config), this.fetchImpl, count);
   }
 
   /**
@@ -724,13 +841,18 @@ export class R2Manager {
     return await run;
   }
 
-  private toPublic(config: StoredR2Config): R2Config {
+  private async toPublic(config: StoredR2Config): Promise<R2Config> {
+    const cloudflare = this.cloudflare ? await this.cloudflare.status() : null;
     return {
+      mode: config.mode,
+      cloudflare,
       enabled: config.enabled,
       endpoint: config.endpoint,
       bucket: config.bucket,
       environmentFields: this.environmentFields(),
-      configured: Boolean(config.endpoint && config.bucket && config.accessKeyId && config.secretAccessKey),
+      configured: config.mode === 'cloudflare'
+        ? cloudflare?.state === 'connected'
+        : Boolean(config.endpoint && config.bucket && config.accessKeyId && config.secretAccessKey),
       lastUploadAt: config.lastUploadAt,
       accessKeyIdMasked: config.accessKeyId ? maskSecret(config.accessKeyId) : null,
       secretAccessKeyConfigured: Boolean(config.secretAccessKey),
@@ -843,6 +965,20 @@ export class R2Manager {
   }
 }
 
+function usageWarnings(report: Pick<R2CloudflareUsage, 'bucket' | 'account'>, config: StoredR2Config): R2UsageWarning[] {
+  const warnings: R2UsageWarning[] = [];
+  const check = (scope: R2UsageWarning['scope'], metric: R2UsageWarning['metric'], used: number | null, limit: number): void => {
+    if (used !== null && limit > 0 && used >= limit * WARNING_RATIO) warnings.push({ scope, metric, used, limit });
+  };
+  check('account', 'storage', report.account.storageBytes, R2_FREE_TIER.storageBytes);
+  check('account', 'classA', report.account.operations.classA, R2_FREE_TIER.classA);
+  check('account', 'classB', report.account.operations.classB, R2_FREE_TIER.classB);
+  check('bucket', 'storage', report.bucket.storageBytes, config.maxStorageBytes);
+  check('bucket', 'classA', report.bucket.operations.classA, config.maxWriteOperations);
+  check('bucket', 'classB', report.bucket.operations.classB, config.maxReadOperations);
+  return warnings;
+}
+
 interface PlannedFile {
   readonly source: SyncSource;
   readonly chunks: readonly FileChunk[];
@@ -928,7 +1064,7 @@ function isoWeek(timestamp: string): string {
   return `${target.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
 }
 
-function toSnapshotSummary(object: S3ObjectRecord): R2SnapshotSummary | null {
+function toSnapshotSummary(object: ObjectRecord): R2SnapshotSummary | null {
   const rest = object.key.slice(SNAPSHOT_PREFIX.length);
   const separator = rest.indexOf('/');
   if (separator <= 0 || !rest.endsWith('.json.gz')) return null;
@@ -981,116 +1117,37 @@ function throwIfStopped(signal?: AbortSignal): void {
   if (signal?.aborted) throw new R2Error('r2_upload_stopped', 'The upload was stopped');
 }
 
-class R2Client {
-  private readonly region = 'auto';
-  private readonly service = 's3';
-
-  public constructor(
-    private readonly credentials: R2Credentials,
-    private readonly fetchImpl: typeof fetch,
-    /** Told about every request that Cloudflare charges for, as it is made. */
-    private readonly onRequest: (billing: 'charged' | 'read' | 'free') => void,
-  ) {}
-
-  public async listObjects(prefix: string, maxKeys: number, cursor?: string): Promise<{ objects: S3ObjectRecord[]; cursor: string | undefined }> {
-    const query = new URLSearchParams([['list-type', '2'], ['prefix', prefix], ['max-keys', String(maxKeys)]]);
-    if (cursor) query.set('continuation-token', cursor);
-    const response = await this.request('GET', '', null, query, {}, 'charged');
-    const body = await response.text();
-    const objects: S3ObjectRecord[] = [];
-    for (const match of body.matchAll(/<Contents>([\s\S]*?)<\/Contents>/gu)) {
-      const content = match[1] ?? '';
-      const key = decodeXml(readXmlTag(content, 'Key') ?? '');
-      if (!key) continue;
-      const size = Number(readXmlTag(content, 'Size') ?? 0);
-      objects.push({ key, sizeBytes: Number.isFinite(size) ? size : 0, lastModified: readXmlTag(content, 'LastModified'), etag: readXmlTag(content, 'ETag') });
+/** What a listing of the manager's prefix holds, sorted by kind. */
+function summarizeObjects(objects: readonly ObjectRecord[]): { blobs: Map<string, ObjectRecord>; snapshotKeys: string[]; legacyObjectCount: number; legacyBytes: number; totalBytes: number } {
+  const blobs = new Map<string, ObjectRecord>();
+  const snapshotKeys: string[] = [];
+  let legacyObjectCount = 0;
+  let legacyBytes = 0;
+  let totalBytes = 0;
+  for (const object of objects) {
+    totalBytes += object.sizeBytes;
+    if (object.key.startsWith(BLOB_PREFIX)) {
+      const hash = object.key.slice(object.key.lastIndexOf('/') + 1);
+      if (/^[0-9a-f]{64}$/u.test(hash)) blobs.set(hash, object);
+      continue;
     }
-    // A store of tens of thousands of chunks does not fit one page, and a
-    // listing that stopped at the first one made every chunk past it look
-    // absent - which would have meant uploading them all again, every time.
-    const truncated = readXmlTag(body, 'IsTruncated') === 'true';
-    const next = readXmlTag(body, 'NextContinuationToken');
-    return { objects, cursor: truncated && next ? decodeXml(next) : undefined };
+    if (object.key.startsWith(SNAPSHOT_PREFIX)) { snapshotKeys.push(object.key); continue; }
+    // Whole-ZIP archives from the version before this one. They are not
+    // read and not deleted behind the operator's back; the panel offers it.
+    legacyObjectCount += 1;
+    legacyBytes += object.sizeBytes;
   }
-
-  public async putObject(key: string, body: Uint8Array, contentType: string): Promise<void> {
-    await this.request('PUT', key, body, undefined, { 'content-type': contentType, 'content-length': String(body.byteLength) }, 'charged');
-  }
-
-  public async getObject(key: string): Promise<Buffer> {
-    const response = await this.request('GET', key, null, undefined, {}, 'read');
-    return Buffer.from(await response.arrayBuffer());
-  }
-
-  public async deleteObject(key: string): Promise<void> {
-    await this.request('DELETE', key, null, undefined, {}, 'free');
-  }
-
-  private async request(method: string, key: string, body: BodyInit | Uint8Array | null, query?: URLSearchParams, extraHeaders: Record<string, string> = {}, billing: 'charged' | 'read' | 'free' = 'read'): Promise<Response> {
-    const url = objectUrl(this.credentials.endpoint, this.credentials.bucket, key, query);
-    const payloadHash = 'UNSIGNED-PAYLOAD';
-    const amzDate = formatAmzDate(new Date());
-    const headers: Record<string, string> = { host: url.host, 'x-amz-content-sha256': payloadHash, 'x-amz-date': amzDate, ...extraHeaders };
-    const { authorization } = signRequest({ method, url, headers, payloadHash, accessKeyId: this.credentials.accessKeyId, secretAccessKey: this.credentials.secretAccessKey, region: this.region, service: this.service });
-    headers.authorization = authorization;
-    const init = { method, headers, ...(body === null ? {} : { body: body as BodyInit }), duplex: 'half' } as RequestInit & { duplex: 'half' };
-    this.onRequest(billing);
-    const response = await this.fetchImpl(url, init);
-    if (!response.ok) {
-      const message = (await response.text()).slice(0, 500);
-      throw new R2HttpError(response.status, `R2 request failed (${response.status}): ${message || response.statusText}`);
-    }
-    return response;
-  }
+  return { blobs, snapshotKeys, legacyObjectCount, legacyBytes, totalBytes };
 }
 
-function signRequest(options: { method: string; url: URL; headers: Record<string, string>; payloadHash: string; accessKeyId: string; secretAccessKey: string; region: string; service: string }): { authorization: string } {
-  const normalizedHeaders = Object.entries(options.headers).map(([name, value]) => [name.toLowerCase(), value.trim().replace(/\s+/gu, ' ')] as const).sort(([left], [right]) => left.localeCompare(right));
-  const canonicalHeaders = normalizedHeaders.map(([name, value]) => `${name}:${value}\n`).join('');
-  const signedHeaders = normalizedHeaders.map(([name]) => name).join(';');
-  const canonicalQuery = canonicalQueryString(options.url.searchParams);
-  const canonicalRequest = [options.method, options.url.pathname || '/', canonicalQuery, canonicalHeaders, signedHeaders, options.payloadHash].join('\n');
-  const date = options.headers['x-amz-date']?.slice(0, 8) ?? formatAmzDate(new Date()).slice(0, 8);
-  const scope = `${date}/${options.region}/${options.service}/aws4_request`;
-  const stringToSign = `AWS4-HMAC-SHA256\n${options.headers['x-amz-date']}\n${scope}\n${sha256(canonicalRequest)}`;
-  const dateKey = hmacDigest(`AWS4${options.secretAccessKey}`, date);
-  const regionKey = hmacDigest(dateKey, options.region);
-  const serviceKey = hmacDigest(regionKey, options.service);
-  const signingKey = hmacDigest(serviceKey, 'aws4_request');
-  const signature = hmacHex(signingKey, stringToSign);
-  return { authorization: `AWS4-HMAC-SHA256 Credential=${options.accessKeyId}/${scope}, SignedHeaders=${signedHeaders}, Signature=${signature}` };
-}
-
-function objectUrl(endpoint: string, bucket: string, key: string, query?: URLSearchParams): URL {
-  const base = endpoint.endsWith('/') ? endpoint.slice(0, -1) : endpoint;
-  const encodedKey = key.split('/').map((segment) => encodeURIComponent(segment)).join('/');
-  const url = new URL(`${base}/${encodeURIComponent(bucket)}${encodedKey ? `/${encodedKey}` : ''}`);
-  if (query) url.search = canonicalQueryString(query);
-  return url;
-}
-
-function canonicalQueryString(query: URLSearchParams): string {
-  return [...query.entries()].map(([key, value]) => [rfc3986(key), rfc3986(value)] as const).sort(([leftKey, leftValue], [rightKey, rightValue]) => leftKey.localeCompare(rightKey) || leftValue.localeCompare(rightValue)).map(([key, value]) => `${key}=${value}`).join('&');
-}
-
-function rfc3986(value: string): string {
-  return encodeURIComponent(value).replace(/[!'()*]/gu, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
-}
-
-function formatAmzDate(date: Date): string {
-  return date.toISOString().replace(/[-:]/gu, '').replace(/\.\d{3}Z$/u, 'Z');
-}
-
-function sha256(value: string): string {
-  return createHash('sha256').update(value, 'utf8').digest('hex');
-}
-
-function hmacDigest(key: string | Buffer, value: string): Buffer {
-  return createHmac('sha256', key).update(value, 'utf8').digest();
-}
-
-function hmacHex(key: string | Buffer, value: string): string {
-  return hmacDigest(key, value).toString('hex');
+/**
+ * A ledger target in the form that names an R2 bucket the same way however it
+ * is reached: an S3 endpoint on R2 becomes the account, jurisdiction and bucket.
+ */
+function canonicalTarget(target: string): string {
+  const match = /^s3:(.+)\/([^/]+)$/u.exec(target);
+  const parsed = match?.[1] ? parseS3Endpoint(match[1]) : null;
+  return parsed && match?.[2] ? `cloudflare:${parsed.accountId}/${parsed.jurisdiction}/${match[2]}` : target;
 }
 
 function toCredentials(config: StoredR2Config): R2Credentials {
@@ -1153,6 +1210,8 @@ function parseStoredConfig(value: unknown): StoredR2Config {
 function defaultStoredConfig(now: Date): StoredR2Config {
   return {
     schemaVersion: R2_SCHEMA_VERSION,
+    mode: 'keys',
+    ledgerTarget: null,
     enabled: false,
     endpoint: null,
     bucket: null,
@@ -1202,17 +1261,11 @@ function maskSecret(value: string): string {
   return `${value.slice(0, 2)}${MASKED_SECRET}${value.slice(-2)}`;
 }
 
-function toPublicObject(object: S3ObjectRecord): R2Object {
+function toPublicObject(object: ObjectRecord): R2Object {
   return { key: object.key, sizeBytes: object.sizeBytes, lastModified: object.lastModified, etag: object.etag };
 }
 
-function readXmlTag(value: string, tag: string): string | null {
-  return new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, 'u').exec(value)?.[1] ?? null;
-}
 
-function decodeXml(value: string): string {
-  return value.replace(/&lt;/gu, '<').replace(/&gt;/gu, '>').replace(/&quot;/gu, '"').replace(/&apos;/gu, "'").replace(/&amp;/gu, '&');
-}
 
 function nullableEnvironment(value: string | undefined): string | null {
   return value?.trim() || null;

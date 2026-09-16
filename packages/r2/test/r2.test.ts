@@ -120,6 +120,42 @@ test('connection settings in .env win, and are never copied into the state file'
   assert.equal(onDisk.includes(CREDENTIALS.accessKeyId), false);
 });
 
+test('a different bucket gets every chunk, because the ledger described the old one', async () => {
+  const first = fakeBucket();
+  const second = fakeBucket();
+  const fetchImpl: typeof fetch = async (input, init) => (new URL(String(input)).pathname.split('/')[1] === 'stm-other-bucket' ? second.fetchImpl : first.fetchImpl)(input, init);
+  const { manager, root } = await createManager({ fetchImpl });
+  const chat = await source(root, 'chats/one.jsonl', 'x'.repeat(5000));
+  const card = await source(root, 'characters/a.png', Buffer.alloc(3000, 1));
+  await manager.syncProfile({ profile: profile(), sources: [chat, card], fingerprint: 'one' });
+  assert.equal(first.requests.put, 3);
+  // Same bucket: the ledger knows both chunks, so only the new index goes up.
+  await manager.syncProfile({ profile: profile(), sources: [chat, card], fingerprint: 'two' });
+  assert.equal(first.requests.put, 4);
+
+  await manager.update({ bucket: 'stm-other-bucket' });
+  await manager.syncProfile({ profile: profile(), sources: [chat, card], fingerprint: 'three' });
+  assert.equal(second.requests.put, 3, 'both chunks and the index go to the new bucket');
+  assert.equal(first.requests.put, 4);
+  assert.equal((await manager.getConfig()).usage.snapshotCount, 1);
+});
+
+test('keysBucket parses an R2 S3 endpoint into an account, bucket and jurisdiction', async () => {
+  const accountId = '0123456789abcdef0123456789abcdef';
+  const { manager } = await createManager();
+  // Default endpoint: jurisdiction is 'default'.
+  await manager.update({ endpoint: `https://${accountId}.r2.cloudflarestorage.com`, bucket: 'stm' });
+  const kb = await manager.keysBucket();
+  assert.deepEqual(kb, { accountId, bucket: 'stm', jurisdiction: 'default' });
+  // EU jurisdiction endpoint.
+  await manager.update({ endpoint: `https://${accountId}.eu.r2.cloudflarestorage.com` });
+  const kbEu = await manager.keysBucket();
+  assert.equal(kbEu?.jurisdiction, 'eu');
+  // Non-R2 endpoint returns null.
+  await manager.update({ endpoint: 'https://s3.amazonaws.com', bucket: 'other' });
+  assert.equal(await manager.keysBucket(), null);
+});
+
 test('a recovery point lists the data it holds, not just the size of its index', async () => {
   const bucket = fakeBucket();
   const { manager, root } = await createManager({ fetchImpl: bucket.fetchImpl });

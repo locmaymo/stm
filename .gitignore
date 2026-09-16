@@ -5,6 +5,7 @@ build/
 coverage/
 .cache/
 .tmp/
+.wrangler/
 docs/
 /.private/
 *.log

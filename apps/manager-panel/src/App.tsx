@@ -29,11 +29,12 @@ import { browserEnvironment, browserStorage, readPreferences, savePreferences, t
 import { authErrorKey } from './auth-error.js';
 import { availableUpdate, readDismissedUpdate, saveDismissedUpdate } from './updates.js';
 import { apiFetch, onSessionExpired, resetSessionWatch } from './session.js';
-import type { AccessGatewayState, BackupManifest, ConfigDocument, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LogEntry, LogSourceFilter, MetricsBucket, MetricsSnapshot, ProcessState, Profile, R2Config, R2SnapshotSummary, RestoreMode, RestorePreview, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, BackupManifest, ConfigDocument, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LogEntry, LogSourceFilter, MetricsBucket, MetricsSnapshot, ProcessState, Profile, R2CloudflareUsage, R2Config, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
 import { translateLogEntry, translateStep } from './log-format.js';
 import { QrCode } from './qr-code.js';
+import { CLOUDFLARE_ORANGE, CloudflareMark } from './cloudflare-mark.js';
 import { LOCAL_HOST, reachableAddresses, shortenHost } from './addresses.js';
 import { EmbedStage } from './embed-stage.js';
 
@@ -1802,11 +1803,14 @@ function tableLabels(t: Translate): DataTableLabels {
  */
 const SECRET_MASK = '********';
 
-interface R2FormState {
+interface R2KeysForm {
   readonly endpoint: string;
   readonly bucket: string;
   readonly accessKeyId: string;
   readonly secretAccessKey: string;
+}
+
+interface R2ScheduleForm {
   readonly hotIntervalMinutes: number;
   readonly coldIntervalHours: number;
   readonly keepRecent: number;
@@ -1814,12 +1818,17 @@ interface R2FormState {
   readonly keepWeekly: number;
 }
 
-function r2FormFrom(config: R2Config | null): R2FormState {
+function r2KeysFrom(config: R2Config | null): R2KeysForm {
   return {
     endpoint: config?.endpoint ?? '',
     bucket: config?.bucket ?? '',
     accessKeyId: config?.accessKeyIdMasked ? SECRET_MASK : '',
     secretAccessKey: config?.secretAccessKeyConfigured ? SECRET_MASK : '',
+  };
+}
+
+function r2ScheduleFrom(config: R2Config | null): R2ScheduleForm {
+  return {
     hotIntervalMinutes: config?.schedule.hotIntervalMinutes ?? 5,
     coldIntervalHours: config?.schedule.coldIntervalHours ?? 6,
     keepRecent: config?.retention.keepRecent ?? 24,
@@ -1859,8 +1868,6 @@ const LOCAL_BACKUP_CHOICES = [
   { id: '6h', label: 'console.every6Hours', intervalMinutes: 360 },
   { id: '1d', label: 'console.everyDay', intervalMinutes: 1440 },
 ] as const;
-type R2DialogTab = 'connection' | 'schedule';
-
 function uploadChoice(hotIntervalMinutes: number, coldIntervalHours: number) {
   return R2_UPLOAD_CHOICES.find((choice) => choice.hotIntervalMinutes === hotIntervalMinutes && choice.coldIntervalHours === coldIntervalHours);
 }
@@ -1924,9 +1931,20 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   // moment left the title reading "Delete ?" for the length of the animation.
   const [deleteTarget, setDeleteTarget] = useState<BackupManifest | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
-  const [r2Open, setR2Open] = useState(false);
-  const [r2Tab, setR2Tab] = useState<R2DialogTab>('connection');
+  // Where the data goes and how often are two questions, so they are two forms.
+  const [r2KeysOpen, setR2KeysOpen] = useState(false);
+  const [r2ScheduleOpen, setR2ScheduleOpen] = useState(false);
   const [r2Toggling, setR2Toggling] = useState(false);
+  const [cloudflareBusy, setCloudflareBusy] = useState(false);
+  const [cloudflareAccount, setCloudflareAccount] = useState('');
+  const [bucketOpen, setBucketOpen] = useState(false);
+  const [disconnectOpen, setDisconnectOpen] = useState(false);
+  // The usage panel owns its own fetch; this just lets the overflow menu's
+  // "Refresh" item reach it without lifting that state up here too.
+  const usageRefresh = useRef<(() => void) | null>(null);
+  // One method at a time: taking over from the other one is asked for first.
+  const [switchToKeysOpen, setSwitchToKeysOpen] = useState(false);
+  const [switchToCloudflareOpen, setSwitchToCloudflareOpen] = useState(false);
   // Newest first: the archive somebody wants is nearly always the last one taken.
   const [backupQuery, setBackupQuery] = useState<TableQuery>(() => initialQuery({ sort: 'createdAt', direction: 'desc' }));
   const [snapshotQuery, setSnapshotQuery] = useState<TableQuery>(() => initialQuery({ pageSize: 5, sort: 'createdAt', direction: 'desc' }));
@@ -1948,6 +1966,31 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
     if (scheduleResponse?.ok) setBackupSchedule((await scheduleResponse.json() as { schedule: LocalBackupSchedule }).schedule);
   };
   useEffect(() => { void refresh(); }, []);
+
+  /*
+   * Coming back from Cloudflare.
+   *
+   * The server finished the sign-in before the browser got here and says how it
+   * went in the address. That is said once, then taken out of the address so a
+   * reload does not say it again.
+   */
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const outcome = params.get('cloudflare');
+    if (!outcome) return;
+    const code = params.get('cloudflare_error') ?? '';
+    window.history.replaceState(null, '', `${window.location.pathname}${window.location.hash}`);
+    if (outcome === 'connected') {
+      void apiFetch('/api/v1/r2', { credentials: 'same-origin' })
+        .then(async (response) => (response.ok ? (await response.json() as { config: R2Config }).config : null))
+        .then((config) => toast({ title: t('console.cfConnected', { bucket: config?.cloudflare?.bucket ?? '' }), tone: 'success', duration: 8000 }))
+        .catch(() => undefined);
+    } else if (outcome === 'choose_account') {
+      toast({ title: t('console.cfChooseNow'), tone: 'success', duration: 8000 });
+    } else {
+      failed(cloudflareErrorText(t, code));
+    }
+  }, []);
 
   /*
    * The R2 card follows the scheduler the same way the list does.
@@ -2225,15 +2268,26 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       await refresh();
     } catch { failed(t('console.backupDeleteFailed')); } finally { setBusyAction(null); setDeleteOpen(false); }
   };
-  const saveR2 = async (form: R2FormState): Promise<string | null> => {
+  const putR2 = async (body: Record<string, unknown>): Promise<string | null> => {
     try {
-      const response = await apiFetch('/api/v1/r2', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify(form) });
+      const response = await apiFetch('/api/v1/r2', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify(body) });
       const payload = await response.json() as { config?: R2Config; error?: { message?: string } };
       if (!response.ok || !payload.config) return fail.body(payload, t('console.r2SaveFailed'));
-      setR2Config(payload.config); await refresh(); done(t('console.r2Saved'));
+      setR2Config(payload.config);
+      done(t('console.r2Saved'));
+      void refresh().catch(() => undefined);
       return null;
     } catch { return t('console.r2SaveFailed'); }
   };
+  /**
+   * Saving keys is choosing them over the Cloudflare sign-in.
+   *
+   * The two ways of reaching a bucket are never both in use, and this form is
+   * the one that says "use the keys" - which is why the switch is asked for
+   * before the form opens, not silently applied after it.
+   */
+  const saveR2Keys = async (form: R2KeysForm): Promise<string | null> => await putR2({ ...form, mode: 'keys' });
+  const saveR2Schedule = async (form: R2ScheduleForm): Promise<string | null> => await putR2({ ...form });
   // The switch lives on the card, not at the bottom of the settings dialog:
   // whether anything is being sent at all is the first thing to see, and
   // turning it off should not mean opening the connection settings to do it.
@@ -2260,6 +2314,68 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       setR2Config(payload.config);
       done(t(enabled ? 'console.r2TurnedOn' : 'console.r2TurnedOff'));
     } catch { failed(t('console.r2SaveFailed')); } finally { setR2Toggling(false); }
+  };
+  const connectCloudflare = async () => {
+    // Cloudflare's sign-in refuses to load in a frame. When the panel is shown
+    // inside another page, the sign-in gets a tab of its own, opened now while
+    // the click still counts as one so it is not taken for a pop-up.
+    const framed = window.self !== window.top;
+    const tab = framed ? window.open('', '_blank') : null;
+    setCloudflareBusy(true);
+    try {
+      const response = await apiFetch('/api/v1/r2/cloudflare/connect', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      const payload = await response.json() as { url?: string; error?: { message?: string } };
+      if (!response.ok || !payload.url) { tab?.close(); failed(fail.body(payload, t('console.cfConnectFailed'))); return; }
+      if (tab) tab.location.href = payload.url;
+      else window.location.assign(payload.url);
+    } catch { tab?.close(); failed(t('console.cfConnectFailed')); } finally { setCloudflareBusy(false); }
+  };
+  const chooseCloudflareAccount = async () => {
+    if (!cloudflareAccount) return;
+    setCloudflareBusy(true);
+    try {
+      const response = await apiFetch('/api/v1/r2/cloudflare/account', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ accountId: cloudflareAccount }) });
+      const payload = await response.json() as { config?: R2Config; error?: { message?: string } };
+      if (!response.ok || !payload.config) { failed(fail.body(payload, t('console.cfConnectFailed'))); return; }
+      setR2Config(payload.config);
+      done(t('console.cfConnected', { bucket: payload.config.cloudflare?.bucket ?? '' }));
+      await refresh();
+    } catch { failed(t('console.cfConnectFailed')); } finally { setCloudflareBusy(false); }
+  };
+  /** Back up to another bucket of the account already signed in to. */
+  const chooseCloudflareBucket = async (name: string): Promise<string | null> => {
+    try {
+      const response = await apiFetch('/api/v1/r2/cloudflare/bucket', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ name }) });
+      const payload = await response.json() as { config?: R2Config; error?: { message?: string } };
+      if (!response.ok || !payload.config) return fail.body(payload, t('console.cfBucketFailed'));
+      setR2Config(payload.config);
+      done(t('console.cfBucketSaved', { bucket: payload.config.cloudflare?.bucket ?? name }));
+      void refresh().catch(() => undefined);
+      return null;
+    } catch { return t('console.cfBucketFailed'); }
+  };
+  const disconnectCloudflare = async () => {
+    setCloudflareBusy(true);
+    try {
+      const response = await apiFetch('/api/v1/r2/cloudflare/disconnect', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      const payload = await response.json() as { revoked?: boolean; config?: R2Config; error?: { message?: string } };
+      if (!response.ok || !payload.config) { failed(fail.body(payload, t('console.cfDisconnectFailed'))); return; }
+      setR2Config(payload.config);
+      if (payload.revoked) done(t('console.cfDisconnected'));
+      else toast({ title: t('console.cfDisconnectedNotRevoked'), tone: 'destructive', duration: 12000 });
+      await refresh();
+    } catch { failed(t('console.cfDisconnectFailed')); } finally { setCloudflareBusy(false); }
+  };
+  const backUpToCloudflare = async () => {
+    setCloudflareBusy(true);
+    try {
+      const response = await apiFetch('/api/v1/r2', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ mode: 'cloudflare', enabled: true }) });
+      const payload = await response.json() as { config?: R2Config; error?: { message?: string } };
+      if (!response.ok || !payload.config) { failed(fail.body(payload, t('console.r2SaveFailed'))); return; }
+      setR2Config(payload.config);
+      done(t('console.cfConnected', { bucket: payload.config.cloudflare?.bucket ?? '' }));
+      await refresh();
+    } catch { failed(t('console.r2SaveFailed')); } finally { setCloudflareBusy(false); }
   };
   const testR2 = async () => {
     setR2Busy(t('console.r2Test'));
@@ -2356,6 +2472,10 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       </DropdownMenu>,
     },
   ];
+  const cloudflare = r2Config?.cloudflare ?? null;
+  // Backups go through the signed-in account, as opposed to it merely being connected.
+  const signedIn = r2Config?.mode === 'cloudflare' && cloudflare?.state === 'connected';
+  const keysConfigured = Boolean(r2Config?.endpoint && r2Config.bucket && r2Config.accessKeyIdMasked && r2Config.secretAccessKeyConfigured);
   const snapshotColumns: DataTableColumn<R2SnapshotSummary>[] = [
     { id: 'createdAt', header: t('console.backupCreated'), sortable: true, cell: (snapshot) => <span className="whitespace-nowrap">{new Date(snapshot.createdAt).toLocaleString()}</span> },
     // The data the point holds, which is what bringing it back downloads. The
@@ -2445,35 +2565,76 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       <PanelHeading icon={<Cloud />}>{t('console.r2Title')}</PanelHeading>
       <CardContent className="grid gap-4">
         <div>
+          {/* Whether anything leaves this machine at all, first: it is the
+              question everything else on the card only answers the details of. */}
           <DetailRow label={t('console.r2Enabled')} hint={!r2Config?.configured ? t('console.r2NeedsSetup') : r2Config.enabled ? t('console.r2EnabledOnHint') : t('console.r2EnabledOffHint')}>
             <Switch aria-label={t('console.r2Enabled')} checked={r2Config?.enabled ?? false} disabled={!r2Config?.configured || r2Toggling} onCheckedChange={(checked) => void setR2Enabled(checked)} />
           </DetailRow>
-          <DetailRow label={t('console.r2Connection')} hint={r2Config?.configured ? r2Config.bucket : t('console.r2SetupBody')}>
-            <Button variant="outline" size="sm" onClick={() => { setR2Tab('connection'); setR2Open(true); }}>{r2Config?.configured ? t('console.r2Change') : t('console.r2Configure')}</Button>
-          </DetailRow>
+          {/* Then where it goes: the sign-in and its bucket, or manual keys.
+              Only one of the two carries the backups. Once one is chosen, the
+              other collapses to a single quiet link instead of a full row
+              with its own hint and button - picking Cloudflare is not an
+              invitation to also go copy keys, and the other way round. */}
+          {cloudflare ? <CloudflareRow
+            t={t}
+            status={cloudflare}
+            mode={r2Config?.mode ?? 'keys'}
+            busy={cloudflareBusy}
+            account={cloudflareAccount}
+            onAccountChange={setCloudflareAccount}
+            onConnect={() => void connectCloudflare()}
+            onChooseAccount={() => void chooseCloudflareAccount()}
+            onDisconnect={() => setDisconnectOpen(true)}
+            onUseForBackups={() => { if (keysConfigured) setSwitchToCloudflareOpen(true); else void backUpToCloudflare(); }}
+            onChangeBucket={() => setBucketOpen(true)}
+            compact={cloudflare.state === 'disconnected' && keysConfigured}
+          /> : null}
+          {signedIn
+            ? <Button variant="link" size="sm" className="h-auto justify-start p-0 text-xs text-muted-foreground" onClick={() => setSwitchToKeysOpen(true)}>{t('console.r2KeysInsteadLink')}</Button>
+            : <DetailRow
+              label={cloudflare ? t('console.r2KeysRow') : t('console.r2Connection')}
+              hint={!keysConfigured ? t('console.r2KeysHint') : r2Config?.mode === 'keys' ? t('console.r2KeysHintActive') : t('console.r2KeysHintInactive')}
+            >
+              <Button variant="outline" size="sm" onClick={() => setR2KeysOpen(true)}>{keysConfigured ? t('console.r2Change') : t('console.r2Configure')}</Button>
+            </DetailRow>}
+          {/* Then how often, and then the same actions in either mode. */}
           {r2Config?.configured ? <DetailRow label={t('console.r2Schedule')} hint={r2ScheduleSummary(t, r2Config)}>
-            <Button variant="outline" size="sm" onClick={() => { setR2Tab('schedule'); setR2Open(true); }}>{t('console.r2Change')}</Button>
+            <Button variant="outline" size="sm" onClick={() => setR2ScheduleOpen(true)}>{t('console.r2Change')}</Button>
           </DetailRow> : null}
+          {/* One primary action, everything else - test, reconcile, remove
+              legacy backups - behind the overflow menu rather than a row of
+              buttons that only a few of which matter on a given day. */}
           {r2Config?.configured ? <DetailRow label={t('console.r2LastUpload')} hint={r2Config.lastUploadAt ? new Date(r2Config.lastUploadAt).toLocaleString() : '—'}>
             <Button size="sm" onClick={() => void uploadR2()} disabled={r2Busy !== null || !r2Config.enabled}><Upload />{t('console.r2UploadLatest')}</Button>
             <DropdownMenu>
               <DropdownMenuTrigger asChild><Button variant="ghost" size="icon-sm" aria-label={t('console.r2More')} disabled={r2Busy !== null}><Ellipsis /></Button></DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem onSelect={() => void testR2()}>{t('console.r2Test')}</DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => void testR2()}><ShieldCheck />{t('console.r2Test')}</DropdownMenuItem>
                 <DropdownMenuItem onSelect={() => void reconcileR2()}>{t('console.r2Reconcile')}</DropdownMenuItem>
+                {/* The one figure that comes from Cloudflare rather than the
+                    manager's own count, so it gets its own refresh - but still
+                    in this same menu, not a second button elsewhere on the card. */}
+                {signedIn ? <><DropdownMenuSeparator /><DropdownMenuItem onSelect={() => usageRefresh.current?.()}>{t('console.cfUsageRefresh')}</DropdownMenuItem></> : null}
                 {/* Backups taken under the old whole-file scheme. Nothing reads
                     them any more, but they are the operator's, so removing them
                     is asked for rather than assumed. */}
                 {r2Config.usage.legacyObjectCount > 0
-                  ? <DropdownMenuItem variant="destructive" onSelect={() => void removeLegacy()}><Trash2 />{t('console.r2LegacyRemove')} ({formatBytes(r2Config.usage.legacyBytes)})</DropdownMenuItem>
+                  ? <><DropdownMenuSeparator /><DropdownMenuItem variant="destructive" onSelect={() => void removeLegacy()}><Trash2 />{t('console.r2LegacyRemove')} ({formatBytes(r2Config.usage.legacyBytes)})</DropdownMenuItem></>
                   : null}
               </DropdownMenuContent>
             </DropdownMenu>
           </DetailRow> : null}
         </div>
         {r2Busy ? <OperationProgress t={t} label={r2Busy} progress={operationProgress} canStop={runningJobId !== null} stopping={stopping} onStop={() => void stopOperation()} warning={null} /> : null}
+        {signedIn && cloudflare?.restReason ? <Alert><TriangleAlert /><AlertDescription>{t(cloudflare.restReason === 'workers_not_granted' ? 'console.cfSlowNotGranted' : 'console.cfSlowUnavailable')}</AlertDescription></Alert> : null}
+        {signedIn && r2Config?.lastUploadAt === null && r2Snapshots.length > 0 ? <Alert><Cloud /><AlertDescription>{t('console.cfNewMachine', { count: r2Snapshots.length })}</AlertDescription></Alert> : null}
         {r2Config?.configured ? <>
-          <R2Usage t={t} config={r2Config} />
+          {/* One set of figures, not two: Cloudflare's own when it can be asked,
+              because it sees every machine on the bucket, and the manager's
+              count when it cannot. */}
+          {signedIn
+            ? <CloudflareUsagePanel t={t} lastUploadAt={r2Config.lastUploadAt} fallback={<R2Usage t={t} config={r2Config} />} onRegisterRefresh={(fn) => { usageRefresh.current = fn; }} />
+            : <R2Usage t={t} config={r2Config} />}
           <div className="grid gap-2">
             <h3 className="text-sm font-medium">{t('console.r2Snapshots')}</h3>
             <DataTable
@@ -2533,7 +2694,36 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       onConfirm={deleteBackup}
     />
     <RestoreDialog t={t} catalog={catalog} displayName={displayName} backup={selectedBackup} preview={selectedPreview} mode={restoreMode} onModeChange={setRestoreMode} onClose={closeRestore} onRestore={restoreSelected} />
-    <R2Dialog t={t} open={r2Open} onOpenChange={setR2Open} tab={r2Tab} config={r2Config} onSave={saveR2} />
+    <R2KeysDialog t={t} open={r2KeysOpen} onOpenChange={setR2KeysOpen} config={r2Config} onSave={saveR2Keys} />
+    <R2ScheduleDialog t={t} open={r2ScheduleOpen} onOpenChange={setR2ScheduleOpen} config={r2Config} onSave={saveR2Schedule} />
+    <CloudflareBucketDialog t={t} open={bucketOpen} onOpenChange={setBucketOpen} current={cloudflare?.bucket ?? null} onSave={chooseCloudflareBucket} />
+    <ConfirmDialog
+      open={disconnectOpen}
+      onOpenChange={setDisconnectOpen}
+      title={t('console.cfDisconnectTitle')}
+      description={t('console.cfDisconnectBody')}
+      confirmLabel={t('console.cfDisconnect')}
+      cancelLabel={t('common.cancel')}
+      onConfirm={disconnectCloudflare}
+    />
+    <ConfirmDialog
+      open={switchToKeysOpen}
+      onOpenChange={setSwitchToKeysOpen}
+      title={t('console.r2SwitchToKeysTitle')}
+      description={t('console.r2SwitchToKeysBody')}
+      confirmLabel={t('console.r2SwitchToKeysConfirm')}
+      cancelLabel={t('common.cancel')}
+      onConfirm={() => { setSwitchToKeysOpen(false); setR2KeysOpen(true); }}
+    />
+    <ConfirmDialog
+      open={switchToCloudflareOpen}
+      onOpenChange={setSwitchToCloudflareOpen}
+      title={t('console.r2SwitchToCloudflareTitle')}
+      description={t('console.r2SwitchToCloudflareBody')}
+      confirmLabel={t('console.r2SwitchToCloudflareConfirm')}
+      cancelLabel={t('common.cancel')}
+      onConfirm={() => { setSwitchToCloudflareOpen(false); void backUpToCloudflare(); }}
+    />
   </div>;
 }
 
@@ -2680,20 +2870,19 @@ function RestoreDialog({ t, catalog, displayName, backup, preview, mode, onModeC
 }
 
 /**
- * Where the off-machine copy goes, behind one button.
+ * The endpoint, bucket and key pair, and nothing else.
  *
- * Eleven settings used to sit open on the page, which is eleven things to read
- * past for everyone who has no bucket and is never going to get one. They are
- * here now, split into the part that says where the data goes and the part that
- * says how often.
+ * Where the data goes and how often it goes there used to be two tabs of one
+ * dialog, which made every save touch both. They are separate questions asked
+ * at separate times - keys once, schedule whenever - so they are separate
+ * forms, and each one sends only its own fields.
  */
-function R2Dialog({ t, open, onOpenChange, tab, config, onSave }: { t: Translate; open: boolean; onOpenChange: (open: boolean) => void; tab: R2DialogTab; config: R2Config | null; onSave: (form: R2FormState) => Promise<string | null> }) {
-  const [form, setForm] = useState<R2FormState>(() => r2FormFrom(config));
+function R2KeysDialog({ t, open, onOpenChange, config, onSave }: { t: Translate; open: boolean; onOpenChange: (open: boolean) => void; config: R2Config | null; onSave: (form: R2KeysForm) => Promise<string | null> }) {
+  const [form, setForm] = useState<R2KeysForm>(() => r2KeysFrom(config));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => { if (open) { setForm(r2FormFrom(config)); setError(null); } }, [open, config]);
-  const set = (patch: Partial<R2FormState>) => setForm((current) => ({ ...current, ...patch }));
-  const number = (value: string, fallback: number) => { const parsed = Number.parseInt(value, 10); return Number.isFinite(parsed) ? parsed : fallback; };
+  useEffect(() => { if (open) { setForm(r2KeysFrom(config)); setError(null); } }, [open, config]);
+  const set = (patch: Partial<R2KeysForm>) => setForm((current) => ({ ...current, ...patch }));
   // Set in `.env`: shown so the reader knows where it comes from, not editable,
   // because the server would ignore the edit.
   const fromEnvironment = new Set<string>(config?.environmentFields ?? []);
@@ -2707,9 +2896,59 @@ function R2Dialog({ t, open, onOpenChange, tab, config, onSave }: { t: Translate
     } finally { setBusy(false); }
   };
 
+  return <Dialog open={open} onOpenChange={onOpenChange}>
+    <DialogContent className="sm:max-w-lg">
+      <DialogHeader>
+        <DialogTitle>{t('console.r2KeysTitle')}</DialogTitle>
+        <DialogDescription>{t('console.r2SetupBody')}</DialogDescription>
+      </DialogHeader>
+      <DialogBody className="grid gap-4">
+        {fromEnvironment.size > 0 ? <Alert><AlertDescription>{t('console.r2FromEnv')}</AlertDescription></Alert> : null}
+        <Field label={t('console.r2Endpoint')}><Input value={form.endpoint} onChange={(event) => set({ endpoint: event.target.value })} placeholder="https://ACCOUNT_ID.r2.cloudflarestorage.com" autoComplete="off" disabled={fromEnvironment.has('endpoint')} /></Field>
+        <Field label={t('console.r2Bucket')}><Input value={form.bucket} onChange={(event) => set({ bucket: event.target.value })} autoComplete="off" disabled={fromEnvironment.has('bucket')} /></Field>
+        <Field label={t('console.r2AccessKey')}><Input value={form.accessKeyId} onChange={(event) => set({ accessKeyId: event.target.value })} autoComplete="off" disabled={fromEnvironment.has('accessKeyId')} /></Field>
+        <Field label={t('console.r2SecretKey')}><PasswordInput revealLabel={t('setup.reveal')} hideLabel={t('setup.hide')} value={form.secretAccessKey} onChange={(event) => set({ secretAccessKey: event.target.value })} autoComplete="new-password" disabled={fromEnvironment.has('secretAccessKey')} /></Field>
+        {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
+      </DialogBody>
+      <DialogFooter>
+        <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={busy}>{t('common.cancel')}</Button>
+        <Button onClick={() => void save()} disabled={busy}>{t('common.save')}</Button>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>;
+}
+
+/**
+ * How often changes go up, and how far back they can be brought back.
+ *
+ * The dialog used to ask for six numbers, three of them retention: "keep
+ * recovery points", "then keep one a day", "then keep one a week". Each was
+ * accurate and together they were a puzzle - nobody could say how far back
+ * 48, 14 and 8 let them go without working it out. The question people have
+ * is how far back, so that is what is asked, and each answer is a set of the
+ * same numbers the server has always taken. The numbers are still there, under
+ * "Exact numbers", and a combination that matches no answer reads as Custom.
+ */
+function R2ScheduleDialog({ t, open, onOpenChange, config, onSave }: { t: Translate; open: boolean; onOpenChange: (open: boolean) => void; config: R2Config | null; onSave: (form: R2ScheduleForm) => Promise<string | null> }) {
+  const [form, setForm] = useState<R2ScheduleForm>(() => r2ScheduleFrom(config));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => { if (open) { setForm(r2ScheduleFrom(config)); setError(null); } }, [open, config]);
+  const set = (patch: Partial<R2ScheduleForm>) => setForm((current) => ({ ...current, ...patch }));
+  const number = (value: string, fallback: number) => { const parsed = Number.parseInt(value, 10); return Number.isFinite(parsed) ? parsed : fallback; };
+
+  const save = async () => {
+    setBusy(true); setError(null);
+    try {
+      const failure = await onSave(form);
+      setError(failure);
+      if (!failure) onOpenChange(false);
+    } finally { setBusy(false); }
+  };
+
   const upload = uploadChoice(form.hotIntervalMinutes, form.coldIntervalHours);
   const history = historyChoice(form.keepRecent, form.keepDaily, form.keepWeekly);
-  const exact: Array<{ label: string; value: number; apply: (value: number) => Partial<R2FormState>; min: number }> = [
+  const exact: Array<{ label: string; value: number; apply: (value: number) => Partial<R2ScheduleForm>; min: number }> = [
     { label: t('console.r2HotEvery'), value: form.hotIntervalMinutes, apply: (value) => ({ hotIntervalMinutes: value }), min: 1 },
     { label: t('console.r2ColdEvery'), value: form.coldIntervalHours, apply: (value) => ({ coldIntervalHours: value }), min: 1 },
     { label: t('console.r2KeepRecent'), value: form.keepRecent, apply: (value) => ({ keepRecent: value }), min: 1 },
@@ -2720,50 +2959,42 @@ function R2Dialog({ t, open, onOpenChange, tab, config, onSave }: { t: Translate
   return <Dialog open={open} onOpenChange={onOpenChange}>
     <DialogContent className="sm:max-w-lg">
       <DialogHeader>
-        <DialogTitle>{t('console.r2Title')}</DialogTitle>
-        <DialogDescription>{t('console.r2SetupBody')}</DialogDescription>
+        <DialogTitle>{t('console.r2ScheduleTitle')}</DialogTitle>
+        <DialogDescription>{t('console.r2ScheduleBody')}</DialogDescription>
       </DialogHeader>
-      <DialogBody>
-        <Tabs defaultValue={tab}>
-          <TabsList className="w-full">
-            <TabsTrigger value="connection" className="flex-1">{t('console.r2Connection')}</TabsTrigger>
-            <TabsTrigger value="schedule" className="flex-1">{t('console.r2Schedule')}</TabsTrigger>
-          </TabsList>
-          <TabsContent value="connection" className="grid gap-4 pt-4">
-            {fromEnvironment.size > 0 ? <Alert><AlertDescription>{t('console.r2FromEnv')}</AlertDescription></Alert> : null}
-            <Field label={t('console.r2Endpoint')}><Input value={form.endpoint} onChange={(event) => set({ endpoint: event.target.value })} placeholder="https://ACCOUNT_ID.r2.cloudflarestorage.com" autoComplete="off" disabled={fromEnvironment.has('endpoint')} /></Field>
-            <Field label={t('console.r2Bucket')}><Input value={form.bucket} onChange={(event) => set({ bucket: event.target.value })} autoComplete="off" disabled={fromEnvironment.has('bucket')} /></Field>
-            <Field label={t('console.r2AccessKey')}><Input value={form.accessKeyId} onChange={(event) => set({ accessKeyId: event.target.value })} autoComplete="off" disabled={fromEnvironment.has('accessKeyId')} /></Field>
-            <Field label={t('console.r2SecretKey')}><PasswordInput revealLabel={t('setup.reveal')} hideLabel={t('setup.hide')} value={form.secretAccessKey} onChange={(event) => set({ secretAccessKey: event.target.value })} autoComplete="new-password" disabled={fromEnvironment.has('secretAccessKey')} /></Field>
-          </TabsContent>
-          <TabsContent value="schedule" className="grid gap-4 pt-4">
-            <ChoiceSelect
-              label={t('console.r2UploadEvery')}
-              hint={t('console.r2UploadEveryHint')}
-              value={upload?.id ?? CUSTOM_CHOICE}
-              choices={R2_UPLOAD_CHOICES.map((choice) => ({ id: choice.id, text: t(choice.label) }))}
-              customLabel={t('console.r2Custom')}
-              onChange={(id) => { const choice = R2_UPLOAD_CHOICES.find((item) => item.id === id); if (choice) set({ hotIntervalMinutes: choice.hotIntervalMinutes, coldIntervalHours: choice.coldIntervalHours }); }}
-            />
-            <ChoiceSelect
-              label={t('console.r2History')}
-              hint={t('console.r2HistoryHint')}
-              value={history?.id ?? CUSTOM_CHOICE}
-              choices={R2_HISTORY_CHOICES.map((choice) => ({ id: choice.id, text: t(choice.label) }))}
-              customLabel={t('console.r2Custom')}
-              onChange={(id) => { const choice = R2_HISTORY_CHOICES.find((item) => item.id === id); if (choice) set({ keepRecent: choice.keepRecent, keepDaily: choice.keepDaily, keepWeekly: choice.keepWeekly }); }}
-            />
-            <details className="r2-advanced">
-              <summary>{t('console.r2Advanced')}</summary>
-              <div className="grid gap-4 pt-3 sm:grid-cols-2">
-                {exact.map((row) => <Field key={row.label} label={row.label}>
-                  <Input type="number" min={row.min} value={row.value} onChange={(event) => set(row.apply(number(event.target.value, row.value)))} />
-                </Field>)}
-              </div>
-            </details>
-          </TabsContent>
-        </Tabs>
-        {error ? <Alert variant="destructive" className="mt-4"><AlertDescription>{error}</AlertDescription></Alert> : null}
+      <DialogBody className="grid gap-4">
+        <ChoiceSelect
+          label={t('console.r2UploadEvery')}
+          hint={t('console.r2UploadEveryHint')}
+          value={upload?.id ?? CUSTOM_CHOICE}
+          choices={R2_UPLOAD_CHOICES.map((choice) => ({ id: choice.id, text: t(choice.label) }))}
+          customLabel={t('console.r2Custom')}
+          onChange={(id) => { const choice = R2_UPLOAD_CHOICES.find((item) => item.id === id); if (choice) set({ hotIntervalMinutes: choice.hotIntervalMinutes, coldIntervalHours: choice.coldIntervalHours }); }}
+        />
+        <div className="grid gap-1.5">
+          <ChoiceSelect
+            label={t('console.r2History')}
+            hint={t('console.r2HistoryHint')}
+            value={history?.id ?? CUSTOM_CHOICE}
+            choices={R2_HISTORY_CHOICES.map((choice) => ({ id: choice.id, text: t(choice.label) }))}
+            customLabel={t('console.r2Custom')}
+            onChange={(id) => { const choice = R2_HISTORY_CHOICES.find((item) => item.id === id); if (choice) set({ keepRecent: choice.keepRecent, keepDaily: choice.keepDaily, keepWeekly: choice.keepWeekly }); }}
+          />
+          {/* The choice above says "3 months" - this says what that means in
+              the same numbers the server stores, so "Custom" reads as a
+              specific set of numbers rather than an unexplained label. */}
+          <p className="text-xs text-muted-foreground">{t('console.r2HistoryExplain', { recent: String(form.keepRecent), daily: String(form.keepDaily), weekly: String(form.keepWeekly) })}</p>
+          {!history ? <p className="text-xs text-muted-foreground">{t('console.r2CustomHint')}</p> : null}
+        </div>
+        <details className="r2-advanced" open={!upload || !history}>
+          <summary>{t('console.r2Advanced')}</summary>
+          <div className="grid gap-4 pt-3 sm:grid-cols-2">
+            {exact.map((row) => <Field key={row.label} label={row.label}>
+              <Input type="number" min={row.min} value={row.value} onChange={(event) => set(row.apply(number(event.target.value, row.value)))} />
+            </Field>)}
+          </div>
+        </details>
+        {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
       </DialogBody>
       <DialogFooter>
         <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={busy}>{t('common.cancel')}</Button>
@@ -2771,6 +3002,237 @@ function R2Dialog({ t, open, onOpenChange, tab, config, onSave }: { t: Translate
       </DialogFooter>
     </DialogContent>
   </Dialog>;
+}
+
+/**
+ * Which bucket of the signed-in account holds the backups.
+ *
+ * The account's own buckets are offered rather than a name to type, because a
+ * name that matches nothing is refused and a name that matches the wrong
+ * bucket is worse. Opening the dialog is what asks Cloudflare for the list.
+ */
+function CloudflareBucketDialog({ t, open, onOpenChange, current, onSave }: { t: Translate; open: boolean; onOpenChange: (open: boolean) => void; current: string | null; onSave: (name: string) => Promise<string | null> }) {
+  const [buckets, setBuckets] = useState<CloudflareBucketOption[] | null>(null);
+  const [chosen, setChosen] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    setError(null); setBuckets(null); setChosen(current ?? '');
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await apiFetch('/api/v1/r2/cloudflare/buckets', { credentials: 'same-origin' });
+        const payload = await response.json() as { buckets?: CloudflareBucketOption[]; error?: { message?: string } };
+        if (cancelled) return;
+        if (!response.ok || !payload.buckets) { setError(payload.error?.message ?? t('console.cfBucketsFailed')); return; }
+        setBuckets(payload.buckets);
+      } catch { if (!cancelled) setError(t('console.cfBucketsFailed')); }
+    })();
+    return () => { cancelled = true; };
+  }, [open, current]);
+
+  const save = async () => {
+    if (!chosen) return;
+    setBusy(true); setError(null);
+    try {
+      const failure = await onSave(chosen);
+      setError(failure);
+      if (!failure) onOpenChange(false);
+    } finally { setBusy(false); }
+  };
+
+  return <Dialog open={open} onOpenChange={onOpenChange}>
+    <DialogContent className="sm:max-w-md">
+      <DialogHeader>
+        <DialogTitle>{t('console.cfBucketTitle')}</DialogTitle>
+        <DialogDescription>{t('console.cfBucketBody')}</DialogDescription>
+      </DialogHeader>
+      <DialogBody className="grid gap-4">
+        {buckets === null && !error ? <Skeleton className="h-9 w-full" /> : null}
+        {buckets !== null && buckets.length === 0 ? <p className="text-sm text-muted-foreground">{t('console.cfBucketsEmpty')}</p> : null}
+        {buckets !== null && buckets.length > 0 ? <Field label={t('console.cfBucketLabel')}>
+          <Select value={chosen} onValueChange={setChosen}>
+            <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {buckets.map((bucket) => <SelectItem key={`${bucket.jurisdiction}/${bucket.name}`} value={bucket.name}>{bucket.name}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </Field> : null}
+        {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
+      </DialogBody>
+      <DialogFooter>
+        <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={busy}>{t('common.cancel')}</Button>
+        <Button onClick={() => void save()} disabled={busy || !chosen || chosen === current}>{t('common.save')}</Button>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>;
+}
+
+/** One bucket as the server lists them for the picker. */
+interface CloudflareBucketOption {
+  readonly name: string;
+  readonly jurisdiction: string;
+}
+
+function cloudflareErrorText(t: Translate, code: string): string {
+  if (code === 'login_required') return t('console.cfErrorLoginRequired');
+  if (code === 'cloudflare_state_mismatch') return t('console.cfErrorStateMismatch');
+  if (code === 'cloudflare_authorization_denied') return t('console.cfErrorDenied');
+  if (code === 'cloudflare_not_available') return t('console.cfErrorUnavailable');
+  return t('console.cfErrorGeneric', { code: code || 'unknown' });
+}
+
+/** Cloudflare's own logo mark, used on the connect button. */
+function CloudflareLogo({ size = 16 }: { size?: number }) {
+  return <svg width={size} height={size} viewBox="0 0 109 82" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <path d="M76.1 55.5c.5-1.6.3-3-.5-4.1-.8-1-2-1.6-3.5-1.7l-39.5-.5c-.3 0-.6-.2-.8-.4-.2-.2-.2-.5-.1-.8.2-.5.8-.9 1.4-.9l39.8-.5c4.7-.2 9.8-4 11.6-8.6l2.3-5.9c.1-.3.1-.5 0-.8C84.5 14.9 74.5 7 62.5 7 52.2 7 43.4 13 39.3 21.6c-2.2-1.6-4.9-2.5-7.9-2.5-6.8 0-12.4 5.1-13.4 11.7C8.9 31.8 3 38.1 3 45.7c0 1 .1 2 .3 2.9.1.5.5.9 1 .9H75.1c.6 0 1.1-.4 1.2-.9l-.2-3.1z" fill="#F6821F"/>
+    <path d="M91.2 31.8c-.4 0-.7 0-1.1.1-.2 0-.3.2-.4.3l-1.2 4.1c-.5 1.6-.3 3 .5 4.1.8 1 2 1.6 3.5 1.7l7.5.5c.3 0 .6.2.8.4.2.2.2.5.1.8-.2.5-.8.9-1.4.9l-7.8.5c-4.8.2-9.8 4-11.6 8.6l-.6 1.7c-.1.3 0 .6.3.7.1 0 .2.1.3.1H106c.5 0 .9-.3 1-.7.5-1.7.8-3.5.8-5.4-.1-9.4-7.8-17.4-16.6-17.4z" fill="#FBAD41"/>
+  </svg>;
+}
+
+/**
+ * Signing in to Cloudflare instead of copying keys, in whatever state it is in.
+ *
+ * One row, because it is one question - which account the backups go to - and
+ * its answer changes: nothing yet, pick an account, this account, or sign in
+ * again. Which bucket of that account is folded into this same row once
+ * connected, rather than a separate row underneath repeating the bucket name.
+ *
+ * When manual keys are already the chosen method and this account is not yet
+ * connected, `compact` renders a single quiet link instead of the full
+ * sign-in invitation - keys were already picked, so the Cloudflare button is
+ * an alternative worth mentioning once, not a second row demanding attention.
+ */
+function CloudflareRow({ t, status, mode, busy, account, onAccountChange, onConnect, onChooseAccount, onDisconnect, onUseForBackups, onChangeBucket, compact }: {
+  t: Translate;
+  status: NonNullable<R2Config['cloudflare']>;
+  mode: R2Config['mode'];
+  busy: boolean;
+  account: string;
+  onAccountChange: (id: string) => void;
+  onConnect: () => void;
+  onChooseAccount: () => void;
+  onDisconnect: () => void;
+  onUseForBackups: () => void;
+  onChangeBucket: () => void;
+  compact: boolean;
+}) {
+  // Cloudflare's own colour and mark, because this button hands the reader over
+  // to Cloudflare and they decide whether to trust it by recognising it.
+  const brand = { backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' };
+  if (status.state === 'disconnected') {
+    if (compact) return <Button variant="link" size="sm" className="h-auto justify-start p-0 text-xs text-muted-foreground" onClick={onConnect} disabled={busy}>{t('console.cfConnectInstead')}</Button>;
+    return <DetailRow label={t('console.cfRow')} hint={t('console.cfConnectHint')}>
+      <Button size="sm" style={brand} className="hover:opacity-90" onClick={onConnect} disabled={busy}><CloudflareMark />{t('console.cfConnect')}</Button>
+    </DetailRow>;
+  }
+  if (status.state === 'reconnect_required') {
+    return <DetailRow label={t('console.cfRow')} hint={t('console.cfReconnectHint')}>
+      <Button size="sm" style={brand} className="hover:opacity-90" onClick={onConnect} disabled={busy}><RefreshCw />{t('console.cfReconnect')}</Button>
+      <Button variant="ghost" size="sm" onClick={onDisconnect} disabled={busy}>{t('console.cfDisconnect')}</Button>
+    </DetailRow>;
+  }
+  if (status.state === 'choose_account') {
+    return <DetailRow label={t('console.cfRow')} hint={t('console.cfChooseAccount')}>
+      <Select value={account} onValueChange={onAccountChange}>
+        <SelectTrigger className="w-48"><SelectValue /></SelectTrigger>
+        <SelectContent>
+          {status.accounts.map((entry) => <SelectItem key={entry.id} value={entry.id}>{entry.name}</SelectItem>)}
+        </SelectContent>
+      </Select>
+      <Button size="sm" onClick={onChooseAccount} disabled={busy || !account}>{t('console.cfUseAccount')}</Button>
+    </DetailRow>;
+  }
+  const described = t('console.cfConnectedAs', { account: status.account?.name ?? '', bucket: status.bucket ?? '' });
+  // Keys, not this account, are the ones actually running backups here - so
+  // switching to it is offered as a link beside a ghost Disconnect, the same
+  // quiet weight as the rest of this row, rather than a solid button that
+  // outweighs the keys row actually doing the work.
+  if (mode === 'keys') {
+    return <DetailRow label={t('console.cfRow')} hint={`${described} · ${t('console.cfUsingKeys')}`}>
+      <Button variant="link" size="sm" className="h-auto p-0" onClick={onUseForBackups} disabled={busy}>{t('console.cfUseForBackupsLink')}</Button>
+      <Button variant="ghost" size="sm" onClick={onDisconnect} disabled={busy}>{t('console.cfDisconnect')}</Button>
+    </DetailRow>;
+  }
+  return <DetailRow label={t('console.cfRow')} hint={described}>
+    <Button variant="outline" size="sm" onClick={onChangeBucket} disabled={busy}>{t('console.cfBucketChange')}</Button>
+    <Button variant="outline" size="sm" onClick={onDisconnect} disabled={busy}>{t('console.cfDisconnect')}</Button>
+  </DetailRow>;
+}
+
+/**
+ * What Cloudflare itself says was used, beside the manager's own count.
+ *
+ * The manager's count only sees its own requests. Cloudflare sees the bucket
+ * from every machine and the account as a whole, which is what the free tier is
+ * measured against. It is asked for when the page opens, after each backup, and
+ * on request; the server keeps it for fifteen minutes in between.
+ */
+function CloudflareUsagePanel({ t, lastUploadAt, fallback, onRegisterRefresh }: { t: Translate; lastUploadAt: string | null; fallback: ReactNode; onRegisterRefresh: (fn: () => void) => void }) {
+  const [response, setResponse] = useState<R2UsageResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const load = async (refresh: boolean) => {
+    setLoading(true);
+    try {
+      const reply = await apiFetch(`/api/v1/r2/usage${refresh ? '?refresh=1' : ''}`, { credentials: 'same-origin' });
+      if (reply.ok) setResponse(await reply.json() as R2UsageResponse);
+    } catch {
+      // Kept as it was; the overflow menu's refresh item tries again.
+    } finally { setLoading(false); }
+  };
+  useEffect(() => { void load(false); }, [lastUploadAt]);
+  // The refresh action lives in the card's one overflow menu rather than a
+  // second button next to this heading; this just hands that menu a way in.
+  useEffect(() => { onRegisterRefresh(() => void load(true)); });
+
+  // Until Cloudflare has answered - and if it cannot, because the permission
+  // was not granted or the query failed - the manager's own count is shown
+  // rather than nothing at all.
+  if (!response) return <>{fallback}</>;
+  if (response.unavailable === 'analytics_not_granted') return <div className="grid gap-3">{fallback}<p className="text-xs text-muted-foreground">{t('console.cfUsageNotGranted')}</p></div>;
+  const usage = response.usage;
+  if (!usage) return <div className="grid gap-3">{fallback}{response.error ? <p className="text-xs text-muted-foreground">{t('console.cfUsageFailed', { error: response.error })}</p> : null}</div>;
+
+  const bars = cloudflareBars(t, usage);
+  return <div className="grid gap-3">
+    <div className="flex items-center gap-2">
+      <h3 className="text-sm font-medium">{t('console.cfUsageTitle')}</h3>
+      {loading ? <RefreshCw className="size-3 animate-spin text-muted-foreground" aria-hidden="true" /> : null}
+    </div>
+    {usage.warnings.length > 0 ? <Alert variant="destructive"><TriangleAlert /><AlertDescription>
+      {usage.warnings.map((warning) => <span className="block" key={`${warning.scope}-${warning.metric}`}>{warningText(t, warning)}</span>)}
+    </AlertDescription></Alert> : null}
+    {/* Whole-account figures only. The bucket's own month-to-date numbers
+        used to repeat here too, but the account totals are what the free
+        tier is measured against, and the bucket ones just doubled the page
+        without answering a different question. */}
+    <span className="text-xs font-medium">{t('console.cfUsageAccount')}</span>
+    {bars.map((bar) => <div className="grid gap-1" key={bar.label}>
+      <span className={cn('text-xs', bar.filled >= 0.8 ? 'text-destructive' : 'text-muted-foreground')}>{bar.label}: {bar.text}</span>
+      <span className="progress-track"><span className="progress-value" style={{ width: `${Math.max(1, bar.filled * 100)}%` }} /></span>
+    </div>)}
+    {response.error ? <p className="text-xs text-muted-foreground">{t('console.cfUsageFailed', { error: response.error })}</p> : null}
+  </div>;
+}
+
+function cloudflareBars(t: Translate, usage: R2CloudflareUsage): Array<{ label: string; text: string; filled: number }> {
+  const storage = usage.account.storageBytes;
+  return [
+    {
+      label: t('console.cfStorage'),
+      text: storage === null ? t('console.cfNotReported') : t('console.cfOfFree', { used: formatBytes(storage), limit: formatBytes(usage.freeTier.storageBytes) }),
+      filled: ratio(storage ?? 0, usage.freeTier.storageBytes),
+    },
+    { label: t('console.cfClassA'), text: t('console.cfOfFree', { used: usage.account.operations.classA.toLocaleString(), limit: usage.freeTier.classA.toLocaleString() }), filled: ratio(usage.account.operations.classA, usage.freeTier.classA) },
+    { label: t('console.cfClassB'), text: t('console.cfOfFree', { used: usage.account.operations.classB.toLocaleString(), limit: usage.freeTier.classB.toLocaleString() }), filled: ratio(usage.account.operations.classB, usage.freeTier.classB) },
+  ];
+}
+
+function warningText(t: Translate, warning: R2UsageWarning): string {
+  const metric = t(warning.metric === 'storage' ? 'console.cfStorage' : warning.metric === 'classA' ? 'console.cfClassA' : 'console.cfClassB');
+  const percent = `${Math.round((warning.used / warning.limit) * 100)}%`;
+  return t(warning.scope === 'account' ? 'console.cfWarningAccount' : 'console.cfWarningBucket', { metric, percent });
 }
 
 /** One plain question with a few answers, and "Custom" only when none of them fits. */

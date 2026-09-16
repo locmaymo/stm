@@ -171,6 +171,19 @@ Backup local luôn hoạt động. Archive là ZIP streaming tương thích vớ
 
 Restore cho xem trước trước khi ghi. Replace là chế độ mặc định, merge là tùy chọn. Manager tạo safety snapshot trước khi replace hoặc chuyển profile. Cloudflare R2 được khuyến nghị để bảo vệ dữ liệu khi hỏng ổ đĩa, mất máy hoặc workspace cloud bị xóa.
 
+### Cloudflare R2
+
+Ở trang **Data**, chỉ cần bấm **Kết nối Cloudflare**. Đăng nhập Cloudflare, chọn tài khoản, cho phép các quyền, manager sẽ tìm hoặc tạo bucket tên <code>sillytavern-manager-backup</code> trong tài khoản đó và bắt đầu sao lưu. Không cần tạo hay dán khoá nào.
+
+- **Cho phép Workers** (tuỳ chọn, nên bật). Manager deploy một Worker nhỏ, cũng tên <code>sillytavern-manager-backup</code>, để chuyển dữ liệu sao lưu vào bucket. Cách này nhanh và không tốn giới hạn gọi API Cloudflare của bạn. Nếu không cho phép, sao lưu đi qua API của Cloudflare, chậm hơn, và lần sao lưu đầu có thể mất nhiều thời gian.
+- **Cho phép Account Analytics** (tuỳ chọn). Panel sẽ hiện dung lượng và số lệnh Class A/B theo số liệu của Cloudflare, cho bucket sao lưu và cho cả tài khoản so với gói miễn phí. Đây là số liệu sử dụng, không phải hoá đơn.
+- **Máy mới** kết nối cùng tài khoản sẽ thấy lại đúng bucket đó; các điểm khôi phục có sẵn trong bucket có thể lấy về và khôi phục.
+- **Ngắt kết nối** xoá khoá Worker của bản cài này và thu hồi quyền đăng nhập. Bucket và các điểm khôi phục vẫn nằm trong tài khoản của bạn. Bạn cũng có thể thu hồi quyền bất cứ lúc nào trong mục **Manage OAuth authorizations** ở hồ sơ Cloudflare.
+
+Chỉ refresh token của Cloudflare được lưu, trong một file riêng mà chỉ user của bạn đọc được. Khoá Worker chỉ nằm trong bộ nhớ, đổi mỗi ngày, và mỗi bản cài có khoá riêng.
+
+**Dùng khoá S3.** Nếu không muốn đăng nhập, chọn **Khoá S3 (thủ công)** và nhập endpoint, bucket, cặp khoá lấy từ trang R2 trong bảng điều khiển Cloudflare, hoặc đặt trong <code>.env</code> (xem <code>.env.example</code>). Mọi storage tương thích S3 đều dùng được theo cách này.
+
 ## Telemetry và quyền riêng tư
 
 Telemetry là một phần của dự án miễn phí này. Manager chỉ gửi summary trong allowlist như nền tảng, phiên bản ứng dụng, provider, model, hostname endpoint, streaming, max tokens, input/output/total tokens, cache, reasoning token, status và duration.
