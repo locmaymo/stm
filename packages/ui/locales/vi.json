@@ -573,6 +573,7 @@
       "downloading": "Đang tải {file}",
       "installed": "Đã cài vào {path}",
       "installingPackage": "Đang cài {package} bằng pkg",
+      "packageInstalled": "Đã cài {package}",
       "packageNotInstalled": "Không cài được {package}: {reason}",
       "throughProot": "Đang khởi động qua termux-chroot, cách Android chạy được bản này",
       "spawnFailed": "{reason}",

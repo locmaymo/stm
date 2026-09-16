@@ -6,7 +6,7 @@ import { createWriteStream } from 'node:fs';
 import { Readable } from 'node:stream';
 import type { ReadableStream } from 'node:stream/web';
 import { pipeline } from 'node:stream/promises';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { describeExit, logEvent, logLineText, STOP_REASON_TEXT, stopReasonCode, type LogSink, type StopReason, type TunnelMode, type TunnelState } from '../../contracts/src/index.js';
 import type { PlatformPaths } from '../../platform/src/index.js';
 
@@ -52,7 +52,7 @@ const ELF_TYPE_FIXED_ADDRESS = 2;
 /** Termux's own prefix, for the installs that start without its environment. */
 const TERMUX_PREFIX = '/data/data/com.termux/files/usr';
 /** How long to let Termux's package manager work before giving up on it. */
-const PACKAGE_INSTALL_TIMEOUT_MS = 300_000;
+const PACKAGE_INSTALL_TIMEOUT_MS = 600_000;
 
 /**
  * Whether Android can start the file at `path` by itself.
@@ -135,6 +135,8 @@ export class TunnelManager {
   private child: ChildProcess | null = null;
   /** Whether the running child is proot rather than cloudflared itself. */
   private wrapped = false;
+  /** Set once Termux has been asked for its own cloudflared, so it is asked once. */
+  private askedForPackage = false;
   private token: string | undefined;
   private buffer = '';
   private state: TunnelState = { mode: 'off', status: 'stopped', url: null, startedAt: null, error: null };
@@ -382,16 +384,20 @@ export class TunnelManager {
    * install carrying it.
    */
   public async ensureBinary(): Promise<string> {
+    const termux = this.paths.platform === 'termux';
     const existing = await this.findBinary();
-    if (existing) return existing;
-    if (this.paths.platform === 'termux') {
-      // Termux packages a build of cloudflared that Android starts by itself.
-      // It costs one command and a sixth of the download, so it is worth
-      // asking for before falling back to Cloudflare's own build under proot.
+    // Termux packages a build of cloudflared that Android starts unaided. It
+    // costs a sixth of the download and needs no proot in front of it, so it is
+    // worth one ask - here, and again for a binary that would otherwise be
+    // wrapped, but never more than once per run.
+    if (existing && (!termux || this.askedForPackage || await startsOnAndroid(existing, true))) return existing;
+    if (termux) {
+      this.askedForPackage = true;
       if (await this.installPackage('cloudflared')) {
         const packaged = await this.findBinary();
-        if (packaged) return packaged;
+        if (packaged && await startsOnAndroid(packaged, true)) return packaged;
       }
+      if (existing) return existing;
     }
     const asset = cloudflaredAsset();
     const target = join(this.paths.bin, asset.exe);
@@ -427,8 +433,8 @@ export class TunnelManager {
       if (!candidate) continue;
       const path = await this.locate(candidate);
       if (!path) continue;
-      if (await startsOnAndroid(path, termux)) return candidate;
-      needsProot ??= candidate;
+      if (await startsOnAndroid(path, termux)) return path;
+      needsProot ??= path;
     }
     return needsProot;
   }
@@ -476,10 +482,22 @@ export class TunnelManager {
    */
   private async installPackage(name: string): Promise<boolean> {
     if (this.paths.platform !== 'termux') return false;
-    if (!await this.locate('pkg')) return false;
+    const pkg = await this.locate('pkg');
+    if (!pkg) return false;
     this.logger(logEvent('cloudflared.installingPackage', `[cloudflared] installing ${name} with pkg`, { package: name }));
+    const env = { ...this.env, DEBIAN_FRONTEND: 'noninteractive' };
+    const run = (args: readonly string[]): Promise<unknown> => execFileAsync(pkg, [...args], { env, timeout: PACKAGE_INSTALL_TIMEOUT_MS });
     try {
-      await execFileAsync('pkg', ['install', '-y', name], { env: this.env, timeout: PACKAGE_INSTALL_TIMEOUT_MS });
+      try {
+        await run(['install', '-y', name]);
+      } catch {
+        // A device that has not seen the repository for a while does not know
+        // the package exists. Refresh the lists once and ask again before
+        // deciding this route is closed.
+        await run(['update', '-y']).catch(() => undefined);
+        await run(['install', '-y', name]);
+      }
+      this.logger(logEvent('cloudflared.packageInstalled', `[cloudflared] ${name} is installed`, { package: name }));
       return true;
     } catch (error: unknown) {
       const reason = error instanceof Error ? error.message : 'unknown error';
@@ -488,15 +506,33 @@ export class TunnelManager {
     }
   }
 
-  /** Where a candidate actually is, whether it is a path or a name on PATH. */
+  /**
+   * Where a program actually is, given a path or a bare name.
+   *
+   * This walks PATH itself rather than asking `which`, because `which` is a
+   * package on Termux and a fresh install does not have it: asking for it there
+   * answered "nothing is installed" about `pkg` itself, which is how the
+   * automatic setup came to tell people to run `pkg install proot` by hand.
+   * Termux's own bin directory is checked first, since that is where its
+   * programs are whether or not PATH was inherited.
+   */
   private async locate(candidate: string): Promise<string | null> {
-    if (candidate.includes('/') || candidate.includes('\\')) {
-      try { await access(candidate); return candidate; } catch { return null; }
+    const found = async (path: string): Promise<string | null> => access(path).then(() => path).catch(() => null);
+    if (candidate.includes('/') || candidate.includes('\\')) return found(candidate);
+    const names = process.platform === 'win32' && !/\.[A-Za-z0-9]+$/u.test(candidate)
+      ? [candidate, `${candidate}.exe`, `${candidate}.cmd`, `${candidate}.bat`]
+      : [candidate];
+    const directories = [
+      ...(this.paths.platform === 'termux' ? [join(this.env.PREFIX ?? TERMUX_PREFIX, 'bin')] : []),
+      ...(this.env.PATH ?? '').split(delimiter).map((entry) => entry.trim().replace(/^"|"$/gu, '')).filter((entry) => entry.length > 0),
+    ];
+    for (const directory of directories) {
+      for (const name of names) {
+        const path = await found(join(directory, name));
+        if (path) return path;
+      }
     }
-    try {
-      const { stdout } = await execFileAsync(process.platform === 'win32' ? 'where.exe' : 'which', [candidate], { env: this.env });
-      return stdout.split(/\r?\n/u).map((line) => line.trim()).find((line) => line.length > 0) ?? null;
-    } catch { return null; }
+    return null;
   }
 
   /** Signal the tunnel, taking the process group with it when proot is in front. */

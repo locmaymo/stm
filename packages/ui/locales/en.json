@@ -573,6 +573,7 @@
       "downloading": "Downloading {file}",
       "installed": "Installed to {path}",
       "installingPackage": "Installing {package} with pkg",
+      "packageInstalled": "{package} is installed",
       "packageNotInstalled": "{package} could not be installed: {reason}",
       "throughProot": "Starting it through termux-chroot, which is how Android runs this build",
       "spawnFailed": "{reason}",

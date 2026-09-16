@@ -144,6 +144,17 @@ test('on Termux a build Android starts by itself needs no proot in front of it',
   await tunnel.close();
 });
 
+test('a cloudflared on PATH is found without any help from the system', async () => {
+  // Termux has no `which` until someone installs it, so PATH is walked here.
+  const paths = await createPaths();
+  const elsewhere = await mkdtemp(join(tmpdir(), 'stm-tunnel-path-'));
+  const onPath = join(elsewhere, binaryName);
+  await writeFile(onPath, 'already here', { mode: 0o755 });
+  const fetchImpl = (async () => { throw new Error('the network must not be reached'); }) as unknown as typeof globalThis.fetch;
+  const tunnel = new TunnelManager({ paths, fetchImpl, env: { PATH: elsewhere }, logger: () => undefined });
+  assert.equal(await tunnel.ensureBinary(), onPath);
+});
+
 test('a fixed-address binary is left alone off Android, where the loader runs it', async () => {
   const paths = await createPaths();
   await mkdir(paths.bin, { recursive: true });
