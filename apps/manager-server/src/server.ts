@@ -1053,7 +1053,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       const { job, signal } = jobs.createOperation('restore', logEvent('job.preparingRestore', 'Preparing restore'));
       void restoreWithProcess({ profile, backups, archivePath, mode, supervisor, signal, onProgress: (progress, step) => jobs.updateOperation(job.id, progress, step) })
         .then(() => jobs.finishOperation(job.id, 'succeeded', null))
-        .catch((error: unknown) => jobs.finishOperation(job.id, 'failed', error instanceof Error ? error.message : 'Restore failed'));
+        .catch((error: unknown) => jobs.finishOperation(job.id, 'failed', error instanceof Error ? error.message : 'Restore failed', { evenIfCanceled: error instanceof RestoreRollbackError, stepCode: error instanceof RestoreRollbackError ? 'job.rollbackFailed' : undefined }));
       sendJson(response, 202, { jobId: job.id, job });
       return;
     }
@@ -1132,7 +1132,30 @@ const RESTORE_STEP_PROGRESS: Record<string, number> = {
   'restore.finalizing': 88,
 };
 
-async function restoreWithProcess(options: {
+/**
+ * A restore was stopped partway and could not be put back the way it was.
+ *
+ * The one outcome of a stop that leaves the profile mixed, so it is reported
+ * as a failure even though the operator asked for the stop.
+ */
+export class RestoreRollbackError extends Error {
+  public constructor(reason: string) {
+    super(`The restore was stopped, and the data could not be put back as it was: ${reason}`);
+    this.name = 'RestoreRollbackError';
+  }
+}
+
+/**
+ * Stop SillyTavern, take the safety copy, restore, and start it again.
+ *
+ * Stopped before any file is written, there is nothing to undo: the safety
+ * copy is abandoned and the profile is untouched. Stopped while files are
+ * being written, the profile is part old and part new, so the safety copy is
+ * restored over it before SillyTavern comes back - a stop always leaves the
+ * data the way it was before Restore was pressed. That undo is not itself
+ * stoppable; stopping it would leave exactly the mixture it exists to remove.
+ */
+export async function restoreWithProcess(options: {
   readonly profile: Awaited<ReturnType<ProfileStore['getActive']>> & {};
   readonly backups: BackupStore;
   readonly archivePath: string;
@@ -1148,6 +1171,8 @@ async function restoreWithProcess(options: {
   const releaseOperationSlot = backups.reserve();
   onProgress?.(5, logEvent('job.stoppingSillyTavern', 'Stopping SillyTavern'));
   await supervisor.stop('restore');
+  let safetyCopy: Awaited<ReturnType<BackupStore['create']>> | null = null;
+  let writing = false;
   try {
     // A safety copy has to exist before the restore overwrites anything, but it
     // does not have to be a second copy of every file. Writing one compressed
@@ -1155,12 +1180,13 @@ async function restoreWithProcess(options: {
     // measured 639 seconds on a ModelScope volume for the same data. It only
     // An unchanged profile can reuse the backup it already has.
     onProgress?.(15, logEvent('job.creatingSafetySnapshot', 'Creating safety snapshot'));
-    const safetySnapshot = await backups.createSafetyCopy(profile, {
+    const safetySnapshot = safetyCopy = await backups.createSafetyCopy(profile, {
       name: `${profile.name}-prerestore`,
       ...(signal ? { signal } : {}),
       onProgress: ({ completed, total }) => onProgress?.(15 + (total > 0 ? (completed / total) * 10 : 0), logEvent('job.backingUpCurrentData', `Backing up current data (${completed}/${total})`, { completed, total })),
     });
     onProgress?.(25, logEvent('job.restoringData', 'Restoring data'));
+    writing = true;
     const preview = await backups.restore(profile, archivePath, {
       mode,
       ...(signal ? { signal } : {}),
@@ -1172,6 +1198,17 @@ async function restoreWithProcess(options: {
     onProgress?.(100, logEvent('job.restoreComplete', 'Restore complete'));
     return { preview, safetySnapshot, process };
   } catch (error) {
+    if (writing && signal?.aborted && safetyCopy) {
+      try {
+        onProgress?.(88, logEvent('job.rollingBack', 'Putting the data back as it was before the restore'));
+        const safetyPath = await backups.getArchivePath(safetyCopy.id);
+        if (!safetyPath) throw new Error('the safety copy is missing');
+        await backups.restore(profile, safetyPath, { mode: 'replace' });
+      } catch (rollbackError: unknown) {
+        await supervisor.start().catch(() => supervisor.getState());
+        throw new RestoreRollbackError(rollbackError instanceof Error ? rollbackError.message : 'unknown error');
+      }
+    }
     await supervisor.start().catch(() => supervisor.getState());
     throw error;
   } finally {
@@ -1750,12 +1787,13 @@ class JobStore {
     this.jobs.set(id, { ...current, progress: Math.max(0, Math.min(100, Math.round(progress))), step: step.message, stepCode: step.code, ...(step.params ? { stepParams: step.params } : {}), updatedAt: new Date().toISOString() });
   }
 
-  public finishOperation(id: string, state: 'succeeded' | 'failed', error: string | null): void {
+  /** `evenIfCanceled` keeps a failure that happened after a stop reported as one. */
+  public finishOperation(id: string, state: 'succeeded' | 'failed', error: string | null, options: { readonly evenIfCanceled?: boolean; readonly stepCode?: string | undefined } = {}): void {
     const current = this.jobs.get(id);
     if (!current) return;
-    const settled: JobState = state === 'failed' && this.wasCanceled(id) ? 'canceled' : state;
+    const settled: JobState = state === 'failed' && this.wasCanceled(id) && !options.evenIfCanceled ? 'canceled' : state;
     const step = settled === 'succeeded' ? 'Completed' : settled === 'canceled' ? 'Stopped' : 'Failed';
-    const stepCode = settled === 'succeeded' ? 'job.completed' : settled === 'canceled' ? 'job.stopped' : 'job.failed';
+    const stepCode = options.stepCode ?? (settled === 'succeeded' ? 'job.completed' : settled === 'canceled' ? 'job.stopped' : 'job.failed');
     this.controllers.delete(id);
     this.jobs.set(id, { ...current, state: settled, progress: settled === 'succeeded' ? 100 : current.progress, step, stepCode, error: settled === 'canceled' ? null : error, updatedAt: new Date().toISOString() });
   }

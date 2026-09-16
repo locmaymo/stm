@@ -99,6 +99,11 @@ class StoppedError extends Error {
   public constructor() { super('stopped'); this.name = 'StoppedError'; }
 }
 
+/** A stopped restore that could not be put back, so the profile is left mixed. */
+class RollbackFailedError extends Error {
+  public constructor(message: string) { super(message); this.name = 'RollbackFailedError'; }
+}
+
 /** What a failed chunk should say, in the reader's language rather than this file's. */
 interface UploadMessages {
   readonly fail: Fail;
@@ -1873,19 +1878,24 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
   useEffect(() => {
     let cancelled = false;
     void (async () => {
+      let kind: Job['kind'] | null = null;
       try {
         const response = await apiFetch('/api/v1/jobs/active', { credentials: 'same-origin' });
         if (!response.ok) return;
         const payload = await response.json() as { job: Job | null };
         if (cancelled || !payload.job) return;
         const running = payload.job;
+        kind = running.kind;
         setBusyAction(running.kind === 'restore' ? t('console.restore') : t('dashboard.backupNow'));
         setOperationProgress({ percent: running.progress, step: jobStep(running) });
         setRunningJobId(running.id);
         await waitForOperation(running.id, (job) => { if (!cancelled) setOperationProgress({ percent: job.progress, step: jobStep(job) }); });
         if (!cancelled) await refresh();
       } catch (error: unknown) {
-        if (!cancelled) failed(error instanceof Error ? error.message : t('console.backupRestoreFailed'));
+        if (cancelled) return;
+        if (error instanceof StoppedError) done(t(kind === 'restore' ? 'console.restoreStopped' : 'console.backupStopped'));
+        else if (error instanceof RollbackFailedError) setMixedProfile(t('console.restoreStoppedPartway'));
+        else failed(error instanceof Error ? error.message : t('console.backupRestoreFailed'));
       } finally {
         if (!cancelled) { setBusyAction(null); setOperationProgress(null); setRunningJobId(null); }
       }
@@ -1965,6 +1975,7 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
       onUpdate(job);
       if (job.state === 'succeeded') return;
       if (job.state === 'canceled') throw new StoppedError();
+      if (job.state === 'failed' && job.stepCode === 'job.rollbackFailed') throw new RollbackFailedError(job.error ?? t('console.backupRestoreFailed'));
       if (job.state === 'failed') throw new Error(job.error ?? t('console.backupRestoreFailed'));
       await new Promise((resolvePromise) => window.setTimeout(resolvePromise, 700));
     }
@@ -1996,10 +2007,11 @@ function DataPage({ t, fail, catalog, csrfToken, profiles, activeProfileId, back
       await refresh();
       done(t('console.restoreDone'));
     } catch (error: unknown) {
-      // A restore that was stopped part of the way through left the profile
-      // part old and part new. That is not a result to glance at: it stays on
-      // the page, and says where the way back is.
-      if (error instanceof StoppedError) { setMixedProfile(t('console.restoreStoppedPartway')); await refresh(); }
+      // A stopped restore is put back by the server before it reports, so a
+      // stop is a result to glance at. Only a stop that could not be put back
+      // leaves the profile mixed, and that stays on the page.
+      if (error instanceof StoppedError) { done(t('console.restoreStopped')); await refresh(); }
+      else if (error instanceof RollbackFailedError) { setMixedProfile(t('console.restoreStoppedPartway')); await refresh(); }
       else failed(error instanceof Error ? error.message : t('console.backupRestoreFailed'));
     } finally { setBusyAction(null); setOperationProgress(null); setRunningJobId(null); }
   };
