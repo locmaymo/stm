@@ -49,23 +49,26 @@ function cloudflaredAsset(platform: NodeJS.Platform = process.platform, architec
 
 /** An ELF executable with a fixed load address, which Android's loader will not run. */
 const ELF_TYPE_FIXED_ADDRESS = 2;
+/** Termux's own prefix, for the installs that start without its environment. */
+const TERMUX_PREFIX = '/data/data/com.termux/files/usr';
+/** How long to let Termux's package manager work before giving up on it. */
+const PACKAGE_INSTALL_TIMEOUT_MS = 300_000;
 
 /**
- * Whether this device's loader can run the file at `path`.
+ * Whether Android can start the file at `path` by itself.
  *
  * Android runs position-independent executables only, and Cloudflare's own
- * Linux builds are not position-independent. One downloaded onto Termux exits
- * immediately with
+ * Linux builds are not position-independent. One started directly on Termux
+ * exits at once with
  *
  *   error: "<path>/cloudflared" has unexpected e_type: 2
  *
- * which reads like a broken download and is not one: no retry can fix it, and
- * nothing else in the manager can tell the difference. Termux packages its own
- * build of cloudflared, so the answer there is to use that one - which first
- * means recognising the downloaded file as unusable instead of running it every
- * minute forever.
+ * which reads like a broken download and is not one - no retry can fix it. The
+ * file is fine; only the way it is started has to change, and `termux-chroot`
+ * from the `proot` package starts exactly this kind of binary. So this answers
+ * one question: run it directly, or run it through proot.
  */
-async function loaderCanRun(path: string, termux: boolean): Promise<boolean> {
+async function startsOnAndroid(path: string, termux: boolean): Promise<boolean> {
   if (!termux) return true;
   const header = Buffer.alloc(18);
   try {
@@ -130,6 +133,8 @@ export class TunnelManager {
   private readonly spawnImpl: typeof spawn;
   private readonly reconnectDelaysMs: readonly number[];
   private child: ChildProcess | null = null;
+  /** Whether the running child is proot rather than cloudflared itself. */
+  private wrapped = false;
   private token: string | undefined;
   private buffer = '';
   private state: TunnelState = { mode: 'off', status: 'stopped', url: null, startedAt: null, error: null };
@@ -163,22 +168,31 @@ export class TunnelManager {
     const selectedToken = token?.trim() || this.token;
     if (mode === 'named' && !selectedToken) return this.fail(mode, 'A Named Tunnel token is required');
     if (mode === 'named') this.token = selectedToken;
-    let binary: string;
+    let plan: Awaited<ReturnType<TunnelManager['launchPlan']>>;
     try {
-      binary = await this.ensureBinary();
+      plan = await this.launchPlan();
     } catch (error: unknown) {
       return this.fail(mode, error instanceof Error ? error.message : 'cloudflared is unavailable');
     }
-    const args = mode === 'quick'
-      ? ['tunnel', '--no-autoupdate', '--url', this.targetUrl]
-      : ['tunnel', '--no-autoupdate', 'run', '--token', selectedToken!];
+    // A phone is where QUIC is blocked and IPv6 is half-configured, and
+    // cloudflared answers both by sitting at "Registering tunnel" until it gives
+    // up. HTTP/2 over IPv4 is the combination that connects there.
+    const mobile = this.paths.platform === 'termux' ? ['--protocol', 'http2', '--edge-ip-version', '4'] : [];
+    const args = [...plan.prefix, 'tunnel', '--no-autoupdate', ...mobile, ...(mode === 'quick'
+      ? ['--url', this.targetUrl]
+      : ['run', '--token', selectedToken!])];
     await this.remember(mode, mode === 'named' ? selectedToken ?? null : null);
     this.state = { mode, status: 'starting', url: null, startedAt: this.now().toISOString(), error: null };
     const target = this.targetUrl.replace(/^https?:\/\//u, '');
     this.logger(mode === 'quick'
       ? logEvent('cloudflared.startingQuick', `[cloudflared] starting Quick Tunnel to ${target}`, { target })
       : logEvent('cloudflared.startingNamed', `[cloudflared] starting Named Tunnel to ${target}`, { target }));
-    const child = this.spawnImpl(binary, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, env: this.env });
+    // proot keeps cloudflared as a child of its own, and a signal sent to the
+    // wrapper alone leaves the tunnel running. Its own process group is what
+    // makes stopping it stop the tunnel too, without a `pkill` that would also
+    // take down a cloudflared nobody here started.
+    const child = this.spawnImpl(plan.command, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, env: plan.env, ...(plan.wrapped ? { detached: true } : {}) });
+    this.wrapped = plan.wrapped;
     this.child = child;
     const consume = (chunk: string) => {
       this.buffer += chunk;
@@ -224,12 +238,12 @@ export class TunnelManager {
     if (!child) { this.state = { ...this.state, status: 'stopped', url: null }; return this.getState(); }
     this.stopReason = reason;
     this.state = { ...this.state, status: 'stopped', url: null, error: null };
-    child.kill('SIGTERM');
+    this.signal(child, 'SIGTERM');
     await new Promise<void>((resolve) => {
       const timer = setTimeout(resolve, 2_000);
       child.once('close', () => { clearTimeout(timer); resolve(); });
     });
-    if (this.child === child && child.exitCode === null) child.kill('SIGKILL');
+    if (this.child === child && child.exitCode === null) this.signal(child, 'SIGKILL');
     this.child = null;
     return this.getState();
   }
@@ -370,9 +384,15 @@ export class TunnelManager {
   public async ensureBinary(): Promise<string> {
     const existing = await this.findBinary();
     if (existing) return existing;
-    // Cloudflare publishes no build Android can run, so downloading one here
-    // only buys the same failure every minute. Termux has its own.
-    if (this.paths.platform === 'termux') throw new Error('Install cloudflared with `pkg install cloudflared`, then turn the tunnel on again.');
+    if (this.paths.platform === 'termux') {
+      // Termux packages a build of cloudflared that Android starts by itself.
+      // It costs one command and a sixth of the download, so it is worth
+      // asking for before falling back to Cloudflare's own build under proot.
+      if (await this.installPackage('cloudflared')) {
+        const packaged = await this.findBinary();
+        if (packaged) return packaged;
+      }
+    }
     const asset = cloudflaredAsset();
     const target = join(this.paths.bin, asset.exe);
     const temporary = `${target}.${randomUUID()}.part`;
@@ -392,25 +412,80 @@ export class TunnelManager {
     return target;
   }
 
+  /**
+   * The cloudflared to use, preferring one this device can start unaided.
+   *
+   * On Android a build that needs proot still works, so it is a fallback here
+   * rather than a rejection: the launch plan wraps it. Anywhere else every
+   * candidate starts unaided and the first one found wins, as before.
+   */
   private async findBinary(): Promise<string | null> {
     const exe = process.platform === 'win32' ? 'cloudflared.exe' : 'cloudflared';
-    const managed = join(this.paths.bin, exe);
     const termux = this.paths.platform === 'termux';
-    for (const candidate of [this.configuredBinaryPath, managed, exe]) {
+    let needsProot: string | null = null;
+    for (const candidate of [this.configuredBinaryPath, join(this.paths.bin, exe), exe]) {
       if (!candidate) continue;
       const path = await this.locate(candidate);
       if (!path) continue;
-      if (!await loaderCanRun(path, termux)) {
-        this.logger(logEvent('cloudflared.unusableBinary', `[cloudflared] ${path} cannot run on this device; Termux packages a build that can (pkg install cloudflared)`, { path }));
-        // A download that cannot run is worse than no download: it stands in
-        // front of the build Termux packages. Remove only what this manager
-        // put there, never an operator's own binary.
-        if (path === managed) await rm(managed, { force: true }).catch(() => undefined);
-        continue;
-      }
-      return candidate;
+      if (await startsOnAndroid(path, termux)) return candidate;
+      needsProot ??= candidate;
     }
-    return null;
+    return needsProot;
+  }
+
+  /**
+   * How to start cloudflared here: what to run, what to put in front of the
+   * tunnel arguments, and the environment it needs.
+   *
+   * Android is the only place this is not simply the binary itself. Cloudflare
+   * publishes no build Android starts on its own, so the one downloaded here
+   * runs under `termux-chroot`, which is what the `proot` package is for. Inside
+   * that view of the filesystem the usual certificate paths do not exist, so the
+   * bundle Termux ships is named outright - without it every edge connection
+   * fails to verify and the tunnel never comes up.
+   */
+  private async launchPlan(): Promise<{ command: string; prefix: readonly string[]; env: NodeJS.ProcessEnv; wrapped: boolean }> {
+    const binary = await this.ensureBinary();
+    const plan = { command: binary, prefix: [] as readonly string[], env: this.env, wrapped: false };
+    if (this.paths.platform !== 'termux' || await startsOnAndroid(await this.locate(binary) ?? binary, true)) return plan;
+    const chroot = await this.findChroot() ?? (await this.installPackage('proot') ? await this.findChroot() : null);
+    if (!chroot) throw new Error('cloudflared needs proot on Android. Install it with `pkg install proot`, then turn the tunnel on again.');
+    this.logger(logEvent('cloudflared.throughProot', '[cloudflared] starting it through termux-chroot, which is how Android runs this build'));
+    const certificates = await this.locate(join(this.env.PREFIX ?? TERMUX_PREFIX, 'etc', 'tls', 'cert.pem'));
+    return {
+      command: chroot,
+      prefix: [binary],
+      env: certificates ? { ...this.env, SSL_CERT_FILE: certificates } : this.env,
+      wrapped: true,
+    };
+  }
+
+  /** Where `proot` puts termux-chroot, which is next to Termux's own programs. */
+  private async findChroot(): Promise<string | null> {
+    const prefix = this.env.PREFIX;
+    return (prefix ? await this.locate(join(prefix, 'bin', 'termux-chroot')) : null) ?? await this.locate('termux-chroot');
+  }
+
+  /**
+   * Install one Termux package, if this is Termux and `pkg` is there to do it.
+   *
+   * Nobody opened the manager to set up a tunnel dependency by hand, so this
+   * asks for what is missing rather than telling the operator to. It answers
+   * whether the package is now there, and never throws: every caller has
+   * somewhere else to go.
+   */
+  private async installPackage(name: string): Promise<boolean> {
+    if (this.paths.platform !== 'termux') return false;
+    if (!await this.locate('pkg')) return false;
+    this.logger(logEvent('cloudflared.installingPackage', `[cloudflared] installing ${name} with pkg`, { package: name }));
+    try {
+      await execFileAsync('pkg', ['install', '-y', name], { env: this.env, timeout: PACKAGE_INSTALL_TIMEOUT_MS });
+      return true;
+    } catch (error: unknown) {
+      const reason = error instanceof Error ? error.message : 'unknown error';
+      this.logger(logEvent('cloudflared.packageNotInstalled', `[cloudflared] ${name} could not be installed: ${reason}`, { package: name, reason }));
+      return false;
+    }
   }
 
   /** Where a candidate actually is, whether it is a path or a name on PATH. */
@@ -422,6 +497,14 @@ export class TunnelManager {
       const { stdout } = await execFileAsync(process.platform === 'win32' ? 'where.exe' : 'which', [candidate], { env: this.env });
       return stdout.split(/\r?\n/u).map((line) => line.trim()).find((line) => line.length > 0) ?? null;
     } catch { return null; }
+  }
+
+  /** Signal the tunnel, taking the process group with it when proot is in front. */
+  private signal(child: ChildProcess, signal: NodeJS.Signals): void {
+    if (this.wrapped && typeof child.pid === 'number') {
+      try { process.kill(-child.pid, signal); return; } catch { /* the group is already gone, or this is not POSIX */ }
+    }
+    child.kill(signal);
   }
 
   private fail(mode: Exclude<TunnelMode, 'off'>, error: string): TunnelState {

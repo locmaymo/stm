@@ -117,7 +117,9 @@ export function detectPlatform(options: PlatformPathOptions = {}): PlatformKind 
   if (hasTruthyEnvironmentValue(env.STM_DOCKER) || env.DOCKER_CONTAINER === 'true' || env.CONTAINER === 'docker') {
     return 'docker';
   }
-  if (env.PREFIX && env.PREFIX.includes('com.termux')) {
+  // Node built for Termux reports its own platform, which is the one signal
+  // that survives a shell started without Termux's environment.
+  if (platform === 'android' || (env.PREFIX && env.PREFIX.includes('com.termux'))) {
     return 'termux';
   }
   if (platform === 'win32') {

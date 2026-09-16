@@ -76,11 +76,7 @@ Dữ liệu Termux nằm ngoài repository tại:
 $PREFIX/var/sillytavern-manager
 ~~~
 
-Thư mục này vẫn còn sau <code>git pull</code> và cập nhật ứng dụng. Cloudflared là tùy chọn; truy cập local vẫn hoạt động khi tunnel chưa cài hoặc đang offline. Trên Termux hãy cài cloudflared từ chính Termux, vì Android chỉ chạy tệp thực thi độc lập vị trí còn bản Linux của Cloudflare thì không:
-
-~~~bash
-pkg install cloudflared
-~~~
+Thư mục này vẫn còn sau <code>git pull</code> và cập nhật ứng dụng. Cloudflared là tùy chọn; truy cập local vẫn hoạt động khi tunnel chưa cài hoặc đang offline. Bật tunnel trên Termux không cần cài gì bằng tay: Android chỉ chạy tệp thực thi độc lập vị trí còn bản của Cloudflare thì không, nên trình quản lý xin bản cloudflared của Termux, nếu không được thì chạy bản của Cloudflare qua `proot`, và tự cài thứ mà nó cần.
 
 ## macOS: cài từ source
 

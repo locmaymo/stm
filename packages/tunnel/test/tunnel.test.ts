@@ -97,27 +97,51 @@ function elfBinary(type: 2 | 3): Buffer {
   return header;
 }
 
-test('on Termux a downloaded cloudflared Android cannot run is dropped, not rerun forever', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'stm-tunnel-termux-'));
-  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root, PREFIX: '/data/data/com.termux/files/usr' } });
-  await mkdir(paths.bin, { recursive: true });
-  await writeFile(join(paths.bin, binaryName), elfBinary(2), { mode: 0o755 });
-  const fetchImpl = (async () => { throw new Error('nothing Cloudflare publishes runs here, so nothing may be downloaded'); }) as unknown as typeof globalThis.fetch;
-  const tunnel = new TunnelManager({ paths, fetchImpl, env: { PATH: '' }, logger: () => undefined });
+test('on Termux a build Android will not start is run through proot instead', async () => {
+  // A Termux prefix, which is how the manager knows it is on Android at all.
+  const prefix = await mkdtemp(join(tmpdir(), 'com.termux-'));
+  const root = join(prefix, 'var', 'sillytavern-manager');
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root, PREFIX: prefix } });
+  // Cloudflare's own build: the one the manager downloads, and the one Android
+  // refuses to start on its own.
+  const cloudflared = join(prefix, binaryName);
+  await writeFile(cloudflared, elfBinary(2), { mode: 0o755 });
+  await mkdir(join(prefix, 'bin'), { recursive: true });
+  const chroot = join(prefix, 'bin', 'termux-chroot');
+  await writeFile(chroot, 'proot stub', { mode: 0o755 });
+  const spawns: Array<{ command: string; args: readonly string[] }> = [];
+  const spawnImpl = ((command: string, args: readonly string[]): ChildProcess => {
+    spawns.push({ command, args });
+    return fakeCloudflared() as unknown as ChildProcess;
+  }) as unknown as typeof spawnType;
+  const tunnel = new TunnelManager({ paths, binaryPath: cloudflared, spawnImpl, env: { PATH: '', PREFIX: prefix }, logger: () => undefined });
 
-  // The message has to name the way out; a retry never finds one.
-  await assert.rejects(() => tunnel.ensureBinary(), /pkg install cloudflared/u);
-  assert.deepEqual(await readdir(paths.bin), []);
+  const state = await tunnel.start('quick');
+  assert.equal(state.status, 'starting');
+  assert.equal(spawns[0]?.command, chroot);
+  assert.deepEqual(spawns[0]?.args.slice(0, 2), [cloudflared, 'tunnel']);
+  // A phone is where QUIC is blocked and IPv6 is half-configured.
+  assert.deepEqual(spawns[0]?.args.slice(2), ['--no-autoupdate', '--protocol', 'http2', '--edge-ip-version', '4', '--url', 'http://127.0.0.1:8001']);
+  await tunnel.close();
 });
 
-test('on Termux the packaged cloudflared is used as it is', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'stm-tunnel-termux-ok-'));
+test('on Termux a build Android starts by itself needs no proot in front of it', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-tunnel-termux-native-'));
   const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root, PREFIX: '/data/data/com.termux/files/usr' } });
+  // What `pkg install cloudflared` leaves behind: a position-independent build.
   const packaged = join(root, binaryName);
   await writeFile(packaged, elfBinary(3), { mode: 0o755 });
-  const fetchImpl = (async () => { throw new Error('the network must not be reached'); }) as unknown as typeof globalThis.fetch;
-  const tunnel = new TunnelManager({ paths, fetchImpl, binaryPath: packaged, env: { PATH: '' }, logger: () => undefined });
-  assert.equal(await tunnel.ensureBinary(), packaged);
+  const spawns: Array<{ command: string; args: readonly string[] }> = [];
+  const spawnImpl = ((command: string, args: readonly string[]): ChildProcess => {
+    spawns.push({ command, args });
+    return fakeCloudflared() as unknown as ChildProcess;
+  }) as unknown as typeof spawnType;
+  const tunnel = new TunnelManager({ paths, binaryPath: packaged, spawnImpl, env: { PATH: '' }, logger: () => undefined });
+
+  await tunnel.start('quick');
+  assert.equal(spawns[0]?.command, packaged);
+  assert.equal(spawns[0]?.args[0], 'tunnel');
+  await tunnel.close();
 });
 
 test('a fixed-address binary is left alone off Android, where the loader runs it', async () => {

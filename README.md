@@ -76,11 +76,7 @@ Termux data is stored outside the repository at:
 $PREFIX/var/sillytavern-manager
 ~~~
 
-That directory survives <code>git pull</code> and application updates. Cloudflared is optional; local access continues to work when a tunnel is not installed or is offline. On Termux, install it from Termux itself, because Android only runs position-independent executables and Cloudflare's own Linux builds are not:
-
-~~~bash
-pkg install cloudflared
-~~~
+That directory survives <code>git pull</code> and application updates. Cloudflared is optional; local access continues to work when a tunnel is not installed or is offline. Turning the tunnel on in Termux needs nothing installed by hand: Android starts position-independent executables only and Cloudflare's own builds are not, so the manager asks Termux for its build of cloudflared and, failing that, runs Cloudflare's through `proot`, installing whichever of the two it ends up needing.
 
 ## macOS: source install
 
