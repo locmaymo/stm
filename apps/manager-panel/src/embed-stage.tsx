@@ -20,7 +20,10 @@ const HANDLE_SIZE = 48;
 export interface EmbedStageProps {
   readonly t: Translate;
   readonly open: boolean;
+  /** What the frame loads: the gateway on this machine. */
   readonly url: string;
+  /** What "Open in a tab" opens: the best address there is, tunnel first. */
+  readonly openUrl: string;
   /** Put the window away and keep SillyTavern loaded behind it. */
   readonly onMinimize: () => void;
   /** Close it for good: the frame is unmounted and opening it again loads SillyTavern afresh. */
@@ -42,7 +45,7 @@ export interface EmbedStageProps {
  * the button that opens the character list - so the one was always being
  * pressed instead of the other.
  */
-export function EmbedStage({ t, open, url, onMinimize, onClose }: EmbedStageProps) {
+export function EmbedStage({ t, open, url, openUrl, onMinimize, onClose }: EmbedStageProps) {
   const stage = useRef<HTMLDivElement | null>(null);
   const [zoomed, setZoomed] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -87,7 +90,7 @@ export function EmbedStage({ t, open, url, onMinimize, onClose }: EmbedStageProp
 
   return <div ref={stage} className="embed-stage" hidden={!open} aria-hidden={!open} data-dragging={dragging || undefined}>
     {zoomed
-      ? <EmbedHandle t={t} url={url} onShowBar={unzoom} onMinimize={minimize} onClose={close} onDragging={setDragging} />
+      ? <EmbedHandle t={t} url={openUrl} onShowBar={unzoom} onMinimize={minimize} onClose={close} onDragging={setDragging} />
       : <div className="embed-bar">
         <div className="embed-lights" role="group" aria-label={t('console.embedWindow')}>
           <button type="button" className="embed-light embed-light-close" onClick={close} aria-label={t('console.embedClose')} title={t('console.embedCloseHint')}><X aria-hidden="true" /></button>
@@ -95,7 +98,7 @@ export function EmbedStage({ t, open, url, onMinimize, onClose }: EmbedStageProp
           <button type="button" className="embed-light embed-light-zoom" onClick={zoom} aria-label={t('console.embedZoom')} title={t('console.embedZoomHint')}><Maximize2 aria-hidden="true" /></button>
         </div>
         <span className="embed-title">SillyTavern</span>
-        <a className="embed-bar-link" href={url} target="_blank" rel="noopener noreferrer" title={t('console.openInNewTab')}><ArrowUpRight aria-hidden="true" /><span>{t('console.openInTab')}</span></a>
+        <a className="embed-bar-link" href={openUrl} target="_blank" rel="noopener noreferrer" title={t('console.openInNewTab')}><ArrowUpRight aria-hidden="true" /><span>{t('console.openInTab')}</span></a>
       </div>}
     <iframe
       className="embed-frame"

@@ -1144,7 +1144,7 @@ function RuntimeCard({
       </CardFooter> : null}
     </Card>
 
-    {embedMounted ? <EmbedStage t={t} open={embedOpen} url={embedUrl} onMinimize={() => setEmbedOpen(false)} onClose={() => { setEmbedOpen(false); setEmbedMounted(false); }} /> : null}
+    {embedMounted ? <EmbedStage t={t} open={embedOpen} url={embedUrl} openUrl={primary.url} onMinimize={() => setEmbedOpen(false)} onClose={() => { setEmbedOpen(false); setEmbedMounted(false); }} /> : null}
 
     <ConfirmDialog
       open={stopAsked}

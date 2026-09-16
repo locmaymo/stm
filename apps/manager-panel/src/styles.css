@@ -729,31 +729,35 @@
  * Work in progress, said in the sentence itself.
  *
  * One band of higher contrast travels along the words. Both ends of the
- * gradient are the same colour and the travel is exactly one image width, so
- * the loop has no seam to catch the eye on, and the band always deepens the
- * text: a pale band sweeping pale text was legible in the dark theme and
- * almost invisible in the light one.
- */
-/*
- * The band is a fixed width in the type's own units rather than a share of
- * the sentence. As a share, a short sentence was lit end to end at once and
- * read as a blink; at a few letters wide it travels across the words one at a
- * time, whatever their length. The tile repeats, so a long sentence has the
- * next band arriving as the last one leaves.
+ * gradient are the same colour and the loop restarts while the band is off
+ * the text, so there is no seam to catch the eye on, and the band always
+ * deepens the text: a pale band sweeping pale text was legible in the dark
+ * theme and almost invisible in the light one.
+ *
+ * The band is a share of the sentence, sized so one pass reads as a sweep at
+ * any length.
+ *
+ * The image is three times the width of the text and the band sits in its
+ * middle, narrow at its core with soft edges - about a tenth of the text lit
+ * at a time, a third counting the fade. Because the image is that wide, only
+ * one band is ever over the words: the next repeat is two text-widths away.
+ * The position runs from 100% to 0%, which with an image wider than its box
+ * carries the band from just before the first letter to just past the last,
+ * left to right, the direction the sentence is read in.
  */
 .thinking {
-  background-image: linear-gradient(100deg,
-    var(--sweep-base) 0%, var(--sweep-base) 40%,
-    var(--sweep-peak) 48%, var(--sweep-peak) 52%,
-    var(--sweep-base) 60%, var(--sweep-base) 100%);
-  background-size: 16em 100%;
+  background-image: linear-gradient(90deg,
+    var(--sweep-base) 0%, var(--sweep-base) 44%,
+    var(--sweep-peak) 49%, var(--sweep-peak) 51%,
+    var(--sweep-base) 56%, var(--sweep-base) 100%);
+  background-size: 300% 100%;
   background-repeat: repeat-x;
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
-  animation: text-sweep 2.4s linear infinite;
+  animation: text-sweep 2.2s linear infinite;
 }
-@keyframes text-sweep { from { background-position: 16em 0; } to { background-position: 0 0; } }
+@keyframes text-sweep { from { background-position: 100% 0; } to { background-position: 0% 0; } }
 /* Without a background there is nothing for `background-clip: text` to show,
    so the clip has to be given up along with the animation. */
 @media (prefers-reduced-motion: reduce) {
