@@ -260,6 +260,13 @@
 .address-link:hover, .address-link:focus-visible { color: var(--link-hover); text-decoration: underline; text-underline-offset: 3px; }
 .address-link code { font-size: 13px; font-weight: 650; letter-spacing: -0.005em; }
 .address-link svg { width: 13px; height: 13px; flex-shrink: 0; }
+/* The whole address where there is room for it, the two ends of it where
+   there is not. */
+.address-short { display: none; }
+@media (max-width: 640px) {
+  .address-full { display: none; }
+  .address-short { display: inline; }
+}
 /*
  * The two cards that share a row keep a shared height.
  *

@@ -352,7 +352,7 @@
     "openInTab": "Open in a tab",
     "useItHere": "Use it here",
     "useItHereHint": "Opens SillyTavern inside this page.",
-    "embedUnavailable": "The embedded view only works from this machine.",
+    "useItInTabHint": "Opens SillyTavern in a new tab.",
     "previewWhenRunning": "Start SillyTavern to use it here.",
     "passcodeForEmbed": "The embedded view goes through the same door as a phone does, so it asks for the PIN once.",
     "backToConsole": "Back to the console",

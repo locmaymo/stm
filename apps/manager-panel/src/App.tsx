@@ -34,6 +34,7 @@ import { backupSearchText, backupSortValue, formatBytes, metricsSearchText, metr
 import { useLiveLogs } from './use-live-logs.js';
 import { translateLogEntry, translateStep } from './log-format.js';
 import { QrCode } from './qr-code.js';
+import { LOCAL_HOST, reachableAddresses, shortenHost } from './addresses.js';
 
 const navigation = [
   { id: 'overview', icon: LayoutDashboard },
@@ -580,6 +581,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     process={processState}
     tunnel={tunnelState}
     security={accessSecurity}
+    networkHost={configDocument?.networkHost ?? null}
     installed={Boolean(activeInstallationId)}
     installing={installing}
     active={activeInstallation}
@@ -848,12 +850,12 @@ function Unavailable({ t, children }: { t: Translate; children: ReactNode }) {
  * two buttons the pointer is over.
  */
 function RuntimeCard({
-  t, fail, catalog, process, tunnel, security, installed, installing, active, dataBytes, profileName,
+  t, fail, catalog, process, tunnel, security, networkHost, installed, installing, active, dataBytes, profileName,
   version, onVersionChange, versions, onPendingInstallationId, csrfToken, onInstalling, onRemove,
   onStart, onStop, onSetPassword, onShowAddresses, onOpenSettings,
 }: {
   t: Translate; fail: Fail; catalog: Record<string, unknown>; process: ProcessState; tunnel: TunnelState;
-  security: AccessGatewayState; installed: boolean; installing: boolean;
+  security: AccessGatewayState; networkHost: string | null; installed: boolean; installing: boolean;
   active: Installation | undefined; dataBytes: number | null; profileName: string | null; version: string;
   onVersionChange: (value: string) => void; versions: VersionOption[];
   onPendingInstallationId: (value: string | null) => void; csrfToken: string | null;
@@ -992,8 +994,11 @@ function RuntimeCard({
     } catch { report(t('console.embedFailed')); } finally { setEmbedOpening(false); }
   };
 
-  const localUrl = 'http://127.0.0.1:8000';
-  const sharedCount = (tunnel.url ? 1 : 0) + (security.lan ? 1 : 0);
+  const addresses = reachableAddresses(tunnel, security, networkHost ?? window.location.hostname);
+  // There is always at least the loopback address.
+  const primary = addresses[0]!;
+  const otherCount = addresses.length - 1;
+  const openPrimary = () => { window.open(primary.url, '_blank', 'noopener,noreferrer'); };
 
   return <>
     <Card className="runtime-card" data-tour="installation">
@@ -1004,7 +1009,7 @@ function RuntimeCard({
         </h2>
         <CardAction className="runtime-actions">
           {installed ? <>
-            <Button variant="outline" size="sm" disabled={!running} onClick={() => { window.open(localUrl, '_blank', 'noopener,noreferrer'); }}><ArrowUpRight />{t('console.openInTab')}</Button>
+            <Button variant="outline" size="sm" disabled={!running} onClick={openPrimary}><ArrowUpRight />{t('console.openInTab')}</Button>
             {running
               ? <Button variant="destructive" size="sm" onClick={() => setStopAsked(true)} disabled={pending}><Square />{t('dashboard.stop')}</Button>
               : <Button size="sm" onClick={() => void run(onStart)} disabled={pending || installingNow}><Play />{pending ? t('common.loading') : t('dashboard.start')}</Button>}
@@ -1021,15 +1026,23 @@ function RuntimeCard({
           */}
         <div className="runtime-preview" data-live={running ? 'true' : 'false'}>
           {running ? <SillyTavernStill generation={process.startedAt ?? 'up'} /> : null}
+          {/* From another device the frame cannot be shown, so the same
+              invitation opens SillyTavern in a tab at the best address instead
+              of explaining why it will not. */}
           {canEmbed
             ? <button type="button" className="runtime-preview-open" onClick={() => void openEmbed()}>
               <span className="runtime-preview-cta"><Monitor aria-hidden="true" />{embedOpening ? t('common.loading') : t('console.useItHere')}</span>
               <span className="runtime-preview-note">{t('console.useItHereHint')}</span>
             </button>
-            : <div className="runtime-preview-idle">
-              <Monitor aria-hidden="true" />
-              <span>{running ? t('console.embedUnavailable') : t('console.stateOffline')}</span>
-            </div>}
+            : running
+              ? <button type="button" className="runtime-preview-open" onClick={openPrimary}>
+                <span className="runtime-preview-cta"><ArrowUpRight aria-hidden="true" />{t('console.useItHere')}</span>
+                <span className="runtime-preview-note">{t('console.useItInTabHint')}</span>
+              </button>
+              : <div className="runtime-preview-idle">
+                <Monitor aria-hidden="true" />
+                <span>{t('console.stateOffline')}</span>
+              </div>}
         </div>
 
         <dl className="runtime-meta">
@@ -1038,9 +1051,12 @@ function RuntimeCard({
           {running ? <div className="runtime-row">
             <dt>{t('console.addressLabel')}</dt>
             <dd>
-              <AddressLink t={t} href={localUrl}>127.0.0.1:8000</AddressLink>
-              {sharedCount > 0
-                ? <button type="button" className="runtime-shared" onClick={onShowAddresses}>{t('console.alsoOnline', { count: sharedCount })}</button>
+              <AddressLink t={t} href={primary.url}>
+                <span className="address-full">{primary.host}</span>
+                <span className="address-short">{shortenHost(primary.host)}</span>
+              </AddressLink>
+              {otherCount > 0
+                ? <button type="button" className="runtime-shared" onClick={onShowAddresses}>{t('console.alsoOnline', { count: otherCount })}</button>
                 : null}
             </dd>
           </div> : null}
@@ -1233,7 +1249,7 @@ function AccessPanel({ t, process, tunnel, config, security, installed, onAction
   // This machine reaches SillyTavern directly, because the loopback address is
   // already a boundary. Everything else goes through the gateway and its
   // password: the LAN address and the tunnel both point there.
-  const localHost = '127.0.0.1:8000';
+  const localHost = LOCAL_HOST;
   const lanHost = `${config?.networkHost ?? window.location.hostname ?? 'localhost'}:${security.port}`;
   const localUrl = `http://${localHost}`;
   const lanUrl = `http://${lanHost}`;

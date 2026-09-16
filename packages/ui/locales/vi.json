@@ -352,7 +352,7 @@
     "openInTab": "Mở tab mới",
     "useItHere": "Dùng ngay tại đây",
     "useItHereHint": "Mở SillyTavern ngay trong trang này.",
-    "embedUnavailable": "Chế độ nhúng chỉ dùng được khi mở từ chính máy này.",
+    "useItInTabHint": "Mở SillyTavern trong tab mới.",
     "previewWhenRunning": "Chạy SillyTavern để dùng ngay tại đây.",
     "passcodeForEmbed": "Chế độ nhúng đi qua đúng cánh cửa mà điện thoại vẫn đi, nên nó hỏi mã PIN một lần.",
     "backToConsole": "Về trang quản lý",
