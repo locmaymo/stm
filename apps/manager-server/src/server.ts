@@ -736,6 +736,10 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     sendJson(response, 200, { config: await r2.update(input) });
     return;
   }
+  if (pathname === '/api/v1/r2/usage' && method === 'GET') {
+    sendJson(response, 200, await r2.cloudflareUsage({ refresh: searchParams.get('refresh') === '1' }));
+    return;
+  }
   if (pathname.startsWith('/api/v1/r2/cloudflare')) {
     await handleCloudflareRequest(context, cloudflare, r2);
     return;

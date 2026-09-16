@@ -309,6 +309,59 @@ export interface R2Config {
   readonly lastFingerprint: string | null;
 }
 
+export interface R2OperationCounts {
+  readonly classA: number;
+  readonly classB: number;
+  readonly free: number;
+  /** Action types Cloudflare's pricing page does not list. Shown, not guessed into a class. */
+  readonly unclassified: number;
+}
+
+export interface R2UsageScope {
+  /** Object data plus metadata at the latest sample; null when Cloudflare had none. */
+  readonly storageBytes: number | null;
+  readonly objectCount: number | null;
+  readonly measuredAt: string | null;
+  /** Month to date, from the start of the calendar month in UTC. */
+  readonly operations: R2OperationCounts;
+}
+
+export interface R2UsageWarning {
+  /**
+   * `account` is measured against Cloudflare's free tier, which the whole
+   * account shares; `bucket` against the ceilings set in the manager.
+   */
+  readonly scope: 'account' | 'bucket';
+  readonly metric: 'storage' | 'classA' | 'classB';
+  readonly used: number;
+  readonly limit: number;
+}
+
+/**
+ * What Cloudflare's analytics say a signed-in bucket and its account used.
+ *
+ * Usage, not billing. There is no API for the bill or for what is left of the
+ * free tier; a billing period need not start on the first of the month; storage
+ * is billed as an average over the month while this is the size now; and the
+ * figures lag by some minutes. Warnings are early signs, not a statement of cost.
+ */
+export interface R2CloudflareUsage {
+  readonly fetchedAt: string;
+  readonly periodStart: string;
+  readonly periodEnd: string;
+  readonly bucket: R2UsageScope & { readonly name: string };
+  readonly account: R2UsageScope;
+  readonly freeTier: { readonly storageBytes: number; readonly classA: number; readonly classB: number };
+  readonly warnings: readonly R2UsageWarning[];
+}
+
+export interface R2UsageResponse {
+  readonly usage: R2CloudflareUsage | null;
+  /** Why there are no figures from Cloudflare, when there are none. */
+  readonly unavailable: 'keys_mode' | 'not_connected' | 'analytics_not_granted' | 'query_failed' | null;
+  readonly error: string | null;
+}
+
 export interface R2Usage {
   readonly storageBytes: number;
   readonly blobCount: number;

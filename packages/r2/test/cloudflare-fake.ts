@@ -17,6 +17,8 @@ export interface FakeCloudflareState {
   workersDevBlocked: boolean;
   revoked: string[];
   calls: string[];
+  /** What the GraphQL analytics answer with: raw groups as Cloudflare returns them. */
+  analytics: { operations: unknown[]; storage: unknown[]; failing: boolean };
 }
 
 /**
@@ -37,6 +39,7 @@ export async function fakeCloudflare(overrides: Partial<FakeCloudflareState> = {
     workersDevBlocked: false,
     revoked: [],
     calls: [],
+    analytics: { operations: [], storage: [], failing: false },
     ...overrides,
   };
   const worker = await loadWorker();
@@ -76,6 +79,12 @@ export async function fakeCloudflare(overrides: Partial<FakeCloudflareState> = {
     const path = url.pathname.replace('/client/v4', '');
     state.calls.push(`api ${method} ${path.replace(`/accounts/${ACCOUNT_ID}`, '').replace(`/accounts/${OTHER_ACCOUNT_ID}`, '')}`);
     if (path === '/accounts') return ok(state.accounts, { total_pages: 1 });
+    if (path === '/graphql') {
+      if (state.analytics.failing || !state.grantedScopes.includes('account-analytics.read')) {
+        return Response.json({ data: null, errors: [{ message: 'not authorized for that account' }] });
+      }
+      return Response.json({ data: { viewer: { accounts: [{ operations: state.analytics.operations, storage: state.analytics.storage }] } }, errors: null });
+    }
     const accountMatch = /^\/accounts\/([0-9a-f]{32})(\/.*)$/u.exec(path);
     if (!accountMatch) return fail(404, 'no route');
     const rest = accountMatch[2] ?? '';

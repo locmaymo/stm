@@ -1,7 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import { mkdir, open, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { formatBytes, logEvent, logLineText, type LogSink, type Profile, type R2Config, type R2ConnectionMode, type R2EnvironmentField, type R2Object, type R2SnapshotSummary, type R2Usage, type TransferProgress } from '../../contracts/src/index.js';
+import { formatBytes, logEvent, logLineText, type LogSink, type Profile, type R2CloudflareUsage, type R2Config, type R2ConnectionMode, type R2UsageResponse, type R2UsageWarning, type R2EnvironmentField, type R2Object, type R2SnapshotSummary, type R2Usage, type TransferProgress } from '../../contracts/src/index.js';
+import { R2_FREE_TIER, readR2Usage } from '../../cloudflare/src/index.js';
 import { ioConcurrency, runPooled } from '../../platform/src/index.js';
 import type { PlatformPaths } from '../../platform/src/index.js';
 import type { CloudflareConnection } from './cloudflare-connection.js';
@@ -40,6 +41,12 @@ const MASKED_SECRET = '********';
 const OBJECT_PREFIX = 'sillytavern-manager/';
 const BLOB_PREFIX = `${OBJECT_PREFIX}blobs/`;
 const SNAPSHOT_PREFIX = `${OBJECT_PREFIX}snapshots/`;
+/** How long Cloudflare's usage figures are reused before asking again. */
+const CLOUD_USAGE_TTL_MS = 15 * 60 * 1000;
+/** How old those figures may be and still count towards the ceilings before a backup. */
+const CLOUD_USAGE_GUARD_MAX_AGE_MS = 60 * 60 * 1000;
+/** A figure this close to its limit is worth saying something about. */
+const WARNING_RATIO = 0.8;
 /** One listing page. R2 caps it here too, so asking for more changes nothing. */
 const LIST_PAGE_KEYS = 1000;
 
@@ -226,6 +233,7 @@ export class R2Manager {
    * to the manager, because the manager is what outlives a request.
    */
   private charges = { write: 0, read: 0 };
+  private cloudUsage: { readonly at: number; readonly usage: R2CloudflareUsage } | null = null;
   private chargesWrittenAt = 0;
 
   public constructor(options: R2ManagerOptions) {
@@ -312,11 +320,17 @@ export class R2Manager {
     return await this.exclusive(async () => {
       const config = await this.onTarget(await this.requireUsable());
       const usage = await this.currentPeriod(config);
-      if (usage.storageBytes >= config.maxStorageBytes) {
-        throw new R2Error('r2_storage_ceiling', `The bucket is holding ${formatBytes(usage.storageBytes)}, at or above the ${formatBytes(config.maxStorageBytes)} ceiling. Lower retention or raise the ceiling.`);
+      // Cloudflare sees what this manager's own count cannot: another machine
+      // on the same bucket, or objects put there some other way. The larger of
+      // the two is the one to hold the ceiling against.
+      const cloud = config.mode === 'cloudflare' ? await this.recentCloudUsage() : null;
+      const storageUsed = Math.max(usage.storageBytes, cloud?.bucket.storageBytes ?? 0);
+      const writesUsed = Math.max(usage.writeOperations, cloud?.bucket.operations.classA ?? 0);
+      if (storageUsed >= config.maxStorageBytes) {
+        throw new R2Error('r2_storage_ceiling', `The bucket is holding ${formatBytes(storageUsed)}, at or above the ${formatBytes(config.maxStorageBytes)} ceiling. Lower retention or raise the ceiling.`);
       }
-      if (usage.writeOperations >= config.maxWriteOperations) {
-        throw new R2Error('r2_operation_ceiling', `${usage.writeOperations} charged writes have been used this month, at or above the ${config.maxWriteOperations} ceiling.`);
+      if (writesUsed >= config.maxWriteOperations) {
+        throw new R2Error('r2_operation_ceiling', `${writesUsed} charged writes have been used this month, at or above the ${config.maxWriteOperations} ceiling.`);
       }
 
       const planned = planUpload(input.sources, this.ledger);
@@ -618,6 +632,47 @@ export class R2Manager {
     await this.recordCharges();
   }
 
+  /**
+   * What Cloudflare's analytics say the signed-in bucket and its account used
+   * this month, with warnings for anything close to a limit.
+   *
+   * Asked for at most every fifteen minutes unless `refresh` says otherwise: the
+   * analytics API has a limit of its own, and the figures lag anyway. A query
+   * that fails still returns the last figures, with the error beside them.
+   */
+  public async cloudflareUsage(options: { readonly refresh?: boolean } = {}): Promise<R2UsageResponse> {
+    const config = await this.load();
+    if (config.mode !== 'cloudflare' || !this.cloudflare) return { usage: null, unavailable: 'keys_mode', error: null };
+    const status = await this.cloudflare.status();
+    if (status.state !== 'connected') return { usage: null, unavailable: 'not_connected', error: null };
+    if (!status.analyticsGranted) return { usage: null, unavailable: 'analytics_not_granted', error: null };
+    const cached = this.cloudUsage;
+    if (cached && !options.refresh && this.now().getTime() - cached.at < CLOUD_USAGE_TTL_MS) return { usage: cached.usage, unavailable: null, error: null };
+    try {
+      const target = await this.cloudflare.target();
+      if (!target) return { usage: null, unavailable: 'not_connected', error: null };
+      const now = this.now();
+      // Analytics name a bucket bound to a jurisdiction with the jurisdiction in front.
+      const bucketName = target.jurisdiction === 'default' ? target.bucket : `${target.jurisdiction}_${target.bucket}`;
+      const report = await readR2Usage(this.cloudflare.cloudflareApi(), target.account.id, bucketName, now);
+      const usage: R2CloudflareUsage = { ...report, fetchedAt: now.toISOString(), freeTier: { ...R2_FREE_TIER }, warnings: usageWarnings(report, config) };
+      this.cloudUsage = { at: now.getTime(), usage };
+      return { usage, unavailable: null, error: null };
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'The usage figures could not be read';
+      return { usage: cached?.usage ?? null, unavailable: cached ? null : 'query_failed', error: message };
+    }
+  }
+
+  /** Cloudflare's figures if they are recent enough to hold a ceiling against, fetched if not. */
+  private async recentCloudUsage(): Promise<R2CloudflareUsage | null> {
+    const cached = this.cloudUsage;
+    if (cached && this.now().getTime() - cached.at < CLOUD_USAGE_GUARD_MAX_AGE_MS) return cached.usage;
+    // A backup never waits on, or fails because of, the analytics being down.
+    const fetched = await this.cloudflareUsage().catch(() => null);
+    return fetched?.usage && this.now().getTime() - Date.parse(fetched.usage.fetchedAt) < CLOUD_USAGE_GUARD_MAX_AGE_MS ? fetched.usage : null;
+  }
+
   public async markFingerprint(fingerprint: string): Promise<void> {
     const config = await this.load();
     await this.save({ ...config, lastFingerprint: fingerprint });
@@ -895,6 +950,20 @@ export class R2Manager {
     this.writeQueue = previous.then(operation, operation);
     await this.writeQueue;
   }
+}
+
+function usageWarnings(report: Pick<R2CloudflareUsage, 'bucket' | 'account'>, config: StoredR2Config): R2UsageWarning[] {
+  const warnings: R2UsageWarning[] = [];
+  const check = (scope: R2UsageWarning['scope'], metric: R2UsageWarning['metric'], used: number | null, limit: number): void => {
+    if (used !== null && limit > 0 && used >= limit * WARNING_RATIO) warnings.push({ scope, metric, used, limit });
+  };
+  check('account', 'storage', report.account.storageBytes, R2_FREE_TIER.storageBytes);
+  check('account', 'classA', report.account.operations.classA, R2_FREE_TIER.classA);
+  check('account', 'classB', report.account.operations.classB, R2_FREE_TIER.classB);
+  check('bucket', 'storage', report.bucket.storageBytes, config.maxStorageBytes);
+  check('bucket', 'classA', report.bucket.operations.classA, config.maxWriteOperations);
+  check('bucket', 'classB', report.bucket.operations.classB, config.maxReadOperations);
+  return warnings;
 }
 
 interface PlannedFile {

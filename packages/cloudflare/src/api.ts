@@ -168,6 +168,31 @@ export class CloudflareApi {
     return buckets.find((bucket) => bucket.name === name && bucket.jurisdiction === 'default') ?? null;
   }
 
+  /**
+   * A GraphQL Analytics query.
+   *
+   * GraphQL does not answer with the REST envelope: a failed query is still a
+   * 200, with `errors` beside `data`. Treating that as success would show a
+   * usage of nothing, which reads as "nothing used" rather than "not known".
+   */
+  public async graphql(query: string, variables: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+    const response = await this.fetchImpl(`${this.baseUrl}/graphql`, {
+      method: 'POST',
+      headers: { accept: 'application/json', 'content-type': 'application/json', authorization: `Bearer ${await this.accessToken()}` },
+      body: JSON.stringify({ query, variables }),
+      ...(signal ? { signal } : {}),
+    });
+    this.observeRateLimit(response.headers);
+    if (response.status === 429) throw new CloudflareRateLimitError(retryAfter(response.headers));
+    const parsed: unknown = await response.json().catch(() => null);
+    const errors = isRecord(parsed) && Array.isArray(parsed.errors) ? parsed.errors.filter(isRecord) : [];
+    if (!response.ok || errors.length > 0 || !isRecord(parsed) || !isRecord(parsed.data)) {
+      const detail = errors.map((error) => (typeof error.message === 'string' ? error.message : '')).filter(Boolean).join('; ').slice(0, 300);
+      throw new CloudflareApiError(response.ok ? 'cloudflare_graphql_failed' : errorCode(response.status), response.status, `Cloudflare analytics query failed (${response.status})${detail ? `: ${detail}` : ''}`);
+    }
+    return parsed.data;
+  }
+
   /** For the Worker calls in `workers.ts`, which share this token, error handling and rate limit. */
   public async call(method: string, path: string, options: RequestOptions = {}): Promise<Envelope> {
     return await this.request(method, path, options);
