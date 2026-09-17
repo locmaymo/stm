@@ -20,6 +20,16 @@ import vi from '../locales/vi.json' with { type: 'json' };
 
 export type LegalLocale = 'en' | 'vi';
 
+/**
+ * Who published this, where it lives, and which revision is in force.
+ *
+ * The same in both languages - the parity test holds the date and the revision
+ * identical - so anything that needs only the revision can read it without
+ * choosing a language first. The server records it against an acceptance, and
+ * the panel and the website print it under the text it belongs to.
+ */
+export const LEGAL_META: LegalMeta = en.meta;
+
 /** The four documents, in the order they are offered. */
 export const LEGAL_DOCUMENT_IDS = ['terms', 'disclaimer', 'privacy', 'notices'] as const;
 export type LegalDocumentId = typeof LEGAL_DOCUMENT_IDS[number];

@@ -24,7 +24,7 @@
   "setup": {
     "title": "Thiết lập trình quản lý",
     "telemetryNotice": "Trình quản lý gửi về số lượt sử dụng để cải thiện dự án. Nội dung chat, nhân vật, prompt và API key không bao giờ được gửi đi.",
-    "terms": "Tôi đồng ý với điều khoản và tự chịu trách nhiệm về dữ liệu của mình.",
+    "terms": "Tôi đồng ý với Điều khoản sử dụng và Tuyên bố miễn trừ trách nhiệm, và tôi hiểu rằng dữ liệu cũng như cách tôi dùng phần mềm này là trách nhiệm của chính tôi.",
     "password": "Mật khẩu trình quản lý",
     "loginTitle": "Đăng nhập trang quản trị",
     "signIn": "Đăng nhập",
@@ -42,7 +42,18 @@
     "termsRequired": "Cần đồng ý với điều khoản để tiếp tục.",
     "alreadyConfigured": "Trình quản lý này đã có mật khẩu. Hãy tải lại trang để đăng nhập.",
     "setupNeeded": "Trình quản lý này chưa có mật khẩu. Hãy tải lại trang để đặt một mật khẩu.",
-    "rateLimited": "Thử quá nhiều lần. Hãy đợi một lát rồi thử lại."
+    "rateLimited": "Thử quá nhiều lần. Hãy đợi một lát rồi thử lại.",
+    "termsAction": "Đọc toàn văn",
+    "termsOpen": "Mở điều khoản, tuyên bố miễn trừ trách nhiệm và thông báo quyền riêng tư"
+  },
+  "legal": {
+    "title": "Điều khoản và thông báo",
+    "effective": "Bản {revision}, có hiệu lực từ {date}. Cùng nội dung này được công bố trên trang web của dự án.",
+    "documents": "Các văn bản",
+    "readingTime": "Đọc khoảng {minutes} phút",
+    "online": "Cũng được công bố tại stm.phamloc.top",
+    "version": "Phiên bản bảng điều khiển {version}",
+    "open": "Đọc"
   },
   "status": {
     "lastBackup": "Sao lưu gần nhất"
@@ -479,7 +490,15 @@
     "cfBucketsEmpty": "Tài khoản này chưa có bucket R2 nào.",
     "r2SwitchToCloudflareTitle": "Chuyển sang sao lưu qua đăng nhập Cloudflare?",
     "r2SwitchToCloudflareBody": "Việc sao lưu sẽ thôi đi qua key R2/S3 thủ công và dùng tài khoản đã đăng nhập. Key vẫn được giữ, lúc nào muốn quay lại cũng được.",
-    "r2SwitchToCloudflareConfirm": "Dùng đăng nhập"
+    "r2SwitchToCloudflareConfirm": "Dùng đăng nhập",
+    "aboutTitle": "Về trình quản lý này",
+    "aboutBody": "SillyTavern Manager là phần mềm tự do phát hành theo giấy phép AGPL-3.0. Đây là dự án độc lập, không liên kết với SillyTavern.",
+    "aboutVersion": "Phiên bản",
+    "aboutSource": "Mã nguồn",
+    "aboutSite": "Trang web và tài liệu",
+    "aboutLegal": "Điều khoản, miễn trừ trách nhiệm và quyền riêng tư",
+    "aboutIssues": "Báo lỗi",
+    "aboutLicence": "Bản quyền © 2026 locmaymo. Phân phối không kèm bảo hành, ở mức pháp luật cho phép."
   },
   "dashboard": {
     "start": "Chạy",

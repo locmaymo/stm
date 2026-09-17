@@ -3,11 +3,18 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ManagerState } from '../../../packages/contracts/src/index.js';
 import { getPlatformPaths, type PlatformPaths } from '../../../packages/platform/src/index.js';
+import { LEGAL_META } from '../../../packages/legal/src/index.js';
 
 const STATE_FILE_NAME = 'manager-state.json';
 const STATE_SCHEMA_VERSION = 1 as const;
-const TERMS_VERSION = '2026-09-09';
-const TELEMETRY_NOTICE_VERSION = '2026-09-09';
+/*
+ * What an operator agreed to, named by the revision of the text they were
+ * shown rather than by a date written here by hand. The legal package is the
+ * one copy of that text, so when it is revised this record follows it and a
+ * state file says which wording was actually on screen.
+ */
+const TERMS_VERSION = LEGAL_META.effective;
+const TELEMETRY_NOTICE_VERSION = LEGAL_META.effective;
 
 interface PersistedManagerState {
   readonly schemaVersion: 1;
