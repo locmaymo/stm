@@ -1,7 +1,8 @@
-import { html, join, paragraphs, raw, text } from '../html.mjs';
+import { html, join, raw, text } from '../html.mjs';
 import { iconOf, icons } from '../icons.mjs';
 import { home } from '../content/home.mjs';
 import { localeRoot } from '../content/strings.mjs';
+import { localePath, prose } from '../links.mjs';
 import { layout } from '../layout.mjs';
 import { NARROW, screenshot } from '../shots.mjs';
 
@@ -41,7 +42,7 @@ export function homePage(locale) {
   <div class="shell">
     ${sectionHead(c.install)}
     <div class="grid grid-3">
-      ${join(c.install.cards.map((card) => html`<a class="card" href="${card.href}">
+      ${join(c.install.cards.map((card) => html`<a class="card" href="${localePath(card.href, root)}">
         <div class="card-icon">${iconOf(card.icon)}</div>
         <h3>${card.title}</h3>
         <p>${text(card.body)}</p>
@@ -98,7 +99,7 @@ export function homePage(locale) {
 <section id="privacy">
   <div class="shell prose-shell">
     ${sectionHead(c.privacy)}
-    ${paragraphs(c.privacy.body)}
+    ${join(c.privacy.body.map((entry) => html`<p>${prose(entry, root)}</p>`))}
   </div>
 </section>
 
@@ -124,7 +125,7 @@ export function homePage(locale) {
 
   function action(item, quiet = false) {
     const external = item.href.startsWith('http');
-    const href = external || item.href.startsWith(root) ? item.href : `${root}${item.href}`;
+    const href = external ? item.href : localePath(item.href, root);
     return html`<a class="button${quiet ? raw(' button-quiet') : raw('')}" href="${href}"${external ? raw(' target="_blank" rel="noreferrer noopener"') : raw('')}>${iconOf(item.icon)}${item.label}</a>`;
   }
 }

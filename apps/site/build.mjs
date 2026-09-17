@@ -3,8 +3,10 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import process from 'node:process';
 import { homePage } from './src/pages/home.mjs';
+import { docsPage } from './src/pages/docs.mjs';
 import { LOCALES, localeRoot } from './src/content/strings.mjs';
 import { home } from './src/content/home.mjs';
+import { docs } from './src/content/docs.mjs';
 
 /**
  * Builds stm.phamloc.top into `dist/`.
@@ -25,6 +27,7 @@ const dist = join(here, 'dist');
 
 const pages = [
   { path: '/', render: homePage },
+  { path: '/docs', render: docsPage },
 ];
 
 await checkContentParity();
@@ -107,6 +110,7 @@ async function copyScreenshots() {
 async function checkContentParity() {
   const problems = [];
   compare(home.en, home.vi, 'home', problems);
+  compare(docs.en, docs.vi, 'docs', problems);
   if (problems.length) {
     console.error(problems.join('\n'));
     process.exitCode = 1;

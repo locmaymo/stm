@@ -113,7 +113,7 @@ export const home = {
       heading: 'Chạy SillyTavern mà không cần dòng lệnh',
       lede: `Một bảng điều khiển duy nhất để cài đặt, chạy, chia sẻ, sao lưu và theo dõi [SillyTavern](${UPSTREAM}) — trên Windows, Android, macOS, Linux và Docker.`,
       primary: { href: RELEASES, label: 'Tải cho Windows', icon: 'download' },
-      secondary: { href: '/vi/docs', label: 'Đọc tài liệu hướng dẫn', icon: 'book' },
+      secondary: { href: '/docs', label: 'Đọc tài liệu hướng dẫn', icon: 'book' },
       meta: [
         { icon: 'check', label: 'Miễn phí, mã nguồn mở, giấy phép AGPL-3.0' },
         { icon: 'lock', label: 'Dữ liệu không bao giờ rời khỏi máy bạn' },
@@ -142,12 +142,12 @@ export const home = {
       heading: 'Sáu đường vào, một lần thiết lập',
       lede: 'Dù chọn cách nào, lần mở đầu tiên cũng chỉ yêu cầu bạn tạo một mật khẩu quản trị. Sau đó chọn phiên bản SillyTavern rồi bấm Cài đặt.',
       cards: [
-        { icon: 'monitor', title: 'Windows', body: 'Tải tệp ZIP chạy trực tiếp, giải nén, bấm đúp. Node.js đã nằm sẵn bên trong; không cần chạm tới dòng lệnh.', href: '/vi/docs#windows', go: 'Hướng dẫn Windows' },
-        { icon: 'phone', title: 'Android · Termux', body: 'Ba khối lệnh để dán. Trình quản lý chạy ngay trên điện thoại và mở bằng trình duyệt của máy.', href: '/vi/docs#android', go: 'Hướng dẫn Termux' },
-        { icon: 'apple', title: 'macOS', body: 'Node.js 22, một lần clone, npm ci, rồi chạy launcher. Apple Silicon và Intel như nhau.', href: '/vi/docs#macos', go: 'Hướng dẫn macOS' },
-        { icon: 'server', title: 'Linux và VPS', body: 'Cùng launcher đó, kèm một unit systemd nếu bạn muốn nó tự chạy lại sau khi khởi động máy.', href: '/vi/docs#linux', go: 'Hướng dẫn Linux' },
-        { icon: 'box', title: 'Docker', body: 'Dựng image, gắn volume vào /data, mở cổng 7860 và 8001. Các nền tảng lưu trữ cũng làm tương tự.', href: '/vi/docs#docker', go: 'Hướng dẫn Docker' },
-        { icon: 'npm', title: 'npm', body: 'npx sillytavern-manager, hoặc cài toàn cục. Gói đã phát hành mang sẵn bảng điều khiển đã dựng.', href: '/vi/docs#npm', go: 'Hướng dẫn npm' },
+        { icon: 'monitor', title: 'Windows', body: 'Tải tệp ZIP chạy trực tiếp, giải nén, bấm đúp. Node.js đã nằm sẵn bên trong; không cần chạm tới dòng lệnh.', href: '/docs#windows', go: 'Hướng dẫn Windows' },
+        { icon: 'phone', title: 'Android · Termux', body: 'Ba khối lệnh để dán. Trình quản lý chạy ngay trên điện thoại và mở bằng trình duyệt của máy.', href: '/docs#android', go: 'Hướng dẫn Termux' },
+        { icon: 'apple', title: 'macOS', body: 'Node.js 22, một lần clone, npm ci, rồi chạy launcher. Apple Silicon và Intel như nhau.', href: '/docs#macos', go: 'Hướng dẫn macOS' },
+        { icon: 'server', title: 'Linux và VPS', body: 'Cùng launcher đó, kèm một unit systemd nếu bạn muốn nó tự chạy lại sau khi khởi động máy.', href: '/docs#linux', go: 'Hướng dẫn Linux' },
+        { icon: 'box', title: 'Docker', body: 'Dựng image, gắn volume vào /data, mở cổng 7860 và 8001. Các nền tảng lưu trữ cũng làm tương tự.', href: '/docs#docker', go: 'Hướng dẫn Docker' },
+        { icon: 'npm', title: 'npm', body: 'npx sillytavern-manager, hoặc cài toàn cục. Gói đã phát hành mang sẵn bảng điều khiển đã dựng.', href: '/docs#npm', go: 'Hướng dẫn npm' },
       ],
     },
     how: {
@@ -192,14 +192,14 @@ export const home = {
       body: [
         'Không có tài khoản, không có đám mây, và dự án không giữ bản sao dữ liệu nào của bạn. Đoạn chat, nhân vật, prompt, thiết lập, bản sao lưu và API key đều nằm trên máy do bạn kiểm soát.',
         'Trình quản lý gửi đi đúng một thứ: một bản tóm tắt sử dụng nhỏ nằm trong danh sách cho phép — nền tảng, phiên bản, và với mỗi lượt gọi là nhà cung cấp, tên mô hình, tên máy chủ điểm cuối, số token, mã trạng thái và thời lượng. Nó không bao giờ gửi prompt, đoạn chat, câu trả lời của mô hình, API key, tên tệp, đường dẫn, địa chỉ IP hay chuỗi truy vấn.',
-        'Danh sách đầy đủ, và cách tắt hẳn việc gửi, nằm trong [Thông báo quyền riêng tư](/vi/privacy).',
+        'Danh sách đầy đủ, và cách tắt hẳn việc gửi, nằm trong [Thông báo quyền riêng tư](/privacy).',
       ],
     },
     cta: {
       heading: 'Bắt đầu chỉ với một lần tải',
       lede: 'Không phải đăng ký gì. Bản Windows chạy trực tiếp; mọi nền tảng khác chỉ là một lần clone và một launcher.',
       primary: { href: RELEASES, label: 'Tải bản phát hành mới nhất', icon: 'download' },
-      secondary: { href: '/vi/docs', label: 'Đọc tài liệu trước đã', icon: 'book' },
+      secondary: { href: '/docs', label: 'Đọc tài liệu trước đã', icon: 'book' },
     },
   },
 };
