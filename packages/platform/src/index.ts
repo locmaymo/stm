@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
 import { existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join, posix, resolve } from 'node:path';
 import type { PlatformKind } from '../../contracts/src/index.js';
 
 const DEFAULT_IO_CONCURRENCY = 8;
@@ -186,7 +186,7 @@ export interface StorageDurability {
 export function storageDurability(dataRoot: string, mountTable?: string): StorageDurability {
   const table = mountTable ?? readMountTable();
   if (table === null) return { durable: true, filesystem: null };
-  const target = resolve(dataRoot);
+  const target = posixPath(dataRoot);
   let best: { point: string; filesystem: string } | null = null;
   for (const line of table.split('\n')) {
     // device mountpoint fstype options dump pass, with spaces and the escape
@@ -202,6 +202,25 @@ export function storageDurability(dataRoot: string, mountTable?: string): Storag
   }
   if (!best) return { durable: true, filesystem: null };
   return { durable: !EPHEMERAL_FILESYSTEMS.has(best.filesystem), filesystem: best.filesystem };
+}
+
+/**
+ * `dataRoot` as a path the mount table can be compared against.
+ *
+ * A mount table is a POSIX idea, so the paths in it are POSIX paths, and the
+ * platform's own `resolve` is the wrong tool for meeting them: on Windows it
+ * turns `/data` into `\\data`, which matches no mount point ever written. That
+ * cost nothing in production - a machine with no /proc/mounts has already
+ * returned above - but it did mean this could only be tested on the one
+ * platform it runs on, and the test that caught it was a Windows CI run.
+ *
+ * A path that is already absolute is taken as written. Anything else is
+ * resolved against the working directory first, which is a question only the
+ * platform can answer.
+ */
+function posixPath(dataRoot: string): string {
+  if (dataRoot.startsWith('/')) return posix.normalize(dataRoot);
+  return posix.normalize(resolve(dataRoot).replace(/\\/gu, '/'));
 }
 
 function readMountTable(): string | null {

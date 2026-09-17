@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { posix } from 'node:path';
 import assert from 'node:assert/strict';
 import { createIoLimiter, detectPlatform, getPlatformPaths, ioConcurrency, runPooled, storageDurability } from '../../../packages/platform/src/index.js';
 
@@ -92,4 +93,14 @@ test('whether the data survives a restart is asked of the filesystem, not the pl
   // A machine with no mount table to read is taken at its word. Telling
   // somebody their own disk might be wiped is worse than saying nothing.
   assert.deepEqual(storageDurability('C:/Users/someone/AppData/Local/SillyTavernManager', ''), { durable: true, filesystem: null });
+
+  // The answer may not depend on which machine asked the question. A mount
+  // table is a POSIX idea and its paths are POSIX paths, so an absolute one is
+  // compared as written rather than run through the platform's own resolver -
+  // which on Windows turns /data into \\data and matches nothing. This test
+  // ran green on Linux and red on Windows CI until it did.
+  assert.equal(posix.normalize('/data/sillytavern-manager'), '/data/sillytavern-manager');
+  for (const root of ['/data/sillytavern-manager', '/data/./sillytavern-manager', '/data/nested/../sillytavern-manager']) {
+    assert.deepEqual(storageDurability(root, container), { durable: false, filesystem: 'overlay' }, root);
+  }
 });
