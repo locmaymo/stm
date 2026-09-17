@@ -81,7 +81,10 @@ export function LegalDialog({ t, locale, open, onOpenChange, document, onDocumen
       <DialogFooter className="sm:justify-between">
         <a
           className="legal-source"
-          href={`${bundle.meta.site}/${current.id}`}
+          // The site keeps Vietnamese under `/vi`, so a reader following this
+          // arrives in the language they are already reading rather than in
+          // English with a switch to find.
+          href={`${bundle.meta.site}${locale === 'en' ? '' : `/${locale}`}/${current.id}`}
           target="_blank"
           rel="noreferrer noopener"
         >{t('legal.online')}<ArrowUpRight className="size-3.5" /></a>

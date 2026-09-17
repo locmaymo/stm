@@ -4,7 +4,8 @@ import { fileURLToPath } from 'node:url';
 import process from 'node:process';
 import { homePage } from './src/pages/home.mjs';
 import { docsPage } from './src/pages/docs.mjs';
-import { LOCALES, localeRoot } from './src/content/strings.mjs';
+import { LEGAL_DOCUMENTS, legalPage } from './src/pages/legal.mjs';
+import { LOCALES, SITE_ORIGIN, localeRoot } from './src/content/strings.mjs';
 import { home } from './src/content/home.mjs';
 import { docs } from './src/content/docs.mjs';
 
@@ -28,6 +29,10 @@ const dist = join(here, 'dist');
 const pages = [
   { path: '/', render: homePage },
   { path: '/docs', render: docsPage },
+  // The four legal documents, rendered straight out of `packages/legal` - the
+  // same file the manager compiles into its own dialog, so the page somebody
+  // is linked to and the text they accepted cannot disagree.
+  ...LEGAL_DOCUMENTS.map((id) => ({ path: `/${id}`, render: (locale) => legalPage(locale, id) })),
 ];
 
 await checkContentParity();
@@ -53,7 +58,37 @@ for (const locale of LOCALES) {
   }
 }
 
+await writeSitemap();
+await writeRobots();
+
 console.log(`Site built: ${written} pages, ${await count(dist)} files in ${relative(repository, dist)}`);
+
+/**
+ * Every page, in both languages, for a crawler that would otherwise have to
+ * find `/vi` by following a link in a header it may not read.
+ */
+async function writeSitemap() {
+  const today = new Date().toISOString().slice(0, 10);
+  const urls = pages.flatMap((page) => LOCALES.map((locale) => {
+    const path = page.path === '/' ? '/' : page.path;
+    const location = `${SITE_ORIGIN}${localeRoot(locale)}${path}`;
+    const alternates = LOCALES
+      .map((other) => `    <xhtml:link rel="alternate" hreflang="${other}" href="${SITE_ORIGIN}${localeRoot(other)}${path}"/>`)
+      .join('\n');
+    return `  <url>\n    <loc>${location}</loc>\n${alternates}\n    <lastmod>${today}</lastmod>\n  </url>`;
+  }));
+  const body = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">\n${urls.join('\n')}\n</urlset>\n`;
+  await writeFile(join(dist, 'sitemap.xml'), body, 'utf8');
+}
+
+/**
+ * The OAuth relay is the one path here that should not be indexed: it is
+ * reached mid-sign-in with a code in its query and is of no use to a reader.
+ */
+async function writeRobots() {
+  const body = `User-agent: *\nAllow: /\nDisallow: /oauth/\n\nSitemap: ${SITE_ORIGIN}/sitemap.xml\n`;
+  await writeFile(join(dist, 'robots.txt'), body, 'utf8');
+}
 
 /**
  * The panel's icons are the site's icons, produced by the same script from the

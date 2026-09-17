@@ -14,6 +14,8 @@
 [![Node.js 22+](https://img.shields.io/badge/node-%E2%89%A5%2022-5FA04E?style=flat-square&logo=nodedotjs&logoColor=white)](https://nodejs.org)
 [![License AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-8b5cf6?style=flat-square)](LICENSE)
 
+[Trang web](https://stm.phamloc.top/vi/) ·
+[Tài liệu](https://stm.phamloc.top/vi/docs) ·
 [Tải về](https://github.com/locmaymo/stm/releases/latest) ·
 [npm](https://www.npmjs.com/package/sillytavern-manager) ·
 [Bắt đầu nhanh](#bắt-đầu-nhanh) ·
@@ -354,7 +356,13 @@ Mọi thứ đều đặt được trong panel. Các biến môi trường sau, 
 
 Khi cả bốn giá trị `STM_R2_*` đều được đặt, sao lưu R2 sẽ bật sẵn ngay lần đầu.
 
-## Telemetry và quyền riêng tư
+## Điều khoản, miễn trừ trách nhiệm và quyền riêng tư
+
+[Điều khoản sử dụng](https://stm.phamloc.top/vi/terms), [Tuyên bố miễn trừ trách nhiệm](https://stm.phamloc.top/vi/disclaimer), [Thông báo quyền riêng tư](https://stm.phamloc.top/vi/privacy) và [Thông báo](https://stm.phamloc.top/vi/notices) được công bố trên trang web và đi kèm luôn trong ứng dụng: màn hình chạy lần đầu mở chúng ra từ dòng chữ cạnh ô tick, và **Thiết lập → Về trình quản lý** mở lại về sau. Nội dung chỉ tồn tại một bản, trong [`packages/legal`](packages/legal), mọi nơi hiển thị nó đều chỉ là một cách trình bày tệp đó.
+
+Nói ngắn: dự án này không liên kết với SillyTavern; nó clone kho mã công khai về máy bạn theo yêu cầu của bạn. Dự án không vận hành dịch vụ nào, không giữ bản sao dữ liệu của bạn, và không có gì để kiểm duyệt. Tài nguyên Cloudflare cùng các khoản phí đi kèm là của bạn, trong chính tài khoản của bạn. Sao lưu là công cụ chứ không phải lời hứa.
+
+### Telemetry
 
 Telemetry là một phần của dự án miễn phí này. Manager chỉ gửi summary trong allowlist: nền tảng, phiên bản ứng dụng, provider, model, hostname endpoint, cờ streaming, max tokens, input/output/total tokens, cache, reasoning token, status và duration.
 

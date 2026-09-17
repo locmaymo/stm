@@ -14,6 +14,8 @@
 [![Node.js 22+](https://img.shields.io/badge/node-%E2%89%A5%2022-5FA04E?style=flat-square&logo=nodedotjs&logoColor=white)](https://nodejs.org)
 [![License AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-8b5cf6?style=flat-square)](LICENSE)
 
+[Website](https://stm.phamloc.top) ·
+[Documentation](https://stm.phamloc.top/docs) ·
 [Download](https://github.com/locmaymo/stm/releases/latest) ·
 [npm](https://www.npmjs.com/package/sillytavern-manager) ·
 [Quick start](#quick-start) ·
@@ -354,7 +356,13 @@ Everything can be set in the panel. These environment variables, read from the p
 
 With all four `STM_R2_*` values set, R2 backups are switched on the first time the manager starts.
 
-## Telemetry and privacy
+## Terms, disclaimer and privacy
+
+The project's [Terms of Use](https://stm.phamloc.top/terms), [Disclaimer](https://stm.phamloc.top/disclaimer), [Privacy Notice](https://stm.phamloc.top/privacy) and [Notices](https://stm.phamloc.top/notices) are published on the site and ship inside the application: the first-run screen opens them from the line beside the tick, and **Settings → About** opens them again afterwards. The text lives once, in [`packages/legal`](packages/legal), and everything that shows it is a view of that file.
+
+In short: this project is not affiliated with SillyTavern; it clones the public repository onto your machine at your request. It operates no service, holds no copy of your data, and has nothing to moderate. Cloudflare resources and the charges they carry are yours, in your own account. Backups are a tool rather than a promise.
+
+### Telemetry
 
 Telemetry is part of this free project. The manager sends only an allowlisted summary: platform, application version, provider, model, endpoint hostname, streaming flag, max tokens, input/output/total tokens, cache usage, reasoning-token usage, status and duration.
 

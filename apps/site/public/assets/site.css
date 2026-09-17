@@ -198,9 +198,12 @@ html.dark [data-theme-icon="light"] { display: none; }
 
 /* ---- sections -------------------------------------------------------- */
 
-section { padding-block: 56px; }
-section + section { border-top: 1px solid var(--border); }
-@media (min-width: 640px) { section { padding-block: 76px; } }
+/* The landing page's bands. Scoped to `main >` so the documentation and the
+   legal documents, whose sections are nested inside an article, do not each
+   pick up 76px of padding and a rule above them. */
+main > section { padding-block: 56px; }
+main > section + section { border-top: 1px solid var(--border); }
+@media (min-width: 640px) { main > section { padding-block: 76px; } }
 
 .section-head { max-width: 42rem; margin-bottom: 30px; }
 .eyebrow { margin: 0 0 8px; color: var(--primary); font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
@@ -360,6 +363,29 @@ tbody tr:last-child td { border-bottom: 0; }
 .code figcaption { padding: 8px 14px; border-bottom: 1px solid var(--border); background: var(--muted); color: var(--muted-foreground); font-size: 12px; font-weight: 600; }
 .code pre { margin: 0; padding: 14px; overflow-x: auto; font-size: 13px; line-height: 1.7; tab-size: 2; }
 .code code { font-size: inherit; }
+
+/* ---- the legal documents --------------------------------------------- */
+
+/*
+ * Legal prose, set to be read rather than to be scrolled past.
+ *
+ * Measure first: a 62-character line is the difference between somebody
+ * reading a clause and giving up on the page. The numbers are in the markup,
+ * not in a counter, so a clause cited as "4.2" in an e-mail can still be found
+ * by somebody opening the page a year later.
+ */
+.legal-page .docs-head .eyebrow { display: inline-flex; align-items: center; gap: 7px; }
+.legal-page .docs-head .eyebrow svg { width: 15px; height: 15px; }
+.legal-page .docs-body { max-width: 42rem; }
+.legal-page .legal-meta { margin: 16px 0 0; color: var(--muted-foreground); font-size: 13px; }
+.legal-section { margin-top: 30px; scroll-margin-top: calc(var(--header-height) + 16px); }
+.legal-section h2 { display: flex; gap: 10px; margin: 0 0 12px; font-size: 19px; }
+.legal-section p { margin: 0 0 12px; }
+.legal-number { color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.docs-toc .legal-number { margin-inline-end: 6px; }
+.legal-foot { margin-top: 44px; padding-top: 22px; border-top: 1px solid var(--border); color: var(--muted-foreground); font-size: 13.5px; }
+.legal-foot p { margin: 0 0 10px; }
+.legal-foot p:last-child { display: flex; flex-wrap: wrap; gap: 8px 12px; margin: 0; }
 
 /* ---- the OAuth relay page -------------------------------------------- */
 

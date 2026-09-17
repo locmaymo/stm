@@ -38,10 +38,13 @@ export default [
     },
   },
   {
-    // The site builder runs in Node and writes files.
+    // The site builder runs in Node and writes files. `ecmaVersion: 'latest'`
+    // because it reads the legal texts with an import attribute, which the
+    // 2022 grammar the rest of this config uses cannot parse.
     files: ['apps/site/**/*.mjs'],
     ignores: ['apps/site/public/**'],
     languageOptions: {
+      ecmaVersion: 'latest',
       globals: { URL: 'readonly' },
     },
   },

@@ -24,6 +24,12 @@ export const strings = {
   en: {
     language: 'English',
     otherLanguage: 'Tiếng Việt',
+    legal: {
+      label: 'Legal',
+      documents: 'Documents',
+      inThisDocument: 'In this document',
+      footer: 'This is the same text the manager shows at its first run and in **Settings → About**. It ships inside the application, so it can be read without an internet connection.',
+    },
     switchLanguage: 'Đọc trang này bằng tiếng Việt',
     skip: 'Skip to content',
     useDark: 'Switch to the dark theme',
@@ -72,6 +78,12 @@ export const strings = {
   vi: {
     language: 'Tiếng Việt',
     otherLanguage: 'English',
+    legal: {
+      label: 'Pháp lý',
+      documents: 'Các văn bản',
+      inThisDocument: 'Trong văn bản này',
+      footer: 'Đây đúng là nội dung mà trình quản lý hiển thị ở lần chạy đầu tiên và trong **Thiết lập → Về trình quản lý**. Nội dung này đi kèm ứng dụng, nên đọc được mà không cần kết nối internet.',
+    },
     switchLanguage: 'Read this page in English',
     skip: 'Tới nội dung chính',
     useDark: 'Chuyển sang giao diện tối',
