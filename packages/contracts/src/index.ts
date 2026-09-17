@@ -45,7 +45,8 @@ export interface HealthResponse {
   readonly status: 'ok';
   readonly manager: {
     readonly version: string;
-    readonly port: 7860;
+    /** Where the console is actually listening, which `STM_PORT` can move. */
+    readonly port: number;
   };
   readonly setupRequired: boolean;
   readonly uptimeSeconds: number;

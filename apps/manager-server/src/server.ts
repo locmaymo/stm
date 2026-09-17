@@ -16,7 +16,8 @@ import { LOG_LIMITS, LogBuffer } from './log-buffer.js';
 import { SystemStore } from './system.js';
 import { panelStaticRoot } from './bootstrap.js';
 import { ProcessSupervisor } from './supervisor.js';
-import { AccessGateway, ACCESS_GATEWAY_PORT } from './gateway.js';
+import { AccessGateway } from './gateway.js';
+import { ACCESS_GATEWAY_PORT, checkSillyTavernPort, MANAGER_PORT, PortError, portFromEnvironment, SILLYTAVERN_PORT } from './ports.js';
 import { previewImage, previewLogo, previewManifest } from './preview.js';
 import { TunnelManager } from '../../../packages/tunnel/src/index.js';
 import { ProfileError, ProfileStore } from '../../../packages/profiles/src/index.js';
@@ -31,8 +32,6 @@ import { instrumentationLoaderPath } from '../../../packages/instrumentation/src
 import { ConfigError, ConfigStore } from '../../../packages/config/src/index.js';
 import { DEFAULT_TELEMETRY_ENDPOINT, DEFAULT_TELEMETRY_ENROLLMENT_ENDPOINT, TelemetryTransport } from '../../../packages/telemetry/src/index.js';
 
-const MANAGER_PORT = 7860 as const;
-const SILLYTAVERN_PORT = 8000 as const;
 const MAX_JSON_BYTES = 128 * 1024;
 const TERMS_VERSION = '2026-09-09';
 const TELEMETRY_NOTICE_VERSION = '2026-09-09';
@@ -71,6 +70,7 @@ const PROTECTED_PATHS = new Set([
   '/api/v1/profiles',
   '/api/v1/backups',
   '/api/v1/config',
+  '/api/v1/config/port',
   '/api/v1/access/security',
   '/api/v1/access/password',
   '/api/v1/access/network',
@@ -145,6 +145,20 @@ export interface ManagerServer {
   close(): Promise<void>;
 }
 
+/**
+ * The ports this process is actually using, as the routes see them.
+ *
+ * The console's and the gateway's are fixed for the life of the process, which
+ * is why they are numbers; SillyTavern's can move, which is why it is a pair of
+ * functions rather than a value read once at startup.
+ */
+interface ServerPorts {
+  readonly manager: number;
+  readonly access: number;
+  readonly sillyTavern: () => number;
+  readonly setSillyTavern: (port: number) => void;
+}
+
 interface RequestContext {
   readonly request: IncomingMessage;
   readonly response: ServerResponse;
@@ -153,6 +167,7 @@ interface RequestContext {
   readonly originTrusted: boolean;
   /** The address the panel is reached at from outside, when the request cannot say. */
   readonly publicOrigin: string | null;
+  readonly ports: ServerPorts;
   readonly sessionToken: string | undefined;
 }
 
@@ -173,16 +188,29 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   const cloudflare = options.cloudflare !== undefined ? options.cloudflare : cloudflareConnectionFromEnvironment(paths, env);
   const r2 = options.r2 ?? new R2Manager({ paths, env, ...(cloudflare ? { cloudflare } : {}), logger: (line) => { jobs.append('backup', line); baseLogger(line); } });
   const metrics = options.metrics ?? new MetricsStore(paths);
-  const config = options.config ?? new ConfigStore({ logger: (line) => { jobs.append('manager', line); baseLogger(line); } });
-  const accessPort = options.accessPort ?? (Number(env.STM_ACCESS_PORT ?? '') || ACCESS_GATEWAY_PORT);
+  /**
+   * The port SillyTavern runs on, as everything that needs it reads it.
+   *
+   * A variable rather than a constant because the console can move it while it
+   * runs, and the gateway, the supervisor and the config writer all have to see
+   * the same answer. Its stored value is read below, once the state file has
+   * been loaded; until then the shipped port stands.
+   */
+  let sillyTavernPort: number = SILLYTAVERN_PORT;
+  const config = options.config ?? new ConfigStore({ managedPort: () => sillyTavernPort, logger: (line) => { jobs.append('manager', line); baseLogger(line); } });
+  const accessPort = options.accessPort ?? portFromEnvironment(env.STM_ACCESS_PORT, ACCESS_GATEWAY_PORT);
   // The console shows SillyTavern in a frame, and the console is the only
   // page allowed to. Both spellings of the loopback address are named because
   // which one is in the address bar is the reader's choice, not ours, and an
   // origin is compared as written.
-  const consolePort = options.port ?? MANAGER_PORT;
+  // Only from the environment, and only at startup: moving the port from a page
+  // that is served on it would take that page down with it.
+  const consolePort = options.port ?? portFromEnvironment(env.STM_PORT, MANAGER_PORT);
+  /** Filled in once the listener is up; an ephemeral port is not known before that. */
+  let boundPort: number = consolePort;
   const gateway = options.gateway ?? new AccessGateway({
     port: accessPort,
-    targetPort: SILLYTAVERN_PORT,
+    targetPort: sillyTavernPort,
     frameAncestors: [`http://127.0.0.1:${consolePort}`, `http://localhost:${consolePort}`],
     // The sign-in page shows SillyTavern's own mark, read from whatever
     // version is installed rather than kept in this repository.
@@ -195,6 +223,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   });
   const supervisor = options.supervisor ?? new ProcessSupervisor({
     runtime,
+    port: () => sillyTavernPort,
     profileResolver: (installation) => profiles.getActiveForInstallation(installation.id),
     profileLifecycle: {
       prepare: async (profile, runtimePath) => {
@@ -272,6 +301,17 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   const publicOrigin = options.publicOrigin !== undefined ? options.publicOrigin : publicOriginFromEnvironment(env, consolePort);
   const staticRoot = options.staticRoot ? resolve(options.staticRoot) : panelStaticRoot(env);
   let persisted = await store.load();
+  // A stored port that would now collide - because `STM_PORT` or
+  // `STM_ACCESS_PORT` moved since it was chosen - is dropped rather than
+  // obeyed: two services fighting for one port is worse than SillyTavern
+  // being somewhere other than where it was left.
+  try {
+    sillyTavernPort = checkSillyTavernPort(persisted.sillyTavernPort, { manager: consolePort, access: accessPort });
+  } catch (error: unknown) {
+    logger(logEvent('config.portReset', `[config] SillyTavern's port ${persisted.sillyTavernPort} is no longer usable (${error instanceof Error ? error.message : 'unknown reason'}); using ${SILLYTAVERN_PORT}`, { port: persisted.sillyTavernPort }));
+    sillyTavernPort = SILLYTAVERN_PORT;
+  }
+  gateway.setTargetPort(sillyTavernPort);
   const testRuntime = process.env.NODE_ENV === 'test' || process.argv.includes('--test') || process.execArgv.includes('--test');
   const telemetryEndpoint = env.STM_TELEMETRY_ENDPOINT ?? (testRuntime ? undefined : DEFAULT_TELEMETRY_ENDPOINT);
   const telemetryEnrollmentEndpoint = env.STM_TELEMETRY_ENROLLMENT_ENDPOINT ?? (testRuntime ? undefined : DEFAULT_TELEMETRY_ENROLLMENT_ENDPOINT);
@@ -317,6 +357,14 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       startedAt,
       secureCookies,
       publicOrigin,
+      ports: {
+        // The port that was actually bound, which is not the one asked for when
+        // the caller asked for an ephemeral one.
+        manager: boundPort,
+        access: accessPort,
+        sillyTavern: () => sillyTavernPort,
+        setSillyTavern: (port) => { sillyTavernPort = port; gateway.setTargetPort(port); },
+      },
       staticRoot,
       platform: paths.platform,
       logger,
@@ -383,6 +431,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   await listen(server, host, port);
   const address = server.address();
   const actualPort = address && typeof address !== 'string' ? address.port : port;
+  boundPort = actualPort;
   // The door opens with the manager rather than with SillyTavern, so its
   // address is the same one every time and a saved bookmark keeps working.
   gateway.setPassword(persisted.accessPasswordHash, persisted.accessPasscode);
@@ -438,6 +487,7 @@ async function handleRequest(options: {
   readonly startedAt: number;
   readonly secureCookies: boolean;
   readonly publicOrigin: string | null;
+  readonly ports: ServerPorts;
   readonly staticRoot: string;
   readonly platform: PlatformPaths['platform'];
   readonly logger: LogSink;
@@ -456,7 +506,7 @@ async function handleRequest(options: {
   readonly shutdownToken: string | null;
   readonly onShutdownRequest: (() => void) | undefined;
 }): Promise<void> {
-  const { request, response, store, sessions, rateLimiter, startedAt, secureCookies, publicOrigin, staticRoot, platform, runtime, jobs, supervisor, tunnel, gateway, profiles, backups, r2, cloudflare, metrics, config, system, shutdownToken, onShutdownRequest } = options;
+  const { request, response, store, sessions, rateLimiter, startedAt, secureCookies, publicOrigin, ports, staticRoot, platform, runtime, jobs, supervisor, tunnel, gateway, profiles, backups, r2, cloudflare, metrics, config, system, shutdownToken, onShutdownRequest } = options;
   const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
   const pathname = url.pathname;
   const context: RequestContext = {
@@ -466,6 +516,7 @@ async function handleRequest(options: {
     searchParams: url.searchParams,
     originTrusted: isTrustedOrigin(request, platform, publicOrigin),
     publicOrigin,
+    ports,
     sessionToken: parseSessionCookie(headerValue(request.headers.cookie), COOKIE_NAME),
   };
 
@@ -487,7 +538,7 @@ async function handleRequest(options: {
     const state = await store.getPersisted();
     const health: HealthResponse = {
       status: 'ok',
-      manager: { version: state.managerVersion, port: MANAGER_PORT },
+      manager: { version: state.managerVersion, port: ports.manager },
       setupRequired: state.adminPasswordHash === null,
       uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
       storage: { durable: store.paths.platform !== 'unknown' },
@@ -570,7 +621,7 @@ async function handleRequest(options: {
 }
 
 async function handleRuntimeRequest(context: RequestContext, store: StateStore, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, gateway: AccessGateway, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, cloudflare: CloudflareConnection | null, metrics: MetricsStore, config: ConfigStore, system: SystemStore): Promise<void> {
-  const { pathname, request, response, searchParams } = context;
+  const { pathname, ports, request, response, searchParams } = context;
   const method = request.method ?? 'GET';
   if (pathname === '/api/v1/auth/password' && method === 'POST') {
     const body = await readJson(request);
@@ -612,6 +663,48 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     const saved = await config.update(profile, installation, input);
     const process = wasRunning ? await supervisor.start() : supervisor.getState();
     sendJson(response, 200, { config: await decorateConfig(saved), process, tunnel: tunnel.getState() });
+    return;
+  }
+  /**
+   * Move SillyTavern to another port.
+   *
+   * Its own route rather than a field of the config editor, because the number
+   * has to be checked against the console's port and the gateway's before
+   * anything is written, and because moving it means restarting SillyTavern:
+   * leaving the door pointed at a port nothing answers on would read as
+   * SillyTavern having crashed.
+   */
+  if (pathname === '/api/v1/config/port' && method === 'GET') {
+    // The reserved pair comes back with it: the panel needs to say which port
+    // is taken and by what, rather than only that the number was refused.
+    sendJson(response, 200, { port: ports.sillyTavern(), reserved: { manager: ports.manager, access: ports.access } });
+    return;
+  }
+  if (pathname === '/api/v1/config/port' && method === 'PUT') {
+    const body = await readJson(request);
+    if (!isRecord(body)) { sendError(response, 400, 'invalid_input', 'A port is required'); return; }
+    let port: number;
+    try {
+      port = checkSillyTavernPort(body.port, { manager: ports.manager, access: ports.access });
+    } catch (error: unknown) {
+      if (error instanceof PortError) { sendError(response, 400, error.code, error.message); return; }
+      throw error;
+    }
+    if (port === ports.sillyTavern()) { sendJson(response, 200, { port, process: supervisor.getState() }); return; }
+    const wasRunning = supervisor.getState().status === 'running';
+    if (wasRunning) await supervisor.stop('configChange');
+    await store.setSillyTavernPort(port);
+    ports.setSillyTavern(port);
+    // Write it into the file too, so a reader of config.yaml is not told one
+    // thing while SillyTavern is started with another.
+    const profile = await profiles.getActive();
+    const installation = await runtime.getActiveInstallation();
+    if (profile && installation?.status === 'ready') {
+      try { await config.applyManagedDefaults(profile, installation); }
+      catch (error: unknown) { if (!(error instanceof ConfigError) || error.code !== 'config_missing') throw error; }
+    }
+    const process = wasRunning ? await supervisor.start() : supervisor.getState();
+    sendJson(response, 200, { port, process });
     return;
   }
   if (pathname === '/api/v1/config/reset' && method === 'POST') {

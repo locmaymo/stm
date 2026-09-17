@@ -4,12 +4,13 @@ import { readFile } from 'node:fs/promises';
 import type { Duplex } from 'node:stream';
 import { logEvent, logLineText, type AccessGatewayState, type LogSink } from '../../../packages/contracts/src/index.js';
 import { verifyPassword } from './password.js';
+import { ACCESS_GATEWAY_PORT, SILLYTAVERN_PORT } from './ports.js';
 import { RateLimiter } from './rate-limit.js';
 
 export const ACCESS_COOKIE_NAME = 'stm_access';
 /** Scoped to the sign-in path, so SillyTavern never receives it either. */
 const LOGIN_COOKIE_NAME = 'stm_login';
-export const ACCESS_GATEWAY_PORT = 8001 as const;
+export { ACCESS_GATEWAY_PORT } from './ports.js';
 const LOGIN_PATH = '/__stm/login';
 const LOGOUT_PATH = '/__stm/logout';
 /**
@@ -138,7 +139,11 @@ export class AccessGateway {
   private readonly logger: LogSink;
   private readonly port: number;
   private readonly targetHost: string;
-  private readonly targetPort: number;
+  /**
+   * Not readonly: SillyTavern can be moved to another port while the manager
+   * runs, and the door has to follow it to the new one on the next request.
+   */
+  private targetPort: number;
   private readonly now: () => number;
   private readonly sessionTtlMs: number;
   private readonly brandLogo: (() => Promise<string | null>) | null;
@@ -195,7 +200,7 @@ export class AccessGateway {
     this.logger = options.logger ?? ((line) => console.log(logLineText(line)));
     this.port = options.port ?? ACCESS_GATEWAY_PORT;
     this.targetHost = options.targetHost ?? '127.0.0.1';
-    this.targetPort = options.targetPort ?? 8000;
+    this.targetPort = options.targetPort ?? SILLYTAVERN_PORT;
     this.now = options.now ?? Date.now;
     this.sessionTtlMs = options.sessionTtlMs ?? SESSION_TTL_MS;
     this.brandLogo = options.brandLogo ?? null;
@@ -211,6 +216,21 @@ export class AccessGateway {
   }
 
   public getState(): AccessGatewayState { return { ...this.state, sessions: this.sessionCount() }; }
+
+  /**
+   * Follow SillyTavern to another port.
+   *
+   * Nothing is restarted: the next request opens its connection to the new
+   * port, and the sessions already signed in stay signed in, because the door
+   * has not changed - only what is behind it.
+   */
+  public setTargetPort(port: number): void {
+    if (this.targetPort === port) return;
+    this.targetPort = port;
+    this.logger(logEvent('gateway.targetPort', `[gateway] now serving SillyTavern on port ${port}`, { port }));
+  }
+
+  public getTargetPort(): number { return this.targetPort; }
 
   /** Adopts a new password, and ends every session opened with the old one. */
   public setPassword(passwordHash: string | null, passcode = false): void {

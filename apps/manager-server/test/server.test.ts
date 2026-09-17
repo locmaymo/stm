@@ -84,7 +84,9 @@ test('setup, login, CSRF, health, and logout work on the manager port', async (t
 
   const health = await fetch(`${base}/api/v1/health`);
   assert.equal(health.status, 200);
-  assert.equal((await health.json() as { manager: { port: number } }).manager.port, 7860);
+  // The port it is actually listening on, not the one it would have taken by
+  // default: `STM_PORT` can move it, and a test asks for an ephemeral one.
+  assert.equal((await health.json() as { manager: { port: number } }).manager.port, manager.port);
 
   const panel = await fetch(`${base}/`);
   assert.equal(panel.status, 200);
@@ -195,6 +197,47 @@ test('R2 settings are authenticated, masked, and preserve masked credentials', a
   assert.equal(visible.status, 200);
   assert.equal(visibleText.includes('secret-key-5678'), false);
   assert.equal(visibleText.includes('access-key-1234'), false);
+});
+
+test('SillyTavern can be moved to another port, but never onto one the manager holds', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-port-api-'));
+  const manager = await createServer({ root, bootstrapPassword: 'correct horse battery staple' });
+  // Closed by hand below to reopen the same directory, so the cleanup only runs
+  // if the test gave up before getting there.
+  let stillOpen = true;
+  t.after(async () => { if (stillOpen) await manager.close(); });
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  const headers = { cookie: auth.cookie, 'x-csrf-token': auth.csrfToken, origin: base, 'content-type': 'application/json' };
+  const put = (port: unknown): Promise<Response> => fetch(`${base}/api/v1/config/port`, { method: 'PUT', headers, body: JSON.stringify({ port }) });
+
+  const before = await (await fetch(`${base}/api/v1/config/port`, { headers: { cookie: auth.cookie } })).json() as { port: number; reserved: { manager: number } };
+  assert.equal(before.port, 8000);
+  assert.equal(before.reserved.manager, manager.port, 'the panel is told which port the console itself holds');
+
+  // The console answers on this one, so SillyTavern may not have it.
+  const clash = await put(manager.port);
+  assert.equal(clash.status, 400);
+  assert.equal((await clash.json() as { error: { code: string } }).error.code, 'port_conflict');
+
+  const privileged = await put(80);
+  assert.equal(privileged.status, 400);
+  assert.equal((await privileged.json() as { error: { code: string } }).error.code, 'port_invalid');
+
+  const moved = await put(8123);
+  assert.equal(moved.status, 200);
+  assert.equal((await moved.json() as { port: number }).port, 8123);
+  assert.equal((await (await fetch(`${base}/api/v1/config/port`, { headers: { cookie: auth.cookie } })).json() as { port: number }).port, 8123);
+
+  // It has to outlive the process, or the next start would go back to 8000
+  // while the door carried on pointing at 8123.
+  stillOpen = false;
+  await manager.close();
+  const again = await createServer({ root });
+  t.after(() => again.close());
+  const reopened = serverUrl(again);
+  const session = await signIn(reopened);
+  assert.equal((await (await fetch(`${reopened}/api/v1/config/port`, { headers: { cookie: session.cookie } })).json() as { port: number }).port, 8123);
 });
 
 test('config follows the active runtime, and sharing waits for an access password', async (t) => {

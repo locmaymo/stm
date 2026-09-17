@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ManagerState } from '../../../packages/contracts/src/index.js';
 import { getPlatformPaths, type PlatformPaths } from '../../../packages/platform/src/index.js';
+import { SILLYTAVERN_PORT } from './ports.js';
 
 const STATE_FILE_NAME = 'manager-state.json';
 const STATE_SCHEMA_VERSION = 1 as const;
@@ -22,6 +23,15 @@ interface PersistedManagerState {
   readonly accessPasscode: boolean;
   /** Whether that gateway binds to the local network or to this machine only. */
   readonly accessLanEnabled: boolean;
+  /**
+   * Which port SillyTavern is started on.
+   *
+   * Kept here rather than read back from config.yaml because the console is
+   * what has to guarantee it does not collide with its own port or the
+   * gateway's, and a config restored from another machine carries that
+   * machine's answer.
+   */
+  readonly sillyTavernPort: number;
   readonly setupAcceptedAt: string | null;
   readonly termsVersion: string;
   readonly telemetryNoticeVersion: string;
@@ -71,6 +81,7 @@ export class StateStore {
         accessPasswordHash: null,
         accessPasscode: false,
         accessLanEnabled: false,
+        sillyTavernPort: SILLYTAVERN_PORT,
         setupAcceptedAt: null,
         termsVersion: TERMS_VERSION,
         telemetryNoticeVersion: TELEMETRY_NOTICE_VERSION,
@@ -114,6 +125,20 @@ export class StateStore {
     const operation = async (): Promise<void> => {
       const state = await this.load();
       const updated: PersistedManagerState = { ...state, accessPasswordHash: passwordHash, accessPasscode: passcode, updatedAt: this.now().toISOString() };
+      await this.write(updated);
+      this.state = updated;
+    };
+    const previous = this.adminWriteQueue;
+    this.adminWriteQueue = previous.then(operation, operation);
+    await this.adminWriteQueue;
+  }
+
+  /** Record the port SillyTavern is to be started on from now on. */
+  public async setSillyTavernPort(port: number): Promise<void> {
+    const operation = async (): Promise<void> => {
+      const state = await this.load();
+      if (state.sillyTavernPort === port) return;
+      const updated: PersistedManagerState = { ...state, sillyTavernPort: port, updatedAt: this.now().toISOString() };
       await this.write(updated);
       this.state = updated;
     };
@@ -246,7 +271,14 @@ export class StateStore {
     // Absent in a file written before passcodes existed, which is exactly the
     // case that has to keep its password field.
     const accessPasscode = input.accessPasscode === true;
-    return { ...input, accessPasswordHash, accessPasscode, accessLanEnabled } as unknown as PersistedManagerState;
+    // Written before the port could be moved, or written by a newer version and
+    // read back by an older one: either way the shipped port is the answer that
+    // matches what the file it describes actually says.
+    const storedPort = input.sillyTavernPort;
+    const sillyTavernPort = typeof storedPort === 'number' && Number.isInteger(storedPort) && storedPort > 0 && storedPort <= 65535
+      ? storedPort
+      : SILLYTAVERN_PORT;
+    return { ...input, accessPasswordHash, accessPasscode, accessLanEnabled, sillyTavernPort } as unknown as PersistedManagerState;
   }
 }
 
