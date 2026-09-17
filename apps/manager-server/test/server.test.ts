@@ -1066,3 +1066,58 @@ test('an interval an older version kept with the R2 settings moves to the backup
   // Handed over once: the R2 file no longer carries it.
   assert.equal((await readFile(join(manager.store.paths.state, 'r2-config.json'), 'utf8')).includes('localIntervalMinutes'), false);
 });
+
+test('a console behind a proxy is reached at the address the browser used, not the one we see', async (t) => {
+  const manager = await createServer({ bootstrapPassword: 'correct horse battery staple' });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+
+  // A proxy that rewrites Host leaves the browser's own address here instead.
+  // Without reading it, every request from the panel it is serving looks like
+  // one from a stranger and the console answers nothing at all.
+  const forwarded = await fetch(`${base}/api/v1/health`, {
+    headers: { origin: 'https://console.example.net', 'x-forwarded-host': 'console.example.net' },
+  });
+  assert.equal(forwarded.status, 200);
+
+  // A chain of proxies appends to the header; the browser's is the first.
+  const chained = await fetch(`${base}/api/v1/health`, {
+    headers: { origin: 'https://console.example.net', 'x-forwarded-host': 'console.example.net, inner.internal' },
+  });
+  assert.equal(chained.status, 200);
+
+  // And it is still only that address: a header naming one host does not let a
+  // different one through behind it.
+  const stranger = await fetch(`${base}/api/v1/health`, {
+    headers: { origin: 'https://evil.example', 'x-forwarded-host': 'console.example.net' },
+  });
+  assert.equal(stranger.status, 403);
+});
+
+test('a session started over HTTPS that a proxy terminated is one a frame can keep', async (t) => {
+  const manager = await createServer({ bootstrapPassword: 'correct horse battery staple' });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+
+  // This connection is plain HTTP, and the browser's was not. Only the proxy's
+  // header says so, and the cookie's attributes depend on the answer: a console
+  // read inside another site's frame needs SameSite=None, which needs Secure.
+  const secure = await fetch(`${base}/api/v1/auth/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-forwarded-proto': 'https' },
+    body: JSON.stringify({ password: 'correct horse battery staple' }),
+  });
+  assert.equal(secure.status, 200);
+  assert.match(secure.headers.get('set-cookie') ?? '', /SameSite=None; Secure/);
+
+  // On a machine somebody is sitting at, none of that applies and the cookie
+  // stays as narrow as it has always been.
+  const plain = await fetch(`${base}/api/v1/auth/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ password: 'correct horse battery staple' }),
+  });
+  assert.equal(plain.status, 200);
+  assert.match(plain.headers.get('set-cookie') ?? '', /SameSite=Lax/);
+  assert.doesNotMatch(plain.headers.get('set-cookie') ?? '', /Secure/);
+});

@@ -421,6 +421,7 @@
     "cfConnectHint": "Sign in to Cloudflare and the manager sets up a bucket for your backups. Nothing to copy or paste.",
     "cfConnectInstead": "Or sign in with Cloudflare instead",
     "cfConnectFailed": "Could not start signing in to Cloudflare",
+    "cfConnectPopupBlocked": "This window cannot open the Cloudflare sign-in. Copy the link below and open it in a new tab.",
     "cfConnectedAs": "{account} · bucket {bucket}",
     "cfChooseAccount": "Choose which Cloudflare account to back up to.",
     "cfUseAccount": "Use this account",

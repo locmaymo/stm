@@ -632,7 +632,11 @@ async function handleRequest(options: {
   readonly shutdownToken: string | null;
   readonly onShutdownRequest: (() => void) | undefined;
 }): Promise<void> {
-  const { request, response, store, sessions, rateLimiter, startedAt, secureCookies, publicOrigins, ports, staticRoot, platform, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, config, system, shutdownToken, onShutdownRequest } = options;
+  const { request, response, store, sessions, rateLimiter, startedAt, publicOrigins, ports, staticRoot, platform, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, config, system, shutdownToken, onShutdownRequest } = options;
+  // Whether the browser's side of this connection is HTTPS, which is not the
+  // same question as whether ours is: a hosted console is reached over HTTPS
+  // that a proxy terminates before us, and only the proxy's own header says so.
+  const secureCookies = options.secureCookies || requestIsSecure(request);
   const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
   const pathname = url.pathname;
   const context: RequestContext = {
@@ -1905,10 +1909,46 @@ function isTrustedOrigin(request: IncomingMessage, platform: PlatformPaths['plat
     // A port-forwarding proxy rewrites `Host` to the loopback address it
     // connects to, so the panel's own origin no longer matches it.
     if (publicOrigins.includes(parsed.origin)) return true;
+    // A proxy that rewrites `Host` is meant to leave the address the browser
+    // actually used here. Believing it costs nothing a browser can spend: a
+    // page on another site cannot put this header on a request without asking
+    // permission first, in a preflight this console never grants.
+    const forwardedHost = forwardedValue(request, 'x-forwarded-host');
+    if (forwardedHost && parsed.host === forwardedHost) return true;
     return platform === 'modelscope' && isModelScopeOrigin(parsed.hostname);
   } catch {
     return false;
   }
+}
+
+/**
+ * Whether the browser reached the console over HTTPS.
+ *
+ * Not the same question as whether this process is speaking TLS. A console on
+ * a hosting platform is behind a proxy that terminates HTTPS and forwards plain
+ * HTTP over the loopback, so the connection here is the insecure half of a
+ * secure request, and the header the proxy adds is the only record of the other
+ * half. It decides whether the session cookie may say `Secure`, and with it
+ * whether the cookie survives being read inside a frame.
+ */
+function requestIsSecure(request: IncomingMessage): boolean {
+  const forwarded = forwardedValue(request, 'x-forwarded-proto');
+  if (forwarded) return forwarded === 'https';
+  return 'encrypted' in request.socket;
+}
+
+/**
+ * The first entry of a forwarded header.
+ *
+ * Each proxy a request passes through appends its own, so a chain arrives as
+ * `https, http` - and the first is the one the browser used, which is the only
+ * one any of this cares about.
+ */
+function forwardedValue(request: IncomingMessage, header: 'x-forwarded-host' | 'x-forwarded-proto'): string | null {
+  const raw = headerValue(request.headers[header]);
+  if (!raw) return null;
+  const first = raw.split(',')[0]?.trim().toLowerCase();
+  return first ? first : null;
 }
 
 /**

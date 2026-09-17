@@ -421,6 +421,7 @@
     "cfConnectHint": "Đăng nhập Cloudflare, trình quản lý sẽ tự tạo bucket để sao lưu. Không cần chép hay dán gì.",
     "cfConnectInstead": "Hoặc đăng nhập Cloudflare",
     "cfConnectFailed": "Không bắt đầu đăng nhập Cloudflare được",
+    "cfConnectPopupBlocked": "Cửa sổ này không mở được trang đăng nhập Cloudflare. Hãy chép đường dẫn bên dưới và mở ở tab mới.",
     "cfConnectedAs": "{account} · bucket {bucket}",
     "cfChooseAccount": "Chọn tài khoản Cloudflare để sao lưu vào.",
     "cfUseAccount": "Dùng tài khoản này",

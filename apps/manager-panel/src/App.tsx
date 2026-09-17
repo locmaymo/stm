@@ -2449,8 +2449,23 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       const response = await apiFetch('/api/v1/r2/cloudflare/connect', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       const payload = await response.json() as { url?: string; error?: { message?: string } };
       if (!response.ok || !payload.url) { tab?.close(); failed(fail.body(payload, t('console.cfConnectFailed'))); return; }
-      if (tab) tab.location.href = payload.url;
-      else window.location.assign(payload.url);
+      if (tab) { tab.location.href = payload.url; return; }
+      // A frame that is not allowed to open tabs leaves nowhere to send the
+      // reader: this one cannot show Cloudflare's sign-in, and sending it
+      // somewhere it will be refused would only blank the console. So hand
+      // over the address instead and let them open it themselves.
+      if (framed) {
+        const url = payload.url;
+        toast({
+          title: t('console.cfConnectPopupBlocked'),
+          description: url,
+          tone: 'attention',
+          duration: Number.POSITIVE_INFINITY,
+          action: { label: t('dashboard.copyLink'), onSelect: () => { void navigator.clipboard.writeText(url).catch(() => undefined); } },
+        });
+        return;
+      }
+      window.location.assign(payload.url);
     } catch { tab?.close(); failed(t('console.cfConnectFailed')); } finally { setCloudflareBusy(false); }
   };
   const chooseCloudflareAccount = async () => {
