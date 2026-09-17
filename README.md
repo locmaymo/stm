@@ -7,12 +7,15 @@
 **One control panel that installs, runs, shares, backs up and watches [SillyTavern](https://github.com/SillyTavern/SillyTavern) — on Windows, Android, macOS, Linux and Docker.**
 
 [![Latest release](https://img.shields.io/github/v/release/locmaymo/stm?style=flat-square&label=release&color=2563eb)](https://github.com/locmaymo/stm/releases/latest)
+[![npm](https://img.shields.io/npm/v/sillytavern-manager?style=flat-square&logo=npm&logoColor=white&color=cb3837)](https://www.npmjs.com/package/sillytavern-manager)
 [![Verify](https://img.shields.io/github/actions/workflow/status/locmaymo/stm/verify.yml?branch=main&style=flat-square&label=verify)](https://github.com/locmaymo/stm/actions/workflows/verify.yml)
-[![Downloads](https://img.shields.io/github/downloads/locmaymo/stm/total?style=flat-square&color=16a34a)](https://github.com/locmaymo/stm/releases)
+[![Release downloads](https://img.shields.io/github/downloads/locmaymo/stm/total?style=flat-square&label=downloads&color=16a34a)](https://github.com/locmaymo/stm/releases)
+[![npm downloads](https://img.shields.io/npm/dm/sillytavern-manager?style=flat-square&label=npm%20downloads&color=16a34a)](https://www.npmjs.com/package/sillytavern-manager)
 [![Node.js 22+](https://img.shields.io/badge/node-%E2%89%A5%2022-5FA04E?style=flat-square&logo=nodedotjs&logoColor=white)](https://nodejs.org)
 [![License AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-8b5cf6?style=flat-square)](LICENSE)
 
 [Download](https://github.com/locmaymo/stm/releases/latest) ·
+[npm](https://www.npmjs.com/package/sillytavern-manager) ·
 [Quick start](#quick-start) ·
 [Screenshots](#screenshots) ·
 [How it works](#how-it-works) ·
@@ -20,8 +23,8 @@
 [Tiếng Việt](README.vi.md)
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/overview-dark.webp">
-  <img src=".github/screenshots/overview.webp" alt="The SillyTavern Manager overview page: SillyTavern running, remote access, data and backups, system usage and live logs" width="900">
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/en/overview-dark.webp">
+  <img src=".github/screenshots/en/overview-light.webp" alt="The SillyTavern Manager overview page: SillyTavern running, remote access, data and backups, system usage and live logs" width="900">
 </picture>
 
 </div>
@@ -201,7 +204,7 @@ For a hosted container platform, expose port `7860`, provide `STM_ADMIN_PASSWORD
 
 <br>
 
-On a machine with Node.js 22 or newer, once the package is published:
+The manager is published on npm as [`sillytavern-manager`](https://www.npmjs.com/package/sillytavern-manager). On a machine with Node.js 22 or newer:
 
 ```bash
 npx sillytavern-manager
@@ -229,18 +232,40 @@ The manager password and the SillyTavern password are two different things. The 
 
 ## Screenshots
 
+Every shot below follows your own system theme, light or dark.
+
 <table>
 <tr>
-<td width="50%"><img src=".github/screenshots/data.webp" alt="Data page with profiles, local backups and Cloudflare R2"></td>
-<td width="50%"><img src=".github/screenshots/metrics.webp" alt="Metrics page with requests, tokens, cache hits and latency"></td>
+<td width="50%">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/en/data-dark.webp">
+  <img src=".github/screenshots/en/data-light.webp" alt="Data page with profiles, local backups and Cloudflare R2">
+</picture>
+</td>
+<td width="50%">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/en/metrics-dark.webp">
+  <img src=".github/screenshots/en/metrics-light.webp" alt="Metrics page with requests, tokens, cache hits and latency">
+</picture>
+</td>
 </tr>
 <tr>
 <td><b>Data</b> — profiles, scheduled and manual backups, Cloudflare R2 in one page.</td>
 <td><b>Metrics</b> — requests, tokens, cache hits and latency, per day, provider and model.</td>
 </tr>
 <tr>
-<td><img src=".github/screenshots/settings.webp" alt="Settings page with security and SillyTavern configuration"></td>
-<td><img src=".github/screenshots/sign-in.webp" alt="The manager sign-in screen"></td>
+<td>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/en/settings-dark.webp">
+  <img src=".github/screenshots/en/settings-light.webp" alt="Settings page with security and SillyTavern configuration">
+</picture>
+</td>
+<td>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/en/sign-in-dark.webp">
+  <img src=".github/screenshots/en/sign-in-light.webp" alt="The manager sign-in screen">
+</picture>
+</td>
 </tr>
 <tr>
 <td><b>Settings</b> — passwords, and SillyTavern's own <code>config.yaml</code> as plain switches.</td>
@@ -249,7 +274,10 @@ The manager password and the SillyTavern password are two different things. The 
 </table>
 
 <div align="center">
-<img src=".github/screenshots/mobile.webp" alt="The overview page on a phone" width="320">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/en/mobile-dark.webp">
+  <img src=".github/screenshots/en/mobile-light.webp" alt="The overview page on a phone" width="320">
+</picture>
 <p><b>On a phone</b> — the same panel, with the navigation moved to the bottom.</p>
 </div>
 

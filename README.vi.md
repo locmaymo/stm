@@ -7,12 +7,15 @@
 **Một bảng điều khiển để cài đặt, chạy, chia sẻ, sao lưu và theo dõi [SillyTavern](https://github.com/SillyTavern/SillyTavern) — trên Windows, Android, macOS, Linux và Docker.**
 
 [![Bản phát hành mới nhất](https://img.shields.io/github/v/release/locmaymo/stm?style=flat-square&label=release&color=2563eb)](https://github.com/locmaymo/stm/releases/latest)
+[![npm](https://img.shields.io/npm/v/sillytavern-manager?style=flat-square&logo=npm&logoColor=white&color=cb3837)](https://www.npmjs.com/package/sillytavern-manager)
 [![Verify](https://img.shields.io/github/actions/workflow/status/locmaymo/stm/verify.yml?branch=main&style=flat-square&label=verify)](https://github.com/locmaymo/stm/actions/workflows/verify.yml)
-[![Lượt tải](https://img.shields.io/github/downloads/locmaymo/stm/total?style=flat-square&color=16a34a)](https://github.com/locmaymo/stm/releases)
+[![Lượt tải bản phát hành](https://img.shields.io/github/downloads/locmaymo/stm/total?style=flat-square&label=downloads&color=16a34a)](https://github.com/locmaymo/stm/releases)
+[![Lượt tải npm](https://img.shields.io/npm/dm/sillytavern-manager?style=flat-square&label=npm%20downloads&color=16a34a)](https://www.npmjs.com/package/sillytavern-manager)
 [![Node.js 22+](https://img.shields.io/badge/node-%E2%89%A5%2022-5FA04E?style=flat-square&logo=nodedotjs&logoColor=white)](https://nodejs.org)
 [![License AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-8b5cf6?style=flat-square)](LICENSE)
 
 [Tải về](https://github.com/locmaymo/stm/releases/latest) ·
+[npm](https://www.npmjs.com/package/sillytavern-manager) ·
 [Bắt đầu nhanh](#bắt-đầu-nhanh) ·
 [Ảnh màn hình](#ảnh-màn-hình) ·
 [Cách hoạt động](#cách-hoạt-động) ·
@@ -20,8 +23,8 @@
 [English](README.md)
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/overview-dark.webp">
-  <img src=".github/screenshots/overview.webp" alt="Trang tổng quan của SillyTavern Manager: SillyTavern đang chạy, truy cập từ xa, dữ liệu và sao lưu, tài nguyên hệ thống và log trực tiếp" width="900">
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/vi/overview-dark.webp">
+  <img src=".github/screenshots/vi/overview-light.webp" alt="Trang tổng quan của SillyTavern Manager: SillyTavern đang chạy, truy cập từ xa, dữ liệu và sao lưu, tài nguyên hệ thống và log trực tiếp" width="900">
 </picture>
 
 </div>
@@ -201,7 +204,7 @@ Trên nền tảng cloud có container, mở cổng `7860`, đặt `STM_ADMIN_PA
 
 <br>
 
-Máy có Node.js 22 trở lên, khi package đã được publish:
+Manager đã có trên npm với tên [`sillytavern-manager`](https://www.npmjs.com/package/sillytavern-manager). Máy có Node.js 22 trở lên:
 
 ```bash
 npx sillytavern-manager
@@ -229,27 +232,52 @@ Mật khẩu manager và mật khẩu SillyTavern là hai mật khẩu khác nha
 
 ## Ảnh màn hình
 
+Mọi ảnh bên dưới đều tự đổi theo giao diện sáng hay tối của máy bạn.
+
 <table>
 <tr>
-<td width="50%"><img src=".github/screenshots/data.webp" alt="Trang Data với profile, sao lưu local và Cloudflare R2"></td>
-<td width="50%"><img src=".github/screenshots/metrics.webp" alt="Trang Metrics với request, token, cache hit và độ trễ"></td>
+<td width="50%">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/vi/data-dark.webp">
+  <img src=".github/screenshots/vi/data-light.webp" alt="Trang Dữ liệu với profile, sao lưu local và Cloudflare R2">
+</picture>
+</td>
+<td width="50%">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/vi/metrics-dark.webp">
+  <img src=".github/screenshots/vi/metrics-light.webp" alt="Trang Số liệu với request, token, cache hit và độ trễ">
+</picture>
+</td>
 </tr>
 <tr>
-<td><b>Data</b> — profile, sao lưu theo lịch và thủ công, Cloudflare R2 trong cùng một trang.</td>
-<td><b>Metrics</b> — request, token, cache hit và độ trễ theo ngày, theo provider và model.</td>
+<td><b>Dữ liệu</b> — profile, sao lưu theo lịch và thủ công, Cloudflare R2 trong cùng một trang.</td>
+<td><b>Số liệu</b> — request, token, cache hit và độ trễ theo ngày, theo provider và model.</td>
 </tr>
 <tr>
-<td><img src=".github/screenshots/settings.webp" alt="Trang Settings với bảo mật và cấu hình SillyTavern"></td>
-<td><img src=".github/screenshots/sign-in.webp" alt="Màn hình đăng nhập của manager"></td>
+<td>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/vi/settings-dark.webp">
+  <img src=".github/screenshots/vi/settings-light.webp" alt="Trang Thiết lập với bảo mật và cấu hình SillyTavern">
+</picture>
+</td>
+<td>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/vi/sign-in-dark.webp">
+  <img src=".github/screenshots/vi/sign-in-light.webp" alt="Màn hình đăng nhập của manager">
+</picture>
+</td>
 </tr>
 <tr>
-<td><b>Settings</b> — mật khẩu, và <code>config.yaml</code> của SillyTavern dưới dạng công tắc.</td>
+<td><b>Thiết lập</b> — mật khẩu, và <code>config.yaml</code> của SillyTavern dưới dạng công tắc.</td>
 <td><b>Đăng nhập</b> — một mật khẩu mở manager, và chỉ mở manager.</td>
 </tr>
 </table>
 
 <div align="center">
-<img src=".github/screenshots/mobile.webp" alt="Trang tổng quan trên điện thoại" width="320">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/vi/mobile-dark.webp">
+  <img src=".github/screenshots/vi/mobile-light.webp" alt="Trang tổng quan trên điện thoại" width="320">
+</picture>
 <p><b>Trên điện thoại</b> — vẫn panel đó, thanh điều hướng chuyển xuống dưới.</p>
 </div>
 
