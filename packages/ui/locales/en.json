@@ -24,7 +24,7 @@
   "setup": {
     "title": "Set up your manager",
     "telemetryNotice": "The manager reports how much it is used, so the project can be improved. Your chats, characters, prompts and API keys are never sent.",
-    "terms": "I agree to the terms, and I understand my data is my own responsibility.",
+    "terms": "I agree to the Terms of Use and the Disclaimer, and I understand that my data and my use of this software are my own responsibility.",
     "password": "Manager password",
     "loginTitle": "Sign in to your manager",
     "signIn": "Sign in",
@@ -42,7 +42,18 @@
     "termsRequired": "The terms have to be accepted to carry on.",
     "alreadyConfigured": "This manager already has a password. Reload the page to sign in.",
     "setupNeeded": "This manager has no password yet. Reload the page to set one.",
-    "rateLimited": "Too many attempts. Wait a moment and try again."
+    "rateLimited": "Too many attempts. Wait a moment and try again.",
+    "termsAction": "Read the full text",
+    "termsOpen": "Open the terms, disclaimer and privacy notice"
+  },
+  "legal": {
+    "title": "Terms and notices",
+    "effective": "Revision {revision}, in force since {date}. The same text is published on the project website.",
+    "documents": "Documents",
+    "readingTime": "About {minutes} minutes to read",
+    "online": "Also published at stm.phamloc.top",
+    "version": "Panel version {version}",
+    "open": "Read"
   },
   "status": {
     "lastBackup": "Last backup"
@@ -193,12 +204,8 @@
     "r2UploadFailed": "Could not upload the backup to R2",
     "quickTunnel": "Cloudflare tunnel",
     "lanAccess": "Local network",
-    "lanEnabled": "Devices on this Wi-Fi can reach it",
-    "lanDisabled": "Only this machine can reach it",
     "lanAddress": "On this Wi-Fi",
     "enableLan": "Enable local network access",
-    "passwordProtected": "Password protected",
-    "passwordRequired": "Password required before sharing",
     "passwordSettings": "SillyTavern PIN",
     "sillyPasswordHelp": "This is the password for opening SillyTavern. Signing in to the manager uses a different one.",
     "changePassword": "Change password",
@@ -511,7 +518,18 @@
     "tunnelOfferAccept": "Open the link",
     "tunnelOfferDecline": "Not now",
     "tunnelOfferOpen": "Go to the link",
-    "managerTunnelOffConfirmBodyHere": "You are reading this page through that link, so it will go blank. Reach the console at its own address to turn the link back on."
+    "managerTunnelOffConfirmBodyHere": "You are reading this page through that link, so it will go blank. Reach the console at its own address to turn the link back on.",
+    "aboutTitle": "About this manager",
+    "aboutBody": "SillyTavern Manager is free software published under the AGPL-3.0. It is an independent project, not affiliated with SillyTavern.",
+    "aboutVersion": "Version",
+    "aboutSource": "Source code",
+    "aboutSite": "Website and documentation",
+    "aboutLegal": "Terms, disclaimer and privacy",
+    "aboutIssues": "Report a problem",
+    "aboutLicence": "Copyright © 2026 locmaymo",
+    "tunnelBadge": "Must try",
+    "tunnelWhy": "Open SillyTavern from your phone, anywhere",
+    "lanWhy": "Open SillyTavern on other devices on this Wi-Fi"
   },
   "dashboard": {
     "start": "Start",

@@ -31,10 +31,12 @@ import { MetricsStore } from './metrics.js';
 import { instrumentationLoaderPath } from '../../../packages/instrumentation/src/index.js';
 import { ConfigError, ConfigStore } from '../../../packages/config/src/index.js';
 import { DEFAULT_TELEMETRY_ENDPOINT, DEFAULT_TELEMETRY_ENROLLMENT_ENDPOINT, TelemetryTransport } from '../../../packages/telemetry/src/index.js';
+import { LEGAL_META } from '../../../packages/legal/src/index.js';
 
 const MAX_JSON_BYTES = 128 * 1024;
-const TERMS_VERSION = '2026-09-09';
-const TELEMETRY_NOTICE_VERSION = '2026-09-09';
+/** Both named by the legal package, so what is reported is what is shown. */
+const TERMS_VERSION = LEGAL_META.effective;
+const TELEMETRY_NOTICE_VERSION = LEGAL_META.effective;
 const COOKIE_NAME = 'stm_session';
 
 const NOTICE = {

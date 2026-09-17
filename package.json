@@ -18,6 +18,7 @@
     "panel:build": "vite build --config apps/manager-panel/vite.config.ts",
     "panel:preview": "vite preview --config apps/manager-panel/vite.config.ts",
     "release:npm": "node scripts/build-npm-package.mjs",
+    "site:build": "node apps/site/build.mjs",
     "release:windows": "node scripts/build-windows-release.mjs",
     "test": "node --import tsx --test",
     "typecheck": "tsc --noEmit -p tsconfig.json",

@@ -1,0 +1,325 @@
+{
+  "meta": {
+    "effective": "2026-09-17",
+    "revision": "2026.09",
+    "author": "locmaymo",
+    "project": "SillyTavern Manager",
+    "repository": "https://github.com/locmaymo/stm",
+    "issues": "https://github.com/locmaymo/stm/issues",
+    "security": "https://github.com/locmaymo/stm/security/advisories",
+    "site": "https://stm.phamloc.top"
+  },
+  "labels": {
+    "effectiveFrom": "In force since {date}",
+    "revisionLabel": "Revision {revision}",
+    "readingTime": "About {minutes} minutes to read"
+  },
+  "documents": {
+    "terms": {
+      "title": "Terms of Use",
+      "short": "Terms",
+      "summary": "SillyTavern Manager is free software that you install and run yourself. These terms say what the project does, what it leaves to you, and what it does not take responsibility for.",
+      "sections": {
+        "about": {
+          "heading": "What this software is",
+          "body": [
+            "SillyTavern Manager (the software, the manager) is an open-source control panel that installs, runs, backs up and monitors SillyTavern on a computer you control. It is published by locmaymo under the GNU Affero General Public License version 3.",
+            "The project operates no service on your behalf. There is no account to create, no server that holds your data, and nothing that runs unless you start it. Every copy runs on hardware you own, rent or otherwise control.",
+            "These terms cover your use of the software, of the project's website at stm.phamloc.top, and of the Cloudflare sign-in relay page hosted there. They do not replace the AGPL-3.0, which grants you the rights to use, study, modify and redistribute the source code. Where these terms and that licence disagree, the licence prevails."
+          ]
+        },
+        "acceptance": {
+          "heading": "Accepting these terms",
+          "body": [
+            "Installing, running or redistributing the software means you accept these terms and the Disclaimer that accompanies them. If you do not accept them, do not install or run the software.",
+            "The first-run screen asks you to confirm this once, before it creates your administrator password. The full text is available there, and in the panel afterwards, without an internet connection.",
+            "These terms may be revised as the software changes. Continuing to use the software after a revision means you accept the version then in force."
+          ]
+        },
+        "independence": {
+          "heading": "Not affiliated with SillyTavern",
+          "body": [
+            "SillyTavern is separate software, written and maintained by other people. This project is not affiliated with, endorsed by, sponsored by or connected to the SillyTavern project, its developers or its community in any official capacity.",
+            "The manager obtains SillyTavern the way you would obtain it yourself: at your request, it clones or downloads the public repository at github.com/SillyTavern/SillyTavern onto your machine. It does not redistribute SillyTavern, does not host a copy of it, and does not alter what upstream publishes beyond the configuration file you choose to edit.",
+            "SillyTavern is licensed by its own authors under its own terms, and your use of SillyTavern is governed by those terms rather than by these. Upstream may change, rename, restructure or withdraw anything at any time. When that breaks an installation, it is not a defect of this software, and the project owes you no fix.",
+            "The name SillyTavern is used here only to state truthfully what this software manages."
+          ]
+        },
+        "installation": {
+          "heading": "Your installation is yours to run",
+          "body": [
+            "You are the administrator. You choose where the software runs, who can reach it, which SillyTavern version to install, when to back up and when to restore.",
+            "You are responsible for the security of the machine, for the strength and secrecy of the passwords you set, for keeping the operating system and Node.js patched, and for anything done by anyone you give access to.",
+            "The defaults keep SillyTavern bound to the local machine. Anything that widens that — the local-network switch, the access gateway, a Cloudflare Tunnel, a reverse proxy, a hosted platform — is a deliberate action you take, and the exposure it creates is yours to accept and to manage.",
+            "Exposure to a network carries risk that no password fully removes. Do not expose an installation holding data you cannot afford to lose or to reveal."
+          ]
+        },
+        "content": {
+          "heading": "Your content and your use",
+          "body": [
+            "Characters, personas, prompts, chats, images, settings and API keys are yours. You create them, they are stored on your machine, and they are never transmitted to the project. The project cannot see them, does not moderate them, and takes no responsibility for them.",
+            "What you write, what you ask a model to produce, and what a model produces in response are entirely your responsibility. The software generates nothing by itself: it starts a program you chose, which talks to services you chose, using credentials you supplied.",
+            "You must use the software in a way that complies with the laws that apply to you, with the terms of every model provider and service you connect to it, and with other people's rights. You must not use it to produce or distribute material that is unlawful where you are.",
+            "The project does not host, transmit, store, index or distribute anything you create with it. There is nothing here for the project to take down, and no moderation or reporting mechanism for it to act on."
+          ]
+        },
+        "services": {
+          "heading": "Third-party services and accounts",
+          "body": [
+            "The manager can connect to services that are not ours: Cloudflare for tunnels, R2 storage, Workers and account analytics; GitHub for releases and source downloads; npm for dependency installs; and whichever model providers SillyTavern is configured to call.",
+            "Those connections use your accounts, your credentials and your quotas. Each provider's own terms, prices and privacy policies apply to them, and you should read them. The project is not a party to your relationship with any provider.",
+            "Storage, bandwidth, operations, tunnels and model usage can cost money. Any charge a provider bills you is yours to pay — including one caused by a backup larger, more frequent or more numerous than you expected, by a misconfiguration, or by a defect in this software. Set your own limits and alerts in the provider's dashboard.",
+            "Signing in to Cloudflare creates resources inside your own Cloudflare account: a bucket, and optionally a Worker. They stay yours, they remain after you disconnect, and you can delete them yourself at any time."
+          ]
+        },
+        "backups": {
+          "heading": "Backups are a tool, not a guarantee",
+          "body": [
+            "Backup and restore are provided to help you, with no promise that a backup will succeed, that an archive is complete, that it will still be readable by a future version, or that a restore will reproduce the state you expected.",
+            "A backup you have never restored is not a backup. Test a restore, keep at least one copy the manager did not make, and keep at least one copy somewhere the manager cannot reach.",
+            "Restoring replaces data. The manager takes a safety snapshot first and previews an archive before writing, but choosing the right archive and the right mode is your responsibility."
+          ]
+        },
+        "telemetry": {
+          "heading": "Usage telemetry",
+          "body": [
+            "The software sends the project a small, allowlisted summary of how much it is used: the platform, the application version, and for each model request the provider, model, endpoint hostname, token counts, status and duration.",
+            "It never sends prompts, chats, model responses, API keys, file names, file paths, IP addresses or URL query strings. This is how a free project learns which platforms, versions and providers to keep working.",
+            "Accepting these terms includes accepting that summary. The Privacy Notice sets out the complete list of what is and is not sent, and how to switch the sending off."
+          ]
+        },
+        "availability": {
+          "heading": "Availability, updates and endings",
+          "body": [
+            "The software is published as it is, when it is published. There is no release schedule, no support commitment, no service level, and no guarantee that a version will keep working, that a feature will be kept, or that the project will continue at all.",
+            "The project's website, the Cloudflare sign-in relay and the telemetry receiver are conveniences. They may change, move or be withdrawn without notice. An installation keeps working without them, except that signing in to Cloudflare through the project's OAuth client needs the relay — and you may register your own client and run your own relay, as the repository documents."
+          ]
+        },
+        "licence": {
+          "heading": "Licence and source code",
+          "body": [
+            "The software is licensed under the GNU Affero General Public License version 3 (AGPL-3.0-only). The complete corresponding source is published at github.com/locmaymo/stm.",
+            "Nothing in these terms limits, waives or adds conditions to the rights the AGPL-3.0 grants you. If you run a modified version and let other people use it over a network, the licence requires you to offer them the source of your version.",
+            "Third-party components keep their own licences, listed in the project's third-party notices. Logos and artwork are not covered by the AGPL-3.0; see the Notices."
+          ]
+        },
+        "changes": {
+          "heading": "Changes to these terms",
+          "body": [
+            "These terms change as the software does. The version in force always ships with the software and is published at stm.phamloc.top/terms, carrying the date it took effect.",
+            "Substantive changes are noted in the release notes. If you do not accept a new version, stop using the software; the rights the AGPL-3.0 already granted you in the source code are unaffected."
+          ]
+        },
+        "law": {
+          "heading": "Governing law",
+          "body": [
+            "These terms are governed by the laws of the Socialist Republic of Viet Nam, without regard to conflict-of-law rules. Any dispute that cannot be settled amicably is to be brought before the competent courts of Viet Nam.",
+            "If any provision is held unenforceable, the rest stays in force, and the unenforceable provision is to be read as narrowly as needed to make it valid.",
+            "Mandatory consumer-protection rights given to you by the law where you live are not affected by this clause."
+          ]
+        },
+        "contact": {
+          "heading": "Contact",
+          "body": [
+            "Questions, licensing enquiries, complaints and legal notices go to the project's issue tracker at github.com/locmaymo/stm/issues.",
+            "Suspected security problems should be reported privately through GitHub's security advisories on the same repository, rather than in a public issue.",
+            "The project is maintained by one person in their own time. A reply is not guaranteed, and nothing here creates an obligation to answer."
+          ]
+        }
+      }
+    },
+    "disclaimer": {
+      "title": "Disclaimer",
+      "short": "Disclaimer",
+      "summary": "This software comes with no warranty, no affiliation with anyone it connects to, and no liability for what you do with it or what it does on your machine.",
+      "sections": {
+        "warranty": {
+          "heading": "No warranty",
+          "body": [
+            "The software is provided as is and as available, without warranty of any kind, express or implied — including, without limitation, warranties of merchantability, fitness for a particular purpose, title and non-infringement — to the fullest extent permitted by law.",
+            "The project does not warrant that the software will be uninterrupted, timely, secure or error-free, that it will work with your system, or that defects will be corrected. No advice or information obtained from the project, its documentation or its community creates any warranty not stated here.",
+            "This restates in plain words the warranty disclaimer in sections 15 and 16 of the GNU Affero General Public License version 3, which governs the software."
+          ]
+        },
+        "affiliation": {
+          "heading": "No affiliation and no endorsement",
+          "body": [
+            "This project is independent. It is not affiliated with, endorsed by, sponsored by, certified by or connected to the SillyTavern project or its contributors, Cloudflare, Inc., GitHub, Inc., Docker, Inc., npm, Inc., Microsoft, Google, OpenAI, Anthropic, or any other model provider, hosting platform or service the software can be pointed at.",
+            "Product names, logos and trademarks belong to their owners and appear only to identify those products where this software works with them. That use is nominative and implies no relationship of any kind.",
+            "The SillyTavern Vietnam (STVN) artwork is used as this project's own mark with permission. The project is a separate work from any community whose mark it borrows, and it speaks only for itself."
+          ]
+        },
+        "liability": {
+          "heading": "Limitation of liability",
+          "body": [
+            "To the fullest extent permitted by law, neither the author nor any contributor is liable for any direct, indirect, incidental, special, exemplary, consequential or punitive damages, nor for any loss of data, profit, revenue, goodwill, time or opportunity, arising from or connected to the software, its documentation, its website, or the inability to use any of them — even if told that such damages were possible.",
+            "This includes, without limitation: loss or corruption of chats, characters, profiles or backups; a restore that overwrote something; an installation broken by an update, by an upstream change or by a dependency; unauthorised access reached through an exposure you enabled; charges billed by Cloudflare or any other provider; and anything a model produced.",
+            "Where the law does not allow a liability to be excluded, that liability is limited to the amount you paid the project for the software, which is nothing."
+          ]
+        },
+        "responsibility": {
+          "heading": "Your use, your responsibility",
+          "body": [
+            "You decide what to install, what to connect, what to expose and what to generate. Those decisions, and their consequences, are yours alone.",
+            "The software is a tool with no opinion about what you do with it. It does not filter, rate, moderate or record content, and the project has no way of knowing what any installation is used for.",
+            "You must comply with the laws that apply to you and with the terms of the services you connect. Use that is unlawful where you are remains unlawful regardless of what this software makes convenient."
+          ]
+        },
+        "generated": {
+          "heading": "About generated content",
+          "body": [
+            "SillyTavern talks to language models. What a model produces is text generated by a statistical system: not fact, not advice, and not the view of this project.",
+            "Do not rely on generated text for medical, legal, financial, psychological or safety decisions. Nothing produced through this software is professional advice, and using it creates no relationship of care.",
+            "Models can be wrong, can invent sources, and can produce material you did not ask for and would not want. The project neither controls nor endorses any of it."
+          ]
+        },
+        "dataloss": {
+          "heading": "Data loss",
+          "body": [
+            "Data on a computer is lost for many reasons: disk failure, power loss, a full disk, a filesystem error, an interrupted write, a mistaken click, ransomware, or a defect in this software. Any of these can destroy a SillyTavern data folder, a backup archive, or both.",
+            "Backups made by this software reduce that risk; they do not remove it. Keep an independent copy of anything you cannot afford to lose, and check that you can restore it."
+          ]
+        },
+        "security": {
+          "heading": "Security",
+          "body": [
+            "The software takes reasonable care: the administration panel is never exposed through the access gateway, the gateway asks for a passcode and locks after repeated failures, secrets are written to files readable by your user alone, and a Cloudflare sign-in stores a refresh token rather than long-lived keys.",
+            "Reasonable care is not a guarantee. No software is free of defects, nothing here has been independently audited, and no claim of security is made or implied.",
+            "Running an installation where other people can reach it is a decision with consequences, and that decision is yours."
+          ]
+        },
+        "indemnity": {
+          "heading": "Indemnity",
+          "body": [
+            "You agree to defend, indemnify and hold harmless the author and contributors from any claim, demand, loss, liability or expense — including reasonable legal fees — arising from your use of the software, from content you create, generate or distribute with it, or from your breach of these terms, of any law, or of any third party's rights."
+          ]
+        }
+      }
+    },
+    "privacy": {
+      "title": "Privacy Notice",
+      "short": "Privacy",
+      "summary": "There is no account, no cloud and no copy of your data held by this project. One small usage summary is sent, and you can switch it off.",
+      "sections": {
+        "summary": {
+          "heading": "The short version",
+          "body": [
+            "There is no account, no cloud, and no copy of your data held by this project. Chats, characters, prompts, settings, backups and API keys stay on machines you control.",
+            "The software sends the project exactly one thing: a small, allowlisted usage summary, described below, which contains nothing you wrote and nothing that identifies you."
+          ]
+        },
+        "local": {
+          "heading": "What stays on your machine",
+          "body": [
+            "Everything SillyTavern holds: chats, characters, personas, prompts, world info, images, extensions and settings.",
+            "Everything the manager holds: backup archives, data profiles, the administrator password hash, session tokens, logs, usage metrics, and any Cloudflare refresh token.",
+            "The data folder is kept outside the application folder, so replacing the application never touches it. Nothing in it is transmitted to the project."
+          ]
+        },
+        "sent": {
+          "heading": "What is sent to the project",
+          "body": [
+            "Once per installation: a random installation identifier, generated on your machine and connected to nothing else.",
+            "With each batch: the platform (Windows, Linux, macOS, Termux, Docker or unknown) and the application version.",
+            "For each model request SillyTavern makes: the timestamp, provider name, completion API format, model name, endpoint hostname, whether streaming was used, the maximum token setting, input, output and total token counts, cache read and write tokens, reasoning tokens, the HTTP status, and the duration in milliseconds.",
+            "That is the complete list. The allowlist is in the source code, under packages/instrumentation and packages/telemetry, and you can read it."
+          ]
+        },
+        "never": {
+          "heading": "What is never sent",
+          "body": [
+            "Prompts, messages, chats, character cards, personas, world info, model responses, request bodies and response bodies.",
+            "API keys, authorization headers, cookies, session tokens and passwords.",
+            "File names, file paths, folder contents, backup archives and anything inside them.",
+            "IP addresses, URL query strings, the host names of your own machines, user names, e-mail addresses, and anything else that identifies you."
+          ]
+        },
+        "howsent": {
+          "heading": "How it is sent, and how to stop it",
+          "body": [
+            "Events are appended to a local outbox file and sent asynchronously, signed with a key belonging to that installation. A receiver that is down never blocks SillyTavern; the outbox is trimmed and its entries expire after 90 days.",
+            "To stop the sending completely, set STM_TELEMETRY_ENDPOINT to an empty value in your .env file or environment and restart the manager. Nothing leaves the machine after that.",
+            "It is free software: you can also read the collection code, change it, and run your own build."
+          ]
+        },
+        "cloudflare": {
+          "heading": "Cloudflare sign-in and R2 backups",
+          "body": [
+            "If you connect Cloudflare, the sign-in is a standard OAuth authorization with PKCE against Cloudflare's own servers. The project never sees your Cloudflare password.",
+            "Only the refresh token is stored, in a file on your machine readable by your user alone. Access tokens and Worker keys are short-lived and live in memory.",
+            "Backups are uploaded from your machine to a bucket in your own Cloudflare account. They pass through no server of this project. What Cloudflare stores and logs is covered by Cloudflare's own privacy policy.",
+            "Disconnecting removes this installation's Worker key and revokes the sign-in. You can also revoke it yourself in your Cloudflare profile, under Manage OAuth authorizations. The bucket and its contents remain yours."
+          ]
+        },
+        "relay": {
+          "heading": "The sign-in relay at stm.phamloc.top",
+          "body": [
+            "Cloudflare only returns a browser to an address registered on the OAuth client, matched exactly, and a manager can be open on any address. So the registered address is a static page on this site, which forwards the browser back to the manager that started the sign-in.",
+            "That page stores nothing, sets no cookie and runs no analytics. The authorization code it forwards is useless without the PKCE verifier, which never leaves your manager.",
+            "It forwards on its own only to loopback, private-network, .local, trycloudflare.com and ModelScope addresses. Anywhere else, it shows the destination and waits for a click, so it cannot be used as a silent redirect to another site."
+          ]
+        },
+        "website": {
+          "heading": "The website",
+          "body": [
+            "The pages at stm.phamloc.top are static files served from Cloudflare's network. There is no account, no login, no tracking pixel, no advertising and no third-party analytics script.",
+            "Cloudflare, as the host, processes request metadata such as IP address and user agent in order to serve and protect the site, under its own privacy policy.",
+            "Your language and theme choice, if you change them, are remembered in your own browser and sent nowhere. Pages may link to GitHub and npm; following a link puts you on their sites, under their policies."
+          ]
+        },
+        "rights": {
+          "heading": "Your choices and your rights",
+          "body": [
+            "Because the project holds no personal data about you, there is usually nothing to access, correct, export or erase. If you believe an installation identifier or a telemetry record relates to you, write to the issue tracker and it will be deleted.",
+            "You can switch telemetry off with the setting above, disconnect Cloudflare at any time, and delete the data folder to remove everything the software ever wrote."
+          ]
+        },
+        "changes": {
+          "heading": "Changes to this notice",
+          "body": [
+            "This notice changes when what the software sends changes. The version in force always ships with the software and is published at stm.phamloc.top/privacy, carrying the date it took effect."
+          ]
+        }
+      }
+    },
+    "notices": {
+      "title": "Notices",
+      "short": "Notices",
+      "summary": "The licence this software is published under, the third-party components it uses, and the trademarks it names.",
+      "sections": {
+        "licence": {
+          "heading": "Licence",
+          "body": [
+            "Copyright © 2026 locmaymo.",
+            "SillyTavern Manager is free software: you may redistribute it and modify it under the terms of the GNU Affero General Public License version 3 (AGPL-3.0-only) as published by the Free Software Foundation.",
+            "It is distributed in the hope that it will be useful, but without any warranty; without even the implied warranty of merchantability or fitness for a particular purpose. See the licence for details.",
+            "The licence applies to every version of the project, including all commits and releases published before the licence file was added."
+          ]
+        },
+        "components": {
+          "heading": "Third-party components",
+          "body": [
+            "Components under packages/ui/src/shadcn/ are adapted from shadcn/ui registry blocks and components, licensed under the MIT License, copyright © 2023 shadcn.",
+            "The manager bundles qrcode-generator, licensed under the MIT License, copyright © 2009 Kazuhiko Arase. QR Code is a registered trademark of DENSO WAVE INCORPORATED.",
+            "Remaining dependencies keep their own licences, as declared in their own packages. The full list ships with the source at THIRD_PARTY_NOTICES.md."
+          ]
+        },
+        "trademarks": {
+          "heading": "Trademarks",
+          "body": [
+            "SillyTavern is the name of a separate project and belongs to its authors. Cloudflare and the Cloudflare logo are trademarks of Cloudflare, Inc. Docker and the Docker logo are trademarks of Docker, Inc. GitHub and the GitHub logo are trademarks of GitHub, Inc. Node.js is a trademark of the OpenJS Foundation.",
+            "Each is named or drawn here only to identify that product where this software works with it. No endorsement, sponsorship or affiliation is claimed by any of them, and none is implied."
+          ]
+        },
+        "artwork": {
+          "heading": "Artwork",
+          "body": [
+            "The application icon, favicon and in-application brand mark are resized from the SillyTavern Vietnam (STVN) logo, used with permission as this project's own mark.",
+            "The service marks drawn in packages/ui/src/brand.tsx are simplified redrawings of the Cloudflare, Cloudflare R2, Docker and GitHub logos, used only to identify those services in the interface.",
+            "Logos and artwork are not covered by the AGPL-3.0 and are not licensed for reuse with it."
+          ]
+        }
+      }
+    }
+  }
+}

@@ -24,7 +24,7 @@
   "setup": {
     "title": "Thiết lập trình quản lý",
     "telemetryNotice": "Trình quản lý gửi về số lượt sử dụng để cải thiện dự án. Nội dung chat, nhân vật, prompt và API key không bao giờ được gửi đi.",
-    "terms": "Tôi đồng ý với điều khoản và tự chịu trách nhiệm về dữ liệu của mình.",
+    "terms": "Tôi đồng ý với Điều khoản sử dụng và Tuyên bố miễn trừ trách nhiệm, và tôi hiểu rằng dữ liệu cũng như cách tôi dùng phần mềm này là trách nhiệm của chính tôi.",
     "password": "Mật khẩu trình quản lý",
     "loginTitle": "Đăng nhập trang quản trị",
     "signIn": "Đăng nhập",
@@ -42,7 +42,18 @@
     "termsRequired": "Cần đồng ý với điều khoản để tiếp tục.",
     "alreadyConfigured": "Trình quản lý này đã có mật khẩu. Hãy tải lại trang để đăng nhập.",
     "setupNeeded": "Trình quản lý này chưa có mật khẩu. Hãy tải lại trang để đặt một mật khẩu.",
-    "rateLimited": "Thử quá nhiều lần. Hãy đợi một lát rồi thử lại."
+    "rateLimited": "Thử quá nhiều lần. Hãy đợi một lát rồi thử lại.",
+    "termsAction": "Đọc toàn văn",
+    "termsOpen": "Mở điều khoản, tuyên bố miễn trừ trách nhiệm và thông báo quyền riêng tư"
+  },
+  "legal": {
+    "title": "Điều khoản và thông báo",
+    "effective": "Bản {revision}, có hiệu lực từ {date}. Cùng nội dung này được công bố trên trang web của dự án.",
+    "documents": "Các văn bản",
+    "readingTime": "Đọc khoảng {minutes} phút",
+    "online": "Cũng được công bố tại stm.phamloc.top",
+    "version": "Phiên bản bảng điều khiển {version}",
+    "open": "Đọc"
   },
   "status": {
     "lastBackup": "Sao lưu gần nhất"
@@ -193,12 +204,8 @@
     "r2UploadFailed": "Không thể đẩy bản sao lưu lên R2",
     "quickTunnel": "Cloudflare tunnel",
     "lanAccess": "Mạng nội bộ",
-    "lanEnabled": "Các thiết bị trong mạng Wi-Fi này có thể truy cập",
-    "lanDisabled": "Chỉ máy này có thể truy cập",
     "lanAddress": "Nội bộ (cùng Wi-Fi)",
     "enableLan": "Bật truy cập mạng nội bộ",
-    "passwordProtected": "Đã bảo vệ bằng mật khẩu",
-    "passwordRequired": "Cần mật khẩu trước khi chia sẻ",
     "passwordSettings": "Mã PIN SillyTavern",
     "sillyPasswordHelp": "Đây là mật khẩu để mở SillyTavern. Đăng nhập vào trình quản lý dùng mật khẩu khác.",
     "changePassword": "Đổi mật khẩu",
@@ -511,7 +518,18 @@
     "tunnelOfferAccept": "Mở liên kết",
     "tunnelOfferDecline": "Để sau",
     "tunnelOfferOpen": "Đi tới liên kết",
-    "managerTunnelOffConfirmBodyHere": "Bạn đang xem trang này qua chính liên kết đó, nên trang sẽ mất kết nối. Hãy vào console bằng địa chỉ của nó để bật lại liên kết."
+    "managerTunnelOffConfirmBodyHere": "Bạn đang xem trang này qua chính liên kết đó, nên trang sẽ mất kết nối. Hãy vào console bằng địa chỉ của nó để bật lại liên kết.",
+    "aboutTitle": "Về trình quản lý này",
+    "aboutBody": "SillyTavern Manager là phần mềm tự do phát hành theo giấy phép AGPL-3.0. Đây là dự án độc lập, không liên kết với SillyTavern.",
+    "aboutVersion": "Phiên bản",
+    "aboutSource": "Mã nguồn",
+    "aboutSite": "Trang web và tài liệu",
+    "aboutLegal": "Điều khoản, miễn trừ trách nhiệm và quyền riêng tư",
+    "aboutIssues": "Báo lỗi",
+    "aboutLicence": "Bản quyền © 2026 locmaymo",
+    "tunnelBadge": "Nên thử",
+    "tunnelWhy": "Mở SillyTavern từ điện thoại, ở bất cứ đâu",
+    "lanWhy": "Mở SillyTavern trên thiết bị khác cùng Wi-Fi"
   },
   "dashboard": {
     "start": "Chạy",

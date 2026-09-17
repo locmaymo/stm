@@ -24,9 +24,9 @@ export default [
   },
   js.configs.recommended,
   {
-    // The OAuth relay is a static page served from the project's domain and
-    // runs in the browser, not in Node.
-    files: ['deploy/oauth-relay/public/**/*.js'],
+    // Everything under the site's `public` is served as written and runs in the
+    // browser, not in Node: the OAuth relay, the theme bootstrap, the switches.
+    files: ['apps/site/public/**/*.js'],
     languageOptions: {
       globals: {
         URL: 'readonly',
@@ -35,6 +35,17 @@ export default [
         document: 'readonly',
         window: 'readonly',
       },
+    },
+  },
+  {
+    // The site builder runs in Node and writes files. `ecmaVersion: 'latest'`
+    // because it reads the legal texts with an import attribute, which the
+    // 2022 grammar the rest of this config uses cannot parse.
+    files: ['apps/site/**/*.mjs'],
+    ignores: ['apps/site/public/**'],
+    languageOptions: {
+      ecmaVersion: 'latest',
+      globals: { URL: 'readonly' },
     },
   },
   {

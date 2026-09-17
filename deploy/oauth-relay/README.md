@@ -1,4 +1,14 @@
-# Cloudflare OAuth relay
+# The project site and the Cloudflare OAuth relay
+
+This directory is the Wrangler project that publishes `stm.phamloc.top`. The
+pages themselves live in [`apps/site`](../../apps/site) and are built into
+`apps/site/dist`, which is what Wrangler uploads. Nothing here is committed
+output: run the build first.
+
+The site carries the landing page, the documentation and the legal documents,
+plus the OAuth relay described below.
+
+## Cloudflare OAuth relay
 
 The static page Cloudflare returns the browser to after **Connect Cloudflare**. It
 reads which manager started the sign-in from the OAuth `state` and sends the
@@ -20,14 +30,16 @@ The project's copy runs as the Worker `stm-oauth-relay` with static assets on
 `stm.phamloc.top`.
 
 ```bash
+npm run site:build
 npx wrangler login
 cd deploy/oauth-relay
 npx wrangler deploy
 ```
 
 Change the `routes` pattern in `wrangler.jsonc` to deploy it on another domain.
-`/oauth/cloudflare/callback` is served from `public/oauth/cloudflare/callback.html`
-without a redirect, so the registered URI is answered exactly as registered.
+`/oauth/cloudflare/callback` is served from
+`apps/site/public/oauth/cloudflare/callback.html` without a redirect, so the
+registered URI is answered exactly as registered.
 
 ## Registering an OAuth client
 

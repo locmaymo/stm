@@ -3,8 +3,8 @@ import {
   Archive, ArrowDown, ArrowUp, ArrowUpRight, BarChart3, Cloud, Copy, Database, Download,
   Globe2, LayoutDashboard, Maximize2, Minimize2, Moon, Package, Pencil, Plus,
   LogOut, RotateCcw, ScrollText, Search, Sun, Trash2, Upload, Users as UsersIcon, X, Rows3,
-  BrainCircuit, CircleStop, Clock3, Cpu, Ellipsis, Play, QrCode as QrCodeIcon, RefreshCw, Settings2, ShieldCheck, Square,
-  Blocks, BookmarkPlus, FileCode2, LoaderCircle, Gauge, History, KeyRound, Monitor, CircleArrowUp, TriangleAlert,
+  BrainCircuit, CircleStop, Clock3, Cpu, Ellipsis, Play, QrCode as QrCodeIcon, RefreshCw, Scale, Settings2, ShieldCheck, Square,
+  Blocks, BookmarkPlus, Bug, FileCode2, LoaderCircle, Gauge, History, KeyRound, Monitor, CircleArrowUp, Star, TriangleAlert,
 } from 'lucide-react';
 import {
   Alert, AlertDescription, AlertTitle, AuthLayout, Badge, BrandMark, Button, buttonVariants, Card, CardAction,
@@ -14,7 +14,7 @@ import {
   Dialog, DialogBody, DialogContent, DialogDescription,
   DialogFooter, DialogHeader, DialogTitle,
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
-  Field, initialQuery, Input, Label, MobileNav, PageContainer, PasscodeInput, PasswordInput,
+  Field, GithubMark, initialQuery, Input, Label, MobileNav, PageContainer, PasscodeInput, PasswordInput,
   Skeleton,
   RadioGroup, RadioGroupItem,
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -39,6 +39,8 @@ import { QrCode } from './qr-code.js';
 import { CLOUDFLARE_ORANGE, CloudflareMark } from './cloudflare-mark.js';
 import { localHost, reachableAddresses, shortenHost } from './addresses.js';
 import { EmbedStage } from './embed-stage.js';
+import { LegalCredit, LegalDialog, LEGAL_REVISION } from './legal-dialog.js';
+import { legalBundle, type LegalDocumentId } from '../../../packages/legal/src/index.js';
 
 const navigation = [
   { id: 'overview', icon: LayoutDashboard },
@@ -253,6 +255,9 @@ function AuthScreen({ t, mode, signedOut, preferences, onPreferencesChange, onSi
   const [accepted, setAccepted] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [legalOpen, setLegalOpen] = useState(false);
+  const [legalDocument, setLegalDocument] = useState<LegalDocumentId>('terms');
+  const termsId = useId();
   const setup = mode === 'setup';
   const fail = failures(preferences.locale);
   // Shown once the second field stops being a prefix of the first, rather than
@@ -284,7 +289,13 @@ function AuthScreen({ t, mode, signedOut, preferences, onPreferencesChange, onSi
     <AuthLayout
       title={setup ? t('setup.title') : t('setup.loginTitle')}
       subtitle={setup ? t('setup.subtitle') : t('setup.loginSubtitle')}
-      footer={setup ? t('setup.telemetryNotice') : null}
+      // The credit is on both screens. On the first run it answers "what is
+      // this and who wrote it?" before anything is typed into it; afterwards
+      // it is the fastest way to read off the version a fault report needs.
+      footer={<>
+        {setup ? <p>{t('setup.telemetryNotice')}</p> : null}
+        <LegalCredit t={t} />
+      </>}
       controls={<>
         <LanguageControl t={t} preferences={preferences} onChange={onPreferencesChange} />
         <Button variant="ghost" size="icon-sm" className="size-9" aria-label={preferences.theme === 'dark' ? t('console.useLight') : t('console.useDark')} onClick={() => onPreferencesChange({ theme: preferences.theme === 'dark' ? 'light' : 'dark' })}>
@@ -319,11 +330,31 @@ function AuthScreen({ t, mode, signedOut, preferences, onPreferencesChange, onSi
                 />
               </Field>
             ) : null}
+            {/* The tick and the text are separate controls on purpose. The
+                text is the way into the documents, which is what somebody
+                asked to accept terms actually needs; the box beside it is the
+                only thing that agrees to them, so reading cannot accidentally
+                be consent and consent cannot be given by a stray click. */}
             {setup ? (
-              <label className="flex items-start gap-2.5 text-sm">
-                <Checkbox checked={accepted} onCheckedChange={(checked) => setAccepted(checked === true)} className="mt-0.5" />
-                <span className="text-muted-foreground">{t('setup.terms')}</span>
-              </label>
+              <div className="terms-consent">
+                <Checkbox
+                  id={termsId}
+                  checked={accepted}
+                  onCheckedChange={(checked) => setAccepted(checked === true)}
+                  aria-label={t('setup.terms')}
+                  className="mt-0.5"
+                />
+                <button
+                  type="button"
+                  className="terms-text"
+                  aria-haspopup="dialog"
+                  title={t('setup.termsOpen')}
+                  onClick={() => { setLegalDocument('terms'); setLegalOpen(true); }}
+                >
+                  <span>{t('setup.terms')}</span>
+                  <span className="terms-more">{t('setup.termsAction')}<ArrowUpRight /></span>
+                </button>
+              </div>
             ) : null}
             {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
             <Button type="submit" size="lg" className="w-full" disabled={busy || !ready}>
@@ -332,6 +363,14 @@ function AuthScreen({ t, mode, signedOut, preferences, onPreferencesChange, onSi
           </form>
         </CardContent>
       </Card>
+      <LegalDialog
+        t={t}
+        locale={preferences.locale}
+        open={legalOpen}
+        onOpenChange={setLegalOpen}
+        document={legalDocument}
+        onDocumentChange={setLegalDocument}
+      />
     </AuthLayout>
   );
 }
@@ -743,7 +782,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
             </div>
           </header>
           <PageContainer>
-            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} installed={Boolean(activeInstallationId)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} locale={preferences.locale} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} /> : <ResourcePanel page={page} t={t} />}
+            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} installed={Boolean(activeInstallationId)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} locale={preferences.locale} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} /> : <ResourcePanel page={page} t={t} />}
           </PageContainer>
           <MobileNav
             items={navigation.map(({ id, icon }) => ({ id, icon, href: `#${id}`, label: t(`nav.${id}`) }))}
@@ -1354,7 +1393,6 @@ function AccessPanel({ t, process, tunnel, config, security, sillyTavernPort, in
   // a version to answer, and no reading is ever "unknown".
   const passwordReady = security.passwordConfigured;
   const lan = security.lan;
-  const lanLabel = lan ? t('console.lanEnabled') : t('console.lanDisabled');
   const [passwordOpen, setPasswordOpen] = useState(false);
   // Turning either of these off takes an address away from whoever is on the
   // other end of it, and they are not in the room to be asked.
@@ -1420,9 +1458,36 @@ function AccessPanel({ t, process, tunnel, config, security, sillyTavernPort, in
         * The tunnel is first because it is the one that reaches a phone that
         * is not in the house.
         */}
+      {/*
+        * Each switch says, in one short line, what it does for the person
+        * reading it.
+        *
+        * It used to say what it needed instead - "Cloudflare tunnel · Password
+        * required before sharing" - which told somebody who did not already
+        * know what a tunnel is two things they could not use: a brand they had
+        * not heard of, and a prerequisite. The feature most worth trying was
+        * the one most often never tried.
+        *
+        * Nothing here mentions the passcode any more, in either state. The
+        * switch asks for one the moment it is pressed, which is the moment it
+        * means anything; announcing it beforehand spends the only line these
+        * rows have on a condition rather than on a reason.
+        */}
       <div className="access-switches">
-        <div className="access-row"><div><strong>{t('console.quickTunnel')}</strong><span>{passwordReady ? t('console.passwordProtected') : t('console.passwordRequired')}</span></div><Switch id="tunnel-switch" checked={tunnelWanted} onCheckedChange={toggleTunnel} disabled={busy || (tunnelWanted ? false : !installed || !running)} aria-label={t('console.enableTunnel')} /></div>
-        <div className="access-row"><div><strong>{t('console.lanAccess')}</strong><span>{lan ? lanLabel : passwordReady ? lanLabel : t('console.passwordRequired')}</span></div><Switch id="listen-switch" checked={lan} onCheckedChange={toggleLan} disabled={!installed || securityBusy} aria-label={t('console.enableLan')} /></div>
+        <div className="access-row">
+          <div>
+            <strong>{t('console.quickTunnel')}{!tunnelWanted ? <span className="access-badge"><Star />{t('console.tunnelBadge')}</span> : null}</strong>
+            <span>{t('console.tunnelWhy')}</span>
+          </div>
+          <Switch id="tunnel-switch" checked={tunnelWanted} onCheckedChange={toggleTunnel} disabled={busy || (tunnelWanted ? false : !installed || !running)} aria-label={t('console.enableTunnel')} />
+        </div>
+        <div className="access-row">
+          <div>
+            <strong>{t('console.lanAccess')}</strong>
+            <span>{t('console.lanWhy')}</span>
+          </div>
+          <Switch id="listen-switch" checked={lan} onCheckedChange={toggleLan} disabled={!installed || securityBusy} aria-label={t('console.enableLan')} />
+        </div>
       </div>
       {/* With SillyTavern down every one of these leads nowhere, so the whole
           group goes rather than three rows of dashes. */}
@@ -3913,7 +3978,7 @@ function SettingsGroup({ icon, title }: { icon: ReactNode; title: string }) {
   </div>;
 }
 
-function ConfigPage({ t, config, security, ports, managerTunnel, process, catalog, onSetManagerTunnel, onPortChange, onConfigUpdate, onConfigReset, onChangeManagerPassword, onSetPassword, onSignOut, onSignOutDevices }: { t: Translate; config: ConfigDocument | null; security: AccessGatewayState; ports: PortSettings | null; managerTunnel: TunnelState; process: ProcessState; catalog: Record<string, unknown>; onSetManagerTunnel: (on: boolean) => Promise<string | null>; onPortChange: (port: number) => Promise<string | null>; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onConfigReset: () => Promise<string | null>; onChangeManagerPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSignOut: () => Promise<void>; onSignOutDevices: () => Promise<string | null> }) {
+function ConfigPage({ t, locale, config, security, ports, managerTunnel, process, catalog, onSetManagerTunnel, onPortChange, onConfigUpdate, onConfigReset, onChangeManagerPassword, onSetPassword, onSignOut, onSignOutDevices }: { t: Translate; locale: LocaleCode; config: ConfigDocument | null; security: AccessGatewayState; ports: PortSettings | null; managerTunnel: TunnelState; process: ProcessState; catalog: Record<string, unknown>; onSetManagerTunnel: (on: boolean) => Promise<string | null>; onPortChange: (port: number) => Promise<string | null>; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onConfigReset: () => Promise<string | null>; onChangeManagerPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSignOut: () => Promise<void>; onSignOutDevices: () => Promise<string | null> }) {
   const [form, setForm] = useState<ConfigSettingsInput>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -3926,6 +3991,8 @@ function ConfigPage({ t, config, security, ports, managerTunnel, process, catalo
   const [managerTunnelBusy, setManagerTunnelBusy] = useState(false);
   const [managerTunnelError, setManagerTunnelError] = useState<string | null>(null);
   const [managerTunnelClosing, setManagerTunnelClosing] = useState(false);
+  const [legalOpen, setLegalOpen] = useState(false);
+  const [legalDocument, setLegalDocument] = useState<LegalDocumentId>('terms');
   const { toast } = useToast();
   // What the switch says, which is what was asked for rather than whether
   // cloudflared has finished connecting - the same reading the sharing card
@@ -4173,7 +4240,57 @@ function ConfigPage({ t, config, security, ports, managerTunnel, process, catalo
         />
       </>}
     {config ? <YamlDialog t={t} open={yamlOpen} onOpenChange={setYamlOpen} initial={config.rawYaml} busy={busy} onApply={(rawYaml) => save({ rawYaml })} /> : null}
+    <AboutPanel t={t} locale={locale} onOpenLegal={(id) => { setLegalDocument(id); setLegalOpen(true); }} />
+    <LegalDialog
+      t={t}
+      locale={locale}
+      open={legalOpen}
+      onOpenChange={setLegalOpen}
+      document={legalDocument}
+      onDocumentChange={setLegalDocument}
+    />
   </div>;
+}
+
+/**
+ * What this is, which version, and where it came from.
+ *
+ * Every open-source application answers these three questions somewhere, and
+ * this is the page people already come to when they want to know what their
+ * copy is doing. It is also the only place after the first run where the terms
+ * can be read again, which is the point of having asked somebody to accept
+ * them: an agreement you cannot reread is not one you can hold to.
+ */
+function AboutPanel({ t, locale, onOpenLegal }: { t: Translate; locale: LocaleCode; onOpenLegal: (document: LegalDocumentId) => void }) {
+  const bundle = legalBundle(locale);
+  const links = [
+    { href: LEGAL_REVISION.repository, icon: <GithubMark className="size-4" />, label: t('console.aboutSource') },
+    { href: LEGAL_REVISION.site, icon: <Globe2 />, label: t('console.aboutSite') },
+    { href: LEGAL_REVISION.issues, icon: <Bug />, label: t('console.aboutIssues') },
+  ];
+  return <Card>
+    <PanelHeading icon={<Scale />} action={<Badge variant="outline">v{__STM_VERSION__}</Badge>}>{t('console.aboutTitle')}</PanelHeading>
+    <CardContent className="grid gap-4">
+      <div className="about-lockup">
+        <BrandMark size={44} />
+        <div className="grid gap-1">
+          <span className="text-sm font-semibold">SillyTavern Manager</span>
+          <p className="text-xs text-muted-foreground">{t('console.aboutBody')}</p>
+        </div>
+      </div>
+      <div className="about-links">
+        {links.map(({ href, icon, label }) => (
+          <a key={href} href={href} target="_blank" rel="noreferrer noopener">{icon}<span>{label}</span><ArrowUpRight className="size-3.5 opacity-60" /></a>
+        ))}
+      </div>
+      <div className="about-documents">
+        {bundle.documents.map((document) => (
+          <Button key={document.id} variant="outline" size="sm" onClick={() => onOpenLegal(document.id)}>{document.short}</Button>
+        ))}
+      </div>
+      <p className="text-xs text-muted-foreground">{t('console.aboutLicence')}</p>
+    </CardContent>
+  </Card>;
 }
 
 /** SillyTavern's own configuration file, for whoever wants to edit it directly. */
