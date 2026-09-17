@@ -6,7 +6,7 @@ import { networkInterfaces } from 'node:os';
 import { createSocket } from 'node:dgram';
 import { extname, join, relative, resolve, sep } from 'node:path';
 import { applyQuery, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, type ApiErrorBody, type ConfigUpdateInput, type HealthResponse, type Installation, type Job, type JobState, type LogEntry, type LogEvent, type LogLine, type LogSink, type LogSourceFilter, type ManagerPorts, type PortSettings, type Profile, type ProfileLayout, type SetupStatus, type VersionSelector } from '../../../packages/contracts/src/index.js';
-import { getPlatformPaths, type PlatformPaths } from '../../../packages/platform/src/index.js';
+import { getPlatformPaths, storageDurability, type PlatformPaths } from '../../../packages/platform/src/index.js';
 import { RuntimeError, RuntimeManager, type InstallationProgress } from '../../../packages/sillytavern-runtime/src/index.js';
 import { hashPassword, MIN_PASSWORD_LENGTH, validatePasscode, validatePassword, verifyPassword } from './password.js';
 import { RateLimiter } from './rate-limit.js';
@@ -399,6 +399,12 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     return ordered;
   };
   const staticRoot = options.staticRoot ? resolve(options.staticRoot) : panelStaticRoot(env);
+  // Said once, at the top of the log, where somebody setting this up is
+  // already looking. The console says it again where it can be acted on.
+  const durability = storageDurability(paths.root);
+  if (!durability.durable) {
+    logger(logEvent('storage.notDurable', `[manager] ${paths.root} is on ${durability.filesystem ?? 'temporary storage'}, which this machine does not keep across a restart; connect Cloudflare R2 so backups are held somewhere else`, { path: paths.root, filesystem: durability.filesystem ?? 'unknown' }));
+  }
   let persisted = await store.load();
   // A stored port that would now collide - because `STM_PORT` or
   // `STM_ACCESS_PORT` moved since it was chosen - is dropped rather than
@@ -671,7 +677,10 @@ async function handleRequest(options: {
       manager: { version: state.managerVersion, port: ports.manager },
       setupRequired: state.adminPasswordHash === null,
       uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
-      storage: { durable: store.paths.platform !== 'unknown' },
+      // Asked of the filesystem the data is actually on, rather than of the
+      // platform's name: the same image is durable with a volume mounted at the
+      // data directory and not without one, and its name says neither.
+      storage: { durable: storageDurability(store.paths.root).durable },
     };
     sendJson(response, 200, health);
     return;
@@ -943,7 +952,10 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     // page - more charged operations than a day of backups - to display a
     // number the manager already keeps. `/api/v1/r2/objects` still lists, for
     // when somebody actually asked to see the contents.
-    sendJson(response, 200, { config: await r2.getConfig() });
+    // The durability of this machine's disk rides along with the backup
+    // settings because it is the same question: whether a copy somewhere else
+    // is a precaution or the only thing keeping the data.
+    sendJson(response, 200, { config: await r2.getConfig(), storage: storageDurability(store.paths.root) });
     return;
   }
   if (pathname === '/api/v1/r2' && method === 'PUT') {

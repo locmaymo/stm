@@ -1,5 +1,5 @@
 import { homedir } from 'node:os';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type { PlatformKind } from '../../contracts/src/index.js';
@@ -149,6 +149,72 @@ function defaultRoot(kind: PlatformKind, options: PlatformPathOptions, env: Node
     return join(env.LOCALAPPDATA ?? join(home, 'AppData', 'Local'), 'SillyTavernManager');
   }
   return join(env.XDG_DATA_HOME ?? join(home, '.local', 'share'), 'sillytavern-manager');
+}
+
+/**
+ * Filesystems that exist only for as long as the machine does.
+ *
+ * `tmpfs` and `ramfs` are memory with a directory tree drawn on it. `overlay`
+ * and `aufs` are a container's own writable layer, which is created with the
+ * container and thrown away with it - so a host that starts a fresh container
+ * on every deploy, or after an idle period, starts it with an empty one. A
+ * volume mounted into a container is a real filesystem and shows up as one
+ * here, which is exactly the difference this is asking about.
+ */
+const EPHEMERAL_FILESYSTEMS = new Set(['overlay', 'overlayfs', 'aufs', 'tmpfs', 'ramfs']);
+
+export interface StorageDurability {
+  /** Whether what is written to the data directory is still there after a restart. */
+  readonly durable: boolean;
+  /** What the data directory turned out to be on, or null when it could not be read. */
+  readonly filesystem: string | null;
+}
+
+/**
+ * Whether this machine keeps what is written to it.
+ *
+ * Asked of the filesystem rather than of the platform's name, because the name
+ * does not answer it: the same image is durable when somebody mounted a volume
+ * at the data directory and not when nobody did, and no environment variable
+ * says which happened. The mount table does.
+ *
+ * A machine that cannot be asked - anything without /proc/mounts, which is
+ * every Windows and macOS install - is taken at its word. Saying "your data may
+ * be wiped" to somebody whose data is on their own disk is worse than saying
+ * nothing, and those are the platforms where nothing is the right answer.
+ */
+export function storageDurability(dataRoot: string, mountTable?: string): StorageDurability {
+  const table = mountTable ?? readMountTable();
+  if (table === null) return { durable: true, filesystem: null };
+  const target = resolve(dataRoot);
+  let best: { point: string; filesystem: string } | null = null;
+  for (const line of table.split('\n')) {
+    // device mountpoint fstype options dump pass, with spaces and the escape
+    // character itself written in octal.
+    const fields = line.split(' ');
+    if (fields.length < 3) continue;
+    const point = unescapeMountPath(fields[1]!);
+    const filesystem = fields[2]!;
+    if (!(target === point || target.startsWith(point.endsWith('/') ? point : `${point}/`))) continue;
+    // The deepest mount point covering the directory is the one it is on; the
+    // root covers everything and is almost never the answer.
+    if (!best || point.length > best.point.length) best = { point, filesystem };
+  }
+  if (!best) return { durable: true, filesystem: null };
+  return { durable: !EPHEMERAL_FILESYSTEMS.has(best.filesystem), filesystem: best.filesystem };
+}
+
+function readMountTable(): string | null {
+  try {
+    return readFileSync('/proc/mounts', 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+/** `/mnt/my\040volume` back to `/mnt/my volume`. */
+function unescapeMountPath(value: string): string {
+  return value.replace(/\\([0-7]{3})/gu, (_match, octal: string) => String.fromCharCode(parseInt(octal, 8)));
 }
 
 export function getPlatformPaths(options: PlatformPathOptions = {}): PlatformPaths {

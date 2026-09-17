@@ -274,6 +274,24 @@ export interface CloudflareConnectionStatus {
   readonly lastError: string | null;
 }
 
+/**
+ * What the machine this manager is on does with what is written to it.
+ *
+ * A console running on somebody's own computer keeps its data because the disk
+ * keeps it. A console running on a hosting platform may be on a filesystem that
+ * belongs to the container rather than to the account: it is created when the
+ * machine starts and thrown away when it stops, and hosts that stop a machine
+ * after an idle period stop it with everything in it. The console cannot make
+ * that storage durable. What it can do is say so, and offer the one thing that
+ * fixes it - a copy somewhere that is not this machine.
+ */
+export interface StorageDurabilityReport {
+  /** Whether what is written here survives this machine being restarted. */
+  readonly durable: boolean;
+  /** What the data directory is on, when that is what decided it. */
+  readonly filesystem: string | null;
+}
+
 export interface R2Config {
   readonly mode: R2ConnectionMode;
   /** Null when this manager has no Cloudflare OAuth client configured. */

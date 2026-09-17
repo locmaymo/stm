@@ -121,6 +121,8 @@
     "uploadedBackup": "Đã tải lên",
     "backupRenameFailed": "Không thể đổi tên bản sao lưu",
     "backupDeleteFailed": "Không thể xoá bản sao lưu",
+    "storageTemporaryTitle": "Máy này không giữ lại dữ liệu của bạn",
+    "storageTemporaryBody": "Bộ nhớ mà trình quản lý đang chạy trên đó chỉ là tạm thời. Nó có thể bị xóa sạch khi máy khởi động lại, và một số hạ tầng còn tắt máy sau một thời gian không dùng - chat, nhân vật và cài đặt sẽ mất theo. Hãy kết nối Cloudflare R2 bên dưới để bản sao lưu được gửi ra ngoài máy này, nhờ vậy có thể khôi phục lại sau khi bị reset.",
     "r2Title": "Cloudflare R2",
     "r2Endpoint": "Endpoint R2",
     "r2Bucket": "Tên bucket",

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createIoLimiter, detectPlatform, getPlatformPaths, ioConcurrency, runPooled } from '../../../packages/platform/src/index.js';
+import { createIoLimiter, detectPlatform, getPlatformPaths, ioConcurrency, runPooled, storageDurability } from '../../../packages/platform/src/index.js';
 
 test('platform paths follow the documented durable roots', () => {
   assert.equal(detectPlatform({ platform: 'win32', env: {} }), 'windows');
@@ -62,4 +62,34 @@ test('a shared limiter caps a recursive walk instead of multiplying per level', 
   };
   await descend(3);
   assert.equal(peak, 3);
+});
+
+test('whether the data survives a restart is asked of the filesystem, not the platform', () => {
+  // A container's own writable layer, which is made with the container and
+  // thrown away with it. Nothing in the environment says so; this does.
+  const container = [
+    'overlay / overlay rw,relatime,lowerdir=/x,upperdir=/y 0 0',
+    'tmpfs /dev tmpfs rw,nosuid 0 0',
+    'proc /proc proc rw,relatime 0 0',
+  ].join('\n');
+  assert.deepEqual(storageDurability('/data/sillytavern-manager', container), { durable: false, filesystem: 'overlay' });
+
+  // The same image with a volume mounted at the data directory keeps its data,
+  // and the deepest mount covering the directory is the one that decides.
+  const withVolume = `${container}\n/dev/sdb /data ext4 rw,relatime 0 0`;
+  assert.deepEqual(storageDurability('/data/sillytavern-manager', withVolume), { durable: true, filesystem: 'ext4' });
+  // But only for what is under it: a sibling directory is still on the layer.
+  assert.equal(storageDurability('/datastore/manager', withVolume).durable, false, 'a prefix of the name is not a prefix of the path');
+
+  // Memory with a directory tree drawn on it is the other way to lose data.
+  assert.equal(storageDurability('/tmp/manager', 'tmpfs /tmp tmpfs rw 0 0').durable, false);
+
+  // An ordinary machine, and a mount point with a space in its name, which
+  // /proc/mounts writes in octal.
+  assert.deepEqual(storageDurability('/home/someone/.local/share/sillytavern-manager', '/dev/sda1 / ext4 rw 0 0'), { durable: true, filesystem: 'ext4' });
+  assert.deepEqual(storageDurability('/mnt/my disk/manager', '/dev/sdc /mnt/my\\040disk xfs rw 0 0'), { durable: true, filesystem: 'xfs' });
+
+  // A machine with no mount table to read is taken at its word. Telling
+  // somebody their own disk might be wiped is worse than saying nothing.
+  assert.deepEqual(storageDurability('C:/Users/someone/AppData/Local/SillyTavernManager', ''), { durable: true, filesystem: null });
 });

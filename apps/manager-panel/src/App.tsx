@@ -7,7 +7,7 @@ import {
   Blocks, BookmarkPlus, FileCode2, LoaderCircle, Gauge, History, KeyRound, Monitor, CircleArrowUp, TriangleAlert,
 } from 'lucide-react';
 import {
-  Alert, AlertDescription, AuthLayout, Badge, BrandMark, Button, buttonVariants, Card, CardAction,
+  Alert, AlertDescription, AlertTitle, AuthLayout, Badge, BrandMark, Button, buttonVariants, Card, CardAction,
   ConfirmDialog, DetailRow, EmptyState, StatTile, type StatusTone,
   CardContent, CardFooter, CardHeader,
   CardGrid, Checkbox, cn, DataTable, type DataTableColumn, type DataTableLabels,
@@ -31,7 +31,7 @@ import { DEFAULT_SILLYTAVERN_PORT, portRefusal } from './ports.js';
 import { readTunnelOfferDeclined, saveTunnelOfferDeclined, shouldOfferManagerTunnel } from './hosting.js';
 import { availableUpdate, readDismissedUpdate, saveDismissedUpdate } from './updates.js';
 import { apiFetch, onSessionExpired, resetSessionWatch } from './session.js';
-import type { AccessGatewayState, BackupManifest, ConfigDocument, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LogEntry, LogSourceFilter, MetricsBucket, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CloudflareUsage, R2Config, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, BackupManifest, ConfigDocument, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LogEntry, LogSourceFilter, MetricsBucket, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CloudflareUsage, R2Config, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
 import { translateLogEntry, translateStep } from './log-format.js';
@@ -2041,6 +2041,14 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   const [stopping, setStopping] = useState(false);
   const uploadAbort = useRef<AbortController | null>(null);
   const [r2Config, setR2Config] = useState<R2Config | null>(null);
+  /**
+   * Whether this machine keeps what is written to it.
+   *
+   * Null until the first answer arrives, and the notice below waits for it:
+   * a warning that appears and then takes itself back is worse than one that
+   * arrives a moment late.
+   */
+  const [storage, setStorage] = useState<StorageDurabilityReport | null>(null);
   const [backupSchedule, setBackupSchedule] = useState<LocalBackupSchedule | null>(null);
   const [scheduleSaving, setScheduleSaving] = useState(false);
   const [r2Snapshots, setR2Snapshots] = useState<R2SnapshotSummary[]>([]);
@@ -2085,7 +2093,11 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
     else setR2Snapshots([]);
     if (profileResponse.ok) { const payload = await profileResponse.json() as { profiles: Profile[]; activeProfileId: string | null }; onProfilesChange(payload.profiles, payload.activeProfileId); }
     if (backupResponse.ok) { const payload = await backupResponse.json() as { backups: BackupManifest[] }; onBackupsChange(payload.backups); }
-    if (r2Response.ok) setR2Config((await r2Response.json() as { config: R2Config }).config);
+    if (r2Response.ok) {
+      const payload = await r2Response.json() as { config: R2Config; storage?: StorageDurabilityReport };
+      setR2Config(payload.config);
+      if (payload.storage) setStorage(payload.storage);
+    }
     if (scheduleResponse?.ok) setBackupSchedule((await scheduleResponse.json() as { schedule: LocalBackupSchedule }).schedule);
   };
   useEffect(() => { void refresh(); }, []);
@@ -2698,6 +2710,16 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
         />
       </CardContent>
     </Card>
+
+    {/* Said above the card rather than inside it, because it is the reason to
+        read the card at all. It stops being shown once backups are leaving this
+        machine: at that point the storage is still temporary and it no longer
+        costs the reader anything, so repeating it would only be noise. */}
+    {storage && !storage.durable && !(r2Config?.enabled && r2Config.configured) ? <Alert variant="destructive">
+      <TriangleAlert />
+      <AlertTitle>{t('console.storageTemporaryTitle')}</AlertTitle>
+      <AlertDescription>{t('console.storageTemporaryBody')}</AlertDescription>
+    </Alert> : null}
 
     <Card>
       <PanelHeading icon={<Cloud />}>{t('console.r2Title')}</PanelHeading>
