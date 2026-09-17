@@ -243,7 +243,10 @@ export function startupPhase(line: string): { code: string; params?: MessagePara
   if (/^Compiling frontend libraries/u.test(line)) return { code: 'process.compilingFrontend' };
   if (/^webpack .*compiled/u.test(line)) return { code: 'process.frontendCompiled' };
   if (/Auto-updating server plugins|^Initializing plugin|server plugin\(s\) are currently loaded/u.test(line)) return { code: 'process.loadingPlugins' };
-  if (/is listening on/u.test(line)) return { code: 'process.listening' };
+  // SillyTavern names the port in the line it announces, which is the one
+  // answer that is true whatever the console asked for.
+  const listening = /is listening on [^:]*:(?:.*:)?(\d+)/u.exec(line);
+  if (listening) return { code: 'process.listening', params: { port: listening[1] ?? '' } };
   if (/^Go to: /u.test(line)) return { code: 'process.waitingForAnswer' };
   return null;
 }

@@ -27,7 +27,7 @@ import {
 import { failures, logCatalog, translator, type Fail, type Translate } from './i18n.js';
 import { browserEnvironment, browserStorage, readPreferences, savePreferences, type LocaleCode, type Preferences } from './preferences.js';
 import { authErrorKey } from './auth-error.js';
-import { portRefusal } from './ports.js';
+import { DEFAULT_SILLYTAVERN_PORT, portRefusal } from './ports.js';
 import { availableUpdate, readDismissedUpdate, saveDismissedUpdate } from './updates.js';
 import { apiFetch, onSessionExpired, resetSessionWatch } from './session.js';
 import type { AccessGatewayState, BackupManifest, ConfigDocument, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LogEntry, LogSourceFilter, MetricsBucket, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CloudflareUsage, R2Config, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
@@ -36,7 +36,7 @@ import { useLiveLogs } from './use-live-logs.js';
 import { translateLogEntry, translateStep } from './log-format.js';
 import { QrCode } from './qr-code.js';
 import { CLOUDFLARE_ORANGE, CloudflareMark } from './cloudflare-mark.js';
-import { LOCAL_HOST, reachableAddresses, shortenHost } from './addresses.js';
+import { localHost, reachableAddresses, shortenHost } from './addresses.js';
 import { EmbedStage } from './embed-stage.js';
 
 const navigation = [
@@ -580,6 +580,10 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     toast({ title: t('console.uninstallDone'), tone: 'success' });
     return null;
   };
+  // Where SillyTavern actually is, for every link that points at it. The config
+  // document reports it too, but it is null until something is installed and
+  // the addresses are shown before that.
+  const sillyTavernPort = portSettings?.port ?? configDocument?.settings.port ?? DEFAULT_SILLYTAVERN_PORT;
   const logProps = { t, catalog, source: logSource, onSourceChange: setLogSource, entries: liveLogs.entries, query: logQuery, onQueryChange: setLogQuery, compact: compactLogs, onToggleCompact: () => setCompactLogs((current) => !current), onLoadOlder: liveLogs.loadOlder, hasOlder: liveLogs.hasOlder, loadingOlder: liveLogs.loadingOlder };
   const logs = <LogsPanel {...logProps} expanded={logsExpanded} onToggleExpanded={() => setLogsExpanded((current) => !current)} />;
   const updateConfig = async (input: ConfigUpdateInput): Promise<string | null> => {
@@ -654,6 +658,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     process={processState}
     tunnel={tunnelState}
     security={accessSecurity}
+    sillyTavernPort={sillyTavernPort}
     networkHost={configDocument?.networkHost ?? null}
     installed={Boolean(activeInstallationId)}
     installing={installing}
@@ -702,7 +707,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
             </div>
           </header>
           <PageContainer>
-            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} installed={Boolean(activeInstallationId)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} locale={preferences.locale} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} config={configDocument} security={accessSecurity} ports={portSettings} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} /> : <ResourcePanel page={page} t={t} />}
+            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} installed={Boolean(activeInstallationId)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} locale={preferences.locale} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} config={configDocument} security={accessSecurity} ports={portSettings} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} /> : <ResourcePanel page={page} t={t} />}
           </PageContainer>
           <MobileNav
             items={navigation.map(({ id, icon }) => ({ id, icon, href: `#${id}`, label: t(`nav.${id}`) }))}
@@ -923,12 +928,12 @@ function Unavailable({ t, children }: { t: Translate; children: ReactNode }) {
  * two buttons the pointer is over.
  */
 function RuntimeCard({
-  t, fail, catalog, process, tunnel, security, networkHost, installed, installing, active, dataBytes, profileName,
+  t, fail, catalog, process, tunnel, security, sillyTavernPort, networkHost, installed, installing, active, dataBytes, profileName,
   version, onVersionChange, versions, onPendingInstallationId, csrfToken, onInstalling, onRemove,
   onStart, onStop, onSetPassword, onShowAddresses, onOpenSettings,
 }: {
   t: Translate; fail: Fail; catalog: Record<string, unknown>; process: ProcessState; tunnel: TunnelState;
-  security: AccessGatewayState; networkHost: string | null; installed: boolean; installing: boolean;
+  security: AccessGatewayState; sillyTavernPort: number; networkHost: string | null; installed: boolean; installing: boolean;
   active: Installation | undefined; dataBytes: number | null; profileName: string | null; version: string;
   onVersionChange: (value: string) => void; versions: VersionOption[];
   onPendingInstallationId: (value: string | null) => void; csrfToken: string | null;
@@ -1076,7 +1081,7 @@ function RuntimeCard({
     } catch { report(t('console.embedFailed')); } finally { setEmbedOpening(false); }
   };
 
-  const addresses = reachableAddresses(tunnel, security, networkHost ?? window.location.hostname);
+  const addresses = reachableAddresses(tunnel, security, networkHost ?? window.location.hostname, sillyTavernPort);
   // There is always at least the loopback address.
   const primary = addresses[0]!;
   const otherCount = addresses.length - 1;
@@ -1244,7 +1249,7 @@ function RuntimeCard({
   </>;
 }
 
-function AccessPanel({ t, process, tunnel, config, security, installed, onAction, onSetLan, onSetPassword }: { t: Translate; process: ProcessState; tunnel: TunnelState; config: ConfigDocument | null; security: AccessGatewayState; installed: boolean; onAction: (path: string, body?: unknown) => Promise<void>; onSetLan: (lan: boolean) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null> }) {
+function AccessPanel({ t, process, tunnel, config, security, sillyTavernPort, installed, onAction, onSetLan, onSetPassword }: { t: Translate; process: ProcessState; tunnel: TunnelState; config: ConfigDocument | null; security: AccessGatewayState; sillyTavernPort: number; installed: boolean; onAction: (path: string, body?: unknown) => Promise<void>; onSetLan: (lan: boolean) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null> }) {
   const [busy, setBusy] = useState(false);
   const [securityBusy, setSecurityBusy] = useState(false);
   const running = process.status === 'running';
@@ -1297,9 +1302,9 @@ function AccessPanel({ t, process, tunnel, config, security, installed, onAction
   // This machine reaches SillyTavern directly, because the loopback address is
   // already a boundary. Everything else goes through the gateway and its
   // password: the LAN address and the tunnel both point there.
-  const localHost = LOCAL_HOST;
+  const local = localHost(sillyTavernPort);
   const lanHost = `${config?.networkHost ?? window.location.hostname ?? 'localhost'}:${security.port}`;
-  const localUrl = `http://${localHost}`;
+  const localUrl = `http://${local}`;
   const lanUrl = `http://${lanHost}`;
   /*
    * What this card reports is whether the doors are answering, which is not
@@ -1341,7 +1346,7 @@ function AccessPanel({ t, process, tunnel, config, security, installed, onAction
         <div className="address-rows">
           <AddressRow t={t} label={t('dashboard.publicAddress')} url={tunnel.url} display={tunnel.url ?? ''} disabledHint={t('console.tunnelOffShort')} />
           <AddressRow t={t} label={t('console.lanAddress')} url={lan ? lanUrl : null} display={lanHost} disabledHint={t('console.lanOffShort')} />
-          <AddressRow t={t} label={t('console.local')} url={localUrl} display={localHost} />
+          <AddressRow t={t} label={t('console.local')} url={localUrl} display={local} />
         </div>
       </> : null}
       <ConfirmDialog

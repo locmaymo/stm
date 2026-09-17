@@ -1,7 +1,15 @@
 import type { AccessGatewayState, TunnelState } from '../../../packages/contracts/src/index.js';
 
-/** SillyTavern itself, which only this machine can reach. */
-export const LOCAL_HOST = '127.0.0.1:8000';
+/**
+ * SillyTavern itself, which only this machine can reach.
+ *
+ * The port is asked for rather than assumed: it used to be written in here as
+ * 8000, so moving SillyTavern left every link on the overview pointing at a
+ * port it had left.
+ */
+export function localHost(sillyTavernPort: number): string {
+  return `127.0.0.1:${sillyTavernPort}`;
+}
 
 /** One place SillyTavern answers, as a link and as something short enough to show. */
 export interface ReachableAddress {
@@ -19,14 +27,15 @@ export interface ReachableAddress {
  * order a link is chosen in. The console used to open the loopback address
  * whatever else was on, which from a phone is an address that goes nowhere.
  */
-export function reachableAddresses(tunnel: Pick<TunnelState, 'url'>, security: Pick<AccessGatewayState, 'lan' | 'port'>, networkHost: string): ReachableAddress[] {
+export function reachableAddresses(tunnel: Pick<TunnelState, 'url'>, security: Pick<AccessGatewayState, 'lan' | 'port'>, networkHost: string, sillyTavernPort: number): ReachableAddress[] {
   const addresses: ReachableAddress[] = [];
   if (tunnel.url) addresses.push({ kind: 'tunnel', url: tunnel.url, host: tunnel.url.replace(/^https?:\/\//u, '').replace(/\/$/u, '') });
   if (security.lan) {
     const host = `${networkHost}:${security.port}`;
     addresses.push({ kind: 'lan', url: `http://${host}`, host });
   }
-  addresses.push({ kind: 'local', url: `http://${LOCAL_HOST}`, host: LOCAL_HOST });
+  const local = localHost(sillyTavernPort);
+  addresses.push({ kind: 'local', url: `http://${local}`, host: local });
   return addresses;
 }
 

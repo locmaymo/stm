@@ -128,6 +128,10 @@ test('a start says which part of the SillyTavern startup it is in', () => {
   assert.deepEqual(startupPhase('Compiling frontend libraries...'), { code: 'process.compilingFrontend' });
   assert.deepEqual(startupPhase('webpack 5.105.4 compiled successfully in 754 ms'), { code: 'process.frontendCompiled' });
   assert.deepEqual(startupPhase('SillyTavern 1.18.0'), { code: 'process.loadingVersion', params: { version: '1.18.0' } });
-  assert.deepEqual(startupPhase('SillyTavern is listening on IPv4: 127.0.0.1:8000'), { code: 'process.listening' });
+  // The port comes out of the line SillyTavern prints, which is true whatever
+  // the console asked for - and is what the log shows instead of a fixed 8000.
+  assert.deepEqual(startupPhase('SillyTavern is listening on IPv4: 127.0.0.1:8000'), { code: 'process.listening', params: { port: '8000' } });
+  assert.deepEqual(startupPhase('SillyTavern is listening on IPv4: 127.0.0.1:8003'), { code: 'process.listening', params: { port: '8003' } });
+  assert.deepEqual(startupPhase('SillyTavern is listening on IPv6: [::1]:8003'), { code: 'process.listening', params: { port: '8003' } });
   assert.equal(startupPhase('Preferring IPv4 for DNS resolution'), null);
 });

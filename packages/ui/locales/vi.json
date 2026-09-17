@@ -522,7 +522,7 @@
     "git_failed": "Git không lấy được phiên bản này.",
     "github_invalid_response": "GitHub trả về dữ liệu mà trình quản lý không đọc được.",
     "github_unavailable": "Không kết nối được tới GitHub. Kiểm tra mạng rồi thử lại.",
-    "health_check_failed": "SillyTavern đã cài xong nhưng không phản hồi. Có thể cổng 8000 đang bị chương trình khác chiếm.",
+    "health_check_failed": "SillyTavern đã cài xong nhưng không phản hồi. Có thể cổng của nó đang bị chương trình khác chiếm.",
     "installation_busy": "Đang có một lượt cài khác chạy. Chờ nó xong đã.",
     "installation_marker_mismatch": "Bản SillyTavern này không khớp với hồ sơ cài đặt của nó. Hãy cài lại.",
     "installation_marker_missing": "Bản SillyTavern này bị thiếu. Hãy cài lại.",
@@ -599,8 +599,8 @@
       "restoredDefaults": "Đã khôi phục {path} về mặc định của bản {ref}"
     },
     "sillytavern": {
-      "starting": "Đang khởi động {ref} trên 127.0.0.1:8000",
-      "ready": "Đã sẵn sàng trên 127.0.0.1:8000 sau {seconds}s",
+      "starting": "Đang khởi động {ref} trên 127.0.0.1:{port}",
+      "ready": "Đã sẵn sàng trên 127.0.0.1:{port} sau {seconds}s",
       "legacyHeap": "Dùng heap {heap} MiB cho bản chạy public/ cũ",
       "spawnFailed": "{reason}",
       "failed": "{reason}",
@@ -749,7 +749,7 @@
       "compilingFrontend": "Đang biên dịch thư viện giao diện, lần đầu sẽ lâu hơn",
       "frontendCompiled": "Đã biên dịch giao diện, đang khởi động máy chủ",
       "loadingPlugins": "Đang nạp plugin máy chủ",
-      "listening": "Đang mở cổng 8000",
+      "listening": "Đang mở cổng {port}",
       "waitingForAnswer": "Đang chờ phản hồi đầu tiên",
       "stopping": "Đang yêu cầu SillyTavern dừng",
       "savingData": "Đang lưu dữ liệu trước khi tắt"

@@ -182,21 +182,22 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   const baseLogger: LogSink = options.logger ?? ((line) => console.log(logLineText(line)));
   const jobs = new JobStore(options.logBuffer ?? new LogBuffer(paths));
   const logger: LogSink = (line) => { jobs.append('manager', line); baseLogger(line); };
-  const runtime = options.runtime ?? new RuntimeManager({ paths, logger: (line) => { jobs.append('installer', line); baseLogger(line); } });
+  /**
+   * The port SillyTavern runs on, as everything that needs it reads it.
+   *
+   * A variable rather than a constant because the console can move it while it
+   * runs, and the gateway, the supervisor, the installer's health check and the
+   * config writer all have to see the same answer. Its stored value is read
+   * below, once the state file has been loaded; until then the shipped port
+   * stands.
+   */
+  let sillyTavernPort: number = SILLYTAVERN_PORT;
+  const runtime = options.runtime ?? new RuntimeManager({ paths, healthCheckPort: () => sillyTavernPort, logger: (line) => { jobs.append('installer', line); baseLogger(line); } });
   const profiles = options.profileStore ?? new ProfileStore({ paths, logger: (line) => { jobs.append('manager', line); baseLogger(line); } });
   const backups = options.backupStore ?? new BackupStore({ paths, logger: (line) => { jobs.append('backup', line); baseLogger(line); } });
   const cloudflare = options.cloudflare !== undefined ? options.cloudflare : cloudflareConnectionFromEnvironment(paths, env);
   const r2 = options.r2 ?? new R2Manager({ paths, env, ...(cloudflare ? { cloudflare } : {}), logger: (line) => { jobs.append('backup', line); baseLogger(line); } });
   const metrics = options.metrics ?? new MetricsStore(paths);
-  /**
-   * The port SillyTavern runs on, as everything that needs it reads it.
-   *
-   * A variable rather than a constant because the console can move it while it
-   * runs, and the gateway, the supervisor and the config writer all have to see
-   * the same answer. Its stored value is read below, once the state file has
-   * been loaded; until then the shipped port stands.
-   */
-  let sillyTavernPort: number = SILLYTAVERN_PORT;
   const config = options.config ?? new ConfigStore({ managedPort: () => sillyTavernPort, logger: (line) => { jobs.append('manager', line); baseLogger(line); } });
   const accessPort = options.accessPort ?? portFromEnvironment(env.STM_ACCESS_PORT, ACCESS_GATEWAY_PORT);
   // The console shows SillyTavern in a frame, and the console is the only

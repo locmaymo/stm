@@ -3,15 +3,26 @@ import assert from 'node:assert/strict';
 import { reachableAddresses, shortenHost } from '../src/addresses.js';
 
 test('the tunnel comes first, then the network, then this machine', () => {
-  const all = reachableAddresses({ url: 'https://example.trycloudflare.com' }, { lan: true, port: 8001 }, '192.168.1.20');
+  const all = reachableAddresses({ url: 'https://example.trycloudflare.com' }, { lan: true, port: 8001 }, '192.168.1.20', 8000);
   assert.deepEqual(all.map((address) => address.kind), ['tunnel', 'lan', 'local']);
   assert.equal(all[0]?.host, 'example.trycloudflare.com');
   assert.equal(all[1]?.url, 'http://192.168.1.20:8001');
 });
 
 test('with nothing shared, this machine is the only address', () => {
-  const only = reachableAddresses({ url: null }, { lan: false, port: 8001 }, 'localhost');
+  const only = reachableAddresses({ url: null }, { lan: false, port: 8001 }, 'localhost', 8000);
   assert.deepEqual(only.map((address) => address.url), ['http://127.0.0.1:8000']);
+});
+
+test('moving SillyTavern moves the address that points straight at it', () => {
+  // The loopback link used to carry 8000 whatever the console had been told,
+  // so every address on the overview pointed at a port SillyTavern had left.
+  const moved = reachableAddresses({ url: null }, { lan: false, port: 8001 }, 'localhost', 8003);
+  assert.deepEqual(moved.map((address) => address.url), ['http://127.0.0.1:8003']);
+  assert.equal(moved[0]?.host, '127.0.0.1:8003');
+  // The gateway keeps its own port: it is the door, not what is behind it.
+  const shared = reachableAddresses({ url: null }, { lan: true, port: 8001 }, '192.168.1.20', 8003);
+  assert.deepEqual(shared.map((address) => address.url), ['http://192.168.1.20:8001', 'http://127.0.0.1:8003']);
 });
 
 test('a long host keeps its two ends and a short one is left alone', () => {
