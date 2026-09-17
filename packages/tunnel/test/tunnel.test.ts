@@ -312,3 +312,104 @@ test('each tunnel remembers its own mode, and publishes its own address', async 
   await forSillyTavern.close();
   await forConsole.close();
 });
+
+test('a network that blocks QUIC gets HTTP/2, once it has been noticed and ever after', async () => {
+  const paths = await createPaths();
+  await installFakeBinary(paths);
+  const children: FakeCloudflared[] = [];
+  const invocations: string[][] = [];
+  const lines: string[] = [];
+  const spawnImpl = ((_command: string, args: readonly string[]): ChildProcess => {
+    invocations.push([...args]);
+    const child = fakeCloudflared();
+    children.push(child);
+    return child as unknown as ChildProcess;
+  }) as unknown as typeof spawnType;
+  const options = {
+    paths,
+    spawnImpl,
+    env: { PATH: '' },
+    reconnectDelaysMs: [5],
+    logger: (line: Parameters<typeof lines.push>[0] | { message: string }) => {
+      lines.push(typeof line === 'string' ? line : line.message);
+    },
+  };
+  const tunnel = new TunnelManager(options as unknown as ConstructorParameters<typeof TunnelManager>[0]);
+
+  // The first attempt is cloudflared's own choice, which is QUIC.
+  await tunnel.start('quick');
+  assert.equal(invocations.length, 1);
+  assert.ok(!invocations[0]!.includes('--protocol'), 'the first attempt does not second-guess cloudflared');
+
+  // cloudflared saying the edge is unreachable over QUIC is the fast half of
+  // the answer: no waiting, straight to the transport that works.
+  children[0]!.stderr.write('ERR failed to dial to edge with quic: timeout: no recent network activity\n');
+  await waitFor(() => invocations.length === 2, 'a second attempt over HTTP/2');
+  assert.deepEqual(invocations[1]!.slice(0, 6), ['tunnel', '--no-autoupdate', '--protocol', 'http2', '--edge-ip-version', '4']);
+  assert.ok(lines.some((line) => line.includes('HTTP/2')), 'and the log says why it changed');
+
+  children[1]!.stdout.write('INF |  https://cedar-married-designer-ticket.trycloudflare.com  |\n');
+  await waitFor(() => tunnel.getState().status === 'running', 'the tunnel to come up over HTTP/2');
+  // The switch is not a failure, so it must not have eaten the backoff that a
+  // real disconnection later depends on.
+  assert.ok(!lines.some((line) => line.includes('reconnecting in')));
+  await tunnel.close();
+
+  // What this machine's network does outlasts the process that learned it: a
+  // manager started again here goes straight to HTTP/2 rather than spending
+  // the wait a second time.
+  const after = new TunnelManager(options as unknown as ConstructorParameters<typeof TunnelManager>[0]);
+  await after.resume();
+  await waitFor(() => invocations.length === 3, 'the resumed tunnel');
+  assert.ok(invocations[2]!.includes('--protocol'), 'the remembered transport is used from the first attempt');
+  await after.close();
+});
+
+test('a tunnel that says nothing at all is given up on too, and asked again over HTTP/2', async () => {
+  const paths = await createPaths();
+  await installFakeBinary(paths);
+  const children: FakeCloudflared[] = [];
+  const invocations: string[][] = [];
+  const spawnImpl = ((_command: string, args: readonly string[]): ChildProcess => {
+    invocations.push([...args]);
+    const child = fakeCloudflared();
+    children.push(child);
+    return child as unknown as ChildProcess;
+  }) as unknown as typeof spawnType;
+  // A blocked UDP path produces no error to match on - the packets leave and
+  // nothing comes back - so silence for long enough has to count as an answer.
+  const tunnel = new TunnelManager({ paths, spawnImpl, env: { PATH: '' }, quicPatienceMs: 20, logger: () => undefined });
+
+  await tunnel.start('quick');
+  assert.ok(!invocations[0]!.includes('--protocol'));
+  await waitFor(() => invocations.length === 2, 'the silent attempt to be given up on');
+  assert.ok(invocations[1]!.includes('--protocol'));
+
+  children[1]!.stdout.write('INF |  https://cedar-married-designer-ticket.trycloudflare.com  |\n');
+  await waitFor(() => tunnel.getState().status === 'running', 'the tunnel to come up over HTTP/2');
+  // And a tunnel that is up is never taken down for being slow to start.
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(invocations.length, 2);
+  await tunnel.close();
+});
+
+test('a network already known to need HTTP/2 is not measured again', async () => {
+  const paths = await createPaths();
+  await installFakeBinary(paths);
+  const invocations: string[][] = [];
+  const spawnImpl = ((_command: string, args: readonly string[]): ChildProcess => {
+    invocations.push([...args]);
+    return fakeCloudflared() as unknown as ChildProcess;
+  }) as unknown as typeof spawnType;
+  const tunnel = new TunnelManager({ paths, spawnImpl, env: { PATH: '', STM_TUNNEL_PROTOCOL: 'http2' }, logger: () => undefined });
+  await tunnel.start('quick');
+  assert.ok(invocations[0]!.includes('--protocol'));
+  await tunnel.close();
+
+  // And the other way: somebody who knows their network is fine can keep QUIC,
+  // which is the faster transport when it is available.
+  const quic = new TunnelManager({ paths, spawnImpl, env: { PATH: '', STM_TUNNEL_PROTOCOL: 'quic' }, logger: () => undefined });
+  await quic.start('quick');
+  assert.ok(!invocations[1]!.includes('--protocol'));
+  await quic.close();
+});

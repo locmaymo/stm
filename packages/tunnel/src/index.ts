@@ -27,6 +27,32 @@ const TUNNEL_STATE_FILE = 'tunnel-config.json';
 const binaryInFlight = new Map<string, Promise<string>>();
 const TUNNEL_SCHEMA_VERSION = 1 as const;
 /**
+ * How cloudflared talks to Cloudflare's edge.
+ *
+ * `auto` is cloudflared's own choice, which is QUIC, which is UDP. `http2` is
+ * TCP, which is slower to recover from a dropped packet and is the only thing
+ * that connects on a network where UDP does not leave the machine.
+ */
+export type TunnelTransport = 'auto' | 'http2';
+/**
+ * How long a tunnel may sit at "starting" before QUIC is blamed for it.
+ *
+ * A network that drops UDP gives cloudflared nothing to fail on: the packets
+ * leave and no answer comes back, so it retries the handshake until it gives up
+ * minutes later, and the link people are waiting for is an error 1033 page the
+ * whole time. Long enough not to punish a slow first connection, short enough
+ * that the reader has not walked away.
+ */
+const QUIC_PATIENCE_MS = 25_000;
+/**
+ * Lines that mean the edge could not be reached over QUIC.
+ *
+ * cloudflared says this several ways depending on version and on where the
+ * block is - a refused handshake, a datagram that never arrived, its own advice
+ * to pass the flag this class is about to pass.
+ */
+const QUIC_FAILURE = /failed to (?:create|dial|connect).{0,40}quic|quic.{0,40}(?:timeout|timed out|connection refused|no recent network activity)|--protocol http2/iu;
+/**
  * How long to wait before reconnecting, per consecutive failure.
  *
  * cloudflared keeps its own edge connections alive, so reaching this at all
@@ -41,6 +67,13 @@ interface StoredTunnelState {
   readonly schemaVersion: 1;
   readonly mode: TunnelMode;
   readonly token: string | null;
+  /**
+   * What the last start settled on, so a machine that has already been found
+   * to block UDP does not spend the patience above rediscovering it on every
+   * restart. Absent in a file written before this existed, which reads as
+   * `auto` and costs one slow start.
+   */
+  readonly transport?: TunnelTransport;
 }
 
 /**
@@ -141,6 +174,8 @@ export interface TunnelManagerOptions {
   readonly spawnImpl?: typeof spawn;
   /** How long to wait before each reconnect attempt; shortened by tests. */
   readonly reconnectDelaysMs?: readonly number[];
+  /** How long a tunnel may sit at "starting" before QUIC is blamed; shortened by tests. */
+  readonly quicPatienceMs?: number;
 }
 
 export class TunnelManager {
@@ -155,6 +190,7 @@ export class TunnelManager {
   private readonly fetchImpl: typeof globalThis.fetch;
   private readonly spawnImpl: typeof spawn;
   private readonly reconnectDelaysMs: readonly number[];
+  private readonly quicPatienceMs: number;
   private child: ChildProcess | null = null;
   /** Whether the running child is proot rather than cloudflared itself. */
   private wrapped = false;
@@ -170,6 +206,19 @@ export class TunnelManager {
   private reconnectAttempt = 0;
   /** Set once the manager is shutting down, so nothing reconnects behind it. */
   private closed = false;
+  /** What this machine has been found to need; see TunnelTransport. */
+  private transport: TunnelTransport = 'auto';
+  /** Runs out if the tunnel is still at "starting" long after it should not be. */
+  private quicTimer: NodeJS.Timeout | null = null;
+  /**
+   * Set between deciding to switch transport and the child actually going away.
+   *
+   * The exit that follows is one this manager asked for, so it must not be
+   * reported as cloudflared dying on its own, and it must come back at once
+   * rather than through the backoff - somebody is watching a link that does
+   * not work yet.
+   */
+  private switchingTransport: Exclude<TunnelMode, 'off'> | null = null;
 
   public constructor(options: TunnelManagerOptions) {
     this.paths = options.paths;
@@ -184,6 +233,7 @@ export class TunnelManager {
     this.fetchImpl = options.fetchImpl ?? ((...args) => globalThis.fetch(...args));
     this.spawnImpl = options.spawnImpl ?? spawn;
     this.reconnectDelaysMs = options.reconnectDelaysMs?.length ? options.reconnectDelaysMs : RECONNECT_DELAYS_MS;
+    this.quicPatienceMs = options.quicPatienceMs ?? QUIC_PATIENCE_MS;
   }
 
   public getState(): TunnelState { return { ...this.state }; }
@@ -201,12 +251,15 @@ export class TunnelManager {
     } catch (error: unknown) {
       return this.fail(mode, error instanceof Error ? error.message : 'cloudflared is unavailable');
     }
+    const transport = this.chooseTransport();
     // A phone is where QUIC is blocked and IPv6 is half-configured, and
     // cloudflared answers both by sitting at "Registering tunnel" until it gives
-    // up. HTTP/2 over IPv4 is the combination that connects there.
-    const mobile = this.paths.platform === 'termux' ? ['--protocol', 'http2', '--edge-ip-version', '4'] : [];
+    // up. HTTP/2 over IPv4 is the combination that connects there - and it is
+    // the same combination that connects inside a container host whose outbound
+    // UDP goes nowhere, which is why this is no longer only a phone's answer.
+    const overEdge = transport === 'http2' ? ['--protocol', 'http2', '--edge-ip-version', '4'] : [];
     const targetUrl = this.resolveTargetUrl();
-    const args = [...plan.prefix, 'tunnel', '--no-autoupdate', ...mobile, ...(mode === 'quick'
+    const args = [...plan.prefix, 'tunnel', '--no-autoupdate', ...overEdge, ...(mode === 'quick'
       ? ['--url', targetUrl]
       : ['run', '--token', selectedToken!])];
     await this.remember(mode, mode === 'named' ? selectedToken ?? null : null);
@@ -222,6 +275,17 @@ export class TunnelManager {
     const child = this.spawnImpl(plan.command, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, env: plan.env, ...(plan.wrapped ? { detached: true } : {}) });
     this.wrapped = plan.wrapped;
     this.child = child;
+    // A UDP block produces no error line to match on, only silence, so the only
+    // way to notice it is to notice that nothing has happened for too long.
+    if (transport === 'auto') {
+      this.quicTimer = setTimeout(() => {
+        this.quicTimer = null;
+        if (this.child === child && this.state.status === 'starting') {
+          this.useHttp2('the tunnel did not come up over QUIC');
+        }
+      }, this.quicPatienceMs);
+      this.quicTimer.unref();
+    }
     const consume = (chunk: string) => {
       this.buffer += chunk;
       const lines = this.buffer.split(/\r?\n/u);
@@ -240,6 +304,19 @@ export class TunnelManager {
     child.once('close', (code, signal) => {
       if (this.buffer.trim()) this.handleLine(this.buffer);
       this.buffer = '';
+      this.clearQuicTimer();
+      // Asked for by this manager, to come straight back on the other
+      // transport. Nothing about it is news, so none of the reporting below
+      // runs and the backoff is not touched: this is the same attempt.
+      const switching = this.switchingTransport;
+      if (switching && this.child === child) {
+        this.switchingTransport = null;
+        this.child = null;
+        void this.start(switching, this.token).then((state) => {
+          if (state.status === 'error') this.scheduleReconnect(switching);
+        }).catch(() => { this.scheduleReconnect(switching); });
+        return;
+      }
       const reason = this.stopReason;
       this.stopReason = null;
       const exit = describeExit(code, signal);
@@ -262,6 +339,9 @@ export class TunnelManager {
 
   public async stop(reason: StopReason = 'requested'): Promise<TunnelState> {
     this.clearReconnect();
+    this.clearQuicTimer();
+    // A stop that arrives mid-switch is the operator's, and it wins.
+    this.switchingTransport = null;
     const child = this.child;
     if (!child) { this.state = { ...this.state, status: 'stopped', url: null }; return this.getState(); }
     this.stopReason = reason;
@@ -317,7 +397,11 @@ export class TunnelManager {
    */
   public async resume(): Promise<TunnelState> {
     const stored = await this.readStored();
-    if (!stored || stored.mode === 'off') return this.getState();
+    if (!stored) return this.getState();
+    // Read even when the tunnel is off, because what this machine's network
+    // does is true whether or not a tunnel was running when it was learned.
+    if (stored.transport === 'http2') this.transport = 'http2';
+    if (stored.mode === 'off') return this.getState();
     if (stored.mode === 'named') this.token = stored.token ?? undefined;
     this.logger(logEvent('cloudflared.resuming', '[cloudflared] restoring the tunnel that was running before'));
     const state = await this.start(stored.mode, stored.token ?? undefined);
@@ -335,8 +419,58 @@ export class TunnelManager {
     // "starting" for as long as it ran, and nothing could tell a working tunnel
     // from one that never came up.
     if (this.state.mode === 'named' && /registered tunnel connection/iu.test(clean)) this.state = { ...this.state, status: 'running', error: null };
-    if (this.state.status === 'running') this.reconnectAttempt = 0;
+    if (this.state.status === 'running') {
+      this.reconnectAttempt = 0;
+      // It came up, so whatever it came up on is right, and nothing is waiting
+      // to be blamed for it any more.
+      this.clearQuicTimer();
+    } else if (this.quicTimer && QUIC_FAILURE.test(clean)) {
+      // Said out loud rather than waited out, which is the faster half of the
+      // same answer.
+      this.useHttp2('cloudflared could not reach the edge over QUIC');
+    }
     this.logger(`[cloudflared] ${clean}`);
+  }
+
+  /**
+   * Which transport the next start should use.
+   *
+   * `STM_TUNNEL_PROTOCOL` settles it for anyone who already knows what their
+   * network does. Termux is asked for HTTP/2 without being measured, because a
+   * phone is where this has always been true and a slow first start there is
+   * one nobody needs to sit through again.
+   */
+  private chooseTransport(): TunnelTransport {
+    const configured = this.env.STM_TUNNEL_PROTOCOL?.trim().toLowerCase();
+    if (configured === 'http2') return 'http2';
+    if (configured === 'quic' || configured === 'auto') return 'auto';
+    if (this.paths.platform === 'termux') return 'http2';
+    return this.transport;
+  }
+
+  /**
+   * Give up on QUIC for this machine and come straight back over HTTP/2.
+   *
+   * Remembered rather than retried each time: a network that blocks outbound
+   * UDP blocks it for as long as the manager is on it, and the alternative is
+   * every restart costing the same silent wait before the same answer.
+   */
+  private useHttp2(reason: string): void {
+    this.clearQuicTimer();
+    const mode = this.state.mode;
+    if (this.transport === 'http2' || this.switchingTransport || mode === 'off') return;
+    this.transport = 'http2';
+    this.logger(logEvent('cloudflared.transportSwitched', `[cloudflared] ${reason}; trying again over HTTP/2`, { reason }));
+    void this.remember(mode, mode === 'named' ? this.token ?? null : null);
+    const child = this.child;
+    if (!child) { void this.start(mode, this.token); return; }
+    this.switchingTransport = mode;
+    this.signal(child, 'SIGTERM');
+  }
+
+  private clearQuicTimer(): void {
+    if (this.quicTimer) clearTimeout(this.quicTimer);
+    this.quicTimer = null;
   }
 
   /**
@@ -366,7 +500,7 @@ export class TunnelManager {
 
   /** Record what the tunnel should be doing, for the next time the manager starts. */
   private async remember(mode: TunnelMode, token: string | null): Promise<void> {
-    const stored: StoredTunnelState = { schemaVersion: TUNNEL_SCHEMA_VERSION, mode, token };
+    const stored: StoredTunnelState = { schemaVersion: TUNNEL_SCHEMA_VERSION, mode, token, transport: this.transport };
     const target = join(this.paths.state, this.stateFile);
     const temporary = `${target}.${randomUUID()}.tmp`;
     try {
@@ -394,7 +528,8 @@ export class TunnelManager {
       if (mode !== 'off' && mode !== 'quick' && mode !== 'named') return null;
       const token = typeof record.token === 'string' && record.token.trim() ? record.token.trim() : null;
       if (mode === 'named' && !token) return null;
-      return { schemaVersion: TUNNEL_SCHEMA_VERSION, mode, token };
+      const transport = record.transport === 'http2' ? 'http2' : 'auto';
+      return { schemaVersion: TUNNEL_SCHEMA_VERSION, mode, token, transport };
     } catch {
       return null;
     }
