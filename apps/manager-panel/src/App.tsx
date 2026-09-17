@@ -4,7 +4,7 @@ import {
   Globe2, LayoutDashboard, Maximize2, Minimize2, Moon, Package, Pencil, Plus,
   LogOut, RotateCcw, ScrollText, Search, Sun, Trash2, Upload, Users as UsersIcon, X, Rows3,
   BrainCircuit, CircleStop, Clock3, Cpu, Ellipsis, Play, QrCode as QrCodeIcon, RefreshCw, Scale, Settings2, ShieldCheck, Square,
-  Blocks, BookmarkPlus, Bug, FileCode2, LoaderCircle, Gauge, History, KeyRound, Monitor, CircleArrowUp, TriangleAlert,
+  Blocks, BookmarkPlus, Bug, FileCode2, LoaderCircle, Gauge, History, KeyRound, Monitor, CircleArrowUp, Star, TriangleAlert,
 } from 'lucide-react';
 import {
   Alert, AlertDescription, AuthLayout, Badge, BrandMark, Button, buttonVariants, Card, CardAction,
@@ -1270,7 +1270,6 @@ function AccessPanel({ t, process, tunnel, config, security, installed, onAction
   // a version to answer, and no reading is ever "unknown".
   const passwordReady = security.passwordConfigured;
   const lan = security.lan;
-  const lanLabel = lan ? t('console.lanEnabled') : t('console.lanDisabled');
   const [passwordOpen, setPasswordOpen] = useState(false);
   // Turning either of these off takes an address away from whoever is on the
   // other end of it, and they are not in the room to be asked.
@@ -1337,28 +1336,32 @@ function AccessPanel({ t, process, tunnel, config, security, installed, onAction
         * is not in the house.
         */}
       {/*
-        * A switch that is off is asked to earn a press, and one that is on is
-        * asked to report its state.
+        * Each switch says, in one short line, what it does for the person
+        * reading it.
         *
-        * "Cloudflare tunnel · Password required before sharing" told a reader
-        * who did not already know what a tunnel is two things they could not
-        * use: a brand they had not heard of, and a prerequisite. The feature
-        * most worth trying was the one most often never tried. While either
-        * switch is off it says what it does for the person reading it; the
-        * passcode is asked for by the switch itself, when it is pressed.
+        * It used to say what it needed instead - "Cloudflare tunnel · Password
+        * required before sharing" - which told somebody who did not already
+        * know what a tunnel is two things they could not use: a brand they had
+        * not heard of, and a prerequisite. The feature most worth trying was
+        * the one most often never tried.
+        *
+        * Nothing here mentions the passcode any more, in either state. The
+        * switch asks for one the moment it is pressed, which is the moment it
+        * means anything; announcing it beforehand spends the only line these
+        * rows have on a condition rather than on a reason.
         */}
       <div className="access-switches">
         <div className="access-row">
           <div>
-            <strong>{t('console.quickTunnel')}{!tunnelWanted ? <span className="access-badge">{t('console.tunnelBadge')}</span> : null}</strong>
-            <span>{tunnelWanted ? (passwordReady ? t('console.passwordProtected') : t('console.passwordRequired')) : t('console.tunnelWhy')}</span>
+            <strong>{t('console.quickTunnel')}{!tunnelWanted ? <span className="access-badge"><Star />{t('console.tunnelBadge')}</span> : null}</strong>
+            <span>{t('console.tunnelWhy')}</span>
           </div>
           <Switch id="tunnel-switch" checked={tunnelWanted} onCheckedChange={toggleTunnel} disabled={busy || (tunnelWanted ? false : !installed || !running)} aria-label={t('console.enableTunnel')} />
         </div>
         <div className="access-row">
           <div>
             <strong>{t('console.lanAccess')}</strong>
-            <span>{lan ? lanLabel : t('console.lanWhy')}</span>
+            <span>{t('console.lanWhy')}</span>
           </div>
           <Switch id="listen-switch" checked={lan} onCheckedChange={toggleLan} disabled={!installed || securityBusy} aria-label={t('console.enableLan')} />
         </div>

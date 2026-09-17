@@ -202,12 +202,8 @@
     "r2UploadFailed": "Could not upload the backup to R2",
     "quickTunnel": "Cloudflare tunnel",
     "lanAccess": "Local network",
-    "lanEnabled": "Devices on this Wi-Fi can reach it",
-    "lanDisabled": "Only this machine can reach it",
     "lanAddress": "On this Wi-Fi",
     "enableLan": "Enable local network access",
-    "passwordProtected": "Password protected",
-    "passwordRequired": "Password required before sharing",
     "passwordSettings": "SillyTavern PIN",
     "sillyPasswordHelp": "This is the password for opening SillyTavern. Signing in to the manager uses a different one.",
     "changePassword": "Change password",
@@ -499,9 +495,9 @@
     "aboutLegal": "Terms, disclaimer and privacy",
     "aboutIssues": "Report a problem",
     "aboutLicence": "Copyright © 2026 locmaymo",
-    "tunnelBadge": "Worth trying",
-    "tunnelWhy": "Open SillyTavern from your phone or anywhere else, with no router setup",
-    "lanWhy": "Open SillyTavern on other devices in this house, without going through the internet"
+    "tunnelBadge": "Must try",
+    "tunnelWhy": "Open SillyTavern from your phone, anywhere",
+    "lanWhy": "Open SillyTavern on other devices on this Wi-Fi"
   },
   "dashboard": {
     "start": "Start",

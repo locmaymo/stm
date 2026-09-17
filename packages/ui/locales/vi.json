@@ -202,12 +202,8 @@
     "r2UploadFailed": "Không thể đẩy bản sao lưu lên R2",
     "quickTunnel": "Cloudflare tunnel",
     "lanAccess": "Mạng nội bộ",
-    "lanEnabled": "Các thiết bị trong mạng Wi-Fi này có thể truy cập",
-    "lanDisabled": "Chỉ máy này có thể truy cập",
     "lanAddress": "Nội bộ (cùng Wi-Fi)",
     "enableLan": "Bật truy cập mạng nội bộ",
-    "passwordProtected": "Đã bảo vệ bằng mật khẩu",
-    "passwordRequired": "Cần mật khẩu trước khi chia sẻ",
     "passwordSettings": "Mã PIN SillyTavern",
     "sillyPasswordHelp": "Đây là mật khẩu để mở SillyTavern. Đăng nhập vào trình quản lý dùng mật khẩu khác.",
     "changePassword": "Đổi mật khẩu",
@@ -500,8 +496,8 @@
     "aboutIssues": "Báo lỗi",
     "aboutLicence": "Bản quyền © 2026 locmaymo",
     "tunnelBadge": "Nên thử",
-    "tunnelWhy": "Mở SillyTavern từ điện thoại hay bất cứ đâu, không phải cấu hình router",
-    "lanWhy": "Mở SillyTavern trên thiết bị khác trong nhà, không phải đi qua internet"
+    "tunnelWhy": "Mở SillyTavern từ điện thoại, ở bất cứ đâu",
+    "lanWhy": "Mở SillyTavern trên thiết bị khác cùng Wi-Fi"
   },
   "dashboard": {
     "start": "Chạy",
