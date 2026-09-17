@@ -17,7 +17,7 @@ import { SystemStore } from './system.js';
 import { panelStaticRoot } from './bootstrap.js';
 import { ProcessSupervisor } from './supervisor.js';
 import { AccessGateway } from './gateway.js';
-import { ACCESS_GATEWAY_PORT, checkSillyTavernPort, MANAGER_PORT, PortError, portFromEnvironment, SILLYTAVERN_PORT } from './ports.js';
+import { ACCESS_GATEWAY_PORT, checkSillyTavernPort, findFreePort, isPortFree, MANAGER_PORT, PortError, resolveAccessPort, resolveConsolePort, SILLYTAVERN_PORT, type ResolvedPort } from './ports.js';
 import { previewImage, previewLogo, previewManifest } from './preview.js';
 import { TunnelManager } from '../../../packages/tunnel/src/index.js';
 import { ProfileError, ProfileStore } from '../../../packages/profiles/src/index.js';
@@ -217,14 +217,47 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   const r2 = options.r2 ?? new R2Manager({ paths, env, ...(cloudflare ? { cloudflare } : {}), logger: (line) => { jobs.append('backup', line); baseLogger(line); } });
   const metrics = options.metrics ?? new MetricsStore(paths);
   const config = options.config ?? new ConfigStore({ managedPort: () => sillyTavernPort, logger: (line) => { jobs.append('manager', line); baseLogger(line); } });
-  const accessPort = options.accessPort ?? portFromEnvironment(env.STM_ACCESS_PORT, ACCESS_GATEWAY_PORT);
+  // Where the console binds, which is also which addresses its ports have to be
+  // free on. Read here rather than at `listen` below, because everything from
+  // the gateway's frame policy to SillyTavern's port is settled against a
+  // console port that has already been proven bindable.
+  const defaultHost = paths.platform === 'docker' || paths.platform === 'modelscope' ? '0.0.0.0' : '127.0.0.1';
+  const host = options.host ?? env.STM_HOST ?? defaultHost;
+  /**
+   * The console's own port, settled before anything else asks for one.
+   *
+   * Only from the environment, and only at startup: moving the port from a page
+   * that is served on it would take that page down with it. A port the host
+   * demanded is bound or the start fails, because on a host that publishes one
+   * port, listening anywhere else is listening where nobody can knock.
+   */
+  const consolePort = options.port ?? await settlePort({
+    resolved: resolveConsolePort(env),
+    host,
+    reserved: [],
+    // Nothing to move for, so nothing to say. The line that matters is the one
+    // below, and only when the port actually moved.
+    onMove: (from, to) => logger(logEvent('manager.portMoved', `[manager] port ${from} is already in use; the console is on ${to} instead`, { from, to })),
+    onDemandedTaken: (port) => logger(logEvent('manager.portTaken', `[manager] port ${port} was asked for and is already in use; starting there anyway and letting it fail`, { port })),
+  });
+  /**
+   * The access gateway's port, which steps aside the same way.
+   *
+   * Probed on every address rather than on the one it will bind, because a
+   * service holding the port on this machine alone still holds it, and moving
+   * for that is cheaper than a gateway that reports an error nobody expected.
+   */
+  const accessPort = options.accessPort ?? await settlePort({
+    resolved: resolveAccessPort(env),
+    host: '0.0.0.0',
+    reserved: [consolePort],
+    onMove: (from, to) => logger(logEvent('gateway.portMoved', `[gateway] port ${from} is already in use; the access gateway is on ${to} instead`, { from, to })),
+    onDemandedTaken: (port) => logger(logEvent('gateway.portTaken', `[gateway] port ${port} was asked for and is already in use`, { port })),
+  });
   // The console shows SillyTavern in a frame, and the console is the only
   // page allowed to. Both spellings of the loopback address are named because
   // which one is in the address bar is the reader's choice, not ours, and an
   // origin is compared as written.
-  // Only from the environment, and only at startup: moving the port from a page
-  // that is served on it would take that page down with it.
-  const consolePort = options.port ?? portFromEnvironment(env.STM_PORT, MANAGER_PORT);
   /** Filled in once the listener is up; an ephemeral port is not known before that. */
   let boundPort: number = consolePort;
   const gateway = options.gateway ?? new AccessGateway({
@@ -377,6 +410,29 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     logger(logEvent('config.portReset', `[config] SillyTavern's port ${persisted.sillyTavernPort} is no longer usable (${error instanceof Error ? error.message : 'unknown reason'}); using ${SILLYTAVERN_PORT}`, { port: persisted.sillyTavernPort }));
     sillyTavernPort = SILLYTAVERN_PORT;
   }
+  /*
+   * And a port that is free in this manager's own bookkeeping but held by
+   * something else on the machine moves too.
+   *
+   * SillyTavern is started by us and reports its failures through us, so an
+   * address already in use here reads as "SillyTavern will not start" with the
+   * real reason several screens up the log. Some hosts run their own service on
+   * 8000; the reader did not put it there and cannot move it. Moving is the
+   * only answer that leaves everything else - the gateway, the tunnel, the
+   * frame - working exactly as before, because all of them ask this variable
+   * where SillyTavern is rather than assuming.
+   */
+  if (!await isPortFree(sillyTavernPort, '127.0.0.1')) {
+    const moved = await findFreePort(sillyTavernPort + 1, { reserved: [consolePort, accessPort], host: '127.0.0.1' });
+    if (moved === null) {
+      logger(logEvent('config.portBusy', `[config] port ${sillyTavernPort} is in use and no free port was found near it; SillyTavern will start there and may fail`, { port: sillyTavernPort }));
+    } else {
+      logger(logEvent('config.portMoved', `[config] port ${sillyTavernPort} is already in use; SillyTavern is on ${moved} instead`, { from: sillyTavernPort, to: moved }));
+      sillyTavernPort = moved;
+      await store.setSillyTavernPort(moved);
+      persisted = await store.load();
+    }
+  }
   gateway.setTargetPort(sillyTavernPort);
   const testRuntime = process.env.NODE_ENV === 'test' || process.argv.includes('--test') || process.execArgv.includes('--test');
   const telemetryEndpoint = env.STM_TELEMETRY_ENDPOINT ?? (testRuntime ? undefined : DEFAULT_TELEMETRY_ENDPOINT);
@@ -492,8 +548,6 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   server.timeout = 0;
   server.headersTimeout = 120_000;
   server.keepAliveTimeout = 120_000;
-  const defaultHost = paths.platform === 'docker' || paths.platform === 'modelscope' ? '0.0.0.0' : '127.0.0.1';
-  const host = options.host ?? env.STM_HOST ?? defaultHost;
   const port = consolePort;
   await listen(server, host, port);
   const address = server.address();
@@ -1976,6 +2030,38 @@ function constantTimeStringEqual(left: string, right: string): boolean {
   return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
 }
 
+
+interface SettlePortOptions {
+  readonly resolved: ResolvedPort;
+  readonly host: string;
+  readonly reserved: readonly number[];
+  readonly onMove: (from: number, to: number) => void;
+  readonly onDemandedTaken: (port: number) => void;
+}
+
+/**
+ * The port to actually use, once the machine has had a say.
+ *
+ * A port somebody wrote down, or that the host published, is used whether or
+ * not it is free: it is the only address that works, so binding it and failing
+ * says what is wrong, while quietly listening elsewhere would not. A port that
+ * is only this project's own preference moves out of the way instead, because
+ * nothing outside this process knows that number yet.
+ */
+async function settlePort(options: SettlePortOptions): Promise<number> {
+  const { port, source } = options.resolved;
+  if (await isPortFree(port, options.host)) return port;
+  if (source === 'demanded') {
+    options.onDemandedTaken(port);
+    return port;
+  }
+  const moved = await findFreePort(port + 1, { reserved: options.reserved, host: options.host });
+  // Nothing free in range is a machine no retry here can improve, so the
+  // preferred port goes ahead and reports its own failure in the usual place.
+  if (moved === null) return port;
+  options.onMove(port, moved);
+  return moved;
+}
 
 function listen(server: Server, host: string, port: number): Promise<void> {
   return new Promise((resolve, reject) => {
