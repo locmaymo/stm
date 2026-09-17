@@ -1336,9 +1336,32 @@ function AccessPanel({ t, process, tunnel, config, security, installed, onAction
         * The tunnel is first because it is the one that reaches a phone that
         * is not in the house.
         */}
+      {/*
+        * A switch that is off is asked to earn a press, and one that is on is
+        * asked to report its state.
+        *
+        * "Cloudflare tunnel · Password required before sharing" told a reader
+        * who did not already know what a tunnel is two things they could not
+        * use: a brand they had not heard of, and a prerequisite. The feature
+        * most worth trying was the one most often never tried. While either
+        * switch is off it says what it does for the person reading it; the
+        * passcode is asked for by the switch itself, when it is pressed.
+        */}
       <div className="access-switches">
-        <div className="access-row"><div><strong>{t('console.quickTunnel')}</strong><span>{passwordReady ? t('console.passwordProtected') : t('console.passwordRequired')}</span></div><Switch id="tunnel-switch" checked={tunnelWanted} onCheckedChange={toggleTunnel} disabled={busy || (tunnelWanted ? false : !installed || !running)} aria-label={t('console.enableTunnel')} /></div>
-        <div className="access-row"><div><strong>{t('console.lanAccess')}</strong><span>{lan ? lanLabel : passwordReady ? lanLabel : t('console.passwordRequired')}</span></div><Switch id="listen-switch" checked={lan} onCheckedChange={toggleLan} disabled={!installed || securityBusy} aria-label={t('console.enableLan')} /></div>
+        <div className="access-row">
+          <div>
+            <strong>{t('console.quickTunnel')}{!tunnelWanted ? <span className="access-badge">{t('console.tunnelBadge')}</span> : null}</strong>
+            <span>{tunnelWanted ? (passwordReady ? t('console.passwordProtected') : t('console.passwordRequired')) : t('console.tunnelWhy')}</span>
+          </div>
+          <Switch id="tunnel-switch" checked={tunnelWanted} onCheckedChange={toggleTunnel} disabled={busy || (tunnelWanted ? false : !installed || !running)} aria-label={t('console.enableTunnel')} />
+        </div>
+        <div className="access-row">
+          <div>
+            <strong>{t('console.lanAccess')}</strong>
+            <span>{lan ? lanLabel : t('console.lanWhy')}</span>
+          </div>
+          <Switch id="listen-switch" checked={lan} onCheckedChange={toggleLan} disabled={!installed || securityBusy} aria-label={t('console.enableLan')} />
+        </div>
       </div>
       {/* With SillyTavern down every one of these leads nowhere, so the whole
           group goes rather than three rows of dashes. */}

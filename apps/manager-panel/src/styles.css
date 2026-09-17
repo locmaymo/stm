@@ -684,7 +684,20 @@
 .access-row:first-child { padding-top: 0; border-top: 0; }
 .access-row > div { display: grid; min-width: 0; flex: 1 1 auto; gap: 2px; }
 .access-row [data-slot="switch"] { flex-shrink: 0; }
-.access-row strong { font-size: 13px; font-weight: 650; }
+.access-row strong { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; font-size: 13px; font-weight: 650; }
+/* Loud enough to be noticed beside a switch, quiet enough not to read as a
+   warning: the accent at low saturation, which is the colour this interface
+   already uses to mean "this way". */
+.access-badge {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
+  color: var(--primary);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: .02em;
+  text-transform: uppercase;
+}
 .access-row span { color: var(--muted-foreground); font-size: 12px; }
 [data-tour="logs"] { grid-column: 1 / -1; height: 28rem; min-height: 0; overflow: hidden; padding-bottom: 0; }
 [data-tour="logs"] [data-slot="card-header"] { flex-shrink: 0; }

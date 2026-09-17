@@ -498,7 +498,10 @@
     "aboutSite": "Trang web và tài liệu",
     "aboutLegal": "Điều khoản, miễn trừ trách nhiệm và quyền riêng tư",
     "aboutIssues": "Báo lỗi",
-    "aboutLicence": "Bản quyền © 2026 locmaymo. Phân phối không kèm bảo hành, ở mức pháp luật cho phép."
+    "aboutLicence": "Bản quyền © 2026 locmaymo",
+    "tunnelBadge": "Nên thử",
+    "tunnelWhy": "Mở SillyTavern từ điện thoại hay bất cứ đâu, không phải cấu hình router",
+    "lanWhy": "Mở SillyTavern trên thiết bị khác trong nhà, không phải đi qua internet"
   },
   "dashboard": {
     "start": "Chạy",

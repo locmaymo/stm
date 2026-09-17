@@ -498,7 +498,10 @@
     "aboutSite": "Website and documentation",
     "aboutLegal": "Terms, disclaimer and privacy",
     "aboutIssues": "Report a problem",
-    "aboutLicence": "Copyright © 2026 locmaymo. Distributed with no warranty, to the extent the law allows."
+    "aboutLicence": "Copyright © 2026 locmaymo",
+    "tunnelBadge": "Worth trying",
+    "tunnelWhy": "Open SillyTavern from your phone or anywhere else, with no router setup",
+    "lanWhy": "Open SillyTavern on other devices in this house, without going through the internet"
   },
   "dashboard": {
     "start": "Start",
