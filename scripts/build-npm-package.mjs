@@ -16,7 +16,11 @@ for (const file of ['loader.mjs', 'observer.mjs', 'node-fetch-hook.mjs']) {
   await cp(join(repositoryRoot, 'packages', 'instrumentation', 'src', file), join(packageRoot, 'packages', 'instrumentation', 'src', file));
 }
 await cp(join(repositoryRoot, 'packaging', 'npm', 'cli.mjs'), join(packageRoot, 'cli.mjs'));
-await cp(join(repositoryRoot, 'LICENSE'), join(packageRoot, 'LICENSE'));
+// The npm page for the package is whatever README lands beside the manifest,
+// and the English one links to the Vietnamese one, so both travel together.
+for (const file of ['LICENSE', 'README.md', 'README.vi.md']) {
+  await cp(join(repositoryRoot, file), join(packageRoot, file));
+}
 const rootPackage = JSON.parse(await readFile(join(repositoryRoot, 'package.json'), 'utf8'));
 const packageManifest = JSON.parse(await readFile(join(repositoryRoot, 'packaging', 'npm', 'package.json'), 'utf8'));
 packageManifest.version = rootPackage.version;

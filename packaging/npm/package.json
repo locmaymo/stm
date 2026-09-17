@@ -2,6 +2,22 @@
   "name": "sillytavern-manager",
   "version": "0.2.0",
   "description": "Cross-platform manager for installing, running, backing up, and monitoring SillyTavern.",
+  "keywords": [
+    "sillytavern",
+    "manager",
+    "self-hosted",
+    "backup",
+    "cloudflare-tunnel",
+    "cli"
+  ],
+  "homepage": "https://github.com/locmaymo/stm#readme",
+  "bugs": {
+    "url": "https://github.com/locmaymo/stm/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/locmaymo/stm.git"
+  },
   "license": "AGPL-3.0-only",
   "type": "module",
   "bin": {
@@ -12,6 +28,8 @@
   },
   "files": [
     "cli.mjs",
+    "README.md",
+    "README.vi.md",
     "apps/manager-server/src/**/*.js",
     "packages/*/src/**/*.js",
     "packages/instrumentation/src/*.mjs",
