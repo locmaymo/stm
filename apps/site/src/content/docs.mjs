@@ -438,7 +438,7 @@ export const docs = {
         id: 'install',
         icon: 'download',
         title: 'Cài đặt',
-        blocks: p('Sáu đường vào, tất cả đều dẫn tới cùng một nơi: một bảng điều khiển ở cổng `7860` hỏi bạn chọn mật khẩu quản trị.'),
+        blocks: p('Cài bằng cách nào thì cuối cùng cũng tới cùng một chỗ: một bảng điều khiển ở cổng `7860` hỏi bạn chọn mật khẩu quản trị.'),
         subsections: [
           {
             id: 'windows',

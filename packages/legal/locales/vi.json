@@ -89,7 +89,7 @@
           ]
         },
         "availability": {
-          "heading": "Tính sẵn có, cập nhật và hồi kết",
+          "heading": "Tính sẵn có, cập nhật và việc dừng dự án",
           "body": [
             "Phần mềm được phát hành đúng như nó có, vào lúc nó được phát hành. Không có lịch phát hành, không có cam kết hỗ trợ, không có mức dịch vụ, và không có bảo đảm rằng một phiên bản sẽ tiếp tục chạy được, rằng một tính năng sẽ được giữ lại, hay rằng dự án sẽ còn tiếp tục.",
             "Trang web của dự án, trang chuyển tiếp đăng nhập Cloudflare và máy chủ nhận số liệu chỉ là tiện ích. Chúng có thể thay đổi, chuyển đi hoặc ngừng hoạt động mà không báo trước. Một bản cài đặt vẫn chạy bình thường khi không có chúng, trừ việc đăng nhập Cloudflare qua OAuth client của dự án thì cần trang chuyển tiếp — và bạn hoàn toàn có thể đăng ký client riêng rồi tự chạy trang chuyển tiếp của mình, kho mã có hướng dẫn."

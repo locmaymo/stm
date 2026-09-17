@@ -72,7 +72,7 @@ export const strings = {
           ],
         },
       ],
-      licence: 'Copyright © 2026 locmaymo. Published under the AGPL-3.0, with no warranty.',
+      licence: 'Copyright © 2026 locmaymo',
     },
   },
   vi: {
@@ -126,7 +126,7 @@ export const strings = {
           ],
         },
       ],
-      licence: 'Bản quyền © 2026 locmaymo. Phát hành theo giấy phép AGPL-3.0, không kèm bảo hành.',
+      licence: 'Bản quyền © 2026 locmaymo',
     },
   },
 };

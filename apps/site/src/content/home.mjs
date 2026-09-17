@@ -139,7 +139,7 @@ export const home = {
     },
     install: {
       eyebrow: 'Cài đặt',
-      heading: 'Sáu đường vào, một lần thiết lập',
+      heading: 'Chọn cách cài hợp với máy của bạn',
       lede: 'Dù chọn cách nào, lần mở đầu tiên cũng chỉ yêu cầu bạn tạo một mật khẩu quản trị. Sau đó chọn phiên bản SillyTavern rồi bấm Cài đặt.',
       cards: [
         { icon: 'monitor', title: 'Windows', body: 'Tải tệp ZIP chạy trực tiếp, giải nén, bấm đúp. Node.js đã nằm sẵn bên trong; không cần chạm tới dòng lệnh.', href: '/docs#windows', go: 'Hướng dẫn Windows' },
@@ -152,7 +152,7 @@ export const home = {
     },
     how: {
       eyebrow: 'Cách hoạt động',
-      heading: 'Ba cổng, và chỉ một cổng từng được chia sẻ',
+      heading: 'Ba cổng, chỉ một cổng được mở ra ngoài',
       lede: 'SillyTavern không bao giờ là thứ bị mở ra ngoài. Thứ mở ra là cổng truy cập, và nó hỏi mã trước khi chuyển tiếp bất cứ gì — đồng thời không bao giờ chuyển tiếp trang quản trị.',
       caption: 'Bảng quản trị chỉ thuộc về bạn. Mọi người khác đi vào qua cổng truy cập.',
       table: {
@@ -188,7 +188,7 @@ export const home = {
     },
     privacy: {
       eyebrow: 'Quyền riêng tư',
-      heading: 'Những gì bạn viết không bao giờ tới chỗ chúng tôi',
+      heading: 'Những gì bạn viết không bao giờ gửi về chúng tôi',
       body: [
         'Không có tài khoản, không có đám mây, và dự án không giữ bản sao dữ liệu nào của bạn. Đoạn chat, nhân vật, prompt, thiết lập, bản sao lưu và API key đều nằm trên máy do bạn kiểm soát.',
         'Trình quản lý gửi đi đúng một thứ: một bản tóm tắt sử dụng nhỏ nằm trong danh sách cho phép — nền tảng, phiên bản, và với mỗi lượt gọi là nhà cung cấp, tên mô hình, tên máy chủ điểm cuối, số token, mã trạng thái và thời lượng. Nó không bao giờ gửi prompt, đoạn chat, câu trả lời của mô hình, API key, tên tệp, đường dẫn, địa chỉ IP hay chuỗi truy vấn.',
