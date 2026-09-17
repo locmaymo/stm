@@ -479,7 +479,21 @@
     "cfBucketsEmpty": "Tài khoản này chưa có bucket R2 nào.",
     "r2SwitchToCloudflareTitle": "Chuyển sang sao lưu qua đăng nhập Cloudflare?",
     "r2SwitchToCloudflareBody": "Việc sao lưu sẽ thôi đi qua key R2/S3 thủ công và dùng tài khoản đã đăng nhập. Key vẫn được giữ, lúc nào muốn quay lại cũng được.",
-    "r2SwitchToCloudflareConfirm": "Dùng đăng nhập"
+    "r2SwitchToCloudflareConfirm": "Dùng đăng nhập",
+    "portsTitle": "Cổng",
+    "sillyTavernPort": "SillyTavern",
+    "sillyTavernPortHint": "Cổng SillyTavern chạy. Đổi cổng sẽ khởi động lại SillyTavern.",
+    "managerPort": "Trình quản lý này",
+    "managerPortHint": "Đặt bằng STM_PORT trong .env, có hiệu lực khi khởi động lại trình quản lý.",
+    "accessPort": "Cửa nội bộ",
+    "accessPortHint": "Nơi liên kết chia sẻ trỏ tới. Đặt bằng STM_ACCESS_PORT trong .env, có hiệu lực khi khởi động lại trình quản lý.",
+    "portInvalid": "Hãy chọn cổng từ {lowest} đến {highest}.",
+    "portTakenByManager": "Cổng {port} là cổng của chính trình quản lý này.",
+    "portTakenByAccess": "Cổng {port} thuộc về cửa nội bộ.",
+    "portChangeTitle": "Chuyển SillyTavern sang cổng khác?",
+    "portChangeBody": "Từ giờ SillyTavern sẽ chạy trên cổng {port}.",
+    "portChangeBodyRunning": "SillyTavern sẽ khởi động lại trên cổng {port}. Ai đang đọc sẽ mất trang cho tới khi nó quay lại.",
+    "portSaveFailed": "Không thể đổi cổng"
   },
   "dashboard": {
     "start": "Chạy",

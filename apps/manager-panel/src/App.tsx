@@ -27,9 +27,10 @@ import {
 import { failures, logCatalog, translator, type Fail, type Translate } from './i18n.js';
 import { browserEnvironment, browserStorage, readPreferences, savePreferences, type LocaleCode, type Preferences } from './preferences.js';
 import { authErrorKey } from './auth-error.js';
+import { portRefusal } from './ports.js';
 import { availableUpdate, readDismissedUpdate, saveDismissedUpdate } from './updates.js';
 import { apiFetch, onSessionExpired, resetSessionWatch } from './session.js';
-import type { AccessGatewayState, BackupManifest, ConfigDocument, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LogEntry, LogSourceFilter, MetricsBucket, MetricsSnapshot, ProcessState, Profile, R2CloudflareUsage, R2Config, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, BackupManifest, ConfigDocument, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LogEntry, LogSourceFilter, MetricsBucket, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CloudflareUsage, R2Config, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
 import { translateLogEntry, translateStep } from './log-format.js';
@@ -352,6 +353,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
   const [processState, setProcessState] = useState<ProcessState>({ status: 'stopped', installationId: null, profileId: null, pid: null, startedAt: null, error: null });
   const [tunnelState, setTunnelState] = useState<TunnelState>({ mode: 'off', status: 'stopped', url: null, startedAt: null, error: null });
   const [configDocument, setConfigDocument] = useState<ConfigDocument | null>(null);
+  const [portSettings, setPortSettings] = useState<PortSettings | null>(null);
   const [accessSecurity, setAccessSecurity] = useState<AccessGatewayState>({ status: 'stopped', host: null, port: 8001, lan: false, passwordConfigured: false, passcode: false, sessions: 0, error: null });
   const t = translator(preferences.locale);
   const catalog = logCatalog(preferences.locale);
@@ -376,6 +378,18 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     void load();
     return () => { cancelled = true; };
   }, [activeInstallationId]);
+
+  // Not tied to an installation: which ports this manager holds is true before
+  // anything is installed, and the page that shows them says so either way.
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      const response = await apiFetch('/api/v1/config/port', { credentials: 'same-origin' });
+      if (response.ok && !cancelled) setPortSettings(await response.json() as PortSettings);
+    };
+    void load();
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -586,6 +600,25 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     if (payload.tunnel) setTunnelState(payload.tunnel);
     return null;
   };
+  /**
+   * Move SillyTavern to another port.
+   *
+   * The server restarts it as part of the change, so the process state comes
+   * back with the answer and is adopted here rather than waited for: until it
+   * does, the page would show SillyTavern as running on a port it has left.
+   */
+  const updateSillyTavernPort = async (port: number): Promise<string | null> => {
+    const response = await apiFetch('/api/v1/config/port', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ port }) });
+    const payload = await response.json() as { port?: number; process?: ProcessState; error?: { message?: string } };
+    const saved = payload.port;
+    if (!response.ok || typeof saved !== 'number') return fail.body(payload, t('console.portSaveFailed'));
+    setPortSettings((current) => current ? { ...current, port: saved } : current);
+    if (payload.process) setProcessState(payload.process);
+    // The file now says the new port, and the settings card reads it from there.
+    const configResponse = await apiFetch('/api/v1/config', { credentials: 'same-origin' });
+    if (configResponse.ok) setConfigDocument(await configResponse.json() as ConfigDocument);
+    return null;
+  };
   const setAccessPassword = async (password: string, confirmPassword: string): Promise<string | null> => {
     const response = await apiFetch('/api/v1/access/password', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ password, confirmPassword }) });
     const payload = await response.json() as AccessGatewayState & { error?: { message?: string } };
@@ -669,7 +702,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
             </div>
           </header>
           <PageContainer>
-            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} installed={Boolean(activeInstallationId)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} locale={preferences.locale} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} config={configDocument} security={accessSecurity} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} /> : <ResourcePanel page={page} t={t} />}
+            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} installed={Boolean(activeInstallationId)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} locale={preferences.locale} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} config={configDocument} security={accessSecurity} ports={portSettings} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} /> : <ResourcePanel page={page} t={t} />}
           </PageContainer>
           <MobileNav
             items={navigation.map(({ id, icon }) => ({ id, icon, href: `#${id}`, label: t(`nav.${id}`) }))}
@@ -3667,6 +3700,85 @@ function configFileName(path: string): string {
   return path.split(/[\\/]/u).at(-1) ?? 'config.yaml';
 }
 
+/**
+ * The three ports, and the one of them this page can move.
+ *
+ * The console's own and the gateway's are shown but not editable: they are read
+ * from the environment once, at startup, and moving the port a page is served
+ * on from that page takes the page down with it. Saying so on the row is worth
+ * more than a control that would have to explain why it did nothing.
+ *
+ * SillyTavern's is checked here before it is sent, because the reader is still
+ * looking at the field; the server checks it again, because a panel is not what
+ * guarantees two services do not land on one port.
+ */
+function PortsCard({ t, ports, process, busy, onPortChange }: { t: Translate; ports: PortSettings | null; process: ProcessState; busy: boolean; onPortChange: (port: number) => Promise<string | null> }) {
+  const [value, setValue] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const inputId = useId();
+  // Reset when the server's answer changes, so a half-typed number is not left
+  // sitting over a port that has since moved.
+  useEffect(() => { if (ports) { setValue(ports.port.toString(10)); setError(null); } }, [ports]);
+  if (!ports) return null;
+
+  const typed = Number(value.trim());
+  const refusal = portRefusal(value, ports.reserved);
+  const failure = refusal ? t(refusal.key, refusal.params) : null;
+  const unchanged = refusal === null && typed === ports.port;
+  const running = process.status === 'running';
+
+  const save = async () => {
+    setSaving(true); setError(null);
+    try {
+      setError(await onPortChange(typed));
+    } finally { setSaving(false); }
+  };
+
+  return <Card>
+    <PanelHeading icon={<Globe2 />}>{t('console.portsTitle')}</PanelHeading>
+    <CardContent>
+      <div>
+        <DetailRow label={<Label htmlFor={inputId}>{t('console.sillyTavernPort')}</Label>} hint={t('console.sillyTavernPortHint')}>
+          <div className="flex items-center gap-2">
+            <Input
+              id={inputId}
+              className="w-28"
+              inputMode="numeric"
+              autoComplete="off"
+              value={value}
+              disabled={busy || saving}
+              aria-invalid={failure !== null}
+              onChange={(event) => { setValue(event.target.value); setError(null); }}
+            />
+            <Button size="sm" disabled={busy || saving || unchanged || failure !== null} onClick={() => setConfirmOpen(true)}>
+              {saving ? <LoaderCircle className="animate-spin" /> : null}{t('common.save')}
+            </Button>
+          </div>
+        </DetailRow>
+        <DetailRow label={t('console.managerPort')} hint={t('console.managerPortHint')}>
+          <code className="font-mono text-sm text-muted-foreground">{ports.reserved.manager}</code>
+        </DetailRow>
+        <DetailRow label={t('console.accessPort')} hint={t('console.accessPortHint')}>
+          <code className="font-mono text-sm text-muted-foreground">{ports.reserved.access}</code>
+        </DetailRow>
+      </div>
+      {failure ?? error ? <Alert variant="destructive" className="mt-4"><AlertDescription>{failure ?? error}</AlertDescription></Alert> : null}
+    </CardContent>
+    <ConfirmDialog
+      open={confirmOpen}
+      onOpenChange={setConfirmOpen}
+      tone="default"
+      title={t('console.portChangeTitle')}
+      description={running ? t('console.portChangeBodyRunning', { port: typed }) : t('console.portChangeBody', { port: typed })}
+      confirmLabel={t('common.save')}
+      cancelLabel={t('common.cancel')}
+      onConfirm={save}
+    />
+  </Card>;
+}
+
 /** A name over a run of rows, so one long list reads as three short ones. */
 function SettingsGroup({ icon, title }: { icon: ReactNode; title: string }) {
   return <div className="flex items-center gap-2 border-t pt-4 pb-2 text-sm font-medium first:border-t-0 first:pt-0 [&_svg]:size-4 [&_svg]:text-muted-foreground">
@@ -3674,7 +3786,7 @@ function SettingsGroup({ icon, title }: { icon: ReactNode; title: string }) {
   </div>;
 }
 
-function ConfigPage({ t, config, security, process, catalog, onConfigUpdate, onConfigReset, onChangeManagerPassword, onSetPassword, onSignOut, onSignOutDevices }: { t: Translate; config: ConfigDocument | null; security: AccessGatewayState; process: ProcessState; catalog: Record<string, unknown>; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onConfigReset: () => Promise<string | null>; onChangeManagerPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSignOut: () => Promise<void>; onSignOutDevices: () => Promise<string | null> }) {
+function ConfigPage({ t, config, security, ports, process, catalog, onPortChange, onConfigUpdate, onConfigReset, onChangeManagerPassword, onSetPassword, onSignOut, onSignOutDevices }: { t: Translate; config: ConfigDocument | null; security: AccessGatewayState; ports: PortSettings | null; process: ProcessState; catalog: Record<string, unknown>; onPortChange: (port: number) => Promise<string | null>; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onConfigReset: () => Promise<string | null>; onChangeManagerPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSignOut: () => Promise<void>; onSignOutDevices: () => Promise<string | null> }) {
   const [form, setForm] = useState<ConfigSettingsInput>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -3792,6 +3904,7 @@ function ConfigPage({ t, config, security, process, catalog, onConfigUpdate, onC
       cancelLabel={t('common.cancel')}
       onConfirm={async () => { await onSignOutDevices(); }}
     />
+    <PortsCard t={t} ports={ports} process={process} busy={busy} onPortChange={onPortChange} />
     <PasswordDialog t={t} open={managerPasswordOpen} onOpenChange={setManagerPasswordOpen} title={t('console.managerPasswordTitle')} description={t('console.managerPasswordHint')} note={t('console.passwordChangeSignsOut')} minLength={MIN_MANAGER_PASSWORD} hint={t('console.managerPasswordMin')} submitLabel={t('console.changePassword')} onSubmit={saveManagerPassword} />
     <PasscodeDialog t={t} open={sillyPasswordOpen} onOpenChange={setSillyPasswordOpen} note={security.passwordConfigured ? t('console.passwordChangeSignsOut') : null} onSubmit={onSetPassword} />
     {!config

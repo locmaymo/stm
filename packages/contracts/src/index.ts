@@ -3,11 +3,28 @@ export * from './table-fields.js';
 
 export type PlatformKind = 'windows' | 'linux' | 'termux' | 'docker' | 'modelscope' | 'unknown';
 
+/** The ports this project ships with, before anything moves them. */
 export interface ManagerPorts {
   readonly manager: 7860;
   readonly sillyTavern: 8000;
   /** Where the guarded door to SillyTavern listens; see AccessGatewayState. */
   readonly access: 8001;
+}
+
+/**
+ * The ports a running manager is actually using.
+ *
+ * `port` is SillyTavern's, which the console can move. The reserved pair is
+ * fixed for the life of the process and comes back with it so the panel can
+ * show what a rejected number collided with, and say where to change those two
+ * instead - the environment, not this page.
+ */
+export interface PortSettings {
+  readonly port: number;
+  readonly reserved: {
+    readonly manager: number;
+    readonly access: number;
+  };
 }
 
 export interface ManagerState {

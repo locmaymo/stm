@@ -479,7 +479,21 @@
     "cfBucketsEmpty": "This account has no R2 buckets yet.",
     "r2SwitchToCloudflareTitle": "Back up through the Cloudflare sign-in?",
     "r2SwitchToCloudflareBody": "Backups stop going through the manual R2/S3 keys and use the signed-in account instead. The keys are kept and you can switch back at any time.",
-    "r2SwitchToCloudflareConfirm": "Use the sign-in"
+    "r2SwitchToCloudflareConfirm": "Use the sign-in",
+    "portsTitle": "Ports",
+    "sillyTavernPort": "SillyTavern",
+    "sillyTavernPortHint": "The port SillyTavern itself runs on. Changing it restarts SillyTavern.",
+    "managerPort": "This manager",
+    "managerPortHint": "Set with STM_PORT in .env, and applied when the manager restarts.",
+    "accessPort": "Internal door",
+    "accessPortHint": "What a shared link points at. Set with STM_ACCESS_PORT in .env, and applied when the manager restarts.",
+    "portInvalid": "Choose a port between {lowest} and {highest}.",
+    "portTakenByManager": "Port {port} is this manager’s own.",
+    "portTakenByAccess": "Port {port} belongs to the internal door.",
+    "portChangeTitle": "Move SillyTavern to another port?",
+    "portChangeBody": "It will start on port {port} from now on.",
+    "portChangeBodyRunning": "SillyTavern restarts on port {port}. Anyone reading it right now loses the page until it is back.",
+    "portSaveFailed": "Could not change the port"
   },
   "dashboard": {
     "start": "Start",
