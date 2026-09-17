@@ -25,7 +25,7 @@ import { BackupError, BackupStore } from '../../../packages/backup/src/index.js'
 import { CloudflareConnection, R2Error, R2Manager, type R2UpdateInput } from '../../../packages/r2/src/index.js';
 import { CloudflareApiError, CloudflareOAuthError, CloudflareRateLimitError, DEFAULT_SCOPES } from '../../../packages/cloudflare/src/index.js';
 import { BackupScheduler, syncProfileToR2 } from './r2-scheduler.js';
-import { fetchSnapshotToLibrary } from './r2-restore.js';
+import { fetchSnapshotToLibrary, recoverProfileFromR2 } from './r2-restore.js';
 import { TransferMeter } from './progress.js';
 import { MetricsStore } from './metrics.js';
 import { instrumentationLoaderPath } from '../../../packages/instrumentation/src/index.js';
@@ -577,6 +577,10 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       readyInstallation = await runtime.migrateLegacyInstallation?.(activeInstallation) ?? activeInstallation;
       await profiles.ensureDefault({ installationId: readyInstallation.id, runtimePath: readyInstallation.runtimePath });
       const activeProfile = await profiles.getActive();
+      // Before the config is written and before SillyTavern is started, so what
+      // comes back is what gets configured and started rather than something
+      // laid over a profile already in use.
+      if (activeProfile) await recoverEmptyProfile(activeProfile, r2, backups, jobs);
       // Reading it first turns a missing config into the handled error below
       // rather than a fault during startup.
       const currentConfig = activeProfile ? await config.read(activeProfile, readyInstallation) : null;
@@ -1162,7 +1166,12 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       jobs.finish(queued.id, installation.status === 'ready' ? 'succeeded' : 'failed', installation.error);
       if (installation.status === 'ready') {
         if (previousProfile) await profiles.rebind(previousProfile.id, installation.id, installation.runtimePath);
-        else await profiles.ensureDefault({ installationId: installation.id, runtimePath: installation.runtimePath });
+        else {
+          // A first install on a machine that starts empty every time. If the
+          // bucket holds what this machine used to have, it goes back now,
+          // before SillyTavern is started on an empty profile.
+          await recoverEmptyProfile(await profiles.ensureDefault({ installationId: installation.id, runtimePath: installation.runtimePath }), r2, backups, jobs);
+        }
         await runtime.cleanupLegacyRuntimeCopies?.(installation.id);
       }
       await supervisor.start();
@@ -2113,6 +2122,33 @@ async function settlePort(options: SettlePortOptions): Promise<number> {
   if (moved === null) return port;
   options.onMove(port, moved);
   return moved;
+}
+
+/**
+ * Put a profile that has nothing in it back from the bucket, if it can be.
+ *
+ * Called wherever a default profile has just been settled and before
+ * SillyTavern is started on it. On a machine that keeps its disk this does
+ * nothing after the first install, because the profile is never empty again.
+ * On a machine that does not, it is the difference between coming back to
+ * yesterday's chats and coming back to a new installation.
+ *
+ * Restored straight into the profile rather than through the path the panel
+ * uses, which stops SillyTavern and takes a safety copy first: SillyTavern is
+ * not running yet at either call site, and a safety copy of an empty profile is
+ * a slow way to archive nothing.
+ */
+async function recoverEmptyProfile(profile: Profile, r2: R2Manager, backups: BackupStore, jobs: JobStore): Promise<void> {
+  const config = await r2.getConfig();
+  // Nowhere to recover from. On a machine that is wiped between runs this is
+  // the case where the R2 settings went with everything else, which is why the
+  // ones that survive - from the environment - are the ones that matter here.
+  if (!config.enabled || !config.configured) return;
+  await recoverProfileFromR2({
+    profile, r2, backups,
+    logger: (line) => jobs.append('backup', line),
+    restore: async (archivePath) => { await backups.restore(profile, archivePath, { mode: 'replace' }); },
+  });
 }
 
 function listen(server: Server, host: string, port: number): Promise<void> {

@@ -137,6 +137,16 @@ Mở manager tại <code>http://127.0.0.1:7860</code>. SillyTavern vẫn chạy 
 
 Trên nền tảng cloud có container, mở cổng <code>7860</code>, đặt <code>STM_ADMIN_PASSWORD</code> bằng phần secret của nền tảng và mount lưu trữ persistent tại <code>/data</code>. Không đưa mật khẩu vào Dockerfile hoặc Git.
 
+### Hạ tầng chỉ mở một cổng, và hạ tầng không giữ dữ liệu
+
+Một số nền tảng chỉ định tuyến đúng một cổng ra ngoài và báo cổng đó qua biến <code>PORT</code>. Trình quản lý sẽ tự lắng nghe ở đó, nên một repo vừa import vào nền tảng kiểu này chạy được ngay từ lần đầu mà không phải cấu hình gì. Còn cổng mà trình quản lý chỉ *ưu tiên* &mdash; <code>7860</code> của chính nó, <code>8001</code> của cổng truy cập, <code>8000</code> của SillyTavern &mdash; nếu đã bị thứ khác trên máy chiếm thì nó tự nhường sang cổng trống kế tiếp và ghi lại số cổng mới vào log. Muốn cố định thì đặt <code>STM_PORT</code> hoặc <code>STM_ACCESS_PORT</code>.
+
+Một số nền tảng còn cấp cho container một hệ thống tệp sinh ra cùng máy và bị xóa cùng máy, và tắt máy sau một khoảng không dùng. Trình quản lý kiểm tra xem thư mục dữ liệu thực sự nằm trên loại ổ nào, rồi báo trong log và trên trang dữ liệu: máy này không giữ dữ liệu của bạn, hãy kết nối Cloudflare R2.
+
+Cảnh báo đó có lối thoát. Hãy đặt bốn giá trị <code>STM_R2_*</code> vào <code>.env</code> hoặc vào phần biến môi trường của nền tảng, để chúng quay lại cùng bản checkout chứ không mất theo ổ đĩa bị xóa. Khi đó, lúc khởi động trình quản lý sẽ nhận ra hồ sơ đang trống còn bucket thì không, và mang bản khôi phục mới nhất về trước khi SillyTavern chạy. Hồ sơ đã có dữ liệu thì không bao giờ bị ghi đè.
+
+Ở nơi mạng không cho UDP đi ra, cloudflared không tới được biên của Cloudflare qua QUIC và đường hầm cứ đứng ở &ldquo;Registering tunnel&rdquo; cho tới khi link báo lỗi. Trình quản lý nhận ra điều đó &mdash; qua dòng lỗi, hoặc qua sự im lặng &mdash; rồi quay lại bằng HTTP/2 và ghi nhớ, nên chỉ phải chờ một lần. Đặt <code>STM_TUNNEL_PROTOCOL=http2</code> để bỏ qua bước dò.
+
 ## npm (người dùng kỹ thuật)
 
 Máy có Node.js 22 trở lên có thể dùng package đã publish khi package sẵn sàng:

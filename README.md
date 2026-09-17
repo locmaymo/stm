@@ -137,6 +137,16 @@ Open the manager at <code>http://127.0.0.1:7860</code>. SillyTavern stays on the
 
 For a hosted container platform, expose port <code>7860</code>, provide <code>STM_ADMIN_PASSWORD</code> through its secret settings, and mount durable storage at <code>/data</code>. Never put the admin password in a Dockerfile or commit it to Git.
 
+### Hosts that publish one port, and hosts that do not keep your data
+
+Some platforms route a single port from the outside world and announce it in <code>PORT</code>. The manager listens there without being asked, so a repository imported into such a platform works on the first run with nothing to configure. A port the manager only prefers &mdash; its own <code>7860</code>, the access gateway's <code>8001</code>, SillyTavern's <code>8000</code> &mdash; steps aside to the next free one when something else on the machine already holds it, and writes down where it went. Set <code>STM_PORT</code> or <code>STM_ACCESS_PORT</code> to pin one deliberately.
+
+Some platforms also give the container a filesystem that is made with the machine and thrown away with it, and stop the machine once it has been idle for a while. The manager checks what its data directory is actually on and says so in the log and on the data page: this machine does not keep your data, connect Cloudflare R2.
+
+That warning has a way out. Put the four <code>STM_R2_*</code> values in <code>.env</code> or in the platform's own environment settings, so they come back with the checkout rather than with the disk that was wiped. The manager then notices on the way up that the profile is empty and the bucket is not, and brings the newest recovery point back before SillyTavern starts. A profile that already holds something is never restored over.
+
+Where a network does not let UDP out, cloudflared cannot reach Cloudflare's edge over QUIC and a tunnel sits at &ldquo;Registering tunnel&rdquo; until the link times out. The manager notices &mdash; from the error, or from the silence &mdash; and comes back over HTTP/2, remembering the answer so the wait is paid once. <code>STM_TUNNEL_PROTOCOL=http2</code> skips the discovery.
+
 ## npm (technical users)
 
 On a machine with Node.js 22 or newer, use the published package when it is available:
