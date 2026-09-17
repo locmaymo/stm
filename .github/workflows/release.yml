@@ -85,3 +85,34 @@ jobs:
         with:
           files: release/**/*
           generate_release_notes: true
+
+  # The same tarball the GitHub Release carries, published to npm, so a version
+  # cannot exist in one place with different bytes in the other. It runs after
+  # the release exists: npm cannot unpublish a version after 72 hours, a GitHub
+  # Release can be deleted and cut again.
+  npm-publish:
+    needs: [publish, npm-package]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Trusted publishing. The job proves to npm which workflow in which
+      # repository it is, and npm answers with a short-lived token, so there is
+      # no npm token in this repository's secrets for anyone to steal or rotate.
+      id-token: write
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      # Node 22 still carries npm 10, and trusted publishing wants 11.5.1 or
+      # newer. This is the npm the repository already pins for its own work.
+      - run: npm install --global npm@11.12.1
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-package
+          path: release/npm
+      # Provenance is attached without asking for it, because this is a public
+      # package published from a public repository through OIDC.
+      - name: Publish to npm
+        shell: bash
+        run: npm publish --access public release/npm/*.tgz
