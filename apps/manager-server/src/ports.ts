@@ -89,20 +89,29 @@ export function portFromEnvironment(value: string | undefined, fallback: number)
 /**
  * Where a port came from, which decides what to do when it cannot be taken.
  *
- * `demanded` is a number somebody or something else chose: `STM_PORT`, or the
- * `PORT` a container host sets because that is the one port it publishes. A
- * port like that is the only address the console is reachable at, so moving off
- * it would leave the console running where nobody can see it. Failing loudly is
- * the better answer.
+ * `configured` is a number somebody wrote down. `platform` is the `PORT` a
+ * container host sets because that is the one port it publishes. Either way it
+ * is the only address the console is reachable at, so moving off it would leave
+ * the console running where nobody can see it, and failing loudly is the better
+ * answer.
  *
  * `default` is this project's own number, which nothing outside depends on. If
  * it is taken, the neighbourly thing is to step aside and say where we went.
+ *
+ * The two demanded kinds are told apart because `platform` says one more thing:
+ * that something in front of this process will be connecting to it, from
+ * outside the loopback address, which decides what to bind.
  */
-export type PortSource = 'demanded' | 'default';
+export type PortSource = 'configured' | 'platform' | 'default';
 
 export interface ResolvedPort {
   readonly port: number;
   readonly source: PortSource;
+}
+
+/** Whether this port is one to bind or fail on, rather than one to move off. */
+export function portWasDemanded(source: PortSource): boolean {
+  return source !== 'default';
 }
 
 /**
@@ -120,15 +129,17 @@ export interface ResolvedPort {
 export function resolveConsolePort(env: NodeJS.ProcessEnv): ResolvedPort {
   // An unreadable value is not a port anything is routing, so it earns no say
   // over where the console listens or whether it may move.
-  const demanded = readPort(env.STM_PORT) ?? readPort(env.PORT);
-  if (demanded !== null) return { port: demanded, source: 'demanded' };
+  const configured = readPort(env.STM_PORT);
+  if (configured !== null) return { port: configured, source: 'configured' };
+  const platform = readPort(env.PORT);
+  if (platform !== null) return { port: platform, source: 'platform' };
   return { port: MANAGER_PORT, source: 'default' };
 }
 
 /** Which port the access gateway should listen on, and whether it may move. */
 export function resolveAccessPort(env: NodeJS.ProcessEnv): ResolvedPort {
-  const demanded = readPort(env.STM_ACCESS_PORT);
-  if (demanded !== null) return { port: demanded, source: 'demanded' };
+  const configured = readPort(env.STM_ACCESS_PORT);
+  if (configured !== null) return { port: configured, source: 'configured' };
   return { port: ACCESS_GATEWAY_PORT, source: 'default' };
 }
 

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:net';
-import { checkSillyTavernPort, findFreePort, isPortFree, PortError, portFromEnvironment, resolveAccessPort, resolveConsolePort, ACCESS_GATEWAY_PORT, MANAGER_PORT, SILLYTAVERN_PORT, type ReservedPorts } from '../src/ports.js';
+import { checkSillyTavernPort, findFreePort, isPortFree, PortError, portFromEnvironment, portWasDemanded, resolveAccessPort, resolveConsolePort, ACCESS_GATEWAY_PORT, MANAGER_PORT, SILLYTAVERN_PORT, type ReservedPorts } from '../src/ports.js';
 
 const RESERVED: ReservedPorts = { manager: MANAGER_PORT, access: ACCESS_GATEWAY_PORT };
 
@@ -52,15 +52,23 @@ test('a host that publishes one port names it in PORT, and that port is not ours
   assert.deepEqual(resolveConsolePort({}), { port: MANAGER_PORT, source: 'default' });
   // A container host sets PORT to the one port it routes. Listening anywhere
   // else there is listening where nobody can knock.
-  assert.deepEqual(resolveConsolePort({ PORT: '3000' }), { port: 3000, source: 'demanded' });
-  // Written down by hand still wins over the platform's.
-  assert.deepEqual(resolveConsolePort({ PORT: '3000', STM_PORT: '9000' }), { port: 9000, source: 'demanded' });
+  assert.deepEqual(resolveConsolePort({ PORT: '3000' }), { port: 3000, source: 'platform' });
+  // Written down by hand still wins over the platform's, and is told apart from
+  // it: only the platform's says something else will be connecting from
+  // outside this machine's loopback address.
+  assert.deepEqual(resolveConsolePort({ PORT: '3000', STM_PORT: '9000' }), { port: 9000, source: 'configured' });
   // Nothing readable is nothing routed, so the default stands and may move.
   for (const unusable of ['', ' ', 'auto', '80', '70000', '7860.5']) {
     assert.deepEqual(resolveConsolePort({ PORT: unusable }), { port: MANAGER_PORT, source: 'default' }, `PORT=${unusable} should be ignored`);
   }
   assert.deepEqual(resolveAccessPort({}), { port: ACCESS_GATEWAY_PORT, source: 'default' });
-  assert.deepEqual(resolveAccessPort({ STM_ACCESS_PORT: '9001' }), { port: 9001, source: 'demanded' });
+  assert.deepEqual(resolveAccessPort({ STM_ACCESS_PORT: '9001' }), { port: 9001, source: 'configured' });
+
+  // Either kind of demand is bound or failed on; only this project's own
+  // number is one to step off.
+  assert.equal(portWasDemanded('configured'), true);
+  assert.equal(portWasDemanded('platform'), true);
+  assert.equal(portWasDemanded('default'), false);
 });
 
 test('a taken port is stepped over, not fought for', async () => {

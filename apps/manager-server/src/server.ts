@@ -17,7 +17,7 @@ import { SystemStore } from './system.js';
 import { panelStaticRoot } from './bootstrap.js';
 import { ProcessSupervisor } from './supervisor.js';
 import { AccessGateway } from './gateway.js';
-import { ACCESS_GATEWAY_PORT, checkSillyTavernPort, findFreePort, isPortFree, MANAGER_PORT, PortError, resolveAccessPort, resolveConsolePort, SILLYTAVERN_PORT, type ResolvedPort } from './ports.js';
+import { ACCESS_GATEWAY_PORT, checkSillyTavernPort, findFreePort, isPortFree, MANAGER_PORT, PortError, portWasDemanded, resolveAccessPort, resolveConsolePort, SILLYTAVERN_PORT, type ResolvedPort } from './ports.js';
 import { previewImage, previewLogo, previewManifest } from './preview.js';
 import { TunnelManager } from '../../../packages/tunnel/src/index.js';
 import { ProfileError, ProfileStore } from '../../../packages/profiles/src/index.js';
@@ -221,7 +221,19 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   // free on. Read here rather than at `listen` below, because everything from
   // the gateway's frame policy to SillyTavern's port is settled against a
   // console port that has already been proven bindable.
-  const defaultHost = paths.platform === 'docker' || paths.platform === 'modelscope' ? '0.0.0.0' : '127.0.0.1';
+  const consolePortChoice = resolveConsolePort(env);
+  /*
+   * Which addresses to answer on.
+   *
+   * The loopback address on a machine somebody is sitting at, so the console is
+   * not on the house network until they say so. Every address in a container,
+   * because the only thing that can reach a container's loopback is the
+   * container - Docker and ModelScope have always been that case, and a host
+   * that named the port it publishes in `PORT` is the same case wearing a
+   * different name: something in front of this process is going to connect to
+   * it, and it will not be connecting from inside.
+   */
+  const defaultHost = paths.platform === 'docker' || paths.platform === 'modelscope' || consolePortChoice.source === 'platform' ? '0.0.0.0' : '127.0.0.1';
   const host = options.host ?? env.STM_HOST ?? defaultHost;
   /**
    * The console's own port, settled before anything else asks for one.
@@ -232,7 +244,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
    * port, listening anywhere else is listening where nobody can knock.
    */
   const consolePort = options.port ?? await settlePort({
-    resolved: resolveConsolePort(env),
+    resolved: consolePortChoice,
     host,
     reserved: [],
     // Nothing to move for, so nothing to say. The line that matters is the one
@@ -2112,7 +2124,7 @@ interface SettlePortOptions {
 async function settlePort(options: SettlePortOptions): Promise<number> {
   const { port, source } = options.resolved;
   if (await isPortFree(port, options.host)) return port;
-  if (source === 'demanded') {
+  if (portWasDemanded(source)) {
     options.onDemandedTaken(port);
     return port;
   }

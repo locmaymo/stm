@@ -1121,3 +1121,42 @@ test('a session started over HTTPS that a proxy terminated is one a frame can ke
   assert.match(plain.headers.get('set-cookie') ?? '', /SameSite=Lax/);
   assert.doesNotMatch(plain.headers.get('set-cookie') ?? '', /Secure/);
 });
+
+test('a host that names the port it publishes gets a console that answers on it', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-manager-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const staticRoot = join(root, 'panel');
+  await mkdir(staticRoot, { recursive: true });
+  await writeFile(join(staticRoot, 'index.html'), '<!doctype html><title>Manager panel</title>', 'utf8');
+  // No host given, so the manager picks one. PORT is how a container platform
+  // says it will be connecting from in front of this process, and nothing in
+  // front of a container can reach the container's own loopback address.
+  const manager = await startManagerServer({
+    port: 0, paths, staticRoot, accessPort: 0, logger: () => undefined,
+    store: new StateStore({ paths }),
+    env: { PORT: '3000' },
+  });
+  t.after(() => manager.close());
+  const address = manager.server.address();
+  assert.ok(address && typeof address !== 'string');
+  assert.equal(address.address, '0.0.0.0');
+});
+
+test('a console on a machine somebody is sitting at stays on the loopback address', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-manager-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const staticRoot = join(root, 'panel');
+  await mkdir(staticRoot, { recursive: true });
+  await writeFile(join(staticRoot, 'index.html'), '<!doctype html><title>Manager panel</title>', 'utf8');
+  // A port written down by hand is not a platform in front of anything, so it
+  // must not open the console to the house network on its own.
+  const manager = await startManagerServer({
+    port: 0, paths, staticRoot, accessPort: 0, logger: () => undefined,
+    store: new StateStore({ paths }),
+    env: { STM_PORT: '9000' },
+  });
+  t.after(() => manager.close());
+  const address = manager.server.address();
+  assert.ok(address && typeof address !== 'string');
+  assert.equal(address.address, '127.0.0.1');
+});
