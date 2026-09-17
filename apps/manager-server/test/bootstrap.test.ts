@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, stat, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { spawn } from 'node:child_process';
@@ -60,8 +60,18 @@ test('a panel older than its sources is built again rather than served as it is'
   assert.equal(await ensurePanelBuilt({ env, sourceRoots: [source], logger: () => undefined, spawnImpl: recordingSpawn(fresh) }), false);
   assert.deepEqual(fresh, []);
 
-  // A source written afterwards is what makes the build out of date.
+  /*
+   * A source written afterwards is what makes the build out of date - but on a
+   * fast filesystem "afterwards" and "at the same moment" are the same
+   * millisecond, and the comparison is `<=`, so the two writes above could tie
+   * and the rebuild be skipped. About one run in three did exactly that. The
+   * source is given a timestamp a second past the build rather than a race
+   * against the clock: it is the same condition, stated rather than hoped for.
+   */
+  const builtAt = (await stat(join(staticRoot, 'index.html'))).mtime;
   await writeFile(join(source, 'nested', 'App.tsx'), 'export const panel = 2;\n', 'utf8');
+  const afterTheBuild = new Date(builtAt.getTime() + 1_000);
+  await utimes(join(source, 'nested', 'App.tsx'), afterTheBuild, afterTheBuild);
   const stale: Launch[] = [];
   const lines: string[] = [];
   await ensurePanelBuilt({ env, sourceRoots: [source], logger: (line) => lines.push(logLineText(line)), spawnImpl: recordingSpawn(stale) });
