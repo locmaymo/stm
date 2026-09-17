@@ -493,7 +493,22 @@
     "portChangeTitle": "Move SillyTavern to another port?",
     "portChangeBody": "It will start on port {port} from now on.",
     "portChangeBodyRunning": "SillyTavern restarts on port {port}. Anyone reading it right now loses the page until it is back.",
-    "portSaveFailed": "Could not change the port"
+    "portSaveFailed": "Could not change the port",
+    "managerTunnel": "Open this manager to the internet",
+    "managerTunnelHint": "A Cloudflare link that reaches this console from anywhere. Guarded by the manager password, and off unless you turn it on.",
+    "managerTunnelOnDone": "The console is reachable from the internet.",
+    "managerTunnelOffDone": "The console is no longer reachable from the internet.",
+    "managerTunnelFailed": "Could not change the console link",
+    "managerTunnelOffConfirm": "Close the console link?",
+    "managerTunnelOffConfirmBody": "The current address stops working. Turning it back on gives you a different one.",
+    "tunnelOfferTitle": "Open this manager to the internet?",
+    "tunnelOfferBody": "You are reading this at {host}, which is an address this platform handed out rather than one of your own.",
+    "tunnelOfferNote": "A Cloudflare link of its own gives the console a fixed address it knows, which is what signing in to Cloudflare needs to come back to. It is guarded by the manager password.",
+    "tunnelOfferOpening": "Opening the link…",
+    "tunnelOfferAccept": "Open the link",
+    "tunnelOfferDecline": "Not now",
+    "tunnelOfferOpen": "Go to the link",
+    "managerTunnelOffConfirmBodyHere": "You are reading this page through that link, so it will go blank. Reach the console at its own address to turn the link back on."
   },
   "dashboard": {
     "start": "Start",

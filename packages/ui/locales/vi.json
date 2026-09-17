@@ -493,7 +493,22 @@
     "portChangeTitle": "Chuyển SillyTavern sang cổng khác?",
     "portChangeBody": "Từ giờ SillyTavern sẽ chạy trên cổng {port}.",
     "portChangeBodyRunning": "SillyTavern sẽ khởi động lại trên cổng {port}. Ai đang đọc sẽ mất trang cho tới khi nó quay lại.",
-    "portSaveFailed": "Không thể đổi cổng"
+    "portSaveFailed": "Không thể đổi cổng",
+    "managerTunnel": "Mở trình quản lý này ra internet",
+    "managerTunnelHint": "Một liên kết Cloudflare để vào console này từ bất cứ đâu. Được mật khẩu trình quản lý bảo vệ, và tắt cho tới khi bạn bật.",
+    "managerTunnelOnDone": "Console đã có thể vào từ internet.",
+    "managerTunnelOffDone": "Console không còn vào được từ internet nữa.",
+    "managerTunnelFailed": "Không thể đổi liên kết console",
+    "managerTunnelOffConfirm": "Đóng liên kết console?",
+    "managerTunnelOffConfirmBody": "Địa chỉ hiện tại sẽ ngừng hoạt động. Bật lại sẽ cho bạn một địa chỉ khác.",
+    "tunnelOfferTitle": "Mở trình quản lý này ra internet?",
+    "tunnelOfferBody": "Bạn đang xem tại {host}, là địa chỉ do nền tảng này cấp chứ không phải địa chỉ của bạn.",
+    "tunnelOfferNote": "Một liên kết Cloudflare riêng cho console một địa chỉ cố định mà nó biết — đúng thứ mà việc đăng nhập Cloudflare cần để quay về. Liên kết này được mật khẩu trình quản lý bảo vệ.",
+    "tunnelOfferOpening": "Đang mở liên kết…",
+    "tunnelOfferAccept": "Mở liên kết",
+    "tunnelOfferDecline": "Để sau",
+    "tunnelOfferOpen": "Đi tới liên kết",
+    "managerTunnelOffConfirmBodyHere": "Bạn đang xem trang này qua chính liên kết đó, nên trang sẽ mất kết nối. Hãy vào console bằng địa chỉ của nó để bật lại liên kết."
   },
   "dashboard": {
     "start": "Chạy",
