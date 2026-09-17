@@ -10,8 +10,10 @@ import { raw } from './html.mjs';
  * stylesheet and two small scripts.
  *
  * `currentColor` throughout, so an icon follows the text it sits beside and
- * the dark theme needs no second copy. GitHub is filled rather than stroked,
- * which is how that mark is drawn.
+ * the dark theme needs no second copy. GitHub and npm are filled rather than
+ * stroked, and both carry their owners' own path data at the coordinates those
+ * owners publish: a logo is either the logo or it is a lookalike, and a
+ * lookalike is worse than no logo at all.
  */
 
 const stroke = 'fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"';
@@ -44,8 +46,8 @@ export const icons = {
   moon: () => icon('<path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>'),
   scale: () => icon('<path d="m16 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"/><path d="m2 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"/><path d="M7 21h10"/><path d="M12 3v18"/><path d="M3 7h2c2 0 5-1 7-2 2 1 5 2 7 2h2"/>'),
   lock: () => icon('<rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>'),
-  github: () => icon('<path d="M12 .5a11.5 11.5 0 0 0-3.6 22.4c.6.1.8-.2.8-.5v-2c-3.2.7-3.9-1.4-3.9-1.4-.5-1.3-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.1.1 1.7 1.2 1.7 1.2 1 1.8 2.7 1.3 3.4 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.8 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.2 1.2a11 11 0 0 1 5.8 0c2.2-1.5 3.2-1.2 3.2-1.2.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.5-2.7 5.5-5.3 5.8.4.4.8 1.1.8 2.2v3.3c0 .3.2.6.8.5A11.5 11.5 0 0 0 12 .5Z"/>', 'fill="currentColor"'),
-  npm: () => raw('<svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor"><path d="M1.8 8.2h20.4v7.6H12v1.4H6.9v-1.4H1.8Zm1.7 6.1h1.7v-4.6h1.7v4.6h1.7V8.2H3.5Zm6.8-6.1v7.6h3.4v-1.5h3.4V8.2Zm3.4 1.5h1.7v3.1h-1.7Zm5.1-1.5v6.1h3.4V9.7h1.7v4.6h1.7V8.2Z"/></svg>'),
+  github: () => icon('<path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/>', 'fill="currentColor"'),
+  npm: () => raw('<svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor"><path d="M1.763 0C.786 0 0 .786 0 1.763v20.474C0 23.214.786 24 1.763 24h20.474c.977 0 1.763-.786 1.763-1.763V1.763C24 .786 23.214 0 22.237 0zM5.13 5.323l13.837.019-.009 13.836h-3.464l.01-10.382h-3.456L12.04 19.17H5.113z"/></svg>'),
 };
 
 /** A Lucide-shaped icon by name, or nothing when the name is unknown. */

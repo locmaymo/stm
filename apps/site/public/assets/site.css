@@ -169,9 +169,12 @@ code { font-size: 0.9em; }
 .icon-button { border-color: transparent; background: transparent; }
 .icon-button:hover, .lang-button:hover { background: var(--accent); color: var(--foreground); }
 .icon-button svg, .lang-button svg { width: 17px; height: 17px; }
-[data-theme-icon="dark"] { display: none; }
-html.dark [data-theme-icon="dark"] { display: block; }
-html.dark [data-theme-icon="light"] { display: none; }
+/* Both wrappers are laid out the same way and one of them is shown. The light
+   one used to have no rule at all, so it stayed `inline` and its icon sat on
+   the text baseline - a moon pushed to the top of its own button. */
+[data-theme-icon] { display: none; place-items: center; line-height: 0; }
+html:not(.dark) [data-theme-icon="light"] { display: grid; }
+html.dark [data-theme-icon="dark"] { display: grid; }
 
 /* ---- buttons --------------------------------------------------------- */
 
