@@ -14,8 +14,8 @@ jobs:
   windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -28,7 +28,7 @@ jobs:
           $archive = Get-ChildItem -LiteralPath build -Filter 'SillyTavernManager-windows-x64-*.zip' | Select-Object -First 1
           $hash = (Get-FileHash -LiteralPath $archive.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
           Set-Content -LiteralPath "$($archive.FullName).sha256" -Value "$hash  $($archive.Name)" -Encoding utf8NoBOM
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: windows-portable
           path: |
@@ -38,13 +38,13 @@ jobs:
   container:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@v7
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@v7
         with:
           context: .
           file: deploy/docker/Dockerfile
@@ -56,14 +56,14 @@ jobs:
   npm-package:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
       - run: npm ci
       - run: npm run release:npm
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: npm-package
           path: build/npm/*.tgz
@@ -73,15 +73,15 @@ jobs:
     needs: [windows, npm-package]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: windows-portable
           path: release/windows
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: npm-package
           path: release/npm
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: release/**/*
           generate_release_notes: true
@@ -100,14 +100,19 @@ jobs:
       # no npm token in this repository's secrets for anyone to steal or rotate.
       id-token: write
     steps:
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
+          # This job checks nothing out and installs nothing, so there is no
+          # lockfile for the caching setup-node turns on by itself whenever the
+          # manifest names a package manager. A release build should not be
+          # restoring a cache anybody else could have written to regardless.
+          package-manager-cache: false
       # Node 22 still carries npm 10, and trusted publishing wants 11.5.1 or
       # newer. This is the npm the repository already pins for its own work.
       - run: npm install --global npm@11.12.1
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: npm-package
           path: release/npm
