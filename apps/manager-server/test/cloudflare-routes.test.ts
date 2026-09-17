@@ -176,14 +176,17 @@ test('behind a port-forwarding proxy the sign-in comes back to the address the b
 
 test('a Codespace names its forwarded address, and STM_PUBLIC_ORIGIN settles it for any other proxy', () => {
   assert.equal(publicOriginFromEnvironment({}, 7860), null);
-  assert.equal(
+  // A Codespace is the console recognising where it is, which a tunnel opened
+  // afterwards outranks; STM_PUBLIC_ORIGIN is somebody saying so, which nothing
+  // outranks. The source is what carries that difference.
+  assert.deepEqual(
     publicOriginFromEnvironment({ CODESPACE_NAME: 'fluffy-doodle-jqx4w64pw5vhpv5g', GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN: 'app.github.dev' }, 7860),
-    'https://fluffy-doodle-jqx4w64pw5vhpv5g-7860.app.github.dev',
+    { origin: 'https://fluffy-doodle-jqx4w64pw5vhpv5g-7860.app.github.dev', source: 'platform' },
   );
   // Half an answer is no answer: without both, nothing can be built.
   assert.equal(publicOriginFromEnvironment({ CODESPACE_NAME: 'fluffy-doodle' }, 7860), null);
-  assert.equal(publicOriginFromEnvironment({ STM_PUBLIC_ORIGIN: 'https://stm.example.com/panel/' }, 7860), 'https://stm.example.com');
-  assert.equal(publicOriginFromEnvironment({ STM_PUBLIC_ORIGIN: 'https://stm.example.com', CODESPACE_NAME: 'x', GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN: 'app.github.dev' }, 7860), 'https://stm.example.com');
+  assert.deepEqual(publicOriginFromEnvironment({ STM_PUBLIC_ORIGIN: 'https://stm.example.com/panel/' }, 7860), { origin: 'https://stm.example.com', source: 'configured' });
+  assert.deepEqual(publicOriginFromEnvironment({ STM_PUBLIC_ORIGIN: 'https://stm.example.com', CODESPACE_NAME: 'x', GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN: 'app.github.dev' }, 7860), { origin: 'https://stm.example.com', source: 'configured' });
   assert.throws(() => publicOriginFromEnvironment({ STM_PUBLIC_ORIGIN: 'stm.example.com' }, 7860), /not a valid URL/u);
   assert.throws(() => publicOriginFromEnvironment({ STM_PUBLIC_ORIGIN: 'ftp://stm.example.com' }, 7860), /http or https/u);
 });

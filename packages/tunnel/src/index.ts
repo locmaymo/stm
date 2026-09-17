@@ -14,6 +14,17 @@ const execFileAsync = promisify(execFile);
 const CLOUDFLARED_RELEASE = 'https://github.com/cloudflare/cloudflared/releases/latest/download';
 /** What the tunnel should be doing, so a manager restart does not take the link down with it. */
 const TUNNEL_STATE_FILE = 'tunnel-config.json';
+/**
+ * The cloudflared fetch in flight, per directory it is being fetched into.
+ *
+ * There is more than one tunnel now - SillyTavern's and the console's - and
+ * they are started independently, so both can arrive here at once on a machine
+ * that has no cloudflared yet. The download is safe either way, because it
+ * lands on a temporary name and is renamed into place, but two of them is twice
+ * the bytes on a connection somebody is waiting on; and on Termux it is two
+ * package installs at once, which is not safe at all.
+ */
+const binaryInFlight = new Map<string, Promise<string>>();
 const TUNNEL_SCHEMA_VERSION = 1 as const;
 /**
  * How long to wait before reconnecting, per consecutive failure.
@@ -103,11 +114,22 @@ export function parseTunnelUrl(line: string): string | undefined {
 export interface TunnelManagerOptions {
   readonly paths: PlatformPaths;
   /**
-   * What cloudflared publishes. This is the access gateway, never SillyTavern
-   * itself: a tunnel points at whatever answers, and SillyTavern answers with
-   * no password of its own.
+   * What cloudflared publishes.
+   *
+   * For SillyTavern this is the access gateway, never SillyTavern itself: a
+   * tunnel points at whatever answers, and SillyTavern answers with no password
+   * of its own. The console publishes itself, because it has a password.
+   *
+   * A function where the address is not known when this is built - the console
+   * does not learn which port it took until it has taken it.
    */
-  readonly targetUrl?: string;
+  readonly targetUrl?: string | (() => string);
+  /**
+   * Where to remember what this tunnel should be doing, under the state
+   * directory. Each tunnel needs its own file, or the second to start would
+   * overwrite what the first was told.
+   */
+  readonly stateFile?: string;
   readonly logger?: LogSink;
   readonly now?: () => Date;
   readonly binaryPath?: string;
@@ -127,7 +149,8 @@ export class TunnelManager {
   private readonly now: () => Date;
   private readonly env: NodeJS.ProcessEnv;
   private readonly configuredBinaryPath: string | undefined;
-  private readonly targetUrl: string;
+  private readonly resolveTargetUrl: () => string;
+  private readonly stateFile: string;
   private readonly beforeStart: (() => Promise<void>) | undefined;
   private readonly fetchImpl: typeof globalThis.fetch;
   private readonly spawnImpl: typeof spawn;
@@ -154,7 +177,9 @@ export class TunnelManager {
     this.now = options.now ?? (() => new Date());
     this.env = options.env ?? process.env;
     this.configuredBinaryPath = options.binaryPath ?? this.env.STM_CLOUDFLARED_PATH;
-    this.targetUrl = options.targetUrl ?? 'http://127.0.0.1:8001';
+    const target = options.targetUrl ?? 'http://127.0.0.1:8001';
+    this.resolveTargetUrl = typeof target === 'function' ? target : (): string => target;
+    this.stateFile = options.stateFile ?? TUNNEL_STATE_FILE;
     this.beforeStart = options.beforeStart;
     this.fetchImpl = options.fetchImpl ?? ((...args) => globalThis.fetch(...args));
     this.spawnImpl = options.spawnImpl ?? spawn;
@@ -180,12 +205,13 @@ export class TunnelManager {
     // cloudflared answers both by sitting at "Registering tunnel" until it gives
     // up. HTTP/2 over IPv4 is the combination that connects there.
     const mobile = this.paths.platform === 'termux' ? ['--protocol', 'http2', '--edge-ip-version', '4'] : [];
+    const targetUrl = this.resolveTargetUrl();
     const args = [...plan.prefix, 'tunnel', '--no-autoupdate', ...mobile, ...(mode === 'quick'
-      ? ['--url', this.targetUrl]
+      ? ['--url', targetUrl]
       : ['run', '--token', selectedToken!])];
     await this.remember(mode, mode === 'named' ? selectedToken ?? null : null);
     this.state = { mode, status: 'starting', url: null, startedAt: this.now().toISOString(), error: null };
-    const target = this.targetUrl.replace(/^https?:\/\//u, '');
+    const target = targetUrl.replace(/^https?:\/\//u, '');
     this.logger(mode === 'quick'
       ? logEvent('cloudflared.startingQuick', `[cloudflared] starting Quick Tunnel to ${target}`, { target })
       : logEvent('cloudflared.startingNamed', `[cloudflared] starting Named Tunnel to ${target}`, { target }));
@@ -341,7 +367,7 @@ export class TunnelManager {
   /** Record what the tunnel should be doing, for the next time the manager starts. */
   private async remember(mode: TunnelMode, token: string | null): Promise<void> {
     const stored: StoredTunnelState = { schemaVersion: TUNNEL_SCHEMA_VERSION, mode, token };
-    const target = join(this.paths.state, TUNNEL_STATE_FILE);
+    const target = join(this.paths.state, this.stateFile);
     const temporary = `${target}.${randomUUID()}.tmp`;
     try {
       await mkdir(this.paths.state, { recursive: true });
@@ -360,7 +386,7 @@ export class TunnelManager {
 
   private async readStored(): Promise<StoredTunnelState | null> {
     try {
-      const parsed: unknown = JSON.parse(await readFile(join(this.paths.state, TUNNEL_STATE_FILE), 'utf8'));
+      const parsed: unknown = JSON.parse(await readFile(join(this.paths.state, this.stateFile), 'utf8'));
       if (typeof parsed !== 'object' || parsed === null) return null;
       const record = parsed as Record<string, unknown>;
       if (record.schemaVersion !== TUNNEL_SCHEMA_VERSION) return null;
@@ -384,6 +410,18 @@ export class TunnelManager {
    * install carrying it.
    */
   public async ensureBinary(): Promise<string> {
+    // One at a time per directory, so two tunnels starting together share the
+    // answer instead of each fetching it. A failure reaches both callers, which
+    // is right: neither of them has a cloudflared to run.
+    const key = this.paths.bin;
+    const running = binaryInFlight.get(key);
+    if (running) return running;
+    const attempt = this.locateOrInstallBinary();
+    binaryInFlight.set(key, attempt);
+    try { return await attempt; } finally { binaryInFlight.delete(key); }
+  }
+
+  private async locateOrInstallBinary(): Promise<string> {
     const termux = this.paths.platform === 'termux';
     const existing = await this.findBinary();
     // Termux packages a build of cloudflared that Android starts unaided. It

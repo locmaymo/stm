@@ -83,6 +83,7 @@ const PROTECTED_PATHS = new Set([
   '/api/v1/system',
   '/api/v1/system/measure',
   '/api/v1/tunnel',
+  '/api/v1/manager-tunnel',
   '/api/v1/r2',
 ]);
 
@@ -104,6 +105,8 @@ export interface ManagerServerOptions {
   readonly logBuffer?: LogBuffer;
   readonly supervisor?: ProcessSupervisor;
   readonly tunnel?: TunnelManager;
+  /** The console's own tunnel, separate from the one that publishes SillyTavern. */
+  readonly managerTunnel?: TunnelManager;
   readonly gateway?: AccessGateway;
   /** Overridable so tests can bind an ephemeral port instead of 8001. */
   readonly accessPort?: number;
@@ -134,6 +137,7 @@ export interface ManagerServer {
   readonly runtime: RuntimeManager;
   readonly supervisor: ProcessSupervisor;
   readonly tunnel: TunnelManager;
+  readonly managerTunnel: TunnelManager;
   readonly gateway: AccessGateway;
   readonly profiles: ProfileStore;
   readonly backups: BackupStore;
@@ -152,6 +156,20 @@ export interface ManagerServer {
  * is why they are numbers; SillyTavern's can move, which is why it is a pair of
  * functions rather than a value read once at startup.
  */
+/**
+ * An outside address the environment named, and how much authority it carries.
+ *
+ * `configured` is somebody having written `STM_PUBLIC_ORIGIN` down, which
+ * outranks anything the console worked out for itself - including a tunnel it
+ * opened. `platform` is the console recognising where it is running, which a
+ * tunnel deliberately opened afterwards should outrank in turn: the usual
+ * reason to open one is that the platform's own address did not work.
+ */
+interface EnvironmentOrigin {
+  readonly origin: string;
+  readonly source: 'configured' | 'platform';
+}
+
 interface ServerPorts {
   readonly manager: number;
   readonly access: number;
@@ -165,8 +183,8 @@ interface RequestContext {
   readonly pathname: string;
   readonly searchParams: URLSearchParams;
   readonly originTrusted: boolean;
-  /** The address the panel is reached at from outside, when the request cannot say. */
-  readonly publicOrigin: string | null;
+  /** Every address the panel is reached at from outside, best first. */
+  readonly publicOrigins: readonly string[];
   readonly ports: ServerPorts;
   readonly sessionToken: string | undefined;
 }
@@ -263,6 +281,34 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     },
     logger: (line) => { jobs.append('cloudflared', line); baseLogger(line); },
   });
+  /**
+   * The console's own public address, for where the platform will not give it
+   * one that works.
+   *
+   * SillyTavern's tunnel publishes the access gateway; this one publishes the
+   * console itself, on a link of its own rather than a path under that one. The
+   * two are handed out to different people - a chat link is shared, a console
+   * link is not - and cloudflared tells this one its address, which is how the
+   * console comes to know where it is on a platform that will not say.
+   *
+   * It refuses to open without the manager password. The gateway's tunnel
+   * refuses without the SillyTavern password for the same reason, and this side
+   * can install software and read the whole data directory.
+   */
+  const managerTunnel = options.managerTunnel ?? new TunnelManager({
+    paths,
+    env,
+    stateFile: 'manager-tunnel-config.json',
+    // Read at start rather than now: an ephemeral port is not known until the
+    // listener has taken one.
+    targetUrl: () => `http://127.0.0.1:${boundPort}`,
+    beforeStart: async () => {
+      if ((await store.getPersisted()).adminPasswordHash === null) {
+        throw new Error('Set the manager password before opening the console to the internet');
+      }
+    },
+    logger: (line) => { jobs.append('cloudflared', line); baseLogger(line); },
+  });
   // The local backup interval used to be stored with the R2 settings. Hand an
   // old value over to the backup library before the scheduler first reads it.
   // An unreadable R2 file must not stop the manager starting over this.
@@ -299,7 +345,26 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     },
   });
   const secureCookies = options.secureCookies ?? env.STM_SECURE_COOKIES === '1';
-  const publicOrigin = options.publicOrigin !== undefined ? options.publicOrigin : publicOriginFromEnvironment(env, consolePort);
+  const environmentOrigin: EnvironmentOrigin | null = options.publicOrigin !== undefined
+    ? (options.publicOrigin === null ? null : { origin: options.publicOrigin, source: 'configured' })
+    : publicOriginFromEnvironment(env, consolePort);
+  /**
+   * Every address the console can be reached at from outside, best first.
+   *
+   * More than one can be true at once - a Codespace that also has the tunnel
+   * open is reachable both ways - so this is a list rather than an answer.
+   * Requests from any of them are trusted; the first is the one a sign-in is
+   * sent back to. See EnvironmentOrigin for why the order is what it is.
+   */
+  const publicOrigins = (): readonly string[] => {
+    const tunnelUrl = managerTunnel.getState().url?.replace(/\/$/u, '');
+    const ordered = [
+      ...(environmentOrigin?.source === 'configured' ? [environmentOrigin.origin] : []),
+      ...(tunnelUrl ? [tunnelUrl] : []),
+      ...(environmentOrigin?.source === 'platform' ? [environmentOrigin.origin] : []),
+    ];
+    return ordered;
+  };
   const staticRoot = options.staticRoot ? resolve(options.staticRoot) : panelStaticRoot(env);
   let persisted = await store.load();
   // A stored port that would now collide - because `STM_PORT` or
@@ -357,7 +422,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       rateLimiter,
       startedAt,
       secureCookies,
-      publicOrigin,
+      publicOrigins: publicOrigins(),
       ports: {
         // The port that was actually bound, which is not the one asked for when
         // the caller asked for an ephemeral one.
@@ -373,6 +438,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       jobs,
       supervisor,
       tunnel,
+      managerTunnel,
       gateway,
       profiles,
       backups,
@@ -441,6 +507,9 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   // soon as the gateway is listening - it does not have to wait for SillyTavern
   // and it does not go away again when SillyTavern is restarted.
   void tunnel.resume().catch((error: unknown) => logger(logEvent('cloudflared.resumeFailed', `[cloudflared] the tunnel could not be restored: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' })));
+  // The console's own link comes back the same way, and only now: its target is
+  // the port that was bound a few lines above.
+  void managerTunnel.resume().catch((error: unknown) => logger(logEvent('cloudflared.resumeFailed', `[cloudflared] the console's tunnel could not be restored: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' })));
   const activeInstallation = await runtime.getActiveInstallation();
   if (activeInstallation?.status === 'ready') {
     let readyInstallation = activeInstallation;
@@ -468,6 +537,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     port: actualPort,
     supervisor,
     tunnel,
+    managerTunnel,
     gateway,
     profiles,
     backups,
@@ -475,7 +545,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     metrics,
     config,
     telemetry,
-    close: async () => { await telemetry.close(); await scheduler.close(); await tunnel.close(); await gateway.close(); await supervisor.close(); await backups.settle(); await profiles.settle(); await closeServer(server); },
+    close: async () => { await telemetry.close(); await scheduler.close(); await tunnel.close(); await managerTunnel.close(); await gateway.close(); await supervisor.close(); await backups.settle(); await profiles.settle(); await closeServer(server); },
   };
 }
 
@@ -487,7 +557,7 @@ async function handleRequest(options: {
   readonly rateLimiter: RateLimiter;
   readonly startedAt: number;
   readonly secureCookies: boolean;
-  readonly publicOrigin: string | null;
+  readonly publicOrigins: readonly string[];
   readonly ports: ServerPorts;
   readonly staticRoot: string;
   readonly platform: PlatformPaths['platform'];
@@ -496,6 +566,7 @@ async function handleRequest(options: {
   readonly jobs: JobStore;
   readonly supervisor: ProcessSupervisor;
   readonly tunnel: TunnelManager;
+  readonly managerTunnel: TunnelManager;
   readonly gateway: AccessGateway;
   readonly profiles: ProfileStore;
   readonly backups: BackupStore;
@@ -507,7 +578,7 @@ async function handleRequest(options: {
   readonly shutdownToken: string | null;
   readonly onShutdownRequest: (() => void) | undefined;
 }): Promise<void> {
-  const { request, response, store, sessions, rateLimiter, startedAt, secureCookies, publicOrigin, ports, staticRoot, platform, runtime, jobs, supervisor, tunnel, gateway, profiles, backups, r2, cloudflare, metrics, config, system, shutdownToken, onShutdownRequest } = options;
+  const { request, response, store, sessions, rateLimiter, startedAt, secureCookies, publicOrigins, ports, staticRoot, platform, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, config, system, shutdownToken, onShutdownRequest } = options;
   const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
   const pathname = url.pathname;
   const context: RequestContext = {
@@ -515,8 +586,8 @@ async function handleRequest(options: {
     response,
     pathname,
     searchParams: url.searchParams,
-    originTrusted: isTrustedOrigin(request, platform, publicOrigin),
-    publicOrigin,
+    originTrusted: isTrustedOrigin(request, platform, publicOrigins),
+    publicOrigins,
     ports,
     sessionToken: parseSessionCookie(headerValue(request.headers.cookie), COOKIE_NAME),
   };
@@ -614,14 +685,14 @@ async function handleRequest(options: {
     if (method !== 'GET' && !requireCsrf(context, session.csrfToken)) {
       return;
     }
-    await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, gateway, profiles, backups, r2, cloudflare, metrics, config, system);
+    await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, config, system);
     return;
   }
 
   sendError(response, 404, 'not_found', 'Route not found');
 }
 
-async function handleRuntimeRequest(context: RequestContext, store: StateStore, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, gateway: AccessGateway, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, cloudflare: CloudflareConnection | null, metrics: MetricsStore, config: ConfigStore, system: SystemStore): Promise<void> {
+async function handleRuntimeRequest(context: RequestContext, store: StateStore, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, managerTunnel: TunnelManager, gateway: AccessGateway, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, cloudflare: CloudflareConnection | null, metrics: MetricsStore, config: ConfigStore, system: SystemStore): Promise<void> {
   const { pathname, ports, request, response, searchParams } = context;
   const method = request.method ?? 'GET';
   if (pathname === '/api/v1/auth/password' && method === 'POST') {
@@ -1261,6 +1332,32 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     sendJson(response, 200, state);
     return;
   }
+  /**
+   * The console's own public link.
+   *
+   * Separate from the one above in every way that matters: it publishes the
+   * console rather than the gateway, it has its own stored mode, and it waits
+   * on the manager password rather than SillyTavern's. It does not wait on
+   * SillyTavern running at all - the reason to open it is usually that the
+   * platform's own address does not work, which is a problem the console has
+   * whether or not anything is installed yet.
+   */
+  if (pathname === '/api/v1/manager-tunnel' && method === 'GET') { sendJson(response, 200, managerTunnel.getState()); return; }
+  if (pathname === '/api/v1/manager-tunnel' && method === 'PUT') {
+    const body = await readJson(request);
+    const mode = isRecord(body) && (body.mode === 'off' || body.mode === 'quick' || body.mode === 'named') ? body.mode : null;
+    if (!mode) { sendError(response, 400, 'invalid_tunnel_mode', 'Tunnel mode must be off, quick, or named'); return; }
+    // This link reaches the console, which installs software, reads the whole
+    // data directory and holds the Cloudflare tokens. A password is the only
+    // thing between it and whoever finds the address.
+    if (mode !== 'off' && (await store.getPersisted()).adminPasswordHash === null) {
+      sendError(response, 409, 'manager_password_required', 'Set the manager password before opening the console to the internet');
+      return;
+    }
+    const state = mode === 'off' ? await managerTunnel.disable() : await managerTunnel.start(mode, isRecord(body) && typeof body.token === 'string' ? body.token : undefined);
+    sendJson(response, 200, state);
+    return;
+  }
   if (pathname === '/api/v1/system' && method === 'GET') {
     sendJson(response, 200, await system.snapshot());
     return;
@@ -1448,7 +1545,7 @@ async function handleCloudflareRequest(context: RequestContext, cloudflare: Clou
     // to the same place - this machine, the LAN address or the tunnel. A
     // port-forwarding proxy leaves the loopback address it connects to in both
     // headers, so a known outside address is taken over what they say.
-    const origin = context.publicOrigin ?? headerValue(request.headers.origin) ?? `http://${headerValue(request.headers.host) ?? 'localhost'}`;
+    const origin = context.publicOrigins[0] ?? headerValue(request.headers.origin) ?? `http://${headerValue(request.headers.host) ?? 'localhost'}`;
     let returnOrigin: string;
     try { returnOrigin = new URL(origin).origin; } catch { sendError(response, 400, 'invalid_origin', 'The panel origin could not be read'); return; }
     sendJson(response, 200, { url: cloudflare.beginConnect(returnOrigin) });
@@ -1739,7 +1836,7 @@ function checkRateLimit(context: RequestContext, rateLimiter: RateLimiter): bool
   return true;
 }
 
-function isTrustedOrigin(request: IncomingMessage, platform: PlatformPaths['platform'], publicOrigin: string | null): boolean {
+function isTrustedOrigin(request: IncomingMessage, platform: PlatformPaths['platform'], publicOrigins: readonly string[]): boolean {
   const origin = headerValue(request.headers.origin);
   if (!origin) {
     return true;
@@ -1753,7 +1850,7 @@ function isTrustedOrigin(request: IncomingMessage, platform: PlatformPaths['plat
     if (host && parsed.host === host) return true;
     // A port-forwarding proxy rewrites `Host` to the loopback address it
     // connects to, so the panel's own origin no longer matches it.
-    if (publicOrigin && parsed.origin === publicOrigin) return true;
+    if (publicOrigins.includes(parsed.origin)) return true;
     return platform === 'modelscope' && isModelScopeOrigin(parsed.hostname);
   } catch {
     return false;
@@ -1770,7 +1867,7 @@ function isTrustedOrigin(request: IncomingMessage, platform: PlatformPaths['plat
  * not the reader's machine. `STM_PUBLIC_ORIGIN` settles it for any proxy, and a
  * Codespace already names itself in the environment.
  */
-export function publicOriginFromEnvironment(env: NodeJS.ProcessEnv, port: number): string | null {
+export function publicOriginFromEnvironment(env: NodeJS.ProcessEnv, port: number): EnvironmentOrigin | null {
   const configured = env.STM_PUBLIC_ORIGIN?.trim();
   if (configured) {
     let parsed: URL;
@@ -1778,12 +1875,12 @@ export function publicOriginFromEnvironment(env: NodeJS.ProcessEnv, port: number
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
       throw new Error(`STM_PUBLIC_ORIGIN must be an http or https address: ${configured}`);
     }
-    return parsed.origin;
+    return { origin: parsed.origin, source: 'configured' };
   }
   const codespace = env.CODESPACE_NAME?.trim();
   const forwardingDomain = env.GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN?.trim();
   if (codespace && forwardingDomain) {
-    return `https://${codespace}-${port.toString(10)}.${forwardingDomain}`;
+    return { origin: `https://${codespace}-${port.toString(10)}.${forwardingDomain}`, source: 'platform' };
   }
   return null;
 }

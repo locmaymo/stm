@@ -6,7 +6,9 @@ import { join } from 'node:path';
 import { getPlatformPaths } from '../../../packages/platform/src/index.js';
 import { StateStore } from '../src/state.js';
 import { preferredNetworkHost, startManagerServer, type ManagerServer } from '../src/server.js';
-import type { AccessGatewayState, Installation, ProcessState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, Installation, ProcessState, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { TunnelManager } from '../../../packages/tunnel/src/index.js';
+import { decodeState } from '../../../packages/cloudflare/src/index.js';
 import type { RuntimeManager } from '../../../packages/sillytavern-runtime/src/index.js';
 import type { ProcessSupervisor } from '../src/supervisor.js';
 
@@ -17,6 +19,10 @@ async function createServer(options: {
   root?: string;
   /** Runs before the server starts, for leaving files an older version wrote. */
   prepare?: (paths: ReturnType<typeof getPlatformPaths>) => Promise<void>;
+  /** Stands in for the console's own tunnel, so no cloudflared is launched. */
+  managerTunnel?: FakeTunnel;
+  /** As `STM_PUBLIC_ORIGIN` would name it. */
+  publicOrigin?: string;
 } = {}): Promise<ManagerServer> {
   const root = options.root ?? await mkdtemp(join(tmpdir(), 'stm-manager-'));
   const basePaths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
@@ -36,7 +42,38 @@ async function createServer(options: {
     accessPort: 0,
     staticRoot,
     logger: () => undefined,
+    ...(options.managerTunnel ? { managerTunnel: options.managerTunnel as unknown as TunnelManager } : {}),
+    ...(options.publicOrigin ? { publicOrigin: options.publicOrigin } : {}),
   });
+}
+
+/**
+ * A tunnel that reports whatever address the test gives it.
+ *
+ * Only the part the server reads is here: which mode it is in and what address
+ * it is answering on. Starting a real one would download cloudflared and open
+ * a link to the internet from a test run.
+ */
+interface FakeTunnel {
+  getState(): TunnelState;
+  start(mode: 'quick' | 'named'): Promise<TunnelState>;
+  disable(): Promise<TunnelState>;
+  resume(): Promise<TunnelState>;
+  close(): Promise<void>;
+  /** Hand it the address cloudflared would have announced, or take it away. */
+  publish(url: string | null): void;
+}
+
+function fakeTunnel(): FakeTunnel {
+  let state: TunnelState = { mode: 'off', status: 'stopped', url: null, startedAt: null, error: null };
+  return {
+    getState: () => state,
+    start: async (mode) => { state = { ...state, mode, status: 'starting' }; return state; },
+    disable: async () => { state = { mode: 'off', status: 'stopped', url: null, startedAt: null, error: null }; return state; },
+    resume: async () => state,
+    close: async () => undefined,
+    publish: (url) => { state = { ...state, url, status: url ? 'running' : state.status }; },
+  };
 }
 
 test('ModelScope proxy origins are accepted while unrelated origins remain blocked', async (t) => {
@@ -582,6 +619,83 @@ test('one password opens SillyTavern on any version, and nothing is shared befor
   assert.equal(state.host, '0.0.0.0');
   const allowed = await fetch(`${base}/api/v1/tunnel`, { method: 'PUT', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'quick' }) });
   assert.notEqual(allowed.status, 409);
+});
+
+test('the console will not be opened to the internet without a manager password', async (t) => {
+  const manager = await createServer();
+  t.after(() => manager.close());
+  // The route cannot even be reached before the password exists, so the refusal
+  // that matters is the tunnel's own: it is what a resume on the next start
+  // goes through, and what would otherwise put an unguarded console online.
+  const refused = await manager.managerTunnel.start('quick');
+  assert.equal(refused.status, 'error');
+  assert.match(refused.error ?? '', /manager password/u);
+  assert.equal(refused.url, null);
+});
+
+test('the console tunnel is separate from SillyTavern’s, and its address is trusted while it is open', async (t) => {
+  const tunnelUrl = 'https://busy-lake-1234.trycloudflare.com';
+  const managerTunnel = fakeTunnel();
+  const manager = await createServer({ bootstrapPassword: 'correct horse battery staple', managerTunnel });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  const headers = { cookie: auth.cookie, 'x-csrf-token': auth.csrfToken, origin: base, 'content-type': 'application/json' };
+
+  assert.equal((await (await fetch(`${base}/api/v1/manager-tunnel`, { headers: { cookie: auth.cookie } })).json() as TunnelState).mode, 'off');
+
+  // Before it is open, a request claiming to come from that address is a
+  // stranger, exactly as any other unknown origin is.
+  const early = await fetch(`${base}/api/v1/health`, { headers: { origin: tunnelUrl } });
+  assert.equal(early.status, 403);
+
+  const opened = await fetch(`${base}/api/v1/manager-tunnel`, { method: 'PUT', headers, body: JSON.stringify({ mode: 'quick' }) });
+  assert.equal(opened.status, 200);
+  managerTunnel.publish(tunnelUrl);
+
+  // Now it is one of the console's own addresses: cloudflared leaves its own
+  // Host header on the request, so without this every write would be refused.
+  const throughTunnel = await fetch(`${base}/api/v1/health`, { headers: { origin: tunnelUrl } });
+  assert.equal(throughTunnel.status, 200);
+  const stranger = await fetch(`${base}/api/v1/health`, { headers: { origin: 'https://evil.example' } });
+  assert.equal(stranger.status, 403);
+
+  // And it is where a Cloudflare sign-in is told to come back to.
+  const connect = await fetch(`${base}/api/v1/r2/cloudflare/connect`, { method: 'POST', headers });
+  assert.equal(connect.status, 200);
+  const url = new URL((await connect.json() as { url: string }).url);
+  assert.equal(decodeState(url.searchParams.get('state') ?? '')?.returnOrigin, tunnelUrl);
+
+  // SillyTavern's own tunnel is untouched by any of it.
+  assert.equal((await (await fetch(`${base}/api/v1/tunnel`, { headers: { cookie: auth.cookie } })).json() as TunnelState).mode, 'off');
+
+  managerTunnel.publish(null);
+  const closed = await fetch(`${base}/api/v1/health`, { headers: { origin: tunnelUrl } });
+  assert.equal(closed.status, 403, 'a link that is no longer open is no longer one of our addresses');
+});
+
+test('an address somebody wrote down outranks one the console opened for itself', async (t) => {
+  const tunnelUrl = 'https://busy-lake-1234.trycloudflare.com';
+  const configured = 'https://stm.example.com';
+  const managerTunnel = fakeTunnel();
+  const manager = await createServer({ bootstrapPassword: 'correct horse battery staple', managerTunnel, publicOrigin: configured });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  managerTunnel.publish(tunnelUrl);
+
+  // Both are addresses this console answers at, so requests from either are
+  // its own rather than a stranger's.
+  for (const origin of [configured, tunnelUrl]) {
+    assert.equal((await fetch(`${base}/api/v1/health`, { headers: { origin } })).status, 200, origin);
+  }
+
+  // But a sign-in goes back to the one that was written down: a tunnel is the
+  // console guessing, and STM_PUBLIC_ORIGIN is somebody saying.
+  const connect = await fetch(`${base}/api/v1/r2/cloudflare/connect`, { method: 'POST', headers: { cookie: auth.cookie, 'x-csrf-token': auth.csrfToken, origin: base } });
+  assert.equal(connect.status, 200);
+  const url = new URL((await connect.json() as { url: string }).url);
+  assert.equal(decodeState(url.searchParams.get('state') ?? '')?.returnOrigin, configured);
 });
 
 test('a running backup can be stopped, and a finished one cannot', async (t) => {
