@@ -1,10 +1,22 @@
+import { readFileSync } from 'node:fs';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import { fileURLToPath, URL } from 'node:url';
 
+/**
+ * The version the panel puts beside its own name.
+ *
+ * Read from the repository manifest at build time rather than asked of the
+ * server, because this names the interface the reader is looking at: the panel
+ * is rebuilt for every release and shipped inside every packaging, so the
+ * number baked in here is the number of the artifact on screen.
+ */
+const { version } = JSON.parse(readFileSync(fileURLToPath(new URL('../../package.json', import.meta.url)), 'utf8')) as { version: string };
+
 export default defineConfig({
   root: fileURLToPath(new URL('.', import.meta.url)),
+  define: { __STM_VERSION__: JSON.stringify(version) },
   plugins: [react(), tailwindcss()],
   server: {
     port: 5173,

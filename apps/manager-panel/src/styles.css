@@ -684,7 +684,24 @@
 .access-row:first-child { padding-top: 0; border-top: 0; }
 .access-row > div { display: grid; min-width: 0; flex: 1 1 auto; gap: 2px; }
 .access-row [data-slot="switch"] { flex-shrink: 0; }
-.access-row strong { font-size: 13px; font-weight: 650; }
+.access-row strong { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; font-size: 13px; font-weight: 650; }
+/* Loud enough to be noticed beside a switch, quiet enough not to read as a
+   warning: the accent at low saturation, which is the colour this interface
+   already uses to mean "this way". */
+.access-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px 2px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
+  color: var(--primary);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: .02em;
+  text-transform: uppercase;
+}
+.access-badge svg { width: 12px; height: 12px; fill: currentColor; stroke-width: 1.5; }
 .access-row span { color: var(--muted-foreground); font-size: 12px; }
 [data-tour="logs"] { grid-column: 1 / -1; height: 28rem; min-height: 0; overflow: hidden; padding-bottom: 0; }
 [data-tour="logs"] [data-slot="card-header"] { flex-shrink: 0; }
@@ -801,6 +818,58 @@
 .resource-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px; min-height: 260px; color: var(--muted-foreground); }
 .config-editor { display: block; width: 100%; min-height: 30rem; resize: vertical; padding: 14px; border: 1px solid var(--border); border-radius: 8px; outline: none; background: var(--background); color: var(--foreground); font-family: Consolas, "SFMono-Regular", monospace; font-size: 12px; line-height: 1.6; tab-size: 2; }
 .config-editor:focus { border-color: var(--primary); box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 20%, transparent); }
+
+/*
+ * Accepting the terms, and reading them.
+ *
+ * The tick and the sentence are two controls side by side, so the sentence can
+ * be pressed to open the documents without that press being taken as consent.
+ * It is styled as a target rather than as a link: the whole line lights up,
+ * because a reader looking for the terms is looking for the line about terms,
+ * not for the two underlined words inside it.
+ */
+.terms-consent { display: flex; align-items: flex-start; gap: 10px; font-size: 13px; }
+.terms-text { display: grid; gap: 4px; margin: -6px -8px; padding: 6px 8px; border-radius: 8px; text-align: start; color: var(--muted-foreground); line-height: 1.5; transition: background-color .15s ease, color .15s ease; }
+.terms-text:hover { background: var(--accent); color: var(--foreground); }
+.terms-more { display: inline-flex; align-items: center; gap: 4px; color: var(--link); font-weight: 600; }
+.terms-text:hover .terms-more { color: var(--link-hover); }
+.terms-more svg { width: 13px; height: 13px; }
+
+/* Who wrote this and which version it is, under the sign-in card and in the
+   footer of the About panel. Quiet by default; the repository is a real link. */
+.project-credit { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 7px; color: var(--muted-foreground); font-size: 12px; }
+.project-credit a { display: inline-flex; align-items: center; gap: 6px; color: inherit; text-decoration: none; }
+.project-credit a:hover { color: var(--foreground); }
+.project-version { font-family: Consolas, "SFMono-Regular", monospace; font-variant-numeric: tabular-nums; }
+
+/*
+ * The legal text itself.
+ *
+ * Measure first: legal prose is read a sentence at a time and a 60-character
+ * line is the difference between reading it and scrolling past it. The
+ * headings are numbered in the markup rather than by a counter, so a section
+ * can be quoted by its number in a bug report and still be found later.
+ */
+.legal-prose { max-width: 62ch; margin: 0 auto; color: var(--foreground); font-size: 13.5px; line-height: 1.7; }
+.legal-prose header { padding-bottom: 18px; margin-bottom: 4px; border-bottom: 1px solid var(--border); }
+.legal-prose h3 { margin: 0 0 8px; font-size: 18px; font-weight: 650; letter-spacing: -0.01em; }
+.legal-summary { margin: 0; color: var(--muted-foreground); }
+.legal-meta { margin: 10px 0 0; color: var(--muted-foreground); font-size: 12px; }
+.legal-prose section { margin-top: 22px; }
+.legal-prose h4 { display: flex; gap: 8px; margin: 0 0 8px; font-size: 14px; font-weight: 650; }
+.legal-prose h4 span { color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.legal-prose p { margin: 0 0 10px; }
+.legal-prose p:last-child { margin-bottom: 0; }
+.legal-source { display: inline-flex; align-items: center; gap: 7px; color: var(--muted-foreground); font-size: 12px; text-decoration: none; }
+.legal-source:hover { color: var(--foreground); }
+
+/* About: the mark, the one-line description, the links, the documents. */
+.about-lockup { display: flex; align-items: flex-start; gap: 14px; }
+.about-links { display: grid; gap: 2px; }
+.about-links a { display: inline-flex; width: fit-content; align-items: center; gap: 10px; margin: 0 -8px; padding: 8px; border-radius: 8px; color: var(--foreground); font-size: 13px; text-decoration: none; }
+.about-links a:hover { background: var(--accent); }
+.about-links svg { width: 16px; height: 16px; flex-shrink: 0; color: var(--muted-foreground); }
+.about-documents { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 2px; }
 .metrics-chart-shell { width: 100%; overflow: hidden; padding: 4px 0 0; }
 /* Drawn at the width it is shown at (see useElementWidth), so one unit is one
    pixel and the labels below are the size written here on a phone too. */

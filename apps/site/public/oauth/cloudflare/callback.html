@@ -5,11 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
   <meta name="robots" content="noindex">
+  <meta name="color-scheme" content="light dark">
   <title>SillyTavern Manager · Cloudflare</title>
-  <link rel="stylesheet" href="/style.css">
+  <link rel="icon" href="/assets/favicon.ico" sizes="16x16 32x32 48x48">
+  <script src="/assets/boot.js"></script>
+  <link rel="stylesheet" href="/assets/site.css">
 </head>
-<body>
-  <main>
+<body class="relay-page">
+  <main class="relay-card">
+    <img src="/assets/brand-mark.png" width="52" height="52" alt="">
     <section id="working">
       <h1>Returning to SillyTavern Manager…</h1>
       <p lang="vi">Đang quay lại SillyTavern Manager…</p>
@@ -21,7 +25,7 @@
       <p class="destination"><code id="destination"></code></p>
       <p>Only continue if this is the address you opened SillyTavern Manager on.</p>
       <p lang="vi">Chỉ tiếp tục nếu đây đúng là địa chỉ bạn đang mở SillyTavern Manager.</p>
-      <button id="continue" type="button">Continue · Tiếp tục</button>
+      <button class="button" id="continue" type="button">Continue · Tiếp tục</button>
     </section>
     <section id="invalid" hidden>
       <h1>This link cannot be used</h1>

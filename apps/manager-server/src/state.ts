@@ -3,11 +3,19 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ManagerState } from '../../../packages/contracts/src/index.js';
 import { getPlatformPaths, type PlatformPaths } from '../../../packages/platform/src/index.js';
+import { LEGAL_META } from '../../../packages/legal/src/index.js';
+import { MANAGER_VERSION } from './version.js';
 
 const STATE_FILE_NAME = 'manager-state.json';
 const STATE_SCHEMA_VERSION = 1 as const;
-const TERMS_VERSION = '2026-09-09';
-const TELEMETRY_NOTICE_VERSION = '2026-09-09';
+/*
+ * What an operator agreed to, named by the revision of the text they were
+ * shown rather than by a date written here by hand. The legal package is the
+ * one copy of that text, so when it is revised this record follows it and a
+ * state file says which wording was actually on screen.
+ */
+const TERMS_VERSION = LEGAL_META.effective;
+const TELEMETRY_NOTICE_VERSION = LEGAL_META.effective;
 
 interface PersistedManagerState {
   readonly schemaVersion: 1;
@@ -42,7 +50,7 @@ export class StateStore {
 
   public constructor(options: StateStoreOptions = {}) {
     this.paths = options.paths ?? getPlatformPaths();
-    this.managerVersion = options.managerVersion ?? '0.1.0';
+    this.managerVersion = options.managerVersion ?? MANAGER_VERSION;
     this.now = options.now ?? (() => new Date());
   }
 
@@ -54,7 +62,19 @@ export class StateStore {
     try {
       const raw = await readFile(this.stateFile(), 'utf8');
       const parsed: unknown = JSON.parse(raw);
-      this.state = this.parsePersistedState(parsed);
+      const stored = this.parsePersistedState(parsed);
+      /*
+       * The version is recorded when the file is created, and an installation
+       * outlives many versions of the manager that reads it. Left alone, a
+       * state file written on a first install reported that version for the
+       * rest of its life - in the banner, in the health response, and on every
+       * usage summary. It is refreshed here, once, on the start that finds it
+       * stale.
+       */
+      this.state = stored.managerVersion === this.managerVersion
+        ? stored
+        : { ...stored, managerVersion: this.managerVersion, updatedAt: this.now().toISOString() };
+      if (this.state !== stored) await this.write(this.state);
       return this.state;
     } catch (error: unknown) {
       if (!isFileNotFound(error)) {

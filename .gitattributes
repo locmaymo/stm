@@ -12,6 +12,7 @@
 *.webmanifest text working-tree-encoding=UTF-8
 *.ico   binary
 *.png   binary
+*.webp  binary
 *.woff  binary
 *.woff2 binary
 *.zip   binary

@@ -58,12 +58,23 @@ function checkText(filePath) {
   }
 }
 
+/**
+ * Every leaf of a locale file, keyed by its path.
+ *
+ * Arrays are walked by index rather than stringified, because the legal texts
+ * are arrays of paragraphs: a translation that merged two paragraphs into one
+ * would otherwise pass a key comparison while no longer saying the same thing.
+ * Walking them means the key set itself carries the paragraph count.
+ */
 function flatten(value, prefix = '') {
   const result = new Map();
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return result;
-  for (const [key, child] of Object.entries(value)) {
+  if (!value || typeof value !== 'object') return result;
+  const entries = Array.isArray(value)
+    ? value.map((child, index) => [String(index), child])
+    : Object.entries(value);
+  for (const [key, child] of entries) {
     const fullKey = prefix ? `${prefix}.${key}` : key;
-    if (child && typeof child === 'object' && !Array.isArray(child)) {
+    if (child && typeof child === 'object') {
       for (const [nestedKey, nestedValue] of flatten(child, fullKey)) result.set(nestedKey, nestedValue);
     } else {
       result.set(fullKey, String(child));
@@ -76,11 +87,18 @@ function placeholders(value) {
   return [...value.matchAll(/\{[^{}]+\}/g)].map((match) => match[0]).sort();
 }
 
-function checkLocales() {
-  const englishPath = path.join(root, 'packages', 'ui', 'locales', 'en.json');
-  const vietnamesePath = path.join(root, 'packages', 'ui', 'locales', 'vi.json');
+/** Every package that keeps an English/Vietnamese pair the gate holds in parity. */
+const localeDirectories = [
+  path.join('packages', 'ui', 'locales'),
+  path.join('packages', 'legal', 'locales'),
+];
+
+function checkLocales(directory) {
+  const englishPath = path.join(root, directory, 'en.json');
+  const vietnamesePath = path.join(root, directory, 'vi.json');
+  const label = directory.split(path.sep).join('/');
   if (!fs.existsSync(englishPath) || !fs.existsSync(vietnamesePath)) {
-    failures.push('locale gate: both packages/ui/locales/en.json and vi.json are required');
+    failures.push(`locale gate: both ${label}/en.json and vi.json are required`);
     return;
   }
   const english = JSON.parse(fs.readFileSync(englishPath, 'utf8'));
@@ -89,14 +107,14 @@ function checkLocales() {
   const vi = flatten(vietnamese);
   const missing = [...en.keys()].filter((key) => !vi.has(key));
   const extra = [...vi.keys()].filter((key) => !en.has(key));
-  if (missing.length) failures.push(`locale gate: vi.json is missing keys: ${missing.join(', ')}`);
-  if (extra.length) failures.push(`locale gate: vi.json has non-canonical keys: ${extra.join(', ')}`);
+  if (missing.length) failures.push(`locale gate: ${label}/vi.json is missing keys: ${missing.join(', ')}`);
+  if (extra.length) failures.push(`locale gate: ${label}/vi.json has non-canonical keys: ${extra.join(', ')}`);
   for (const key of en.keys()) {
     if (!vi.has(key)) continue;
     const enPlaceholders = JSON.stringify(placeholders(en.get(key)));
     const viPlaceholders = JSON.stringify(placeholders(vi.get(key)));
     if (enPlaceholders !== viPlaceholders) {
-      failures.push(`locale gate: ICU placeholders differ for ${key}`);
+      failures.push(`locale gate: ICU placeholders differ for ${label} ${key}`);
     }
   }
 }
@@ -104,7 +122,7 @@ function checkLocales() {
 for (const filePath of walk(root)) {
   if (isTextFile(filePath)) checkText(filePath);
 }
-checkLocales();
+for (const directory of localeDirectories) checkLocales(directory);
 
 if (failures.length) {
   console.error(failures.join('\n'));

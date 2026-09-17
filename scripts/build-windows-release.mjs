@@ -20,19 +20,24 @@ await mkdir(resourcesRoot, { recursive: true });
 run('npm', ['run', 'panel:build']);
 run(process.execPath, [join(repositoryRoot, 'node_modules', 'typescript', 'bin', 'tsc'), '-p', join(repositoryRoot, 'packaging', 'windows', 'tsconfig.release.json')]);
 
+await mkdir(appRoot, { recursive: true });
 await cp(join(repositoryRoot, 'apps', 'manager-panel', 'dist'), panelRoot, { recursive: true });
 for (const file of ['loader.mjs', 'observer.mjs', 'node-fetch-hook.mjs']) {
   await cp(join(repositoryRoot, 'packages', 'instrumentation', 'src', file), join(appRoot, 'packages', 'instrumentation', 'src', file));
 }
-await cp(join(repositoryRoot, 'packaging', 'windows', 'runtime-package.json'), join(appRoot, 'package.json'));
+// The manifest carries the version as well as the dependencies: the manager
+// finds its own version by walking up for the nearest manifest that has one,
+// and in this bundle that is this file.
+const rootPackage = JSON.parse(await readFile(join(repositoryRoot, 'package.json'), 'utf8'));
+const runtimeManifest = JSON.parse(await readFile(join(repositoryRoot, 'packaging', 'windows', 'runtime-package.json'), 'utf8'));
+await writeFile(join(appRoot, 'package.json'), `${JSON.stringify({ ...runtimeManifest, version: rootPackage.version }, null, 2)}\n`, 'utf8');
 run('npm', ['install', '--omit=dev', '--ignore-scripts', '--no-package-lock', '--prefix', appRoot]);
 await cp(process.execPath, join(runtimeRoot, 'node.exe'));
 await cp(join(repositoryRoot, 'THIRD_PARTY_NOTICES.md'), join(releaseRoot, 'THIRD_PARTY_NOTICES.md'));
 await cp(join(repositoryRoot, 'LICENSE'), join(releaseRoot, 'LICENSE'));
 // Sorts first in Explorer, so it is the file someone sees before the exe.
 await cp(join(repositoryRoot, 'packaging', 'windows', 'FIRST-RUN.txt'), join(releaseRoot, 'Read me first.txt'));
-const packageJson = JSON.parse(await readFile(join(repositoryRoot, 'package.json'), 'utf8'));
-await writeFile(join(resourcesRoot, 'release.json'), `${JSON.stringify({ version: packageJson.version, platform: 'windows-x64', dataLocation: '%LOCALAPPDATA%\\SillyTavernManager' }, null, 2)}\n`, 'utf8');
+await writeFile(join(resourcesRoot, 'release.json'), `${JSON.stringify({ version: rootPackage.version, platform: 'windows-x64', dataLocation: '%LOCALAPPDATA%\\SillyTavernManager' }, null, 2)}\n`, 'utf8');
 
 const seaConfig = join(repositoryRoot, 'build', 'release', 'sea-config.json');
 await writeFile(seaConfig, `${JSON.stringify({ main: join(repositoryRoot, 'packaging', 'windows', 'launcher.cjs'), output: blob, disableExperimentalSEAWarning: true, useSnapshot: false, useCodeCache: false }, null, 2)}\n`, 'utf8');
