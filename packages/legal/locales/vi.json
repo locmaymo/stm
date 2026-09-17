@@ -1,0 +1,325 @@
+{
+  "meta": {
+    "effective": "2026-09-17",
+    "revision": "2026.09",
+    "author": "locmaymo",
+    "project": "SillyTavern Manager",
+    "repository": "https://github.com/locmaymo/stm",
+    "issues": "https://github.com/locmaymo/stm/issues",
+    "security": "https://github.com/locmaymo/stm/security/advisories",
+    "site": "https://stm.phamloc.top"
+  },
+  "labels": {
+    "effectiveFrom": "Có hiệu lực từ {date}",
+    "revisionLabel": "Bản {revision}",
+    "readingTime": "Đọc khoảng {minutes} phút"
+  },
+  "documents": {
+    "terms": {
+      "title": "Điều khoản sử dụng",
+      "short": "Điều khoản",
+      "summary": "SillyTavern Manager là phần mềm tự do do chính bạn cài và tự chạy. Điều khoản này nói rõ phần mềm làm gì, phần nào thuộc về bạn, và phần nào dự án không chịu trách nhiệm.",
+      "sections": {
+        "about": {
+          "heading": "Phần mềm này là gì",
+          "body": [
+            "SillyTavern Manager (gọi tắt là phần mềm, trình quản lý) là một bảng điều khiển mã nguồn mở dùng để cài đặt, chạy, sao lưu và theo dõi SillyTavern trên máy do bạn kiểm soát. Phần mềm được locmaymo phát hành theo Giấy phép Công cộng Affero GNU phiên bản 3.",
+            "Dự án không vận hành dịch vụ nào thay bạn. Không có tài khoản phải tạo, không có máy chủ nào giữ dữ liệu của bạn, và không có gì chạy nếu bạn không tự khởi động. Mọi bản sao đều chạy trên phần cứng do bạn sở hữu, thuê hoặc kiểm soát.",
+            "Điều khoản này áp dụng cho việc bạn sử dụng phần mềm, sử dụng trang web của dự án tại stm.phamloc.top, và sử dụng trang chuyển tiếp đăng nhập Cloudflare đặt tại đó. Điều khoản không thay thế giấy phép AGPL-3.0, vốn trao cho bạn quyền sử dụng, nghiên cứu, sửa đổi và phân phối lại mã nguồn. Khi điều khoản và giấy phép mâu thuẫn, giấy phép có hiệu lực cao hơn."
+          ]
+        },
+        "acceptance": {
+          "heading": "Chấp nhận điều khoản",
+          "body": [
+            "Việc cài đặt, chạy hoặc phân phối lại phần mềm đồng nghĩa với việc bạn chấp nhận điều khoản này cùng bản Tuyên bố miễn trừ trách nhiệm đi kèm. Nếu bạn không chấp nhận, xin đừng cài đặt hoặc chạy phần mềm.",
+            "Màn hình thiết lập lần đầu yêu cầu bạn xác nhận một lần, trước khi tạo mật khẩu quản trị. Toàn văn có sẵn ngay tại đó, và trong bảng điều khiển về sau, không cần kết nối internet.",
+            "Điều khoản có thể được sửa đổi khi phần mềm thay đổi. Việc tiếp tục sử dụng phần mềm sau một lần sửa đổi đồng nghĩa với việc bạn chấp nhận bản đang có hiệu lực khi đó."
+          ]
+        },
+        "independence": {
+          "heading": "Không liên kết với SillyTavern",
+          "body": [
+            "SillyTavern là phần mềm riêng biệt, do những người khác viết và duy trì. Dự án này không liên kết, không được chứng thực, không được tài trợ và không có quan hệ chính thức nào với dự án SillyTavern, các nhà phát triển hay cộng đồng của họ.",
+            "Trình quản lý lấy SillyTavern đúng theo cách bạn tự lấy: theo yêu cầu của bạn, nó clone hoặc tải kho mã công khai tại github.com/SillyTavern/SillyTavern về máy bạn. Nó không phân phối lại SillyTavern, không lưu trữ bản sao, và không thay đổi những gì thượng nguồn phát hành ngoài tệp cấu hình mà bạn chọn sửa.",
+            "SillyTavern được cấp phép bởi chính tác giả của nó theo điều khoản riêng, và việc bạn dùng SillyTavern chịu sự điều chỉnh của điều khoản đó, không phải của điều khoản này. Thượng nguồn có thể thay đổi, đổi tên, tái cấu trúc hoặc gỡ bỏ bất cứ thứ gì vào bất cứ lúc nào. Khi điều đó làm hỏng một bản cài đặt, đó không phải lỗi của phần mềm này, và dự án không có nghĩa vụ phải sửa.",
+            "Tên gọi SillyTavern chỉ được dùng ở đây để nói đúng sự thật rằng phần mềm này quản lý cái gì."
+          ]
+        },
+        "installation": {
+          "heading": "Bản cài đặt là của bạn, do bạn vận hành",
+          "body": [
+            "Bạn là quản trị viên. Bạn chọn nơi phần mềm chạy, ai được truy cập, cài phiên bản SillyTavern nào, khi nào sao lưu và khi nào phục hồi.",
+            "Bạn chịu trách nhiệm về an toàn của máy, về độ mạnh và tính bí mật của những mật khẩu bạn đặt, về việc cập nhật bản vá cho hệ điều hành và Node.js, và về mọi hành vi của bất kỳ ai bạn cho phép truy cập.",
+            "Mặc định, SillyTavern chỉ mở trong phạm vi máy cục bộ. Mọi thứ mở rộng phạm vi đó — công tắc mạng nội bộ, cổng truy cập, Cloudflare Tunnel, reverse proxy, nền tảng lưu trữ — đều là hành động bạn chủ động thực hiện, và mức phơi bày mà nó tạo ra là điều bạn tự chấp nhận và tự quản lý.",
+            "Việc mở ra mạng luôn kèm rủi ro mà không mật khẩu nào loại bỏ hoàn toàn. Đừng mở ra ngoài một bản cài đặt đang giữ dữ liệu mà bạn không thể chấp nhận mất hoặc lộ."
+          ]
+        },
+        "content": {
+          "heading": "Nội dung của bạn và cách bạn dùng",
+          "body": [
+            "Nhân vật, persona, prompt, đoạn chat, hình ảnh, thiết lập và API key đều là của bạn. Bạn tạo ra chúng, chúng nằm trên máy bạn, và chúng không bao giờ được gửi về dự án. Dự án không thể nhìn thấy, không kiểm duyệt và không chịu trách nhiệm về chúng.",
+            "Những gì bạn viết, những gì bạn yêu cầu mô hình tạo ra, và những gì mô hình trả lời hoàn toàn thuộc trách nhiệm của bạn. Phần mềm tự nó không tạo ra nội dung nào: nó khởi chạy một chương trình bạn chọn, chương trình đó gọi tới các dịch vụ bạn chọn, bằng thông tin xác thực bạn cung cấp.",
+            "Bạn phải sử dụng phần mềm theo đúng pháp luật áp dụng với bạn, theo điều khoản của mọi nhà cung cấp mô hình và dịch vụ bạn kết nối, và tôn trọng quyền của người khác. Bạn không được dùng phần mềm để tạo ra hoặc phát tán nội dung trái pháp luật tại nơi bạn ở.",
+            "Dự án không lưu trữ, không truyền tải, không cất giữ, không lập chỉ mục và không phân phối bất cứ nội dung nào bạn tạo ra bằng phần mềm. Không có gì ở đây để dự án gỡ xuống, và cũng không có cơ chế kiểm duyệt hay báo cáo nào để dự án xử lý."
+          ]
+        },
+        "services": {
+          "heading": "Dịch vụ và tài khoản của bên thứ ba",
+          "body": [
+            "Trình quản lý có thể kết nối tới những dịch vụ không thuộc về chúng tôi: Cloudflare cho tunnel, lưu trữ R2, Workers và số liệu tài khoản; GitHub cho bản phát hành và mã nguồn; npm cho việc cài phụ thuộc; và bất kỳ nhà cung cấp mô hình nào bạn cấu hình cho SillyTavern gọi tới.",
+            "Những kết nối đó dùng tài khoản, thông tin xác thực và hạn mức của bạn. Điều khoản, giá và chính sách riêng tư của từng nhà cung cấp áp dụng cho chúng, và bạn nên đọc. Dự án không phải một bên trong quan hệ giữa bạn và bất kỳ nhà cung cấp nào.",
+            "Dung lượng lưu trữ, băng thông, số thao tác, tunnel và lượt gọi mô hình đều có thể tốn tiền. Mọi khoản phí nhà cung cấp tính cho bạn đều do bạn trả — kể cả khoản phát sinh vì một bản sao lưu lớn hơn, dày hơn hay nhiều hơn bạn tưởng, vì cấu hình sai, hoặc vì một lỗi của phần mềm này. Hãy tự đặt hạn mức và cảnh báo trong bảng điều khiển của nhà cung cấp.",
+            "Đăng nhập Cloudflare sẽ tạo tài nguyên bên trong chính tài khoản Cloudflare của bạn: một bucket, và tuỳ chọn thêm một Worker. Chúng vẫn thuộc về bạn, vẫn còn sau khi bạn ngắt kết nối, và bạn có thể tự xoá bất cứ lúc nào."
+          ]
+        },
+        "backups": {
+          "heading": "Sao lưu là công cụ, không phải bảo đảm",
+          "body": [
+            "Sao lưu và phục hồi được cung cấp để giúp bạn, không kèm lời hứa nào rằng một bản sao lưu sẽ thành công, rằng một tệp lưu trữ là đầy đủ, rằng nó vẫn đọc được bởi phiên bản tương lai, hay rằng một lần phục hồi sẽ tái tạo đúng trạng thái bạn mong đợi.",
+            "Một bản sao lưu chưa bao giờ được phục hồi thử thì chưa phải là bản sao lưu. Hãy thử phục hồi, giữ ít nhất một bản sao không do trình quản lý tạo ra, và giữ ít nhất một bản sao ở nơi trình quản lý không với tới được.",
+            "Phục hồi là ghi đè dữ liệu. Trình quản lý chụp một bản an toàn trước và xem trước tệp lưu trữ trước khi ghi, nhưng việc chọn đúng tệp và đúng chế độ là trách nhiệm của bạn."
+          ]
+        },
+        "telemetry": {
+          "heading": "Số liệu sử dụng",
+          "body": [
+            "Phần mềm gửi về dự án một bản tóm tắt nhỏ, nằm trong danh sách cho phép, về mức độ được sử dụng: nền tảng, phiên bản ứng dụng, và với mỗi lượt gọi mô hình là nhà cung cấp, tên mô hình, tên máy chủ điểm cuối, số token, mã trạng thái và thời lượng.",
+            "Phần mềm không bao giờ gửi prompt, đoạn chat, câu trả lời của mô hình, API key, tên tệp, đường dẫn tệp, địa chỉ IP hay chuỗi truy vấn URL. Đây là cách một dự án miễn phí biết được cần tiếp tục hỗ trợ nền tảng, phiên bản và nhà cung cấp nào.",
+            "Chấp nhận điều khoản này bao gồm chấp nhận bản tóm tắt đó. Thông báo quyền riêng tư liệt kê đầy đủ những gì được gửi, những gì không, và cách tắt hẳn việc gửi."
+          ]
+        },
+        "availability": {
+          "heading": "Tính sẵn có, cập nhật và hồi kết",
+          "body": [
+            "Phần mềm được phát hành đúng như nó có, vào lúc nó được phát hành. Không có lịch phát hành, không có cam kết hỗ trợ, không có mức dịch vụ, và không có bảo đảm rằng một phiên bản sẽ tiếp tục chạy được, rằng một tính năng sẽ được giữ lại, hay rằng dự án sẽ còn tiếp tục.",
+            "Trang web của dự án, trang chuyển tiếp đăng nhập Cloudflare và máy chủ nhận số liệu chỉ là tiện ích. Chúng có thể thay đổi, chuyển đi hoặc ngừng hoạt động mà không báo trước. Một bản cài đặt vẫn chạy bình thường khi không có chúng, trừ việc đăng nhập Cloudflare qua OAuth client của dự án thì cần trang chuyển tiếp — và bạn hoàn toàn có thể đăng ký client riêng rồi tự chạy trang chuyển tiếp của mình, kho mã có hướng dẫn."
+          ]
+        },
+        "licence": {
+          "heading": "Giấy phép và mã nguồn",
+          "body": [
+            "Phần mềm được cấp phép theo Giấy phép Công cộng Affero GNU phiên bản 3 (AGPL-3.0-only). Toàn bộ mã nguồn tương ứng được công bố tại github.com/locmaymo/stm.",
+            "Không điều nào trong điều khoản này hạn chế, từ bỏ hay thêm điều kiện vào các quyền mà AGPL-3.0 trao cho bạn. Nếu bạn chạy một bản đã sửa đổi và cho người khác dùng qua mạng, giấy phép buộc bạn phải cung cấp mã nguồn bản đó cho họ.",
+            "Các thành phần của bên thứ ba giữ giấy phép riêng của chúng, được liệt kê trong phần thông báo bên thứ ba của dự án. Logo và hình hoạ không thuộc phạm vi AGPL-3.0; xem mục Thông báo."
+          ]
+        },
+        "changes": {
+          "heading": "Thay đổi điều khoản",
+          "body": [
+            "Điều khoản thay đổi cùng với phần mềm. Bản đang có hiệu lực luôn đi kèm phần mềm và được công bố tại stm.phamloc.top/terms, kèm ngày bắt đầu hiệu lực.",
+            "Những thay đổi mang tính nội dung sẽ được ghi trong ghi chú phát hành. Nếu bạn không chấp nhận bản mới, hãy ngừng sử dụng phần mềm; các quyền mà AGPL-3.0 đã trao cho bạn đối với mã nguồn không bị ảnh hưởng."
+          ]
+        },
+        "law": {
+          "heading": "Luật áp dụng",
+          "body": [
+            "Điều khoản này chịu sự điều chỉnh của pháp luật nước Cộng hoà xã hội chủ nghĩa Việt Nam, không áp dụng các quy tắc xung đột pháp luật. Mọi tranh chấp không thể giải quyết bằng thương lượng sẽ được đưa ra toà án có thẩm quyền tại Việt Nam.",
+            "Nếu một điều khoản bị coi là không thể thi hành, phần còn lại vẫn có hiệu lực, và điều khoản đó được hiểu theo nghĩa hẹp nhất đủ để có giá trị.",
+            "Các quyền bảo vệ người tiêu dùng bắt buộc mà pháp luật nơi bạn sinh sống trao cho bạn không bị điều khoản này ảnh hưởng."
+          ]
+        },
+        "contact": {
+          "heading": "Liên hệ",
+          "body": [
+            "Thắc mắc, yêu cầu về giấy phép, khiếu nại và thông báo pháp lý xin gửi tới trang theo dõi vấn đề của dự án tại github.com/locmaymo/stm/issues.",
+            "Nghi vấn về lỗ hổng bảo mật xin báo riêng qua mục security advisories của GitHub trên cùng kho mã, thay vì mở một vấn đề công khai.",
+            "Dự án do một người duy trì trong thời gian rảnh. Không bảo đảm sẽ có hồi đáp, và không điều nào ở đây tạo ra nghĩa vụ phải trả lời."
+          ]
+        }
+      }
+    },
+    "disclaimer": {
+      "title": "Tuyên bố miễn trừ trách nhiệm",
+      "short": "Miễn trừ trách nhiệm",
+      "summary": "Phần mềm này không kèm bảo hành, không liên kết với bất kỳ bên nào nó kết nối tới, và không chịu trách nhiệm về cách bạn dùng nó hay về những gì xảy ra trên máy bạn.",
+      "sections": {
+        "warranty": {
+          "heading": "Không bảo hành",
+          "body": [
+            "Phần mềm được cung cấp nguyên trạng và theo mức sẵn có, không kèm bảo đảm dưới bất kỳ hình thức nào, dù minh thị hay ngụ ý — bao gồm nhưng không giới hạn ở bảo đảm về khả năng thương mại, sự phù hợp cho một mục đích cụ thể, quyền sở hữu và không xâm phạm quyền của bên khác — ở mức tối đa pháp luật cho phép.",
+            "Dự án không bảo đảm rằng phần mềm sẽ chạy liên tục, đúng hạn, an toàn hay không có lỗi, rằng nó chạy được trên hệ thống của bạn, hay rằng các lỗi sẽ được sửa. Không lời khuyên hay thông tin nào nhận được từ dự án, tài liệu hoặc cộng đồng của dự án tạo ra bất kỳ bảo đảm nào ngoài những gì nêu ở đây.",
+            "Mục này diễn đạt lại bằng lời thông thường phần miễn trừ bảo hành tại mục 15 và 16 của Giấy phép Công cộng Affero GNU phiên bản 3, giấy phép điều chỉnh phần mềm này."
+          ]
+        },
+        "affiliation": {
+          "heading": "Không liên kết, không chứng thực",
+          "body": [
+            "Dự án này độc lập. Dự án không liên kết, không được chứng thực, không được tài trợ, không được chứng nhận và không có quan hệ nào với dự án SillyTavern hay những người đóng góp cho nó, với Cloudflare, Inc., GitHub, Inc., Docker, Inc., npm, Inc., Microsoft, Google, OpenAI, Anthropic, hay bất kỳ nhà cung cấp mô hình, nền tảng lưu trữ hoặc dịch vụ nào mà phần mềm có thể trỏ tới.",
+            "Tên sản phẩm, logo và nhãn hiệu thuộc về chủ sở hữu của chúng và chỉ xuất hiện để nhận diện sản phẩm tại nơi phần mềm này làm việc cùng chúng. Việc sử dụng đó mang tính chỉ danh và không hàm ý bất kỳ mối quan hệ nào.",
+            "Hình hoạ SillyTavern Vietnam (STVN) được dùng làm nhãn riêng của dự án này với sự cho phép. Dự án là một tác phẩm tách biệt với bất kỳ cộng đồng nào mà nó mượn nhãn, và chỉ đại diện cho chính nó."
+          ]
+        },
+        "liability": {
+          "heading": "Giới hạn trách nhiệm",
+          "body": [
+            "Ở mức tối đa pháp luật cho phép, cả tác giả lẫn người đóng góp đều không chịu trách nhiệm về bất kỳ thiệt hại trực tiếp, gián tiếp, ngẫu nhiên, đặc biệt, mang tính điển hình, hệ quả hay trừng phạt nào, cũng như về bất kỳ tổn thất dữ liệu, lợi nhuận, doanh thu, uy tín, thời gian hay cơ hội nào phát sinh từ hoặc liên quan tới phần mềm, tài liệu, trang web của nó, hay việc không thể sử dụng bất kỳ thứ nào trong số đó — kể cả khi đã được báo trước rằng thiệt hại như vậy có thể xảy ra.",
+            "Điều này bao gồm nhưng không giới hạn ở: mất hoặc hỏng đoạn chat, nhân vật, hồ sơ dữ liệu hay bản sao lưu; một lần phục hồi ghi đè mất thứ gì đó; một bản cài đặt hỏng vì cập nhật, vì thay đổi từ thượng nguồn hay vì một gói phụ thuộc; truy cập trái phép đi qua một cổng mà chính bạn đã mở; các khoản phí Cloudflare hay nhà cung cấp khác tính cho bạn; và mọi thứ do một mô hình tạo ra.",
+            "Ở nơi pháp luật không cho phép loại trừ một trách nhiệm, trách nhiệm đó được giới hạn ở số tiền bạn đã trả cho dự án để có phần mềm, tức là không đồng nào."
+          ]
+        },
+        "responsibility": {
+          "heading": "Bạn dùng, bạn chịu trách nhiệm",
+          "body": [
+            "Bạn quyết định cài gì, kết nối gì, mở ra những gì và tạo ra những gì. Các quyết định đó, cùng hệ quả của chúng, chỉ thuộc về bạn.",
+            "Phần mềm là một công cụ, không có quan điểm gì về việc bạn dùng nó làm gì. Nó không lọc, không xếp hạng, không kiểm duyệt và không ghi lại nội dung, còn dự án thì không có cách nào biết một bản cài đặt được dùng vào việc gì.",
+            "Bạn phải tuân thủ pháp luật áp dụng với bạn và điều khoản của các dịch vụ bạn kết nối. Một hành vi trái pháp luật tại nơi bạn ở thì vẫn trái pháp luật, bất kể phần mềm này khiến nó tiện đến đâu."
+          ]
+        },
+        "generated": {
+          "heading": "Về nội dung do mô hình tạo ra",
+          "body": [
+            "SillyTavern làm việc với các mô hình ngôn ngữ. Những gì một mô hình tạo ra là văn bản do một hệ thống thống kê sinh ra: không phải sự thật, không phải lời khuyên, và không phải quan điểm của dự án này.",
+            "Đừng dựa vào văn bản do mô hình tạo ra để đưa ra quyết định về y tế, pháp lý, tài chính, tâm lý hay an toàn. Không nội dung nào sinh ra qua phần mềm này là tư vấn chuyên môn, và việc sử dụng nó không tạo ra bất kỳ quan hệ chăm sóc nào.",
+            "Mô hình có thể sai, có thể bịa ra nguồn dẫn, và có thể tạo ra thứ bạn không yêu cầu và không mong muốn. Dự án không kiểm soát và cũng không tán thành bất kỳ nội dung nào trong số đó."
+          ]
+        },
+        "dataloss": {
+          "heading": "Mất dữ liệu",
+          "body": [
+            "Dữ liệu trên máy tính mất đi vì nhiều lý do: hỏng ổ đĩa, mất điện, đầy ổ, lỗi hệ thống tệp, một lần ghi bị ngắt giữa chừng, một cú nhấp nhầm, mã độc tống tiền, hoặc một lỗi trong chính phần mềm này. Bất kỳ nguyên nhân nào cũng có thể huỷ hoại thư mục dữ liệu SillyTavern, tệp sao lưu, hoặc cả hai.",
+            "Các bản sao lưu do phần mềm này tạo ra làm giảm rủi ro đó chứ không loại bỏ nó. Hãy giữ một bản sao độc lập cho những gì bạn không thể chấp nhận mất, và hãy kiểm tra rằng bạn phục hồi được nó."
+          ]
+        },
+        "security": {
+          "heading": "Bảo mật",
+          "body": [
+            "Phần mềm có sự cẩn trọng hợp lý: bảng quản trị không bao giờ được mở ra qua cổng truy cập, cổng truy cập yêu cầu mã và tự khoá sau nhiều lần sai, các bí mật được ghi vào tệp chỉ người dùng của bạn đọc được, và một lần đăng nhập Cloudflare lưu refresh token thay vì khoá dài hạn.",
+            "Cẩn trọng hợp lý không phải là bảo đảm. Không phần mềm nào không có lỗi, không có phần nào ở đây được kiểm toán độc lập, và không có tuyên bố an toàn nào được đưa ra hay hàm ý.",
+            "Chạy một bản cài đặt ở nơi người khác có thể truy cập là một quyết định có hệ quả, và quyết định đó là của bạn."
+          ]
+        },
+        "indemnity": {
+          "heading": "Bồi hoàn",
+          "body": [
+            "Bạn đồng ý bảo vệ, bồi hoàn và giữ cho tác giả cùng những người đóng góp không phải chịu bất kỳ khiếu nại, yêu cầu, tổn thất, trách nhiệm hay chi phí nào — bao gồm cả chi phí pháp lý hợp lý — phát sinh từ việc bạn sử dụng phần mềm, từ nội dung bạn tạo ra, sinh ra hoặc phát tán bằng phần mềm, hoặc từ việc bạn vi phạm điều khoản này, vi phạm pháp luật, hay xâm phạm quyền của bên thứ ba."
+          ]
+        }
+      }
+    },
+    "privacy": {
+      "title": "Thông báo quyền riêng tư",
+      "short": "Quyền riêng tư",
+      "summary": "Không tài khoản, không đám mây, và dự án không giữ bản sao dữ liệu nào của bạn. Chỉ một bản tóm tắt sử dụng nhỏ được gửi đi, và bạn có thể tắt nó.",
+      "sections": {
+        "summary": {
+          "heading": "Nói ngắn gọn",
+          "body": [
+            "Không có tài khoản, không có đám mây, và dự án không giữ bản sao dữ liệu nào của bạn. Đoạn chat, nhân vật, prompt, thiết lập, bản sao lưu và API key đều nằm trên máy do bạn kiểm soát.",
+            "Phần mềm gửi về dự án đúng một thứ: một bản tóm tắt sử dụng nhỏ nằm trong danh sách cho phép, mô tả bên dưới, không chứa bất cứ điều gì bạn viết và không chứa gì nhận dạng được bạn."
+          ]
+        },
+        "local": {
+          "heading": "Những gì ở lại trên máy bạn",
+          "body": [
+            "Toàn bộ những gì SillyTavern giữ: đoạn chat, nhân vật, persona, prompt, world info, hình ảnh, tiện ích mở rộng và thiết lập.",
+            "Toàn bộ những gì trình quản lý giữ: tệp sao lưu, hồ sơ dữ liệu, mã băm mật khẩu quản trị, token phiên, nhật ký, số liệu sử dụng, và refresh token Cloudflare nếu có.",
+            "Thư mục dữ liệu nằm ngoài thư mục ứng dụng, nên việc thay ứng dụng không bao giờ đụng tới nó. Không thứ gì trong đó được gửi về dự án."
+          ]
+        },
+        "sent": {
+          "heading": "Những gì được gửi về dự án",
+          "body": [
+            "Một lần cho mỗi bản cài đặt: một mã định danh cài đặt ngẫu nhiên, sinh ra trên máy bạn và không gắn với bất cứ thứ gì khác.",
+            "Kèm mỗi lô dữ liệu: nền tảng (Windows, Linux, macOS, Termux, Docker hoặc không xác định) và phiên bản ứng dụng.",
+            "Với mỗi lượt gọi mô hình mà SillyTavern thực hiện: thời điểm, tên nhà cung cấp, định dạng API hoàn thành, tên mô hình, tên máy chủ điểm cuối, có dùng truyền theo luồng hay không, thiết lập token tối đa, số token đầu vào, đầu ra và tổng cộng, số token đọc và ghi bộ nhớ đệm, số token suy luận, mã trạng thái HTTP, và thời lượng tính bằng mili giây.",
+            "Đó là toàn bộ danh sách. Danh sách cho phép nằm trong mã nguồn, tại packages/instrumentation và packages/telemetry, và bạn có thể đọc nó."
+          ]
+        },
+        "never": {
+          "heading": "Những gì không bao giờ được gửi",
+          "body": [
+            "Prompt, tin nhắn, đoạn chat, thẻ nhân vật, persona, world info, câu trả lời của mô hình, nội dung yêu cầu và nội dung phản hồi.",
+            "API key, header xác thực, cookie, token phiên và mật khẩu.",
+            "Tên tệp, đường dẫn tệp, nội dung thư mục, tệp sao lưu và mọi thứ bên trong chúng.",
+            "Địa chỉ IP, chuỗi truy vấn URL, tên máy của bạn, tên người dùng, địa chỉ e-mail, và mọi thứ khác có thể nhận dạng bạn."
+          ]
+        },
+        "howsent": {
+          "heading": "Gửi bằng cách nào, và tắt ra sao",
+          "body": [
+            "Các sự kiện được ghi nối vào một tệp hộp gửi cục bộ rồi gửi đi bất đồng bộ, có ký bằng khoá riêng của bản cài đặt đó. Máy chủ nhận nếu ngừng hoạt động cũng không bao giờ làm nghẽn SillyTavern; hộp gửi được cắt bớt và các mục trong đó hết hạn sau 90 ngày.",
+            "Để dừng hẳn việc gửi, hãy đặt STM_TELEMETRY_ENDPOINT thành giá trị rỗng trong tệp .env hoặc trong biến môi trường rồi khởi động lại trình quản lý. Sau đó không gì rời khỏi máy nữa.",
+            "Đây là phần mềm tự do: bạn cũng có thể đọc mã thu thập, sửa nó, và tự dựng bản của mình."
+          ]
+        },
+        "cloudflare": {
+          "heading": "Đăng nhập Cloudflare và sao lưu R2",
+          "body": [
+            "Nếu bạn kết nối Cloudflare, việc đăng nhập là một phiên OAuth chuẩn có PKCE trên chính máy chủ của Cloudflare. Dự án không bao giờ nhìn thấy mật khẩu Cloudflare của bạn.",
+            "Chỉ refresh token được lưu, trong một tệp trên máy bạn mà chỉ người dùng của bạn đọc được. Access token và khoá Worker đều ngắn hạn và chỉ nằm trong bộ nhớ.",
+            "Bản sao lưu được tải lên từ máy bạn tới một bucket trong chính tài khoản Cloudflare của bạn. Chúng không đi qua máy chủ nào của dự án. Những gì Cloudflare lưu và ghi nhật ký thuộc phạm vi chính sách riêng tư của Cloudflare.",
+            "Ngắt kết nối sẽ xoá khoá Worker của bản cài đặt này và thu hồi phiên đăng nhập. Bạn cũng có thể tự thu hồi trong hồ sơ Cloudflare của mình, tại mục Manage OAuth authorizations. Bucket và nội dung bên trong vẫn là của bạn."
+          ]
+        },
+        "relay": {
+          "heading": "Trang chuyển tiếp đăng nhập tại stm.phamloc.top",
+          "body": [
+            "Cloudflare chỉ đưa trình duyệt quay lại một địa chỉ đã đăng ký trên OAuth client, khớp chính xác, trong khi một trình quản lý có thể mở ở bất kỳ địa chỉ nào. Vì vậy địa chỉ đăng ký là một trang tĩnh trên site này, và nó chuyển trình duyệt về đúng trình quản lý đã khởi tạo phiên đăng nhập.",
+            "Trang đó không lưu gì, không đặt cookie và không chạy công cụ phân tích nào. Mã uỷ quyền mà nó chuyển tiếp là vô dụng nếu thiếu bộ xác minh PKCE, và bộ xác minh này không bao giờ rời khỏi trình quản lý của bạn.",
+            "Trang chỉ tự động chuyển tiếp tới các địa chỉ loopback, mạng riêng, .local, trycloudflare.com và ModelScope. Với mọi địa chỉ khác, nó hiển thị đích đến và chờ bạn bấm, nên không thể bị lợi dụng để âm thầm chuyển hướng sang trang khác."
+          ]
+        },
+        "website": {
+          "heading": "Trang web",
+          "body": [
+            "Các trang tại stm.phamloc.top là tệp tĩnh phục vụ từ mạng lưới Cloudflare. Không có tài khoản, không có đăng nhập, không có pixel theo dõi, không có quảng cáo và không có mã phân tích của bên thứ ba.",
+            "Cloudflare, với tư cách bên lưu trữ, xử lý siêu dữ liệu của yêu cầu như địa chỉ IP và user agent nhằm phục vụ và bảo vệ trang, theo chính sách riêng tư của họ.",
+            "Lựa chọn ngôn ngữ và giao diện sáng tối của bạn, nếu bạn đổi, được nhớ ngay trong trình duyệt của bạn và không gửi đi đâu cả. Các trang có thể dẫn tới GitHub và npm; bấm vào một liên kết là bạn sang trang của họ, theo chính sách của họ."
+          ]
+        },
+        "rights": {
+          "heading": "Lựa chọn và quyền của bạn",
+          "body": [
+            "Vì dự án không giữ dữ liệu cá nhân nào về bạn, thường sẽ không có gì để truy cập, sửa, xuất hay xoá. Nếu bạn cho rằng một mã định danh cài đặt hay một bản ghi số liệu nào đó liên quan tới mình, hãy viết vào trang theo dõi vấn đề và nó sẽ được xoá.",
+            "Bạn có thể tắt số liệu sử dụng bằng thiết lập nêu trên, ngắt kết nối Cloudflare bất cứ lúc nào, và xoá thư mục dữ liệu để bỏ đi mọi thứ phần mềm từng ghi ra."
+          ]
+        },
+        "changes": {
+          "heading": "Thay đổi thông báo này",
+          "body": [
+            "Thông báo này thay đổi khi những gì phần mềm gửi đi thay đổi. Bản đang có hiệu lực luôn đi kèm phần mềm và được công bố tại stm.phamloc.top/privacy, kèm ngày bắt đầu hiệu lực."
+          ]
+        }
+      }
+    },
+    "notices": {
+      "title": "Thông báo",
+      "short": "Thông báo",
+      "summary": "Giấy phép phát hành phần mềm, các thành phần của bên thứ ba mà nó dùng, và những nhãn hiệu nó nhắc tới.",
+      "sections": {
+        "licence": {
+          "heading": "Giấy phép",
+          "body": [
+            "Bản quyền © 2026 locmaymo.",
+            "SillyTavern Manager là phần mềm tự do: bạn có thể phân phối lại và sửa đổi theo điều khoản của Giấy phép Công cộng Affero GNU phiên bản 3 (AGPL-3.0-only) do Free Software Foundation công bố.",
+            "Phần mềm được phân phối với mong muốn nó có ích, nhưng không kèm bất kỳ bảo đảm nào; thậm chí không có bảo đảm ngụ ý về khả năng thương mại hay sự phù hợp cho một mục đích cụ thể. Xem giấy phép để biết chi tiết.",
+            "Giấy phép áp dụng cho mọi phiên bản của dự án, bao gồm tất cả commit và bản phát hành công bố trước khi tệp giấy phép được thêm vào."
+          ]
+        },
+        "components": {
+          "heading": "Thành phần của bên thứ ba",
+          "body": [
+            "Các thành phần trong packages/ui/src/shadcn/ được chuyển thể từ các khối và thành phần trong registry của shadcn/ui, cấp phép theo Giấy phép MIT, bản quyền © 2023 shadcn.",
+            "Trình quản lý đóng gói kèm qrcode-generator, cấp phép theo Giấy phép MIT, bản quyền © 2009 Kazuhiko Arase. QR Code là nhãn hiệu đã đăng ký của DENSO WAVE INCORPORATED.",
+            "Các gói phụ thuộc còn lại giữ giấy phép riêng của chúng, như khai báo trong chính gói đó. Danh sách đầy đủ đi kèm mã nguồn tại THIRD_PARTY_NOTICES.md."
+          ]
+        },
+        "trademarks": {
+          "heading": "Nhãn hiệu",
+          "body": [
+            "SillyTavern là tên của một dự án riêng biệt và thuộc về tác giả của nó. Cloudflare và logo Cloudflare là nhãn hiệu của Cloudflare, Inc. Docker và logo Docker là nhãn hiệu của Docker, Inc. GitHub và logo GitHub là nhãn hiệu của GitHub, Inc. Node.js là nhãn hiệu của OpenJS Foundation.",
+            "Mỗi cái tên hay hình vẽ ở đây chỉ nhằm nhận diện sản phẩm tại nơi phần mềm này làm việc cùng nó. Không bên nào trong số đó chứng thực, tài trợ hay liên kết với dự án, và cũng không có hàm ý nào như vậy."
+          ]
+        },
+        "artwork": {
+          "heading": "Hình hoạ",
+          "body": [
+            "Biểu tượng ứng dụng, favicon và nhãn thương hiệu trong ứng dụng được chỉnh kích thước từ logo SillyTavern Vietnam (STVN), dùng làm nhãn riêng của dự án này với sự cho phép.",
+            "Các nhãn dịch vụ vẽ trong packages/ui/src/brand.tsx là bản vẽ lại đơn giản hoá của logo Cloudflare, Cloudflare R2, Docker và GitHub, chỉ dùng để nhận diện các dịch vụ đó trong giao diện.",
+            "Logo và hình hoạ không thuộc phạm vi AGPL-3.0 và không được cấp phép để dùng lại kèm theo nó."
+          ]
+        }
+      }
+    }
+  }
+}
