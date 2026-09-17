@@ -35,6 +35,16 @@ export function legalPage(locale, id) {
   const body = html`
 <div class="docs legal-page">
   <div class="shell docs-shell">
+    <header class="docs-head">
+      <p class="eyebrow">${icons.scale()}${s.legal.label}</p>
+      <h1>${document.title}</h1>
+      <p class="lede">${document.summary}</p>
+      <p class="legal-meta">
+        ${interpolate(bundle.labels.effectiveFrom, { date: formatDate(bundle.meta.effective, locale) })}
+        · ${interpolate(bundle.labels.revisionLabel, { revision: bundle.meta.revision })}
+        · ${interpolate(bundle.labels.readingTime, { minutes: readingMinutes(document) })}
+      </p>
+    </header>
     <nav class="docs-toc" aria-label="${s.legal.documents}">
       <p class="docs-toc-title">${s.legal.documents}</p>
       <ul>
@@ -46,16 +56,6 @@ export function legalPage(locale, id) {
       </ul>
     </nav>
     <article class="docs-body">
-      <header class="docs-head">
-        <p class="eyebrow">${icons.scale()}${s.legal.label}</p>
-        <h1>${document.title}</h1>
-        <p class="lede">${document.summary}</p>
-        <p class="legal-meta">
-          ${interpolate(bundle.labels.effectiveFrom, { date: formatDate(bundle.meta.effective, locale) })}
-          · ${interpolate(bundle.labels.revisionLabel, { revision: bundle.meta.revision })}
-          · ${interpolate(bundle.labels.readingTime, { minutes: readingMinutes(document) })}
-        </p>
-      </header>
       ${join(sections.map(([sectionId, section], index) => html`<section id="${sectionId}" class="legal-section">
         <h2><span class="legal-number" aria-hidden="true">${index + 1}.</span>${section.heading}</h2>
         ${join(section.body.map((paragraph) => html`<p>${text(paragraph)}</p>`))}

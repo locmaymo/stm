@@ -322,15 +322,31 @@ tbody tr:last-child td { border-bottom: 0; }
  * never a drawer, because a drawer is a thing to open before you can look.
  */
 .docs { padding-block: 32px 72px; }
-.docs-shell { display: grid; gap: 34px; align-items: start; }
-@media (min-width: 1000px) { .docs-shell { grid-template-columns: 16rem minmax(0, 1fr); gap: 48px; } }
+/* The title comes first on every width. The contents list is a column beside
+   the text on a wide screen and a block under the title on a narrow one -
+   never the first screenful, which is what it became when it shared the
+   article with the heading. */
+.docs-shell { display: grid; gap: 28px; align-items: start; grid-template-areas: "head" "toc" "body"; }
+@media (min-width: 1000px) {
+  .docs-shell {
+    grid-template-columns: 16rem minmax(0, 1fr);
+    grid-template-areas: "head head" "toc body";
+    column-gap: 48px;
+    row-gap: 34px;
+  }
+}
+.docs-shell > .docs-head { grid-area: head; }
+.docs-shell > .docs-toc { grid-area: toc; }
+.docs-shell > .docs-body { grid-area: body; }
 
 .docs-toc { font-size: 13.5px; }
 @media (min-width: 1000px) {
   .docs-toc { position: sticky; top: calc(var(--header-height) + 20px); max-height: calc(100dvh - var(--header-height) - 40px); overflow-y: auto; }
 }
 @media (max-width: 999px) {
-  .docs-toc { padding: 18px 20px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); }
+  /* Capped and scrolling, so a fourteen-entry list is a box to glance at
+     rather than a screenful to swipe past on the way to the first sentence. */
+  .docs-toc { max-height: 15rem; overflow-y: auto; padding: 18px 20px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); }
 }
 .docs-toc-title { margin: 0 0 12px; color: var(--muted-foreground); font-size: 11.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 .docs-toc ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 1px; }
@@ -340,10 +356,11 @@ tbody tr:last-child td { border-bottom: 0; }
 .docs-toc ul ul a { display: block; padding: 3px 10px; color: var(--muted-foreground); font-size: 13px; text-decoration: none; border-radius: 7px; }
 
 .docs-body { min-width: 0; max-width: var(--prose-width); }
-.docs-head { padding-bottom: 28px; margin-bottom: 4px; border-bottom: 1px solid var(--border); }
+.docs-head { padding-bottom: 26px; border-bottom: 1px solid var(--border); }
 .docs-head h1 { margin: 0 0 10px; font-size: clamp(30px, 5vw, 40px); line-height: 1.1; }
 
-.docs-section { padding-block: 34px 0; border-top: 0; }
+.docs-section { padding-block: 6px 0; border-top: 0; }
+.docs-section + .docs-section { padding-top: 34px; }
 .docs-section > h2 { display: flex; align-items: center; gap: 11px; margin: 0 0 14px; font-size: 24px; scroll-margin-top: calc(var(--header-height) + 16px); }
 .docs-section > h2 svg { width: 21px; height: 21px; flex-shrink: 0; color: var(--primary); }
 .docs-sub { margin-top: 30px; padding-top: 4px; }

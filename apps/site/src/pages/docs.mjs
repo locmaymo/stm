@@ -25,6 +25,10 @@ export function docsPage(locale) {
   const body = html`
 <div class="docs">
   <div class="shell docs-shell">
+    <header class="docs-head">
+      <h1>${c.heading}</h1>
+      <p class="lede">${c.lede}</p>
+    </header>
     <nav class="docs-toc" aria-label="${c.tocLabel}">
       <p class="docs-toc-title">${c.tocLabel}</p>
       <ul>
@@ -35,10 +39,6 @@ export function docsPage(locale) {
       </ul>
     </nav>
     <article class="docs-body">
-      <header class="docs-head">
-        <h1>${c.heading}</h1>
-        <p class="lede">${c.lede}</p>
-      </header>
       ${join(c.sections.map((section) => html`<section id="${section.id}" class="docs-section">
         <h2>${iconOf(section.icon)}${section.title}</h2>
         ${blocks(section.blocks, locale, root)}
