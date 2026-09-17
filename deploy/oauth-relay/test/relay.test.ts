@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { encodeState } from '../../../packages/cloudflare/src/oauth.js';
 // @ts-expect-error The relay is plain browser JavaScript with no type declarations.
-import { decide, isUsualManagerHost, originFromState } from '../public/relay.js';
+import { decide, isUsualManagerHost, originFromState } from '../../../apps/site/public/relay.js';
 
 test('the relay reads the origin the manager put in state', () => {
   assert.equal(originFromState(encodeState('http://127.0.0.1:7860/some/page')), 'http://127.0.0.1:7860');
