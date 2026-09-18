@@ -28,7 +28,7 @@ import { failures, logCatalog, translator, type Fail, type Translate } from './i
 import { browserEnvironment, browserStorage, readPreferences, savePreferences, type LocaleCode, type Preferences } from './preferences.js';
 import { authErrorKey } from './auth-error.js';
 import { DEFAULT_SILLYTAVERN_PORT, portRefusal } from './ports.js';
-import { readTunnelOfferDeclined, saveTunnelOfferDeclined, shouldOfferManagerTunnel } from './hosting.js';
+import { isThisMachine, readTunnelOfferDeclined, saveTunnelOfferDeclined, shouldOfferManagerTunnel } from './hosting.js';
 import { availableUpdate, readDismissedUpdate, saveDismissedUpdate } from './updates.js';
 import { apiFetch, onSessionExpired, resetSessionWatch } from './session.js';
 import type { AccessGatewayState, BackupManifest, ConfigDocument, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LogEntry, LogSourceFilter, MetricsBucket, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
@@ -750,6 +750,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     onStart={() => updateRuntime('/api/v1/process/start')}
     onStop={() => updateRuntime('/api/v1/process/stop')}
     onSetPassword={setAccessPassword}
+    onPublish={() => updateRuntime('/api/v1/tunnel', { mode: 'quick' })}
     onShowAddresses={() => { document.querySelector('[data-tour="remote-access"]')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}
     onOpenSettings={() => navigate('config')}
   />;
@@ -1054,7 +1055,7 @@ function Unavailable({ t, children }: { t: Translate; children: ReactNode }) {
 function RuntimeCard({
   t, fail, catalog, process, tunnel, security, sillyTavernPort, networkHost, installed, installing, active, dataBytes, profileName,
   version, onVersionChange, versions, onPendingInstallationId, csrfToken, onInstalling, onRemove,
-  onStart, onStop, onSetPassword, onShowAddresses, onOpenSettings,
+  onStart, onStop, onSetPassword, onPublish, onShowAddresses, onOpenSettings,
 }: {
   t: Translate; fail: Fail; catalog: Record<string, unknown>; process: ProcessState; tunnel: TunnelState;
   security: AccessGatewayState; sillyTavernPort: number; networkHost: string | null; installed: boolean; installing: boolean;
@@ -1064,10 +1065,16 @@ function RuntimeCard({
   onInstalling: (value: boolean) => void; onRemove: () => Promise<string | null>;
   onStart: () => Promise<void>; onStop: () => Promise<void>;
   onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>;
+  /** Turn the tunnel on, for a reader who has no address that reaches this machine. */
+  onPublish: () => Promise<void>;
   onShowAddresses: () => void;
   onOpenSettings: () => void;
 }) {
   const [stopAsked, setStopAsked] = useState(false);
+  // Asked for on the way to a link, not before: the PIN is what the tunnel
+  // needs, and it means something at the moment the door is about to open.
+  const [passcodeAsked, setPasscodeAsked] = useState(false);
+  const [publishing, setPublishing] = useState(false);
   const [askedVersion, setAskedVersion] = useState<string | null>(null);
   const [askedRemove, setAskedRemove] = useState(false);
   const [removing, setRemoving] = useState(false);
@@ -1178,7 +1185,7 @@ function RuntimeCard({
    * other origin, which the gateway has not been told to allow, and the frame
    * would come up blank with nothing on screen to explain why.
    */
-  const onThisMachine = window.location.hostname === '127.0.0.1' || window.location.hostname === 'localhost';
+  const onThisMachine = isThisMachine(window.location.hostname);
   const embedUrl = `http://${window.location.hostname}:${security.port}/`;
   const canEmbed = running && onThisMachine;
   // A frame kept loaded across a stop would come back to an error page.
@@ -1205,11 +1212,34 @@ function RuntimeCard({
     } catch { report(t('console.embedFailed')); } finally { setEmbedOpening(false); }
   };
 
-  const addresses = reachableAddresses(tunnel, security, networkHost ?? window.location.hostname, sillyTavernPort);
-  // There is always at least the loopback address.
-  const primary = addresses[0]!;
-  const otherCount = addresses.length - 1;
-  const openPrimary = () => { window.open(primary.url, '_blank', 'noopener,noreferrer'); };
+  const addresses = reachableAddresses(tunnel, security, networkHost ?? window.location.hostname, sillyTavernPort, onThisMachine);
+  /*
+   * The best address there is, or none at all.
+   *
+   * None is what a hosted console has before anything is published: the
+   * loopback address belongs to a container nobody can reach, the network
+   * address is off, and there is no tunnel yet. This used to fall back on the
+   * loopback address and offer it as the way in, which from the reader's
+   * browser is their own machine - a link that opens a connection refused.
+   */
+  const primary = addresses[0] ?? null;
+  const otherCount = Math.max(0, addresses.length - 1);
+  const openPrimary = () => { if (primary) window.open(primary.url, '_blank', 'noopener,noreferrer'); };
+  /*
+   * Give the reader a link to SillyTavern, doing whatever that takes.
+   *
+   * The tunnel publishes the gateway, and the gateway will not open without a
+   * PIN, so those are the two steps - asked for here, in that order, off one
+   * press. Telling somebody on a hosted studio that their only address is one
+   * they cannot use, and leaving them to find the switch, is how a console
+   * ends up looking broken.
+   */
+  const publish = async () => {
+    if (!security.passwordConfigured) { setPasscodeAsked(true); return; }
+    setPublishing(true);
+    try { await onPublish(); } finally { setPublishing(false); }
+  };
+  const waitingForLink = running && primary === null;
 
   return <>
     <Card className="runtime-card" data-tour="installation">
@@ -1220,7 +1250,9 @@ function RuntimeCard({
         </h2>
         <CardAction className="runtime-actions">
           {installed ? <>
-            <Button variant="outline" size="sm" disabled={!running} onClick={openPrimary}><ArrowUpRight />{t('console.openInTab')}</Button>
+            {waitingForLink
+              ? <Button variant="outline" size="sm" onClick={() => void publish()} disabled={publishing || tunnel.mode !== 'off'}><Globe2 />{publishing || tunnel.mode !== 'off' ? t('common.loading') : t('console.getLink')}</Button>
+              : <Button variant="outline" size="sm" disabled={!running || primary === null} onClick={openPrimary}><ArrowUpRight />{t('console.openInTab')}</Button>}
             {running
               ? <Button variant="destructive" size="sm" onClick={() => setStopAsked(true)} disabled={pending}><Square />{t('dashboard.stop')}</Button>
               : <Button size="sm" onClick={() => void run(onStart)} disabled={pending || installingNow}><Play />{pending ? t('common.loading') : t('dashboard.start')}</Button>}
@@ -1245,7 +1277,12 @@ function RuntimeCard({
               <span className="runtime-preview-cta"><Monitor aria-hidden="true" />{embedOpening ? t('common.loading') : embedMounted ? t('console.embedResume') : t('console.useItHere')}</span>
               <span className="runtime-preview-note">{embedMounted ? t('console.embedResumeHint') : t('console.useItHereHint')}</span>
             </button>
-            : running
+            : waitingForLink
+              ? <button type="button" className="runtime-preview-open" onClick={() => void publish()} disabled={publishing || tunnel.mode !== 'off'}>
+                <span className="runtime-preview-cta"><Globe2 aria-hidden="true" />{publishing || tunnel.mode !== 'off' ? t('console.linkStarting') : t('console.getLink')}</span>
+                <span className="runtime-preview-note">{t('console.getLinkHint')}</span>
+              </button>
+              : running
               ? <button type="button" className="runtime-preview-open" onClick={openPrimary}>
                 <span className="runtime-preview-cta"><ArrowUpRight aria-hidden="true" />{t('console.useItHere')}</span>
                 <span className="runtime-preview-note">{t('console.useItInTabHint')}</span>
@@ -1262,10 +1299,12 @@ function RuntimeCard({
           {running ? <div className="runtime-row">
             <dt>{t('console.addressLabel')}</dt>
             <dd>
-              <AddressLink t={t} href={primary.url}>
-                <span className="address-full">{primary.host}</span>
-                <span className="address-short">{shortenHost(primary.host)}</span>
-              </AddressLink>
+              {primary
+                ? <AddressLink t={t} href={primary.url}>
+                  <span className="address-full">{primary.host}</span>
+                  <span className="address-short">{shortenHost(primary.host)}</span>
+                </AddressLink>
+                : <span className="text-muted-foreground">{t('console.noAddressYet')}</span>}
               {otherCount > 0
                 ? <button type="button" className="runtime-shared" onClick={onShowAddresses}>{t('console.alsoOnline', { count: otherCount })}</button>
                 : null}
@@ -1340,7 +1379,7 @@ function RuntimeCard({
       </CardFooter> : null}
     </Card>
 
-    {embedMounted ? <EmbedStage t={t} open={embedOpen} url={embedUrl} openUrl={primary.url} onMinimize={() => setEmbedOpen(false)} onClose={() => { setEmbedOpen(false); setEmbedMounted(false); }} /> : null}
+    {embedMounted && primary ? <EmbedStage t={t} open={embedOpen} url={embedUrl} openUrl={primary.url} onMinimize={() => setEmbedOpen(false)} onClose={() => { setEmbedOpen(false); setEmbedMounted(false); }} /> : null}
 
     <ConfirmDialog
       open={stopAsked}
@@ -1360,6 +1399,20 @@ function RuntimeCard({
       confirmLabel={t('dashboard.install')}
       cancelLabel={t('common.cancel')}
       onConfirm={install}
+    />
+    <PasscodeDialog
+      t={t}
+      open={passcodeAsked}
+      onOpenChange={setPasscodeAsked}
+      note={null}
+      onSubmit={async (passcode, confirmPasscode) => {
+        const failure = await onSetPassword(passcode, confirmPasscode);
+        if (failure) return failure;
+        // The PIN was only ever the condition. Publishing is what was asked for.
+        setPublishing(true);
+        try { await onPublish(); } finally { setPublishing(false); }
+        return null;
+      }}
     />
     <ConfirmDialog
       open={askedRemove}
@@ -1426,6 +1479,11 @@ function AccessPanel({ t, process, tunnel, config, security, sillyTavernPort, in
   // already a boundary. Everything else goes through the gateway and its
   // password: the LAN address and the tunnel both point there.
   const local = localHost(sillyTavernPort);
+  // Whether the reader is on the machine this is running on. From anywhere else
+  // - another device on the Wi-Fi, a hosted studio, a forwarded port - the
+  // loopback address names the reader's own computer, so it is shown as what it
+  // is rather than offered as a link into a machine it was never going to reach.
+  const onThisMachine = isThisMachine(window.location.hostname);
   const lanHost = `${config?.networkHost ?? window.location.hostname ?? 'localhost'}:${security.port}`;
   const localUrl = `http://${local}`;
   const lanUrl = `http://${lanHost}`;
@@ -1496,7 +1554,7 @@ function AccessPanel({ t, process, tunnel, config, security, sillyTavernPort, in
         <div className="address-rows">
           <AddressRow t={t} label={t('dashboard.publicAddress')} url={tunnel.url} display={tunnel.url ?? ''} disabledHint={t('console.tunnelOffShort')} />
           <AddressRow t={t} label={t('console.lanAddress')} url={lan ? lanUrl : null} display={lanHost} disabledHint={t('console.lanOffShort')} />
-          <AddressRow t={t} label={t('console.local')} url={localUrl} display={local} />
+          <AddressRow t={t} label={t('console.local')} url={onThisMachine ? localUrl : null} display={local} disabledHint={t('console.localElsewhere')} />
         </div>
       </> : null}
       <ConfirmDialog

@@ -594,7 +594,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       // Before the config is written and before SillyTavern is started, so what
       // comes back is what gets configured and started rather than something
       // laid over a profile already in use.
-      if (activeProfile) await recoverEmptyProfile(activeProfile, r2, backups, jobs);
+      if (activeProfile) await recoverEmptyProfile(() => Promise.resolve(activeProfile), r2, backups, jobs);
       // Reading it first turns a missing config into the handled error below
       // rather than a fault during startup.
       const currentConfig = activeProfile ? await config.read(activeProfile, readyInstallation) : null;
@@ -1219,7 +1219,9 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
           // A first install on a machine that starts empty every time. If the
           // bucket holds what this machine used to have, it goes back now,
           // before SillyTavern is started on an empty profile.
-          await recoverEmptyProfile(await profiles.ensureDefault({ installationId: installation.id, runtimePath: installation.runtimePath }), r2, backups, jobs);
+          // The profile is made inside, so the slot is held before it exists
+          // and the scheduler cannot find it half-restored.
+          await recoverEmptyProfile(() => profiles.ensureDefault({ installationId: installation.id, runtimePath: installation.runtimePath }), r2, backups, jobs);
         }
         await runtime.cleanupLegacyRuntimeCopies?.(installation.id);
         // There is a profile now where a moment ago there was none, and on the
@@ -2211,21 +2213,41 @@ async function announceRecoverable(r2: R2Manager, logger: LogSink): Promise<void
   }
 }
 
-async function recoverEmptyProfile(profile: Profile, r2: R2Manager, backups: BackupStore, jobs: JobStore): Promise<void> {
-  const config = await r2.getConfig();
-  // Nowhere to recover from. On a machine that is wiped between runs this is
-  // the case where the R2 settings went with everything else, which is why the
-  // ones that survive - from the environment - are the ones that matter here.
-  if (!config.enabled || !config.configured) return;
-  const restored = await recoverProfileFromR2({
-    profile, r2, backups,
-    logger: (line) => jobs.append('backup', line),
-    restore: async (archivePath) => { await backups.restore(profile, archivePath, { mode: 'replace' }); },
-  });
-  // Nobody was watching while this ran. The card says it happened, and what
-  // came back, so the reader can tell a machine that recovered itself from one
-  // that never had anything.
-  if (restored) await r2.recordRecovery({ createdAt: restored.createdAt, fileCount: restored.fileCount });
+async function recoverEmptyProfile(settle: () => Promise<Profile>, r2: R2Manager, backups: BackupStore, jobs: JobStore): Promise<void> {
+  /*
+   * The backup slot is held from before the profile exists.
+   *
+   * Bringing a profile back takes a minute or two of downloading, and the
+   * scheduler ticks every minute. Without this it woke up in the middle of one,
+   * found a profile holding the four files that had arrived so far, and wrote
+   * that to the bucket as a recovery point - which is then the newest one
+   * there, and the one the next wiped machine would be given back. A backup of
+   * a profile caught mid-restore is worse than no backup: it is the shape of
+   * the reader's data with nothing in it.
+   *
+   * Reserved rather than queued: the restore inside this takes the slot itself,
+   * and waiting for a slot this already holds would wait forever.
+   */
+  const release = backups.reserve();
+  try {
+    const profile = await settle();
+    const config = await r2.getConfig();
+    // Nowhere to recover from. On a machine that is wiped between runs this is
+    // the case where the R2 settings went with everything else, which is why the
+    // ones that survive - from the environment - are the ones that matter here.
+    if (!config.enabled || !config.configured) return;
+    const restored = await recoverProfileFromR2({
+      profile, r2, backups,
+      logger: (line) => jobs.append('backup', line),
+      restore: async (archivePath) => { await backups.restore(profile, archivePath, { mode: 'replace' }); },
+    });
+    // Nobody was watching while this ran. The card says it happened, and says it
+    // of the recovery point rather than of the archive that carried it here:
+    // when the data was taken is what the reader is trying to work out.
+    if (restored) await r2.recordRecovery({ createdAt: restored.point.createdAt, fileCount: restored.manifest.fileCount });
+  } finally {
+    release();
+  }
 }
 
 function listen(server: Server, host: string, port: number): Promise<void> {
