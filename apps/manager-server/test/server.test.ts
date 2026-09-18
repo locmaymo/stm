@@ -11,6 +11,7 @@ import type { TunnelManager } from '../../../packages/tunnel/src/index.js';
 import { decodeState } from '../../../packages/cloudflare/src/index.js';
 import type { RuntimeManager } from '../../../packages/sillytavern-runtime/src/index.js';
 import type { ProcessSupervisor } from '../src/supervisor.js';
+import { SILLYTAVERN_PORT } from '../src/ports.js';
 
 async function createServer(options: {
   bootstrapPassword?: string;
@@ -249,7 +250,16 @@ test('SillyTavern can be moved to another port, but never onto one the manager h
   const put = (port: unknown): Promise<Response> => fetch(`${base}/api/v1/config/port`, { method: 'PUT', headers, body: JSON.stringify({ port }) });
 
   const before = await (await fetch(`${base}/api/v1/config/port`, { headers: { cookie: auth.cookie } })).json() as { port: number; reserved: { manager: number } };
-  assert.equal(before.port, 8000);
+  /*
+   * Not the preferred number, necessarily.
+   *
+   * A port this project only prefers steps aside when the machine already holds
+   * it, which is the whole point of `settlePort` - so pinning the number here
+   * made the test fail on any machine already running a SillyTavern. What the
+   * panel has to be told is the port in use, whichever it turned out to be.
+   */
+  assert.ok(before.port >= SILLYTAVERN_PORT && before.port < SILLYTAVERN_PORT + 64, `SillyTavern is on ${before.port}`);
+  assert.notEqual(before.port, manager.port);
   assert.equal(before.reserved.manager, manager.port, 'the panel is told which port the console itself holds');
 
   // The console answers on this one, so SillyTavern may not have it.
@@ -619,6 +629,47 @@ test('one password opens SillyTavern on any version, and nothing is shared befor
   assert.equal(state.host, '0.0.0.0');
   const allowed = await fetch(`${base}/api/v1/tunnel`, { method: 'PUT', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'quick' }) });
   assert.notEqual(allowed.status, 409);
+});
+
+test('sharing opens before SillyTavern does, because what is published is the door', async (t) => {
+  /*
+   * The tunnel publishes the access gateway, which is up from the moment the
+   * console is. Refusing to open it until SillyTavern answered made the public
+   * address depend on the one thing it was built not to depend on, and left
+   * somebody setting a machine up unable to do the two steps in the order that
+   * suited them - the switch was simply dead, with no way to find out why.
+   */
+  const root = await mkdtemp(join(tmpdir(), 'stm-share-early-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const stopped: ProcessState = { status: 'stopped', installationId: null, profileId: null, pid: null, startedAt: null, error: null };
+  const fakeSupervisor = { getState: () => stopped, restart: async () => stopped, start: async () => stopped, stop: async () => stopped, close: async () => undefined } as unknown as ProcessSupervisor;
+  const fakeRuntime = { listVersions: async () => [], listInstallations: async () => [], getActiveInstallation: async () => null, getInstallation: async () => null } as unknown as RuntimeManager;
+  const manager = await startManagerServer({ host: '127.0.0.1', port: 0, paths, env: { STM_ADMIN_PASSWORD: 'correct horse battery staple' }, secureCookies: false, accessPort: 0, runtime: fakeRuntime, supervisor: fakeSupervisor, tunnel: fakeTunnel() as unknown as TunnelManager, logger: () => undefined });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const login = await fetch(`${base}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'correct horse battery staple' }) });
+  const cookie = cookieFrom(login);
+  const csrf = (await login.json() as { session: { csrfToken: string } }).session.csrfToken;
+  const headers = { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' };
+
+  // Nothing installed and nothing running.
+  assert.equal((await (await fetch(`${base}/api/v1/process`, { headers: { cookie } })).json() as ProcessState).status, 'stopped');
+
+  // The PIN is the one thing that cannot wait: it is what stands between the
+  // internet and the data.
+  const early = await fetch(`${base}/api/v1/tunnel`, { method: 'PUT', headers, body: JSON.stringify({ mode: 'quick' }) });
+  assert.equal(early.status, 409);
+  assert.equal((await early.json() as { error: { code: string } }).error.code, 'public_access_password_required');
+
+  assert.equal((await fetch(`${base}/api/v1/access/password`, { method: 'POST', headers, body: JSON.stringify({ password: '417203', confirmPassword: '417203' }) })).status, 200);
+
+  const tunnel = await fetch(`${base}/api/v1/tunnel`, { method: 'PUT', headers, body: JSON.stringify({ mode: 'quick' }) });
+  assert.equal(tunnel.status, 200, 'the address is ready before the thing behind it is');
+  assert.equal((await tunnel.json() as TunnelState).mode, 'quick');
+
+  const lan = await fetch(`${base}/api/v1/access/network`, { method: 'PUT', headers, body: JSON.stringify({ lan: true }) });
+  assert.equal(lan.status, 200);
+  assert.equal((await lan.json() as AccessGatewayState).lan, true);
 });
 
 test('the console will not be opened to the internet without a manager password', async (t) => {

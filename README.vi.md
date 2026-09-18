@@ -101,7 +101,7 @@ npm ci
 npm start
 ```
 
-Giữ phiên Termux này chạy trong lúc dùng SillyTavern. Mở manager trên điện thoại tại `http://127.0.0.1:7860`; SillyTavern ở `http://127.0.0.1:8000`. Khi cần dùng iPhone hoặc mạng khác để truy cập, bạn có thể tạo public tunnel trong manager.
+Giữ phiên Termux này chạy trong lúc dùng SillyTavern. Mở manager trên điện thoại tại `http://127.0.0.1:7860`; SillyTavern ở `http://127.0.0.1:8002`. Khi cần dùng iPhone hoặc mạng khác để truy cập, bạn có thể tạo public tunnel trong manager.
 
 Lần sau khởi động lại:
 
@@ -141,7 +141,7 @@ npm ci
 node deploy/linux/launcher.mjs
 ```
 
-Mở `http://127.0.0.1:7860`. SillyTavern vẫn ở `http://127.0.0.1:8000`. Dừng bằng <kbd>Ctrl</kbd>+<kbd>C</kbd>, lần sau chạy lại bằng:
+Mở `http://127.0.0.1:7860`. SillyTavern vẫn ở `http://127.0.0.1:8002`. Dừng bằng <kbd>Ctrl</kbd>+<kbd>C</kbd>, lần sau chạy lại bằng:
 
 ```bash
 cd "$HOME/stm"
@@ -195,13 +195,13 @@ docker run --rm \
   sillytavern-manager
 ```
 
-Mở manager tại `http://127.0.0.1:7860`. SillyTavern vẫn chạy ở cổng nội bộ `8000`; tunnel chỉ trỏ tới cổng đó.
+Mở manager tại `http://127.0.0.1:7860`. SillyTavern vẫn chạy ở cổng nội bộ `8002`; tunnel chỉ trỏ tới cổng đó.
 
 Trên nền tảng cloud có container, mở cổng `7860`, đặt `STM_ADMIN_PASSWORD` bằng phần secret của nền tảng và mount lưu trữ persistent tại `/data`. Không đưa mật khẩu vào Dockerfile hoặc Git.
 
 Hạ tầng cloud thường tự quyết ba thứ thay bạn, và trình quản lý giờ đáp ứng cả ba mà không cần cấu hình.
 
-**Cổng.** Nền tảng chỉ định tuyến một cổng ra ngoài sẽ báo cổng đó qua biến `PORT`; trình quản lý lắng nghe ở đó, nên một repo vừa import vào là chạy được ngay từ lần đầu. Còn cổng mà trình quản lý chỉ *ưu tiên* — `7860` của chính nó, `8001` của cổng truy cập, `8000` của SillyTavern — nếu đã bị thứ khác trên máy chiếm thì nó tự nhường sang cổng trống kế tiếp và ghi lại số cổng mới. Muốn cố định thì đặt `STM_PORT` hoặc `STM_ACCESS_PORT`; cổng đã cố định sẽ được bind hoặc báo lỗi hẳn chứ không tự dời.
+**Cổng.** Nền tảng chỉ định tuyến một cổng ra ngoài sẽ báo cổng đó qua biến `PORT`; trình quản lý lắng nghe ở đó, nên một repo vừa import vào là chạy được ngay từ lần đầu. Còn cổng mà trình quản lý chỉ *ưu tiên* — `7860` của chính nó, `8001` của cổng truy cập, `8002` của SillyTavern — nếu đã bị thứ khác trên máy chiếm thì nó tự nhường sang cổng trống kế tiếp và ghi lại số cổng mới. Muốn cố định thì đặt `STM_PORT` hoặc `STM_ACCESS_PORT`; cổng đã cố định sẽ được bind hoặc báo lỗi hẳn chứ không tự dời.
 
 **Mạng.** Ở nơi UDP bị chặn đi ra, cloudflared không tới được biên của Cloudflare qua QUIC, và đường hầm cứ đứng ở *Registering tunnel* cho tới khi link báo lỗi 1033. Trình quản lý nhận ra điều đó — qua dòng lỗi, hoặc qua sự im lặng — rồi quay lại bằng HTTP/2 và ghi nhớ, nên chỉ phải chờ một lần chứ không phải mỗi lần khởi động. Đặt `STM_TUNNEL_PROTOCOL=http2` để bỏ qua bước dò.
 
@@ -237,7 +237,7 @@ Người dùng Windows nên chọn ZIP portable vì ZIP đã có sẵn Node.js. 
 
 1. Mở manager ở cổng `7860` và tạo mật khẩu quản trị.
 2. Chọn phiên bản SillyTavern; mặc định là `latest`.
-3. Bấm **Cài đặt** và chờ **Ready**. Ready nghĩa là SillyTavern đã trả lời ở cổng `8000`.
+3. Bấm **Cài đặt** và chờ **Ready**. Ready nghĩa là SillyTavern đã trả lời ở cổng `8002`.
 4. Mở link local, hoặc đặt mật khẩu SillyTavern rồi bật truy cập mạng nội bộ hay public tunnel.
 
 Mật khẩu manager và mật khẩu SillyTavern là hai mật khẩu khác nhau. Mật khẩu SillyTavern được hỏi ở trang đăng nhập do chính manager phục vụ, nên nó hoạt động giống nhau trên mọi phiên bản SillyTavern, cũ hay mới; đổi mật khẩu sẽ đăng xuất mọi thiết bị đang ở trong.
@@ -302,7 +302,7 @@ flowchart LR
   subgraph machine["Máy của bạn"]
     M["Bảng quản trị<br/>:7860"]
     G["Cổng truy cập<br/>:8001"]
-    S["SillyTavern<br/>:8000 · chỉ localhost"]
+    S["SillyTavern<br/>:8002 · chỉ localhost"]
     M --> S
     G --> S
   end
@@ -314,7 +314,7 @@ flowchart LR
 | Cổng | Cái gì đang lắng nghe | Ai vào được |
 | --- | --- | --- |
 | `7860` | Bảng quản trị manager | Chỉ máy này, trừ khi bạn tự mở ra ngoài |
-| `8000` | SillyTavern | Chỉ máy này |
+| `8002` | SillyTavern | Chỉ máy này |
 | `8001` | Cổng truy cập | Mạng nội bộ hoặc Cloudflare Tunnel, sau khi nhập mật khẩu |
 
 Tunnel và công tắc mạng nội bộ chỉ mở cổng truy cập, không bao giờ mở bảng quản trị, nên người tìm được địa chỉ public của bạn cũng không thể cài đặt, khôi phục hay xoá bất cứ thứ gì.

@@ -101,7 +101,7 @@ npm ci
 npm start
 ```
 
-Leave that Termux session running while SillyTavern is in use. Open the manager on the phone at `http://127.0.0.1:7860`; SillyTavern itself is at `http://127.0.0.1:8000`. The manager can create a public tunnel when you want to reach SillyTavern from an iPhone or another network.
+Leave that Termux session running while SillyTavern is in use. Open the manager on the phone at `http://127.0.0.1:7860`; SillyTavern itself is at `http://127.0.0.1:8002`. The manager can create a public tunnel when you want to reach SillyTavern from an iPhone or another network.
 
 Later starts:
 
@@ -141,7 +141,7 @@ npm ci
 node deploy/linux/launcher.mjs
 ```
 
-Open `http://127.0.0.1:7860`. SillyTavern remains at `http://127.0.0.1:8000`. Stop the process with <kbd>Ctrl</kbd>+<kbd>C</kbd>, and start it again later with:
+Open `http://127.0.0.1:7860`. SillyTavern remains at `http://127.0.0.1:8002`. Stop the process with <kbd>Ctrl</kbd>+<kbd>C</kbd>, and start it again later with:
 
 ```bash
 cd "$HOME/stm"
@@ -195,13 +195,13 @@ docker run --rm \
   sillytavern-manager
 ```
 
-Open the manager at `http://127.0.0.1:7860`. SillyTavern stays on the container's internal port `8000`; a configured tunnel points only to that port.
+Open the manager at `http://127.0.0.1:7860`. SillyTavern stays on the container's internal port `8002`; a configured tunnel points only to that port.
 
 For a hosted container platform, expose port `7860`, provide `STM_ADMIN_PASSWORD` through its secret settings and mount durable storage at `/data`. Never put the admin password in a Dockerfile or commit it to Git.
 
 Hosted platforms often decide three things for you, and the manager now meets each of them without being configured.
 
-**The port.** A platform that routes a single port from the outside world announces it in `PORT`; the manager listens there, so a repository imported into one works on the first run. A port the manager only *prefers* — its own `7860`, the access gateway's `8001`, SillyTavern's `8000` — steps aside to the next free one when something else on the machine already holds it, and writes down where it went. Set `STM_PORT` or `STM_ACCESS_PORT` to pin one deliberately; a pinned port is bound or the start fails, rather than moving.
+**The port.** A platform that routes a single port from the outside world announces it in `PORT`; the manager listens there, so a repository imported into one works on the first run. A port the manager only *prefers* — its own `7860`, the access gateway's `8001`, SillyTavern's `8002` — steps aside to the next free one when something else on the machine already holds it, and writes down where it went. Set `STM_PORT` or `STM_ACCESS_PORT` to pin one deliberately; a pinned port is bound or the start fails, rather than moving.
 
 **The network.** Where outbound UDP is blocked, cloudflared cannot reach Cloudflare's edge over QUIC, and a tunnel sits at *Registering tunnel* until the link times out with error 1033. The manager notices — from the error line, or from the silence — and comes back over HTTP/2, remembering the answer so the wait is paid once rather than at every restart. `STM_TUNNEL_PROTOCOL=http2` skips the discovery.
 
@@ -237,7 +237,7 @@ Windows users should prefer the portable ZIP, because it already includes Node.j
 
 1. Open the manager at port `7860` and create the manager administrator password.
 2. Choose a SillyTavern version — `latest` is selected by default.
-3. Press **Install** and wait for **Ready**. Ready means SillyTavern answered on port `8000`.
+3. Press **Install** and wait for **Ready**. Ready means SillyTavern answered on port `8002`.
 4. Open the local link, or set the SillyTavern password and then turn on local-network access or a public tunnel.
 
 The manager password and the SillyTavern password are two different things. The SillyTavern password is asked for by a sign-in page the manager serves, so it works the same on every SillyTavern version, old or new; changing it signs out every device that was already in.
@@ -302,7 +302,7 @@ flowchart LR
   subgraph machine["Your machine"]
     M["Manager panel<br/>:7860"]
     G["Access gateway<br/>:8001"]
-    S["SillyTavern<br/>:8000 · localhost only"]
+    S["SillyTavern<br/>:8002 · localhost only"]
     M --> S
     G --> S
   end
@@ -314,7 +314,7 @@ flowchart LR
 | Port | What listens | Who can reach it |
 | --- | --- | --- |
 | `7860` | The manager panel | This machine, unless you expose it yourself |
-| `8000` | SillyTavern | This machine only |
+| `8002` | SillyTavern | This machine only |
 | `8001` | The access gateway | Your local network or a Cloudflare Tunnel, after a password |
 
 The tunnel and the local-network switch open the gateway, never the manager panel, so nobody who finds your public address can install, restore or delete anything.

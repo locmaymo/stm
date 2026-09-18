@@ -30,7 +30,8 @@ const MAX_ZIP_DIRECTORY_BYTES = 64 * 1024 * 1024;
 const GIT_REPOSITORY = `https://github.com/${REPOSITORY}.git`;
 const DEPENDENCY_MARKER = '.stm-dependencies.json';
 /** SillyTavern's own default, used when no console has said where it runs. */
-const DEFAULT_SILLYTAVERN_PORT = 8000;
+/** The port this console runs SillyTavern on; see SILLYTAVERN_PORT in the server. */
+const DEFAULT_SILLYTAVERN_PORT = 8002;
 
 /** How work running before the download says what it is doing. */
 export type BeforeInstallReport = (progress: number, step: LogEvent) => Promise<void>;

@@ -783,7 +783,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
             </div>
           </header>
           <PageContainer>
-            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} installed={Boolean(activeInstallationId)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} locale={preferences.locale} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} /> : <ResourcePanel page={page} t={t} />}
+            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} locale={preferences.locale} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} /> : <ResourcePanel page={page} t={t} />}
           </PageContainer>
           <MobileNav
             items={navigation.map(({ id, icon }) => ({ id, icon, href: `#${id}`, label: t(`nav.${id}`) }))}
@@ -1426,7 +1426,7 @@ function RuntimeCard({
   </>;
 }
 
-function AccessPanel({ t, process, tunnel, config, security, sillyTavernPort, installed, onAction, onSetLan, onSetPassword }: { t: Translate; process: ProcessState; tunnel: TunnelState; config: ConfigDocument | null; security: AccessGatewayState; sillyTavernPort: number; installed: boolean; onAction: (path: string, body?: unknown) => Promise<void>; onSetLan: (lan: boolean) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null> }) {
+function AccessPanel({ t, process, tunnel, config, security, sillyTavernPort, onAction, onSetLan, onSetPassword }: { t: Translate; process: ProcessState; tunnel: TunnelState; config: ConfigDocument | null; security: AccessGatewayState; sillyTavernPort: number; onAction: (path: string, body?: unknown) => Promise<void>; onSetLan: (lan: boolean) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null> }) {
   const [busy, setBusy] = useState(false);
   const [securityBusy, setSecurityBusy] = useState(false);
   const running = process.status === 'running';
@@ -1452,7 +1452,17 @@ function AccessPanel({ t, process, tunnel, config, security, sillyTavernPort, in
   const [closing, setClosing] = useState<'tunnel' | 'lan' | null>(null);
   const runAction = async (path: string, body?: unknown) => { setBusy(true); try { await onAction(path, body); } finally { setBusy(false); } };
   const setTunnel = async (on: boolean) => { await runAction('/api/v1/tunnel', { mode: on ? 'quick' : 'off' }); };
-  // What to turn on once a password exists, or null when nothing is waiting.
+  /*
+   * What to turn on once a PIN exists, or null when nothing is waiting.
+   *
+   * A switch pressed without a PIN is a request, not a state: it opens the
+   * dialog that asks for one, and it is that dialog finishing which turns the
+   * thing on. Until then the switch shows what is true, which is off - and a
+   * dialog closed without a PIN leaves it there, because nothing was turned on.
+   * These switches used to be disabled instead, with a line underneath naming a
+   * prerequisite, which left the reader to go and find the prerequisite
+   * themselves.
+   */
   const [waiting, setWaiting] = useState<'tunnel' | 'lan' | null>(null);
   const askForPassword = (what: 'tunnel' | 'lan') => { setWaiting(what); setPasswordOpen(true); };
   const toggleTunnel = (next: boolean) => {
@@ -1537,14 +1547,19 @@ function AccessPanel({ t, process, tunnel, config, security, sillyTavernPort, in
             <strong>{t('console.quickTunnel')}{!tunnelWanted ? <span className="access-badge"><Star />{t('console.tunnelBadge')}</span> : null}</strong>
             <span>{t('console.tunnelWhy')}</span>
           </div>
-          <Switch id="tunnel-switch" checked={tunnelWanted} onCheckedChange={toggleTunnel} disabled={busy || (tunnelWanted ? false : !installed || !running)} aria-label={t('console.enableTunnel')} />
+          {/* Not waiting on SillyTavern. The tunnel publishes the door in
+              front of it, which is up from the moment the console is, and it
+              serves SillyTavern the moment SillyTavern answers - so somebody
+              setting a machine up gets to do these steps in whichever order
+              suits them, and the address is ready before it is needed. */}
+          <Switch id="tunnel-switch" checked={tunnelWanted} onCheckedChange={toggleTunnel} disabled={busy} aria-label={t('console.enableTunnel')} />
         </div>
         <div className="access-row">
           <div>
             <strong>{t('console.lanAccess')}</strong>
             <span>{t('console.lanWhy')}</span>
           </div>
-          <Switch id="listen-switch" checked={lan} onCheckedChange={toggleLan} disabled={!installed || securityBusy} aria-label={t('console.enableLan')} />
+          <Switch id="listen-switch" checked={lan} onCheckedChange={toggleLan} disabled={securityBusy} aria-label={t('console.enableLan')} />
         </div>
       </div>
       {/* With SillyTavern down every one of these leads nowhere, so the whole
@@ -2570,7 +2585,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
    * the one that says "use the keys" - which is why the switch is asked for
    * before the form opens, not silently applied after it.
    */
-  const saveR2Keys = async (form: R2KeysForm): Promise<string | null> => await putR2({ ...form, mode: 'keys' });
+  const saveR2Keys = async (form: R2KeysForm & { readonly enabled?: boolean }): Promise<string | null> => await putR2({ ...form, mode: 'keys' });
   const saveR2Schedule = async (form: R2ScheduleForm): Promise<string | null> => await putR2({ ...form });
   // The switch lives on the card, not at the bottom of the settings dialog:
   // whether anything is being sent at all is the first thing to see, and
@@ -2902,9 +2917,21 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       <AlertDescription>{t('console.storageTemporaryBody')}</AlertDescription>
     </Alert> : null}
 
-    <Card>
-      <PanelHeading icon={<Cloud />}>{t('console.r2Title')}</PanelHeading>
+    <Card className="cloud-card">
+      <PanelHeading icon={<Cloud />}>
+        {t('console.r2Title')}
+        {/* The same mark the overview puts on the tunnel, for the same reason:
+            of everything on this page, these two are what somebody who has not
+            tried them is missing out on. */}
+        <span className="access-badge"><Star />{t('console.r2Badge')}</span>
+      </PanelHeading>
       <CardContent className="grid gap-4">
+        {/* Said above the settings, and only while it is off: once it is on,
+            this is a sales pitch for something the reader has already bought. */}
+        {!(r2Config?.enabled && r2Config.configured) ? <p className="cloud-pitch">
+          <ShieldCheck aria-hidden="true" />
+          <span>{t('console.r2Pitch')}</span>
+        </p> : null}
         {/*
           * An account that has never turned R2 on. Said first and said plainly,
           * because the sign-in worked, every permission asked for was granted,
@@ -2942,7 +2969,18 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
             {r2Config?.configured && r2Config.enabled
               ? <Button variant="outline" size="sm" onClick={() => setR2ScheduleOpen(true)}>{t('console.r2Change')}</Button>
               : null}
-            <Switch aria-label={t('console.r2Enabled')} checked={r2Config?.enabled ?? false} disabled={!r2Config?.configured || r2Toggling} onCheckedChange={(checked) => void setR2Enabled(checked)} />
+            {/* Pressable with nothing set up, because pressing it is how somebody
+                says they want this on - and the form that makes it possible is
+                what that press should open. A switch that is simply dead, with a
+                sentence underneath naming a prerequisite, leaves the reader to
+                find the prerequisite themselves. Closed without finishing, the
+                switch goes back to off: nothing was turned on. */}
+            <Switch
+              aria-label={t('console.r2Enabled')}
+              checked={(r2Config?.enabled ?? false) && (r2Config?.configured ?? false)}
+              disabled={r2Toggling}
+              onCheckedChange={(checked) => { if (checked && !r2Config?.configured) setDestinationOpen(true); else void setR2Enabled(checked); }}
+            />
           </DetailRow>
           {/* Then where it goes. One row whichever way the bucket is reached,
               because it is one question; the two ways of answering it are both
@@ -3051,6 +3089,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       t={t}
       open={destinationOpen}
       onOpenChange={setDestinationOpen}
+      startEnabled={!r2Config?.enabled}
       config={r2Config}
       busy={cloudflareBusy}
       onConnect={() => void connectCloudflare()}
@@ -3266,18 +3305,20 @@ function RestoreDialog({ t, catalog, displayName, backup, preview, mode, onModeC
  * to. Saving means "use this one", which is the choice that used to need a
  * confirmation dialog of its own, asked here where it is being made.
  */
-function R2DestinationDialog({ t, open, onOpenChange, config, busy, onConnect, onChooseAccount, onChooseBucket, onDisconnect, onUseCloudflare, onSaveKeys }: {
+function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled, onConnect, onChooseAccount, onChooseBucket, onDisconnect, onUseCloudflare, onSaveKeys }: {
   t: Translate;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   config: R2Config | null;
   busy: boolean;
+  /** Opened by a switch somebody just turned on, so finishing here turns it on. */
+  startEnabled: boolean;
   onConnect: () => void;
   onChooseAccount: (accountId: string) => Promise<string | null>;
   onChooseBucket: (name: string) => Promise<string | null>;
   onDisconnect: () => void;
   onUseCloudflare: () => Promise<void>;
-  onSaveKeys: (form: R2KeysForm) => Promise<string | null>;
+  onSaveKeys: (form: R2KeysForm & { readonly enabled?: boolean }) => Promise<string | null>;
 }) {
   const group = useId();
   const cloudflare = config?.cloudflare ?? null;
@@ -3327,10 +3368,10 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, onConnect, o
       // Saving is choosing. Keys are sent with the mode that uses them; the
       // sign-in has nothing to send but the choice itself.
       if (choice === 'keys') {
-        const failure = await onSaveKeys(keys);
+        const failure = await onSaveKeys({ ...keys, ...(startEnabled ? { enabled: true } : {}) });
         setError(failure);
         if (failure) return;
-      } else if (mode !== 'cloudflare') {
+      } else if (mode !== 'cloudflare' || startEnabled) {
         await onUseCloudflare();
       }
       onOpenChange(false);
@@ -3458,7 +3499,7 @@ function CloudflareMethod({ t, status, busy, account, onAccountChange, onConnect
       <p className="text-xs text-muted-foreground">{t('console.cfReconnectHint')}</p>
       <div className="flex flex-wrap gap-2">
         <Button size="sm" style={brand} className="hover:opacity-90" onClick={onConnect} disabled={busy}><RefreshCw />{t('console.cfReconnect')}</Button>
-        <Button variant="ghost" size="sm" onClick={onDisconnect} disabled={busy}>{t('console.cfDisconnect')}</Button>
+        <Button variant="outline" size="sm" onClick={onDisconnect} disabled={busy}>{t('console.cfDisconnect')}</Button>
       </div>
     </div>;
   }
@@ -3476,8 +3517,10 @@ function CloudflareMethod({ t, status, busy, account, onAccountChange, onConnect
         {/* Signed in, with the account still to pick - and no way back out. The
             grant exists from this point on, so the way to give it back has to
             exist from this point on too, and this is where somebody who has
-            just seen that the account cannot be used needs it. */}
-        <Button variant="ghost" size="sm" onClick={onDisconnect} disabled={busy}>{t('console.cfDisconnect')}</Button>
+            just seen that the account cannot be used needs it. Outlined, not
+            ghosted: it ends a connection, and it has to read as something that
+            can be pressed. */}
+        <Button variant="outline" size="sm" onClick={onDisconnect} disabled={busy}>{t('console.cfDisconnect')}</Button>
       </div>
       {/* An account that has not turned R2 on fails the moment it is chosen,
           with the sign-in itself in perfect order. The way out is on Cloudflare. */}
@@ -3500,7 +3543,7 @@ function CloudflareMethod({ t, status, busy, account, onAccountChange, onConnect
             {(buckets ?? []).map((bucket) => <SelectItem key={`${bucket.jurisdiction}/${bucket.name}`} value={bucket.name}>{bucket.name}</SelectItem>)}
           </SelectContent>
         </Select>}
-      <Button variant="ghost" size="sm" onClick={onDisconnect} disabled={busy}>{t('console.cfDisconnect')}</Button>
+      <Button variant="outline" size="sm" onClick={onDisconnect} disabled={busy}>{t('console.cfDisconnect')}</Button>
     </div>
     <p className="text-xs text-muted-foreground">{t('console.cfBucketBody')}</p>
     {bucketError ? <p className="text-xs text-destructive">{bucketError}</p> : null}

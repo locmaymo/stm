@@ -1460,7 +1460,22 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     const body = await readJson(request);
     const mode = isRecord(body) && (body.mode === 'off' || body.mode === 'quick' || body.mode === 'named') ? body.mode : null;
     if (!mode) { sendError(response, 400, 'invalid_tunnel_mode', 'Tunnel mode must be off, quick, or named'); return; }
-    if (mode !== 'off' && supervisor.getState().status !== 'running') { sendError(response, 409, 'sillytavern_not_running', 'Start SillyTavern before enabling the tunnel'); return; }
+    /*
+     * SillyTavern does not have to be running, or installed.
+     *
+     * What the tunnel publishes is the access gateway, which is up from the
+     * moment the manager is - the comment above `/process/stop` says so, and it
+     * is why a public address survives a stop, a restart and a version switch.
+     * Refusing to open it until SillyTavern answers contradicted that: it made
+     * the address depend on the one thing it was built not to depend on, and
+     * left somebody setting a machine up unable to do the two steps in the
+     * order that suits them. Opened early, the gateway answers that SillyTavern
+     * is not there yet, and starts serving it the moment it is.
+     *
+     * The PIN is a different matter and still required: it is what stands
+     * between the internet and the data, and there is no sense in which it can
+     * wait.
+     */
     if (mode !== 'off' && !gateway.getState().passwordConfigured) { sendError(response, 409, 'public_access_password_required', 'Set the SillyTavern password before opening a public tunnel'); return; }
     const state = mode === 'off' ? await tunnel.disable() : await tunnel.start(mode, isRecord(body) && typeof body.token === 'string' ? body.token : undefined);
     sendJson(response, 200, state);

@@ -6,7 +6,7 @@ export type PlatformKind = 'windows' | 'linux' | 'termux' | 'docker' | 'modelsco
 /** The ports this project ships with, before anything moves them. */
 export interface ManagerPorts {
   readonly manager: 7860;
-  readonly sillyTavern: 8000;
+  readonly sillyTavern: 8002;
   /** Where the guarded door to SillyTavern listens; see AccessGatewayState. */
   readonly access: 8001;
 }
