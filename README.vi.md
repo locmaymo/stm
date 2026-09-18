@@ -338,16 +338,21 @@ Restore cho xem trước trước khi ghi. Replace là chế độ mặc định
 
 ### Cloudflare R2
 
-Ở trang **Data**, chỉ cần bấm **Kết nối Cloudflare**. Đăng nhập Cloudflare, chọn tài khoản, cho phép các quyền, manager sẽ tìm hoặc tạo bucket tên `sillytavern-manager-backup` trong tài khoản đó và bắt đầu sao lưu. Không cần tạo hay dán khoá nào.
+Ở trang **Data**, **Nơi lưu bản sao lưu** là câu hỏi duy nhất, và **Kết nối Cloudflare** là bước duy nhất để trả lời. Đăng nhập Cloudflare, chọn tài khoản, cho phép các quyền, manager sẽ tìm hoặc tạo bucket tên `sillytavern-manager-backup` trong tài khoản đó và bắt đầu sao lưu. Không cần tạo hay dán khoá nào.
+
+Nếu tài khoản chưa từng bật R2, Cloudflare sẽ từ chối tạo bucket dù bạn đã cấp đủ quyền, và panel nói rõ điều đó kèm đường dẫn tới trang bật R2. R2 phải được bật một lần trong bảng điều khiển Cloudflare và Cloudflare có hỏi thẻ thanh toán trước khi bật; 10 GB đầu vẫn miễn phí và không bị tính tiền cho tới khi vượt gói miễn phí.
 
 - **Cho phép Workers** (tuỳ chọn, nên bật). Manager deploy một Worker nhỏ, cũng tên `sillytavern-manager-backup`, để chuyển dữ liệu sao lưu vào bucket. Cách này nhanh và không tốn giới hạn gọi API Cloudflare của bạn. Nếu không cho phép, sao lưu đi qua API của Cloudflare, chậm hơn, và lần sao lưu đầu có thể mất nhiều thời gian.
 - **Cho phép Account Analytics** (tuỳ chọn). Panel sẽ hiện dung lượng và số lệnh Class A/B theo số liệu của Cloudflare, cho bucket sao lưu và cho cả tài khoản so với gói miễn phí. Đây là số liệu sử dụng, không phải hoá đơn.
 - **Máy mới** kết nối cùng tài khoản sẽ thấy lại đúng bucket đó; các điểm khôi phục có sẵn trong bucket có thể lấy về và khôi phục.
 - **Ngắt kết nối** xoá khoá Worker của bản cài này và thu hồi quyền đăng nhập. Bucket và các điểm khôi phục vẫn nằm trong tài khoản của bạn. Bạn cũng có thể thu hồi quyền bất cứ lúc nào trong mục **Manage OAuth authorizations** ở hồ sơ Cloudflare.
+- **Kiểm tra** đọc bucket một lần rồi cho biết trong đó có gì — bao nhiêu đối tượng, nặng bao nhiêu, bao nhiêu điểm khôi phục — đồng thời cập nhật lại các số liệu panel đang giữ. Đây là nút duy nhất cho câu hỏi "cái này có chạy không": không còn nút nào khác để thử.
+
+Danh sách điểm khôi phục là tất cả những gì bucket đang giữ, không chỉ của máy này. Mỗi hồ sơ mang một mã do chính máy tạo ra nó đặt, nên một máy vừa dựng hôm nay có mã mà bucket chưa từng thấy; chỉ liệt kê của riêng nó thì bảng sẽ trống trơn trong khi bucket đang giữ cả năm dữ liệu. Điểm do máy khác ghi được đánh dấu, và lấy về vẫn theo đúng cách đó.
 
 Chỉ refresh token của Cloudflare được lưu, trong một file riêng mà chỉ user của bạn đọc được. Khoá Worker chỉ nằm trong bộ nhớ, đổi mỗi ngày, và mỗi bản cài có khoá riêng.
 
-**Dùng khoá S3.** Nếu không muốn đăng nhập, chọn **Khoá R2/S3 (thủ công)** và nhập endpoint, bucket, cặp khoá lấy từ trang R2 trong bảng điều khiển Cloudflare, hoặc đặt trong `.env` (xem [`.env.example`](.env.example)). Mọi storage tương thích S3 đều dùng được theo cách này.
+**Dùng khoá S3.** Nếu không muốn đăng nhập, mở **Nơi lưu bản sao lưu**, chọn **Key R2 hoặc S3** và nhập endpoint, bucket, cặp khoá lấy từ trang R2 trong bảng điều khiển Cloudflare, hoặc đặt trong `.env` (xem [`.env.example`](.env.example)). Mọi storage tương thích S3 đều dùng được theo cách này. Cả hai cách kết nối tới bucket đều nằm trong cùng một form đó; bấm lưu chính là chọn cách nào sẽ mang bản sao lưu đi.
 
 ## Cấu hình
 

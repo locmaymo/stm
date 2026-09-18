@@ -338,16 +338,21 @@ Restore previews the archive before writing. Replace is the default mode; merge 
 
 ### Cloudflare R2
 
-On the **Data** page, **Connect Cloudflare** is the one step. Sign in to Cloudflare, pick the account, allow the permissions, and the manager finds or creates a bucket named `sillytavern-manager-backup` in that account and starts backing up to it. There are no keys to create or paste.
+On the **Data** page, **Where backups go** is the one question, and **Connect Cloudflare** is the one step in answering it. Sign in to Cloudflare, pick the account, allow the permissions, and the manager finds or creates a bucket named `sillytavern-manager-backup` in that account and starts backing up to it. There are no keys to create or paste.
+
+If the account has never enabled R2, Cloudflare refuses to make the bucket however many permissions were granted, and the panel says so with a link to the page that turns it on. R2 has to be enabled once in the Cloudflare dashboard and Cloudflare asks for a card before it will; the first 10 GB stay free and nothing is charged until you pass the free tier.
 
 - **Allow Workers** (optional, recommended). The manager deploys a small Worker, also named `sillytavern-manager-backup`, that carries backup data to the bucket. It is fast and does not use your Cloudflare API rate limit. Without it, backups go through Cloudflare's API, which is slower, and a first backup can take a long time.
 - **Allow Account Analytics** (optional). The panel then shows storage and Class A/B operations as Cloudflare counts them, for the backup bucket and for the whole account against the free tier. These are usage figures, not your bill.
 - **A new machine** connects to the same account and finds the same bucket; the recovery points already in it can be brought back and restored.
 - **Disconnect** removes this installation's Worker key and revokes the sign-in. The bucket and its recovery points stay in your account. You can also revoke access at any time under **Manage OAuth authorizations** in your Cloudflare profile.
+- **Check** reads the bucket once and says what is in it - how many objects, how large, how many recovery points - and brings the panel's own figures back in line with it. It is the one button for "does this work": there is nothing else to press to find out.
+
+The recovery points shown are every one in the bucket, not only this machine's. A profile is identified by a name the machine that made it chose, so a machine set up today has one the bucket has never seen; listing only its own would show an empty table over a bucket holding a year of backups. Points written by another machine are marked, and bringing one back works the same way.
 
 Only the Cloudflare refresh token is stored, in its own file readable by your user alone. Worker keys live in memory, change every day, and each installation has its own.
 
-**S3 keys instead.** If you would rather not sign in, choose **R2/S3 keys (manual)** and enter the endpoint, bucket and key pair from the R2 page of the Cloudflare dashboard, or set them in `.env` (see [`.env.example`](.env.example)). Any S3-compatible storage works this way.
+**S3 keys instead.** If you would rather not sign in, open **Where backups go**, choose **R2 or S3 keys** and enter the endpoint, bucket and key pair from the R2 page of the Cloudflare dashboard, or set them in `.env` (see [`.env.example`](.env.example)). Any S3-compatible storage works this way. Both ways of reaching a bucket are in that one form; saving is choosing which one carries the backups.
 
 ## Configuration
 
