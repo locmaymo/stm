@@ -604,6 +604,18 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       logger(logEvent('installer.legacyMigrationFailed', `[installer] legacy runtime migration failed: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
     }
     void supervisor.start().catch((error: unknown) => logger(logEvent('sillytavern.autoStartFailed', `[sillytavern] automatic startup failed: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' })));
+  } else {
+    /*
+     * Nothing installed, and a bucket set up in `.env` that already holds data.
+     *
+     * This is the machine that starts from nothing every time. It cannot be
+     * given its profile back yet - a profile is made against an installation,
+     * and there is not one - but it can say, before anybody wonders, that the
+     * data is not lost and that installing is what brings it back. Said in the
+     * log rather than made into a question: the settings are in `.env` because
+     * somebody put them there, which is the decision already taken.
+     */
+    void announceRecoverable(r2, logger);
   }
 
   return {
@@ -1006,8 +1018,11 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     await handleCloudflareRequest(context, cloudflare, r2);
     return;
   }
-  if (pathname === '/api/v1/r2/test' && method === 'POST') {
-    sendJson(response, 200, await r2.testConnection());
+  // The one question about the bucket: is it reachable, and what is in it. It
+  // replaced three buttons that each answered part of it and then said so in a
+  // notification that went away.
+  if (pathname === '/api/v1/r2/check' && method === 'POST') {
+    sendJson(response, 200, { check: await r2.inspect(), config: await r2.getConfig() });
     return;
   }
   if (pathname === '/api/v1/r2/objects' && method === 'GET') {
@@ -1023,9 +1038,24 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     return;
   }
   if (pathname === '/api/v1/r2/snapshots' && method === 'GET') {
+    /*
+     * Every recovery point in the bucket, not this profile's.
+     *
+     * A profile identifier is made on the machine that made the profile, so a
+     * machine that has just been set up - a hosted one that starts empty, a new
+     * computer, a reinstall - has an identifier the bucket has never seen. Asking
+     * for its own points came back with none, and the panel said the bucket was
+     * empty over a bucket holding a year of them. The one moment somebody most
+     * needs to see what is there is the moment they have just connected, and it
+     * was the one moment this showed nothing.
+     *
+     * The chunks are shared across every profile in the bucket, so a point from
+     * another one costs no more to bring back and restores the same way. Which
+     * profile each belongs to comes back with it, for the panel to say so.
+     */
     const profile = await profiles.getActive();
-    const snapshots = profile ? await r2.listSnapshots(profile.id) : [];
-    sendList(response, 'snapshots', snapshots, searchParams, { searchText: snapshotSearchText, sortValue: snapshotSortValue });
+    const snapshots = await r2.listSnapshots().catch(() => []);
+    sendList(response, 'snapshots', snapshots, searchParams, { searchText: snapshotSearchText, sortValue: snapshotSortValue }, { activeProfileId: profile?.id ?? null });
     return;
   }
   const snapshotMatch = /^\/api\/v1\/r2\/snapshots\/([^/]+)\/fetch$/u.exec(pathname);
@@ -1033,6 +1063,11 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     const profile = await profiles.getActive();
     if (!profile) { sendError(response, 409, 'profile_required', 'Create or activate a profile before fetching a recovery point'); return; }
     const snapshotId = snapshotMatch[1] ?? '';
+    // Which profile in the bucket it belongs to, when that is not this one.
+    // Sent by the panel from the row it was pressed on; a point of this
+    // profile's own needs nothing and says nothing.
+    const fetchBody = await readJson(request);
+    const sourceProfileId = isRecord(fetchBody) && typeof fetchBody.profileId === 'string' && fetchBody.profileId ? fetchBody.profileId : profile.id;
     // Fetching lands it in the backup library rather than writing it straight
     // into the profile. Restoring is then the path that already exists, with
     // its preview, its safety snapshot and its merge-or-replace choice.
@@ -1040,7 +1075,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     const { job, signal } = jobs.createOperation('backup', logEvent('job.fetchingRecoveryPoint', 'Fetching the recovery point from R2'));
     const meter = new TransferMeter();
     void fetchSnapshotToLibrary({
-      profile, r2, backups, snapshotId, signal,
+      profile, r2, backups, snapshotId, sourceProfileId, signal,
       logger: (line) => jobs.append('backup', line),
       onProgress: (progress) => {
         const { percent, params } = meter.update(progress);
@@ -1187,6 +1222,10 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
           await recoverEmptyProfile(await profiles.ensureDefault({ installationId: installation.id, runtimePath: installation.runtimePath }), r2, backups, jobs);
         }
         await runtime.cleanupLegacyRuntimeCopies?.(installation.id);
+        // There is a profile now where a moment ago there was none, and on the
+        // overview its size is the line somebody who has just installed is
+        // watching. Walked now rather than on whatever poll next falls due.
+        system.remeasure();
       }
       await supervisor.start();
     }).catch(async (error: unknown) => {
@@ -2152,17 +2191,41 @@ async function settlePort(options: SettlePortOptions): Promise<number> {
  * not running yet at either call site, and a safety copy of an empty profile is
  * a slow way to archive nothing.
  */
+/**
+ * Say that the bucket holds data this machine has not got, before it is asked.
+ *
+ * Costs one listing, and only on a start with nothing installed, which is the
+ * one start where it answers a question somebody is about to have.
+ */
+async function announceRecoverable(r2: R2Manager, logger: LogSink): Promise<void> {
+  try {
+    const config = await r2.getConfig();
+    if (!config.enabled || !config.configured) return;
+    const snapshots = await r2.listSnapshots();
+    const newest = snapshots[0];
+    if (!newest) return;
+    logger(logEvent('r2.awaitingInstall', `[r2] the bucket holds ${snapshots.length} recovery point(s), the newest from ${newest.createdAt}; installing SillyTavern brings the newest one back automatically`, { count: snapshots.length, createdAt: newest.createdAt }));
+  } catch {
+    // A bucket that cannot be reached on the way up is not worth a line here:
+    // the console is about to be open, and it says so there.
+  }
+}
+
 async function recoverEmptyProfile(profile: Profile, r2: R2Manager, backups: BackupStore, jobs: JobStore): Promise<void> {
   const config = await r2.getConfig();
   // Nowhere to recover from. On a machine that is wiped between runs this is
   // the case where the R2 settings went with everything else, which is why the
   // ones that survive - from the environment - are the ones that matter here.
   if (!config.enabled || !config.configured) return;
-  await recoverProfileFromR2({
+  const restored = await recoverProfileFromR2({
     profile, r2, backups,
     logger: (line) => jobs.append('backup', line),
     restore: async (archivePath) => { await backups.restore(profile, archivePath, { mode: 'replace' }); },
   });
+  // Nobody was watching while this ran. The card says it happened, and what
+  // came back, so the reader can tell a machine that recovered itself from one
+  // that never had anything.
+  if (restored) await r2.recordRecovery({ createdAt: restored.createdAt, fileCount: restored.fileCount });
 }
 
 function listen(server: Server, host: string, port: number): Promise<void> {

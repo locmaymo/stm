@@ -9,6 +9,7 @@ import {
   createAuthorization,
   DEFAULT_SCOPES,
   exchangeCode,
+  isR2NotEnabled,
   matchesPending,
   refreshGrant,
   revokeToken,
@@ -18,7 +19,7 @@ import {
   type R2Jurisdiction,
   type WorkerSession,
 } from '../../cloudflare/src/index.js';
-import type { CloudflareConnectionState, CloudflareConnectionStatus } from '../../contracts/src/index.js';
+import type { CloudflareAccountProblem, CloudflareConnectionState, CloudflareConnectionStatus } from '../../contracts/src/index.js';
 import type { PlatformPaths } from '../../platform/src/index.js';
 import { RequestPacer, RestObjectStore } from './rest.js';
 import { R2Error, type Billing, type ObjectRecord, type ObjectStore } from './store.js';
@@ -48,6 +49,8 @@ interface StoredConnection {
   readonly connectedAt: string | null;
   readonly reconnectRequired: boolean;
   readonly lastError: string | null;
+  /** Set when Cloudflare refused for a reason the account owner has to fix there. */
+  readonly problem: CloudflareAccountProblem | null;
 }
 
 /**
@@ -134,6 +137,7 @@ export class CloudflareConnection {
       analyticsGranted: stored.scopes.includes(DEFAULT_SCOPES.analyticsRead),
       connectedAt: stored.connectedAt,
       lastError: stored.lastError,
+      problem: stored.problem,
     };
   }
 
@@ -199,10 +203,30 @@ export class CloudflareConnection {
     if (this.offeredAccounts.length === 0) this.offeredAccounts = await this.api.listAccounts();
     const account = this.offeredAccounts.find((entry) => entry.id === accountId);
     if (!account) throw new R2Error('cloudflare_unknown_account', 'That account is not one this sign-in can reach');
-    const existing = known?.accountId === account.id ? await this.api.findBucket(account.id, known.bucket, { jurisdiction: known.jurisdiction }) : null;
-    const bucket = existing ?? (await this.api.ensureBackupBucket(account.id)).bucket;
+    let bucket;
+    try {
+      const existing = known?.accountId === account.id ? await this.api.findBucket(account.id, known.bucket, { jurisdiction: known.jurisdiction }) : null;
+      bucket = existing ?? (await this.api.ensureBackupBucket(account.id)).bucket;
+    } catch (error: unknown) {
+      /*
+       * The account has never turned R2 on.
+       *
+       * The sign-in worked and every permission asked for was granted; there
+       * is simply no R2 on this account to put a bucket in. Recorded on the
+       * connection rather than thrown away with the request, so the panel can
+       * keep saying what is wrong and where to fix it after the refusal that
+       * carried it has scrolled past. The account is kept for the same reason:
+       * the reader is coming back to this page after enabling R2, and it should
+       * know which account they chose.
+       */
+      if (isR2NotEnabled(error)) {
+        await this.save({ ...(await this.load()), account, bucket: null, problem: 'r2_not_enabled', lastError: 'R2 is not enabled on this Cloudflare account yet.' });
+        throw new R2Error('cloudflare_r2_not_enabled', 'This Cloudflare account has not enabled R2 yet. Turn it on in the Cloudflare dashboard, then connect again.');
+      }
+      throw error;
+    }
     if (stored.account?.id !== account.id || stored.bucket?.name !== bucket.name || stored.bucket.jurisdiction !== bucket.jurisdiction) this.resetSession();
-    await this.save({ ...(await this.load()), account, bucket: { name: bucket.name, jurisdiction: bucket.jurisdiction }, lastError: null });
+    await this.save({ ...(await this.load()), account, bucket: { name: bucket.name, jurisdiction: bucket.jurisdiction }, lastError: null, problem: null });
     this.offeredAccounts = [];
     return await this.status();
   }
@@ -253,7 +277,7 @@ export class CloudflareConnection {
     this.accessToken = null;
     this.pending = null;
     this.offeredAccounts = [];
-    await this.save({ ...stored, refreshToken: null, scopes: [], account: null, bucket: null, connectedAt: null, reconnectRequired: false, lastError: null });
+    await this.save({ ...stored, refreshToken: null, scopes: [], account: null, bucket: null, connectedAt: null, reconnectRequired: false, lastError: null, problem: null });
     return { revoked, workerKeyRemoved };
   }
 
@@ -416,6 +440,7 @@ export class CloudflareConnection {
         connectedAt: null,
         reconnectRequired: false,
         lastError: null,
+        problem: null,
       };
       await this.save(fresh);
     }
@@ -460,6 +485,7 @@ function parseStored(value: unknown): StoredConnection {
     connectedAt: typeof value.connectedAt === 'string' ? value.connectedAt : null,
     reconnectRequired: value.reconnectRequired === true,
     lastError: typeof value.lastError === 'string' ? value.lastError : null,
+    problem: value.problem === 'r2_not_enabled' ? 'r2_not_enabled' : null,
   };
 }
 

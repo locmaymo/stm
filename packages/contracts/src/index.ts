@@ -254,6 +254,17 @@ export type R2ConnectionMode = 'keys' | 'cloudflare';
 
 export type CloudflareConnectionState = 'disconnected' | 'choose_account' | 'connected' | 'reconnect_required';
 
+/**
+ * Something about the account itself that stands between it and a backup.
+ *
+ * `r2_not_enabled` is the one that actually happens: R2 is not part of a
+ * Cloudflare account until somebody accepts its terms once in the dashboard,
+ * and until they do, a sign-in that granted every permission asked for still
+ * cannot make a bucket. Told apart from an ordinary failure because it is the
+ * only one the reader fixes in a minute, on a page this can send them to.
+ */
+export type CloudflareAccountProblem = 'r2_not_enabled';
+
 export interface CloudflareAccountRef {
   readonly id: string;
   readonly name: string;
@@ -272,6 +283,8 @@ export interface CloudflareConnectionStatus {
   readonly analyticsGranted: boolean;
   readonly connectedAt: string | null;
   readonly lastError: string | null;
+  /** Something about the account that has to be dealt with on Cloudflare, not here. */
+  readonly problem: CloudflareAccountProblem | null;
 }
 
 /**
@@ -343,6 +356,22 @@ export interface R2Config {
   };
   readonly usage: R2Usage;
   readonly lastFingerprint: string | null;
+  /**
+   * The recovery point the manager brought back on its own, if it ever did.
+   *
+   * A machine that does not keep its disk restores itself on the way up, before
+   * anybody opens the console. That is the whole point of putting the bucket in
+   * `.env` - but done silently it is indistinguishable from a machine that
+   * happened to still have the data, and the reader has no way to tell whether
+   * what they are looking at is yesterday's work or a fresh installation that
+   * looks like it. So it is written down and said.
+   */
+  readonly lastRecovery: {
+    readonly at: string;
+    /** When the point that came back was taken. */
+    readonly createdAt: string;
+    readonly fileCount: number;
+  } | null;
 }
 
 export interface R2OperationCounts {
@@ -455,6 +484,35 @@ export interface R2SnapshotSummary {
   readonly fileCount: number | null;
   /** The data those files hold: what bringing the point back downloads. */
   readonly dataBytes: number | null;
+}
+
+/**
+ * What one look at the bucket found, so the answer can be shown rather than flashed.
+ *
+ * The panel used to offer three buttons that all did some of this - "Test
+ * connection", "Check the bucket", "Refresh" - and each answered with a toast
+ * that said it had worked and then went away. Three buttons, one question, and
+ * no lasting answer to it. This is the one question: is the bucket reachable,
+ * and what is in it. Its answer stays on the card.
+ *
+ * `failure` rides inside a successful response on purpose: an unreachable
+ * bucket is a finding, not a broken request, and it belongs on the card beside
+ * the figures it replaces.
+ */
+export interface R2CheckResult {
+  readonly ok: boolean;
+  readonly checkedAt: string;
+  /** The bucket that answered, named as the reader knows it. */
+  readonly bucket: string | null;
+  readonly objectCount: number;
+  readonly totalBytes: number;
+  readonly snapshotCount: number;
+  /** Archives left by the version that uploaded whole ZIP files, which nothing reads. */
+  readonly legacyObjectCount: number;
+  readonly legacyBytes: number;
+  /** The manager's own counters, brought back in line with what was listed. */
+  readonly usage: R2Usage | null;
+  readonly failure: { readonly code: string; readonly message: string } | null;
 }
 
 export interface R2Object {
