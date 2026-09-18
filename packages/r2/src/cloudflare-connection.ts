@@ -317,6 +317,23 @@ export class CloudflareConnection {
     return this.api;
   }
 
+  /**
+   * The signed-in account, for work that needs Workers but not the bucket.
+   *
+   * The Worker that gives a tunnel a fixed address is one of those: it has
+   * nothing to do with backups, needs no bucket, and is possible exactly when
+   * there is an account and the grant included permission to deploy scripts.
+   * Null covers every reason it is not - not signed in, signed out again, the
+   * grant expired, or that permission declined on the consent screen - because
+   * the caller does the same thing in all of them: nothing.
+   */
+  public async workersAccount(): Promise<CloudflareAccount | null> {
+    const stored = await this.load();
+    if (!stored.refreshToken || !stored.account || stored.reconnectRequired) return null;
+    if (!stored.scopes.includes(DEFAULT_SCOPES.workersScriptsWrite)) return null;
+    return stored.account;
+  }
+
   private async choosePath(): Promise<CloudflareDataPath> {
     const stored = await this.requireConnected();
     if (!stored.scopes.includes(DEFAULT_SCOPES.workersScriptsWrite)) return 'rest';

@@ -129,7 +129,7 @@ interface StoredR2Config {
    */
   readonly lastSnapshot: { readonly profileId: string; readonly id: string } | null;
   /** What the manager restored by itself on the way up; see R2Config.lastRecovery. */
-  readonly lastRecovery: { readonly at: string; readonly createdAt: string; readonly fileCount: number } | null;
+  readonly lastRecovery: { readonly at: string; readonly createdAt: string; readonly fileCount: number; readonly sizeBytes?: number } | null;
   readonly usage: StoredUsage;
 }
 
@@ -728,9 +728,9 @@ export class R2Manager {
    * the reader would otherwise have to work out from the chat history whether
    * their data came back.
    */
-  public async recordRecovery(recovery: { readonly createdAt: string; readonly fileCount: number }): Promise<void> {
+  public async recordRecovery(recovery: { readonly createdAt: string; readonly fileCount: number; readonly sizeBytes?: number }): Promise<void> {
     const config = await this.load();
-    await this.save({ ...config, lastRecovery: { at: this.now().toISOString(), createdAt: recovery.createdAt, fileCount: recovery.fileCount } });
+    await this.save({ ...config, lastRecovery: { at: this.now().toISOString(), createdAt: recovery.createdAt, fileCount: recovery.fileCount, ...(recovery.sizeBytes === undefined ? {} : { sizeBytes: recovery.sizeBytes }) } });
   }
 
   public async markFingerprint(fingerprint: string): Promise<void> {

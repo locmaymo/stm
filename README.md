@@ -42,6 +42,8 @@ SillyTavern is a terminal, a Git checkout and a folder of data you must not lose
 | **Install and update** | Pick a release or a branch and press **Install**. The manager clones it, installs dependencies, health-checks the build and reports **Ready** only once SillyTavern answers on its port. It tells you when a newer release is out. |
 | **Run and watch** | Start, stop and open SillyTavern from the panel, with live logs from the manager, SillyTavern, the installer, backups and the tunnel in one searchable feed. |
 | **Share safely** | SillyTavern itself stays on localhost. Other devices and Cloudflare Tunnel reach it through the manager's access gateway, which asks for a password first and never forwards the admin panel. |
+| **A link that keeps working** | Sign in to Cloudflare and the manager puts `sillytavern.<you>.workers.dev` and `stm.<you>.workers.dev` in front of the tunnels. A Quick Tunnel's own hostname changes every restart; these two never do. |
+| **Reach your own machine** | The console has its own link, behind the manager password, for administering the machine from somewhere else. It is a separate switch from the one you share. |
 | **Back up** | Scheduled and manual ZIP archives, compatible with SillyTavern's own exports, plus previewed restores and a safety snapshot before anything is replaced. |
 | **Back up off-site** | One button signs in to Cloudflare, finds or creates an R2 bucket and keeps recovery points there. No keys to create or paste — or bring your own S3 keys. |
 | **Know your usage** | Requests, tokens, cache hits and latency per day, per provider and per model, measured from SillyTavern's own traffic. |
@@ -306,18 +308,33 @@ flowchart LR
     M --> S
     G --> S
   end
+  subgraph cf["Cloudflare, when you sign in"]
+    WS["sillytavern.&lt;you&gt;.workers.dev"]
+    WM["stm.&lt;you&gt;.workers.dev"]
+  end
   A["You, on this machine"] --> M
   B["Phone or laptop<br/>on the same Wi-Fi"] -- password --> G
-  C["Cloudflare Tunnel"] -- password --> G
+  C["Anyone you send the link to"] --> WS
+  D["You, from anywhere"] -- manager password --> WM
+  WS -- tunnel · password --> G
+  WM -- tunnel --> M
 ```
 
 | Port | What listens | Who can reach it |
 | --- | --- | --- |
-| `7860` | The manager panel | This machine, unless you expose it yourself |
+| `7860` | The manager panel | This machine, and you from anywhere once you switch its own link on |
 | `8002` | SillyTavern | This machine only |
 | `8001` | The access gateway | Your local network or a Cloudflare Tunnel, after a password |
 
-The tunnel and the local-network switch open the gateway, never the manager panel, so nobody who finds your public address can install, restore or delete anything.
+Two separate switches, because the two links are given to different people. **Cloudflare tunnel** on the overview opens the gateway, which asks for the SillyTavern password and never forwards the admin panel — that is the link you send to somebody you want to chat with. **Open this manager to the internet**, in **Settings**, opens the console itself behind the manager password; it is for reaching your own machine from another one, not for sharing.
+
+### Addresses that do not change
+
+A Cloudflare Quick Tunnel gets a random hostname, and a different one every time it starts — so a link saved yesterday is a dead name today, and a phone that had it bookmarked gets `DNS_PROBE_FINISHED_NXDOMAIN` rather than a page that says to try later.
+
+Sign in to Cloudflare (the same sign-in that sets up backups) and the manager puts two small Workers on your account's own `workers.dev` subdomain: `sillytavern.<you>.workers.dev` in front of SillyTavern and `stm.<you>.workers.dev` in front of the console. They forward to whichever tunnel is running and are redeployed the moment it changes, so the address you write down, bookmark or send is yours for good. While the machine is off they answer with a short page saying so.
+
+The manager will not deploy over a Worker of those names that it did not create, so an account that already has one keeps it — the panel says so instead. Disconnecting Cloudflare removes both.
 
 Where your data lives:
 

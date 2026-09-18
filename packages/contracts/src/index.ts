@@ -80,6 +80,19 @@ export interface ApiErrorBody {
   };
 }
 
+/**
+ * What the manager does on its own way up, as opposed to what SillyTavern is
+ * configured to do once it is running.
+ *
+ * Kept apart from ConfigSettings because those are written into the installed
+ * runtime's own config.yaml and belong to the version installed. This belongs
+ * to the manager and outlives every version it installs.
+ */
+export interface StartupSettings {
+  /** Start SillyTavern when the manager starts. On unless it is turned off. */
+  readonly autoStartSillyTavern: boolean;
+}
+
 export type VersionSelector = 'latest' | 'release' | 'staging' | (string & {});
 
 export type VersionChannel = 'release' | 'staging';
@@ -371,6 +384,14 @@ export interface R2Config {
     /** When the point that came back was taken. */
     readonly createdAt: string;
     readonly fileCount: number;
+    /**
+     * How much came back, which is what the card says.
+     *
+     * A file count answers a question nobody asked: 790 files is not a size,
+     * not a duration, and not something a reader can weigh against what they
+     * remember having. Absent on a recovery recorded before this was kept.
+     */
+    readonly sizeBytes?: number;
   } | null;
 }
 
@@ -557,6 +578,15 @@ export interface Job {
   readonly stepCode?: string;
   readonly stepParams?: MessageParams;
   readonly installationId: string | null;
+  /**
+   * The archive a finished job produced, when it produced one.
+   *
+   * Set by fetching a recovery point out of R2: what arrives is an ordinary
+   * backup, and the panel opens the same restore question over it that an
+   * uploaded zip gets. Without this the panel would have to guess which of the
+   * archives in the library was the one it just asked for.
+   */
+  readonly resultBackupId?: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly error: string | null;
@@ -686,6 +716,22 @@ export interface TunnelState {
   readonly url: string | null;
   readonly startedAt: string | null;
   readonly error: string | null;
+  /**
+   * A fixed address in front of this tunnel, when there is one.
+   *
+   * A Quick Tunnel's own address is random and is a different one every time
+   * cloudflared starts, so it cannot be the address anybody keeps: a bookmark
+   * from yesterday answers `DNS_PROBE_FINISHED_NXDOMAIN`, because the hostname
+   * has gone from DNS rather than merely stopped answering. Given a Cloudflare
+   * sign-in, the manager puts a Worker on the account's own `workers.dev`
+   * subdomain and redeploys it at each new tunnel, so this address stays the
+   * same. It is the one to show and the one to share; `url` above is still the
+   * truth about where the traffic actually goes, and is worth showing beside it.
+   *
+   * Absent where nothing decorates the state - the tunnel manager itself does
+   * not know about any of this - and null when no Worker is deployed.
+   */
+  readonly proxyUrl?: string | null;
 }
 
 /**

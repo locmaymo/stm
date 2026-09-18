@@ -31,7 +31,7 @@ import { DEFAULT_SILLYTAVERN_PORT, portRefusal } from './ports.js';
 import { isThisMachine, readTunnelOfferDeclined, saveTunnelOfferDeclined, shouldOfferManagerTunnel } from './hosting.js';
 import { availableUpdate, readDismissedUpdate, saveDismissedUpdate } from './updates.js';
 import { apiFetch, onSessionExpired, resetSessionWatch } from './session.js';
-import type { AccessGatewayState, BackupManifest, ConfigDocument, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LogEntry, LogSourceFilter, MetricsBucket, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, BackupManifest, ConfigDocument, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LogEntry, LogSourceFilter, MetricsBucket, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
 import { translateLogEntry, translateStep } from './log-format.js';
@@ -386,6 +386,10 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
   const [backups, setBackups] = useState<BackupManifest[]>([]);
   const [installing, setInstalling] = useState(false);
   const [pendingInstallationId, setPendingInstallationId] = useState<string | null>(null);
+  /** The job behind the install in flight, which is what stopping it asks for. */
+  const [installJobId, setInstallJobId] = useState<string | null>(null);
+  /** What the manager does with SillyTavern on its own way up. Null until read. */
+  const [startup, setStartup] = useState<StartupSettings | null>(null);
   const [logSource, setLogSource] = useState<LogSourceFilter>('all');
   const [logQuery, setLogQuery] = useState('');
   const [logsExpanded, setLogsExpanded] = useState(false);
@@ -486,13 +490,31 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     let cancelled = false;
     void Promise.all([
       apiFetch('/api/v1/versions', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<{ versions: VersionOption[] }> : null),
-      apiFetch('/api/v1/installations', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<{ installations: Installation[]; activeInstallationId: string | null }> : null),
+      apiFetch('/api/v1/installations', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<{ installations: Installation[]; activeInstallationId: string | null; activeJob: Job | null }> : null),
       apiFetch('/api/v1/profiles', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<{ profiles: Profile[]; activeProfileId: string | null }> : null),
       apiFetch('/api/v1/backups', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<{ backups: BackupManifest[] }> : null),
-    ]).then(([versionPayload, installationPayload, profilePayload, backupPayload]) => {
+      apiFetch('/api/v1/startup', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<{ startup: StartupSettings }> : null),
+    ]).then(([versionPayload, installationPayload, profilePayload, backupPayload, startupPayload]) => {
       if (cancelled) return;
+      if (startupPayload) setStartup(startupPayload.startup);
       if (versionPayload) setVersions(versionPayload.versions);
-      if (installationPayload) { setInstallations(installationPayload.installations); setActiveInstallationId(installationPayload.activeInstallationId); }
+      if (installationPayload) {
+        setInstallations(installationPayload.installations);
+        setActiveInstallationId(installationPayload.activeInstallationId);
+        /*
+         * An install already running that this page did not start.
+         *
+         * Two ways that happens: the page was reloaded during one, and a
+         * manager that had just been set up installed SillyTavern by itself.
+         * Adopting it is what makes the progress on the card belong to
+         * something - and gives the reader the button that stops it.
+         */
+        if (installationPayload.activeJob) {
+          setInstalling(true);
+          setPendingInstallationId(installationPayload.activeJob.installationId);
+          setInstallJobId(installationPayload.activeJob.id);
+        }
+      }
       if (profilePayload) { setProfiles(profilePayload.profiles); setActiveProfileId(profilePayload.activeProfileId); }
       if (backupPayload) setBackups(backupPayload.backups);
     }).catch(() => undefined);
@@ -536,11 +558,31 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     if (!installing) return undefined;
     if (!pendingInstallationId) return undefined;
     const timer = window.setInterval(() => {
-      void apiFetch(`/api/v1/installations/${pendingInstallationId}`, { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<Installation> : null).then((installation) => {
+      void apiFetch(`/api/v1/installations/${pendingInstallationId}`, { credentials: 'same-origin' }).then(async (response) => {
+        // A stopped install takes its own record away with everything else it
+        // wrote, so the row this was watching is simply not there any more.
+        // Without this the console sat on "Installing" for as long as it was
+        // left open, over a machine on which nothing was being installed.
+        if (response.status === 404) return 'gone' as const;
+        return response.ok ? await response.json() as Installation : null;
+      }).then((installation) => {
+        if (installation === 'gone') {
+          setInstalling(false);
+          setPendingInstallationId(null);
+          setInstallJobId(null);
+          setInstallations((current) => current.filter((item) => item.id !== pendingInstallationId));
+          void apiFetch('/api/v1/installations', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<{ installations: Installation[]; activeInstallationId: string | null }> : null).then((payload) => {
+            if (!payload) return;
+            setInstallations(payload.installations);
+            setActiveInstallationId(payload.activeInstallationId);
+          }).catch(() => undefined);
+          return;
+        }
         if (!installation) return;
         setInstallations((current) => [...current.filter((item) => item.id !== installation.id), installation]);
         if (installation.status === 'ready' || installation.status === 'failed') {
           setInstalling(false);
+          setInstallJobId(null);
           // Keep the pending id so the just-finished result stays visible.
           // Refresh the active pointer after the runtime switches atomically.
           void apiFetch('/api/v1/installations', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<{ installations: Installation[]; activeInstallationId: string | null }> : null).then((payload) => {
@@ -553,6 +595,27 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     }, 1200);
     return () => window.clearInterval(timer);
   }, [installing, pendingInstallationId]);
+
+  /**
+   * Stop the install that is running, and let the server take back what it wrote.
+   *
+   * The answer is not waited for here beyond the request being accepted: what
+   * happens next is the same polling that was already watching the install,
+   * which sees the record go and clears the card.
+   */
+  const cancelInstall = async (): Promise<void> => {
+    if (!installJobId || !csrfToken) return;
+    await apiFetch(`/api/v1/jobs/${encodeURIComponent(installJobId)}/cancel`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } }).catch(() => undefined);
+  };
+
+  /** Whether SillyTavern comes up with the manager. Reported back so the switch can go back. */
+  const setAutoStartSillyTavern = async (enabled: boolean): Promise<string | null> => {
+    const response = await apiFetch('/api/v1/startup', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ autoStartSillyTavern: enabled }) });
+    const payload = await response.json() as { startup?: StartupSettings; error?: { message?: string } };
+    if (!response.ok || !payload.startup) return fail.body(payload, t('console.startupSaveFailed'));
+    setStartup(payload.startup);
+    return null;
+  };
 
   const navigate: Navigate = (next) => { window.location.hash = next; setPage(next); window.scrollTo({ top: 0 }); };
   const changePreferences = onPreferencesChange;
@@ -737,6 +800,8 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     networkHost={configDocument?.networkHost ?? null}
     installed={Boolean(activeInstallationId)}
     installing={installing}
+    canCancelInstall={installJobId !== null}
+    onCancelInstall={cancelInstall}
     active={activeInstallation}
     dataBytes={systemSnapshot?.storage.dataBytes ?? null}
     profileName={profiles.find((profile) => profile.id === activeProfileId)?.name ?? null}
@@ -746,6 +811,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     onPendingInstallationId={setPendingInstallationId}
     csrfToken={csrfToken}
     onInstalling={setInstalling}
+    onInstallJob={setInstallJobId}
     onRemove={removeInstallation}
     onStart={() => updateRuntime('/api/v1/process/start')}
     onStop={() => updateRuntime('/api/v1/process/stop')}
@@ -783,7 +849,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
             </div>
           </header>
           <PageContainer>
-            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} locale={preferences.locale} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} /> : <ResourcePanel page={page} t={t} />}
+            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} locale={preferences.locale} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} startup={startup} onSetAutoStart={setAutoStartSillyTavern} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} /> : <ResourcePanel page={page} t={t} />}
           </PageContainer>
           <MobileNav
             items={navigation.map(({ id, icon }) => ({ id, icon, href: `#${id}`, label: t(`nav.${id}`) }))}
@@ -830,8 +896,8 @@ function ManagerTunnelOffer({ t, open, hostname, tunnel, onDecline, onAccept }: 
       </DialogHeader>
       <DialogBody className="grid gap-3">
         <p className="text-sm text-muted-foreground">{t('console.tunnelOfferNote')}</p>
-        {tunnel.url
-          ? <code className="break-all rounded-lg border bg-muted/40 p-3 font-mono text-sm">{tunnel.url}</code>
+        {tunnel.proxyUrl ?? tunnel.url
+          ? <code className="break-all rounded-lg border bg-muted/40 p-3 font-mono text-sm">{tunnel.proxyUrl ?? tunnel.url}</code>
           : tunnel.mode !== 'off'
             ? <div className="grid gap-2 rounded-lg border bg-muted/40 p-3" role="status"><span className="thinking">{t('console.tunnelOfferOpening')}</span><TaskBar /></div>
             : null}
@@ -839,8 +905,8 @@ function ManagerTunnelOffer({ t, open, hostname, tunnel, onDecline, onAccept }: 
       </DialogBody>
       <DialogFooter>
         <Button variant="outline" onClick={onDecline}>{tunnel.url ? t('common.close') : t('console.tunnelOfferDecline')}</Button>
-        {tunnel.url
-          ? <Button asChild><a href={tunnel.url} target="_blank" rel="noopener noreferrer"><ArrowUpRight />{t('console.tunnelOfferOpen')}</a></Button>
+        {tunnel.proxyUrl ?? tunnel.url
+          ? <Button asChild><a href={(tunnel.proxyUrl ?? tunnel.url)!} target="_blank" rel="noopener noreferrer"><ArrowUpRight />{t('console.tunnelOfferOpen')}</a></Button>
           : <Button disabled={busy || tunnel.mode !== 'off'} onClick={() => void accept()}>{busy ? <LoaderCircle className="animate-spin" /> : null}{t('console.tunnelOfferAccept')}</Button>}
       </DialogFooter>
     </DialogContent>
@@ -1054,7 +1120,8 @@ function Unavailable({ t, children }: { t: Translate; children: ReactNode }) {
  */
 function RuntimeCard({
   t, fail, catalog, process, tunnel, security, sillyTavernPort, networkHost, installed, installing, active, dataBytes, profileName,
-  version, onVersionChange, versions, onPendingInstallationId, csrfToken, onInstalling, onRemove,
+  version, onVersionChange, versions, onPendingInstallationId, csrfToken, onInstalling, onInstallJob, onRemove,
+  canCancelInstall, onCancelInstall,
   onStart, onStop, onSetPassword, onPublish, onShowAddresses, onOpenSettings,
 }: {
   t: Translate; fail: Fail; catalog: Record<string, unknown>; process: ProcessState; tunnel: TunnelState;
@@ -1062,7 +1129,10 @@ function RuntimeCard({
   active: Installation | undefined; dataBytes: number | null; profileName: string | null; version: string;
   onVersionChange: (value: string) => void; versions: VersionOption[];
   onPendingInstallationId: (value: string | null) => void; csrfToken: string | null;
-  onInstalling: (value: boolean) => void; onRemove: () => Promise<string | null>;
+  onInstalling: (value: boolean) => void; onInstallJob: (value: string | null) => void; onRemove: () => Promise<string | null>;
+  /** Whether the install in flight is one the server will take back. */
+  canCancelInstall: boolean;
+  onCancelInstall: () => Promise<void>;
   onStart: () => Promise<void>; onStop: () => Promise<void>;
   onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>;
   /** Turn the tunnel on, for a reader who has no address that reaches this machine. */
@@ -1077,6 +1147,8 @@ function RuntimeCard({
   const [publishing, setPublishing] = useState(false);
   const [askedVersion, setAskedVersion] = useState<string | null>(null);
   const [askedRemove, setAskedRemove] = useState(false);
+  const [askedStopInstall, setAskedStopInstall] = useState(false);
+  const [stoppingInstall, setStoppingInstall] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [busy, setBusy] = useState(false);
   const [embedOpen, setEmbedOpen] = useState(false);
@@ -1155,16 +1227,22 @@ function RuntimeCard({
     onInstalling(true);
     try {
       const response = await apiFetch('/api/v1/installations', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ version }) });
-      const payload = await response.json() as { installationId?: string; error?: { message?: string } };
+      const payload = await response.json() as { installationId?: string; job?: { id?: string }; error?: { message?: string } };
       if (!response.ok) { report(fail.body(payload, t('console.installRequestFailed'))); onInstalling(false); return; }
       if (!payload.installationId) { report(t('console.installRequestFailed')); onInstalling(false); return; }
       onPendingInstallationId(payload.installationId);
+      // The job, not the installation: stopping is asked of the job, and the
+      // record the installation lives in is one of the things a stop removes.
+      onInstallJob(payload.job?.id ?? null);
     } catch { report(t('console.installRequestFailed')); onInstalling(false); }
   };
 
   // The first install has nothing to interrupt. Every one after it replaces a
   // working copy and restarts it, which is worth a question.
   const requestInstall = () => { if (installed || running) setAskedVersion(version); else void install(); };
+  // Asked about, because what is being given up is however many minutes of
+  // downloading have already been spent.
+  const stopInstall = () => { setAskedStopInstall(true); };
   const takeUpdate = () => { if (update) { onVersionChange('latest'); setAskedVersion('latest'); } };
   const dismissUpdate = () => {
     if (!update) return;
@@ -1181,9 +1259,15 @@ function RuntimeCard({
    * and says instead that this console may frame it - so the embed needs the
    * gateway up, and the gateway needs its PIN set before it lets anyone past.
    *
-   * Only from this machine. Reached over the network the console is on some
-   * other origin, which the gateway has not been told to allow, and the frame
-   * would come up blank with nothing on screen to explain why.
+   * Only from this machine, and that is not a gap waiting to be filled.
+   * Reached over the network the console is on some other origin, which the
+   * gateway has not been told to allow; and reached through the two Workers
+   * the console and the gateway are two different hostnames, so the session
+   * cookie the embed relies on would be a third-party cookie inside a
+   * cross-site frame - blocked outright by Safari and Firefox, and by Chrome
+   * before long. A feature that works in one browser and fails silently in
+   * the rest is worse than the tab this falls back to, which works in all of
+   * them. The box below says so by offering that instead.
    */
   const onThisMachine = isThisMachine(window.location.hostname);
   const embedUrl = `http://${window.location.hostname}:${security.port}/`;
@@ -1340,6 +1424,16 @@ function RuntimeCard({
             <dd className="runtime-progress">
               <TaskLine task={t('console.taskInstall')} step={translateStep(active.step, catalog, active.stepCode, active.stepParams)} percent={active.progress} />
               <TaskBar percent={active.progress} />
+              {/* A first install is minutes of Git and npm, and on a phone a
+                  good deal more. Somebody who started it by mistake, or on the
+                  wrong version, used to have nothing to press. What is stopped
+                  is taken back by the server, so the machine is left as it was
+                  found rather than holding half a checkout. */}
+              {canCancelInstall ? <div className="runtime-progress-actions">
+                <Button variant="outline" size="sm" disabled={stoppingInstall} onClick={() => void stopInstall()}>
+                  {stoppingInstall ? <LoaderCircle className="animate-spin" /> : <Square />}{stoppingInstall ? t('console.installStopping') : t('console.installStop')}
+                </Button>
+              </div> : null}
             </dd>
           </div> : removing ? <div className="runtime-row">
             <dt>{t('console.progressLabel')}</dt>
@@ -1413,6 +1507,15 @@ function RuntimeCard({
         try { await onPublish(); } finally { setPublishing(false); }
         return null;
       }}
+    />
+    <ConfirmDialog
+      open={askedStopInstall}
+      onOpenChange={setAskedStopInstall}
+      title={t('console.installStopConfirm')}
+      description={t('console.installStopConfirmBody')}
+      confirmLabel={t('console.installStop')}
+      cancelLabel={t('common.cancel')}
+      onConfirm={async () => { setStoppingInstall(true); try { await onCancelInstall(); } finally { setStoppingInstall(false); } }}
     />
     <ConfirmDialog
       open={askedRemove}
@@ -1567,7 +1670,17 @@ function AccessPanel({ t, process, tunnel, config, security, sillyTavernPort, on
       {running ? <>
         <div className="access-group-label">{t('console.addresses')}</div>
         <div className="address-rows">
-          <AddressRow t={t} label={t('dashboard.publicAddress')} url={tunnel.url} display={tunnel.url ?? ''} disabledHint={t('console.tunnelOffShort')} />
+          {/* The fixed Worker address when there is one, because that is the
+              address worth giving anybody; the tunnel's own is inside the
+              sheet, where somebody looking for it will find it. */}
+          <AddressRow
+            t={t}
+            label={t('dashboard.publicAddress')}
+            url={tunnel.proxyUrl ?? tunnel.url}
+            display={tunnel.proxyUrl ?? tunnel.url ?? ''}
+            disabledHint={t('console.tunnelOffShort')}
+            {...(tunnel.proxyUrl && tunnel.url ? { alternates: [tunnel.url] } : {})}
+          />
           <AddressRow t={t} label={t('console.lanAddress')} url={lan ? lanUrl : null} display={lanHost} disabledHint={t('console.lanOffShort')} />
           <AddressRow t={t} label={t('console.local')} url={onThisMachine ? localUrl : null} display={local} disabledHint={t('console.localElsewhere')} />
         </div>
@@ -1757,7 +1870,7 @@ function AddressLink({ t, href, children }: { t: Translate; href: string; childr
  * the button beside it opens the sheet that holds the code, the copy and the
  * open - for that address, not for whichever one the footer had in mind.
  */
-function AddressRow({ t, label, url, display, disabledHint }: { t: Translate; label: string; url: string | null; display: string; disabledHint?: string }) {
+function AddressRow({ t, label, url, display, disabledHint, alternates }: { t: Translate; label: string; url: string | null; display: string; disabledHint?: string; alternates?: readonly string[] }) {
   const [open, setOpen] = useState(false);
   return <div className="address-row">
     <span className="address-name">{label}</span>
@@ -1772,25 +1885,21 @@ function AddressRow({ t, label, url, display, disabledHint }: { t: Translate; la
       disabled={url === null}
       onClick={() => setOpen(true)}
     ><QrCodeIcon /></Button>
-    {url ? <ShareDialog t={t} open={open} onOpenChange={setOpen} label={label} url={url} /> : null}
+    {url ? <ShareDialog t={t} open={open} onOpenChange={setOpen} label={label} links={[url, ...(alternates ?? [])]} /> : null}
   </div>;
 }
 
-/** The code, the address, and the two things anyone wants to do with it. */
-function ShareDialog({ t, open, onOpenChange, label, url }: { t: Translate; open: boolean; onOpenChange: (open: boolean) => void; label: string; url: string }) {
-  const [copied, setCopied] = useState(false);
-  const { toast } = useToast();
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(url);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1600);
-    } catch {
-      // A clipboard the browser will not hand over is not a failure worth a
-      // dialog of its own: the address is on screen and can be selected.
-      toast({ title: t('console.copyFailed'), tone: 'destructive' });
-    }
-  };
+/**
+ * The code, and every address that reaches this door.
+ *
+ * Three things and no fourth: the code, and one line per address, each of them
+ * a link. Where a place has two addresses - a Worker with a fixed name and the
+ * tunnel it forwards to - both are here, one under the other, because either
+ * works and a reader is entitled to see the second rather than be told about
+ * it. The first is the one the code carries and the one worth sharing.
+ */
+function ShareDialog({ t, open, onOpenChange, label, links }: { t: Translate; open: boolean; onOpenChange: (open: boolean) => void; label: string; links: readonly string[] }) {
+  const primary = links[0] ?? '';
   return <Dialog open={open} onOpenChange={onOpenChange}>
     <DialogContent className="share-dialog">
       <DialogHeader>
@@ -1798,13 +1907,11 @@ function ShareDialog({ t, open, onOpenChange, label, url }: { t: Translate; open
         <DialogDescription>{t('console.scanToOpen')}</DialogDescription>
       </DialogHeader>
       <DialogBody className="share-body">
-        <QrCode value={url} label={`${label}: ${url}`} />
-        <code className="share-url">{url}</code>
+        <QrCode value={primary} label={`${label}: ${primary}`} />
+        <div className="share-links">
+          {links.map((link) => <a key={link} className="share-url" href={link} target="_blank" rel="noopener noreferrer">{link}</a>)}
+        </div>
       </DialogBody>
-      <DialogFooter className="share-actions">
-        <Button variant="outline" onClick={() => void copy()}><Copy />{copied ? t('console.linkCopied') : t('dashboard.copyLink')}</Button>
-        <Button variant="outline" asChild><a href={url} target="_blank" rel="noopener noreferrer"><ArrowUpRight />{t('dashboard.open')}</a></Button>
-      </DialogFooter>
     </DialogContent>
   </Dialog>;
 }
@@ -2045,6 +2152,21 @@ export function backupDisplayName(t: Translate, locale: string, backup: BackupMa
   return `${t(BACKUP_KIND_LABEL[backupKind(backup)])} · ${when}`;
 }
 
+/**
+ * A moment as `hh:mm dd/mm/yyyy`, for a column that has to fit on a phone.
+ *
+ * Not `toLocaleString`: that writes the reader's long form, which on a narrow
+ * table wraps onto two or three lines and pushes the size and the button out of
+ * the row. Digits in a fixed order are the same width in every language and
+ * are read the same way in both of the ones this console speaks.
+ */
+export function shortWhen(value: string): string {
+  const at = new Date(value);
+  if (Number.isNaN(at.getTime())) return '—';
+  const pad = (part: number) => String(part).padStart(2, '0');
+  return `${pad(at.getHours())}:${pad(at.getMinutes())} ${pad(at.getDate())}/${pad(at.getMonth() + 1)}/${at.getFullYear()}`;
+}
+
 /** The labels every table in the console borrows, in the reader's language. */
 function tableLabels(t: Translate): DataTableLabels {
   return {
@@ -2215,6 +2337,15 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
    */
   const [destinationOpen, setDestinationOpen] = useState(false);
   const [r2ScheduleOpen, setR2ScheduleOpen] = useState(false);
+  /*
+   * The Cloudflare sign-in address, when this page could not open it itself.
+   *
+   * Kept on the page rather than announced and taken away again. It used to be
+   * a toast: the one case where the reader has to do something with a link is
+   * the one case where the link must not vanish while they look for somewhere
+   * to put it.
+   */
+  const [cloudflareSignInUrl, setCloudflareSignInUrl] = useState<string | null>(null);
   const [r2Toggling, setR2Toggling] = useState(false);
   const [cloudflareBusy, setCloudflareBusy] = useState(false);
   const [disconnectOpen, setDisconnectOpen] = useState(false);
@@ -2224,15 +2355,6 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   // The usage panel owns its own fetch; this lets one press of Check bring it
   // up to date too, instead of a second button that only refreshes.
   const usageRefresh = useRef<(() => void) | null>(null);
-  /**
-   * Which profile in the bucket is this machine's.
-   *
-   * The list covers every profile the bucket holds, because a machine that has
-   * just been set up has an identifier the bucket has never seen and would
-   * otherwise be shown nothing. The server says which of them is the one in use
-   * here so the table can mark the rest as somebody else's.
-   */
-  const [snapshotProfileId, setSnapshotProfileId] = useState<string | null>(null);
   // Newest first: the archive somebody wants is nearly always the last one taken.
   const [backupQuery, setBackupQuery] = useState<TableQuery>(() => initialQuery({ sort: 'createdAt', direction: 'desc' }));
   const [snapshotQuery, setSnapshotQuery] = useState<TableQuery>(() => initialQuery({ pageSize: 5, sort: 'createdAt', direction: 'desc' }));
@@ -2247,9 +2369,8 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
     // Listing recovery points needs the bucket, so it is the one call here that
     // fails when R2 is off or unreachable. That must not blank the page.
     if (snapshotResponse?.ok) {
-      const payload = await snapshotResponse.json() as { snapshots: R2SnapshotSummary[]; activeProfileId?: string | null };
+      const payload = await snapshotResponse.json() as { snapshots: R2SnapshotSummary[] };
       setR2Snapshots(payload.snapshots);
-      setSnapshotProfileId(payload.activeProfileId ?? null);
     } else setR2Snapshots([]);
     if (profileResponse.ok) { const payload = await profileResponse.json() as { profiles: Profile[]; activeProfileId: string | null }; onProfilesChange(payload.profiles, payload.activeProfileId); }
     if (backupResponse.ok) { const payload = await backupResponse.json() as { backups: BackupManifest[] }; onBackupsChange(payload.backups); }
@@ -2278,7 +2399,15 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
     if (outcome === 'connected') {
       void apiFetch('/api/v1/r2', { credentials: 'same-origin' })
         .then(async (response) => (response.ok ? (await response.json() as { config: R2Config }).config : null))
-        .then((config) => toast({ title: t('console.cfConnected', { bucket: config?.cloudflare?.bucket ?? '' }), tone: 'success', duration: 8000 }))
+        .then((config) => {
+          toast({ title: t('console.cfConnected', { bucket: config?.cloudflare?.bucket ?? '' }), tone: 'success', duration: 8000 });
+          if (config) setR2Config(config);
+          // Reading the bucket is how anyone finds out whether the connection
+          // they just made actually works, and it was left as a button to
+          // press. Asked here instead, so what the reader comes back to is the
+          // answer rather than another thing to do.
+          void checkAfterConnect(config);
+        })
         .catch(() => undefined);
     } else if (outcome === 'choose_account') {
       // The sign-in worked and the only thing left is a choice, so the form
@@ -2443,13 +2572,13 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
     })();
     return null;
   };
-  const waitForOperation = async (jobId: string, onUpdate: (job: Job) => void): Promise<void> => {
+  const waitForOperation = async (jobId: string, onUpdate: (job: Job) => void): Promise<Job> => {
     for (;;) {
       const response = await apiFetch(`/api/v1/jobs/${encodeURIComponent(jobId)}`, { credentials: 'same-origin' });
       if (!response.ok) throw new Error(t('console.backupRestoreFailed'));
       const job = await response.json() as Job;
       onUpdate(job);
-      if (job.state === 'succeeded') return;
+      if (job.state === 'succeeded') return job;
       if (job.state === 'canceled') throw new StoppedError();
       if (job.state === 'failed' && job.stepCode === 'job.rollbackFailed') throw new RollbackFailedError(job.error ?? t('console.backupRestoreFailed'));
       if (job.state === 'failed') throw new Error(job.error ?? t('console.backupRestoreFailed'));
@@ -2459,12 +2588,33 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   const previewBackup = async (backup: BackupManifest) => {
     setBusyAction(t('console.restore'));
     try {
+      await openRestoreFor(backup);
+    } finally { setBusyAction(null); }
+  };
+  /**
+   * Look inside an archive and ask what to do with it.
+   *
+   * Shared by the Restore menu item and by whatever has just put an archive in
+   * the library - an uploaded zip, a recovery point brought back from R2 - so
+   * all three end at the same question instead of one of them ending at a
+   * notification and a list to go hunting through.
+   */
+  /** One archive by id, asked for straight rather than found again in the list. */
+  const readBackup = async (backupId: string): Promise<BackupManifest | null> => {
+    try {
+      const response = await apiFetch(`/api/v1/backups/${encodeURIComponent(backupId)}`, { credentials: 'same-origin' });
+      return response.ok ? await response.json() as BackupManifest : null;
+    } catch { return null; }
+  };
+  const openRestoreFor = async (backup: BackupManifest): Promise<boolean> => {
+    try {
       const response = await apiFetch(`/api/v1/backups/${backup.id}/preview`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       const payload = await response.json() as RestorePreview | { error?: { message?: string } };
-      if (!response.ok || !('files' in payload)) { failed(fail.body(payload, t('console.backupPreviewFailed'))); return; }
+      if (!response.ok || !('files' in payload)) { failed(fail.body(payload, t('console.backupPreviewFailed'))); return false; }
       setRestoreMode('replace');
       setSelectedBackup(backup); setSelectedPreview(payload);
-    } catch { failed(t('console.backupPreviewFailed')); } finally { setBusyAction(null); }
+      return true;
+    } catch { failed(t('console.backupPreviewFailed')); return false; }
   };
   const closeRestore = () => { setSelectedBackup(null); setSelectedPreview(null); };
   const restoreSelected = async () => {
@@ -2615,6 +2765,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
     } catch { failed(t('console.r2SaveFailed')); } finally { setR2Toggling(false); }
   };
   const connectCloudflare = async () => {
+    setCloudflareSignInUrl(null);
     // Cloudflare's sign-in refuses to load in a frame. When the panel is shown
     // inside another page, the sign-in gets a tab of its own, opened now while
     // the click still counts as one so it is not taken for a pop-up.
@@ -2631,14 +2782,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       // somewhere it will be refused would only blank the console. So hand
       // over the address instead and let them open it themselves.
       if (framed) {
-        const url = payload.url;
-        toast({
-          title: t('console.cfConnectPopupBlocked'),
-          description: url,
-          tone: 'attention',
-          duration: Number.POSITIVE_INFINITY,
-          action: { label: t('dashboard.copyLink'), onSelect: () => { void navigator.clipboard.writeText(url).catch(() => undefined); } },
-        });
+        setCloudflareSignInUrl(payload.url);
         return;
       }
       window.location.assign(payload.url);
@@ -2657,6 +2801,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       setR2Config(payload.config);
       done(t('console.cfConnected', { bucket: payload.config.cloudflare?.bucket ?? '' }));
       await refresh();
+      await checkAfterConnect(payload.config);
       return null;
     } catch { failed(t('console.cfConnectFailed')); return t('console.cfConnectFailed'); } finally { setCloudflareBusy(false); }
   };
@@ -2693,6 +2838,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       setR2Config(payload.config);
       done(t('console.cfConnected', { bucket: payload.config.cloudflare?.bucket ?? '' }));
       await refresh();
+      await checkAfterConnect(payload.config);
     } catch { failed(t('console.r2SaveFailed')); } finally { setCloudflareBusy(false); }
   };
   /**
@@ -2718,6 +2864,19 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       usageRefresh.current?.();
       await refresh();
     } catch { failed(t('console.r2TestFailed')); } finally { setR2Busy(null); }
+  };
+  /**
+   * Read the bucket once, straight after a connection is made.
+   *
+   * Only when there is something to read: the check needs backups to be on and
+   * the destination settled, and asking before that is a refusal the reader did
+   * nothing to cause. A failure here is the useful kind - it is the connection
+   * they just made, said plainly on the card while they are still looking at it.
+   */
+  const checkAfterConnect = async (config: R2Config | null) => {
+    if (!config?.enabled || !config.configured) return;
+    if (config.mode === 'cloudflare' && config.cloudflare?.state !== 'connected') return;
+    await checkR2();
   };
   const uploadR2 = async () => {
     setR2Busy(t('console.r2UploadLatest'));
@@ -2755,8 +2914,20 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       const payload = await response.json() as { jobId?: string; error?: { message?: string } };
       if (!response.ok || !payload.jobId) { failed(fail.body(payload, t('console.r2FetchFailed'))); return; }
       setRunningJobId(payload.jobId);
-      await waitForOperation(payload.jobId, (job) => setOperationProgress({ percent: job.progress, step: jobStep(job) }));
-      await refresh(); toast({ title: t('console.r2Fetched'), tone: 'success', duration: 8000 });
+      const finished = await waitForOperation(payload.jobId, (job) => setOperationProgress({ percent: job.progress, step: jobStep(job) }));
+      await refresh();
+      /*
+       * Ask what to do with it, the way an uploaded zip is asked about.
+       *
+       * Bringing a recovery point back and restoring it are one intention,
+       * split in two only because the archive has to exist before it can be
+       * looked inside. Ending at a notification left the reader to go and find
+       * the row themselves, in a list where the thing they had just downloaded
+       * looked like everything else in it.
+       */
+      const landed = finished.resultBackupId ? await readBackup(finished.resultBackupId) : null;
+      if (landed && await openRestoreFor(landed)) return;
+      toast({ title: t('console.r2Fetched'), tone: 'success', duration: 8000 });
     } catch (error: unknown) {
       if (!(error instanceof StoppedError)) failed(error instanceof Error ? error.message : t('console.r2FetchFailed'));
     } finally { setR2Busy(null); setOperationProgress(null); setRunningJobId(null); }
@@ -2805,38 +2976,41 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   const signedIn = r2Config?.mode === 'cloudflare' && cloudflare?.state === 'connected';
   const keysConfigured = Boolean(r2Config?.endpoint && r2Config.bucket && r2Config.accessKeyIdMasked && r2Config.secretAccessKeyConfigured);
   const destination = destinationText(t, r2Config);
+  /*
+   * When, how big, and the one thing to do with it.
+   *
+   * There used to be two more columns: which profile in the bucket wrote the
+   * point, and how many files it holds. Neither is a question anybody asks of
+   * this table - every row is the same person's data, and a file count says
+   * nothing a size does not say better - and between them they took the width
+   * that the three columns that are read need on a phone. The row now fits on
+   * one line at any width.
+   */
   const snapshotColumns: DataTableColumn<R2SnapshotSummary>[] = [
-    { id: 'createdAt', header: t('console.backupCreated'), sortable: true, cell: (snapshot) => <span className="whitespace-nowrap">{new Date(snapshot.createdAt).toLocaleString()}</span> },
-    /*
-     * Whose point this is.
-     *
-     * The table lists the whole bucket, so on a machine that has been rebuilt
-     * most rows were written by what is, as far as the bucket is concerned, a
-     * different profile - the same person's data under an identifier this
-     * machine no longer has. Marking them is the difference between a list
-     * that looks wrong and a list that explains itself.
-     */
     {
-      id: 'profileId',
-      header: t('console.r2SnapshotFrom'),
-      showFrom: 'md',
-      cell: (snapshot) => snapshotProfileId !== null && snapshot.profileId === snapshotProfileId
-        ? <span className="text-xs text-muted-foreground">{t('console.r2SnapshotThisProfile')}</span>
-        : <Badge variant="secondary">{t('console.r2SnapshotOtherProfile')}</Badge>,
+      id: 'createdAt',
+      header: t('console.backupCreated'),
+      sortable: true,
+      // Digits rather than the locale's long form below `sm`: "18:05
+      // 18/09/2026" is half the width of what `toLocaleString` writes and is
+      // read the same way in both languages.
+      cell: (snapshot) => <span className="whitespace-nowrap">
+        <span className="sm:hidden">{shortWhen(snapshot.createdAt)}</span>
+        <span className="hidden sm:inline">{new Date(snapshot.createdAt).toLocaleString()}</span>
+      </span>,
     },
     // The data the point holds, which is what bringing it back downloads. The
     // index object alone - what this column used to show - is a few hundred
     // kilobytes whatever the profile weighs.
-    { id: 'dataBytes', header: t('console.backupSize'), sortable: true, align: 'end', showFrom: 'sm', cell: (snapshot) => <span className="whitespace-nowrap text-muted-foreground">{snapshot.dataBytes === null ? '—' : formatBytes(snapshot.dataBytes)}</span> },
-    { id: 'fileCount', header: t('console.r2Files'), align: 'end', showFrom: 'md', cell: (snapshot) => <span className="whitespace-nowrap tabular-nums text-muted-foreground">{snapshot.fileCount === null ? '—' : snapshot.fileCount.toLocaleString()}</span> },
+    { id: 'dataBytes', header: t('console.backupSize'), sortable: true, align: 'end', cell: (snapshot) => <span className="whitespace-nowrap text-muted-foreground">{snapshot.dataBytes === null ? '—' : formatBytes(snapshot.dataBytes)}</span> },
     {
       id: 'actions',
       header: <span className="sr-only">{t('console.backupActions')}</span>,
       align: 'end',
-      headClassName: 'w-32',
+      headClassName: 'w-28',
       // Not "Download": nothing leaves for the reader to carry off. The point
       // comes back into this manager's backup library, to be restored from there.
-      cell: (snapshot) => <Button variant="ghost" size="sm" onClick={() => void fetchSnapshot(snapshot)} disabled={r2Busy !== null}><History />{t('console.r2Fetch')}</Button>,
+      cell: (snapshot) => <Button variant="ghost" size="sm" className="whitespace-nowrap" onClick={() => void fetchSnapshot(snapshot)} disabled={r2Busy !== null}><History />{t('console.r2Fetch')}</Button>,
     },
   ];
 
@@ -2926,6 +3100,9 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
         <span className="access-badge"><Star />{t('console.r2Badge')}</span>
       </PanelHeading>
       <CardContent className="grid gap-4">
+        {/* The address the dialog handed over, still here after the dialog has
+            been closed on top of it. */}
+        {cloudflareSignInUrl && !destinationOpen ? <CloudflareSignInBanner t={t} url={cloudflareSignInUrl} onDismiss={() => setCloudflareSignInUrl(null)} /> : null}
         {/* Said above the settings, and only while it is off: once it is on,
             this is a sales pitch for something the reader has already bought. */}
         {!(r2Config?.enabled && r2Config.configured) ? <p className="cloud-pitch">
@@ -2955,7 +3132,13 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
         {r2Config?.lastRecovery ? <Alert>
           <History />
           <AlertTitle>{t('console.r2RecoveredTitle')}</AlertTitle>
-          <AlertDescription>{t('console.r2RecoveredBody', { when: new Date(r2Config.lastRecovery.createdAt).toLocaleString(), files: r2Config.lastRecovery.fileCount })}</AlertDescription>
+          {/* How much came back, not how many files: a size is something the
+              reader can weigh against what they remember having. A recovery
+              recorded before the size was kept says the rest without it,
+              rather than claiming 0 B came back. */}
+          <AlertDescription>{r2Config.lastRecovery.sizeBytes === undefined
+            ? t('console.r2RecoveredBodyNoSize', { when: new Date(r2Config.lastRecovery.createdAt).toLocaleString() })
+            : t('console.r2RecoveredBody', { when: new Date(r2Config.lastRecovery.createdAt).toLocaleString(), size: formatBytes(r2Config.lastRecovery.sizeBytes) })}</AlertDescription>
         </Alert> : null}
         <div>
           {/* Whether anything leaves this machine at all, first: it is the
@@ -2992,10 +3175,16 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
               and look at it. Everything else that used to be a button here
               answered some part of "look at it" and is folded into Check. */}
           {r2Config?.configured ? <DetailRow label={t('console.r2LastUpload')} hint={r2Config.lastUploadAt ? new Date(r2Config.lastUploadAt).toLocaleString() : '—'}>
-            <Button size="sm" onClick={() => void uploadR2()} disabled={r2Busy !== null || !r2Config.enabled}><Upload />{t('console.r2UploadLatest')}</Button>
-            <Tooltip><TooltipTrigger asChild><span className="inline-flex">
-              <Button variant="outline" size="sm" onClick={() => void checkR2()} disabled={r2Busy !== null}><ShieldCheck />{t('console.r2CheckNow')}</Button>
-            </span></TooltipTrigger><TooltipContent>{t('console.r2CheckHint')}</TooltipContent></Tooltip>
+            {/* One under the other, not side by side. Two buttons in a row
+                needed more width than the card has on a phone, and what gave
+                way was the label beside them. Stacked, each keeps its own
+                width and the name of the row stays on one line. */}
+            <div className="grid gap-2">
+              <Button size="sm" onClick={() => void uploadR2()} disabled={r2Busy !== null || !r2Config.enabled}><Upload />{t('console.r2UploadLatest')}</Button>
+              <Tooltip><TooltipTrigger asChild><span className="inline-flex">
+                <Button variant="outline" size="sm" className="w-full" onClick={() => void checkR2()} disabled={r2Busy !== null}><ShieldCheck />{t('console.r2CheckNow')}</Button>
+              </span></TooltipTrigger><TooltipContent>{t('console.r2CheckHint')}</TooltipContent></Tooltip>
+            </div>
             {/* Backups taken under the old whole-file scheme. Nothing reads them
                 any more, but they are the operator's, so removing them is asked
                 for rather than assumed - and this menu exists only when there
@@ -3092,6 +3281,8 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       startEnabled={!r2Config?.enabled}
       config={r2Config}
       busy={cloudflareBusy}
+      signInUrl={cloudflareSignInUrl}
+      onDismissSignIn={() => setCloudflareSignInUrl(null)}
       onConnect={() => void connectCloudflare()}
       onChooseAccount={chooseCloudflareAccount}
       onChooseBucket={chooseCloudflareBucket}
@@ -3139,7 +3330,7 @@ function R2CheckLine({ t, check }: { t: Translate; check: R2CheckResult }) {
     return <p className="text-xs text-muted-foreground">
       <span className="font-medium text-(--success)">{fresh ? t('console.r2CheckedJustNow') : t('console.r2CheckedAt', { time: when.toLocaleTimeString() })}</span>
       {' \u00b7 '}
-      {t('console.r2CheckOk', { objects: check.objectCount.toLocaleString(), size: formatBytes(check.totalBytes), points: check.snapshotCount.toLocaleString() })}
+      {t('console.r2CheckOk', { size: formatBytes(check.totalBytes), points: check.snapshotCount.toLocaleString() })}
     </p>;
   }
   return <Alert variant="destructive"><TriangleAlert /><AlertDescription>{t('console.r2CheckFailed', { error: check.failure.message })}</AlertDescription></Alert>;
@@ -3288,6 +3479,46 @@ function RestoreDialog({ t, catalog, displayName, backup, preview, mode, onModeC
 }
 
 /**
+ * The Cloudflare sign-in address, for a page that cannot open it itself.
+ *
+ * Cloudflare's sign-in refuses to load in a frame, so a console shown inside
+ * another page has to hand the address over instead of following it. That used
+ * to be a notification, which is the wrong shape for it twice over: it goes
+ * away while the reader is still looking at it, and it left them nothing to
+ * press but Copy - so the one path out of a framed console was copy the link,
+ * find the address bar, paste. A banner stays, and carries both: open it here,
+ * or take the address somewhere else.
+ */
+function CloudflareSignInBanner({ t, url, onDismiss }: { t: Translate; url: string; onDismiss: () => void }) {
+  const [copied, setCopied] = useState(false);
+  const { toast } = useToast();
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      // The address is on screen and can be selected, so a clipboard the
+      // browser will not hand over is worth saying and nothing more.
+      toast({ title: t('console.copyFailed'), tone: 'destructive' });
+    }
+  };
+  return <Alert>
+    <CloudflareMark />
+    <AlertTitle>{t('console.cfConnectOpenHere')}</AlertTitle>
+    <AlertDescription className="grid gap-2">
+      <span>{t('console.cfConnectPopupBlocked')}</span>
+      <a className="break-all font-mono text-xs underline underline-offset-4" href={url} target="_blank" rel="noopener noreferrer">{url}</a>
+      <div className="flex flex-wrap gap-2">
+        <Button size="sm" asChild><a href={url} target="_blank" rel="noopener noreferrer"><ArrowUpRight />{t('console.openInTab')}</a></Button>
+        <Button variant="outline" size="sm" onClick={() => void copy()}><Copy />{copied ? t('console.linkCopied') : t('dashboard.copyLink')}</Button>
+        <Button variant="ghost" size="sm" onClick={onDismiss}>{t('common.close')}</Button>
+      </div>
+    </AlertDescription>
+  </Alert>;
+}
+
+/**
  * Where backups go, asked once, with both ways of answering it in view.
  *
  * There is one question here - which bucket, reached how - and the card used to
@@ -3305,7 +3536,7 @@ function RestoreDialog({ t, catalog, displayName, backup, preview, mode, onModeC
  * to. Saving means "use this one", which is the choice that used to need a
  * confirmation dialog of its own, asked here where it is being made.
  */
-function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled, onConnect, onChooseAccount, onChooseBucket, onDisconnect, onUseCloudflare, onSaveKeys }: {
+function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled, signInUrl, onDismissSignIn, onConnect, onChooseAccount, onChooseBucket, onDisconnect, onUseCloudflare, onSaveKeys }: {
   t: Translate;
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -3313,6 +3544,9 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled
   busy: boolean;
   /** Opened by a switch somebody just turned on, so finishing here turns it on. */
   startEnabled: boolean;
+  /** Set when this page could not open Cloudflare's sign-in and handed it over instead. */
+  signInUrl: string | null;
+  onDismissSignIn: () => void;
   onConnect: () => void;
   onChooseAccount: (accountId: string) => Promise<string | null>;
   onChooseBucket: (name: string) => Promise<string | null>;
@@ -3386,6 +3620,7 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled
       </DialogHeader>
       <DialogBody className="grid gap-4">
         {fromEnvironment.size > 0 ? <Alert><AlertDescription>{t('console.r2FromEnv')}</AlertDescription></Alert> : null}
+        {signInUrl ? <CloudflareSignInBanner t={t} url={signInUrl} onDismiss={onDismissSignIn} /> : null}
         <RadioGroup value={choice} onValueChange={(value) => setChoice(value as R2ConnectionMode)} aria-label={t('console.r2DestinationTitle')}>
           {/* Signing in first, and marked as the one to reach for: it makes the
               bucket, keeps its own keys and is the only one that can show what
@@ -4169,6 +4404,43 @@ function configFileName(path: string): string {
  * looking at the field; the server checks it again, because a panel is not what
  * guarantees two services do not land on one port.
  */
+/**
+ * What the manager does with SillyTavern when it opens.
+ *
+ * Its own card rather than a row among SillyTavern's settings: everything
+ * there is written into the installed runtime's config.yaml and belongs to the
+ * version installed. This belongs to the manager and outlives every version it
+ * installs - which is also why it is not in the file the Edit button opens.
+ */
+function StartupCard({ t, startup, onSetAutoStart }: { t: Translate; startup: StartupSettings | null; onSetAutoStart: (enabled: boolean) => Promise<string | null> }) {
+  // What the switch shows while the answer is in flight, so it moves under the
+  // press rather than a second later.
+  const [pending, setPending] = useState<boolean | null>(null);
+  const [busy, setBusy] = useState(false);
+  const { toast } = useToast();
+  const checked = pending ?? startup?.autoStartSillyTavern ?? null;
+  const save = async (next: boolean) => {
+    setPending(next); setBusy(true);
+    try {
+      const failure = await onSetAutoStart(next);
+      if (failure) { toast({ title: failure, tone: 'destructive' }); return; }
+      // Not `configSaved`: nothing was written into SillyTavern's own config and
+      // nothing restarted. What changed is what the next start will do.
+      toast({ title: t('console.startupSaved'), tone: 'success' });
+    } finally { setPending(null); setBusy(false); }
+  };
+  return <Card>
+    <PanelHeading icon={<Play />}>{t('console.startupTitle')}</PanelHeading>
+    <CardContent>
+      <DetailRow label={t('console.autoStartSillyTavern')} hint={t('console.autoStartSillyTavernHint')}>
+        {checked === null
+          ? <Skeleton className="h-5 w-9" />
+          : <Switch checked={checked} disabled={busy} onCheckedChange={(next) => void save(next)} aria-label={t('console.autoStartSillyTavern')} />}
+      </DetailRow>
+    </CardContent>
+  </Card>;
+}
+
 function PortsCard({ t, ports, process, busy, onPortChange }: { t: Translate; ports: PortSettings | null; process: ProcessState; busy: boolean; onPortChange: (port: number) => Promise<string | null> }) {
   const [value, setValue] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -4243,7 +4515,7 @@ function SettingsGroup({ icon, title }: { icon: ReactNode; title: string }) {
   </div>;
 }
 
-function ConfigPage({ t, locale, config, security, ports, managerTunnel, process, catalog, onSetManagerTunnel, onPortChange, onConfigUpdate, onConfigReset, onChangeManagerPassword, onSetPassword, onSignOut, onSignOutDevices }: { t: Translate; locale: LocaleCode; config: ConfigDocument | null; security: AccessGatewayState; ports: PortSettings | null; managerTunnel: TunnelState; process: ProcessState; catalog: Record<string, unknown>; onSetManagerTunnel: (on: boolean) => Promise<string | null>; onPortChange: (port: number) => Promise<string | null>; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onConfigReset: () => Promise<string | null>; onChangeManagerPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSignOut: () => Promise<void>; onSignOutDevices: () => Promise<string | null> }) {
+function ConfigPage({ t, locale, config, security, ports, managerTunnel, process, catalog, startup, onSetAutoStart, onSetManagerTunnel, onPortChange, onConfigUpdate, onConfigReset, onChangeManagerPassword, onSetPassword, onSignOut, onSignOutDevices }: { t: Translate; locale: LocaleCode; config: ConfigDocument | null; security: AccessGatewayState; ports: PortSettings | null; managerTunnel: TunnelState; process: ProcessState; catalog: Record<string, unknown>; startup: StartupSettings | null; onSetAutoStart: (enabled: boolean) => Promise<string | null>; onSetManagerTunnel: (on: boolean) => Promise<string | null>; onPortChange: (port: number) => Promise<string | null>; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onConfigReset: () => Promise<string | null>; onChangeManagerPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSignOut: () => Promise<void>; onSignOutDevices: () => Promise<string | null> }) {
   const [form, setForm] = useState<ConfigSettingsInput>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -4263,17 +4535,15 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
   // cloudflared has finished connecting - the same reading the sharing card
   // uses, for the same reason.
   const managerTunnelWanted = managerTunnel.mode !== 'off';
-  const managerTunnelLink = managerTunnel.url;
-  const copyManagerTunnelLink = async (link: string) => {
-    try {
-      await navigator.clipboard.writeText(link);
-      toast({ title: t('console.linkCopied'), tone: 'success' });
-    } catch {
-      // The address is on the row and can be selected; a clipboard the browser
-      // will not hand over is not worth more than saying so.
-      toast({ title: t('console.copyFailed'), tone: 'destructive' });
-    }
-  };
+  /*
+   * The address to show for the console's own link.
+   *
+   * The Worker's, when Cloudflare is signed in: it is the same address every
+   * time, which is the only kind worth writing down or putting on a phone. The
+   * tunnel's own is shown underneath it rather than instead of it, because it
+   * is what the traffic really goes through and it changes on every restart.
+   */
+  const managerTunnelLink = managerTunnel.proxyUrl ?? managerTunnel.url;
   const applyManagerTunnel = async (on: boolean) => {
     setManagerTunnelBusy(true); setManagerTunnelError(null);
     try {
@@ -4382,13 +4652,23 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
               the console - which is the side that installs software and holds
               the Cloudflare tokens. It belongs next to the password that is the
               only thing guarding it. */}
+          {/* The address in full, and clickable, rather than a shortened
+              fragment beside a Copy button. What somebody wants from this row
+              is to be at that page, or to send it to a phone - and a link they
+              can press does the first and lets them copy the second for
+              themselves. The button beside it opens the same address, for a
+              reader whose eye goes to the buttons rather than to the text. */}
           <DetailRow
-            label={<span className="flex flex-wrap items-center gap-2">{t('console.managerTunnel')}{managerTunnelLink ? <code className="font-mono text-xs text-muted-foreground">{shortenHost(managerTunnelLink.replace(/^https?:\/\//u, ''))}</code> : null}</span>}
-            hint={t('console.managerTunnelHint')}
+            label={t('console.managerTunnel')}
+            hint={managerTunnelLink
+              ? <a className="break-all font-mono underline underline-offset-4" href={managerTunnelLink} target="_blank" rel="noopener noreferrer">{managerTunnelLink}</a>
+              : t('console.managerTunnelHint')}
           >
             <div className="flex items-center gap-1">
               {managerTunnelLink
-                ? rowAction(<Copy />, t('dashboard.copyLink'), t('dashboard.copyLink'), () => { void copyManagerTunnelLink(managerTunnelLink); }, { variant: 'outline' })
+                ? <Button variant="outline" size="sm" aria-label={t('console.openInTab')} title={t('console.openInTab')} asChild>
+                  <a href={managerTunnelLink} target="_blank" rel="noopener noreferrer"><ArrowUpRight /><span className="hidden sm:inline">{t('console.openInTab')}</span></a>
+                </Button>
                 : null}
               <Switch
                 checked={managerTunnelWanted}
@@ -4425,6 +4705,7 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
       cancelLabel={t('common.cancel')}
       onConfirm={() => applyManagerTunnel(false)}
     />
+    <StartupCard t={t} startup={startup} onSetAutoStart={onSetAutoStart} />
     <PortsCard t={t} ports={ports} process={process} busy={busy} onPortChange={onPortChange} />
     <PasswordDialog t={t} open={managerPasswordOpen} onOpenChange={setManagerPasswordOpen} title={t('console.managerPasswordTitle')} description={t('console.managerPasswordHint')} note={t('console.passwordChangeSignsOut')} minLength={MIN_MANAGER_PASSWORD} hint={t('console.managerPasswordMin')} submitLabel={t('console.changePassword')} onSubmit={saveManagerPassword} />
     <PasscodeDialog t={t} open={sillyPasswordOpen} onOpenChange={setSillyPasswordOpen} note={security.passwordConfigured ? t('console.passwordChangeSignsOut') : null} onSubmit={onSetPassword} />

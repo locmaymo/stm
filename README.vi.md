@@ -42,6 +42,8 @@ SillyTavern là một cửa sổ terminal, một bản checkout Git và một th
 | **Cài đặt và cập nhật** | Chọn một bản release hoặc một branch rồi bấm **Cài đặt**. Manager tự clone, cài dependency, kiểm tra bản cài và chỉ báo **Ready** khi SillyTavern thực sự trả lời trên cổng của nó. Có bản mới, manager sẽ báo. |
 | **Chạy và theo dõi** | Bật, tắt và mở SillyTavern ngay trong panel, cùng log trực tiếp của manager, SillyTavern, trình cài đặt, sao lưu và tunnel trong một dòng tin tìm kiếm được. |
 | **Chia sẻ an toàn** | Bản thân SillyTavern chỉ nằm ở localhost. Thiết bị khác và Cloudflare Tunnel đi qua cổng truy cập của manager, cổng đó hỏi mật khẩu trước và không bao giờ chuyển tiếp bảng quản trị. |
+| **Link dùng được lâu dài** | Đăng nhập Cloudflare là manager đặt `sillytavern.<bạn>.workers.dev` và `stm.<bạn>.workers.dev` đứng trước tunnel. Hostname của Quick Tunnel đổi sau mỗi lần khởi động lại; hai địa chỉ này thì không. |
+| **Vào máy của mình từ xa** | Console có link riêng, nằm sau mật khẩu manager, để bạn quản trị máy từ nơi khác. Đó là một công tắc tách biệt với cái link bạn chia sẻ. |
 | **Sao lưu** | Archive ZIP theo lịch hoặc thủ công, tương thích với export của chính SillyTavern, kèm xem trước khi khôi phục và một safety snapshot trước khi ghi đè. |
 | **Sao lưu ngoài máy** | Một nút đăng nhập Cloudflare, tìm hoặc tạo bucket R2 và giữ các điểm khôi phục ở đó. Không phải tạo hay dán khoá nào — hoặc dùng khoá S3 của bạn. |
 | **Biết mình dùng bao nhiêu** | Số request, token, cache hit và độ trễ theo ngày, theo provider và theo model, đo từ chính lưu lượng của SillyTavern. |
@@ -306,18 +308,33 @@ flowchart LR
     M --> S
     G --> S
   end
+  subgraph cf["Cloudflare, khi bạn đã đăng nhập"]
+    WS["sillytavern.&lt;bạn&gt;.workers.dev"]
+    WM["stm.&lt;bạn&gt;.workers.dev"]
+  end
   A["Bạn, trên máy này"] --> M
   B["Điện thoại hoặc laptop<br/>cùng Wi-Fi"] -- mật khẩu --> G
-  C["Cloudflare Tunnel"] -- mật khẩu --> G
+  C["Người bạn gửi link"] --> WS
+  D["Bạn, từ bất cứ đâu"] -- mật khẩu manager --> WM
+  WS -- tunnel · mật khẩu --> G
+  WM -- tunnel --> M
 ```
 
 | Cổng | Cái gì đang lắng nghe | Ai vào được |
 | --- | --- | --- |
-| `7860` | Bảng quản trị manager | Chỉ máy này, trừ khi bạn tự mở ra ngoài |
+| `7860` | Bảng quản trị manager | Máy này, và chính bạn từ xa khi đã bật link riêng của nó |
 | `8002` | SillyTavern | Chỉ máy này |
 | `8001` | Cổng truy cập | Mạng nội bộ hoặc Cloudflare Tunnel, sau khi nhập mật khẩu |
 
-Tunnel và công tắc mạng nội bộ chỉ mở cổng truy cập, không bao giờ mở bảng quản trị, nên người tìm được địa chỉ public của bạn cũng không thể cài đặt, khôi phục hay xoá bất cứ thứ gì.
+Hai công tắc tách riêng, vì hai cái link dành cho hai nhóm người khác nhau. **Cloudflare tunnel** ở trang tổng quan mở cổng truy cập — nó hỏi mật khẩu SillyTavern và không bao giờ chuyển tiếp bảng quản trị; đây là link bạn gửi cho người muốn chat cùng. **Mở trình quản lý này ra internet**, trong **Cài đặt**, mở chính console phía sau mật khẩu manager; nó để bạn quản trị máy của mình từ máy khác, không phải để chia sẻ.
+
+### Địa chỉ không đổi
+
+Cloudflare Quick Tunnel nhận một hostname ngẫu nhiên, và mỗi lần khởi động lại là một cái khác — nên cái link lưu hôm qua hôm nay đã là một cái tên chết, và điện thoại đã bookmark nó nhận `DNS_PROBE_FINISHED_NXDOMAIN` chứ không phải một trang báo hãy thử lại sau.
+
+Đăng nhập Cloudflare (đúng cái đăng nhập dùng để sao lưu) và manager đặt hai Worker nhỏ lên subdomain `workers.dev` của chính tài khoản bạn: `sillytavern.<bạn>.workers.dev` đứng trước SillyTavern và `stm.<bạn>.workers.dev` đứng trước console. Chúng chuyển tiếp tới tunnel đang chạy và được deploy lại ngay khi tunnel đổi, nên địa chỉ bạn ghi lại, bookmark hay gửi đi là của bạn mãi mãi. Lúc máy tắt, chúng trả về một trang ngắn báo đúng như vậy.
+
+Manager không deploy đè lên Worker trùng tên mà nó không tạo ra, nên tài khoản đã có sẵn một cái thì vẫn giữ nguyên — bảng điều khiển sẽ báo thay vì ghi đè. Ngắt kết nối Cloudflare sẽ xoá cả hai.
 
 Dữ liệu của bạn nằm ở đâu:
 

@@ -25,6 +25,39 @@ test('moving SillyTavern moves the address that points straight at it', () => {
   assert.deepEqual(shared.map((address) => address.url), ['http://192.168.1.20:8001', 'http://127.0.0.1:8003']);
 });
 
+test('a fixed address in front of the tunnel is the one offered', () => {
+  /*
+   * A Quick Tunnel's hostname changes every time cloudflared starts, so it is
+   * the wrong thing to hand anybody: the link they save or send stops working
+   * on the next restart, and stops as DNS_PROBE_FINISHED_NXDOMAIN because the
+   * name has gone from DNS altogether. The Worker address is the same one for
+   * good, so it is what the card shows and what the Open button takes.
+   */
+  const withProxy = reachableAddresses(
+    { url: 'https://example.trycloudflare.com', proxyUrl: 'https://sillytavern.acme.workers.dev' },
+    { lan: false, port: 8001 },
+    'localhost',
+    8000,
+    false,
+  );
+  assert.deepEqual(withProxy.map((address) => address.url), ['https://sillytavern.acme.workers.dev']);
+  // The tunnel behind it is still worth being able to see: it is what the
+  // traffic really goes through, and the share sheet says so.
+  assert.equal(withProxy[0]?.via, 'example.trycloudflare.com');
+
+  // With no Cloudflare sign-in there is no Worker, and the tunnel's own
+  // address is the only address there is.
+  const withoutProxy = reachableAddresses({ url: 'https://example.trycloudflare.com', proxyUrl: null }, { lan: false, port: 8001 }, 'localhost', 8000, false);
+  assert.deepEqual(withoutProxy.map((address) => address.url), ['https://example.trycloudflare.com']);
+  assert.equal(withoutProxy[0]?.via, undefined);
+
+  // A Worker deployed while the tunnel is off is still the address to show:
+  // it answers, and it says the door is shut.
+  const tunnelOff = reachableAddresses({ url: null, proxyUrl: 'https://stm.acme.workers.dev' }, { lan: false, port: 8001 }, 'localhost', 8000, false);
+  assert.deepEqual(tunnelOff.map((address) => address.url), ['https://stm.acme.workers.dev']);
+  assert.equal(tunnelOff[0]?.via, undefined);
+});
+
 test('a long host keeps its two ends and a short one is left alone', () => {
   assert.equal(shortenHost('example.trycloudflare.com'), 'exam...flare.com');
   assert.equal(shortenHost('127.0.0.1:8000'), '127.0.0.1:8000');

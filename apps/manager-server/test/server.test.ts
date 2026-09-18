@@ -8,6 +8,7 @@ import { StateStore } from '../src/state.js';
 import { preferredNetworkHost, startManagerServer, type ManagerServer } from '../src/server.js';
 import type { AccessGatewayState, Installation, ProcessState, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import type { TunnelManager } from '../../../packages/tunnel/src/index.js';
+import type { ProxyWorkerManager } from '../../../packages/cloudflare/src/index.js';
 import { decodeState } from '../../../packages/cloudflare/src/index.js';
 import type { RuntimeManager } from '../../../packages/sillytavern-runtime/src/index.js';
 import type { ProcessSupervisor } from '../src/supervisor.js';
@@ -22,6 +23,8 @@ async function createServer(options: {
   prepare?: (paths: ReturnType<typeof getPlatformPaths>) => Promise<void>;
   /** Stands in for the console's own tunnel, so no cloudflared is launched. */
   managerTunnel?: FakeTunnel;
+  /** Stands in for the Workers that give the tunnels a fixed address. */
+  proxy?: { urlFor(target: 'manager' | 'sillyTavern'): Promise<string | null> };
   /** As `STM_PUBLIC_ORIGIN` would name it. */
   publicOrigin?: string;
 } = {}): Promise<ManagerServer> {
@@ -44,6 +47,7 @@ async function createServer(options: {
     staticRoot,
     logger: () => undefined,
     ...(options.managerTunnel ? { managerTunnel: options.managerTunnel as unknown as TunnelManager } : {}),
+    ...(options.proxy ? { proxy: options.proxy as unknown as ProxyWorkerManager } : {}),
     ...(options.publicOrigin ? { publicOrigin: options.publicOrigin } : {}),
   });
 }
@@ -88,6 +92,48 @@ test('ModelScope proxy origins are accepted while unrelated origins remain block
   const unrelated = await fetch(`${base}/api/v1/health`, { headers: { origin: 'https://evil.example' } });
   assert.equal(unrelated.status, 403);
   assert.equal((await unrelated.json() as { error: { code: string } }).error.code, 'origin_rejected');
+});
+
+test('the console trusts its own fixed address, and signs in through it', async (t) => {
+  /*
+   * A browser at the Worker's address sends that as its `Origin`, while `Host`
+   * by the time the request arrives is the tunnel's random hostname - so the
+   * two never match and the console refused its own sign-in form with
+   * `origin_rejected`. The address opened, showed the page, and could not be
+   * used, which is worse than not opening: it looks like the password is wrong.
+   */
+  const tunnel = fakeTunnel();
+  const manager = await createServer({
+    bootstrapPassword: 'correct horse battery staple',
+    managerTunnel: tunnel,
+    proxy: { urlFor: async (target) => target === 'manager' ? 'https://stm.acme.workers.dev' : 'https://sillytavern.acme.workers.dev' },
+  });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  await tunnel.start('quick');
+  tunnel.publish('https://inspector-moss-hints-pitch.trycloudflare.com');
+
+  const throughWorker = await fetch(`${base}/api/v1/auth/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: 'https://stm.acme.workers.dev' },
+    body: JSON.stringify({ password: 'correct horse battery staple' }),
+  });
+  assert.equal(throughWorker.status, 200);
+
+  // The tunnel behind it still works, and a stranger still does not.
+  const throughTunnel = await fetch(`${base}/api/v1/health`, { headers: { origin: 'https://inspector-moss-hints-pitch.trycloudflare.com' } });
+  assert.equal(throughTunnel.status, 200);
+  const unrelated = await fetch(`${base}/api/v1/health`, { headers: { origin: 'https://stm.someone-else.workers.dev' } });
+  assert.equal(unrelated.status, 403);
+
+  /*
+   * And a Worker with nothing behind it is not an address the console answers
+   * on. With the tunnel off it serves its own "not open" page to everybody, so
+   * naming it here would be claiming a way in that does not exist.
+   */
+  await tunnel.disable();
+  const shut = await fetch(`${base}/api/v1/health`, { headers: { origin: 'https://stm.acme.workers.dev' } });
+  assert.equal(shut.status, 403);
 });
 
 /** Set the password on a fresh manager, or sign in to one that has it. */
@@ -199,6 +245,41 @@ test('a fresh manager without an environment secret accepts first-run password s
     body: JSON.stringify({ password: '123456', termsAccepted: true, telemetryAccepted: true }),
   });
   assert.equal(setup.status, 201);
+});
+
+test('starting SillyTavern with the manager is on by default, and stays where it is put', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-startup-'));
+  const manager = await createServer({ root, bootstrapPassword: 'correct horse battery staple' });
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+
+  // On, because the manager exists to run SillyTavern and a console that has
+  // to be told every time is one step in front of the thing people opened.
+  const initial = await fetch(`${base}/api/v1/startup`, { headers: { cookie: auth.cookie } });
+  assert.equal(initial.status, 200);
+  assert.equal((await initial.json() as { startup: { autoStartSillyTavern: boolean } }).startup.autoStartSillyTavern, true);
+
+  const off = await fetch(`${base}/api/v1/startup`, { method: 'PUT', headers: { cookie: auth.cookie, 'x-csrf-token': auth.csrfToken, 'content-type': 'application/json' }, body: JSON.stringify({ autoStartSillyTavern: false }) });
+  assert.equal(off.status, 200);
+  assert.equal((await off.json() as { startup: { autoStartSillyTavern: boolean } }).startup.autoStartSillyTavern, false);
+
+  // Anything that is not a yes or a no is refused rather than read as one.
+  const nonsense = await fetch(`${base}/api/v1/startup`, { method: 'PUT', headers: { cookie: auth.cookie, 'x-csrf-token': auth.csrfToken, 'content-type': 'application/json' }, body: JSON.stringify({ autoStartSillyTavern: 'yes' }) });
+  assert.equal(nonsense.status, 400);
+
+  // And it is a setting, so it outlives the process that was told it.
+  await manager.close();
+  const again = await createServer({ root });
+  t.after(() => again.close());
+  const restarted = await fetch(`${serverUrl(again)}/api/v1/startup`, { headers: { cookie: (await signIn(serverUrl(again))).cookie } });
+  assert.equal((await restarted.json() as { startup: { autoStartSillyTavern: boolean } }).startup.autoStartSillyTavern, false);
+});
+
+test('the startup setting is not readable without signing in', async (t) => {
+  const manager = await createServer({ bootstrapPassword: 'correct horse battery staple' });
+  t.after(() => manager.close());
+  const anonymous = await fetch(`${serverUrl(manager)}/api/v1/startup`);
+  assert.equal(anonymous.status, 401);
 });
 
 test('authenticated admins can change the manager password without losing persistence', async (t) => {
@@ -1045,6 +1126,54 @@ test('SillyTavern can be removed, and the request does not wait for the safety c
   // Without the CSRF header it is refused, like every other change.
   const unguarded = await fetch(`${url}/api/v1/installations`, { method: 'DELETE', headers: { cookie } });
   assert.equal(unguarded.status, 403);
+});
+
+test('an install already running is handed to a page that did not start it, and can be stopped there', async (t) => {
+  /*
+   * Two ways a console meets an install it knows nothing about: the page was
+   * reloaded during one, and a manager that had just been set up installed
+   * SillyTavern by itself on first run. Either way the card has to show the
+   * job and offer the way out of it, or the reader is left watching a version
+   * list while minutes of work happen invisibly behind it.
+   */
+  const root = await mkdtemp(join(tmpdir(), 'stm-manager-adopt-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  let cancelled: AbortSignal | null = null;
+  const fakeRuntime = {
+    listVersions: async () => [],
+    listInstallations: async () => [],
+    getActiveInstallation: async () => null,
+    getInstallation: async () => null,
+    queueInstall: (_selector: string, _onProgress: unknown, _before: unknown, signal?: AbortSignal) => {
+      cancelled = signal ?? null;
+      return { id: 'install-9', promise: new Promise<Installation>(() => undefined) };
+    },
+  } as unknown as RuntimeManager;
+  const manager = await startManagerServer({ host: '127.0.0.1', port: 0, paths, env: { STM_ADMIN_PASSWORD: 'correct horse battery staple' }, secureCookies: false, accessPort: 0, runtime: fakeRuntime, logger: () => undefined });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  const headers = { cookie: auth.cookie, 'x-csrf-token': auth.csrfToken, 'content-type': 'application/json' };
+
+  // Nothing running: nothing to adopt, and the panel shows the version list.
+  const idle = await fetch(`${base}/api/v1/installations`, { headers: { cookie: auth.cookie } });
+  assert.equal((await idle.json() as { activeJob: unknown }).activeJob, null);
+
+  const queued = await fetch(`${base}/api/v1/installations`, { method: 'POST', headers, body: JSON.stringify({ version: 'latest' }) });
+  assert.equal(queued.status, 202);
+
+  // A page that has just loaded asks the same question and is told what is
+  // happening, which installation it is for, and the job to follow.
+  const listed = await fetch(`${base}/api/v1/installations`, { headers: { cookie: auth.cookie } });
+  const active = (await listed.json() as { activeJob: { id: string; kind: string; state: string; installationId: string } | null }).activeJob;
+  assert.equal(active?.kind, 'installation');
+  assert.equal(active?.state, 'running');
+  assert.equal(active?.installationId, 'install-9');
+
+  // And the Stop button on that card reaches the install itself.
+  const stop = await fetch(`${base}/api/v1/jobs/${active?.id}/cancel`, { method: 'POST', headers });
+  assert.equal(stop.status, 200);
+  assert.equal((cancelled as AbortSignal | null)?.aborted, true, 'the runtime was told to stop, not just the job marked');
 });
 
 test('the local backup schedule is read and changed over HTTP, and survives a restart', async (t) => {

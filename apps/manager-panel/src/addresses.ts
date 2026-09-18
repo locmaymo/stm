@@ -17,6 +17,15 @@ export interface ReachableAddress {
   readonly url: string;
   /** The URL without its scheme, which is all a reader needs to recognise it. */
   readonly host: string;
+  /**
+   * Where this address actually forwards to, when it is not itself the door.
+   *
+   * Set only for the fixed Worker address: the traffic goes through it to
+   * whatever Quick Tunnel is up at the time, and that tunnel's own address is
+   * worth being able to see - it is what the logs say and what is actually
+   * being proxied - without being the address anybody is offered.
+   */
+  readonly via?: string;
 }
 
 /**
@@ -38,9 +47,21 @@ export interface ReachableAddress {
  * SillyTavern was the one press guaranteed not to. An empty list is the honest
  * answer, and the console can then offer the thing that would actually work.
  */
-export function reachableAddresses(tunnel: Pick<TunnelState, 'url'>, security: Pick<AccessGatewayState, 'lan' | 'port'>, networkHost: string, sillyTavernPort: number, onThisMachine: boolean): ReachableAddress[] {
+export function reachableAddresses(tunnel: Pick<TunnelState, 'url' | 'proxyUrl'>, security: Pick<AccessGatewayState, 'lan' | 'port'>, networkHost: string, sillyTavernPort: number, onThisMachine: boolean): ReachableAddress[] {
   const addresses: ReachableAddress[] = [];
-  if (tunnel.url) addresses.push({ kind: 'tunnel', url: tunnel.url, host: tunnel.url.replace(/^https?:\/\//u, '').replace(/\/$/u, '') });
+  /*
+   * The fixed address wins over the tunnel's own.
+   *
+   * A Quick Tunnel's hostname is a different one every time cloudflared
+   * starts, so it is the wrong thing to put in front of somebody: the link
+   * they save, send or scan stops working the next time the machine is
+   * restarted, and stops as `DNS_PROBE_FINISHED_NXDOMAIN`. The Worker address
+   * is the same one for good, and forwards to whichever tunnel is up. Where
+   * there is no Cloudflare sign-in there is no Worker, and the tunnel's own
+   * address is the only address there is.
+   */
+  if (tunnel.proxyUrl) addresses.push({ kind: 'tunnel', url: tunnel.proxyUrl, host: bareHost(tunnel.proxyUrl), ...(tunnel.url ? { via: bareHost(tunnel.url) } : {}) });
+  else if (tunnel.url) addresses.push({ kind: 'tunnel', url: tunnel.url, host: bareHost(tunnel.url) });
   if (security.lan) {
     const host = `${networkHost}:${security.port}`;
     addresses.push({ kind: 'lan', url: `http://${host}`, host });
@@ -49,6 +70,11 @@ export function reachableAddresses(tunnel: Pick<TunnelState, 'url'>, security: P
   const local = localHost(sillyTavernPort);
   addresses.push({ kind: 'local', url: `http://${local}`, host: local });
   return addresses;
+}
+
+/** An address as a reader recognises it: no scheme, no trailing slash. */
+export function bareHost(url: string): string {
+  return url.replace(/^https?:\/\//u, '').replace(/\/$/u, '');
 }
 
 /**
