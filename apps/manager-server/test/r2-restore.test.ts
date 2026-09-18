@@ -9,12 +9,14 @@ import { BackupStore } from '../../../packages/backup/src/index.js';
 import { R2Manager } from '../../../packages/r2/src/index.js';
 import { CHUNK_BYTES } from '../../../packages/r2/src/sync.js';
 import type { Profile } from '../../../packages/contracts/src/index.js';
-import { fetchSnapshotToLibrary } from '../src/r2-restore.js';
+import { fetchSnapshotToLibrary, recoverProfileFromR2 } from '../src/r2-restore.js';
 import { syncProfileToR2 } from '../src/r2-scheduler.js';
 
 /** An in-memory bucket that answers the parts of S3 this manager speaks. */
-function fakeBucket(): { fetchImpl: typeof fetch; objects: Map<string, Buffer> } {
-  const objects = new Map<string, Buffer>();
+function fakeBucket(existing?: Map<string, Buffer>): { fetchImpl: typeof fetch; objects: Map<string, Buffer> } {
+  // A bucket handed in is one that outlived the machine that wrote to it, which
+  // is the whole point of the recovery this file also covers.
+  const objects = existing ?? new Map<string, Buffer>();
   const fetchImpl: typeof fetch = async (input, init) => {
     const url = new URL(typeof input === 'string' ? input : input.toString());
     const method = init?.method ?? 'GET';
@@ -36,7 +38,7 @@ function fakeBucket(): { fetchImpl: typeof fetch; objects: Map<string, Buffer> }
   return { fetchImpl, objects };
 }
 
-async function createWorld(): Promise<{ profile: Profile; backups: BackupStore; r2: R2Manager; dataRoot: string; objects: Map<string, Buffer> }> {
+async function createWorld(options: { objects?: Map<string, Buffer>; profileId?: string } = {}): Promise<{ profile: Profile; backups: BackupStore; r2: R2Manager; dataRoot: string; objects: Map<string, Buffer> }> {
   const root = await mkdtemp(join(tmpdir(), 'stm-r2-restore-'));
   const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
   const runtimePath = join(root, 'runtime');
@@ -45,11 +47,11 @@ async function createWorld(): Promise<{ profile: Profile; backups: BackupStore; 
   await mkdir(join(dataRoot, 'characters'), { recursive: true });
   await mkdir(join(dataRoot, 'thumbnails'), { recursive: true });
   const profile: Profile = {
-    id: 'profile-1', name: 'Default', installationId: 'install-1', runtimePath,
+    id: options.profileId ?? 'profile-1', name: 'Default', installationId: 'install-1', runtimePath,
     configPath: join(runtimePath, 'config.yaml'), dataPath: join(runtimePath, 'data'), layout: 'data',
     active: true, createdAt: '2026-09-01T00:00:00.000Z', updatedAt: '2026-09-01T00:00:00.000Z', activatedAt: null,
   };
-  const bucket = fakeBucket();
+  const bucket = fakeBucket(options.objects);
   const backups = new BackupStore({ paths, logger: () => undefined });
   const r2 = new R2Manager({ paths, env: {}, logger: () => undefined, fetchImpl: bucket.fetchImpl });
   await r2.update({
@@ -136,3 +138,62 @@ test('a recovery point whose chunks are gone fails instead of restoring a hole',
   await assert.rejects(() => fetchSnapshotToLibrary({ profile, r2, backups, snapshotId: snapshots[0]!.id }), /404|failed/u);
   assert.equal((await backups.list(profile.id)).length, 0);
 });
+
+test('a machine that came back empty puts its profile back from the bucket by itself', async () => {
+  const first = await createWorld();
+  const chat = Buffer.concat([Buffer.alloc(CHUNK_BYTES, 'a'), Buffer.from('yesterday\n')]);
+  await writeFile(join(first.dataRoot, 'settings.json'), '{"theme":"dark"}', 'utf8');
+  await writeFile(join(first.dataRoot, 'chats', 'long.jsonl'), chat);
+  await syncProfileToR2({ profile: first.profile, backups: first.backups, r2: first.r2, tier: 'cold' });
+
+  // The machine is wiped and started again: a new disk, a new backup library,
+  // and a profile with an identifier that has never been in the bucket. The
+  // bucket is the only thing that survived, which is what it is for.
+  const second = await createWorld({ objects: first.objects, profileId: 'profile-after-reset' });
+  assert.deepEqual(await r2Snapshots(second.r2, 'profile-after-reset'), [], 'the new profile has no recovery points of its own');
+  await rm(second.dataRoot, { recursive: true, force: true });
+
+  const restored: string[] = [];
+  const manifest = await recoverProfileFromR2({
+    profile: second.profile, r2: second.r2, backups: second.backups,
+    restore: async (archivePath) => {
+      restored.push(archivePath);
+      await second.backups.restore(second.profile, archivePath, { mode: 'replace' });
+    },
+  });
+  assert.ok(manifest, 'the newest recovery point in the bucket is brought back');
+  assert.equal(restored.length, 1);
+  assert.equal(await readFile(join(second.dataRoot, 'settings.json'), 'utf8'), '{"theme":"dark"}');
+  assert.deepEqual(await readFile(join(second.dataRoot, 'chats', 'long.jsonl')), chat);
+});
+
+test('recovery leaves a profile that already holds something exactly as it was', async () => {
+  const first = await createWorld();
+  await writeFile(join(first.dataRoot, 'settings.json'), '{"from":"the bucket"}', 'utf8');
+  await syncProfileToR2({ profile: first.profile, backups: first.backups, r2: first.r2, tier: 'cold' });
+
+  // This machine kept its disk. Whatever is in the bucket, the profile in front
+  // of us is the newer one, and nothing here may write over it.
+  const second = await createWorld({ objects: first.objects, profileId: 'profile-in-use' });
+  await writeFile(join(second.dataRoot, 'settings.json'), '{"from":"this machine"}', 'utf8');
+  const untouched = await recoverProfileFromR2({
+    profile: second.profile, r2: second.r2, backups: second.backups,
+    restore: () => { throw new Error('a profile with data in it must never be restored over'); },
+  });
+  assert.equal(untouched, null);
+  assert.equal(await readFile(join(second.dataRoot, 'settings.json'), 'utf8'), '{"from":"this machine"}');
+});
+
+test('an empty profile and an empty bucket is a first run, not a failure', async () => {
+  const world = await createWorld();
+  await rm(world.dataRoot, { recursive: true, force: true });
+  assert.equal(await recoverProfileFromR2({
+    profile: world.profile, r2: world.r2, backups: world.backups,
+    restore: () => { throw new Error('there is nothing to restore'); },
+  }), null);
+});
+
+/** The recovery points the bucket holds for one profile, ids only. */
+async function r2Snapshots(r2: R2Manager, profileId: string): Promise<string[]> {
+  return (await r2.listSnapshots(profileId)).map((snapshot) => snapshot.id);
+}

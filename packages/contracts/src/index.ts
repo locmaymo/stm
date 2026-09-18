@@ -3,11 +3,28 @@ export * from './table-fields.js';
 
 export type PlatformKind = 'windows' | 'linux' | 'termux' | 'docker' | 'modelscope' | 'unknown';
 
+/** The ports this project ships with, before anything moves them. */
 export interface ManagerPorts {
   readonly manager: 7860;
   readonly sillyTavern: 8000;
   /** Where the guarded door to SillyTavern listens; see AccessGatewayState. */
   readonly access: 8001;
+}
+
+/**
+ * The ports a running manager is actually using.
+ *
+ * `port` is SillyTavern's, which the console can move. The reserved pair is
+ * fixed for the life of the process and comes back with it so the panel can
+ * show what a rejected number collided with, and say where to change those two
+ * instead - the environment, not this page.
+ */
+export interface PortSettings {
+  readonly port: number;
+  readonly reserved: {
+    readonly manager: number;
+    readonly access: number;
+  };
 }
 
 export interface ManagerState {
@@ -45,7 +62,8 @@ export interface HealthResponse {
   readonly status: 'ok';
   readonly manager: {
     readonly version: string;
-    readonly port: 7860;
+    /** Where the console is actually listening, which `STM_PORT` can move. */
+    readonly port: number;
   };
   readonly setupRequired: boolean;
   readonly uptimeSeconds: number;
@@ -254,6 +272,24 @@ export interface CloudflareConnectionStatus {
   readonly analyticsGranted: boolean;
   readonly connectedAt: string | null;
   readonly lastError: string | null;
+}
+
+/**
+ * What the machine this manager is on does with what is written to it.
+ *
+ * A console running on somebody's own computer keeps its data because the disk
+ * keeps it. A console running on a hosting platform may be on a filesystem that
+ * belongs to the container rather than to the account: it is created when the
+ * machine starts and thrown away when it stops, and hosts that stop a machine
+ * after an idle period stop it with everything in it. The console cannot make
+ * that storage durable. What it can do is say so, and offer the one thing that
+ * fixes it - a copy somewhere that is not this machine.
+ */
+export interface StorageDurabilityReport {
+  /** Whether what is written here survives this machine being restarted. */
+  readonly durable: boolean;
+  /** What the data directory is on, when that is what decided it. */
+  readonly filesystem: string | null;
 }
 
 export interface R2Config {

@@ -29,6 +29,8 @@ const GITHUB_API = 'https://api.github.com';
 const MAX_ZIP_DIRECTORY_BYTES = 64 * 1024 * 1024;
 const GIT_REPOSITORY = `https://github.com/${REPOSITORY}.git`;
 const DEPENDENCY_MARKER = '.stm-dependencies.json';
+/** SillyTavern's own default, used when no console has said where it runs. */
+const DEFAULT_SILLYTAVERN_PORT = 8000;
 
 /** How work running before the download says what it is doing. */
 export type BeforeInstallReport = (progress: number, step: LogEvent) => Promise<void>;
@@ -50,8 +52,15 @@ export interface RuntimeManagerOptions {
   readonly installDependencies?: (runtimePath: string, onLine: (line: string) => void) => Promise<void>;
   readonly healthCheck?: (runtimePath: string, onLine?: (line: string) => void) => Promise<void>;
   readonly healthCheckTimeoutMs?: number;
-  /** Override only for tests; production health checks stay on SillyTavern's port 8000. */
-  readonly healthCheckPort?: number;
+  /**
+   * Which port to check a fresh installation on.
+   *
+   * A function where the console supplies it, because the console can move
+   * SillyTavern between two installs and a port captured here would have the
+   * check refusing over whatever happens to hold the old one. Tests pass a
+   * number, which is the port they bound.
+   */
+  readonly healthCheckPort?: number | (() => number);
   /** Production uses one shared Git checkout. Tests can force the zip fallback. */
   readonly useGit?: boolean;
   readonly gitCommand?: string;
@@ -108,10 +117,11 @@ export class RuntimeManager {
     this.useGit = options.useGit ?? options.fetch === undefined;
     this.gitCommand = options.gitCommand ?? 'git';
     this.repositoryUrl = options.repositoryUrl ?? GIT_REPOSITORY;
-    const healthCheckPort = options.healthCheckPort ?? 8000;
+    const configured = options.healthCheckPort;
+    const healthCheckPort = typeof configured === 'function' ? configured : (): number => configured ?? DEFAULT_SILLYTAVERN_PORT;
     this.healthCheck = options.healthCheck
       ? options.healthCheck
-      : (runtimePath, onLine) => probeRuntime(runtimePath, this.healthCheckTimeoutMs, healthCheckPort, (line) => {
+      : (runtimePath, onLine) => probeRuntime(runtimePath, this.healthCheckTimeoutMs, healthCheckPort(), (line) => {
         if (onLine) onLine(line); else this.logger(`[sillytavern] ${line}`);
       });
   }
@@ -547,7 +557,7 @@ export class RuntimeError extends Error {
 async function probeRuntime(
   runtimePath: string,
   timeoutMs: number,
-  port = 8000,
+  port = DEFAULT_SILLYTAVERN_PORT,
   onLine?: (line: string) => void,
 ): Promise<void> {
   let packageJson: unknown;

@@ -21,7 +21,21 @@ const { randomBytes } = require('node:crypto');
 const { dirname, join } = require('node:path');
 const readline = require('node:readline');
 
-const MANAGER_URL = 'http://127.0.0.1:7860';
+/**
+ * Where the console is, and where this window will point people.
+ *
+ * 7860 unless something else on this machine already holds it, in which case
+ * the manager steps aside to the next free port - and so does this, to the same
+ * one, before the manager is started. Working it out here rather than reading
+ * it back out of the manager's output is what lets every line this window
+ * prints be right the first time it is printed.
+ */
+const configuredPort = Number(process.env.STM_PORT);
+/** A port somebody wrote down is theirs; nothing here moves off it. */
+const pinned = Number.isInteger(configuredPort) && configuredPort >= 1024 && configuredPort <= 65535;
+const DEFAULT_MANAGER_PORT = pinned ? configuredPort : 7860;
+let managerPort = DEFAULT_MANAGER_PORT;
+let MANAGER_URL = `http://127.0.0.1:${DEFAULT_MANAGER_PORT}`;
 const READY_TIMEOUT_MS = 180_000;
 const GRACEFUL_STOP_MS = 20_000;
 
@@ -186,13 +200,31 @@ async function portHolder() {
     // Not answering as the manager. It may still be holding the port.
   }
   const held = await new Promise((resolve) => {
-    const probe = net.connect({ host: '127.0.0.1', port: 7860 });
+    const probe = net.connect({ host: '127.0.0.1', port: DEFAULT_MANAGER_PORT });
     const settle = (value) => { probe.destroy(); resolve(value); };
     probe.once('connect', () => settle(true));
     probe.once('error', () => settle(false));
     probe.setTimeout(2_000, () => settle(false));
   });
   return held ? 'other' : null;
+}
+
+/** Whether this port can be bound right now, asked by binding it and letting go. */
+function portIsFree(port) {
+  return new Promise((resolve) => {
+    const probe = net.createServer();
+    probe.once('error', () => resolve(false));
+    probe.once('listening', () => probe.close(() => resolve(true)));
+    try { probe.listen(port, '127.0.0.1'); } catch { resolve(false); }
+  });
+}
+
+/** The first free port at or above `from`, counting up so the number stays recognisable. */
+async function nextFreePort(from) {
+  for (let port = from; port < from + 64 && port <= 65535; port += 1) {
+    if (await portIsFree(port)) return port;
+  }
+  return null;
 }
 
 async function start() {
@@ -207,19 +239,48 @@ async function start() {
     holdWindowOpen(() => process.exit(0));
     return;
   }
-  if (holder === 'other') {
+  if (holder === 'other' && pinned) {
     banner();
-    line('  Port 7860 is already being used by another program, so the manager');
-    line('  cannot listen on it. To see what has it, run this in a terminal:');
+    line(`  Port ${DEFAULT_MANAGER_PORT} is set in STM_PORT and another program is already`);
+    line('  using it, so the manager cannot listen on it. A port that was asked');
+    line('  for is not one to move off, so nothing here moves. To see what has');
+    line('  it, run this in a terminal:');
     line();
-    line('      netstat -ano | findstr :7860');
+    line(`      netstat -ano | findstr :${DEFAULT_MANAGER_PORT}`);
     line();
     line('  The last column is the process id; look it up on the Details tab of');
-    line('  Task Manager.');
+    line('  Task Manager. Or unset STM_PORT and the manager will find its own.');
     holdWindowOpen(() => process.exit(1));
     return;
   }
+  let moved = null;
+  if (holder === 'other') {
+    // Another program has it. That used to end here, which meant a port some
+    // unrelated software happened to take was enough to make the manager
+    // unusable. Moving costs the reader nothing except a different number in
+    // the address, and this window is where that number is written down.
+    moved = await nextFreePort(DEFAULT_MANAGER_PORT + 1);
+    if (moved === null) {
+      banner();
+      line(`  Port ${DEFAULT_MANAGER_PORT} is already being used by another program, and no free`);
+      line('  port was found near it. To see what has it, run this in a terminal:');
+      line();
+      line(`      netstat -ano | findstr :${DEFAULT_MANAGER_PORT}`);
+      line();
+      line('  The last column is the process id; look it up on the Details tab of');
+      line('  Task Manager.');
+      holdWindowOpen(() => process.exit(1));
+      return;
+    }
+    managerPort = moved;
+    MANAGER_URL = `http://127.0.0.1:${managerPort}`;
+  }
   banner();
+  if (moved !== null) {
+    line(`  Port ${DEFAULT_MANAGER_PORT} is being used by another program, so the console is`);
+    line(`  on ${managerPort} instead. The address above is the one to use.`);
+    line();
+  }
   server = spawn(nodeBinary, serverArguments, {
     cwd: applicationRoot,
     env: {
@@ -231,6 +292,9 @@ async function start() {
       // The launcher opens the browser once the manager answers, so the manager
       // opening its own would produce two tabs.
       STM_OPEN_BROWSER: '0',
+      // Named rather than left to the manager's own search, so this window and
+      // the manager cannot disagree about where the console ended up.
+      STM_PORT: String(managerPort),
     },
     stdio: 'inherit',
     windowsHide: true,
@@ -272,4 +336,4 @@ void start().catch((error) => {
   holdWindowOpen(() => process.exit(1));
 });
 
-module.exports = { MANAGER_URL, isReady: () => ready };
+module.exports = { managerUrl: () => MANAGER_URL, isReady: () => ready };

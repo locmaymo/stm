@@ -7,11 +7,11 @@ import { decodeState, DEFAULT_SCOPES } from '../../../packages/cloudflare/src/in
 import { getPlatformPaths } from '../../../packages/platform/src/index.js';
 import { CloudflareConnection } from '../../../packages/r2/src/index.js';
 import { ACCOUNT_ID, fakeCloudflare, OTHER_ACCOUNT_ID, type FakeCloudflareState } from '../../../packages/r2/test/cloudflare-fake.js';
-import { CLOUDFLARE_CALLBACK_PATH, startManagerServer, type ManagerServer } from '../src/server.js';
+import { CLOUDFLARE_CALLBACK_PATH, publicOriginFromEnvironment, startManagerServer, type ManagerServer } from '../src/server.js';
 
 const PASSWORD = 'correct horse battery staple';
 
-async function start(options: { cloudflare?: Partial<FakeCloudflareState> | null } = {}): Promise<{ manager: ManagerServer; base: string; state: FakeCloudflareState | null }> {
+async function start(options: { cloudflare?: Partial<FakeCloudflareState> | null; publicOrigin?: string } = {}): Promise<{ manager: ManagerServer; base: string; state: FakeCloudflareState | null }> {
   const root = await mkdtemp(join(tmpdir(), 'stm-cf-routes-'));
   const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
   const staticRoot = join(root, 'panel');
@@ -32,6 +32,7 @@ async function start(options: { cloudflare?: Partial<FakeCloudflareState> | null
   const manager = await startManagerServer({
     host: '127.0.0.1', port: 0, paths, env: { STM_ADMIN_PASSWORD: PASSWORD }, secureCookies: false, accessPort: 0, staticRoot,
     logger: () => undefined, cloudflare: connection,
+    ...(options.publicOrigin ? { publicOrigin: options.publicOrigin } : {}),
   });
   const address = manager.server.address();
   assert.ok(address && typeof address !== 'string');
@@ -149,4 +150,43 @@ test('a manager without a Cloudflare client keeps to keys and says so', async (t
   const refused = await fetch(`${base}/api/v1/r2`, { method: 'PUT', headers: { cookie: auth.cookie, 'x-csrf-token': auth.csrf, origin: base, 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'cloudflare' }) });
   assert.equal(refused.status, 400);
   assert.equal((await callback(base, { state: 'x', code: 'y' }, auth.cookie)).headers.get('location'), '/?cloudflare=error&cloudflare_error=cloudflare_not_available#data');
+});
+
+test('behind a port-forwarding proxy the sign-in comes back to the address the browser is on', async (t) => {
+  // What GitHub Codespaces does: the panel is opened on the forwarded address,
+  // but the manager is asked over loopback and both Host and Origin say so.
+  const forwarded = 'https://fluffy-doodle-jqx4w64pw5vhpv5g-7860.app.github.dev';
+  const { manager, base } = await start({ publicOrigin: forwarded });
+  t.after(() => manager.close());
+  const auth = await signIn(base);
+
+  // The panel's own origin is a stranger to the Host header, and still allowed.
+  const panelOrigin = await fetch(`${base}/api/v1/r2/cloudflare/connect`, { method: 'POST', headers: { cookie: auth.cookie, 'x-csrf-token': auth.csrf, origin: forwarded } });
+  assert.equal(panelOrigin.status, 200);
+  assert.equal(decodeState(new URL((await panelOrigin.json() as { url: string }).url).searchParams.get('state') ?? '')?.returnOrigin, forwarded);
+
+  // And the loopback address the proxy leaves behind does not win over it.
+  const rewritten = await fetch(`${base}/api/v1/r2/cloudflare/connect`, { method: 'POST', headers: { cookie: auth.cookie, 'x-csrf-token': auth.csrf, origin: base } });
+  assert.equal(rewritten.status, 200);
+  assert.equal(decodeState(new URL((await rewritten.json() as { url: string }).url).searchParams.get('state') ?? '')?.returnOrigin, forwarded);
+
+  const elsewhere = await fetch(`${base}/api/v1/r2/cloudflare/connect`, { method: 'POST', headers: { cookie: auth.cookie, 'x-csrf-token': auth.csrf, origin: 'https://example.com' } });
+  assert.equal(elsewhere.status, 403, 'only the address the panel is served on is added, not any other');
+});
+
+test('a Codespace names its forwarded address, and STM_PUBLIC_ORIGIN settles it for any other proxy', () => {
+  assert.equal(publicOriginFromEnvironment({}, 7860), null);
+  // A Codespace is the console recognising where it is, which a tunnel opened
+  // afterwards outranks; STM_PUBLIC_ORIGIN is somebody saying so, which nothing
+  // outranks. The source is what carries that difference.
+  assert.deepEqual(
+    publicOriginFromEnvironment({ CODESPACE_NAME: 'fluffy-doodle-jqx4w64pw5vhpv5g', GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN: 'app.github.dev' }, 7860),
+    { origin: 'https://fluffy-doodle-jqx4w64pw5vhpv5g-7860.app.github.dev', source: 'platform' },
+  );
+  // Half an answer is no answer: without both, nothing can be built.
+  assert.equal(publicOriginFromEnvironment({ CODESPACE_NAME: 'fluffy-doodle' }, 7860), null);
+  assert.deepEqual(publicOriginFromEnvironment({ STM_PUBLIC_ORIGIN: 'https://stm.example.com/panel/' }, 7860), { origin: 'https://stm.example.com', source: 'configured' });
+  assert.deepEqual(publicOriginFromEnvironment({ STM_PUBLIC_ORIGIN: 'https://stm.example.com', CODESPACE_NAME: 'x', GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN: 'app.github.dev' }, 7860), { origin: 'https://stm.example.com', source: 'configured' });
+  assert.throws(() => publicOriginFromEnvironment({ STM_PUBLIC_ORIGIN: 'stm.example.com' }, 7860), /not a valid URL/u);
+  assert.throws(() => publicOriginFromEnvironment({ STM_PUBLIC_ORIGIN: 'ftp://stm.example.com' }, 7860), /http or https/u);
 });

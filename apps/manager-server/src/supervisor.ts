@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { describeExit, logEvent, logLineText, STOP_REASON_TEXT, stopReasonCode, type Installation, type LogSink, type MessageParams, type ProcessState, type Profile, type StopReason } from '../../../packages/contracts/src/index.js';
 import { assertInstallationMarker, RuntimeError, type RuntimeManager } from '../../../packages/sillytavern-runtime/src/index.js';
+import { SILLYTAVERN_PORT } from './ports.js';
 
 export interface ProcessSupervisorOptions {
   readonly runtime: RuntimeManager;
@@ -14,8 +15,16 @@ export interface ProcessSupervisorOptions {
     readonly persist: (profile: Profile, runtimePath: string, runtimeLayout: 'data' | 'public') => Promise<void>;
     readonly legacyHeapMb?: (profile: Profile, runtimePath: string) => Promise<number | null>;
   };
-  /** Test hook; production waits for HTTP on port 8000. */
-  readonly readinessCheck?: (child: ChildProcess) => Promise<void>;
+  /**
+   * Which port to start SillyTavern on, read at each start.
+   *
+   * A function rather than a number because the console can move it between
+   * one start and the next, and a value captured in the constructor would keep
+   * launching on the port it was moved away from.
+   */
+  readonly port?: () => number;
+  /** Test hook; production waits for HTTP on the port above. */
+  readonly readinessCheck?: (child: ChildProcess, port: number) => Promise<void>;
   /** Runtime loader and JSONL destination for privacy-safe usage metrics. */
   readonly instrumentationPath?: string;
   readonly metricsFile?: string;
@@ -29,7 +38,8 @@ export class ProcessSupervisor {
   private readonly startupTimeoutMs: number;
   private readonly profileResolver: ((installation: Installation) => Promise<Profile | null>) | undefined;
   private readonly profileLifecycle: ProcessSupervisorOptions['profileLifecycle'];
-  private readonly readinessCheck: (child: ChildProcess) => Promise<void>;
+  private readonly port: () => number;
+  private readonly readinessCheck: (child: ChildProcess, port: number) => Promise<void>;
   private readonly instrumentationPath: string | undefined;
   private readonly metricsFile: string | undefined;
   private child: ChildProcess | null = null;
@@ -45,12 +55,13 @@ export class ProcessSupervisor {
     this.logger = options.logger ?? ((line) => console.log(logLineText(line)));
     this.now = options.now ?? (() => new Date());
     this.nodePath = options.nodePath ?? process.execPath;
-    // The first real launch can compile SillyTavern's frontend before port 8000
+    // The first real launch can compile SillyTavern's frontend before the port
     // is available, especially on free-tier workspaces.
     this.startupTimeoutMs = options.startupTimeoutMs ?? 300_000;
     this.profileResolver = options.profileResolver;
     this.profileLifecycle = options.profileLifecycle;
-    this.readinessCheck = options.readinessCheck ?? ((child) => waitForHttpReady('http://127.0.0.1:8000/', child, this.startupTimeoutMs));
+    this.port = options.port ?? (() => SILLYTAVERN_PORT);
+    this.readinessCheck = options.readinessCheck ?? ((child, port) => waitForHttpReady(`http://127.0.0.1:${port}/`, child, this.startupTimeoutMs));
     this.instrumentationPath = options.instrumentationPath;
     this.metricsFile = options.metricsFile;
   }
@@ -71,11 +82,12 @@ export class ProcessSupervisor {
     // the panel say which of the two went wrong in the reader's language.
     try { await assertInstallationMarker(installation); }
     catch (error: unknown) { return this.fail(installation.id, error instanceof Error ? error.message : 'The SillyTavern installation marker is invalid', error instanceof RuntimeError ? error.code : undefined); }
+    const port = this.port();
     this.current = { status: 'starting', installationId: installation.id, profileId: profile?.id ?? null, pid: null, startedAt: null, error: null, stepCode: 'process.preparingProfile' };
-    this.logger(logEvent('sillytavern.starting', `[sillytavern] starting ${installation.resolvedRef} on 127.0.0.1:8000`, { ref: installation.resolvedRef }));
+    this.logger(logEvent('sillytavern.starting', `[sillytavern] starting ${installation.resolvedRef} on 127.0.0.1:${port}`, { ref: installation.resolvedRef, port }));
     const args = [
       ...(this.instrumentationPath ? ['--import', this.instrumentationPath] : []),
-      'server.js', '--port', '8000', '--browserLaunchEnabled', 'false',
+      'server.js', '--port', port.toString(10), '--browserLaunchEnabled', 'false',
     ];
     let runtimeLayout: 'data' | 'public' = profile?.layout === 'public' ? 'public' : 'data';
     if (profile && this.profileLifecycle) runtimeLayout = await this.profileLifecycle.prepare(profile, installation.runtimePath);
@@ -145,12 +157,12 @@ export class ProcessSupervisor {
     });
     const spawnedAt = Date.now();
     try {
-      await this.readinessCheck(child);
+      await this.readinessCheck(child, port);
       this.current = withoutStep({ ...this.current, status: 'running' });
       // Most of this is SillyTavern loading its dependency tree, which on a
       // hosted volume is thousands of small reads rather than any real work.
       // Saying how long it took makes that visible instead of inferred.
-      this.logger(logEvent('sillytavern.ready', `[sillytavern] ready on 127.0.0.1:8000 after ${((Date.now() - spawnedAt) / 1000).toFixed(1)}s`, { seconds: ((Date.now() - spawnedAt) / 1000).toFixed(1) }));
+      this.logger(logEvent('sillytavern.ready', `[sillytavern] ready on 127.0.0.1:${port} after ${((Date.now() - spawnedAt) / 1000).toFixed(1)}s`, { seconds: ((Date.now() - spawnedAt) / 1000).toFixed(1), port }));
       return this.getState();
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'SillyTavern did not become ready';
@@ -231,7 +243,10 @@ export function startupPhase(line: string): { code: string; params?: MessagePara
   if (/^Compiling frontend libraries/u.test(line)) return { code: 'process.compilingFrontend' };
   if (/^webpack .*compiled/u.test(line)) return { code: 'process.frontendCompiled' };
   if (/Auto-updating server plugins|^Initializing plugin|server plugin\(s\) are currently loaded/u.test(line)) return { code: 'process.loadingPlugins' };
-  if (/is listening on/u.test(line)) return { code: 'process.listening' };
+  // SillyTavern names the port in the line it announces, which is the one
+  // answer that is true whatever the console asked for.
+  const listening = /is listening on [^:]*:(?:.*:)?(\d+)/u.exec(line);
+  if (listening) return { code: 'process.listening', params: { port: listening[1] ?? '' } };
   if (/^Go to: /u.test(line)) return { code: 'process.waitingForAnswer' };
   return null;
 }
@@ -246,5 +261,5 @@ async function waitForHttpReady(url: string, child: ChildProcess, timeoutMs: num
     } catch { /* startup is still in progress */ }
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
   }
-  throw new Error('SillyTavern did not become ready on port 8000');
+  throw new Error(`SillyTavern did not become ready on ${new URL(url).host}`);
 }

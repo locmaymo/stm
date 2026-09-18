@@ -151,8 +151,22 @@ test('keys a version does not understand are not invented for it', async () => {
 
 test('the managed port cannot be moved out from under the manager', async () => {
   const { store, profile, installation } = await fixture();
-  await assert.rejects(
-    store.update(profile, installation, { rawYaml: 'listen: false\nport: 9000\n' }),
-    (error: unknown) => error instanceof ConfigError && error.code === 'invalid_config',
-  );
+  // The console hands the port out, having checked it against its own and the
+  // gateway's, so an edited document is put back rather than refused.
+  const saved = await store.update(profile, installation, { rawYaml: 'listen: false\nport: 9000\n' });
+  assert.equal(saved.settings.port, 8000);
+});
+
+test('the port the console was given is the one written, even into a file that never mentioned it', async () => {
+  const { configPath, profile, installation } = await fixture();
+  let port = 8123;
+  const store = new ConfigStore({ managedPort: () => port, logger: () => undefined });
+  await store.update(profile, installation, { settings: { lazyLoadCharacters: true } });
+  assert.equal(parseYaml(await readFile(configPath, 'utf8')).port, 8123);
+
+  // And it follows the console when the console moves it again.
+  port = 8200;
+  assert.equal(await store.applyManagedDefaults(profile, installation), true, 'the file still says the old port, so it is rewritten');
+  assert.equal(parseYaml(await readFile(configPath, 'utf8')).port, 8200);
+  assert.equal(await store.applyManagedDefaults(profile, installation), false, 'and once it agrees, nothing is written');
 });

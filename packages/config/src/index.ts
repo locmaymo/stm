@@ -5,6 +5,8 @@ import { parseDocument, type Document, type YAMLMap } from 'yaml';
 import { logEvent, logLineText, type ConfigDocument, type ConfigSettings, type ConfigSettingsInput, type ConfigUpdateInput, type Installation, type LogSink, type Profile } from '../../contracts/src/index.js';
 
 const CONFIG_SCHEMA_VERSION = 1 as const;
+/** SillyTavern's own default, and what the console uses until it is told otherwise. */
+const DEFAULT_SILLYTAVERN_PORT = 8000;
 const REDACTED_PASSWORD = '********';
 const DEFAULT_BASIC_AUTH_USER = { username: 'user', password: 'password' } as const;
 /**
@@ -19,6 +21,9 @@ const DEFAULT_BASIC_AUTH_USER = { username: 'user', password: 'password' } as co
  *
  * A key that is simply absent is already at its default, so nothing is written
  * for it. Only a key that is set to something else gets moved back.
+ *
+ * `port` is managed too, but it is not in this list because its value is not a
+ * constant: it is whichever port the console was told to run SillyTavern on.
  */
 const MANAGED_DEFAULTS: ReadonlyArray<{ readonly path: readonly string[]; readonly value: boolean }> = [
   { path: ['listen'], value: false },
@@ -43,14 +48,24 @@ export class ConfigError extends Error {
 
 export interface ConfigStoreOptions {
   readonly logger?: LogSink;
+  /**
+   * Which port SillyTavern is to be started on, read at each write.
+   *
+   * The console owns this number, not the file: whoever edits the YAML is
+   * editing the copy of it that the console will overwrite. A function rather
+   * than a value because the console can move it between two writes.
+   */
+  readonly managedPort?: () => number;
 }
 
 /** Reads and updates the active SillyTavern YAML document without replacing unknown keys. */
 export class ConfigStore {
   private readonly logger: LogSink;
+  private readonly managedPort: () => number;
 
   public constructor(options: ConfigStoreOptions = {}) {
     this.logger = options.logger ?? ((line) => console.log(logLineText(line)));
+    this.managedPort = options.managedPort ?? (() => DEFAULT_SILLYTAVERN_PORT);
   }
 
   public async read(profile: Profile, installation: Installation): Promise<ConfigDocument> {
@@ -71,7 +86,7 @@ export class ConfigStore {
   public async applyManagedDefaults(profile: Profile, installation: Installation): Promise<boolean> {
     const path = await resolveConfigPath(profile, installation.runtimePath);
     const document = parseYaml(await readConfig(path));
-    if (!applyManagedDefaults(document)) return false;
+    if (!applyManagedDefaults(document, this.managedPort())) return false;
     const nextRaw = String(document);
     await atomicWriteYaml(path, nextRaw);
     this.logger(logEvent('config.managedDefaults', `[config] returned the managed settings in ${path} to their defaults`, { path }));
@@ -89,7 +104,7 @@ export class ConfigStore {
    */
   public async restoreDefaults(profile: Profile, installation: Installation): Promise<ConfigDocument> {
     const document = parseYaml(await readTemplate(installation.runtimePath));
-    applyManagedDefaults(document);
+    applyManagedDefaults(document, this.managedPort());
     const path = await resolveConfigPath(profile, installation.runtimePath);
     const nextRaw = String(document);
     await atomicWriteYaml(path, nextRaw);
@@ -112,12 +127,10 @@ export class ConfigStore {
     }
     applySettings(document, input.settings);
     // An edited YAML document can carry anything, including the settings that
-    // decide who can reach SillyTavern. Those are not the editor's to move.
-    applyManagedDefaults(document);
-    const settings = extractSettings(document);
-    if (settings.port !== 8000) {
-      throw new ConfigError('invalid_config', 'SillyTavern must keep port 8000 when managed by SillyTavern Manager');
-    }
+    // decide who can reach SillyTavern. Those are not the editor's to move -
+    // and neither is the port, which the console hands out so that it cannot
+    // collide with the console's own or with the access gateway's.
+    applyManagedDefaults(document, this.managedPort());
     const nextRaw = String(document);
     await atomicWriteYaml(path, nextRaw);
     this.logger(logEvent('config.updated', `[config] updated ${path}`, { path }));
@@ -261,12 +274,19 @@ function applySettings(document: Document.Parsed, settings: ConfigUpdateInput['s
 }
 
 /** Returns whether any managed setting had to be moved back to its default. */
-function applyManagedDefaults(document: Document.Parsed): boolean {
+function applyManagedDefaults(document: Document.Parsed, port: number): boolean {
   let changed = false;
   for (const { path, value } of MANAGED_DEFAULTS) {
     const current = getPath(document, [...path]);
     if (current === undefined || current === value) continue;
     setPath(document, [...path], value);
+    changed = true;
+  }
+  // Unlike the settings above, the port is written even when the file does not
+  // mention it: an absent `port` is SillyTavern's 8000, which is only the right
+  // answer while the console has not been asked for a different one.
+  if (getPath(document, ['port']) !== port) {
+    setPath(document, ['port'], port);
     changed = true;
   }
   return changed;

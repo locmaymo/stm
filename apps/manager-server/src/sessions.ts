@@ -89,12 +89,32 @@ export function parseSessionCookie(cookieHeader: string | undefined, cookieName 
   return undefined;
 }
 
+/**
+ * The part of the session cookie that decides where a browser will send it.
+ *
+ * On a machine somebody is sitting at, the console is its own tab on
+ * `http://127.0.0.1`, and `SameSite=Lax` is right: the cookie goes nowhere it
+ * was not asked from.
+ *
+ * Read through a platform's own preview frame, the console is a document on one
+ * site inside a page on another, which is exactly what `Lax` withholds the
+ * cookie from. Signing in then appears to do nothing - the password is
+ * accepted, the cookie is set, and the very next request arrives without it.
+ * `SameSite=None` is what a cookie in a frame needs, and browsers only accept
+ * it together with `Secure`, so the two travel together here.
+ *
+ * What `Lax` was guarding against is guarded twice over regardless: every
+ * request that changes anything carries a CSRF token no other site can read,
+ * and its Origin has to match the console's own.
+ */
+function cookieAttributes(secure: boolean): string {
+  return secure ? '; SameSite=None; Secure' : '; SameSite=Lax';
+}
+
 export function sessionCookie(token: string, secure: boolean): string {
-  const securePart = secure ? '; Secure' : '';
-  return `stm_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_TTL_MS / 1000}${securePart}`;
+  return `stm_session=${token}; Path=/; HttpOnly; Max-Age=${SESSION_TTL_MS / 1000}${cookieAttributes(secure)}`;
 }
 
 export function clearSessionCookie(secure: boolean): string {
-  const securePart = secure ? '; Secure' : '';
-  return `stm_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${securePart}`;
+  return `stm_session=; Path=/; HttpOnly; Max-Age=0${cookieAttributes(secure)}`;
 }

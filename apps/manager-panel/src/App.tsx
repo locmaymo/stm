@@ -7,7 +7,7 @@ import {
   Blocks, BookmarkPlus, Bug, FileCode2, LoaderCircle, Gauge, History, KeyRound, Monitor, CircleArrowUp, Star, TriangleAlert,
 } from 'lucide-react';
 import {
-  Alert, AlertDescription, AuthLayout, Badge, BrandMark, Button, buttonVariants, Card, CardAction,
+  Alert, AlertDescription, AlertTitle, AuthLayout, Badge, BrandMark, Button, buttonVariants, Card, CardAction,
   ConfirmDialog, DetailRow, EmptyState, StatTile, type StatusTone,
   CardContent, CardFooter, CardHeader,
   CardGrid, Checkbox, cn, DataTable, type DataTableColumn, type DataTableLabels,
@@ -27,15 +27,17 @@ import {
 import { failures, logCatalog, translator, type Fail, type Translate } from './i18n.js';
 import { browserEnvironment, browserStorage, readPreferences, savePreferences, type LocaleCode, type Preferences } from './preferences.js';
 import { authErrorKey } from './auth-error.js';
+import { DEFAULT_SILLYTAVERN_PORT, portRefusal } from './ports.js';
+import { readTunnelOfferDeclined, saveTunnelOfferDeclined, shouldOfferManagerTunnel } from './hosting.js';
 import { availableUpdate, readDismissedUpdate, saveDismissedUpdate } from './updates.js';
 import { apiFetch, onSessionExpired, resetSessionWatch } from './session.js';
-import type { AccessGatewayState, BackupManifest, ConfigDocument, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LogEntry, LogSourceFilter, MetricsBucket, MetricsSnapshot, ProcessState, Profile, R2CloudflareUsage, R2Config, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, BackupManifest, ConfigDocument, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LogEntry, LogSourceFilter, MetricsBucket, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CloudflareUsage, R2Config, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
 import { translateLogEntry, translateStep } from './log-format.js';
 import { QrCode } from './qr-code.js';
 import { CLOUDFLARE_ORANGE, CloudflareMark } from './cloudflare-mark.js';
-import { LOCAL_HOST, reachableAddresses, shortenHost } from './addresses.js';
+import { localHost, reachableAddresses, shortenHost } from './addresses.js';
 import { EmbedStage } from './embed-stage.js';
 import { LegalCredit, LegalDialog, LEGAL_REVISION } from './legal-dialog.js';
 import { legalBundle, type LegalDocumentId } from '../../../packages/legal/src/index.js';
@@ -390,7 +392,10 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
   const [compactLogs, setCompactLogs] = useState(false);
   const [processState, setProcessState] = useState<ProcessState>({ status: 'stopped', installationId: null, profileId: null, pid: null, startedAt: null, error: null });
   const [tunnelState, setTunnelState] = useState<TunnelState>({ mode: 'off', status: 'stopped', url: null, startedAt: null, error: null });
+  const [managerTunnelState, setManagerTunnelState] = useState<TunnelState>({ mode: 'off', status: 'stopped', url: null, startedAt: null, error: null });
   const [configDocument, setConfigDocument] = useState<ConfigDocument | null>(null);
+  const [portSettings, setPortSettings] = useState<PortSettings | null>(null);
+  const [tunnelOfferOpen, setTunnelOfferOpen] = useState(false);
   const [accessSecurity, setAccessSecurity] = useState<AccessGatewayState>({ status: 'stopped', host: null, port: 8001, lan: false, passwordConfigured: false, passcode: false, sessions: 0, error: null });
   const t = translator(preferences.locale);
   const catalog = logCatalog(preferences.locale);
@@ -416,17 +421,48 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     return () => { cancelled = true; };
   }, [activeInstallationId]);
 
+  /*
+   * Offer the console's own link once, on a platform where its address may not
+   * be one that works.
+   *
+   * Waits for the first answer about the tunnel rather than asking on the
+   * strength of the state's initial value, which says "off" before anything has
+   * been read and would put the dialog in front of somebody who already has it
+   * open. Once asked, it is not asked again: closing it remembers that.
+   */
+  const managerTunnelMode = managerTunnelState.mode;
+  const [tunnelAnswered, setTunnelAnswered] = useState(false);
+  useEffect(() => {
+    if (!tunnelAnswered) return;
+    if (!shouldOfferManagerTunnel({ hostname: window.location.hostname, tunnelWanted: managerTunnelMode !== 'off', declined: readTunnelOfferDeclined(browserStorage()) })) return;
+    setTunnelOfferOpen(true);
+  }, [tunnelAnswered, managerTunnelMode]);
+
+  // Not tied to an installation: which ports this manager holds is true before
+  // anything is installed, and the page that shows them says so either way.
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      const response = await apiFetch('/api/v1/config/port', { credentials: 'same-origin' });
+      if (response.ok && !cancelled) setPortSettings(await response.json() as PortSettings);
+    };
+    void load();
+    return () => { cancelled = true; };
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     const refresh = async () => {
-      const [processResponse, tunnelResponse, securityResponse] = await Promise.all([
+      const [processResponse, tunnelResponse, managerTunnelResponse, securityResponse] = await Promise.all([
         apiFetch('/api/v1/process', { credentials: 'same-origin' }),
         apiFetch('/api/v1/tunnel', { credentials: 'same-origin' }),
+        apiFetch('/api/v1/manager-tunnel', { credentials: 'same-origin' }),
         apiFetch('/api/v1/access/security', { credentials: 'same-origin' }),
       ]);
       if (cancelled) return;
       if (processResponse.ok) setProcessState(await processResponse.json() as ProcessState);
       if (tunnelResponse.ok) setTunnelState(await tunnelResponse.json() as TunnelState);
+      if (managerTunnelResponse.ok) { setManagerTunnelState(await managerTunnelResponse.json() as TunnelState); setTunnelAnswered(true); }
       if (securityResponse.ok) setAccessSecurity(await securityResponse.json() as AccessGatewayState);
     };
     void refresh();
@@ -605,6 +641,10 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     toast({ title: t('console.uninstallDone'), tone: 'success' });
     return null;
   };
+  // Where SillyTavern actually is, for every link that points at it. The config
+  // document reports it too, but it is null until something is installed and
+  // the addresses are shown before that.
+  const sillyTavernPort = portSettings?.port ?? configDocument?.settings.port ?? DEFAULT_SILLYTAVERN_PORT;
   const logProps = { t, catalog, source: logSource, onSourceChange: setLogSource, entries: liveLogs.entries, query: logQuery, onQueryChange: setLogQuery, compact: compactLogs, onToggleCompact: () => setCompactLogs((current) => !current), onLoadOlder: liveLogs.loadOlder, hasOlder: liveLogs.hasOlder, loadingOlder: liveLogs.loadingOlder };
   const logs = <LogsPanel {...logProps} expanded={logsExpanded} onToggleExpanded={() => setLogsExpanded((current) => !current)} />;
   const updateConfig = async (input: ConfigUpdateInput): Promise<string | null> => {
@@ -623,6 +663,39 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     setConfigDocument(payload.config);
     if (payload.process) setProcessState(payload.process);
     if (payload.tunnel) setTunnelState(payload.tunnel);
+    return null;
+  };
+  /**
+   * Move SillyTavern to another port.
+   *
+   * The server restarts it as part of the change, so the process state comes
+   * back with the answer and is adopted here rather than waited for: until it
+   * does, the page would show SillyTavern as running on a port it has left.
+   */
+  const updateSillyTavernPort = async (port: number): Promise<string | null> => {
+    const response = await apiFetch('/api/v1/config/port', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ port }) });
+    const payload = await response.json() as { port?: number; process?: ProcessState; error?: { message?: string } };
+    const saved = payload.port;
+    if (!response.ok || typeof saved !== 'number') return fail.body(payload, t('console.portSaveFailed'));
+    setPortSettings((current) => current ? { ...current, port: saved } : current);
+    if (payload.process) setProcessState(payload.process);
+    // The file now says the new port, and the settings card reads it from there.
+    const configResponse = await apiFetch('/api/v1/config', { credentials: 'same-origin' });
+    if (configResponse.ok) setConfigDocument(await configResponse.json() as ConfigDocument);
+    return null;
+  };
+  /**
+   * Open or close the console's own public link.
+   *
+   * Nothing is navigated here. The address takes a moment to arrive - the
+   * switch reports "starting" until cloudflared announces it - and moving the
+   * reader to a link that does not exist yet would land them on nothing.
+   */
+  const setManagerTunnel = async (on: boolean): Promise<string | null> => {
+    const response = await apiFetch('/api/v1/manager-tunnel', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ mode: on ? 'quick' : 'off' }) });
+    const payload = await response.json() as TunnelState & { error?: { message?: string } };
+    if (!response.ok) return fail.body(payload, t('console.managerTunnelFailed'));
+    setManagerTunnelState(payload);
     return null;
   };
   const setAccessPassword = async (password: string, confirmPassword: string): Promise<string | null> => {
@@ -660,6 +733,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     process={processState}
     tunnel={tunnelState}
     security={accessSecurity}
+    sillyTavernPort={sillyTavernPort}
     networkHost={configDocument?.networkHost ?? null}
     installed={Boolean(activeInstallationId)}
     installing={installing}
@@ -708,7 +782,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
             </div>
           </header>
           <PageContainer>
-            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} installed={Boolean(activeInstallationId)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} locale={preferences.locale} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} locale={preferences.locale} config={configDocument} security={accessSecurity} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} /> : <ResourcePanel page={page} t={t} />}
+            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} installed={Boolean(activeInstallationId)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} locale={preferences.locale} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} /> : <ResourcePanel page={page} t={t} />}
           </PageContainer>
           <MobileNav
             items={navigation.map(({ id, icon }) => ({ id, icon, href: `#${id}`, label: t(`nav.${id}`) }))}
@@ -719,8 +793,57 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
         </SidebarInset>
         <LogsSheet {...logProps} open={logsExpanded} onClose={() => setLogsExpanded(false)} />
       </SidebarProvider>
+      <ManagerTunnelOffer
+        t={t}
+        open={tunnelOfferOpen}
+        hostname={window.location.hostname}
+        tunnel={managerTunnelState}
+        onDecline={() => { setTunnelOfferOpen(false); saveTunnelOfferDeclined(browserStorage()); }}
+        onAccept={setManagerTunnel}
+      />
     </>
   );
+}
+
+/**
+ * The offer to open the console's own link, on a platform where its address
+ * may not be one that works.
+ *
+ * It stays open after the switch is thrown, because the address does not exist
+ * yet at that moment - cloudflared takes a few seconds to announce it - and
+ * the whole point of the offer is to hand the reader that address. So the
+ * dialog becomes the place it arrives, with a button that moves there.
+ */
+function ManagerTunnelOffer({ t, open, hostname, tunnel, onDecline, onAccept }: { t: Translate; open: boolean; hostname: string; tunnel: TunnelState; onDecline: () => void; onAccept: (on: boolean) => Promise<string | null> }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const accept = async () => {
+    setBusy(true); setError(null);
+    try { setError(await onAccept(true)); } finally { setBusy(false); }
+  };
+  return <Dialog open={open} onOpenChange={(next) => { if (!next) onDecline(); }}>
+    <DialogContent className="sm:max-w-md">
+      <DialogHeader>
+        <DialogTitle>{t('console.tunnelOfferTitle')}</DialogTitle>
+        <DialogDescription>{t('console.tunnelOfferBody', { host: hostname })}</DialogDescription>
+      </DialogHeader>
+      <DialogBody className="grid gap-3">
+        <p className="text-sm text-muted-foreground">{t('console.tunnelOfferNote')}</p>
+        {tunnel.url
+          ? <code className="break-all rounded-lg border bg-muted/40 p-3 font-mono text-sm">{tunnel.url}</code>
+          : tunnel.mode !== 'off'
+            ? <div className="grid gap-2 rounded-lg border bg-muted/40 p-3" role="status"><span className="thinking">{t('console.tunnelOfferOpening')}</span><TaskBar /></div>
+            : null}
+        {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
+      </DialogBody>
+      <DialogFooter>
+        <Button variant="outline" onClick={onDecline}>{tunnel.url ? t('common.close') : t('console.tunnelOfferDecline')}</Button>
+        {tunnel.url
+          ? <Button asChild><a href={tunnel.url} target="_blank" rel="noopener noreferrer"><ArrowUpRight />{t('console.tunnelOfferOpen')}</a></Button>
+          : <Button disabled={busy || tunnel.mode !== 'off'} onClick={() => void accept()}>{busy ? <LoaderCircle className="animate-spin" /> : null}{t('console.tunnelOfferAccept')}</Button>}
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>;
 }
 
 function AppSidebar({ page, navigate, t }: { page: PageId; navigate: Navigate; t: Translate }) {
@@ -929,12 +1052,12 @@ function Unavailable({ t, children }: { t: Translate; children: ReactNode }) {
  * two buttons the pointer is over.
  */
 function RuntimeCard({
-  t, fail, catalog, process, tunnel, security, networkHost, installed, installing, active, dataBytes, profileName,
+  t, fail, catalog, process, tunnel, security, sillyTavernPort, networkHost, installed, installing, active, dataBytes, profileName,
   version, onVersionChange, versions, onPendingInstallationId, csrfToken, onInstalling, onRemove,
   onStart, onStop, onSetPassword, onShowAddresses, onOpenSettings,
 }: {
   t: Translate; fail: Fail; catalog: Record<string, unknown>; process: ProcessState; tunnel: TunnelState;
-  security: AccessGatewayState; networkHost: string | null; installed: boolean; installing: boolean;
+  security: AccessGatewayState; sillyTavernPort: number; networkHost: string | null; installed: boolean; installing: boolean;
   active: Installation | undefined; dataBytes: number | null; profileName: string | null; version: string;
   onVersionChange: (value: string) => void; versions: VersionOption[];
   onPendingInstallationId: (value: string | null) => void; csrfToken: string | null;
@@ -1082,7 +1205,7 @@ function RuntimeCard({
     } catch { report(t('console.embedFailed')); } finally { setEmbedOpening(false); }
   };
 
-  const addresses = reachableAddresses(tunnel, security, networkHost ?? window.location.hostname);
+  const addresses = reachableAddresses(tunnel, security, networkHost ?? window.location.hostname, sillyTavernPort);
   // There is always at least the loopback address.
   const primary = addresses[0]!;
   const otherCount = addresses.length - 1;
@@ -1250,7 +1373,7 @@ function RuntimeCard({
   </>;
 }
 
-function AccessPanel({ t, process, tunnel, config, security, installed, onAction, onSetLan, onSetPassword }: { t: Translate; process: ProcessState; tunnel: TunnelState; config: ConfigDocument | null; security: AccessGatewayState; installed: boolean; onAction: (path: string, body?: unknown) => Promise<void>; onSetLan: (lan: boolean) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null> }) {
+function AccessPanel({ t, process, tunnel, config, security, sillyTavernPort, installed, onAction, onSetLan, onSetPassword }: { t: Translate; process: ProcessState; tunnel: TunnelState; config: ConfigDocument | null; security: AccessGatewayState; sillyTavernPort: number; installed: boolean; onAction: (path: string, body?: unknown) => Promise<void>; onSetLan: (lan: boolean) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null> }) {
   const [busy, setBusy] = useState(false);
   const [securityBusy, setSecurityBusy] = useState(false);
   const running = process.status === 'running';
@@ -1302,9 +1425,9 @@ function AccessPanel({ t, process, tunnel, config, security, installed, onAction
   // This machine reaches SillyTavern directly, because the loopback address is
   // already a boundary. Everything else goes through the gateway and its
   // password: the LAN address and the tunnel both point there.
-  const localHost = LOCAL_HOST;
+  const local = localHost(sillyTavernPort);
   const lanHost = `${config?.networkHost ?? window.location.hostname ?? 'localhost'}:${security.port}`;
-  const localUrl = `http://${localHost}`;
+  const localUrl = `http://${local}`;
   const lanUrl = `http://${lanHost}`;
   /*
    * What this card reports is whether the doors are answering, which is not
@@ -1373,7 +1496,7 @@ function AccessPanel({ t, process, tunnel, config, security, installed, onAction
         <div className="address-rows">
           <AddressRow t={t} label={t('dashboard.publicAddress')} url={tunnel.url} display={tunnel.url ?? ''} disabledHint={t('console.tunnelOffShort')} />
           <AddressRow t={t} label={t('console.lanAddress')} url={lan ? lanUrl : null} display={lanHost} disabledHint={t('console.lanOffShort')} />
-          <AddressRow t={t} label={t('console.local')} url={localUrl} display={localHost} />
+          <AddressRow t={t} label={t('console.local')} url={localUrl} display={local} />
         </div>
       </> : null}
       <ConfirmDialog
@@ -1983,6 +2106,14 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   const [stopping, setStopping] = useState(false);
   const uploadAbort = useRef<AbortController | null>(null);
   const [r2Config, setR2Config] = useState<R2Config | null>(null);
+  /**
+   * Whether this machine keeps what is written to it.
+   *
+   * Null until the first answer arrives, and the notice below waits for it:
+   * a warning that appears and then takes itself back is worse than one that
+   * arrives a moment late.
+   */
+  const [storage, setStorage] = useState<StorageDurabilityReport | null>(null);
   const [backupSchedule, setBackupSchedule] = useState<LocalBackupSchedule | null>(null);
   const [scheduleSaving, setScheduleSaving] = useState(false);
   const [r2Snapshots, setR2Snapshots] = useState<R2SnapshotSummary[]>([]);
@@ -2027,7 +2158,11 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
     else setR2Snapshots([]);
     if (profileResponse.ok) { const payload = await profileResponse.json() as { profiles: Profile[]; activeProfileId: string | null }; onProfilesChange(payload.profiles, payload.activeProfileId); }
     if (backupResponse.ok) { const payload = await backupResponse.json() as { backups: BackupManifest[] }; onBackupsChange(payload.backups); }
-    if (r2Response.ok) setR2Config((await r2Response.json() as { config: R2Config }).config);
+    if (r2Response.ok) {
+      const payload = await r2Response.json() as { config: R2Config; storage?: StorageDurabilityReport };
+      setR2Config(payload.config);
+      if (payload.storage) setStorage(payload.storage);
+    }
     if (scheduleResponse?.ok) setBackupSchedule((await scheduleResponse.json() as { schedule: LocalBackupSchedule }).schedule);
   };
   useEffect(() => { void refresh(); }, []);
@@ -2391,8 +2526,23 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       const response = await apiFetch('/api/v1/r2/cloudflare/connect', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       const payload = await response.json() as { url?: string; error?: { message?: string } };
       if (!response.ok || !payload.url) { tab?.close(); failed(fail.body(payload, t('console.cfConnectFailed'))); return; }
-      if (tab) tab.location.href = payload.url;
-      else window.location.assign(payload.url);
+      if (tab) { tab.location.href = payload.url; return; }
+      // A frame that is not allowed to open tabs leaves nowhere to send the
+      // reader: this one cannot show Cloudflare's sign-in, and sending it
+      // somewhere it will be refused would only blank the console. So hand
+      // over the address instead and let them open it themselves.
+      if (framed) {
+        const url = payload.url;
+        toast({
+          title: t('console.cfConnectPopupBlocked'),
+          description: url,
+          tone: 'attention',
+          duration: Number.POSITIVE_INFINITY,
+          action: { label: t('dashboard.copyLink'), onSelect: () => { void navigator.clipboard.writeText(url).catch(() => undefined); } },
+        });
+        return;
+      }
+      window.location.assign(payload.url);
     } catch { tab?.close(); failed(t('console.cfConnectFailed')); } finally { setCloudflareBusy(false); }
   };
   const chooseCloudflareAccount = async () => {
@@ -2625,6 +2775,16 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
         />
       </CardContent>
     </Card>
+
+    {/* Said above the card rather than inside it, because it is the reason to
+        read the card at all. It stops being shown once backups are leaving this
+        machine: at that point the storage is still temporary and it no longer
+        costs the reader anything, so repeating it would only be noise. */}
+    {storage && !storage.durable && !(r2Config?.enabled && r2Config.configured) ? <Alert variant="destructive">
+      <TriangleAlert />
+      <AlertTitle>{t('console.storageTemporaryTitle')}</AlertTitle>
+      <AlertDescription>{t('console.storageTemporaryBody')}</AlertDescription>
+    </Alert> : null}
 
     <Card>
       <PanelHeading icon={<Cloud />}>{t('console.r2Title')}</PanelHeading>
@@ -3732,6 +3892,85 @@ function configFileName(path: string): string {
   return path.split(/[\\/]/u).at(-1) ?? 'config.yaml';
 }
 
+/**
+ * The three ports, and the one of them this page can move.
+ *
+ * The console's own and the gateway's are shown but not editable: they are read
+ * from the environment once, at startup, and moving the port a page is served
+ * on from that page takes the page down with it. Saying so on the row is worth
+ * more than a control that would have to explain why it did nothing.
+ *
+ * SillyTavern's is checked here before it is sent, because the reader is still
+ * looking at the field; the server checks it again, because a panel is not what
+ * guarantees two services do not land on one port.
+ */
+function PortsCard({ t, ports, process, busy, onPortChange }: { t: Translate; ports: PortSettings | null; process: ProcessState; busy: boolean; onPortChange: (port: number) => Promise<string | null> }) {
+  const [value, setValue] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const inputId = useId();
+  // Reset when the server's answer changes, so a half-typed number is not left
+  // sitting over a port that has since moved.
+  useEffect(() => { if (ports) { setValue(ports.port.toString(10)); setError(null); } }, [ports]);
+  if (!ports) return null;
+
+  const typed = Number(value.trim());
+  const refusal = portRefusal(value, ports.reserved);
+  const failure = refusal ? t(refusal.key, refusal.params) : null;
+  const unchanged = refusal === null && typed === ports.port;
+  const running = process.status === 'running';
+
+  const save = async () => {
+    setSaving(true); setError(null);
+    try {
+      setError(await onPortChange(typed));
+    } finally { setSaving(false); }
+  };
+
+  return <Card>
+    <PanelHeading icon={<Globe2 />}>{t('console.portsTitle')}</PanelHeading>
+    <CardContent>
+      <div>
+        <DetailRow label={<Label htmlFor={inputId}>{t('console.sillyTavernPort')}</Label>} hint={t('console.sillyTavernPortHint')}>
+          <div className="flex items-center gap-2">
+            <Input
+              id={inputId}
+              className="w-28"
+              inputMode="numeric"
+              autoComplete="off"
+              value={value}
+              disabled={busy || saving}
+              aria-invalid={failure !== null}
+              onChange={(event) => { setValue(event.target.value); setError(null); }}
+            />
+            <Button size="sm" disabled={busy || saving || unchanged || failure !== null} onClick={() => setConfirmOpen(true)}>
+              {saving ? <LoaderCircle className="animate-spin" /> : null}{t('common.save')}
+            </Button>
+          </div>
+        </DetailRow>
+        <DetailRow label={t('console.managerPort')} hint={t('console.managerPortHint')}>
+          <code className="font-mono text-sm text-muted-foreground">{ports.reserved.manager}</code>
+        </DetailRow>
+        <DetailRow label={t('console.accessPort')} hint={t('console.accessPortHint')}>
+          <code className="font-mono text-sm text-muted-foreground">{ports.reserved.access}</code>
+        </DetailRow>
+      </div>
+      {failure ?? error ? <Alert variant="destructive" className="mt-4"><AlertDescription>{failure ?? error}</AlertDescription></Alert> : null}
+    </CardContent>
+    <ConfirmDialog
+      open={confirmOpen}
+      onOpenChange={setConfirmOpen}
+      tone="default"
+      title={t('console.portChangeTitle')}
+      description={running ? t('console.portChangeBodyRunning', { port: typed }) : t('console.portChangeBody', { port: typed })}
+      confirmLabel={t('common.save')}
+      cancelLabel={t('common.cancel')}
+      onConfirm={save}
+    />
+  </Card>;
+}
+
 /** A name over a run of rows, so one long list reads as three short ones. */
 function SettingsGroup({ icon, title }: { icon: ReactNode; title: string }) {
   return <div className="flex items-center gap-2 border-t pt-4 pb-2 text-sm font-medium first:border-t-0 first:pt-0 [&_svg]:size-4 [&_svg]:text-muted-foreground">
@@ -3739,7 +3978,7 @@ function SettingsGroup({ icon, title }: { icon: ReactNode; title: string }) {
   </div>;
 }
 
-function ConfigPage({ t, locale, config, security, process, catalog, onConfigUpdate, onConfigReset, onChangeManagerPassword, onSetPassword, onSignOut, onSignOutDevices }: { t: Translate; locale: LocaleCode; config: ConfigDocument | null; security: AccessGatewayState; process: ProcessState; catalog: Record<string, unknown>; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onConfigReset: () => Promise<string | null>; onChangeManagerPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSignOut: () => Promise<void>; onSignOutDevices: () => Promise<string | null> }) {
+function ConfigPage({ t, locale, config, security, ports, managerTunnel, process, catalog, onSetManagerTunnel, onPortChange, onConfigUpdate, onConfigReset, onChangeManagerPassword, onSetPassword, onSignOut, onSignOutDevices }: { t: Translate; locale: LocaleCode; config: ConfigDocument | null; security: AccessGatewayState; ports: PortSettings | null; managerTunnel: TunnelState; process: ProcessState; catalog: Record<string, unknown>; onSetManagerTunnel: (on: boolean) => Promise<string | null>; onPortChange: (port: number) => Promise<string | null>; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onConfigReset: () => Promise<string | null>; onChangeManagerPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSignOut: () => Promise<void>; onSignOutDevices: () => Promise<string | null> }) {
   const [form, setForm] = useState<ConfigSettingsInput>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -3749,9 +3988,35 @@ function ConfigPage({ t, locale, config, security, process, catalog, onConfigUpd
   const [signOutDevicesOpen, setSignOutDevicesOpen] = useState(false);
   const [saveOpen, setSaveOpen] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
+  const [managerTunnelBusy, setManagerTunnelBusy] = useState(false);
+  const [managerTunnelError, setManagerTunnelError] = useState<string | null>(null);
+  const [managerTunnelClosing, setManagerTunnelClosing] = useState(false);
   const [legalOpen, setLegalOpen] = useState(false);
   const [legalDocument, setLegalDocument] = useState<LegalDocumentId>('terms');
   const { toast } = useToast();
+  // What the switch says, which is what was asked for rather than whether
+  // cloudflared has finished connecting - the same reading the sharing card
+  // uses, for the same reason.
+  const managerTunnelWanted = managerTunnel.mode !== 'off';
+  const managerTunnelLink = managerTunnel.url;
+  const copyManagerTunnelLink = async (link: string) => {
+    try {
+      await navigator.clipboard.writeText(link);
+      toast({ title: t('console.linkCopied'), tone: 'success' });
+    } catch {
+      // The address is on the row and can be selected; a clipboard the browser
+      // will not hand over is not worth more than saying so.
+      toast({ title: t('console.copyFailed'), tone: 'destructive' });
+    }
+  };
+  const applyManagerTunnel = async (on: boolean) => {
+    setManagerTunnelBusy(true); setManagerTunnelError(null);
+    try {
+      const failure = await onSetManagerTunnel(on);
+      setManagerTunnelError(failure);
+      if (!failure) toast({ title: on ? t('console.managerTunnelOnDone') : t('console.managerTunnelOffDone'), tone: 'success' });
+    } finally { setManagerTunnelBusy(false); }
+  };
   useEffect(() => {
     if (!config) return;
     setForm(offeredSettings(config.settings));
@@ -3847,7 +4112,29 @@ function ConfigPage({ t, locale, config, security, process, catalog, onConfigUpd
               {rowAction(<LogOut />, t('console.signOut'), security.sessions > 0 ? t('console.signOutDevices') : t('console.signOutDevicesNone'), () => setSignOutDevicesOpen(true), { variant: 'destructive', disabled: security.sessions === 0 })}
             </div>
           </DetailRow>
+          {/* Here rather than on the sharing card: that card is about letting
+              people into SillyTavern, and this is about letting them as far as
+              the console - which is the side that installs software and holds
+              the Cloudflare tokens. It belongs next to the password that is the
+              only thing guarding it. */}
+          <DetailRow
+            label={<span className="flex flex-wrap items-center gap-2">{t('console.managerTunnel')}{managerTunnelLink ? <code className="font-mono text-xs text-muted-foreground">{shortenHost(managerTunnelLink.replace(/^https?:\/\//u, ''))}</code> : null}</span>}
+            hint={t('console.managerTunnelHint')}
+          >
+            <div className="flex items-center gap-1">
+              {managerTunnelLink
+                ? rowAction(<Copy />, t('dashboard.copyLink'), t('dashboard.copyLink'), () => { void copyManagerTunnelLink(managerTunnelLink); }, { variant: 'outline' })
+                : null}
+              <Switch
+                checked={managerTunnelWanted}
+                disabled={managerTunnelBusy}
+                onCheckedChange={(next) => { if (next) void applyManagerTunnel(true); else setManagerTunnelClosing(true); }}
+                aria-label={t('console.managerTunnel')}
+              />
+            </div>
+          </DetailRow>
         </div>
+        {managerTunnelError ? <Alert variant="destructive" className="mt-4"><AlertDescription>{managerTunnelError}</AlertDescription></Alert> : null}
       </CardContent>
     </Card>
     <ConfirmDialog
@@ -3859,6 +4146,21 @@ function ConfigPage({ t, locale, config, security, process, catalog, onConfigUpd
       cancelLabel={t('common.cancel')}
       onConfirm={async () => { await onSignOutDevices(); }}
     />
+    <ConfirmDialog
+      open={managerTunnelClosing}
+      onOpenChange={(open) => { if (!open) setManagerTunnelClosing(false); }}
+      title={t('console.managerTunnelOffConfirm')}
+      // Closing the link a reader arrived through takes their own page with
+      // it, which is worth saying before they press the button rather than
+      // leaving them to work out why the console stopped answering.
+      description={managerTunnelLink && window.location.origin === managerTunnelLink.replace(/\/$/u, '')
+        ? t('console.managerTunnelOffConfirmBodyHere')
+        : t('console.managerTunnelOffConfirmBody')}
+      confirmLabel={t('common.turnOff')}
+      cancelLabel={t('common.cancel')}
+      onConfirm={() => applyManagerTunnel(false)}
+    />
+    <PortsCard t={t} ports={ports} process={process} busy={busy} onPortChange={onPortChange} />
     <PasswordDialog t={t} open={managerPasswordOpen} onOpenChange={setManagerPasswordOpen} title={t('console.managerPasswordTitle')} description={t('console.managerPasswordHint')} note={t('console.passwordChangeSignsOut')} minLength={MIN_MANAGER_PASSWORD} hint={t('console.managerPasswordMin')} submitLabel={t('console.changePassword')} onSubmit={saveManagerPassword} />
     <PasscodeDialog t={t} open={sillyPasswordOpen} onOpenChange={setSillyPasswordOpen} note={security.passwordConfigured ? t('console.passwordChangeSignsOut') : null} onSubmit={onSetPassword} />
     {!config

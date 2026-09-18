@@ -6,7 +6,9 @@ import { join } from 'node:path';
 import { getPlatformPaths } from '../../../packages/platform/src/index.js';
 import { StateStore } from '../src/state.js';
 import { preferredNetworkHost, startManagerServer, type ManagerServer } from '../src/server.js';
-import type { AccessGatewayState, Installation, ProcessState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, Installation, ProcessState, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { TunnelManager } from '../../../packages/tunnel/src/index.js';
+import { decodeState } from '../../../packages/cloudflare/src/index.js';
 import type { RuntimeManager } from '../../../packages/sillytavern-runtime/src/index.js';
 import type { ProcessSupervisor } from '../src/supervisor.js';
 
@@ -17,6 +19,10 @@ async function createServer(options: {
   root?: string;
   /** Runs before the server starts, for leaving files an older version wrote. */
   prepare?: (paths: ReturnType<typeof getPlatformPaths>) => Promise<void>;
+  /** Stands in for the console's own tunnel, so no cloudflared is launched. */
+  managerTunnel?: FakeTunnel;
+  /** As `STM_PUBLIC_ORIGIN` would name it. */
+  publicOrigin?: string;
 } = {}): Promise<ManagerServer> {
   const root = options.root ?? await mkdtemp(join(tmpdir(), 'stm-manager-'));
   const basePaths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
@@ -36,7 +42,38 @@ async function createServer(options: {
     accessPort: 0,
     staticRoot,
     logger: () => undefined,
+    ...(options.managerTunnel ? { managerTunnel: options.managerTunnel as unknown as TunnelManager } : {}),
+    ...(options.publicOrigin ? { publicOrigin: options.publicOrigin } : {}),
   });
+}
+
+/**
+ * A tunnel that reports whatever address the test gives it.
+ *
+ * Only the part the server reads is here: which mode it is in and what address
+ * it is answering on. Starting a real one would download cloudflared and open
+ * a link to the internet from a test run.
+ */
+interface FakeTunnel {
+  getState(): TunnelState;
+  start(mode: 'quick' | 'named'): Promise<TunnelState>;
+  disable(): Promise<TunnelState>;
+  resume(): Promise<TunnelState>;
+  close(): Promise<void>;
+  /** Hand it the address cloudflared would have announced, or take it away. */
+  publish(url: string | null): void;
+}
+
+function fakeTunnel(): FakeTunnel {
+  let state: TunnelState = { mode: 'off', status: 'stopped', url: null, startedAt: null, error: null };
+  return {
+    getState: () => state,
+    start: async (mode) => { state = { ...state, mode, status: 'starting' }; return state; },
+    disable: async () => { state = { mode: 'off', status: 'stopped', url: null, startedAt: null, error: null }; return state; },
+    resume: async () => state,
+    close: async () => undefined,
+    publish: (url) => { state = { ...state, url, status: url ? 'running' : state.status }; },
+  };
 }
 
 test('ModelScope proxy origins are accepted while unrelated origins remain blocked', async (t) => {
@@ -84,7 +121,9 @@ test('setup, login, CSRF, health, and logout work on the manager port', async (t
 
   const health = await fetch(`${base}/api/v1/health`);
   assert.equal(health.status, 200);
-  assert.equal((await health.json() as { manager: { port: number } }).manager.port, 7860);
+  // The port it is actually listening on, not the one it would have taken by
+  // default: `STM_PORT` can move it, and a test asks for an ephemeral one.
+  assert.equal((await health.json() as { manager: { port: number } }).manager.port, manager.port);
 
   const panel = await fetch(`${base}/`);
   assert.equal(panel.status, 200);
@@ -195,6 +234,47 @@ test('R2 settings are authenticated, masked, and preserve masked credentials', a
   assert.equal(visible.status, 200);
   assert.equal(visibleText.includes('secret-key-5678'), false);
   assert.equal(visibleText.includes('access-key-1234'), false);
+});
+
+test('SillyTavern can be moved to another port, but never onto one the manager holds', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-port-api-'));
+  const manager = await createServer({ root, bootstrapPassword: 'correct horse battery staple' });
+  // Closed by hand below to reopen the same directory, so the cleanup only runs
+  // if the test gave up before getting there.
+  let stillOpen = true;
+  t.after(async () => { if (stillOpen) await manager.close(); });
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  const headers = { cookie: auth.cookie, 'x-csrf-token': auth.csrfToken, origin: base, 'content-type': 'application/json' };
+  const put = (port: unknown): Promise<Response> => fetch(`${base}/api/v1/config/port`, { method: 'PUT', headers, body: JSON.stringify({ port }) });
+
+  const before = await (await fetch(`${base}/api/v1/config/port`, { headers: { cookie: auth.cookie } })).json() as { port: number; reserved: { manager: number } };
+  assert.equal(before.port, 8000);
+  assert.equal(before.reserved.manager, manager.port, 'the panel is told which port the console itself holds');
+
+  // The console answers on this one, so SillyTavern may not have it.
+  const clash = await put(manager.port);
+  assert.equal(clash.status, 400);
+  assert.equal((await clash.json() as { error: { code: string } }).error.code, 'port_conflict');
+
+  const privileged = await put(80);
+  assert.equal(privileged.status, 400);
+  assert.equal((await privileged.json() as { error: { code: string } }).error.code, 'port_invalid');
+
+  const moved = await put(8123);
+  assert.equal(moved.status, 200);
+  assert.equal((await moved.json() as { port: number }).port, 8123);
+  assert.equal((await (await fetch(`${base}/api/v1/config/port`, { headers: { cookie: auth.cookie } })).json() as { port: number }).port, 8123);
+
+  // It has to outlive the process, or the next start would go back to 8000
+  // while the door carried on pointing at 8123.
+  stillOpen = false;
+  await manager.close();
+  const again = await createServer({ root });
+  t.after(() => again.close());
+  const reopened = serverUrl(again);
+  const session = await signIn(reopened);
+  assert.equal((await (await fetch(`${reopened}/api/v1/config/port`, { headers: { cookie: session.cookie } })).json() as { port: number }).port, 8123);
 });
 
 test('config follows the active runtime, and sharing waits for an access password', async (t) => {
@@ -539,6 +619,83 @@ test('one password opens SillyTavern on any version, and nothing is shared befor
   assert.equal(state.host, '0.0.0.0');
   const allowed = await fetch(`${base}/api/v1/tunnel`, { method: 'PUT', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'quick' }) });
   assert.notEqual(allowed.status, 409);
+});
+
+test('the console will not be opened to the internet without a manager password', async (t) => {
+  const manager = await createServer();
+  t.after(() => manager.close());
+  // The route cannot even be reached before the password exists, so the refusal
+  // that matters is the tunnel's own: it is what a resume on the next start
+  // goes through, and what would otherwise put an unguarded console online.
+  const refused = await manager.managerTunnel.start('quick');
+  assert.equal(refused.status, 'error');
+  assert.match(refused.error ?? '', /manager password/u);
+  assert.equal(refused.url, null);
+});
+
+test('the console tunnel is separate from SillyTavern’s, and its address is trusted while it is open', async (t) => {
+  const tunnelUrl = 'https://busy-lake-1234.trycloudflare.com';
+  const managerTunnel = fakeTunnel();
+  const manager = await createServer({ bootstrapPassword: 'correct horse battery staple', managerTunnel });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  const headers = { cookie: auth.cookie, 'x-csrf-token': auth.csrfToken, origin: base, 'content-type': 'application/json' };
+
+  assert.equal((await (await fetch(`${base}/api/v1/manager-tunnel`, { headers: { cookie: auth.cookie } })).json() as TunnelState).mode, 'off');
+
+  // Before it is open, a request claiming to come from that address is a
+  // stranger, exactly as any other unknown origin is.
+  const early = await fetch(`${base}/api/v1/health`, { headers: { origin: tunnelUrl } });
+  assert.equal(early.status, 403);
+
+  const opened = await fetch(`${base}/api/v1/manager-tunnel`, { method: 'PUT', headers, body: JSON.stringify({ mode: 'quick' }) });
+  assert.equal(opened.status, 200);
+  managerTunnel.publish(tunnelUrl);
+
+  // Now it is one of the console's own addresses: cloudflared leaves its own
+  // Host header on the request, so without this every write would be refused.
+  const throughTunnel = await fetch(`${base}/api/v1/health`, { headers: { origin: tunnelUrl } });
+  assert.equal(throughTunnel.status, 200);
+  const stranger = await fetch(`${base}/api/v1/health`, { headers: { origin: 'https://evil.example' } });
+  assert.equal(stranger.status, 403);
+
+  // And it is where a Cloudflare sign-in is told to come back to.
+  const connect = await fetch(`${base}/api/v1/r2/cloudflare/connect`, { method: 'POST', headers });
+  assert.equal(connect.status, 200);
+  const url = new URL((await connect.json() as { url: string }).url);
+  assert.equal(decodeState(url.searchParams.get('state') ?? '')?.returnOrigin, tunnelUrl);
+
+  // SillyTavern's own tunnel is untouched by any of it.
+  assert.equal((await (await fetch(`${base}/api/v1/tunnel`, { headers: { cookie: auth.cookie } })).json() as TunnelState).mode, 'off');
+
+  managerTunnel.publish(null);
+  const closed = await fetch(`${base}/api/v1/health`, { headers: { origin: tunnelUrl } });
+  assert.equal(closed.status, 403, 'a link that is no longer open is no longer one of our addresses');
+});
+
+test('an address somebody wrote down outranks one the console opened for itself', async (t) => {
+  const tunnelUrl = 'https://busy-lake-1234.trycloudflare.com';
+  const configured = 'https://stm.example.com';
+  const managerTunnel = fakeTunnel();
+  const manager = await createServer({ bootstrapPassword: 'correct horse battery staple', managerTunnel, publicOrigin: configured });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  managerTunnel.publish(tunnelUrl);
+
+  // Both are addresses this console answers at, so requests from either are
+  // its own rather than a stranger's.
+  for (const origin of [configured, tunnelUrl]) {
+    assert.equal((await fetch(`${base}/api/v1/health`, { headers: { origin } })).status, 200, origin);
+  }
+
+  // But a sign-in goes back to the one that was written down: a tunnel is the
+  // console guessing, and STM_PUBLIC_ORIGIN is somebody saying.
+  const connect = await fetch(`${base}/api/v1/r2/cloudflare/connect`, { method: 'POST', headers: { cookie: auth.cookie, 'x-csrf-token': auth.csrfToken, origin: base } });
+  assert.equal(connect.status, 200);
+  const url = new URL((await connect.json() as { url: string }).url);
+  assert.equal(decodeState(url.searchParams.get('state') ?? '')?.returnOrigin, configured);
 });
 
 test('a running backup can be stopped, and a finished one cannot', async (t) => {
@@ -908,4 +1065,98 @@ test('an interval an older version kept with the R2 settings moves to the backup
   assert.equal((await response.json() as { schedule: { intervalMinutes: number } }).schedule.intervalMinutes, 30);
   // Handed over once: the R2 file no longer carries it.
   assert.equal((await readFile(join(manager.store.paths.state, 'r2-config.json'), 'utf8')).includes('localIntervalMinutes'), false);
+});
+
+test('a console behind a proxy is reached at the address the browser used, not the one we see', async (t) => {
+  const manager = await createServer({ bootstrapPassword: 'correct horse battery staple' });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+
+  // A proxy that rewrites Host leaves the browser's own address here instead.
+  // Without reading it, every request from the panel it is serving looks like
+  // one from a stranger and the console answers nothing at all.
+  const forwarded = await fetch(`${base}/api/v1/health`, {
+    headers: { origin: 'https://console.example.net', 'x-forwarded-host': 'console.example.net' },
+  });
+  assert.equal(forwarded.status, 200);
+
+  // A chain of proxies appends to the header; the browser's is the first.
+  const chained = await fetch(`${base}/api/v1/health`, {
+    headers: { origin: 'https://console.example.net', 'x-forwarded-host': 'console.example.net, inner.internal' },
+  });
+  assert.equal(chained.status, 200);
+
+  // And it is still only that address: a header naming one host does not let a
+  // different one through behind it.
+  const stranger = await fetch(`${base}/api/v1/health`, {
+    headers: { origin: 'https://evil.example', 'x-forwarded-host': 'console.example.net' },
+  });
+  assert.equal(stranger.status, 403);
+});
+
+test('a session started over HTTPS that a proxy terminated is one a frame can keep', async (t) => {
+  const manager = await createServer({ bootstrapPassword: 'correct horse battery staple' });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+
+  // This connection is plain HTTP, and the browser's was not. Only the proxy's
+  // header says so, and the cookie's attributes depend on the answer: a console
+  // read inside another site's frame needs SameSite=None, which needs Secure.
+  const secure = await fetch(`${base}/api/v1/auth/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-forwarded-proto': 'https' },
+    body: JSON.stringify({ password: 'correct horse battery staple' }),
+  });
+  assert.equal(secure.status, 200);
+  assert.match(secure.headers.get('set-cookie') ?? '', /SameSite=None; Secure/);
+
+  // On a machine somebody is sitting at, none of that applies and the cookie
+  // stays as narrow as it has always been.
+  const plain = await fetch(`${base}/api/v1/auth/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ password: 'correct horse battery staple' }),
+  });
+  assert.equal(plain.status, 200);
+  assert.match(plain.headers.get('set-cookie') ?? '', /SameSite=Lax/);
+  assert.doesNotMatch(plain.headers.get('set-cookie') ?? '', /Secure/);
+});
+
+test('a host that names the port it publishes gets a console that answers on it', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-manager-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const staticRoot = join(root, 'panel');
+  await mkdir(staticRoot, { recursive: true });
+  await writeFile(join(staticRoot, 'index.html'), '<!doctype html><title>Manager panel</title>', 'utf8');
+  // No host given, so the manager picks one. PORT is how a container platform
+  // says it will be connecting from in front of this process, and nothing in
+  // front of a container can reach the container's own loopback address.
+  const manager = await startManagerServer({
+    port: 0, paths, staticRoot, accessPort: 0, logger: () => undefined,
+    store: new StateStore({ paths }),
+    env: { PORT: '3000' },
+  });
+  t.after(() => manager.close());
+  const address = manager.server.address();
+  assert.ok(address && typeof address !== 'string');
+  assert.equal(address.address, '0.0.0.0');
+});
+
+test('a console on a machine somebody is sitting at stays on the loopback address', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-manager-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const staticRoot = join(root, 'panel');
+  await mkdir(staticRoot, { recursive: true });
+  await writeFile(join(staticRoot, 'index.html'), '<!doctype html><title>Manager panel</title>', 'utf8');
+  // A port written down by hand is not a platform in front of anything, so it
+  // must not open the console to the house network on its own.
+  const manager = await startManagerServer({
+    port: 0, paths, staticRoot, accessPort: 0, logger: () => undefined,
+    store: new StateStore({ paths }),
+    env: { STM_PORT: '9000' },
+  });
+  t.after(() => manager.close());
+  const address = manager.server.address();
+  assert.ok(address && typeof address !== 'string');
+  assert.equal(address.address, '127.0.0.1');
 });

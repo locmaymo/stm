@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { RateLimiter } from '../src/rate-limit.js';
-import { parseSessionCookie, SessionStore, sessionCookie } from '../src/sessions.js';
+import { clearSessionCookie, parseSessionCookie, SessionStore, sessionCookie } from '../src/sessions.js';
 
 test('sessions are opaque, expire, and revoke', () => {
   let now = 1_000;
@@ -22,6 +22,23 @@ test('cookies parse and include browser security attributes', () => {
   assert.equal(parseSessionCookie(`${cookie}; other=value`), 'token-value');
   assert.match(cookie, /HttpOnly/);
   assert.match(cookie, /SameSite=Lax/);
+  assert.doesNotMatch(cookie, /Secure/);
+});
+
+test('a console read over HTTPS gets a cookie a frame can keep', () => {
+  // Read inside another site's frame, the console is a third party to the page
+  // around it, and SameSite=Lax is exactly what a browser withholds there: the
+  // password is accepted and the next request arrives with no session at all.
+  const cookie = sessionCookie('token-value', true);
+  assert.equal(parseSessionCookie(cookie), 'token-value');
+  assert.match(cookie, /SameSite=None/);
+  // Which browsers accept only together with Secure, so the two never separate.
+  assert.match(cookie, /Secure/);
+  assert.match(clearSessionCookie(true), /SameSite=None; Secure/);
+  // A cookie set one way has to be cleared the same way, or signing out sets a
+  // second cookie beside the first instead of replacing it.
+  assert.match(clearSessionCookie(false), /SameSite=Lax/);
+  assert.doesNotMatch(clearSessionCookie(false), /Secure/);
 });
 
 test('rate limiter blocks after the configured attempts', () => {

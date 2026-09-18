@@ -199,6 +199,16 @@ Mở manager tại `http://127.0.0.1:7860`. SillyTavern vẫn chạy ở cổng 
 
 Trên nền tảng cloud có container, mở cổng `7860`, đặt `STM_ADMIN_PASSWORD` bằng phần secret của nền tảng và mount lưu trữ persistent tại `/data`. Không đưa mật khẩu vào Dockerfile hoặc Git.
 
+Hạ tầng cloud thường tự quyết ba thứ thay bạn, và trình quản lý giờ đáp ứng cả ba mà không cần cấu hình.
+
+**Cổng.** Nền tảng chỉ định tuyến một cổng ra ngoài sẽ báo cổng đó qua biến `PORT`; trình quản lý lắng nghe ở đó, nên một repo vừa import vào là chạy được ngay từ lần đầu. Còn cổng mà trình quản lý chỉ *ưu tiên* — `7860` của chính nó, `8001` của cổng truy cập, `8000` của SillyTavern — nếu đã bị thứ khác trên máy chiếm thì nó tự nhường sang cổng trống kế tiếp và ghi lại số cổng mới. Muốn cố định thì đặt `STM_PORT` hoặc `STM_ACCESS_PORT`; cổng đã cố định sẽ được bind hoặc báo lỗi hẳn chứ không tự dời.
+
+**Mạng.** Ở nơi UDP bị chặn đi ra, cloudflared không tới được biên của Cloudflare qua QUIC, và đường hầm cứ đứng ở *Registering tunnel* cho tới khi link báo lỗi 1033. Trình quản lý nhận ra điều đó — qua dòng lỗi, hoặc qua sự im lặng — rồi quay lại bằng HTTP/2 và ghi nhớ, nên chỉ phải chờ một lần chứ không phải mỗi lần khởi động. Đặt `STM_TUNNEL_PROTOCOL=http2` để bỏ qua bước dò.
+
+**Ổ đĩa.** Một số nền tảng cấp cho container một hệ thống tệp sinh ra cùng máy và bị xóa cùng máy, và tắt máy sau một thời gian không dùng. Trình quản lý kiểm tra thư mục dữ liệu thực sự nằm trên loại ổ nào, rồi báo trong log và trên trang dữ liệu: máy này không giữ dữ liệu của bạn, hãy kết nối Cloudflare R2.
+
+Cảnh báo cuối đó có lối thoát. Hãy đặt bốn giá trị `STM_R2_*` vào `.env` hoặc vào phần biến môi trường của nền tảng, để chúng quay lại cùng bản checkout chứ không mất theo ổ đĩa bị xóa. Khi đó, lúc khởi động trình quản lý sẽ nhận ra hồ sơ đang trống còn bucket thì không, và mang bản khôi phục mới nhất về trước khi SillyTavern chạy. Hồ sơ đã có dữ liệu thì không bao giờ bị ghi đè.
+
 </details>
 
 <details id="npm">

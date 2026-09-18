@@ -199,6 +199,16 @@ Open the manager at `http://127.0.0.1:7860`. SillyTavern stays on the container'
 
 For a hosted container platform, expose port `7860`, provide `STM_ADMIN_PASSWORD` through its secret settings and mount durable storage at `/data`. Never put the admin password in a Dockerfile or commit it to Git.
 
+Hosted platforms often decide three things for you, and the manager now meets each of them without being configured.
+
+**The port.** A platform that routes a single port from the outside world announces it in `PORT`; the manager listens there, so a repository imported into one works on the first run. A port the manager only *prefers* — its own `7860`, the access gateway's `8001`, SillyTavern's `8000` — steps aside to the next free one when something else on the machine already holds it, and writes down where it went. Set `STM_PORT` or `STM_ACCESS_PORT` to pin one deliberately; a pinned port is bound or the start fails, rather than moving.
+
+**The network.** Where outbound UDP is blocked, cloudflared cannot reach Cloudflare's edge over QUIC, and a tunnel sits at *Registering tunnel* until the link times out with error 1033. The manager notices — from the error line, or from the silence — and comes back over HTTP/2, remembering the answer so the wait is paid once rather than at every restart. `STM_TUNNEL_PROTOCOL=http2` skips the discovery.
+
+**The disk.** Some platforms give the container a filesystem that is made with the machine and thrown away with it, and stop the machine once it has been idle. The manager checks what its data directory is actually on, and says so in the log and on the data page: this machine does not keep your data, connect Cloudflare R2.
+
+That last warning has a way out. Put the four `STM_R2_*` values in `.env` or in the platform's own environment settings, so they come back with the checkout rather than with the disk that was wiped. The manager then notices on the way up that the profile is empty and the bucket is not, and brings the newest recovery point back before SillyTavern starts. A profile that already holds something is never restored over.
+
 </details>
 
 <details id="npm">
