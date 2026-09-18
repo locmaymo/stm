@@ -3282,6 +3282,15 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, onConnect, o
   const group = useId();
   const cloudflare = config?.cloudflare ?? null;
   const mode = config?.mode ?? 'keys';
+  /*
+   * Which answer the form opens on.
+   *
+   * Whatever is already carrying the backups, and the sign-in when nothing is.
+   * It used to open on the keys - the stored default before anything had been
+   * chosen - which put four empty fields in front of somebody on a form whose
+   * recommended answer, one line above, was greyed out until they had already
+   * done the thing the form was for.
+   */
   const [choice, setChoice] = useState<R2ConnectionMode>(mode);
   const [keys, setKeys] = useState<R2KeysForm>(() => r2KeysFrom(config));
   const [account, setAccount] = useState('');
@@ -3295,7 +3304,7 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, onConnect, o
     setError(null);
     setKeys(r2KeysFrom(config));
     setAccount(cloudflare?.accounts[0]?.id ?? '');
-    setChoice(cloudflare?.state === 'choose_account' ? 'cloudflare' : mode);
+    setChoice(!cloudflare ? 'keys' : config?.configured ? mode : 'cloudflare');
   }, [open]);
 
   // Set in `.env`: shown so the reader knows where the value comes from, and
@@ -3304,7 +3313,12 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, onConnect, o
   const fromEnvironment = new Set<string>(config?.environmentFields ?? []);
   const keysReady = Boolean(keys.endpoint.trim() && keys.bucket.trim() && keys.accessKeyId.trim() && (keys.secretAccessKey.trim() || config?.secretAccessKeyConfigured));
   const connected = cloudflare?.state === 'connected';
+  // Choosing the sign-in is allowed before signing in - that is how somebody
+  // says which way they want to go. What waits for it is Save, because there is
+  // no bucket to save yet, and the row below says so rather than leaving a dead
+  // button to be puzzled over.
   const canSave = choice === 'keys' ? keysReady : connected;
+  const cloudflarePending = choice === 'cloudflare' && Boolean(cloudflare) && !connected;
 
   const save = async () => {
     if (!canSave || saving) return;
@@ -3337,7 +3351,7 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, onConnect, o
               Cloudflare says the account has used. */}
           {cloudflare ? <div className="grid gap-3 rounded-lg border p-3 has-[[data-state=checked]]:border-primary has-[[data-state=checked]]:bg-primary/5">
             <div className="flex items-start gap-3">
-              <RadioGroupItem id={`${group}-cloudflare`} value="cloudflare" className="mt-0.5" disabled={!connected && cloudflare.state !== 'choose_account'} />
+              <RadioGroupItem id={`${group}-cloudflare`} value="cloudflare" className="mt-0.5" />
               <div className="grid gap-1">
                 <Label htmlFor={`${group}-cloudflare`} className="flex flex-wrap items-center gap-2 font-medium">
                   <CloudflareMark />{t('console.r2MethodCloudflare')}
@@ -3382,9 +3396,13 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, onConnect, o
             </div> : null}
           </div>
         </RadioGroup>
-        {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
+        {/* An account that has not enabled R2 already says so, in the row where
+            it was chosen and with the way to fix it attached. Saying it again
+            down here in the general failure slot is the same sentence twice. */}
+        {error && !(choice === 'cloudflare' && cloudflare?.problem === 'r2_not_enabled') ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
       </DialogBody>
       <DialogFooter>
+        {cloudflarePending ? <span className="mr-auto text-xs text-muted-foreground">{t('console.r2SaveNeedsCloudflare')}</span> : null}
         <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={saving}>{t('common.cancel')}</Button>
         <Button onClick={() => void save()} disabled={saving || !canSave}>{t('common.save')}</Button>
       </DialogFooter>
@@ -3455,6 +3473,11 @@ function CloudflareMethod({ t, status, busy, account, onAccountChange, onConnect
           </SelectContent>
         </Select>
         <Button size="sm" onClick={() => void onChooseAccount()} disabled={busy || !account}>{t('console.cfUseAccount')}</Button>
+        {/* Signed in, with the account still to pick - and no way back out. The
+            grant exists from this point on, so the way to give it back has to
+            exist from this point on too, and this is where somebody who has
+            just seen that the account cannot be used needs it. */}
+        <Button variant="ghost" size="sm" onClick={onDisconnect} disabled={busy}>{t('console.cfDisconnect')}</Button>
       </div>
       {/* An account that has not turned R2 on fails the moment it is chosen,
           with the sign-in itself in perfect order. The way out is on Cloudflare. */}
