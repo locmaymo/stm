@@ -482,6 +482,21 @@ export interface R2Usage {
   readonly legacyObjectCount: number;
   readonly legacyBytes: number;
   readonly lastReconciledAt: string | null;
+  /**
+   * When a manager first counted operations against this bucket.
+   *
+   * The count is kept in the bucket, so it starts at zero the first time an
+   * account is connected and then survives the machine: a reinstall, a new
+   * computer, or a hosted studio that starts each time from nothing all read
+   * back the month that is actually being billed. Absent until a bucket has
+   * been read, and on a manager too old to keep the record.
+   */
+  readonly countingSince?: string;
+  /**
+   * Whether the two figures above come from that shared record rather than
+   * from this machine's own memory of what it has done.
+   */
+  readonly sharedRecord?: boolean;
 }
 
 /**

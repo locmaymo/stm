@@ -4124,7 +4124,13 @@ function R2Usage({ t, config }: { t: Translate; config: R2Config }) {
       <span className={cn('text-xs', bar.filled >= 0.9 ? 'text-destructive' : 'text-muted-foreground')}>{bar.label}: {bar.text}</span>
       <span className="progress-track"><span className="progress-value" style={{ width: `${Math.max(1, bar.filled * 100)}%` }} /></span>
     </div>)}
-    <p className="text-xs text-muted-foreground">{t('console.r2UsageNote')}</p>
+    {/* Where the counts come from, which is the difference between a figure
+        that resets when this machine is replaced and one that does not. */}
+    <p className="text-xs text-muted-foreground">
+      {config.usage.sharedRecord && config.usage.countingSince
+        ? t('console.r2UsageShared', { since: new Date(config.usage.countingSince).toLocaleDateString() })
+        : t('console.r2UsageNote')}
+    </p>
   </div>;
 }
 

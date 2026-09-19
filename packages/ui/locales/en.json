@@ -177,6 +177,7 @@
     "r2Writes": "Write operations this month",
     "r2Reads": "Read operations this month",
     "r2UsageNote": "Counted by the manager as it works, not read back from Cloudflare. The R2 page of your Cloudflare dashboard is the final word.",
+    "r2UsageShared": "Counted into the bucket itself since {since}, so the month's total follows your data to a new machine. The R2 page of your Cloudflare dashboard is the final word.",
     "localScheduleLabel": "Back up automatically",
     "localScheduleSaved": "Automatic backup schedule saved.",
     "localScheduleEvery": "How often",

@@ -177,6 +177,7 @@
     "r2Writes": "Lượt ghi trong tháng",
     "r2Reads": "Lượt đọc trong tháng",
     "r2UsageNote": "Do chính trình quản lý đếm khi chạy, không đọc lại từ Cloudflare. Con số chính thức nằm ở trang R2 trong bảng điều khiển Cloudflare.",
+    "r2UsageShared": "Được đếm vào chính thùng chứa từ {since}, nên tổng của tháng đi theo dữ liệu sang máy mới. Con số chính thức nằm ở trang R2 trong bảng điều khiển Cloudflare.",
     "localScheduleLabel": "Tự động sao lưu",
     "localScheduleSaved": "Đã lưu lịch tự động sao lưu.",
     "localScheduleEvery": "Tần suất",

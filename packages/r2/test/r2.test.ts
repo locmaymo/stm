@@ -128,15 +128,18 @@ test('a different bucket gets every chunk, because the ledger described the old 
   const chat = await source(root, 'chats/one.jsonl', 'x'.repeat(5000));
   const card = await source(root, 'characters/a.png', Buffer.alloc(3000, 1));
   await manager.syncProfile({ profile: profile(), sources: [chat, card], fingerprint: 'one' });
-  assert.equal(first.requests.put, 3);
-  // Same bucket: the ledger knows both chunks, so only the new index goes up.
-  await manager.syncProfile({ profile: profile(), sources: [chat, card], fingerprint: 'two' });
+  // Two chunks, one index, and the record of what the bucket has been charged
+  // for, which a first run starts; see `usage-record.ts`.
   assert.equal(first.requests.put, 4);
+  // Same bucket: the ledger knows both chunks, so only the new index goes up.
+  // The usage record is on its own clock and is not written again this soon.
+  await manager.syncProfile({ profile: profile(), sources: [chat, card], fingerprint: 'two' });
+  assert.equal(first.requests.put, 5);
 
   await manager.update({ bucket: 'stm-other-bucket' });
   await manager.syncProfile({ profile: profile(), sources: [chat, card], fingerprint: 'three' });
   assert.equal(second.requests.put, 3, 'both chunks and the index go to the new bucket');
-  assert.equal(first.requests.put, 4);
+  assert.equal(first.requests.put, 5, 'and nothing else goes to the old one');
   assert.equal((await manager.getConfig()).usage.snapshotCount, 1);
 });
 

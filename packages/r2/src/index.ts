@@ -11,6 +11,7 @@ import { BlobLedger } from './ledger.js';
 import { S3ObjectStore, type R2Credentials } from './s3.js';
 import { R2Error, type Billing, type ObjectRecord, type ObjectStore } from './store.js';
 import { claimIsStale, readClaim, writeClaim, CLAIM_OBJECT, CLAIM_REFRESH_MS, type BucketClaim } from './owner.js';
+import { addOperations, monthKey, readUsage, writeUsage, USAGE_FLUSH_MS, USAGE_OBJECT } from './usage-record.js';
 import {
   blobKey,
   decodeBlob,
@@ -45,6 +46,7 @@ const OBJECT_PREFIX = 'sillytavern-manager/';
 const BLOB_PREFIX = `${OBJECT_PREFIX}blobs/`;
 const SNAPSHOT_PREFIX = `${OBJECT_PREFIX}snapshots/`;
 const CLAIM_KEY = `${OBJECT_PREFIX}${CLAIM_OBJECT}`;
+const USAGE_KEY = `${OBJECT_PREFIX}${USAGE_OBJECT}`;
 /** How long Cloudflare's usage figures are reused before asking again. */
 const CLOUD_USAGE_TTL_MS = 15 * 60 * 1000;
 /** How old those figures may be and still count towards the ceilings before a backup. */
@@ -90,6 +92,28 @@ interface StoredUsage {
   readonly legacyObjectCount: number;
   readonly legacyBytes: number;
   readonly lastReconciledAt: string | null;
+  /**
+   * How much of this month's local count has been added to the bucket's own
+   * record; see `usage-record.ts`.
+   *
+   * The difference between this and the counts above is what this machine
+   * still owes the record, which is what the next flush adds. Kept rather than
+   * recomputed so that a manager which is stopped mid-month adds what it spent
+   * exactly once, however many times it is started again.
+   */
+  readonly reportedOperations: { readonly classA: number; readonly classB: number };
+  /**
+   * This month as the bucket's record last had it: every machine's operations,
+   * including the part of this one's that has already been reported.
+   *
+   * Null until a bucket has been read. Kept so the panel can show the month's
+   * real total without a request behind every poll of the settings.
+   */
+  readonly bucketOperations: { readonly classA: number; readonly classB: number; readonly month: string; readonly readAt: string } | null;
+  /** When this machine last added its spending to the record in the bucket. */
+  readonly reportedAt: string | null;
+  /** When a manager first used this bucket, as that record says. */
+  readonly countingSince: string | null;
 }
 
 interface StoredR2Config {
@@ -246,6 +270,8 @@ export class R2Manager {
   private charges = { write: 0, read: 0 };
   private cloudUsage: { readonly at: number; readonly usage: R2CloudflareUsage } | null = null;
   private chargesWrittenAt = 0;
+  /** Held while the bucket's own count is being updated, which is itself charged. */
+  private usageFlushing = false;
 
   public constructor(options: R2ManagerOptions) {
     this.paths = options.paths;
@@ -344,6 +370,10 @@ export class R2Manager {
       };
       await this.save({ ...(await this.load()), usage });
       await this.recordCharges();
+      // Pressing Check is the moment to settle up: it is what somebody does
+      // after connecting an account on a new machine, and the figures they are
+      // about to read are the month's, not this installation's.
+      await this.syncUsageRecord({ force: true });
       this.logger(logEvent('r2.checked', `[r2] the bucket answered: ${objects.length} object(s), ${formatBytes(found.totalBytes)}, ${found.snapshotKeys.length} recovery point(s)`, { objects: objects.length, size: formatBytes(found.totalBytes), points: found.snapshotKeys.length }));
       return {
         ok: true,
@@ -354,7 +384,10 @@ export class R2Manager {
         snapshotCount: found.snapshotKeys.length,
         legacyObjectCount: found.legacyObjectCount,
         legacyBytes: found.legacyBytes,
-        usage: toPublicUsage(usage),
+        // Read back rather than reported from the variable above, so the
+        // answer carries what the bucket's own record just said about the
+        // month rather than only what this machine had counted.
+        usage: toPublicUsage((await this.load()).usage),
         failure: null,
       };
     } catch (error: unknown) {
@@ -480,6 +513,9 @@ export class R2Manager {
         usage: nextUsage,
       });
       await this.recordCharges();
+      // On its own clock, so an upload every five minutes does not mean two
+      // more requests every five minutes.
+      await this.syncUsageRecord();
       if (dropped.size > 0) this.logger(logEvent('r2.skippedMissingFiles', `[r2] skipped ${dropped.size} file(s) removed while the upload was running`, { count: dropped.size }));
       this.logger(logEvent('r2.synced', `[r2] sent ${uploadedChunks} changed chunk(s), ${formatBytes(uploadedBytes)}, of ${files.length} file(s)`, { chunks: uploadedChunks, bytes: formatBytes(uploadedBytes), files: files.length }));
       return {
@@ -645,20 +681,22 @@ export class R2Manager {
       const blobBytesTotal = [...blobs.values()].reduce((sum, object) => sum + object.sizeBytes, 0);
       const previous = await this.currentPeriod(config);
       const usage: StoredUsage = {
+        ...previous,
         storageBytes: blobBytesTotal + snapshotBytesTotal + legacyBytes,
         blobCount: blobs.size,
         snapshotCount: snapshots.length,
-        writeOperations: previous.writeOperations,
-        readOperations: previous.readOperations,
-        periodStartedAt: previous.periodStartedAt,
         legacyObjectCount,
         legacyBytes,
         lastReconciledAt: this.now().toISOString(),
       };
       await this.save({ ...(await this.load()), ledgerTarget: await this.storageTarget(config), usage });
       await this.recordCharges();
+      // The sweep is the most expensive thing the manager does to a bucket -
+      // one listing per thousand objects - so what it spent is worth writing
+      // down rather than waiting for the next upload to carry it.
+      await this.syncUsageRecord({ force: true });
       this.logger(logEvent('r2.reconciled', `[r2] ${blobs.size} stored chunk(s), ${formatBytes(usage.storageBytes)}; collected ${collectedBlobs}`, { chunks: blobs.size, size: formatBytes(usage.storageBytes), collected: collectedBlobs }));
-      return { blobCount: blobs.size, collectedBlobs, collectedBytes, usage: toPublicUsage(usage) };
+      return { blobCount: blobs.size, collectedBlobs, collectedBytes, usage: toPublicUsage((await this.load()).usage) };
     });
   }
 
@@ -674,7 +712,7 @@ export class R2Manager {
       const config = await this.requireUsable();
       const client = this.client(config);
       const objects = await this.listAll(config, OBJECT_PREFIX, client);
-      const legacy = objects.filter((object) => !object.key.startsWith(BLOB_PREFIX) && !object.key.startsWith(SNAPSHOT_PREFIX) && object.key !== CLAIM_KEY);
+      const legacy = objects.filter((object) => !object.key.startsWith(BLOB_PREFIX) && !object.key.startsWith(SNAPSHOT_PREFIX) && object.key !== CLAIM_KEY && object.key !== USAGE_KEY);
       let bytes = 0;
       for (const object of legacy) {
         await client.deleteObject(object.key);
@@ -984,11 +1022,29 @@ export class R2Manager {
     return switched;
   }
 
-  /** The usage counters, with the charged-write count reset when the month turns over. */
+  /**
+   * The usage counters, with the operation counts reset when the month turns
+   * over.
+   *
+   * Cloudflare's allowance is monthly and so are both counts. Only the write
+   * count used to be reset here, so the read count was a running total since
+   * the manager was installed, held against a monthly ceiling - a figure that
+   * could only ever grow towards a limit it was never measured against.
+   *
+   * What has been reported to the bucket is reset with them: it is a position
+   * within a month, and in a new month this machine has reported nothing.
+   */
   private async currentPeriod(config: StoredR2Config): Promise<StoredUsage> {
     const period = monthStart(this.now());
     if (config.usage.periodStartedAt === period) return config.usage;
-    return { ...config.usage, writeOperations: 0, periodStartedAt: period };
+    return {
+      ...config.usage,
+      writeOperations: 0,
+      readOperations: 0,
+      periodStartedAt: period,
+      reportedOperations: { classA: 0, classB: 0 },
+      bucketOperations: null,
+    };
   }
 
   private client(config: StoredR2Config): ObjectStore {
@@ -1025,6 +1081,69 @@ export class R2Manager {
     });
   }
 
+  /**
+   * Add what this machine has spent to the record kept in the bucket, and read
+   * back the month's total.
+   *
+   * See `usage-record.ts` for why the count lives there. Two requests, once
+   * every quarter of an hour at most, which is what makes a figure that
+   * outlives this machine cost about three hundred operations a month out of a
+   * million.
+   *
+   * Nothing here is allowed to fail an operation. A bucket that cannot be
+   * reached leaves the local count exactly as it was, so the next flush adds
+   * everything that was owed rather than losing it; the figure on screen falls
+   * back to what this machine remembers, which is what it always used to be.
+   */
+  private async syncUsageRecord(options: { readonly force?: boolean } = {}): Promise<void> {
+    if (this.usageFlushing) return;
+    const config = await this.load();
+    if (!config.enabled && !options.force) return;
+    const usage = await this.currentPeriod(config);
+    const owed = {
+      classA: Math.max(0, usage.writeOperations - usage.reportedOperations.classA),
+      classB: Math.max(0, usage.readOperations - usage.reportedOperations.classB),
+    };
+    const now = this.now();
+    const since = usage.reportedAt === null ? Number.POSITIVE_INFINITY : now.getTime() - Date.parse(usage.reportedAt);
+    if (!options.force && since < USAGE_FLUSH_MS) return;
+    // Nothing owed and a record already read this month: there is nothing the
+    // bucket could tell us that we do not know, so it is not asked.
+    if (!options.force && owed.classA === 0 && owed.classB === 0 && usage.bucketOperations?.month === monthKey(now)) return;
+    this.usageFlushing = true;
+    try {
+      const client = this.client(config);
+      const month = monthKey(now);
+      const previous = await readUsage(client, USAGE_KEY);
+      const next = addOperations(previous, month, owed, now);
+      await writeUsage(client, USAGE_KEY, next);
+      const total = next.months[month] ?? { classA: 0, classB: 0 };
+      // Reading and writing the record are themselves a charged read and a
+      // charged write. They are counted like any others and owed to the next
+      // flush, rather than quietly left out of the figure they produce.
+      await this.recordCharges();
+      const current = await this.load();
+      const fresh = await this.currentPeriod(current);
+      await this.save({
+        ...current,
+        usage: {
+          ...fresh,
+          // Against `fresh`, not against what was read at the top: an upload
+          // running beside this one has been charged meanwhile, and that part
+          // is owed to the next flush rather than written off by this one.
+          reportedOperations: { classA: Math.min(fresh.writeOperations, usage.reportedOperations.classA + owed.classA), classB: Math.min(fresh.readOperations, usage.reportedOperations.classB + owed.classB) },
+          bucketOperations: { classA: total.classA, classB: total.classB, month, readAt: now.toISOString() },
+          reportedAt: now.toISOString(),
+          countingSince: next.startedAt,
+        },
+      });
+    } catch (error: unknown) {
+      this.logger(logEvent('r2.usageRecordSkipped', `[r2] the bucket's own count of charged operations could not be updated: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
+    } finally {
+      this.usageFlushing = false;
+    }
+  }
+
   /** Run one whole-store operation at a time, whatever else is asked for meanwhile. */
   private async exclusive<T>(operation: () => Promise<T>): Promise<T> {
     const run = this.busy.then(operation, operation);
@@ -1034,6 +1153,10 @@ export class R2Manager {
 
   private async toPublic(config: StoredR2Config): Promise<R2Config> {
     const cloudflare = this.cloudflare ? await this.cloudflare.status() : null;
+    // The month is rolled over for the reader as well as for the writer. Taken
+    // straight from the file, the panel went on showing last month's figures
+    // against this month's allowance until something happened to write them.
+    const usage = await this.currentPeriod(config);
     return {
       mode: config.mode,
       cloudflare,
@@ -1054,7 +1177,7 @@ export class R2Manager {
       },
       retention: { keepRecent: config.keepRecent, keepDaily: config.keepDaily, keepWeekly: config.keepWeekly },
       limits: { maxStorageBytes: config.maxStorageBytes, maxWriteOperations: config.maxWriteOperations, maxReadOperations: config.maxReadOperations },
-      usage: toPublicUsage(config.usage),
+      usage: toPublicUsage(usage),
       lastFingerprint: config.lastFingerprint,
       lastRecovery: config.lastRecovery,
       owner: config.claim ? { label: config.claim.label, lastSeenAt: config.claim.lastSeenAt, mine: config.claim.mine } : null,
@@ -1325,9 +1448,10 @@ function summarizeObjects(objects: readonly ObjectRecord[]): { blobs: Map<string
       continue;
     }
     if (object.key.startsWith(SNAPSHOT_PREFIX)) { snapshotKeys.push(object.key); continue; }
-    // Which installation holds the bucket. Not data, not an archive, and not
+    // Which installation holds the bucket, and what the bucket has been
+    // charged for. Neither is data, neither is an archive, and neither is
     // something the legacy sweep may take away from the manager that wrote it.
-    if (object.key === CLAIM_KEY) continue;
+    if (object.key === CLAIM_KEY || object.key === USAGE_KEY) continue;
     // Whole-ZIP archives from the version before this one. They are not
     // read and not deleted behind the operator's back; the panel offers it.
     legacyObjectCount += 1;
@@ -1430,12 +1554,39 @@ function defaultStoredConfig(now: Date): StoredR2Config {
       legacyObjectCount: 0,
       legacyBytes: 0,
       lastReconciledAt: null,
+      reportedOperations: { classA: 0, classB: 0 },
+      bucketOperations: null,
+      reportedAt: null,
+      countingSince: null,
     },
   };
 }
 
+/**
+ * The counts to show, which are the bucket's where the bucket has them.
+ *
+ * The local figure is what this machine has spent since it last started
+ * counting; the record in the bucket is what every machine has spent this
+ * month, and is the one that survives a reinstall or a move to another
+ * computer. What has not been added to the record yet is added here, so the
+ * figure on screen does not sit still for fifteen minutes during a backup.
+ */
 function toPublicUsage(usage: StoredUsage): R2Usage {
-  return { ...usage };
+  const bucket = usage.bucketOperations;
+  const owed = { classA: Math.max(0, usage.writeOperations - usage.reportedOperations.classA), classB: Math.max(0, usage.readOperations - usage.reportedOperations.classB) };
+  return {
+    storageBytes: usage.storageBytes,
+    blobCount: usage.blobCount,
+    snapshotCount: usage.snapshotCount,
+    writeOperations: bucket ? bucket.classA + owed.classA : usage.writeOperations,
+    readOperations: bucket ? bucket.classB + owed.classB : usage.readOperations,
+    periodStartedAt: usage.periodStartedAt,
+    legacyObjectCount: usage.legacyObjectCount,
+    legacyBytes: usage.legacyBytes,
+    lastReconciledAt: usage.lastReconciledAt,
+    ...(usage.countingSince ? { countingSince: usage.countingSince } : {}),
+    sharedRecord: bucket !== null,
+  };
 }
 
 function normalizeNullable(value: string | null): string | null {
