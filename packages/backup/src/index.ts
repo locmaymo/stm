@@ -126,6 +126,14 @@ export class BackupStore {
   private operationTail: Promise<void> = Promise.resolve();
   private cleanupTail: Promise<void> = Promise.resolve();
   private pendingOperations = 0;
+  /**
+   * Archives something is reading right now, and how many readers each has.
+   *
+   * Counted rather than flagged: a restore of one archive can be running while
+   * something else holds the same one, and the first to let go must not let go
+   * for both.
+   */
+  private readonly inUse = new Map<string, number>();
 
   public constructor(options: BackupStoreOptions) {
     this.paths = options.paths;
@@ -175,6 +183,27 @@ export class BackupStore {
 
   public async get(id: string): Promise<BackupManifest | null> {
     return (await this.load()).find((manifest) => manifest.id === id) ?? null;
+  }
+
+  /**
+   * Keep this archive while something is reading it. Returns the way to let go.
+   *
+   * A restore reads one archive and, before it does, writes a safety copy of
+   * the profile as it stands. Writing that copy sweeps the library, and the
+   * sweep keeps only the newest safety copy - so restoring the safety copy
+   * from before the last restore deleted the very file the restore was about
+   * to open, and the restore failed on a missing archive it had been shown a
+   * moment earlier.
+   */
+  public hold(id: string): () => void {
+    this.inUse.set(id, (this.inUse.get(id) ?? 0) + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const held = (this.inUse.get(id) ?? 1) - 1;
+      if (held > 0) this.inUse.set(id, held); else this.inUse.delete(id);
+    };
   }
 
   public async getArchivePath(id: string): Promise<string | null> {
@@ -396,7 +425,9 @@ export class BackupStore {
       const newer = newestFirst.some((other) => other.createdAt > manifest.createdAt);
       return newer && now - Date.parse(manifest.createdAt) > SAFETY_COPY_MAX_AGE_MS;
     });
-    const superseded = [...scheduled.slice(localRetention()), ...expired];
+    // Never the archive something is reading: a sweep that removes it turns
+    // the restore that asked for it into a missing file.
+    const superseded = [...scheduled.slice(localRetention()), ...expired].filter((manifest) => !this.inUse.has(manifest.id));
     if (superseded.length === 0) return 0;
     const removed = new Set(superseded.map((manifest) => manifest.id));
     // Leave the library first: an interrupted sweep should leave a stray file,
@@ -540,7 +571,12 @@ export class BackupStore {
    */
   private async restoreUnlocked(profile: Profile, archivePath: string, options: RestoreOptions): Promise<RestorePreview> {
     throwIfStopped(options.signal);
-    const entries = await readZipDirectory(archivePath);
+    // An archive that has gone between being chosen and being read is a
+    // sentence, not a filesystem error code from a path nobody recognises.
+    const entries = await readZipDirectory(archivePath).catch((error: unknown) => {
+      if (isFileNotFound(error)) throw new BackupError('backup_archive_missing', 'That backup is no longer in the library');
+      throw error;
+    });
     const preview = previewEntries(entries, profile.layout);
     const dataDestination = await resolveProfileDataRoot(profile);
     const plan = planEntries(entries, { dataDestination, configPath: resolve(profile.configPath) });

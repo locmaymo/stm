@@ -352,6 +352,54 @@ test('each kind of backup is kept by its own rule', async () => {
   assert.ok((await store.list(fixture.profile.id)).some((manifest) => manifest.id === manual.id));
 });
 
+/*
+ * The archive a restore is reading outlives the sweep that restore triggers.
+ *
+ * Restoring the safety copy from before the last restore is the one case
+ * where the archive being read is also the archive the next sweep would drop:
+ * a restore writes a safety copy of the profile as it stands before it
+ * overwrites anything, that copy becomes the newest one, and the sweep keeps
+ * only the newest. The file went while the restore was still holding its
+ * path, and the restore ended on a missing archive it had been shown a moment
+ * earlier.
+ */
+test('the archive a restore is reading is not swept away by the safety copy it takes first', async () => {
+  const fixture = await createFixture();
+  let clock = new Date(2026, 8, 19, 17, 0).getTime();
+  const store = new BackupStore({ paths: fixture.paths, now: () => new Date(clock) });
+  const change = async (label: string) => { clock += 60_000; await writeFile(join(fixture.profile.dataPath, 'chats', `${label}.json`), `{"message":"${label}"}`, 'utf8'); };
+  const chosen = await store.create(fixture.profile, { kind: 'before-restore' });
+  await change('later');
+
+  const release = store.hold(chosen.id);
+  // What a restore does before it writes: a safety copy of the profile as it
+  // stands, which sweeps the library on its way out.
+  await store.createSafetyCopy(fixture.profile, { kind: 'before-restore' });
+  const archive = await store.getArchivePath(chosen.id);
+  assert.ok(archive, 'the archive being restored is still in the library');
+  const preview = await store.restore(fixture.profile, archive, { mode: 'replace' });
+  assert.ok(preview.fileCount > 0);
+
+  // Let go, and it is an ordinary superseded safety copy again.
+  release();
+  await change('after');
+  await store.createSafetyCopy(fixture.profile, { kind: 'before-restore' });
+  assert.equal(await store.getArchivePath(chosen.id), null);
+});
+
+test('a restore whose archive has gone says so in words rather than in a path', async () => {
+  const fixture = await createFixture();
+  const store = new BackupStore({ paths: fixture.paths });
+  const manifest = await store.create(fixture.profile);
+  const archive = await store.getArchivePath(manifest.id);
+  assert.ok(archive);
+  await store.remove(manifest.id);
+  await assert.rejects(
+    () => store.restore(fixture.profile, archive, { mode: 'replace' }),
+    (error: unknown) => error instanceof BackupError && error.code === 'backup_archive_missing',
+  );
+});
+
 test('a safety copy that guarded nothing becomes the newest automatic backup', async () => {
   const fixture = await createFixture();
   let clock = new Date(2026, 8, 16, 16, 5).getTime();

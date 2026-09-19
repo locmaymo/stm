@@ -1597,7 +1597,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       if (mode !== 'merge' && mode !== 'replace') { sendError(response, 400, 'invalid_restore_mode', 'Restore mode must be merge or replace'); return; }
       const libraryPath = await backups.getArchivePath(imported.manifest.id);
       if (!libraryPath) { sendError(response, 500, 'backup_archive_missing', 'The uploaded archive could not be stored'); return; }
-      const result = await restoreWithProcess({ profile, backups, archivePath: libraryPath, mode, supervisor });
+      const result = await restoreWithProcess({ profile, backups, archivePath: libraryPath, backupId: imported.manifest.id, mode, supervisor });
       sendJson(response, 200, result);
     } finally {
       if (!retained) await backups.removeTemporary(archivePath);
@@ -1642,7 +1642,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       const mode = isRecord(body) && (body.mode === 'merge' || body.mode === 'replace') ? body.mode : null;
       if (!mode) { sendError(response, 400, 'invalid_restore_mode', 'Restore mode must be merge or replace'); return; }
       const { job, signal } = jobs.createOperation('restore', logEvent('job.preparingRestore', 'Preparing restore'));
-      void restoreWithProcess({ profile, backups, archivePath, mode, supervisor, signal, onProgress: (progress, step) => jobs.updateOperation(job.id, progress, step) })
+      void restoreWithProcess({ profile, backups, archivePath, backupId: id, mode, supervisor, signal, onProgress: (progress, step) => jobs.updateOperation(job.id, progress, step) })
         .then(() => jobs.finishOperation(job.id, 'succeeded', null))
         .catch((error: unknown) => jobs.finishOperation(job.id, 'failed', error instanceof Error ? error.message : 'Restore failed', { evenIfCanceled: error instanceof RestoreRollbackError, stepCode: error instanceof RestoreRollbackError ? 'job.rollbackFailed' : undefined }));
       sendJson(response, 202, { jobId: job.id, job });
@@ -1951,12 +1951,23 @@ export async function restoreWithProcess(options: {
   readonly profile: Awaited<ReturnType<ProfileStore['getActive']>> & {};
   readonly backups: BackupStore;
   readonly archivePath: string;
+  /**
+   * Which archive in the library this is, when it is one.
+   *
+   * The safety copy taken a moment from now sweeps the library, and the sweep
+   * keeps one safety copy: restoring the copy from before the previous restore
+   * therefore deleted the file this is about to read. Named here, it is held
+   * until the restore is done with it. An uploaded zip on its way through has
+   * no entry to hold.
+   */
+  readonly backupId?: string;
   readonly mode: 'merge' | 'replace';
   readonly supervisor: ProcessSupervisor;
   readonly signal?: AbortSignal;
   readonly onProgress?: (progress: number, step: LogEvent) => void;
 }): Promise<{ preview: Awaited<ReturnType<BackupStore['restore']>>; safetySnapshot: Awaited<ReturnType<BackupStore['create']>>; process: ReturnType<ProcessSupervisor['getState']> }> {
   const { profile, backups, archivePath, mode, supervisor, signal, onProgress } = options;
+  const releaseArchive = options.backupId ? backups.hold(options.backupId) : () => undefined;
   // Claim the backup store before stopping anything. Otherwise the scheduler's
   // next tick sees an idle store and starts a full backup that the restore then
   // has to wait out.
@@ -2009,6 +2020,7 @@ export async function restoreWithProcess(options: {
     await supervisor.start().catch(() => supervisor.getState());
     throw error;
   } finally {
+    releaseArchive();
     releaseOperationSlot();
   }
 }
