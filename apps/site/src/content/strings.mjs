@@ -13,7 +13,7 @@ export const LOCALES = ['en', 'vi'];
 /** Where each locale's pages live. English is at the root; Vietnamese under /vi. */
 export const localeRoot = (locale) => (locale === 'en' ? '' : `/${locale}`);
 
-export const SITE_ORIGIN = 'https://stm.phamloc.top';
+export const SITE_ORIGIN = 'https://stm.locmaymo.top';
 export const REPOSITORY = 'https://github.com/locmaymo/stm';
 export const RELEASES = 'https://github.com/locmaymo/stm/releases/latest';
 export const NPM_PACKAGE = 'https://www.npmjs.com/package/sillytavern-manager';

@@ -1,0 +1,69 @@
+# The project site, and the OAuth relay page that lives on it.
+#
+# Deployed on every push to main that touches it, because the relay page is
+# part of how the manager signs in to Cloudflare: a change to it that sits
+# undeployed is a sign-in that behaves differently from the code it ships with.
+# Everything else on the domain - the landing page, the documentation, the
+# legal documents - is static and has no reason to wait either.
+#
+# `paths` keeps it from running on changes that cannot reach the site. The
+# legal documents are in `packages/legal` and are read at build time, so they
+# are listed even though they are not under `apps/site`.
+name: site
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'apps/site/**'
+      - 'packages/legal/**'
+      - 'deploy/oauth-relay/**'
+      - '.github/workflows/site.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deploy at a time, and never an older commit over a newer one. Not
+# cancelled in progress: a half-finished upload is worse than a wasted minute.
+concurrency:
+  group: site-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # Named so the deployment, and the secret it needs, are visible in the
+    # repository's settings rather than only in this file.
+    environment: site
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      # The gate that guards every other change guards this one too: the legal
+      # documents and the site strings are the same UTF-8, JSON and locale
+      # parity rules, and a broken one would be published rather than caught.
+      - run: npm run encoding:gate
+
+      # Built here rather than committed: `apps/site/dist` is generated output
+      # and is not in the repository.
+      - run: npm run site:build
+
+      # The pages have to exist before Wrangler is asked to upload them, and a
+      # silently empty `dist` would publish an empty site over a working one.
+      - name: Check the build produced pages
+        run: |
+          test -f apps/site/dist/index.html
+          test -f apps/site/dist/oauth/cloudflare/callback.html
+
+      - name: Deploy
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: deploy/oauth-relay

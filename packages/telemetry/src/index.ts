@@ -13,8 +13,8 @@ const RETENTION_MS = 90 * 24 * 60 * 60 * 1_000;
 /** The longest a receiver that keeps failing is left alone before it is tried again. */
 const MAX_RETRY_DELAY_MS = 30 * 60 * 1_000;
 
-export const DEFAULT_TELEMETRY_ENDPOINT = 'https://stm-telemetry.phamloc.top/v1/telemetry';
-export const DEFAULT_TELEMETRY_ENROLLMENT_ENDPOINT = 'https://stm-telemetry.phamloc.top/v1/enroll';
+export const DEFAULT_TELEMETRY_ENDPOINT = 'https://stm-telemetry.locmaymo.top/v1/telemetry';
+export const DEFAULT_TELEMETRY_ENROLLMENT_ENDPOINT = 'https://stm-telemetry.locmaymo.top/v1/enroll';
 
 export interface TelemetryTransportOptions {
   readonly paths: PlatformPaths;

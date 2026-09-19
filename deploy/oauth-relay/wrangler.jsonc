@@ -18,6 +18,6 @@
   "workers_dev": false,
   "preview_urls": false,
   "routes": [
-    { "pattern": "stm.phamloc.top", "custom_domain": true }
+    { "pattern": "stm.locmaymo.top", "custom_domain": true }
   ]
 }

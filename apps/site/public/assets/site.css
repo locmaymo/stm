@@ -415,11 +415,30 @@ tbody tr:last-child td { border-bottom: 0; }
  * and colours so the hop does not look like a stranger's page, and nothing
  * else - no bar, no footer, nowhere else to go from here.
  */
-.relay-page { display: grid; place-items: center; min-height: 100dvh; padding: 24px; }
-.relay-card { width: 100%; max-width: 30rem; padding: 28px; border: 1px solid var(--border); border-radius: 14px; background: var(--card); box-shadow: var(--elevation-2); text-align: center; }
-.relay-card h1 { margin: 16px 0 10px; font-size: 20px; }
-.relay-card p { margin: 0 0 8px; color: var(--muted-foreground); font-size: 14px; }
-.relay-card p[lang="vi"] { opacity: .8; }
-.relay-card .destination { margin: 16px 0; }
-.relay-card .destination code { font-size: 15px; overflow-wrap: anywhere; }
-.relay-card .button { margin-top: 12px; }
+/*
+ * The Cloudflare callback page, dressed as the manager's own sign-in.
+ *
+ * Somebody arrives here mid-way through connecting their account: they pressed
+ * a button in the manager, went to Cloudflare, and landed on a third site.
+ * Looking like the place they started from is what says the journey is still
+ * the one they began - so this borrows the sign-in's shape: the glow behind,
+ * the mark above the title, and the card holding only what has to be decided.
+ */
+.relay-page { position: relative; isolation: isolate; display: grid; place-items: center; min-height: 100dvh; padding: 48px 24px; }
+.relay-page::before {
+  content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+  background:
+    radial-gradient(44rem 26rem at 50% -5rem, color-mix(in srgb, var(--primary) 17%, transparent), transparent 70%),
+    radial-gradient(34rem 22rem at 50% 112%, color-mix(in srgb, var(--primary) 9%, transparent), transparent 70%);
+}
+.relay-tools { position: absolute; inset-inline: 0; top: 0; display: flex; justify-content: flex-end; gap: 6px; padding: 12px; }
+.relay-main { width: 100%; max-width: 26rem; text-align: center; }
+/* Neither rounded nor boxed: the artwork is a disc with a badge hanging off
+   its lower corner, and a box would cut the badge clean off. */
+.relay-mark { margin: 0 auto 18px; display: block; filter: drop-shadow(0 0.5rem 1.25rem color-mix(in srgb, var(--primary) 30%, transparent)); }
+.relay-main h1 { margin: 0 0 8px; font-size: 22px; letter-spacing: -0.01em; text-wrap: balance; }
+.relay-main p { margin: 0 0 8px; color: var(--muted-foreground); font-size: 14px; text-wrap: balance; }
+.relay-card { margin-top: 20px; padding: 22px; border: 1px solid var(--border); border-radius: 14px; background: var(--card); box-shadow: var(--elevation-2); }
+.relay-card code { display: block; font-size: 15px; overflow-wrap: anywhere; }
+.relay-card .relay-warn { margin: 14px 0 0; }
+.relay-card .button { margin-top: 16px; width: 100%; justify-content: center; }

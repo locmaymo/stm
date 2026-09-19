@@ -7,7 +7,7 @@
     "repository": "https://github.com/locmaymo/stm",
     "issues": "https://github.com/locmaymo/stm/issues",
     "security": "https://github.com/locmaymo/stm/security/advisories",
-    "site": "https://stm.phamloc.top"
+    "site": "https://stm.locmaymo.top"
   },
   "labels": {
     "effectiveFrom": "Có hiệu lực từ {date}",
@@ -25,7 +25,7 @@
           "body": [
             "SillyTavern Manager (gọi tắt là phần mềm, trình quản lý) là một bảng điều khiển mã nguồn mở dùng để cài đặt, chạy, sao lưu và theo dõi SillyTavern trên máy do bạn kiểm soát. Phần mềm được locmaymo phát hành theo Giấy phép Công cộng Affero GNU phiên bản 3.",
             "Dự án không vận hành dịch vụ nào thay bạn. Không có tài khoản phải tạo, không có máy chủ nào giữ dữ liệu của bạn, và không có gì chạy nếu bạn không tự khởi động. Mọi bản sao đều chạy trên phần cứng do bạn sở hữu, thuê hoặc kiểm soát.",
-            "Điều khoản này áp dụng cho việc bạn sử dụng phần mềm, sử dụng trang web của dự án tại stm.phamloc.top, và sử dụng trang chuyển tiếp đăng nhập Cloudflare đặt tại đó. Điều khoản không thay thế giấy phép AGPL-3.0, vốn trao cho bạn quyền sử dụng, nghiên cứu, sửa đổi và phân phối lại mã nguồn. Khi điều khoản và giấy phép mâu thuẫn, giấy phép có hiệu lực cao hơn."
+            "Điều khoản này áp dụng cho việc bạn sử dụng phần mềm, sử dụng trang web của dự án tại stm.locmaymo.top, và sử dụng trang chuyển tiếp đăng nhập Cloudflare đặt tại đó. Điều khoản không thay thế giấy phép AGPL-3.0, vốn trao cho bạn quyền sử dụng, nghiên cứu, sửa đổi và phân phối lại mã nguồn. Khi điều khoản và giấy phép mâu thuẫn, giấy phép có hiệu lực cao hơn."
           ]
         },
         "acceptance": {
@@ -106,7 +106,7 @@
         "changes": {
           "heading": "Thay đổi điều khoản",
           "body": [
-            "Điều khoản thay đổi cùng với phần mềm. Bản đang có hiệu lực luôn đi kèm phần mềm và được công bố tại stm.phamloc.top/terms, kèm ngày bắt đầu hiệu lực.",
+            "Điều khoản thay đổi cùng với phần mềm. Bản đang có hiệu lực luôn đi kèm phần mềm và được công bố tại stm.locmaymo.top/terms, kèm ngày bắt đầu hiệu lực.",
             "Những thay đổi mang tính nội dung sẽ được ghi trong ghi chú phát hành. Nếu bạn không chấp nhận bản mới, hãy ngừng sử dụng phần mềm; các quyền mà AGPL-3.0 đã trao cho bạn đối với mã nguồn không bị ảnh hưởng."
           ]
         },
@@ -252,7 +252,7 @@
           ]
         },
         "relay": {
-          "heading": "Trang chuyển tiếp đăng nhập tại stm.phamloc.top",
+          "heading": "Trang chuyển tiếp đăng nhập tại stm.locmaymo.top",
           "body": [
             "Cloudflare chỉ đưa trình duyệt quay lại một địa chỉ đã đăng ký trên OAuth client, khớp chính xác, trong khi một trình quản lý có thể mở ở bất kỳ địa chỉ nào. Vì vậy địa chỉ đăng ký là một trang tĩnh trên site này, và nó chuyển trình duyệt về đúng trình quản lý đã khởi tạo phiên đăng nhập.",
             "Trang đó không lưu gì, không đặt cookie và không chạy công cụ phân tích nào. Mã uỷ quyền mà nó chuyển tiếp là vô dụng nếu thiếu bộ xác minh PKCE, và bộ xác minh này không bao giờ rời khỏi trình quản lý của bạn.",
@@ -262,7 +262,7 @@
         "website": {
           "heading": "Trang web",
           "body": [
-            "Các trang tại stm.phamloc.top là tệp tĩnh phục vụ từ mạng lưới Cloudflare. Không có tài khoản, không có đăng nhập, không có pixel theo dõi, không có quảng cáo và không có mã phân tích của bên thứ ba.",
+            "Các trang tại stm.locmaymo.top là tệp tĩnh phục vụ từ mạng lưới Cloudflare. Không có tài khoản, không có đăng nhập, không có pixel theo dõi, không có quảng cáo và không có mã phân tích của bên thứ ba.",
             "Cloudflare, với tư cách bên lưu trữ, xử lý siêu dữ liệu của yêu cầu như địa chỉ IP và user agent nhằm phục vụ và bảo vệ trang, theo chính sách riêng tư của họ.",
             "Lựa chọn ngôn ngữ và giao diện sáng tối của bạn, nếu bạn đổi, được nhớ ngay trong trình duyệt của bạn và không gửi đi đâu cả. Các trang có thể dẫn tới GitHub và npm; bấm vào một liên kết là bạn sang trang của họ, theo chính sách của họ."
           ]
@@ -277,7 +277,7 @@
         "changes": {
           "heading": "Thay đổi thông báo này",
           "body": [
-            "Thông báo này thay đổi khi những gì phần mềm gửi đi thay đổi. Bản đang có hiệu lực luôn đi kèm phần mềm và được công bố tại stm.phamloc.top/privacy, kèm ngày bắt đầu hiệu lực."
+            "Thông báo này thay đổi khi những gì phần mềm gửi đi thay đổi. Bản đang có hiệu lực luôn đi kèm phần mềm và được công bố tại stm.locmaymo.top/privacy, kèm ngày bắt đầu hiệu lực."
           ]
         }
       }
