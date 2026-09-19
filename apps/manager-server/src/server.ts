@@ -5,7 +5,7 @@ import { createReadStream } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import { createSocket } from 'node:dgram';
 import { extname, join, relative, resolve, sep } from 'node:path';
-import { applyQuery, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, OPERATION_JOB_KINDS, type ApiErrorBody, type ConfigUpdateInput, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogSink, type LogSourceFilter, type ManagerPorts, type PortSettings, type Profile, type ProfileLayout, type SetupStatus, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
+import { applyQuery, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, OPERATION_JOB_KINDS, type ApiErrorBody, type ConfigUpdateInput, type ConsoleStatus, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogSink, type LogSourceFilter, type ManagerPorts, type PortSettings, type Profile, type ProfileLayout, type SetupStatus, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
 import { getPlatformPaths, storageDurability, type PlatformPaths } from '../../../packages/platform/src/index.js';
 import { INSTALL_CANCELED, RuntimeError, RuntimeManager, type InstallationProgress } from '../../../packages/sillytavern-runtime/src/index.js';
 import { hashPassword, MIN_PASSWORD_LENGTH, validatePasscode, validatePassword, verifyPassword } from './password.js';
@@ -86,6 +86,7 @@ const PROTECTED_PATHS = new Set([
   '/api/v1/system',
   '/api/v1/system/measure',
   '/api/v1/startup',
+  '/api/v1/status',
   '/api/v1/tunnel',
   '/api/v1/manager-tunnel',
   '/api/v1/r2',
@@ -1770,6 +1771,29 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
   if (pathname === '/api/v1/system/measure' && method === 'POST') {
     system.remeasure();
     sendJson(response, 202, await system.snapshot());
+    return;
+  }
+  /*
+   * Everything the console watches on its clock, in one answer.
+   *
+   * The console used to ask for these four separately, several times a minute,
+   * which is four connections for one screenful of state. Reached through a
+   * Cloudflare Worker - which is what the console's own fixed address is -
+   * every one of those counts against an allowance of a hundred thousand a
+   * day, shared with SillyTavern's address and with the backup Worker; the
+   * console on its own was spending it in seven hours.
+   *
+   * The four endpoints it replaces are untouched: something already open
+   * against an older panel, or a script somebody wrote, still has them.
+   */
+  if (pathname === '/api/v1/status' && method === 'GET') {
+    const status: ConsoleStatus = {
+      process: supervisor.getState(),
+      tunnel: await withProxyUrl(tunnel.getState(), proxy, cloudflare, 'sillyTavern'),
+      managerTunnel: await withProxyUrl(managerTunnel.getState(), proxy, cloudflare, 'manager'),
+      security: gateway.getState(),
+    };
+    sendJson(response, 200, status);
     return;
   }
   if (pathname === '/api/v1/jobs/active' && method === 'GET') {

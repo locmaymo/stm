@@ -932,6 +932,22 @@ export interface AccessGatewayState {
   readonly error: string | null;
 }
 
+/**
+ * The four things the console watches continuously, in one answer.
+ *
+ * They used to be four requests on one timer, which is four times the traffic
+ * for one screenful of state - and through a Cloudflare Worker, where the
+ * console's own address is a Worker and every request is charged against a
+ * daily allowance, four times the bill. Nothing here is computed: each field is
+ * what its own endpoint returns, which still exists and still answers.
+ */
+export interface ConsoleStatus {
+  readonly process: ProcessState;
+  readonly tunnel: TunnelState;
+  readonly managerTunnel: TunnelState;
+  readonly security: AccessGatewayState;
+}
+
 /** The complete allowlist written by the SillyTavern fetch instrumentation. */
 export interface UsageEvent {
   readonly schemaVersion: 1;

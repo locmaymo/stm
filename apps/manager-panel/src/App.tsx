@@ -31,9 +31,11 @@ import { DEFAULT_SILLYTAVERN_PORT, portRefusal } from './ports.js';
 import { isThisMachine, readTunnelOfferDeclined, saveTunnelOfferDeclined, shouldOfferManagerTunnel } from './hosting.js';
 import { availableUpdate, readDismissedUpdate, saveDismissedUpdate } from './updates.js';
 import { apiFetch, onSessionExpired, resetSessionWatch } from './session.js';
-import type { AccessGatewayState, BackupManifest, ConfigDocument, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LogEntry, LogSourceFilter, MetricsBucket, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, BackupManifest, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LogEntry, LogSourceFilter, MetricsBucket, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, isCloudJob, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
+import { usePoll } from './use-poll.js';
+import { POLL_BACKGROUND_MS, POLL_CARD_MS, POLL_LIVE_MS, statusIntervalMs } from './polling.js';
 import { translateLogEntry, translateStep } from './log-format.js';
 import { QrCode } from './qr-code.js';
 import { CLOUDFLARE_ORANGE, CloudflareMark } from './cloudflare-mark.js';
@@ -454,25 +456,24 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     return () => { cancelled = true; };
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    const refresh = async () => {
-      const [processResponse, tunnelResponse, managerTunnelResponse, securityResponse] = await Promise.all([
-        apiFetch('/api/v1/process', { credentials: 'same-origin' }),
-        apiFetch('/api/v1/tunnel', { credentials: 'same-origin' }),
-        apiFetch('/api/v1/manager-tunnel', { credentials: 'same-origin' }),
-        apiFetch('/api/v1/access/security', { credentials: 'same-origin' }),
-      ]);
-      if (cancelled) return;
-      if (processResponse.ok) setProcessState(await processResponse.json() as ProcessState);
-      if (tunnelResponse.ok) setTunnelState(await tunnelResponse.json() as TunnelState);
-      if (managerTunnelResponse.ok) { setManagerTunnelState(await managerTunnelResponse.json() as TunnelState); setTunnelAnswered(true); }
-      if (securityResponse.ok) setAccessSecurity(await securityResponse.json() as AccessGatewayState);
-    };
-    void refresh();
-    const timer = window.setInterval(() => { void refresh(); }, 1500);
-    return () => { cancelled = true; window.clearInterval(timer); };
-  }, []);
+  /*
+   * The four things the console watches, in one request on one clock.
+   *
+   * The clock is fast while something is moving and slow while it is not; see
+   * `polling.ts` for why that distinction is worth making and what it costs
+   * not to. An install is in motion too, and is the one thing here the server
+   * does not report in this answer, so it is passed in.
+   */
+  usePoll(async () => {
+    const response = await apiFetch('/api/v1/status', { credentials: 'same-origin' });
+    if (!response.ok) return;
+    const status = await response.json() as ConsoleStatus;
+    setProcessState(status.process);
+    setTunnelState(status.tunnel);
+    setManagerTunnelState(status.managerTunnel);
+    setTunnelAnswered(true);
+    setAccessSecurity(status.security);
+  }, { intervalMs: statusIntervalMs({ process: processState, tunnel: tunnelState, managerTunnel: managerTunnelState, working: installing }) });
 
   useEffect(() => {
     const onHashChange = () => {
@@ -528,31 +529,24 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
    * safety copy a restore or a profile switch takes, a copy that became an
    * automatic backup - and the list used to show them only after a reload or
    * a trip to another page and back. The list is the manager's own file, read
-   * from memory, so asking every few seconds costs nothing worth saving; it is
-   * skipped while the tab is hidden, and a reply identical to what is on
-   * screen changes nothing.
+   * from memory, but it still costs a request, so the fast clock is kept for
+   * the page that shows the list and the other pages, which show at most the
+   * newest one, ask rarely. A reply identical to what is on screen changes
+   * nothing.
    */
-  useEffect(() => {
-    let cancelled = false;
-    let last = '';
-    const poll = async () => {
-      if (document.hidden) return;
-      try {
-        const response = await apiFetch('/api/v1/backups', { credentials: 'same-origin' });
-        if (!response.ok || cancelled) return;
-        const text = await response.text();
-        if (cancelled || text === last) return;
-        last = text;
-        setBackups((JSON.parse(text) as { backups: BackupManifest[] }).backups);
-      } catch {
-        // The next poll tries again.
-      }
-    };
-    const timer = window.setInterval(() => { void poll(); }, 4000);
-    const onVisible = () => { if (!document.hidden) void poll(); };
-    document.addEventListener('visibilitychange', onVisible);
-    return () => { cancelled = true; window.clearInterval(timer); document.removeEventListener('visibilitychange', onVisible); };
-  }, []);
+  const backupsSeen = useRef('');
+  usePoll(async () => {
+    try {
+      const response = await apiFetch('/api/v1/backups', { credentials: 'same-origin' });
+      if (!response.ok) return;
+      const text = await response.text();
+      if (text === backupsSeen.current) return;
+      backupsSeen.current = text;
+      setBackups((JSON.parse(text) as { backups: BackupManifest[] }).backups);
+    } catch {
+      // The next poll tries again.
+    }
+  }, { intervalMs: page === 'data' ? 4_000 : POLL_BACKGROUND_MS });
 
   useEffect(() => {
     if (!installing) return undefined;
@@ -619,7 +613,15 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
 
   const navigate: Navigate = (next) => { window.location.hash = next; setPage(next); window.scrollTo({ top: 0 }); };
   const changePreferences = onPreferencesChange;
-  const liveLogs = useLiveLogs(logSource);
+  /*
+   * Three speeds, for three ways of looking at a log.
+   *
+   * The sheet is the log opened to be read, and gets the fast clock. The card
+   * among the other cards on the Overview page is worth keeping current but is
+   * not what anybody is reading. Everywhere else the tail is followed only so
+   * that the dot in the header can say something new arrived.
+   */
+  const liveLogs = useLiveLogs(logSource, logsExpanded ? POLL_LIVE_MS : page === 'overview' ? POLL_CARD_MS : POLL_BACKGROUND_MS);
   /*
    * Whether anything has arrived in the log since it was last looked at.
    *
@@ -635,7 +637,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     if (seenLogId === null || logsExpanded) setSeenLogId(newestLogId);
   }, [newestLogId, logsExpanded, seenLogId]);
   const hasNewLogs = seenLogId !== null && newestLogId !== null && newestLogId > seenLogId;
-  const { snapshot: systemSnapshot, remeasure } = useSystemSnapshot(csrfToken);
+  const { snapshot: systemSnapshot, remeasure } = useSystemSnapshot(csrfToken, page === 'overview');
   const updateRuntime = async (path: string, body?: unknown) => {
     const init: RequestInit = { method: body === undefined ? 'POST' : 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken } };
     if (body !== undefined) init.body = JSON.stringify(body);
@@ -2481,30 +2483,22 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
    * time says there is a new one to list.
    */
   const lastUploadSeen = useRef<string | null | undefined>(undefined);
-  useEffect(() => {
-    let cancelled = false;
-    const poll = async () => {
-      if (document.hidden) return;
-      try {
-        const response = await apiFetch('/api/v1/r2', { credentials: 'same-origin' });
-        if (!response.ok || cancelled) return;
-        const config = (await response.json() as { config: R2Config }).config;
-        if (cancelled) return;
-        setR2Config(config);
-        const previous = lastUploadSeen.current;
-        lastUploadSeen.current = config.lastUploadAt;
-        if (previous !== undefined && previous !== config.lastUploadAt && config.configured) {
-          const snapshots = await apiFetch('/api/v1/r2/snapshots', { credentials: 'same-origin' });
-          if (snapshots.ok && !cancelled) setR2Snapshots((await snapshots.json() as { snapshots: R2SnapshotSummary[] }).snapshots);
-        }
-      } catch {
-        // The next poll tries again.
+  usePoll(async () => {
+    try {
+      const response = await apiFetch('/api/v1/r2', { credentials: 'same-origin' });
+      if (!response.ok) return;
+      const config = (await response.json() as { config: R2Config }).config;
+      setR2Config(config);
+      const previous = lastUploadSeen.current;
+      lastUploadSeen.current = config.lastUploadAt;
+      if (previous !== undefined && previous !== config.lastUploadAt && config.configured) {
+        const snapshots = await apiFetch('/api/v1/r2/snapshots', { credentials: 'same-origin' });
+        if (snapshots.ok) setR2Snapshots((await snapshots.json() as { snapshots: R2SnapshotSummary[] }).snapshots);
       }
-    };
-    void poll();
-    const timer = window.setInterval(() => { void poll(); }, 10_000);
-    return () => { cancelled = true; window.clearInterval(timer); };
-  }, []);
+    } catch {
+      // The next poll tries again.
+    }
+  }, { intervalMs: 10_000 });
 
   /*
    * A job already in flight, picked up by a page that did not start it.
@@ -4155,7 +4149,13 @@ function formatDuration(seconds: number): string {
  * they are asked in three different cards. One poll serves all of them rather
  * than each card opening its own.
  */
-function useSystemSnapshot(csrfToken: string): { snapshot: SystemSnapshot | null; remeasure: () => Promise<void> } {
+/**
+ * Three live readings of the machine, taken only while they are on screen.
+ *
+ * `enabled` is what page is showing: these are meters, and a meter nobody is
+ * looking at is worth nothing and still costs a request every five seconds.
+ */
+function useSystemSnapshot(csrfToken: string, enabled: boolean): { snapshot: SystemSnapshot | null; remeasure: () => Promise<void> } {
   const [snapshot, setSnapshot] = useState<SystemSnapshot | null>(null);
   const remeasure = async () => {
     try {
@@ -4165,22 +4165,14 @@ function useSystemSnapshot(csrfToken: string): { snapshot: SystemSnapshot | null
       // The next poll reports the sizes whether or not this request landed.
     }
   };
-  useEffect(() => {
-    const controller = new AbortController();
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const poll = async () => {
-      try {
-        const response = await apiFetch('/api/v1/system', { credentials: 'same-origin', signal: controller.signal });
-        if (response.ok && !controller.signal.aborted) setSnapshot(await response.json() as SystemSnapshot);
-      } catch {
-        // A dropped reading is replaced by the next one.
-      } finally {
-        if (!controller.signal.aborted) timer = setTimeout(() => void poll(), 5000);
-      }
-    };
-    void poll();
-    return () => { controller.abort(); clearTimeout(timer); };
-  }, []);
+  usePoll(async () => {
+    try {
+      const response = await apiFetch('/api/v1/system', { credentials: 'same-origin' });
+      if (response.ok) setSnapshot(await response.json() as SystemSnapshot);
+    } catch {
+      // A dropped reading is replaced by the next one.
+    }
+  }, { intervalMs: 5_000, enabled });
   return { snapshot, remeasure };
 }
 

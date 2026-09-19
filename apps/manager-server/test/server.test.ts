@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { getPlatformPaths } from '../../../packages/platform/src/index.js';
 import { StateStore } from '../src/state.js';
 import { preferredNetworkHost, startManagerServer, type ManagerServer } from '../src/server.js';
-import type { AccessGatewayState, Installation, ProcessState, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, ConsoleStatus, Installation, ProcessState, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import type { TunnelManager } from '../../../packages/tunnel/src/index.js';
 import type { ProxyWorkerManager } from '../../../packages/cloudflare/src/index.js';
 import { decodeState } from '../../../packages/cloudflare/src/index.js';
@@ -1525,4 +1525,37 @@ test('without a Cloudflare account there is no fixed address to wait for', async
   assert.equal(state.proxyUrl, null);
   assert.equal(state.proxyPending, false);
   assert.equal(state.url, 'https://today.trycloudflare.com');
+});
+
+test('everything the console watches comes back in one answer', async (t) => {
+  const managerTunnel = fakeTunnel();
+  const manager = await createServer({ bootstrapPassword: 'correct horse battery staple', managerTunnel });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  const headers = { cookie: auth.cookie };
+
+  const status = await (await fetch(`${base}/api/v1/status`, { headers })).json() as ConsoleStatus;
+
+  // Each field is what its own endpoint says, which is the whole point: the
+  // console makes one request instead of four for the same screenful.
+  const [process, tunnel, mine, security] = await Promise.all([
+    (await fetch(`${base}/api/v1/process`, { headers })).json() as Promise<ProcessState>,
+    (await fetch(`${base}/api/v1/tunnel`, { headers })).json() as Promise<TunnelState>,
+    (await fetch(`${base}/api/v1/manager-tunnel`, { headers })).json() as Promise<TunnelState>,
+    (await fetch(`${base}/api/v1/access/security`, { headers })).json() as Promise<AccessGatewayState>,
+  ]);
+  assert.deepEqual(status.process, process);
+  assert.deepEqual(status.tunnel, tunnel);
+  assert.deepEqual(status.managerTunnel, mine);
+  assert.deepEqual(status.security, security);
+
+  // It follows the state rather than reporting a fixed answer.
+  await managerTunnel.start('quick');
+  managerTunnel.publish('https://busy-lake-1234.trycloudflare.com');
+  const opened = await (await fetch(`${base}/api/v1/status`, { headers })).json() as ConsoleStatus;
+  assert.equal(opened.managerTunnel.url, 'https://busy-lake-1234.trycloudflare.com');
+
+  // And it is behind the same door as everything else.
+  assert.equal((await fetch(`${base}/api/v1/status`)).status, 401);
 });
