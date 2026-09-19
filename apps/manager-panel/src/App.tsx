@@ -2349,6 +2349,8 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   const [restoreMode, setRestoreMode] = useState<RestoreMode>('replace');
   const [selectedBackup, setSelectedBackup] = useState<BackupManifest | null>(null);
   const [selectedPreview, setSelectedPreview] = useState<RestorePreview | null>(null);
+  /** The reader has been shown that this archive is not a profile and said to go ahead. */
+  const [restoreAnyway, setRestoreAnyway] = useState(false);
   const [operationProgress, setOperationProgress] = useState<{ percent: number; step: string } | null>(null);
   const [uploading, setUploading] = useState(false);
   // What the Stop button acts on: a server job by id, or the upload in flight.
@@ -2681,11 +2683,14 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       const payload = await response.json() as RestorePreview | { error?: { message?: string } };
       if (!response.ok || !('files' in payload)) { failed(fail.body(payload, t('console.backupPreviewFailed'))); return false; }
       setRestoreMode('replace');
+      // Said once, for this archive. An archive that has to be insisted on is
+      // asked about again the next time it is opened.
+      setRestoreAnyway(false);
       setSelectedBackup(backup); setSelectedPreview(payload);
       return true;
     } catch { failed(t('console.backupPreviewFailed')); return false; }
   };
-  const closeRestore = () => { setSelectedBackup(null); setSelectedPreview(null); };
+  const closeRestore = () => { setSelectedBackup(null); setSelectedPreview(null); setRestoreAnyway(false); };
   const restoreSelected = async () => {
     if (!selectedBackup || !selectedPreview) return;
     const backupId = selectedBackup.id;
@@ -2694,7 +2699,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
     closeRestore();
     setBusyAction(t('console.restore')); setOperationProgress(null); setMixedProfile(null);
     try {
-      const response = await apiFetch(`/api/v1/backups/${backupId}/restore`, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ mode: restoreMode }) });
+      const response = await apiFetch(`/api/v1/backups/${backupId}/restore`, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ mode: restoreMode, ...(restoreAnyway ? { force: true } : {}) }) });
       const payload = await response.json() as { jobId?: string; error?: { message?: string } };
       if (!response.ok || !payload.jobId) { failed(fail.body(payload, t('console.backupRestoreFailed'))); return; }
       setRunningJobId(payload.jobId);
@@ -3342,7 +3347,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       cancelLabel={t('common.cancel')}
       onConfirm={deleteBackup}
     />
-    <RestoreDialog t={t} catalog={catalog} displayName={displayName} backup={selectedBackup} preview={selectedPreview} mode={restoreMode} onModeChange={setRestoreMode} onClose={closeRestore} onRestore={restoreSelected} />
+    <RestoreDialog t={t} catalog={catalog} displayName={displayName} backup={selectedBackup} preview={selectedPreview} mode={restoreMode} onModeChange={setRestoreMode} anyway={restoreAnyway} onAnywayChange={setRestoreAnyway} onClose={closeRestore} onRestore={restoreSelected} />
     <R2DestinationDialog
       t={t}
       open={destinationOpen}
@@ -3506,9 +3511,23 @@ function NameDialog({ t, open, onOpenChange, title, label, hint, initial = '', s
  * where the choice is made, and the choice is made in a dialog, because one of
  * them deletes everything that is there.
  */
-function RestoreDialog({ t, catalog, displayName, backup, preview, mode, onModeChange, onClose, onRestore }: { t: Translate; catalog: Record<string, unknown>; displayName: (backup: BackupManifest) => string; backup: BackupManifest | null; preview: RestorePreview | null; mode: RestoreMode; onModeChange: (mode: RestoreMode) => void; onClose: () => void; onRestore: () => Promise<void> }) {
+function RestoreDialog({ t, catalog, displayName, backup, preview, mode, onModeChange, anyway, onAnywayChange, onClose, onRestore }: { t: Translate; catalog: Record<string, unknown>; displayName: (backup: BackupManifest) => string; backup: BackupManifest | null; preview: RestorePreview | null; mode: RestoreMode; onModeChange: (mode: RestoreMode) => void; anyway: boolean; onAnywayChange: (anyway: boolean) => void; onClose: () => void; onRestore: () => Promise<void> }) {
   const group = useId();
+  const anywayId = useId();
   if (!backup || !preview) return null;
+  /*
+   * An archive that is not a profile is refused here rather than restored.
+   *
+   * A replace deletes everything the archive does not mention, so restoring
+   * the wrong zip does not restore anything - it empties the profile. It used
+   * to be a line of small print under the buttons, which is the shape of a
+   * remark rather than of a question, and the button beside it was ready to
+   * press.
+   *
+   * An older manager answers without saying either way, and that is read as
+   * recognised: there was nothing else it could have meant.
+   */
+  const unrecognized = preview.recognized === false;
   /*
    * Replace is the one to reach for, and says so.
    *
@@ -3536,12 +3555,25 @@ function RestoreDialog({ t, catalog, displayName, backup, preview, mode, onModeC
             </div>
           </div>)}
         </RadioGroup>
-        {preview.warnings.length > 0 ? <Alert><AlertDescription>{preview.warnings.map((warning) => translateStep(warning.message, catalog, warning.code, warning.params)).join(' ')}</AlertDescription></Alert> : null}
+        {preview.warnings.length > 0
+          ? <Alert variant={unrecognized ? 'destructive' : 'default'}>
+            <AlertDescription className="grid gap-2">
+              <span>{preview.warnings.map((warning) => translateStep(warning.message, catalog, warning.code, warning.params)).join(' ')}</span>
+              {unrecognized ? <>
+                <span>{t('console.restoreUnknownBody')}</span>
+                <Label htmlFor={anywayId} className="flex items-start gap-2 font-normal">
+                  <Checkbox id={anywayId} checked={anyway} onCheckedChange={(checked) => onAnywayChange(checked === true)} className="mt-0.5" />
+                  <span>{t('console.restoreUnknownAnyway')}</span>
+                </Label>
+              </> : null}
+            </AlertDescription>
+          </Alert>
+          : null}
         <p className="text-xs text-muted-foreground">{t('console.restoreSafety')}</p>
       </DialogBody>
       <DialogFooter>
         <Button variant="ghost" onClick={onClose}>{t('common.cancel')}</Button>
-        <Button variant={mode === 'replace' ? 'destructive' : 'default'} onClick={() => void onRestore()}>{t('console.restoreStart')}</Button>
+        <Button variant={mode === 'replace' ? 'destructive' : 'default'} disabled={unrecognized && !anyway} onClick={() => void onRestore()}>{t('console.restoreStart')}</Button>
       </DialogFooter>
     </DialogContent>
   </Dialog>;

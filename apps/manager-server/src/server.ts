@@ -1597,7 +1597,8 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       if (mode !== 'merge' && mode !== 'replace') { sendError(response, 400, 'invalid_restore_mode', 'Restore mode must be merge or replace'); return; }
       const libraryPath = await backups.getArchivePath(imported.manifest.id);
       if (!libraryPath) { sendError(response, 500, 'backup_archive_missing', 'The uploaded archive could not be stored'); return; }
-      const result = await restoreWithProcess({ profile, backups, archivePath: libraryPath, backupId: imported.manifest.id, mode, supervisor });
+      const force = headerValue(request.headers['x-restore-force']) === 'yes';
+      const result = await restoreWithProcess({ profile, backups, archivePath: libraryPath, backupId: imported.manifest.id, mode, ...(force ? { force: true } : {}), supervisor });
       sendJson(response, 200, result);
     } finally {
       if (!retained) await backups.removeTemporary(archivePath);
@@ -1641,8 +1642,17 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       const body = await readJson(request);
       const mode = isRecord(body) && (body.mode === 'merge' || body.mode === 'replace') ? body.mode : null;
       if (!mode) { sendError(response, 400, 'invalid_restore_mode', 'Restore mode must be merge or replace'); return; }
+      // An archive that does not look like a profile is refused unless the
+      // reader has been shown why and said to go ahead anyway. Asked here, so
+      // the answer is a refusal with a code the panel can translate rather
+      // than a job that starts and then fails in English.
+      const force = isRecord(body) && body.force === true;
+      if (!force && (await backups.preview(archivePath, profile.layout)).recognized === false) {
+        sendError(response, 409, 'unrecognized_archive', 'This archive holds none of the folders a SillyTavern profile usually has');
+        return;
+      }
       const { job, signal } = jobs.createOperation('restore', logEvent('job.preparingRestore', 'Preparing restore'));
-      void restoreWithProcess({ profile, backups, archivePath, backupId: id, mode, supervisor, signal, onProgress: (progress, step) => jobs.updateOperation(job.id, progress, step) })
+      void restoreWithProcess({ profile, backups, archivePath, backupId: id, mode, ...(force ? { force: true } : {}), supervisor, signal, onProgress: (progress, step) => jobs.updateOperation(job.id, progress, step) })
         .then(() => jobs.finishOperation(job.id, 'succeeded', null))
         .catch((error: unknown) => jobs.finishOperation(job.id, 'failed', error instanceof Error ? error.message : 'Restore failed', { evenIfCanceled: error instanceof RestoreRollbackError, stepCode: error instanceof RestoreRollbackError ? 'job.rollbackFailed' : undefined }));
       sendJson(response, 202, { jobId: job.id, job });
@@ -1962,6 +1972,8 @@ export async function restoreWithProcess(options: {
    */
   readonly backupId?: string;
   readonly mode: 'merge' | 'replace';
+  /** The reader has been shown what is wrong with this archive and said to go ahead. */
+  readonly force?: boolean;
   readonly supervisor: ProcessSupervisor;
   readonly signal?: AbortSignal;
   readonly onProgress?: (progress: number, step: LogEvent) => void;
@@ -1992,6 +2004,7 @@ export async function restoreWithProcess(options: {
     writing = true;
     const preview = await backups.restore(profile, archivePath, {
       mode,
+      ...(options.force ? { force: true } : {}),
       ...(signal ? { signal } : {}),
       onProgress: ({ completed, total }) => onProgress?.(25 + (total > 0 ? (completed / total) * 60 : 60), logEvent('job.restoringFiles', `Restoring files (${completed}/${total})`, { completed, total })),
       onStatus: (step) => onProgress?.(RESTORE_STEP_PROGRESS[step.code] ?? 86, step),
@@ -2010,7 +2023,9 @@ export async function restoreWithProcess(options: {
         onProgress?.(88, logEvent('job.rollingBack', 'Putting the data back as it was before the restore'));
         const safetyPath = await backups.getArchivePath(safetyCopy.id);
         if (!safetyPath) throw new Error('the safety copy is missing');
-        await backups.restore(profile, safetyPath, { mode: 'replace' });
+        // The undo, never refused: this archive is the profile as it stood a
+        // moment ago, and whatever it holds is what the reader is owed back.
+        await backups.restore(profile, safetyPath, { mode: 'replace', force: true });
         await settle();
       } catch (rollbackError: unknown) {
         await supervisor.start().catch(() => supervisor.getState());
@@ -2672,7 +2687,9 @@ async function recoverEmptyProfile(settle: () => Promise<Profile>, r2: R2Manager
     const restored = await recoverProfileFromR2({
       profile, r2, backups,
       logger: (line) => jobs.append('backup', line),
-      restore: async (archivePath) => { await backups.restore(profile, archivePath, { mode: 'replace' }); },
+      // Nobody is here to be asked, and the profile this writes into is empty,
+      // so there is nothing an odd-looking recovery point could destroy.
+      restore: async (archivePath) => { await backups.restore(profile, archivePath, { mode: 'replace', force: true }); },
     });
     // Nobody was watching while this ran. The card says it happened, and says it
     // of the recovery point rather than of the archive that carried it here:

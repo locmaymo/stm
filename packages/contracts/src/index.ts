@@ -562,6 +562,28 @@ export interface RestorePreview {
    * that cannot be undone.
    */
   readonly warnings: readonly LogEvent[];
+  /**
+   * Whether this archive is a SillyTavern profile at all.
+   *
+   * A zip reaches the manager because a person handed it over, and people hand
+   * over the wrong file: an installer, a character card, a folder of holiday
+   * photos. Nothing checked, so the wrong file restored - a replace emptied
+   * the profile of everything the archive did not mention, and the run
+   * reported success. Restoring one of these is now refused unless the reader
+   * says in the dialog that they meant it.
+   *
+   * Absent on an older manager's answer, which is read as recognised: there
+   * was nothing else it could have meant.
+   */
+  readonly recognized?: boolean;
+  /**
+   * Where inside the archive the profile starts; `''` when it is at the root.
+   *
+   * A zip of `data/default-user/`, or of the folder rather than its contents,
+   * is a profile one or two directories down. Carried so the panel can say
+   * which part of the archive is going to be read.
+   */
+  readonly root?: string;
 }
 
 export type JobState = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled';
