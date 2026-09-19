@@ -2131,6 +2131,18 @@ async function handleCloudflareRequest(context: RequestContext, cloudflare: Clou
     sendJson(response, 200, { cloudflare: status, config: await r2.getConfig() });
     return;
   }
+  if (pathname === '/api/v1/r2/cloudflare/takeover' && method === 'POST') {
+    /*
+     * This machine takes the bucket, and the one that had it stops.
+     *
+     * Asked for by hand because the alternative is a machine deciding for
+     * itself that another one is finished with an account - which, for the
+     * pair of machines somebody is deliberately running side by side, is a
+     * decision nobody asked it to make.
+     */
+    sendJson(response, 200, { config: await r2.takeOwnership(), cloudflare: await cloudflare.status() });
+    return;
+  }
   if (pathname === '/api/v1/r2/cloudflare/disconnect' && method === 'POST') {
     /*
      * The Workers go before the grant does, because afterwards there is no
@@ -2151,6 +2163,12 @@ async function handleCloudflareRequest(context: RequestContext, cloudflare: Clou
         });
       }
     }
+    // The claim in the bucket goes first, while there is still a grant to
+    // reach the bucket with. Left behind, the next machine to connect would
+    // have to argue with a claim nobody is behind any more.
+    await r2.releaseOwnership().catch((error: unknown) => {
+      logger(logEvent('r2.claimReleaseFailed', `[r2] the bucket claim could not be given up: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
+    });
     const result = await cloudflare.disconnect();
     await proxy?.forget().catch(() => undefined);
     if ((await r2.getConfig()).mode === 'cloudflare') await r2.update({ enabled: false });

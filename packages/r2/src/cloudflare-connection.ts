@@ -263,13 +263,26 @@ export class CloudflareConnection {
    * asked for it to be gone. A revocation that failed is still reported, since
    * the grant may then live on until the user revokes it in the dashboard.
    */
-  public async disconnect(): Promise<{ revoked: boolean; workerKeyRemoved: boolean }> {
+  public async disconnect(): Promise<{ revoked: boolean; workerKeyRemoved: boolean; workerRemoved: boolean }> {
     const stored = await this.load();
     let workerKeyRemoved = false;
+    let workerRemoved = false;
     let revoked = false;
     if (stored.refreshToken) {
       if (stored.account && stored.scopes.includes(DEFAULT_SCOPES.workersScriptsWrite)) {
         workerKeyRemoved = await this.worker.removeKey(stored.account.id, stored.installationKeyId).then(() => true, () => false);
+        /*
+         * And the Worker itself, once nothing else holds a key on it.
+         *
+         * Removing only this installation's key left the script deployed, on
+         * the account's own subdomain, bound to the bucket, for a reader who
+         * had just asked for the connection to be gone. Another machine
+         * backing up to the same account is the one reason to leave it, and
+         * its key is how it says so.
+         */
+        workerRemoved = await this.worker.keyIds(stored.account.id)
+          .then(async (keyIds) => keyIds.length === 0 && await this.worker.remove(stored.account?.id ?? ''))
+          .catch(() => false);
       }
       revoked = await revokeToken(this.client.clientId, stored.refreshToken, { fetchImpl: this.fetchImpl }).then(() => true, () => false);
     }
@@ -278,7 +291,28 @@ export class CloudflareConnection {
     this.pending = null;
     this.offeredAccounts = [];
     await this.save({ ...stored, refreshToken: null, scopes: [], account: null, bucket: null, connectedAt: null, reconnectRequired: false, lastError: null, problem: null });
-    return { revoked, workerKeyRemoved };
+    return { revoked, workerKeyRemoved, workerRemoved };
+  }
+
+  /** This installation, as the bucket's claim names it. Stable across reconnects. */
+  public async installationId(): Promise<string> {
+    return (await this.load()).installationKeyId;
+  }
+
+  /**
+   * Stop another installation from reaching the bucket through the Worker.
+   *
+   * The claim in the bucket is what one manager reads to know it is not the
+   * one using this account, and a manager that respects it stops on its own.
+   * This is the other half: the key it signs with is taken off the Worker, so
+   * a machine that is not listening - an older version, one mid-run - stops
+   * too, at the first request rather than at the next check.
+   */
+  public async evict(keyId: string): Promise<boolean> {
+    const stored = await this.load();
+    if (!stored.account || !stored.scopes.includes(DEFAULT_SCOPES.workersScriptsWrite)) return false;
+    if (keyId === stored.installationKeyId) return false;
+    return await this.worker.removeKey(stored.account.id, keyId).then(() => true, () => false);
   }
 
   /**

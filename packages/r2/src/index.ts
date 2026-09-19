@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { hostname } from 'node:os';
 import { mkdir, open, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { formatBytes, logEvent, logLineText, type LogSink, type Profile, type R2CheckResult, type R2CloudflareUsage, type R2Config, type R2ConnectionMode, type R2UsageResponse, type R2UsageWarning, type R2EnvironmentField, type R2Object, type R2SnapshotSummary, type R2Usage, type TransferProgress } from '../../contracts/src/index.js';
@@ -9,6 +10,7 @@ import type { CloudflareConnection, KnownBucket } from './cloudflare-connection.
 import { BlobLedger } from './ledger.js';
 import { S3ObjectStore, type R2Credentials } from './s3.js';
 import { R2Error, type Billing, type ObjectRecord, type ObjectStore } from './store.js';
+import { claimIsStale, readClaim, writeClaim, CLAIM_OBJECT, CLAIM_REFRESH_MS, type BucketClaim } from './owner.js';
 import {
   blobKey,
   decodeBlob,
@@ -42,6 +44,7 @@ const MASKED_SECRET = '********';
 const OBJECT_PREFIX = 'sillytavern-manager/';
 const BLOB_PREFIX = `${OBJECT_PREFIX}blobs/`;
 const SNAPSHOT_PREFIX = `${OBJECT_PREFIX}snapshots/`;
+const CLAIM_KEY = `${OBJECT_PREFIX}${CLAIM_OBJECT}`;
 /** How long Cloudflare's usage figures are reused before asking again. */
 const CLOUD_USAGE_TTL_MS = 15 * 60 * 1000;
 /** How old those figures may be and still count towards the ceilings before a backup. */
@@ -130,6 +133,14 @@ interface StoredR2Config {
   readonly lastSnapshot: { readonly profileId: string; readonly id: string } | null;
   /** What the manager restored by itself on the way up; see R2Config.lastRecovery. */
   readonly lastRecovery: { readonly at: string; readonly createdAt: string; readonly fileCount: number; readonly sizeBytes?: number } | null;
+  /**
+   * The bucket's claim as this manager last read it; see `owner.ts`.
+   *
+   * Kept here so the panel can say who holds the bucket without a request to
+   * R2 behind every poll of the settings. It is what was true at `checkedAt`,
+   * which is enough for a line on a card and never enough to act on.
+   */
+  readonly claim: { readonly keyId: string; readonly label: string; readonly lastSeenAt: string; readonly mine: boolean; readonly checkedAt: string } | null;
   readonly usage: StoredUsage;
 }
 
@@ -141,6 +152,8 @@ export interface R2ManagerOptions {
   readonly fetchImpl?: typeof fetch;
   /** The signed-in connection, when this manager has a Cloudflare OAuth client. */
   readonly cloudflare?: CloudflareConnection;
+  /** What this machine is called in the bucket's claim; its hostname by default. */
+  readonly installationLabel?: string;
 }
 
 export interface R2UpdateInput {
@@ -209,6 +222,7 @@ export class R2Manager {
   private readonly fetchImpl: typeof fetch;
   private readonly ledger: BlobLedger;
   private readonly cloudflare: CloudflareConnection | null;
+  private readonly installationLabel: string;
   private configState: StoredR2Config | null = null;
   /** The local backup interval an older version kept in this file, until it is handed over. */
   private legacyLocalInterval: number | null = null;
@@ -241,6 +255,7 @@ export class R2Manager {
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.ledger = new BlobLedger({ path: join(this.paths.state, R2_LEDGER_FILE) });
     this.cloudflare = options.cloudflare ?? null;
+    this.installationLabel = (options.installationLabel ?? hostname() ?? '').slice(0, 120) || 'this machine';
   }
 
   public async getConfig(): Promise<R2Config> {
@@ -312,6 +327,10 @@ export class R2Manager {
     const bucket = await this.bucketName();
     try {
       const config = await this.requireUsable();
+      // Pressing Check is the first thing done after connecting, and the
+      // answer somebody most needs then is that this account is already
+      // somebody else's.
+      await this.requireOwnership(config);
       const objects = await this.listAll(config, OBJECT_PREFIX);
       const found = summarizeObjects(objects);
       const previous = await this.currentPeriod(config);
@@ -382,6 +401,7 @@ export class R2Manager {
   public async syncProfile(input: R2SyncInput): Promise<R2SyncResult> {
     return await this.exclusive(async () => {
       const config = await this.onTarget(await this.requireUsable());
+      await this.requireOwnership(config);
       const usage = await this.currentPeriod(config);
       // Cloudflare sees what this manager's own count cannot: another machine
       // on the same bucket, or objects put there some other way. The larger of
@@ -590,6 +610,9 @@ export class R2Manager {
   public async reconcile(): Promise<R2ReconcileResult> {
     return await this.exclusive(async () => {
       const config = await this.requireUsable();
+      // The one operation that deletes by inference rather than by name, and
+      // the one that another machine's half-finished upload looks like rubbish to.
+      await this.requireOwnership(config);
       const client = this.client(config);
       const objects = await this.listAll(config, OBJECT_PREFIX, client);
       const { blobs, snapshotKeys, legacyObjectCount, legacyBytes } = summarizeObjects(objects);
@@ -651,7 +674,7 @@ export class R2Manager {
       const config = await this.requireUsable();
       const client = this.client(config);
       const objects = await this.listAll(config, OBJECT_PREFIX, client);
-      const legacy = objects.filter((object) => !object.key.startsWith(BLOB_PREFIX) && !object.key.startsWith(SNAPSHOT_PREFIX));
+      const legacy = objects.filter((object) => !object.key.startsWith(BLOB_PREFIX) && !object.key.startsWith(SNAPSHOT_PREFIX) && object.key !== CLAIM_KEY);
       let bytes = 0;
       for (const object of legacy) {
         await client.deleteObject(object.key);
@@ -781,6 +804,112 @@ export class R2Manager {
       cursor = page.cursor;
     } while (cursor);
     return objects;
+  }
+
+  /**
+   * Take the bucket, or stop because another installation has it.
+   *
+   * One account, one manager. Two of them share a bucket without ever seeing
+   * each other: they upload under different profile ids, so neither reads the
+   * other's recovery points, while the sweep that collects chunks nothing
+   * points at is a whole-bucket operation and runs against whatever the other
+   * one has uploaded but not yet written an index for.
+   *
+   * The claim is read before anything is written, and this is also where it is
+   * kept alive: the holder writes it again every few hours, and a claim nobody
+   * has refreshed for days is taken without asking. That is what makes a
+   * machine whose disk was emptied - a hosted studio restarted, a reinstall -
+   * able to come back by itself rather than needing a button pressed.
+   *
+   * Only for a bucket connected by signing in. Manual keys are somebody
+   * carrying their own credentials between machines on purpose, and refusing
+   * them here would take away a way of working that already worked.
+   */
+  private async requireOwnership(config: StoredR2Config): Promise<void> {
+    if (config.mode !== 'cloudflare' || !this.cloudflare) return;
+    const keyId = await this.cloudflare.installationId();
+    const now = this.now().getTime();
+    const claim = await readClaim(this.client(config), CLAIM_KEY);
+    if (claim && claim.keyId !== keyId && !claimIsStale(claim, now)) {
+      await this.rememberClaim(claim, false);
+      await this.recordCharges();
+      throw new R2Error('r2_in_use', `Another installation (${claim.label}) is backing up to this bucket. Take it over from this machine, or disconnect this Cloudflare account.`);
+    }
+    const mine: BucketClaim = {
+      schemaVersion: 1,
+      keyId,
+      label: this.installationLabel,
+      claimedAt: claim?.keyId === keyId ? claim.claimedAt : new Date(now).toISOString(),
+      lastSeenAt: new Date(now).toISOString(),
+    };
+    // Writing it on every run would be a charged operation every five minutes
+    // for a fact that does not change.
+    const fresh = claim?.keyId === keyId && now - Date.parse(claim.lastSeenAt) < CLAIM_REFRESH_MS;
+    if (!fresh) {
+      await writeClaim(this.client(config), CLAIM_KEY, mine);
+      if (!claim) this.logger(logEvent('r2.claimed', `[r2] this machine (${mine.label}) is now the one backing up to this bucket`, { label: mine.label }));
+      else if (claim.keyId !== keyId) this.logger(logEvent('r2.claimTaken', `[r2] the previous machine (${claim.label}) had not used this bucket for days, so this one took it over`, { label: claim.label }));
+    }
+    await this.rememberClaim(fresh && claim ? claim : mine, true);
+    await this.recordCharges();
+  }
+
+  /**
+   * Hand the bucket to this machine, whatever the claim says.
+   *
+   * The other installation's Worker key goes with it, so a machine that is not
+   * reading the claim - an older version, one in the middle of a run - stops
+   * at its next request rather than at its next check.
+   */
+  public async takeOwnership(): Promise<R2Config> {
+    const config = await this.requireUsable();
+    if (config.mode !== 'cloudflare' || !this.cloudflare) throw new R2Error('r2_not_connected_account', 'Only a bucket connected by signing in to Cloudflare has an owner to take over');
+    const keyId = await this.cloudflare.installationId();
+    const client = this.client(config);
+    const previous = await readClaim(client, CLAIM_KEY);
+    if (previous && previous.keyId !== keyId) {
+      await this.cloudflare.evict(previous.keyId).catch(() => false);
+      this.logger(logEvent('r2.claimTakenOver', `[r2] this machine took the bucket over from ${previous.label}`, { label: previous.label }));
+    }
+    const at = new Date(this.now()).toISOString();
+    await writeClaim(client, CLAIM_KEY, { schemaVersion: 1, keyId, label: this.installationLabel, claimedAt: at, lastSeenAt: at });
+    await this.rememberClaim({ schemaVersion: 1, keyId, label: this.installationLabel, claimedAt: at, lastSeenAt: at }, true);
+    await this.recordCharges();
+    return await this.getConfig();
+  }
+
+  /**
+   * Give the bucket up, so the next machine to connect does not have to argue
+   * with a claim nobody is behind any more. Best effort: a sign-out that
+   * cannot reach the bucket is still a sign-out.
+   */
+  public async releaseOwnership(): Promise<void> {
+    const config = await this.load();
+    if (config.mode !== 'cloudflare' || !this.cloudflare || !config.enabled) { await this.forgetClaim(); return; }
+    try {
+      const keyId = await this.cloudflare.installationId();
+      const client = this.client(config);
+      const claim = await readClaim(client, CLAIM_KEY);
+      if (claim?.keyId === keyId) await client.deleteObject(CLAIM_KEY);
+    } catch {
+      // The grant may already be gone. The claim goes stale on its own.
+    }
+    await this.forgetClaim();
+    await this.recordCharges();
+  }
+
+  private async rememberClaim(claim: BucketClaim, mine: boolean): Promise<void> {
+    const config = await this.load();
+    const next = { keyId: claim.keyId, label: claim.label, lastSeenAt: claim.lastSeenAt, mine, checkedAt: new Date(this.now()).toISOString() };
+    const current = config.claim;
+    if (current && current.keyId === next.keyId && current.mine === next.mine && current.lastSeenAt === next.lastSeenAt) return;
+    await this.save({ ...config, claim: next });
+  }
+
+  private async forgetClaim(): Promise<void> {
+    const config = await this.load();
+    if (config.claim === null) return;
+    await this.save({ ...config, claim: null });
   }
 
   private async requireUsable(): Promise<StoredR2Config> {
@@ -928,6 +1057,7 @@ export class R2Manager {
       usage: toPublicUsage(config.usage),
       lastFingerprint: config.lastFingerprint,
       lastRecovery: config.lastRecovery,
+      owner: config.claim ? { label: config.claim.label, lastSeenAt: config.claim.lastSeenAt, mine: config.claim.mine } : null,
     };
   }
 
@@ -1195,6 +1325,9 @@ function summarizeObjects(objects: readonly ObjectRecord[]): { blobs: Map<string
       continue;
     }
     if (object.key.startsWith(SNAPSHOT_PREFIX)) { snapshotKeys.push(object.key); continue; }
+    // Which installation holds the bucket. Not data, not an archive, and not
+    // something the legacy sweep may take away from the manager that wrote it.
+    if (object.key === CLAIM_KEY) continue;
     // Whole-ZIP archives from the version before this one. They are not
     // read and not deleted behind the operator's back; the panel offers it.
     legacyObjectCount += 1;
@@ -1286,6 +1419,7 @@ function defaultStoredConfig(now: Date): StoredR2Config {
     lastFingerprint: null,
     lastSnapshot: null,
     lastRecovery: null,
+    claim: null,
     usage: {
       storageBytes: 0,
       blobCount: 0,

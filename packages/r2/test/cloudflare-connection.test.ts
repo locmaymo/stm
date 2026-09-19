@@ -204,8 +204,11 @@ test('disconnecting removes this installation\'s Worker key, revokes the grant a
   await connection.objectStore(() => undefined).putObject('sillytavern-manager/blobs/a', new Uint8Array([7]), 'application/octet-stream');
   assert.equal(cloudflare.state.secrets.size, 1);
   const refresh = cloudflare.state.refreshToken;
-  assert.deepEqual(await connection.disconnect(), { revoked: true, workerKeyRemoved: true });
+  // The key and then the Worker itself: nothing of this manager's is left in
+  // somebody's account after they have asked for the connection to be gone.
+  assert.deepEqual(await connection.disconnect(), { revoked: true, workerKeyRemoved: true, workerRemoved: true });
   assert.equal(cloudflare.state.secrets.size, 0);
+  assert.equal(cloudflare.state.deployed, null, 'the backup Worker is gone from the account');
   assert.deepEqual(cloudflare.state.revoked, [refresh]);
   assert.equal((await connection.status()).state, 'disconnected');
   assert.doesNotMatch(await readFile(join(paths.state, 'cloudflare-connection.json'), 'utf8'), /refresh-/u);

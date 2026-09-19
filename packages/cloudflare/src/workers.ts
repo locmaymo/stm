@@ -127,12 +127,55 @@ export class BackupWorker {
     }
   }
 
-  /** Remove this installation's key, which is what Disconnect means for the Worker. */
+  /** Remove one installation's key: its own on Disconnect, another's on a takeover. */
   public async removeKey(accountId: string, keyId: string): Promise<void> {
     try {
       await this.api.call('DELETE', `/accounts/${segment(accountId)}/workers/scripts/${WORKER_SCRIPT_NAME}/secrets/${secretName(keyId)}`);
     } catch (error: unknown) {
       if (!(error instanceof CloudflareApiError) || error.status !== 404) throw error;
+    }
+  }
+
+  /**
+   * The installations that still hold a key on this Worker.
+   *
+   * Secret values cannot be read back, but their names can be listed, and each
+   * key is named after the installation that asked for it. That is enough to
+   * answer the only question Disconnect has: is anything else still using this.
+   */
+  public async keyIds(accountId: string): Promise<string[]> {
+    let result;
+    try {
+      ({ result } = await this.api.call('GET', `/accounts/${segment(accountId)}/workers/scripts/${WORKER_SCRIPT_NAME}/secrets`));
+    } catch (error: unknown) {
+      // No Worker, so no keys on it.
+      if (error instanceof CloudflareApiError && error.status === 404) return [];
+      throw error;
+    }
+    const entries = Array.isArray(result) ? result : [];
+    return entries
+      .map((entry) => isRecord(entry) && typeof entry.name === 'string' ? entry.name : '')
+      .filter((name) => name.startsWith(KEY_SECRET_PREFIX))
+      .map((name) => name.slice(KEY_SECRET_PREFIX.length));
+  }
+
+  /**
+   * Take the Worker out of the account altogether.
+   *
+   * Signing out has to leave nothing behind: a Worker nobody can explain,
+   * still answering on the account's own subdomain and still bound to a
+   * bucket, is the worst thing for an account owner to find. Done only when no
+   * other installation holds a key on it - the account may be one somebody
+   * else's machine is also backing up to.
+   */
+  public async remove(accountId: string): Promise<boolean> {
+    try {
+      await this.api.call('DELETE', `/accounts/${segment(accountId)}/workers/scripts/${WORKER_SCRIPT_NAME}`);
+      return true;
+    } catch (error: unknown) {
+      // Already gone is the outcome that was wanted.
+      if (error instanceof CloudflareApiError && error.status === 404) return false;
+      throw error;
     }
   }
 
@@ -212,8 +255,10 @@ export function signWorkerRequest(session: Pick<WorkerSession, 'keyId' | 'key'>,
   return { 'x-stm-key-id': session.keyId, 'x-stm-timestamp': timestamp, 'x-stm-signature': signature };
 }
 
+const KEY_SECRET_PREFIX = 'STM_KEY_';
+
 function secretName(keyId: string): string {
-  return `STM_KEY_${keyId}`;
+  return `${KEY_SECRET_PREFIX}${keyId}`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

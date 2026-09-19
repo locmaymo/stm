@@ -393,6 +393,27 @@ export interface R2Config {
      */
     readonly sizeBytes?: number;
   } | null;
+  /**
+   * Which installation is backing up to this bucket, as last read from it.
+   *
+   * One account, one manager. Two of them share a bucket without ever seeing
+   * each other - they write under different profile ids - while the sweep that
+   * collects chunks nothing points at is a whole-bucket operation and would
+   * run against whatever the other one had uploaded but not yet indexed. So
+   * the bucket carries a claim, and a manager that is not the one named in it
+   * stops and says so here instead.
+   *
+   * Null when nothing has been read yet, when the bucket was connected with
+   * manual keys - somebody carrying their own credentials between machines is
+   * doing it on purpose - or on an older manager's answer.
+   */
+  readonly owner?: {
+    /** What the holding machine calls itself, usually its hostname. */
+    readonly label: string;
+    readonly lastSeenAt: string;
+    /** Whether the holder is this manager. */
+    readonly mine: boolean;
+  } | null;
 }
 
 export interface R2OperationCounts {

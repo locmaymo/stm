@@ -53,6 +53,16 @@ async function fakeCloudflare(initial: Partial<Account> = {}): Promise<{ account
       account.secrets.set(secret.name, secret.text);
       return ok({ name: secret.name, type: 'secret_text' });
     }
+    if (url.pathname === `${SCRIPTS}/secrets` && method === 'GET') {
+      if (!account.deployed) return fail(404, 10007);
+      return ok([...account.secrets.keys()].map((name) => ({ name, type: 'secret_text' })));
+    }
+    if (url.pathname === SCRIPTS && method === 'DELETE') {
+      if (!account.deployed) return fail(404, 10007);
+      account.deployed = null;
+      account.secrets.clear();
+      return ok(null);
+    }
     if (url.pathname.startsWith(`${SCRIPTS}/secrets/`) && method === 'DELETE') {
       const name = url.pathname.slice(`${SCRIPTS}/secrets/`.length);
       if (!account.secrets.delete(name)) return fail(404, 10056);

@@ -3006,6 +3006,23 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       if (!(error instanceof StoppedError)) failed(error instanceof Error ? error.message : t('console.r2FetchFailed'));
     } finally { setR2Busy(null); setOperationProgress(null); setRunningJobId(null); }
   };
+  /**
+   * Take the bucket from the machine that holds it.
+   *
+   * Pressed by somebody who has read whose it is, so it does not ask again.
+   * The check that follows is the proof: it is the first thing this manager
+   * does as the holder, and it either works or says why not.
+   */
+  const takeOverR2 = async () => {
+    setR2Busy(t('console.r2TakeOver'));
+    try {
+      const response = await apiFetch('/api/v1/r2/cloudflare/takeover', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      const payload = await response.json() as { config?: R2Config; error?: { message?: string } };
+      if (!response.ok || !payload.config) { failed(fail.body(payload, t('console.r2TakeOverFailed'))); return; }
+      setR2Config(payload.config);
+      done(t('console.r2TakenOver'));
+    } catch { failed(t('console.r2TakeOverFailed')); } finally { setR2Busy(null); }
+  };
   const removeLegacy = async () => {
     setR2Busy(t('console.r2LegacyRemove'));
     try {
@@ -3203,6 +3220,22 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
           * opened the console. Said here because it is otherwise
           * indistinguishable from a machine that happened to still have it.
           */}
+        {/*
+          * Another machine is using this account.
+          *
+          * One manager per bucket: two of them never see each other's recovery
+          * points but do collect each other's chunks. The one that is not the
+          * holder stops and says so here, with the one thing there is to do
+          * about it - take it over, which stops the other one.
+          */}
+        {r2Config?.owner && !r2Config.owner.mine ? <Alert variant="destructive">
+          <ShieldCheck />
+          <AlertTitle>{t('console.r2InUseTitle')}</AlertTitle>
+          <AlertDescription className="grid gap-2">
+            <span>{t('console.r2InUseBody', { name: r2Config.owner.label, when: new Date(r2Config.owner.lastSeenAt).toLocaleString() })}</span>
+            <span><Button size="sm" variant="outline" onClick={() => void takeOverR2()} disabled={r2Busy !== null}>{t('console.r2TakeOver')}</Button></span>
+          </AlertDescription>
+        </Alert> : null}
         {r2Config?.lastRecovery ? <Alert>
           <History />
           <AlertTitle>{t('console.r2RecoveredTitle')}</AlertTitle>

@@ -56,6 +56,15 @@ export class BackupScheduler {
   private timer: NodeJS.Timeout | null = null;
   private running = false;
   private reportedBusy = false;
+  /**
+   * The last reason a tick gave up, so a standing one is said once.
+   *
+   * Every minute is often enough that a reason which is not going to change on
+   * its own - another machine holds the bucket, the ceiling is reached, the
+   * network is down - fills the log with itself and buries the lines somebody
+   * is reading it for.
+   */
+  private lastSkip: string | null = null;
   /** When the frequent tier last went up, so its clock survives a tick that did nothing. */
   private lastHotUploadAt: number | null = null;
 
@@ -100,9 +109,13 @@ export class BackupScheduler {
       const config = await this.r2.getConfig();
       if (!config.enabled || !config.configured) return;
       await this.runRemoteSync(profile, fingerprint, config);
+      this.lastSkip = null;
     } catch (error: unknown) {
       const reason = error instanceof Error ? error.message : 'unknown error';
-      this.logger(logEvent('backup.scheduleSkipped', `[backup] scheduled backup skipped: ${reason}`, { reason }));
+      if (reason !== this.lastSkip) {
+        this.lastSkip = reason;
+        this.logger(logEvent('backup.scheduleSkipped', `[backup] scheduled backup skipped: ${reason}`, { reason }));
+      }
     } finally {
       this.running = false;
     }
