@@ -54,7 +54,7 @@ const NOTICE = {
  * Cloudflare account and point `STM_CLOUDFLARE_OAUTH_CLIENT_ID` at it, or set it
  * empty to turn signing in to Cloudflare off and keep to S3 keys.
  */
-const DEFAULT_CLOUDFLARE_CLIENT_ID = 'b55fd7c6239ab201abe3cbdf58012dbc';
+const DEFAULT_CLOUDFLARE_CLIENT_ID = '042dda365c8407a62549886823a5fa4c';
 /**
  * Where Cloudflare sends the browser back to.
  *
@@ -62,7 +62,7 @@ const DEFAULT_CLOUDFLARE_CLIENT_ID = 'b55fd7c6239ab201abe3cbdf58012dbc';
  * manager can be on any port and any address. The registered one is a page on
  * the project's domain that forwards to the origin the sign-in started from.
  */
-const DEFAULT_CLOUDFLARE_REDIRECT_URI = 'https://stm.phamloc.top/oauth/cloudflare/callback';
+const DEFAULT_CLOUDFLARE_REDIRECT_URI = 'https://stm.locmaymo.top/oauth/cloudflare/callback';
 /** Where the relay, or Cloudflare itself for a loopback client, sends the browser on this manager. */
 export const CLOUDFLARE_CALLBACK_PATH = '/oauth/cloudflare/callback';
 

@@ -10,7 +10,7 @@ import { home } from './src/content/home.mjs';
 import { docs } from './src/content/docs.mjs';
 
 /**
- * Builds stm.phamloc.top into `dist/`.
+ * Builds stm.locmaymo.top into `dist/`.
  *
  * The site is static files and nothing else: no framework, no client-side
  * router, no runtime. This script renders one HTML file per page per language,

@@ -7,7 +7,7 @@
     "repository": "https://github.com/locmaymo/stm",
     "issues": "https://github.com/locmaymo/stm/issues",
     "security": "https://github.com/locmaymo/stm/security/advisories",
-    "site": "https://stm.phamloc.top"
+    "site": "https://stm.locmaymo.top"
   },
   "labels": {
     "effectiveFrom": "In force since {date}",
@@ -25,7 +25,7 @@
           "body": [
             "SillyTavern Manager (the software, the manager) is an open-source control panel that installs, runs, backs up and monitors SillyTavern on a computer you control. It is published by locmaymo under the GNU Affero General Public License version 3.",
             "The project operates no service on your behalf. There is no account to create, no server that holds your data, and nothing that runs unless you start it. Every copy runs on hardware you own, rent or otherwise control.",
-            "These terms cover your use of the software, of the project's website at stm.phamloc.top, and of the Cloudflare sign-in relay page hosted there. They do not replace the AGPL-3.0, which grants you the rights to use, study, modify and redistribute the source code. Where these terms and that licence disagree, the licence prevails."
+            "These terms cover your use of the software, of the project's website at stm.locmaymo.top, and of the Cloudflare sign-in relay page hosted there. They do not replace the AGPL-3.0, which grants you the rights to use, study, modify and redistribute the source code. Where these terms and that licence disagree, the licence prevails."
           ]
         },
         "acceptance": {
@@ -106,7 +106,7 @@
         "changes": {
           "heading": "Changes to these terms",
           "body": [
-            "These terms change as the software does. The version in force always ships with the software and is published at stm.phamloc.top/terms, carrying the date it took effect.",
+            "These terms change as the software does. The version in force always ships with the software and is published at stm.locmaymo.top/terms, carrying the date it took effect.",
             "Substantive changes are noted in the release notes. If you do not accept a new version, stop using the software; the rights the AGPL-3.0 already granted you in the source code are unaffected."
           ]
         },
@@ -252,7 +252,7 @@
           ]
         },
         "relay": {
-          "heading": "The sign-in relay at stm.phamloc.top",
+          "heading": "The sign-in relay at stm.locmaymo.top",
           "body": [
             "Cloudflare only returns a browser to an address registered on the OAuth client, matched exactly, and a manager can be open on any address. So the registered address is a static page on this site, which forwards the browser back to the manager that started the sign-in.",
             "That page stores nothing, sets no cookie and runs no analytics. The authorization code it forwards is useless without the PKCE verifier, which never leaves your manager.",
@@ -262,7 +262,7 @@
         "website": {
           "heading": "The website",
           "body": [
-            "The pages at stm.phamloc.top are static files served from Cloudflare's network. There is no account, no login, no tracking pixel, no advertising and no third-party analytics script.",
+            "The pages at stm.locmaymo.top are static files served from Cloudflare's network. There is no account, no login, no tracking pixel, no advertising and no third-party analytics script.",
             "Cloudflare, as the host, processes request metadata such as IP address and user agent in order to serve and protect the site, under its own privacy policy.",
             "Your language and theme choice, if you change them, are remembered in your own browser and sent nowhere. Pages may link to GitHub and npm; following a link puts you on their sites, under their policies."
           ]
@@ -277,7 +277,7 @@
         "changes": {
           "heading": "Changes to this notice",
           "body": [
-            "This notice changes when what the software sends changes. The version in force always ships with the software and is published at stm.phamloc.top/privacy, carrying the date it took effect."
+            "This notice changes when what the software sends changes. The version in force always ships with the software and is published at stm.locmaymo.top/privacy, carrying the date it took effect."
           ]
         }
       }

@@ -1,6 +1,6 @@
 # The project site and the Cloudflare OAuth relay
 
-This directory is the Wrangler project that publishes `stm.phamloc.top`. The
+This directory is the Wrangler project that publishes `stm.locmaymo.top`. The
 pages themselves live in [`apps/site`](../../apps/site) and are built into
 `apps/site/dist`, which is what Wrangler uploads. Nothing here is committed
 output: run the build first.
@@ -27,7 +27,22 @@ manager.
 ## Deploy
 
 The project's copy runs as the Worker `stm-oauth-relay` with static assets on
-`stm.phamloc.top`.
+`stm.locmaymo.top`.
+
+It deploys itself. [`.github/workflows/site.yml`](../../.github/workflows/site.yml)
+runs on every push to `main` that touches `apps/site`, `packages/legal` or this
+directory, builds the pages and uploads them. The relay page is part of how the
+manager signs in to Cloudflare, so a change to it that sits undeployed is a
+sign-in behaving differently from the code that ships with it.
+
+It needs two repository secrets, on an environment named `site`:
+
+| Secret | What it is |
+| --- | --- |
+| `CLOUDFLARE_API_TOKEN` | An API token with **Workers Scripts: Edit**. Create it under **My Profile → API Tokens**, not as an account-wide key. |
+| `CLOUDFLARE_ACCOUNT_ID` | The account ID from the Cloudflare dashboard sidebar. |
+
+By hand, when you want to deploy without a push:
 
 ```bash
 npm run site:build
