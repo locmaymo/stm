@@ -35,12 +35,17 @@ directory, builds the pages and uploads them. The relay page is part of how the
 manager signs in to Cloudflare, so a change to it that sits undeployed is a
 sign-in behaving differently from the code that ships with it.
 
-It needs two repository secrets, on an environment named `site`:
+It needs two repository secrets:
 
 | Secret | What it is |
 | --- | --- |
 | `CLOUDFLARE_API_TOKEN` | An API token with **Workers Scripts: Edit**. Create it under **My Profile → API Tokens**, not as an account-wide key. |
 | `CLOUDFLARE_ACCOUNT_ID` | The account ID from the Cloudflare dashboard sidebar. |
+
+Wrangler is a dev dependency of this repository, pinned and locked, and the
+workflow runs that one. It is not left to `cloudflare/wrangler-action` to
+choose: the version it picked was 3.90, which cannot deploy a Worker that is
+only static assets and asked for an entry point this site does not have.
 
 By hand, when you want to deploy without a push:
 
