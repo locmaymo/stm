@@ -64,6 +64,42 @@ jobs:
           test -f apps/site/dist/index.html
           test -f apps/site/dist/oauth/cloudflare/callback.html
 
+      # Cloudflare answers a wrong account ID and a token that cannot reach the
+      # account with the same sentence - `7003 Could not route to ...,
+      # perhaps your object identifier is invalid` - which names neither. It
+      # arrives after a build, from a runner, with the values masked, so
+      # guessing costs a push each time. This asks the one question the deploy
+      # is about to ask, against the same account and the same permission, and
+      # says which half is wrong.
+      - name: Check the Cloudflare credentials
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -z "${CLOUDFLARE_API_TOKEN}" ] || [ -z "${CLOUDFLARE_ACCOUNT_ID}" ]; then
+            echo "::error::CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID is not set. Add both as repository secrets."
+            exit 1
+          fi
+          # A pasted secret often carries a newline, and Cloudflare reports the
+          # resulting address as an object identifier that does not exist.
+          if [ "${CLOUDFLARE_ACCOUNT_ID}" != "$(printf '%s' "${CLOUDFLARE_ACCOUNT_ID}" | tr -d '[:space:]')" ]; then
+            echo "::error::CLOUDFLARE_ACCOUNT_ID has whitespace in it. Paste it again without a trailing newline."
+            exit 1
+          fi
+          body="$RUNNER_TEMP/cloudflare-check.json"
+          url="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts"
+          status=$(curl -sS -o "$body" -w '%{http_code}' -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" "$url")
+          if [ "$status" = "200" ]; then
+            echo "The token reaches this account's Workers."
+            exit 0
+          fi
+          echo "::error::Cloudflare refused the credentials (HTTP $status)."
+          jq -r '.errors[]? | "  [\(.code)] \(.message)"' "$body" || cat "$body"
+          echo "  7003  the account ID is not one this token can address."
+          echo "  9106  the token itself was refused - expired, revoked, or mistyped."
+          echo "  9109  the token is valid but has no Workers Scripts: Edit on this account."
+          exit 1
+
       # The repository's own Wrangler, from `npm ci` above, rather than
       # `cloudflare/wrangler-action`: that action installs a Wrangler of its
       # own choosing, and the one it chose was 3.90, which cannot deploy a

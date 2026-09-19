@@ -39,8 +39,13 @@ It needs two repository secrets:
 
 | Secret | What it is |
 | --- | --- |
-| `CLOUDFLARE_API_TOKEN` | An API token with **Workers Scripts: Edit**. Create it under **My Profile → API Tokens**, not as an account-wide key. |
-| `CLOUDFLARE_ACCOUNT_ID` | The account ID from the Cloudflare dashboard sidebar. |
+| `CLOUDFLARE_API_TOKEN` | An API token with **Workers Scripts: Edit** on the account below — the *Edit Cloudflare Workers* template gives it. Create it under **My Profile → API Tokens**, not as an account-wide key. |
+| `CLOUDFLARE_ACCOUNT_ID` | The account ID from the Cloudflare dashboard sidebar. Paste it with no trailing newline. |
+
+The workflow asks Cloudflare whether those two reach this account's Workers
+before it builds anything to upload. Cloudflare answers a wrong account ID and a
+token without the permission with the same `7003 ... perhaps your object
+identifier is invalid`, which names neither; the check says which.
 
 Wrangler is a dev dependency of this repository, pinned and locked, and the
 workflow runs that one. It is not left to `cloudflare/wrangler-action` to
