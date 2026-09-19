@@ -32,7 +32,7 @@ import { isThisMachine, readTunnelOfferDeclined, saveTunnelOfferDeclined, should
 import { availableUpdate, readDismissedUpdate, saveDismissedUpdate } from './updates.js';
 import { apiFetch, onSessionExpired, resetSessionWatch } from './session.js';
 import type { AccessGatewayState, BackupManifest, ConfigDocument, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LogEntry, LogSourceFilter, MetricsBucket, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
-import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
+import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, isCloudJob, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
 import { translateLogEntry, translateStep } from './log-format.js';
 import { QrCode } from './qr-code.js';
@@ -1712,6 +1712,7 @@ function AccessPanel({ t, process, tunnel, config, security, sillyTavernPort, on
             url={publicUrl}
             display={publicUrl ?? ''}
             disabledHint={tunnelWanted ? t('console.addressComing') : t('console.tunnelOffShort')}
+            pending={tunnelWanted}
             {...(publicUrl && tunnel.proxyUrl && tunnel.url ? { alternates: [tunnel.url] } : {})}
           />
           <AddressRow t={t} label={t('console.lanAddress')} url={lan ? lanUrl : null} display={lanHost} disabledHint={t('console.lanOffShort')} />
@@ -1903,12 +1904,16 @@ function AddressLink({ t, href, children }: { t: Translate; href: string; childr
  * the button beside it opens the sheet that holds the code, the copy and the
  * open - for that address, not for whichever one the footer had in mind.
  */
-function AddressRow({ t, label, url, display, disabledHint, alternates }: { t: Translate; label: string; url: string | null; display: string; disabledHint?: string; alternates?: readonly string[] }) {
+function AddressRow({ t, label, url, display, disabledHint, pending, alternates }: { t: Translate; label: string; url: string | null; display: string; disabledHint?: string; pending?: boolean; alternates?: readonly string[] }) {
   const [open, setOpen] = useState(false);
   return <div className="address-row">
     <span className="address-name">{label}</span>
     <span className="address-value">
-      {url ? <AddressLink t={t} href={url}>{display}</AddressLink> : <code className="address-absent">{disabledHint ?? '—'}</code>}
+      {/* An address on its way is the same wait the manager's own link shows
+          on the settings page, so it is shown the same way: the words sweep
+          while something is happening behind them. Standing text here read as
+          a state that had settled, next to a switch that was already on. */}
+      {url ? <AddressLink t={t} href={url}>{display}</AddressLink> : <code className={pending ? 'address-absent thinking' : 'address-absent'}>{disabledHint ?? '—'}</code>}
     </span>
     <Button
       variant="ghost"
@@ -2304,6 +2309,19 @@ function r2ScheduleSummary(t: Translate, config: R2Config): string {
 }
 
 /**
+ * What to call a job that this page did not start.
+ *
+ * The name a button carries when it starts the work, so a page returning to
+ * work already running says the same thing it would have said all along.
+ */
+function jobLabel(t: Translate, kind: Job['kind']): string {
+  if (kind === 'restore') return t('console.restore');
+  if (kind === 'r2Upload') return t('console.r2UploadLatest');
+  if (kind === 'r2Fetch') return t('console.r2Fetch');
+  return t('dashboard.backupNow');
+}
+
+/**
  * The profiles, the backups and the off-machine copy.
  *
  * The page used to be three cards of exposed machinery: a disclosure triangle
@@ -2486,13 +2504,23 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
     return () => { cancelled = true; window.clearInterval(timer); };
   }, []);
 
-  // A restore runs in the server for minutes. Reloading the page must show the
-  // one already in flight rather than an idle screen the operator would be
-  // tempted to start a second restore from.
+  /*
+   * A job already in flight, picked up by a page that did not start it.
+   *
+   * A restore runs in the server for minutes, and this page is left and come
+   * back to - another tab, a reload - while it does. Showing an idle screen
+   * then invites starting the same work a second time.
+   *
+   * What it is showing is taken from the job's kind, so it comes back where it
+   * was started and under the name it was started with. Kind used to say only
+   * "backup", so a recovery point coming down from R2 reappeared as "Back up
+   * now" in the local backup card, with a download's progress under it.
+   */
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       let kind: Job['kind'] | null = null;
+      const setBusy = (label: string | null) => { if (kind && isCloudJob(kind)) setR2Busy(label); else setBusyAction(label); };
       try {
         const response = await apiFetch('/api/v1/jobs/active', { credentials: 'same-origin' });
         if (!response.ok) return;
@@ -2500,18 +2528,26 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
         if (cancelled || !payload.job) return;
         const running = payload.job;
         kind = running.kind;
-        setBusyAction(running.kind === 'restore' ? t('console.restore') : t('dashboard.backupNow'));
+        setBusy(jobLabel(t, kind));
         setOperationProgress({ percent: running.progress, step: jobStep(running) });
         setRunningJobId(running.id);
-        await waitForOperation(running.id, (job) => { if (!cancelled) setOperationProgress({ percent: job.progress, step: jobStep(job) }); });
-        if (!cancelled) await refresh();
+        const finished = await waitForOperation(running.id, (job) => { if (!cancelled) setOperationProgress({ percent: job.progress, step: jobStep(job) }); });
+        if (cancelled) return;
+        await refresh();
+        // A fetch that finishes while this page is watching ends where it ends
+        // when this page started it: at the question of what to do with what
+        // came down, rather than at a row in a list to go and find.
+        if (kind === 'r2Fetch') {
+          const landed = finished.resultBackupId ? await readBackup(finished.resultBackupId) : null;
+          if (!cancelled && landed && await openRestoreFor(landed)) return;
+        }
       } catch (error: unknown) {
         if (cancelled) return;
         if (error instanceof StoppedError) done(t(kind === 'restore' ? 'console.restoreStopped' : 'console.backupStopped'));
         else if (error instanceof RollbackFailedError) setMixedProfile(t('console.restoreStoppedPartway'));
-        else failed(error instanceof Error ? error.message : t('console.backupRestoreFailed'));
+        else failed(error instanceof Error ? error.message : t(kind === 'r2Fetch' ? 'console.r2FetchFailed' : kind === 'r2Upload' ? 'console.r2UploadFailed' : 'console.backupRestoreFailed'));
       } finally {
-        if (!cancelled) { setBusyAction(null); setOperationProgress(null); setRunningJobId(null); }
+        if (!cancelled) { setBusy(null); setOperationProgress(null); setRunningJobId(null); }
       }
     })();
     return () => { cancelled = true; };

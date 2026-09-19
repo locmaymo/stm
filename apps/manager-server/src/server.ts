@@ -5,7 +5,7 @@ import { createReadStream } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import { createSocket } from 'node:dgram';
 import { extname, join, relative, resolve, sep } from 'node:path';
-import { applyQuery, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, type ApiErrorBody, type ConfigUpdateInput, type HealthResponse, type Installation, type Job, type JobState, type LogEntry, type LogEvent, type LogLine, type LogSink, type LogSourceFilter, type ManagerPorts, type PortSettings, type Profile, type ProfileLayout, type SetupStatus, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
+import { applyQuery, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, OPERATION_JOB_KINDS, type ApiErrorBody, type ConfigUpdateInput, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogSink, type LogSourceFilter, type ManagerPorts, type PortSettings, type Profile, type ProfileLayout, type SetupStatus, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
 import { getPlatformPaths, storageDurability, type PlatformPaths } from '../../../packages/platform/src/index.js';
 import { INSTALL_CANCELED, RuntimeError, RuntimeManager, type InstallationProgress } from '../../../packages/sillytavern-runtime/src/index.js';
 import { hashPassword, MIN_PASSWORD_LENGTH, validatePasscode, validatePassword, verifyPassword } from './password.js';
@@ -1335,8 +1335,10 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     // Fetching lands it in the backup library rather than writing it straight
     // into the profile. Restoring is then the path that already exists, with
     // its preview, its safety snapshot and its merge-or-replace choice.
-    // It produces a backup in the library, so that is the kind of job it is.
-    const { job, signal } = jobs.createOperation('backup', logEvent('job.fetchingRecoveryPoint', 'Fetching the recovery point from R2'));
+    // It produces a backup in the library, but it is not one: a panel that
+    // reattaches to it has only the kind to name it by, and named a download
+    // "Back up now" under the local backup card.
+    const { job, signal } = jobs.createOperation('r2Fetch', logEvent('job.fetchingRecoveryPoint', 'Fetching the recovery point from R2'));
     const meter = new TransferMeter();
     void fetchSnapshotToLibrary({
       profile, r2, backups, snapshotId, sourceProfileId, signal,
@@ -1371,7 +1373,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     // synchronously meant the panel had an indeterminate bar and no way to
     // stop - indistinguishable from a hang, and the reasonable response to a
     // hang is to kill it, which is the one thing that makes it take longer.
-    const { job, signal } = jobs.createOperation('backup', logEvent('job.sendingToR2', 'Sending to R2'));
+    const { job, signal } = jobs.createOperation('r2Upload', logEvent('job.sendingToR2', 'Sending to R2'));
     const meter = new TransferMeter();
     void syncProfileToR2({
       profile, backups, r2, tier: 'cold', signal,
@@ -2826,7 +2828,7 @@ class JobStore {
    * the only way out of one started by mistake was to kill the manager. The
    * returned signal is what the work watches.
    */
-  public createOperation(kind: 'backup' | 'restore', step: LogEvent): { job: Job; signal: AbortSignal } {
+  public createOperation(kind: Exclude<JobKind, 'installation'>, step: LogEvent): { job: Job; signal: AbortSignal } {
     const now = new Date().toISOString();
     const job: Job = {
       id: `job-${randomUUID()}`,
@@ -2883,7 +2885,7 @@ class JobStore {
   public activeOperation(): Job | null {
     let newest: Job | null = null;
     for (const job of this.jobs.values()) {
-      if (job.state !== 'running' || (job.kind !== 'backup' && job.kind !== 'restore')) continue;
+      if (job.state !== 'running' || !OPERATION_JOB_KINDS.includes(job.kind)) continue;
       if (!newest || job.createdAt > newest.createdAt) newest = job;
     }
     return newest;

@@ -909,6 +909,52 @@ test('a running backup can be stopped, and a finished one cannot', async (t) => 
   assert.equal(missing.status, 404);
 });
 
+/*
+ * What a job says it is, for a panel that did not start it.
+ *
+ * Sending to R2 and bringing a recovery point back both end with an archive,
+ * and both used to be filed as backups. A panel coming back to one - a tab
+ * left and returned to - had only the kind to go on, so a download announced
+ * itself as "Back up now" under the local backup card.
+ */
+test('sending to R2 and fetching a recovery point are jobs of their own kind', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-r2-job-kind-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const runtimePath = join(root, 'runtime');
+  await mkdir(runtimePath, { recursive: true });
+  const now = new Date().toISOString();
+  const installation: Installation = { id: 'install-1', selector: 'latest', resolvedRef: '1.2.3', channel: 'release', runtimePath, markerPath: join(runtimePath, '.stm-installation.json'), status: 'ready', progress: 100, step: 'Installation ready', error: null, createdAt: now, updatedAt: now, activatedAt: now };
+  const fakeRuntime = { listVersions: async () => [], listInstallations: async () => [installation], getActiveInstallation: async () => installation, getInstallation: async (id: string) => id === installation.id ? installation : null } as unknown as RuntimeManager;
+  const manager = await startManagerServer({ host: '127.0.0.1', port: 0, paths, env: { STM_ADMIN_PASSWORD: 'correct horse battery staple' }, secureCookies: false,
+    accessPort: 0, runtime: fakeRuntime, logger: () => undefined });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const login = await fetch(`${base}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'correct horse battery staple' }) });
+  const cookie = cookieFrom(login);
+  const csrf = (await login.json() as { session: { csrfToken: string } }).session.csrfToken;
+  const headers = { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' };
+  // A bucket nothing answers for: the work fails on its own a moment later,
+  // and the kind is decided before the first request goes out.
+  const saved = await fetch(`${base}/api/v1/r2`, { method: 'PUT', headers, body: JSON.stringify({ enabled: true, endpoint: 'http://127.0.0.1:9', bucket: 'stm-test-bucket', accessKeyId: 'access-key-1234', secretAccessKey: 'secret-key-5678' }) });
+  assert.equal(saved.status, 200);
+
+  const upload = await fetch(`${base}/api/v1/r2/sync`, { method: 'POST', headers });
+  assert.equal(upload.status, 202);
+  const uploadJob = (await upload.json() as { job: { id: string; kind: string } }).job;
+  assert.equal(uploadJob.kind, 'r2Upload');
+  await fetch(`${base}/api/v1/jobs/${uploadJob.id}/cancel`, { method: 'POST', headers });
+
+  const fetched = await fetch(`${base}/api/v1/r2/snapshots/point-1/fetch`, { method: 'POST', headers, body: JSON.stringify({}) });
+  assert.equal(fetched.status, 202);
+  const fetchJob = (await fetched.json() as { job: { id: string; kind: string } }).job;
+  assert.equal(fetchJob.kind, 'r2Fetch');
+  // Whichever is still running is the one a panel would reattach to, and it
+  // carries the same kind there.
+  const active = (await (await fetch(`${base}/api/v1/jobs/active`, { headers: { cookie } })).json() as { job: { kind: string } | null }).job;
+  if (active) assert.ok(active.kind === 'r2Fetch' || active.kind === 'r2Upload', `a panel would call this job ${active.kind}`);
+  await fetch(`${base}/api/v1/jobs/${fetchJob.id}/cancel`, { method: 'POST', headers });
+});
+
 test('the launcher shutdown route exists only for the launcher that started the manager', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'stm-shutdown-'));
   const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });

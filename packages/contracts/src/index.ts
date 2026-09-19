@@ -566,7 +566,25 @@ export interface RestorePreview {
 
 export type JobState = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled';
 
-export type JobKind = 'installation' | 'backup' | 'restore';
+/**
+ * What a job is doing, in the reader's terms rather than in its result's.
+ *
+ * Sending to R2 and bringing a recovery point back were both filed as
+ * `backup`, because a fetch does end with an archive in the library. A panel
+ * that came back to a job it had not started - a tab switched away from and
+ * returned to - had only this to name it by, so a download of a gigabyte
+ * announced itself as "Back up now" in the local backup card while the cloud
+ * card, which had started it, showed nothing.
+ */
+export type JobKind = 'installation' | 'backup' | 'restore' | 'r2Upload' | 'r2Fetch';
+
+/** The jobs a panel reattaches to and shows progress for; an install is its own screen. */
+export const OPERATION_JOB_KINDS: readonly JobKind[] = ['backup', 'restore', 'r2Upload', 'r2Fetch'];
+
+/** Whether this job belongs to the cloud card rather than the local backup card. */
+export function isCloudJob(kind: JobKind): boolean {
+  return kind === 'r2Upload' || kind === 'r2Fetch';
+}
 
 export interface Job {
   readonly id: string;
