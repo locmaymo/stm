@@ -1676,7 +1676,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
    * shows the fixed one and keeps the tunnel's own beside it, because that is
    * where the traffic really goes and it is worth being able to see.
    */
-  if (pathname === '/api/v1/tunnel' && method === 'GET') { sendJson(response, 200, await withProxyUrl(tunnel.getState(), proxy, 'sillyTavern')); return; }
+  if (pathname === '/api/v1/tunnel' && method === 'GET') { sendJson(response, 200, await withProxyUrl(tunnel.getState(), proxy, cloudflare, 'sillyTavern')); return; }
   if (pathname === '/api/v1/tunnel' && method === 'PUT') {
     const body = await readJson(request);
     const mode = isRecord(body) && (body.mode === 'off' || body.mode === 'quick' || body.mode === 'named') ? body.mode : null;
@@ -1699,7 +1699,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
      */
     if (mode !== 'off' && !gateway.getState().passwordConfigured) { sendError(response, 409, 'public_access_password_required', 'Set the SillyTavern password before opening a public tunnel'); return; }
     const state = mode === 'off' ? await tunnel.disable() : await tunnel.start(mode, isRecord(body) && typeof body.token === 'string' ? body.token : undefined);
-    sendJson(response, 200, await withProxyUrl(state, proxy, 'sillyTavern'));
+    sendJson(response, 200, await withProxyUrl(state, proxy, cloudflare, 'sillyTavern'));
     return;
   }
   /**
@@ -1712,7 +1712,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
    * platform's own address does not work, which is a problem the console has
    * whether or not anything is installed yet.
    */
-  if (pathname === '/api/v1/manager-tunnel' && method === 'GET') { sendJson(response, 200, await withProxyUrl(managerTunnel.getState(), proxy, 'manager')); return; }
+  if (pathname === '/api/v1/manager-tunnel' && method === 'GET') { sendJson(response, 200, await withProxyUrl(managerTunnel.getState(), proxy, cloudflare, 'manager')); return; }
   if (pathname === '/api/v1/manager-tunnel' && method === 'PUT') {
     const body = await readJson(request);
     const mode = isRecord(body) && (body.mode === 'off' || body.mode === 'quick' || body.mode === 'named') ? body.mode : null;
@@ -1725,7 +1725,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       return;
     }
     const state = mode === 'off' ? await managerTunnel.disable() : await managerTunnel.start(mode, isRecord(body) && typeof body.token === 'string' ? body.token : undefined);
-    sendJson(response, 200, await withProxyUrl(state, proxy, 'manager'));
+    sendJson(response, 200, await withProxyUrl(state, proxy, cloudflare, 'manager'));
     return;
   }
   /*
@@ -1791,9 +1791,23 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
  *
  * Null rather than absent when there is no Worker, so a panel can tell "no
  * fixed address" from "this manager does not know about them".
+ *
+ * `proxyPending` answers the question the address alone cannot: is what the
+ * console would show right now the address this reader is going to keep? It is
+ * not, from the moment a tunnel announces itself until the Worker in front of
+ * it has been redeployed at the new address - seconds during which the tunnel's
+ * own address is about to be replaced and the Worker's still points at the
+ * tunnel from last time. Expected is decided the same way the redeploy itself
+ * decides it, by asking whether there is a Cloudflare account to deploy into,
+ * so the console never waits for an address that is not coming.
  */
-async function withProxyUrl(state: TunnelState, proxy: ProxyWorkerManager | null, target: ProxyWorkerTarget): Promise<TunnelState> {
-  return { ...state, proxyUrl: proxy ? await proxy.urlFor(target).catch(() => null) : null };
+async function withProxyUrl(state: TunnelState, proxy: ProxyWorkerManager | null, cloudflare: CloudflareConnection | null, target: ProxyWorkerTarget): Promise<TunnelState> {
+  if (!proxy) return { ...state, proxyUrl: null, proxyPending: false };
+  const record = await proxy.recordFor(target).catch(() => null);
+  const expected = cloudflare ? await cloudflare.workersAccount().catch(() => null) !== null : false;
+  // A tunnel with no address of its own has nothing for a Worker to follow:
+  // it is off, still starting, or a Named Tunnel, which has its own hostname.
+  return { ...state, proxyUrl: record?.url ?? null, proxyPending: expected && state.url !== null && record?.origin !== state.url };
 }
 
 /** What starting an installation needs, whoever asked for it. */

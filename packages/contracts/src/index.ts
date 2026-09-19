@@ -732,6 +732,25 @@ export interface TunnelState {
    * not know about any of this - and null when no Worker is deployed.
    */
   readonly proxyUrl?: string | null;
+  /**
+   * Whether the fixed address above is on its way but not usable yet.
+   *
+   * Deploying a Worker is a write to somebody's Cloudflare account over the
+   * network, and it takes seconds; the tunnel announces its own address long
+   * before that finishes. In between, there are two ways to be wrong. On a
+   * first run there is no Worker yet, so the console showed the tunnel's own
+   * address and then swapped it for the permanent one a moment later - which
+   * is the address somebody had already copied. On every run after that the
+   * Worker exists but is still pointing at the tunnel from last time, so it is
+   * a deployed address that answers with an error.
+   *
+   * True covers both: a fixed address is expected here, and what there is now
+   * is not it. A console reading this shows the link as still coming rather
+   * than offering something it will take back.
+   *
+   * Absent where nothing decorates the state, like `proxyUrl` above.
+   */
+  readonly proxyPending?: boolean;
 }
 
 /**

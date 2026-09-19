@@ -371,6 +371,7 @@
     "restoreDefaultsTitle": "Restore the default configuration?",
     "restoreDefaultsBody": "The file goes back to the one this SillyTavern ships with. Everything in it now is lost.",
     "restoreDefaultsDone": "The configuration is back to its defaults.",
+    "addressComing": "Getting the address ready…",
     "resetTitle": "Start over",
     "resetHint": "Erase everything this manager keeps on this computer and set it up again from nothing.",
     "resetAction": "Erase everything",

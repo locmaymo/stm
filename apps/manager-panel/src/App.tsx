@@ -37,7 +37,7 @@ import { useLiveLogs } from './use-live-logs.js';
 import { translateLogEntry, translateStep } from './log-format.js';
 import { QrCode } from './qr-code.js';
 import { CLOUDFLARE_ORANGE, CloudflareMark } from './cloudflare-mark.js';
-import { localHost, reachableAddresses, shortenHost } from './addresses.js';
+import { localHost, publicAddress, reachableAddresses, shortenHost } from './addresses.js';
 import { EmbedStage } from './embed-stage.js';
 import { LegalCredit, LegalDialog, LEGAL_REVISION } from './legal-dialog.js';
 import { legalBundle, type LegalDocumentId } from '../../../packages/legal/src/index.js';
@@ -908,6 +908,9 @@ function ManagerTunnelOffer({ t, open, hostname, tunnel, onDecline, onAccept }: 
     setBusy(true); setError(null);
     try { setError(await onAccept(true)); } finally { setBusy(false); }
   };
+  // The address worth handing over, which is not the tunnel's own while the
+  // fixed one in front of it is still being put there.
+  const offered = publicAddress(tunnel);
   return <Dialog open={open} onOpenChange={(next) => { if (!next) onDecline(); }}>
     <DialogContent className="sm:max-w-md">
       <DialogHeader>
@@ -916,8 +919,8 @@ function ManagerTunnelOffer({ t, open, hostname, tunnel, onDecline, onAccept }: 
       </DialogHeader>
       <DialogBody className="grid gap-3">
         <p className="text-sm text-muted-foreground">{t('console.tunnelOfferNote')}</p>
-        {tunnel.proxyUrl ?? tunnel.url
-          ? <code className="break-all rounded-lg border bg-muted/40 p-3 font-mono text-sm">{tunnel.proxyUrl ?? tunnel.url}</code>
+        {offered
+          ? <code className="break-all rounded-lg border bg-muted/40 p-3 font-mono text-sm">{offered}</code>
           : tunnel.mode !== 'off'
             ? <div className="grid gap-2 rounded-lg border bg-muted/40 p-3" role="status"><span className="thinking">{t('console.tunnelOfferOpening')}</span><TaskBar /></div>
             : null}
@@ -925,8 +928,8 @@ function ManagerTunnelOffer({ t, open, hostname, tunnel, onDecline, onAccept }: 
       </DialogBody>
       <DialogFooter>
         <Button variant="outline" onClick={onDecline}>{tunnel.url ? t('common.close') : t('console.tunnelOfferDecline')}</Button>
-        {tunnel.proxyUrl ?? tunnel.url
-          ? <Button asChild><a href={(tunnel.proxyUrl ?? tunnel.url)!} target="_blank" rel="noopener noreferrer"><ArrowUpRight />{t('console.tunnelOfferOpen')}</a></Button>
+        {offered
+          ? <Button asChild><a href={offered} target="_blank" rel="noopener noreferrer"><ArrowUpRight />{t('console.tunnelOfferOpen')}</a></Button>
           : <Button disabled={busy || tunnel.mode !== 'off'} onClick={() => void accept()}>{busy ? <LoaderCircle className="animate-spin" /> : null}{t('console.tunnelOfferAccept')}</Button>}
       </DialogFooter>
     </DialogContent>
@@ -1493,7 +1496,14 @@ function RuntimeCard({
       </CardFooter> : null}
     </Card>
 
-    {embedMounted && primary ? <EmbedStage t={t} open={embedOpen} url={embedUrl} openUrl={primary.url} onMinimize={() => setEmbedOpen(false)} onClose={() => { setEmbedOpen(false); setEmbedMounted(false); }} /> : null}
+    {/* Mounted on nothing but whether it was opened. It used to go with the
+        best address too, so a tunnel reconnecting - or a fixed address being
+        redeployed - took the window down for the seconds there was no public
+        address, and brought it back as a fresh frame with the chat reloaded.
+        The frame loads the door on this machine, which those seconds do not
+        touch; only the "open in a tab" link needs an address, and the door's
+        own is the right thing to fall back to. */}
+    {embedMounted ? <EmbedStage t={t} open={embedOpen} url={embedUrl} openUrl={primary?.url ?? embedUrl} onMinimize={() => setEmbedOpen(false)} onClose={() => { setEmbedOpen(false); setEmbedMounted(false); }} /> : null}
 
     <ConfirmDialog
       open={stopAsked}
@@ -1564,6 +1574,9 @@ function AccessPanel({ t, process, tunnel, config, security, sillyTavernPort, on
    * turned off at all.
    */
   const tunnelWanted = tunnel.mode !== 'off';
+  // The address to show, which is null both before cloudflared has announced
+  // one and while the fixed address in front of it is still being deployed.
+  const publicUrl = publicAddress(tunnel);
   // The door is the manager's own, so its password and its reach are known
   // whether or not SillyTavern happens to be up. Nothing here has to wait for
   // a version to answer, and no reading is ever "unknown".
@@ -1696,10 +1709,10 @@ function AccessPanel({ t, process, tunnel, config, security, sillyTavernPort, on
           <AddressRow
             t={t}
             label={t('dashboard.publicAddress')}
-            url={tunnel.proxyUrl ?? tunnel.url}
-            display={tunnel.proxyUrl ?? tunnel.url ?? ''}
-            disabledHint={t('console.tunnelOffShort')}
-            {...(tunnel.proxyUrl && tunnel.url ? { alternates: [tunnel.url] } : {})}
+            url={publicUrl}
+            display={publicUrl ?? ''}
+            disabledHint={tunnelWanted ? t('console.addressComing') : t('console.tunnelOffShort')}
+            {...(publicUrl && tunnel.proxyUrl && tunnel.url ? { alternates: [tunnel.url] } : {})}
           />
           <AddressRow t={t} label={t('console.lanAddress')} url={lan ? lanUrl : null} display={lanHost} disabledHint={t('console.lanOffShort')} />
           <AddressRow t={t} label={t('console.local')} url={onThisMachine ? localUrl : null} display={local} disabledHint={t('console.localElsewhere')} />
@@ -4562,8 +4575,12 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
    * time, which is the only kind worth writing down or putting on a phone. The
    * tunnel's own is shown underneath it rather than instead of it, because it
    * is what the traffic really goes through and it changes on every restart.
+   *
+   * Nothing at all while that Worker is being deployed. This row is where the
+   * console's address is copied from and sent to a phone, and the address it
+   * would have shown in those few seconds is one that is about to change.
    */
-  const managerTunnelLink = managerTunnel.proxyUrl ?? managerTunnel.url;
+  const managerTunnelLink = publicAddress(managerTunnel);
   const applyManagerTunnel = async (on: boolean) => {
     setManagerTunnelBusy(true); setManagerTunnelError(null);
     try {
@@ -4682,6 +4699,11 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
             label={t('console.managerTunnel')}
             hint={managerTunnelLink
               ? <a className="break-all font-mono underline underline-offset-4" href={managerTunnelLink} target="_blank" rel="noopener noreferrer">{managerTunnelLink}</a>
+              // The switch is on and there is no address yet: cloudflared is
+              // still connecting, or the fixed address in front of it is still
+              // being deployed. Either way it is coming, which is a different
+              // thing to say than what this row says when the switch is off.
+              : managerTunnelWanted ? <span className="thinking">{t('console.addressComing')}</span>
               : t('console.managerTunnelHint')}
           >
             <div className="flex items-center gap-1">

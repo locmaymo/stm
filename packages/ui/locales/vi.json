@@ -371,6 +371,7 @@
     "restoreDefaultsTitle": "Khôi phục cấu hình mặc định?",
     "restoreDefaultsBody": "Tệp sẽ trở về đúng bản mà SillyTavern này mang theo. Mọi thứ đang có trong đó sẽ mất.",
     "restoreDefaultsDone": "Đã khôi phục cấu hình mặc định.",
+    "addressComing": "Đang chuẩn bị địa chỉ…",
     "resetTitle": "Làm lại từ đầu",
     "resetHint": "Xoá sạch mọi thứ trình quản lý này giữ trên máy và cài đặt lại từ con số không.",
     "resetAction": "Xoá sạch mọi thứ",

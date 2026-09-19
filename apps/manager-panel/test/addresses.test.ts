@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { reachableAddresses, shortenHost } from '../src/addresses.js';
+import { publicAddress, reachableAddresses, shortenHost } from '../src/addresses.js';
 
 test('the tunnel comes first, then the network, then this machine', () => {
   const all = reachableAddresses({ url: 'https://example.trycloudflare.com' }, { lan: true, port: 8001 }, '192.168.1.20', 8000, true);
@@ -56,6 +56,35 @@ test('a fixed address in front of the tunnel is the one offered', () => {
   const tunnelOff = reachableAddresses({ url: null, proxyUrl: 'https://stm.acme.workers.dev' }, { lan: false, port: 8001 }, 'localhost', 8000, false);
   assert.deepEqual(tunnelOff.map((address) => address.url), ['https://stm.acme.workers.dev']);
   assert.equal(tunnelOff[0]?.via, undefined);
+});
+
+test('an address still being deployed is not an address anybody is given', () => {
+  /*
+   * Deploying the Worker takes seconds, and the tunnel announces its own
+   * address long before that finishes. The console used to show that address
+   * and then swap it for the permanent one - so what somebody had already
+   * copied was the address about to be thrown away. On every run after the
+   * first it was worse: the Worker exists, still pointing at last time's
+   * tunnel, so the link on the card answered with an error.
+   */
+  assert.equal(publicAddress({ url: 'https://new.trycloudflare.com', proxyUrl: null, proxyPending: true }), null);
+  assert.equal(publicAddress({ url: 'https://new.trycloudflare.com', proxyUrl: 'https://stm.acme.workers.dev', proxyPending: true }), null);
+  // Once it points at the tunnel that is up, it is the address to give.
+  assert.equal(publicAddress({ url: 'https://new.trycloudflare.com', proxyUrl: 'https://stm.acme.workers.dev', proxyPending: false }), 'https://stm.acme.workers.dev');
+  // And with no Cloudflare sign-in nothing is ever pending, so the tunnel's
+  // own address is offered the moment it exists.
+  assert.equal(publicAddress({ url: 'https://new.trycloudflare.com', proxyUrl: null, proxyPending: false }), 'https://new.trycloudflare.com');
+
+  // The card loses the public row while it waits rather than showing one that
+  // is about to change; the addresses that do work are still there.
+  const waiting = reachableAddresses(
+    { url: 'https://new.trycloudflare.com', proxyUrl: 'https://stm.acme.workers.dev', proxyPending: true },
+    { lan: true, port: 8001 },
+    '192.168.1.20',
+    8000,
+    false,
+  );
+  assert.deepEqual(waiting.map((address) => address.kind), ['lan']);
 });
 
 test('a long host keeps its two ends and a short one is left alone', () => {
