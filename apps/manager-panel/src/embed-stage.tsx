@@ -2,15 +2,15 @@ import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } f
 import { ArrowUpRight, Maximize2, Minus, PanelTop, X } from 'lucide-react';
 import type { Translate } from './i18n.js';
 import { browserStorage } from './preferences.js';
-import { readHandle, saveHandle, snapHandle, type HandlePlacement } from './embed-handle.js';
+import { handleOffset, readHandle, saveHandle, snapHandle, HANDLE_EDGE_GAP, type HandlePlacement } from './embed-handle.js';
 
 /** Tall enough for the four entries, so the menu can be kept on screen. */
 const MENU_HEIGHT = 190;
 
 /** Beside the handle, moved up where the handle is too low for the menu to fit under it. */
-function menuTop(placement: HandlePlacement): number {
-  const wanted = placement.top * window.innerHeight - HANDLE_SIZE / 2;
-  return Math.max(8, Math.min(wanted, window.innerHeight - MENU_HEIGHT - 8));
+function menuTop(placement: HandlePlacement, height: number): number {
+  const wanted = placement.top * height - HANDLE_SIZE / 2;
+  return Math.max(8, Math.min(wanted, height - MENU_HEIGHT - 8));
 }
 
 /** How far a press may wander and still be a tap rather than a drag. */
@@ -98,7 +98,9 @@ export function EmbedStage({ t, open, url, openUrl, onMinimize, onClose }: Embed
           <button type="button" className="embed-light embed-light-zoom" onClick={zoom} aria-label={t('console.embedZoom')} title={t('console.embedZoomHint')}><Maximize2 aria-hidden="true" /></button>
         </div>
         <span className="embed-title">SillyTavern</span>
-        <a className="embed-bar-link" href={openUrl} target="_blank" rel="noopener noreferrer" title={t('console.openInNewTab')}><ArrowUpRight aria-hidden="true" /><span>{t('console.openInTab')}</span></a>
+        <div className="embed-bar-end">
+          <a className="embed-bar-link" href={openUrl} target="_blank" rel="noopener noreferrer" title={t('console.openInNewTab')}><ArrowUpRight aria-hidden="true" /><span>{t('console.openInTab')}</span></a>
+        </div>
       </div>}
     <iframe
       className="embed-frame"
@@ -120,6 +122,19 @@ function EmbedHandle({ t, url, onShowBar, onMinimize, onClose, onDragging }: { t
   const [point, setPoint] = useState<{ x: number; y: number } | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const press = useRef<{ x: number; y: number; moved: boolean } | null>(null);
+  /*
+   * The window's size, watched rather than read once.
+   *
+   * The resting handle is placed in pixels now, so a window that changed shape
+   * under it - a phone turned on its side, a keyboard coming up - would leave
+   * it short of the edge it is meant to be against until it was next dragged.
+   */
+  const [viewport, setViewport] = useState(() => ({ width: window.innerWidth, height: window.innerHeight }));
+  useEffect(() => {
+    const onResize = () => setViewport({ width: window.innerWidth, height: window.innerHeight });
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
 
   const down = (event: ReactPointerEvent<HTMLButtonElement>) => {
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -151,7 +166,7 @@ function EmbedHandle({ t, url, onShowBar, onMinimize, onClose, onDragging }: { t
 
   const style = point
     ? { left: point.x - HANDLE_SIZE / 2, top: point.y - HANDLE_SIZE / 2 }
-    : { [placement.side]: 10, top: `calc(${placement.top * 100}% - ${HANDLE_SIZE / 2}px)` };
+    : handleOffset(placement, viewport.width, viewport.height, HANDLE_SIZE);
   const act = (work: () => void) => () => { setMenuOpen(false); work(); };
 
   return <>
@@ -172,7 +187,7 @@ function EmbedHandle({ t, url, onShowBar, onMinimize, onClose, onDragging }: { t
       onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setMenuOpen((value) => !value); } }}
     ><span aria-hidden="true" /></button>
     {menuOpen && !point
-      ? <div className="embed-menu" data-side={placement.side} style={{ [placement.side]: HANDLE_SIZE + 18, top: menuTop(placement) }} role="menu">
+      ? <div className="embed-menu" data-side={placement.side} style={{ [placement.side]: HANDLE_SIZE + HANDLE_EDGE_GAP + 8, top: menuTop(placement, viewport.height) }} role="menu">
         <button type="button" role="menuitem" onClick={act(onShowBar)}><PanelTop aria-hidden="true" />{t('console.showBar')}</button>
         <button type="button" role="menuitem" onClick={act(onMinimize)}><Minus aria-hidden="true" />{t('console.embedMinimize')}</button>
         <a role="menuitem" href={url} target="_blank" rel="noopener noreferrer" onClick={() => setMenuOpen(false)}><ArrowUpRight aria-hidden="true" />{t('console.openInTab')}</a>

@@ -563,7 +563,12 @@
   .embed-light { width: 20px; height: 20px; }
   .embed-light svg { width: 12px; height: 12px; opacity: 1; }
 }
-.embed-title { flex: 1; min-width: 0; overflow: hidden; color: var(--muted-foreground); font-size: 13px; font-weight: 600; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
+/* The name is centred on the bar, not on what is left of it. The two sides
+   share the leftover width evenly, so the title's middle is the bar's middle
+   whether the link beside it carries its word or, on a phone, only its arrow. */
+.embed-lights, .embed-bar-end { flex: 1 1 0; min-width: fit-content; }
+.embed-bar-end { display: flex; justify-content: flex-end; }
+.embed-title { flex: 0 1 auto; min-width: 0; overflow: hidden; color: var(--muted-foreground); font-size: 13px; font-weight: 600; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
 .embed-bar-link { display: inline-flex; align-items: center; gap: 5px; padding: 5px 8px; border-radius: 6px; color: var(--muted-foreground); font-size: 12.5px; font-weight: 500; text-decoration: none; }
 .embed-bar-link:hover, .embed-bar-link:focus-visible { background: var(--accent); color: var(--foreground); }
 .embed-bar-link svg { width: 14px; height: 14px; }
@@ -593,9 +598,14 @@
   touch-action: none;
   -webkit-backdrop-filter: blur(8px);
   backdrop-filter: blur(8px);
-  transition: opacity 0.15s ease, top 0.2s ease, left 0.2s ease, right 0.2s ease;
+  /* Let go, it travels to the edge rather than appearing against it. Both
+     edges are reached through `left`, so both of them are travelled to; the
+     curve settles rather than stopping dead, which is what a phone's own
+     assistive button does. */
+  transition: opacity 0.15s ease, left 0.24s cubic-bezier(0.22, 1, 0.36, 1), top 0.24s cubic-bezier(0.22, 1, 0.36, 1);
   cursor: grab;
 }
+@media (prefers-reduced-motion: reduce) { .embed-handle { transition: opacity 0.15s ease; } }
 .embed-handle span { width: 24px; height: 24px; border-radius: 999px; background: rgb(255 255 255 / 0.85); box-shadow: 0 0 0 5px rgb(255 255 255 / 0.22); }
 .embed-handle:hover, .embed-handle:focus-visible, .embed-handle[data-active] { opacity: 1; }
 /* Following the finger, not easing after it. */
