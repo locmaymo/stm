@@ -49,9 +49,24 @@ const QUIC_PATIENCE_MS = 25_000;
  *
  * cloudflared says this several ways depending on version and on where the
  * block is - a refused handshake, a datagram that never arrived, its own advice
- * to pass the flag this class is about to pass.
+ * to pass the flag this class is about to pass, and its own switch to the
+ * protocol this class would have switched to. That last one is worth matching
+ * even though cloudflared has already acted on it: a fallback it chose for
+ * itself is not written down anywhere, so the next start would spend the same
+ * silence learning the same thing again.
  */
-const QUIC_FAILURE = /failed to (?:create|dial|connect).{0,40}quic|quic.{0,40}(?:timeout|timed out|connection refused|no recent network activity)|--protocol http2/iu;
+const QUIC_FAILURE = /failed to (?:create|dial|connect).{0,60}quic|quic.{0,60}(?:timeout|timed out|connection refused|no recent network activity)|(?:--protocol|fallback protocol) http2/iu;
+/**
+ * How many such lines it takes once the tunnel is already up.
+ *
+ * Before the address is announced, one is the whole answer - nothing is
+ * working yet and there is nothing to lose by changing transport. Afterwards
+ * cloudflared is holding several edge connections and retries each of them, so
+ * a single failed dial can be one edge having a bad minute rather than a
+ * network that drops UDP; a machine that really blocks it says so again within
+ * milliseconds.
+ */
+const QUIC_FAILURES_WHILE_RUNNING = 2;
 /**
  * What Cloudflare's edge answers for a tunnel whose connections never came up.
  *
@@ -64,7 +79,7 @@ const QUIC_FAILURE = /failed to (?:create|dial|connect).{0,40}quic|quic.{0,40}(?
  * wrong, the address exists, and every visit to it is an error page.
  */
 const EDGE_TUNNEL_ERROR_STATUS = 530;
-const EDGE_TUNNEL_ERROR_BODY = /error\s*1033|argo tunnel error/iu;
+const EDGE_TUNNEL_ERROR_BODY = /\b1033\b|argo tunnel error/iu;
 /**
  * When to ask the edge whether the address it just handed out actually works,
  * how many times, and how many refusals in a row settle it.
@@ -251,6 +266,19 @@ export class TunnelManager {
   private closed = false;
   /** What this machine has been found to need; see TunnelTransport. */
   private transport: TunnelTransport = 'auto';
+  /**
+   * What the child now running was actually started with.
+   *
+   * Not the same question as `transport`: Termux and an explicit
+   * `STM_TUNNEL_PROTOCOL` reach `chooseTransport` without anything having been
+   * learned, so a tunnel can be running on HTTP/2 while this manager still
+   * believes nothing about the network. Reading the child's own transport is
+   * what keeps a QUIC line in the log - or a 1033 that has nothing to do with
+   * the transport - from restarting a tunnel that is already on HTTP/2.
+   */
+  private activeTransport: TunnelTransport = 'auto';
+  /** QUIC failures seen from the child now running; see QUIC_FAILURES_WHILE_RUNNING. */
+  private quicFailures = 0;
   /** Runs out if the tunnel is still at "starting" long after it should not be. */
   private quicTimer: NodeJS.Timeout | null = null;
   /**
@@ -329,6 +357,8 @@ export class TunnelManager {
     const child = this.spawnImpl(plan.command, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, env: plan.env, ...(plan.wrapped ? { detached: true } : {}) });
     this.wrapped = plan.wrapped;
     this.child = child;
+    this.activeTransport = transport;
+    this.quicFailures = 0;
     // A UDP block produces no error line to match on, only silence, so the only
     // way to notice it is to notice that nothing has happened for too long.
     if (transport === 'auto') {
@@ -486,10 +516,25 @@ export class TunnelManager {
       // reaches this machine is a separate question, asked below.
       this.clearQuicTimer();
       if (url && this.child) this.watchEdge(url, this.child);
-    } else if (this.quicTimer && QUIC_FAILURE.test(clean)) {
-      // Said out loud rather than waited out, which is the faster half of the
-      // same answer.
-      this.useHttp2('cloudflared could not reach the edge over QUIC');
+    }
+    /*
+     * Read on every line rather than only while the start is being waited out.
+     *
+     * A Quick Tunnel prints its address within a second or two of starting, and
+     * it prints it whether or not a single edge connection ever came up. So on
+     * a network that drops outbound UDP the order is: address, "running",
+     * patience timer cleared - and only then the stream of QUIC failures that
+     * say the link is an error page. Gating this on that timer meant the one
+     * case it exists for was the one case it could not see, and the tunnel was
+     * left on a transport that had already told the log it does not work.
+     */
+    if (this.activeTransport === 'auto' && QUIC_FAILURE.test(clean)) {
+      this.quicFailures += 1;
+      if (this.state.status !== 'running' || this.quicFailures >= QUIC_FAILURES_WHILE_RUNNING) {
+        // Said out loud rather than waited out, which is the faster half of the
+        // same answer.
+        this.useHttp2('cloudflared could not reach the edge over QUIC');
+      }
     }
     this.logger(`[cloudflared] ${clean}`);
   }
@@ -520,7 +565,11 @@ export class TunnelManager {
   private useHttp2(reason: string): void {
     this.clearQuicTimer();
     const mode = this.state.mode;
-    if (this.transport === 'http2' || this.switchingTransport || mode === 'off') return;
+    // Already there, either because this machine has been found to need it or
+    // because the child now running was started on it anyway. Restarting a
+    // tunnel onto the transport it is already using buys nothing and costs
+    // whoever has the link open their connection.
+    if (this.transport === 'http2' || this.activeTransport === 'http2' || this.switchingTransport || mode === 'off') return;
     this.transport = 'http2';
     this.logger(logEvent('cloudflared.transportSwitched', `[cloudflared] ${reason}; trying again over HTTP/2`, { reason }));
     void this.remember(mode, mode === 'named' ? this.token ?? null : null);
@@ -568,7 +617,7 @@ export class TunnelManager {
    * HTTP/2, a 1033 is not something a transport change can fix.
    */
   private watchEdge(url: string, child: ChildProcess): void {
-    if (this.transport === 'http2' || this.edgeChecking === url) return;
+    if (this.transport === 'http2' || this.activeTransport === 'http2' || this.edgeChecking === url) return;
     this.edgeChecking = url;
     void this.askEdgeRepeatedly(url, child).finally(() => {
       if (this.edgeChecking === url) this.edgeChecking = null;
@@ -584,7 +633,15 @@ export class TunnelManager {
       if (this.closed || this.child !== child || this.state.url !== url || this.switchingTransport) return;
       const verdict = await this.askEdge(url);
       if (verdict === 'answered') return;
-      if (verdict === 'unknown') { refusals = 0; continue; }
+      /*
+       * An ask that failed here is not evidence either way, so it is skipped
+       * rather than counted - and rather than forgetting the refusals already
+       * seen. Clearing them meant a flaky path from this machine to the edge
+       * could keep the count below the threshold forever while every visitor
+       * got the same 1033 page; two refusals are two refusals whether or not
+       * a timeout landed between them.
+       */
+      if (verdict === 'unknown') continue;
       refusals += 1;
       if (refusals >= EDGE_FAILURE_STREAK) {
         if (this.child !== child || this.state.url !== url) return;
