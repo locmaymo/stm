@@ -317,6 +317,18 @@ export class ProfileStore {
       .catch((error: unknown) => { const reason = error instanceof Error ? error.message : 'unknown error'; this.logger(logEvent('profiles.deferredCleanupFailed', `[profiles] deferred cleanup failed for ${path}: ${reason}`, { path, reason })); });
   }
 
+  /**
+   * Drop what is held in memory, so the next read is of the disk again.
+   *
+   * For the one caller that deletes the profile tree out from under this store:
+   * a reset. Without it the console would go on listing profiles that no longer
+   * exist, and the first write would put their records back.
+   */
+  public async forget(): Promise<void> {
+    await this.writeQueue;
+    this.profiles = null;
+  }
+
   /** Wait for background deletions. Tests and shutdown need a quiet filesystem. */
   public async settle(): Promise<void> {
     await this.cleanupTail;

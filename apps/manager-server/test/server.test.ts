@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getPlatformPaths } from '../../../packages/platform/src/index.js';
@@ -1339,4 +1339,60 @@ test('a console on a machine somebody is sitting at stays on the loopback addres
   const address = manager.server.address();
   assert.ok(address && typeof address !== 'string');
   assert.equal(address.address, '127.0.0.1');
+});
+
+test('erasing everything needs the password, and leaves a manager nobody has set up yet', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-manager-'));
+  const manager = await createServer({ root });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  const headers = { cookie: auth.cookie, 'x-csrf-token': auth.csrfToken, 'content-type': 'application/json' };
+  // Something in the tree that only a reset would remove.
+  await mkdir(join(root, 'profiles', 'default'), { recursive: true });
+  await writeFile(join(root, 'profiles', 'default', 'chat.jsonl'), 'a conversation somebody had', 'utf8');
+
+  // A console left signed in on a desk is not somebody asking for this.
+  const wrong = await fetch(`${base}/api/v1/reset`, { method: 'POST', headers, body: JSON.stringify({ password: 'not the password' }) });
+  assert.equal(wrong.status, 403);
+  assert.equal((await wrong.json() as { error: { code: string } }).error.code, 'invalid_password');
+  assert.deepEqual(await readdir(join(root, 'profiles')), ['default'], 'and nothing was touched');
+
+  const erased = await fetch(`${base}/api/v1/reset`, { method: 'POST', headers, body: JSON.stringify({ password: 'correct horse battery staple' }) });
+  assert.equal(erased.status, 200);
+  assert.deepEqual(await erased.json(), { ok: true, erased: 7, failures: [] });
+  assert.deepEqual(await readdir(join(root, 'profiles')), []);
+  assert.deepEqual(await readdir(join(root, 'archives')), []);
+
+  // The password it was checked against is gone, so the session opened with it
+  // is over - the reply says so, and the manager asks to be set up again.
+  assert.match(erased.headers.get('set-cookie') ?? '', /stm_session=;/u);
+  const afterwards = await fetch(`${base}/api/v1/config/port`, { headers: { cookie: auth.cookie } });
+  assert.equal(afterwards.status, 401);
+  const status = await (await fetch(`${base}/api/v1/setup/status`)).json() as { setupRequired: boolean };
+  assert.equal(status.setupRequired, true);
+
+  // And it can be set up again, in the same process, without a restart.
+  const again = await signIn(base, 'a different password entirely');
+  assert.ok(again.csrfToken);
+});
+
+test('a reset leaves no store still listing what it read before', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-manager-'));
+  const manager = await createServer({ root });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  const headers = { cookie: auth.cookie, 'x-csrf-token': auth.csrfToken, 'content-type': 'application/json' };
+  // Read once, so the stores are holding what was on the disk.
+  await manager.profiles.list();
+  await manager.runtime.listInstallations();
+
+  await fetch(`${base}/api/v1/reset`, { method: 'POST', headers, body: JSON.stringify({ password: 'correct horse battery staple' }) });
+
+  // Asked again, they go back to the disk rather than to what they remember -
+  // otherwise the console lists a profile with no files behind it.
+  assert.deepEqual(await manager.profiles.list(), []);
+  assert.deepEqual(await manager.runtime.listInstallations(), []);
+  assert.equal((await manager.store.getPersisted()).adminPasswordHash, null);
 });

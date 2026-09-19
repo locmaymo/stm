@@ -175,6 +175,18 @@ export class RuntimeManager {
     return options;
   }
 
+  /**
+   * Forget which installations there were; see ProfileStore.forget.
+   *
+   * The list of versions available to install is not forgotten with them: it
+   * comes from GitHub rather than from this machine, and a reset is not a
+   * reason to ask for it again.
+   */
+  public async forget(): Promise<void> {
+    await this.writeQueue;
+    this.installations = null;
+  }
+
   public async listInstallations(): Promise<Installation[]> {
     const installations = await this.loadInstallations();
     return installations.map((installation) => ({ ...installation }));

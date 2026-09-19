@@ -784,6 +784,26 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     toast({ title: t('console.signOutDevicesDone'), tone: 'success' });
     return null;
   };
+  /**
+   * Erase everything and let the manager set itself up again.
+   *
+   * There is nothing to update here afterwards. The password this page was
+   * signed in with no longer exists, so the server has already ended the
+   * session and cleared the cookie; reloading is what takes the reader to the
+   * first-run screen, and it is also the only way to be sure nothing on the
+   * page is still showing a profile or a backup that is gone.
+   */
+  const eraseEverything = async (password: string): Promise<string | null> => {
+    const response = await apiFetch('/api/v1/reset', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ password }) });
+    const payload = await response.json() as { ok?: boolean; erased?: number; failures?: ReadonlyArray<{ path: string }>; error?: { message?: string } };
+    if (!response.ok) return fail.body(payload, t('console.resetFailed'));
+    const failed = payload.failures?.length ?? 0;
+    toast({ title: failed > 0 ? t('console.resetPartial', { count: failed }) : t('console.resetDone'), tone: failed > 0 ? 'attention' : 'success' });
+    // Long enough for the line above to be read, short enough that nobody
+    // wonders whether the button worked.
+    window.setTimeout(() => { window.location.reload(); }, failed > 0 ? 4000 : 1200);
+    return null;
+  };
   const changeManagerPassword = async (password: string, confirmPassword: string): Promise<string | null> => {
     const response = await apiFetch('/api/v1/auth/password', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ password, confirmPassword }) });
     const payload = await response.json() as { error?: { message?: string } };
@@ -849,7 +869,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
             </div>
           </header>
           <PageContainer>
-            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} locale={preferences.locale} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} startup={startup} onSetAutoStart={setAutoStartSillyTavern} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} /> : <ResourcePanel page={page} t={t} />}
+            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} locale={preferences.locale} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} startup={startup} onSetAutoStart={setAutoStartSillyTavern} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} onEraseEverything={eraseEverything} /> : <ResourcePanel page={page} t={t} />}
           </PageContainer>
           <MobileNav
             items={navigation.map(({ id, icon }) => ({ id, icon, href: `#${id}`, label: t(`nav.${id}`) }))}
@@ -4515,7 +4535,7 @@ function SettingsGroup({ icon, title }: { icon: ReactNode; title: string }) {
   </div>;
 }
 
-function ConfigPage({ t, locale, config, security, ports, managerTunnel, process, catalog, startup, onSetAutoStart, onSetManagerTunnel, onPortChange, onConfigUpdate, onConfigReset, onChangeManagerPassword, onSetPassword, onSignOut, onSignOutDevices }: { t: Translate; locale: LocaleCode; config: ConfigDocument | null; security: AccessGatewayState; ports: PortSettings | null; managerTunnel: TunnelState; process: ProcessState; catalog: Record<string, unknown>; startup: StartupSettings | null; onSetAutoStart: (enabled: boolean) => Promise<string | null>; onSetManagerTunnel: (on: boolean) => Promise<string | null>; onPortChange: (port: number) => Promise<string | null>; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onConfigReset: () => Promise<string | null>; onChangeManagerPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSignOut: () => Promise<void>; onSignOutDevices: () => Promise<string | null> }) {
+function ConfigPage({ t, locale, config, security, ports, managerTunnel, process, catalog, startup, onSetAutoStart, onSetManagerTunnel, onPortChange, onConfigUpdate, onConfigReset, onChangeManagerPassword, onSetPassword, onSignOut, onSignOutDevices, onEraseEverything }: { t: Translate; locale: LocaleCode; config: ConfigDocument | null; security: AccessGatewayState; ports: PortSettings | null; managerTunnel: TunnelState; process: ProcessState; catalog: Record<string, unknown>; startup: StartupSettings | null; onSetAutoStart: (enabled: boolean) => Promise<string | null>; onSetManagerTunnel: (on: boolean) => Promise<string | null>; onPortChange: (port: number) => Promise<string | null>; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onConfigReset: () => Promise<string | null>; onChangeManagerPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSignOut: () => Promise<void>; onSignOutDevices: () => Promise<string | null>; onEraseEverything: (password: string) => Promise<string | null> }) {
   const [form, setForm] = useState<ConfigSettingsInput>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -4786,6 +4806,7 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
         />
       </>}
     {config ? <YamlDialog t={t} open={yamlOpen} onOpenChange={setYamlOpen} initial={config.rawYaml} busy={busy} onApply={(rawYaml) => save({ rawYaml })} /> : null}
+    <StartOverCard t={t} onErase={onEraseEverything} />
     <AboutPanel t={t} locale={locale} onOpenLegal={(id) => { setLegalDocument(id); setLegalOpen(true); }} />
     <LegalDialog
       t={t}
@@ -4796,6 +4817,101 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
       onDocumentChange={setLegalDocument}
     />
   </div>;
+}
+
+/** Seconds the confirm button stays out of reach, so the warning is read rather than clicked past. */
+const RESET_COUNTDOWN_SECONDS = 10;
+
+/**
+ * The one button on this page that takes something away for good.
+ *
+ * Last on the settings page and inside a border of its own, because that is
+ * where a reader who is not looking for it will not find it: everything above
+ * changes how the manager behaves, and this ends the manager's whole history on
+ * the machine. It is the answer to an installation that has gone wrong in a way
+ * nobody wants to unpick - a half-restored profile, a version that will not
+ * start, credentials from an account that is not theirs any more.
+ */
+function StartOverCard({ t, onErase }: { t: Translate; onErase: (password: string) => Promise<string | null> }) {
+  const [open, setOpen] = useState(false);
+  return <>
+    <Card className="border-destructive/35">
+      <PanelHeading icon={<TriangleAlert className="text-destructive" />}>{t('console.resetTitle')}</PanelHeading>
+      <CardContent className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3">
+        <p className="min-w-[14rem] flex-1 text-sm text-muted-foreground">{t('console.resetHint')}</p>
+        <Button variant="destructive" onClick={() => setOpen(true)}><Trash2 />{t('console.resetAction')}</Button>
+      </CardContent>
+    </Card>
+    <StartOverDialog t={t} open={open} onOpenChange={setOpen} onErase={onErase} />
+  </>;
+}
+
+/**
+ * Ask twice over: wait, then type the password.
+ *
+ * The countdown is not a delay for its own sake. The list above it is the only
+ * place anybody is told what "everything" means here, and a destructive button
+ * that is live the moment a dialog opens is one somebody presses while still
+ * reading the first line of it. The password is the second half: it is proof
+ * that the person at the keyboard is the one who set this manager up, which a
+ * console left signed in on a desk is not.
+ */
+function StartOverDialog({ t, open, onOpenChange, onErase }: { t: Translate; open: boolean; onOpenChange: (open: boolean) => void; onErase: (password: string) => Promise<string | null> }) {
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [remaining, setRemaining] = useState(RESET_COUNTDOWN_SECONDS);
+
+  // Restarted on every open, so a dialog dismissed and opened again is a fresh
+  // pause rather than a button that is already live.
+  useEffect(() => {
+    if (!open) return undefined;
+    setPassword(''); setError(null); setRemaining(RESET_COUNTDOWN_SECONDS);
+    const timer = window.setInterval(() => setRemaining((value) => (value <= 1 ? 0 : value - 1)), 1000);
+    return () => window.clearInterval(timer);
+  }, [open]);
+
+  const ready = remaining === 0 && password.length > 0 && !busy;
+  const erase = async () => {
+    setBusy(true); setError(null);
+    try {
+      const failure = await onErase(password);
+      setError(failure);
+      // Left open on success: the page is about to reload itself, and a dialog
+      // that closed first would leave a console behind that no longer works.
+      if (!failure) return;
+    } finally { setBusy(false); }
+  };
+
+  return <Dialog open={open} onOpenChange={(next) => { if (!busy) onOpenChange(next); }}>
+    <DialogContent className="sm:max-w-md">
+      <DialogHeader>
+        <DialogTitle>{t('console.resetDialogTitle')}</DialogTitle>
+        <DialogDescription>{t('console.resetDialogBody')}</DialogDescription>
+      </DialogHeader>
+      <DialogBody className="grid gap-4">
+        <Alert variant="destructive"><TriangleAlert /><AlertDescription>{t('console.resetKeeps')}</AlertDescription></Alert>
+        <Field label={t('console.resetPasswordLabel')} hint={t('console.resetPasswordHint')}>
+          <PasswordInput
+            revealLabel={t('setup.reveal')}
+            hideLabel={t('setup.hide')}
+            autoComplete="current-password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            disabled={busy}
+          />
+        </Field>
+        {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
+      </DialogBody>
+      <DialogFooter>
+        <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={busy}>{t('common.cancel')}</Button>
+        <Button variant="destructive" onClick={() => void erase()} disabled={!ready}>
+          {busy ? <LoaderCircle className="animate-spin" /> : <Trash2 />}
+          {busy ? t('console.resetRunning') : remaining > 0 ? t('console.resetCountdown', { seconds: remaining }) : t('console.resetAction')}
+        </Button>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>;
 }
 
 /**

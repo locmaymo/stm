@@ -50,6 +50,19 @@ export class SessionStore {
     }
   }
 
+  /**
+   * End every console session, this one included.
+   *
+   * A reset takes away the password these were opened with, so leaving them
+   * open would leave whoever holds one signed in to a manager that no longer
+   * knows who they are.
+   */
+  public revokeAll(): number {
+    const count = this.sessions.size;
+    this.sessions.clear();
+    return count;
+  }
+
   public size(): number {
     this.prune();
     return this.sessions.size;

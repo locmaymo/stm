@@ -371,6 +371,12 @@ Only the Cloudflare refresh token is stored, in its own file readable by your us
 
 **S3 keys instead.** If you would rather not sign in, open **Where backups go**, choose **R2 or S3 keys** and enter the endpoint, bucket and key pair from the R2 page of the Cloudflare dashboard, or set them in `.env` (see [`.env.example`](.env.example)). Any S3-compatible storage works this way. Both ways of reaching a bucket are in that one form; saving is choosing which one carries the backups.
 
+### Starting over
+
+**Settings → Start over** erases everything this manager keeps on the machine: SillyTavern itself, every profile with the chats and characters in it, every backup on this disk, the R2 connection, the tunnel, the PIN and the manager password. It asks twice - a short wait before the button comes alive, and the manager password typed again - because a console left signed in on a desk is not the same as somebody asking for this.
+
+What is already in your own R2 bucket stays there; nothing on the machine does. Afterwards the manager is the one you first started: the console reloads onto the first-run screen and setting a password begins again. cloudflared is the one thing kept, because it is a program downloaded from Cloudflare rather than anything you put here.
+
 ## Configuration
 
 Everything can be set in the panel. These environment variables, read from the process or from a `.env` file at start, are for unattended installs; anything set here is shown in the panel and cannot be changed there.
