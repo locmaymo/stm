@@ -11,29 +11,55 @@
   <script src="/assets/boot.js"></script>
   <link rel="stylesheet" href="/assets/site.css">
 </head>
+<!--
+  One address, two languages.
+
+  This page's address is registered on the OAuth client and Cloudflare returns
+  to it matched exactly, so it cannot be a Vietnamese URL the way every other
+  page on this site is. It used to print each sentence twice instead. Now it
+  holds one language and a switch changes it: English here, Vietnamese in
+  `/assets/relay-page.js`, which is also what a reader without JavaScript is
+  left with - and this page needs JavaScript for anything else anyway.
+-->
 <body class="relay-page">
-  <main class="relay-card">
-    <img src="/assets/brand-mark.png" width="52" height="52" alt="">
-    <section id="working">
-      <h1>Returning to SillyTavern Manager…</h1>
-      <p lang="vi">Đang quay lại SillyTavern Manager…</p>
-    </section>
-    <section id="confirm" hidden>
-      <h1>Continue to your manager?</h1>
-      <p>Cloudflare sign-in finished. It will be completed on:</p>
-      <p lang="vi">Đăng nhập Cloudflare đã xong. Việc kết nối sẽ được hoàn tất tại:</p>
-      <p class="destination"><code id="destination"></code></p>
-      <p>Only continue if this is the address you opened SillyTavern Manager on.</p>
-      <p lang="vi">Chỉ tiếp tục nếu đây đúng là địa chỉ bạn đang mở SillyTavern Manager.</p>
-      <button class="button" id="continue" type="button">Continue · Tiếp tục</button>
-    </section>
-    <section id="invalid" hidden>
-      <h1>This link cannot be used</h1>
-      <p>It did not come from a SillyTavern Manager sign-in. Start again from <strong>Connect Cloudflare</strong> in the manager.</p>
-      <p lang="vi">Liên kết này không đến từ lần đăng nhập của SillyTavern Manager. Hãy bắt đầu lại từ nút <strong>Kết nối Cloudflare</strong> trong manager.</p>
-    </section>
-    <noscript><p>JavaScript is needed to return to the manager. · Cần bật JavaScript để quay lại manager.</p></noscript>
+  <div class="relay-tools">
+    <button class="lang-button" type="button" data-lang-toggle title="Đọc trang này bằng tiếng Việt">
+      <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 8 6 6"/><path d="m4 14 6-6 3-3"/><path d="M2 5h12"/><path d="M7 2h1"/><path d="m22 22-5-10-5 10"/><path d="M14 18h6"/></svg>
+      <span data-lang-other>Tiếng Việt</span>
+    </button>
+    <button class="icon-button" type="button" data-theme-toggle aria-label="Switch to the dark theme" data-label-dark="Switch to the dark theme" data-label-light="Switch to the light theme">
+      <span data-theme-icon="light"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg></span>
+      <span data-theme-icon="dark"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.9 4.9 1.4 1.4"/><path d="m17.7 17.7 1.4 1.4"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.3 17.7-1.4 1.4"/><path d="m19.1 4.9-1.4 1.4"/></svg></span>
+    </button>
+  </div>
+
+  <main class="relay-main">
+    <img class="relay-mark" src="/assets/brand-mark.png" width="64" height="64" alt="">
+
+    <div id="working">
+      <h1 data-i18n="working.title">Returning to SillyTavern Manager…</h1>
+      <p data-i18n="working.body">This takes a second.</p>
+    </div>
+
+    <div id="confirm" hidden>
+      <h1 data-i18n="confirm.title">Continue to your manager?</h1>
+      <p data-i18n="confirm.body">Cloudflare sign-in finished. It will be completed on:</p>
+      <div class="relay-card">
+        <code id="destination"></code>
+        <p class="relay-warn" data-i18n="confirm.warn">Only continue if this is the address you opened SillyTavern Manager on.</p>
+        <button class="button" id="continue" type="button" data-i18n="confirm.button">Continue</button>
+      </div>
+    </div>
+
+    <div id="invalid" hidden>
+      <h1 data-i18n="invalid.title">This link cannot be used</h1>
+      <p data-i18n="invalid.body">It did not come from a SillyTavern Manager sign-in. Start again from Connect Cloudflare in the manager.</p>
+    </div>
+
+    <noscript><p data-i18n="noscript">JavaScript is needed to return to the manager.</p></noscript>
   </main>
+
+  <script type="module" src="/assets/relay-page.js"></script>
   <script type="module" src="/relay.js"></script>
 </body>
 </html>

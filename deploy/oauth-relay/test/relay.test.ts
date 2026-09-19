@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { encodeState } from '../../../packages/cloudflare/src/oauth.js';
 // @ts-expect-error The relay is plain browser JavaScript with no type declarations.
 import { decide, isUsualManagerHost, originFromState } from '../../../apps/site/public/relay.js';
+// @ts-expect-error The page script is plain browser JavaScript with no type declarations.
+import { preferredLocale } from '../../../apps/site/public/assets/relay-page.js';
 
 test('the relay reads the origin the manager put in state', () => {
   assert.equal(originFromState(encodeState('http://127.0.0.1:7860/some/page')), 'http://127.0.0.1:7860');
@@ -42,4 +44,26 @@ test('usual manager addresses forward at once; anything else waits for a click',
   const custom = decide(`?code=abc&state=${encodeState('https://tavern.example.com')}`);
   assert.equal(custom.automatic, false);
   assert.equal(custom.host, 'tavern.example.com');
+});
+
+test('the callback page opens in the language the reader has already chosen', () => {
+  /*
+   * This page's address is registered on the OAuth client and Cloudflare
+   * returns to it matched exactly, so it cannot be a Vietnamese URL the way
+   * every other page on the site is. It printed both languages at once
+   * instead. Now it picks one, and `stm-locale` - the key the site's own
+   * language switch writes, on this same origin - is what it picks by.
+   */
+  assert.equal(preferredLocale('vi', ['en-US']), 'vi');
+  assert.equal(preferredLocale('en', ['vi-VN']), 'en');
+
+  // Nothing chosen here before: follow the browser, which for a Vietnamese
+  // reader is very often already the right answer.
+  assert.equal(preferredLocale(null, ['vi-VN', 'en-US']), 'vi');
+  assert.equal(preferredLocale(null, ['en-GB']), 'en');
+
+  // Anything else is not an answer, and English is the one the page ships in.
+  assert.equal(preferredLocale('fr', ['fr-FR']), 'en');
+  assert.equal(preferredLocale(null, []), 'en');
+  assert.equal(preferredLocale(null, undefined), 'en');
 });
