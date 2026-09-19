@@ -98,6 +98,16 @@ jobs:
           echo "  7003  the account ID is not one this token can address."
           echo "  9106  the token itself was refused - expired, revoked, or mistyped."
           echo "  9109  the token is valid but has no Workers Scripts: Edit on this account."
+          # On 7003 the useful next fact is which accounts the token does
+          # reach: an account ID and a zone ID are both 32 hex characters and
+          # sit a few lines apart in the dashboard, so the usual mistake is
+          # pasting the wrong one. Names and a short prefix only - these logs
+          # are as public as the repository.
+          if jq -e '.errors[]? | select(.code == 7003)' "$body" >/dev/null 2>&1; then
+            echo "  This token reaches these accounts:"
+            list=$(curl -sS -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" "https://api.cloudflare.com/client/v4/accounts?per_page=50")
+            printf '%s' "$list" | jq -r '.result[]? | "    \(.name)  (id starts \(.id[0:8]))"' || echo "    (the account list could not be read either)"
+          fi
           exit 1
 
       # The repository's own Wrangler, from `npm ci` above, rather than
