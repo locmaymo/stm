@@ -85,7 +85,19 @@ export class ProxyWorkerManager {
   }
 
   public async urlFor(target: ProxyWorkerTarget): Promise<string | null> {
-    return (await this.load()).workers[target]?.url ?? null;
+    return (await this.recordFor(target))?.url ?? null;
+  }
+
+  /**
+   * One Worker as it was last deployed, address and origin together.
+   *
+   * The origin is the half a caller needs to know whether the address is any
+   * use yet: a Worker still carrying the tunnel from before this one is a
+   * deployed Worker and a broken link, and the two are only distinguishable by
+   * comparing what it points at with the tunnel that is up.
+   */
+  public async recordFor(target: ProxyWorkerTarget): Promise<ProxyWorkerRecord | null> {
+    return (await this.load()).workers[target] ?? null;
   }
 
   /**

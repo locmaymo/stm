@@ -11,6 +11,26 @@ export function localHost(sillyTavernPort: number): string {
   return `127.0.0.1:${sillyTavernPort}`;
 }
 
+/** What a tunnel's public address is read from, whichever card is asking. */
+export type PublicTunnel = Pick<TunnelState, 'url' | 'proxyUrl' | 'proxyPending'>;
+
+/**
+ * The public address to put in front of a reader, or null while there is none.
+ *
+ * Null covers two different waits, and deliberately does not distinguish them:
+ * a tunnel that has not announced itself yet, and one that has while the fixed
+ * Worker address in front of it is still being deployed. Both mean the same
+ * thing to whoever is looking at the card - the link is coming - and showing an
+ * address during either of them is showing one that is about to be replaced or
+ * that answers with an error. This is the only place that decision is made, so
+ * the overview, the sharing card, the QR code, the embedded window and the
+ * console's own link cannot disagree about it.
+ */
+export function publicAddress(tunnel: PublicTunnel): string | null {
+  if (tunnel.proxyPending) return null;
+  return tunnel.proxyUrl ?? tunnel.url ?? null;
+}
+
 /** One place SillyTavern answers, as a link and as something short enough to show. */
 export interface ReachableAddress {
   readonly kind: 'tunnel' | 'lan' | 'local';
@@ -47,7 +67,7 @@ export interface ReachableAddress {
  * SillyTavern was the one press guaranteed not to. An empty list is the honest
  * answer, and the console can then offer the thing that would actually work.
  */
-export function reachableAddresses(tunnel: Pick<TunnelState, 'url' | 'proxyUrl'>, security: Pick<AccessGatewayState, 'lan' | 'port'>, networkHost: string, sillyTavernPort: number, onThisMachine: boolean): ReachableAddress[] {
+export function reachableAddresses(tunnel: PublicTunnel, security: Pick<AccessGatewayState, 'lan' | 'port'>, networkHost: string, sillyTavernPort: number, onThisMachine: boolean): ReachableAddress[] {
   const addresses: ReachableAddress[] = [];
   /*
    * The fixed address wins over the tunnel's own.
@@ -59,9 +79,18 @@ export function reachableAddresses(tunnel: Pick<TunnelState, 'url' | 'proxyUrl'>
    * is the same one for good, and forwards to whichever tunnel is up. Where
    * there is no Cloudflare sign-in there is no Worker, and the tunnel's own
    * address is the only address there is.
+   *
+   * While that Worker is being deployed there is no public address at all
+   * here, rather than the tunnel's own standing in for a few seconds. A reader
+   * on a machine of their own still has the network and loopback addresses
+   * below, which work; a reader on a hosted studio has none, which is the
+   * honest answer and the one the card is built to say.
    */
-  if (tunnel.proxyUrl) addresses.push({ kind: 'tunnel', url: tunnel.proxyUrl, host: bareHost(tunnel.proxyUrl), ...(tunnel.url ? { via: bareHost(tunnel.url) } : {}) });
-  else if (tunnel.url) addresses.push({ kind: 'tunnel', url: tunnel.url, host: bareHost(tunnel.url) });
+  const publicUrl = publicAddress(tunnel);
+  if (publicUrl) {
+    const via = tunnel.proxyUrl && tunnel.url ? { via: bareHost(tunnel.url) } : {};
+    addresses.push({ kind: 'tunnel', url: publicUrl, host: bareHost(publicUrl), ...via });
+  }
   if (security.lan) {
     const host = `${networkHost}:${security.port}`;
     addresses.push({ kind: 'lan', url: `http://${host}`, host });

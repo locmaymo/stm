@@ -573,6 +573,17 @@ export class BackupStore {
       .catch((error: unknown) => { const reason = error instanceof Error ? error.message : 'unknown error'; this.logger(logEvent('backup.deferredCleanupFailed', `[backup] deferred cleanup failed for ${path}: ${reason}`, { path, reason })); });
   }
 
+  /**
+   * Drop the manifest list held in memory; see ProfileStore.forget.
+   *
+   * A reset deletes the archives, and a store still holding their manifests
+   * would offer to restore files that are not there any more.
+   */
+  public async forget(): Promise<void> {
+    await this.writeQueue;
+    this.manifests = null;
+  }
+
   /** Wait for background deletions. Tests and shutdown need a quiet filesystem. */
   public async settle(): Promise<void> {
     await this.cleanupTail;

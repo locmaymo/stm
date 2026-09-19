@@ -164,6 +164,27 @@ test('cache hit denominator includes Anthropic cache read and write tokens', () 
   assert.equal(snapshot.totals.totalTokens, 11);
 });
 
+test('every way into the observer writes the usage log through one queue', async () => {
+  /*
+   * There are three: the global `fetch`, the CJS bridge for older SillyTavern
+   * releases, and the ESM hook that rewrites node-fetch. The third reads its
+   * options off `globalThis`, and nothing ever put them there - so it quietly
+   * made a second write queue of its own, and two queues appending to one file
+   * have no order between them. A call that had already finished could be
+   * written after one that came later, which is why the test above failed on
+   * Windows about once in a while.
+   */
+  const root = await mkdtemp(join(tmpdir(), 'stm-instrumentation-queue-'));
+  const seen = join(root, 'seen.json');
+  const script = `
+    const { writeFileSync } = await import('node:fs');
+    writeFileSync(${JSON.stringify(seen)}, JSON.stringify({ persist: typeof globalThis.__stmInstrumentationOptions?.persist }));
+  `;
+  await runNode(['--import', instrumentationLoaderPath, '--input-type=module', '-e', script], { STM_METRICS_FILE: join(root, 'metrics', 'usage-events.jsonl') });
+
+  assert.deepEqual(JSON.parse(await readFile(seen, 'utf8')), { persist: 'function' });
+});
+
 async function runNode(args: string[], env: Record<string, string>): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const child = spawn(process.execPath, args, { env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });

@@ -274,6 +274,24 @@ export class StateStore {
     return this.load();
   }
 
+  /**
+   * Forget the state held in memory, so the next read is of the disk again.
+   *
+   * For the one caller that deletes the file underneath this store: a reset.
+   * Without it the manager would keep answering from the state it happened to
+   * be holding - the password that has just been erased included - and write it
+   * back on the next change, so the wipe would undo itself.
+   *
+   * Through the same queue as every write, so it cannot land between a write's
+   * read and its save and leave the file holding what was just forgotten.
+   */
+  public async forget(): Promise<void> {
+    const operation = async (): Promise<void> => { this.state = null; };
+    const previous = this.adminWriteQueue;
+    this.adminWriteQueue = previous.then(operation, operation);
+    await this.adminWriteQueue;
+  }
+
   public toPublicState(): ManagerState {
     const state = this.state;
     if (!state) {

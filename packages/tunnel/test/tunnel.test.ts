@@ -405,6 +405,46 @@ test('a tunnel that says nothing at all is given up on too, and asked again over
   await tunnel.close();
 });
 
+test('an address handed out before QUIC failed is still a network that blocks QUIC', async () => {
+  const paths = await createPaths();
+  await installFakeBinary(paths);
+  const children: FakeCloudflared[] = [];
+  const invocations: string[][] = [];
+  const spawnImpl = ((_command: string, args: readonly string[]): ChildProcess => {
+    invocations.push([...args]);
+    const child = fakeCloudflared();
+    children.push(child);
+    return child as unknown as ChildProcess;
+  }) as unknown as typeof spawnType;
+  // The order a hosted container actually produces: cloudflared is given a
+  // hostname over HTTPS and prints it, and only then does the first UDP
+  // handshake time out. Everyone opening that address gets an error page.
+  const tunnel = new TunnelManager({ paths, spawnImpl, env: { PATH: '' }, fetchImpl: offline, edgeCheckDelayMs: 5, logger: () => undefined });
+
+  await tunnel.start('quick');
+  children[0]!.stdout.write('INF |  https://cedar-married-designer-ticket.trycloudflare.com  |\n');
+  await waitFor(() => tunnel.getState().status === 'running', 'the address to be announced');
+
+  // One failed dial out of several edge connections is a bad minute, not a
+  // blocked network, and must not cost a working tunnel its connections.
+  children[0]!.stderr.write('ERR Failed to create new quic connection error="failed to dial to edge with quic: timeout: no recent network activity" connIndex=0\n');
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(invocations.length, 1, 'one line is not yet an answer');
+
+  children[0]!.stderr.write('ERR Failed to create new quic connection error="failed to dial to edge with quic: timeout: no recent network activity" connIndex=1\n');
+  await waitFor(() => invocations.length === 2, 'a second attempt over HTTP/2');
+  assert.deepEqual(invocations[1]!.slice(0, 6), ['tunnel', '--no-autoupdate', '--protocol', 'http2', '--edge-ip-version', '4']);
+
+  children[1]!.stdout.write('INF |  https://cedar-married-designer-ticket.trycloudflare.com  |\n');
+  await waitFor(() => tunnel.getState().status === 'running', 'the tunnel to come up over HTTP/2');
+  // And once it is on HTTP/2, the same lines have nowhere left to send it.
+  children[1]!.stderr.write('ERR failed to dial to edge with quic: timeout: no recent network activity\n');
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(invocations.length, 2);
+  await tunnel.close();
+  assert.equal(JSON.parse(await readFile(join(paths.state, 'tunnel-config.json'), 'utf8')).transport, 'http2');
+});
+
 test('a link that answers with error 1033 is a tunnel that never reached the edge', async () => {
   const paths = await createPaths();
   await installFakeBinary(paths);
@@ -454,6 +494,36 @@ test('a link that answers with error 1033 is a tunnel that never reached the edg
 
   // And what was learned outlives the process that learned it.
   assert.equal(JSON.parse(await readFile(join(paths.state, 'tunnel-config.json'), 'utf8')).transport, 'http2');
+});
+
+test('refusals on either side of a failed ask still add up to a refused tunnel', async () => {
+  const paths = await createPaths();
+  await installFakeBinary(paths);
+  const children: FakeCloudflared[] = [];
+  const invocations: string[][] = [];
+  const spawnImpl = ((_command: string, args: readonly string[]): ChildProcess => {
+    invocations.push([...args]);
+    const child = fakeCloudflared();
+    children.push(child);
+    return child as unknown as ChildProcess;
+  }) as unknown as typeof spawnType;
+  // 1033, then a request that never got an answer, then 1033 again. The middle
+  // one says nothing about the tunnel, and it must not wipe out what the other
+  // two said.
+  let ask = 0;
+  const fetchImpl = (async () => {
+    ask += 1;
+    if (ask === 2) throw new Error('the manager itself could not get there');
+    return new Response('<html><body>Error 1033</body></html>', { status: 530 });
+  }) as unknown as typeof globalThis.fetch;
+  const tunnel = new TunnelManager({ paths, spawnImpl, fetchImpl, env: { PATH: '' }, edgeCheckDelayMs: 5, edgeCheckAttempts: 4, logger: () => undefined });
+
+  await tunnel.start('quick');
+  children[0]!.stdout.write('INF |  https://cedar-married-designer-ticket.trycloudflare.com  |\n');
+  await waitFor(() => invocations.length === 2, 'the tunnel to be started again over HTTP/2');
+  assert.ok(invocations[1]!.includes('--protocol'));
+  assert.ok(ask >= 3, 'all three asks were made');
+  await tunnel.close();
 });
 
 test('a link the manager itself cannot reach is not blamed on the transport', async () => {

@@ -13,6 +13,7 @@ import { RateLimiter } from './rate-limit.js';
 import { parseSessionCookie, SessionStore, clearSessionCookie, sessionCookie } from './sessions.js';
 import { StateStore } from './state.js';
 import { LOG_LIMITS, LogBuffer } from './log-buffer.js';
+import { eraseManagerData } from './reset.js';
 import { SystemStore } from './system.js';
 import { panelStaticRoot } from './bootstrap.js';
 import { ProcessSupervisor } from './supervisor.js';
@@ -935,6 +936,28 @@ async function handleRequest(options: {
     return;
   }
 
+  /*
+   * Erase everything this manager keeps, and be a new one.
+   *
+   * Its own route rather than a corner of the settings page's API, because it
+   * is not a setting: it removes SillyTavern, every chat and character in every
+   * profile, every backup on this disk, the R2 connection, the tunnel, the PIN
+   * and the manager's own password. Nothing else here asks for the password of
+   * somebody who is already signed in, and this asks for it because a signed-in
+   * console left open on a desk is not consent to that.
+   *
+   * Handled here rather than with the other runtime routes so that it can end
+   * the session it was asked through: the password it was checked against no
+   * longer exists by the time it answers.
+   */
+  if (pathname === '/api/v1/reset' && method === 'POST') {
+    const session = requireSession(context, sessions);
+    if (!session) return;
+    if (!requireCsrf(context, session.csrfToken)) return;
+    await handleReset(context, { store, sessions, jobs, supervisor, tunnel, managerTunnel, gateway, runtime, profiles, backups, logger, secureCookies });
+    return;
+  }
+
   const needsAuth = isProtectedPath(pathname);
   if (needsAuth) {
     const session = requireSession(context, sessions);
@@ -949,6 +972,85 @@ async function handleRequest(options: {
   }
 
   sendError(response, 404, 'not_found', 'Route not found');
+}
+
+interface ResetDeps {
+  readonly store: StateStore;
+  readonly sessions: SessionStore;
+  readonly jobs: JobStore;
+  readonly supervisor: ProcessSupervisor;
+  readonly tunnel: TunnelManager;
+  readonly managerTunnel: TunnelManager;
+  readonly gateway: AccessGateway;
+  readonly runtime: RuntimeManager;
+  readonly profiles: ProfileStore;
+  readonly backups: BackupStore;
+  readonly logger: LogSink;
+  readonly secureCookies: boolean;
+}
+
+/**
+ * Take the manager back to the state it was in before anybody used it.
+ *
+ * The order matters, and it is the order of who is holding what. SillyTavern
+ * runs out of a profile directory, so it stops first - on Windows a running
+ * process is enough to make its own directory undeletable. Both tunnels are
+ * turned off rather than left to notice their configuration has gone. The two
+ * stores that write in the background are allowed to finish what they have
+ * started, because a write that lands after the delete would put the first file
+ * back into an empty tree.
+ *
+ * Then the directories go, and only then what is held in memory. Four stores
+ * keep what they last read: the state store would go on answering with the
+ * password that has just been erased and write it back on the next change, and
+ * the other three would go on listing an installation, profiles and backups
+ * whose files are gone. The door is holding the PIN, and every console session
+ * was opened with a password this manager no longer knows. The reply
+ * clears the cookie of the session that asked, so the page that gets it lands
+ * on the first-run screen rather than on a console with nothing behind it.
+ *
+ * A job in flight is the one thing that stops all of this. An install or a
+ * restore is writing into the directories about to be deleted, and racing it
+ * would leave files from the old manager inside the new one - so the answer is
+ * to say so and let the operator stop it.
+ */
+async function handleReset(context: RequestContext, deps: ResetDeps): Promise<void> {
+  const { request, response } = context;
+  const { store, sessions, jobs, supervisor, tunnel, managerTunnel, gateway, runtime, profiles, backups, logger, secureCookies } = deps;
+  const body = await readJson(request);
+  const password = isRecord(body) && typeof body.password === 'string' ? body.password : '';
+  const persisted = await store.getPersisted();
+  if (!persisted.adminPasswordHash) {
+    sendError(response, 409, 'setup_required', 'This manager has not been set up yet');
+    return;
+  }
+  if (!password || !verifyPassword(password, persisted.adminPasswordHash)) {
+    sendError(response, 403, 'invalid_password', 'That is not this manager password');
+    return;
+  }
+  const running = jobs.activeInstallation() ?? jobs.activeOperation();
+  if (running) {
+    sendError(response, 409, 'reset_busy', 'Stop the job that is still running, then erase everything');
+    return;
+  }
+  logger(logEvent('manager.resetting', '[manager] erasing everything this manager keeps, because the console asked for it'));
+  await supervisor.stop('uninstall');
+  await tunnel.disable();
+  await managerTunnel.disable();
+  await backups.settle();
+  await profiles.settle();
+  const report = await eraseManagerData(store.paths, logger);
+  await Promise.all([store.forget(), runtime.forget(), profiles.forget(), backups.forget()]);
+  gateway.setPassword(null, false);
+  gateway.signOutEveryone();
+  await gateway.setLan(false);
+  sessions.revokeAll();
+  response.setHeader('Set-Cookie', clearSessionCookie(secureCookies));
+  sendJson(response, 200, {
+    ok: report.failures.length === 0,
+    erased: report.removed.length,
+    failures: report.failures.map((failure) => ({ path: failure.path, reason: failure.reason })),
+  });
 }
 
 async function handleRuntimeRequest(context: RequestContext, store: StateStore, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, managerTunnel: TunnelManager, gateway: AccessGateway, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, cloudflare: CloudflareConnection | null, metrics: MetricsStore, config: ConfigStore, system: SystemStore, proxy: ProxyWorkerManager | null, publishProxies: () => void, logger: LogSink): Promise<void> {
@@ -1574,7 +1676,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
    * shows the fixed one and keeps the tunnel's own beside it, because that is
    * where the traffic really goes and it is worth being able to see.
    */
-  if (pathname === '/api/v1/tunnel' && method === 'GET') { sendJson(response, 200, await withProxyUrl(tunnel.getState(), proxy, 'sillyTavern')); return; }
+  if (pathname === '/api/v1/tunnel' && method === 'GET') { sendJson(response, 200, await withProxyUrl(tunnel.getState(), proxy, cloudflare, 'sillyTavern')); return; }
   if (pathname === '/api/v1/tunnel' && method === 'PUT') {
     const body = await readJson(request);
     const mode = isRecord(body) && (body.mode === 'off' || body.mode === 'quick' || body.mode === 'named') ? body.mode : null;
@@ -1597,7 +1699,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
      */
     if (mode !== 'off' && !gateway.getState().passwordConfigured) { sendError(response, 409, 'public_access_password_required', 'Set the SillyTavern password before opening a public tunnel'); return; }
     const state = mode === 'off' ? await tunnel.disable() : await tunnel.start(mode, isRecord(body) && typeof body.token === 'string' ? body.token : undefined);
-    sendJson(response, 200, await withProxyUrl(state, proxy, 'sillyTavern'));
+    sendJson(response, 200, await withProxyUrl(state, proxy, cloudflare, 'sillyTavern'));
     return;
   }
   /**
@@ -1610,7 +1712,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
    * platform's own address does not work, which is a problem the console has
    * whether or not anything is installed yet.
    */
-  if (pathname === '/api/v1/manager-tunnel' && method === 'GET') { sendJson(response, 200, await withProxyUrl(managerTunnel.getState(), proxy, 'manager')); return; }
+  if (pathname === '/api/v1/manager-tunnel' && method === 'GET') { sendJson(response, 200, await withProxyUrl(managerTunnel.getState(), proxy, cloudflare, 'manager')); return; }
   if (pathname === '/api/v1/manager-tunnel' && method === 'PUT') {
     const body = await readJson(request);
     const mode = isRecord(body) && (body.mode === 'off' || body.mode === 'quick' || body.mode === 'named') ? body.mode : null;
@@ -1623,7 +1725,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       return;
     }
     const state = mode === 'off' ? await managerTunnel.disable() : await managerTunnel.start(mode, isRecord(body) && typeof body.token === 'string' ? body.token : undefined);
-    sendJson(response, 200, await withProxyUrl(state, proxy, 'manager'));
+    sendJson(response, 200, await withProxyUrl(state, proxy, cloudflare, 'manager'));
     return;
   }
   /*
@@ -1689,9 +1791,23 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
  *
  * Null rather than absent when there is no Worker, so a panel can tell "no
  * fixed address" from "this manager does not know about them".
+ *
+ * `proxyPending` answers the question the address alone cannot: is what the
+ * console would show right now the address this reader is going to keep? It is
+ * not, from the moment a tunnel announces itself until the Worker in front of
+ * it has been redeployed at the new address - seconds during which the tunnel's
+ * own address is about to be replaced and the Worker's still points at the
+ * tunnel from last time. Expected is decided the same way the redeploy itself
+ * decides it, by asking whether there is a Cloudflare account to deploy into,
+ * so the console never waits for an address that is not coming.
  */
-async function withProxyUrl(state: TunnelState, proxy: ProxyWorkerManager | null, target: ProxyWorkerTarget): Promise<TunnelState> {
-  return { ...state, proxyUrl: proxy ? await proxy.urlFor(target).catch(() => null) : null };
+async function withProxyUrl(state: TunnelState, proxy: ProxyWorkerManager | null, cloudflare: CloudflareConnection | null, target: ProxyWorkerTarget): Promise<TunnelState> {
+  if (!proxy) return { ...state, proxyUrl: null, proxyPending: false };
+  const record = await proxy.recordFor(target).catch(() => null);
+  const expected = cloudflare ? await cloudflare.workersAccount().catch(() => null) !== null : false;
+  // A tunnel with no address of its own has nothing for a Worker to follow:
+  // it is off, still starting, or a Named Tunnel, which has its own hostname.
+  return { ...state, proxyUrl: record?.url ?? null, proxyPending: expected && state.url !== null && record?.origin !== state.url };
 }
 
 /** What starting an installation needs, whoever asked for it. */

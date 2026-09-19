@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getPlatformPaths } from '../../../packages/platform/src/index.js';
@@ -10,6 +10,7 @@ import type { AccessGatewayState, Installation, ProcessState, TunnelState, Versi
 import type { TunnelManager } from '../../../packages/tunnel/src/index.js';
 import type { ProxyWorkerManager } from '../../../packages/cloudflare/src/index.js';
 import { decodeState } from '../../../packages/cloudflare/src/index.js';
+import type { CloudflareConnection } from '../../../packages/r2/src/index.js';
 import type { RuntimeManager } from '../../../packages/sillytavern-runtime/src/index.js';
 import type { ProcessSupervisor } from '../src/supervisor.js';
 import { SILLYTAVERN_PORT } from '../src/ports.js';
@@ -24,7 +25,9 @@ async function createServer(options: {
   /** Stands in for the console's own tunnel, so no cloudflared is launched. */
   managerTunnel?: FakeTunnel;
   /** Stands in for the Workers that give the tunnels a fixed address. */
-  proxy?: { urlFor(target: 'manager' | 'sillyTavern'): Promise<string | null> };
+  proxy?: FakeProxy;
+  /** Stands in for a signed-in Cloudflare account, so Workers are expected. */
+  cloudflare?: unknown;
   /** As `STM_PUBLIC_ORIGIN` would name it. */
   publicOrigin?: string;
 } = {}): Promise<ManagerServer> {
@@ -48,8 +51,34 @@ async function createServer(options: {
     logger: () => undefined,
     ...(options.managerTunnel ? { managerTunnel: options.managerTunnel as unknown as TunnelManager } : {}),
     ...(options.proxy ? { proxy: options.proxy as unknown as ProxyWorkerManager } : {}),
+    ...(options.cloudflare !== undefined ? { cloudflare: options.cloudflare as CloudflareConnection } : {}),
     ...(options.publicOrigin ? { publicOrigin: options.publicOrigin } : {}),
   });
+}
+
+/**
+ * The two Workers, as the routes read them.
+ *
+ * `recordFor` is the one that matters here: the console asks it what the
+ * Worker is pointing at, because a Worker still carrying the tunnel from last
+ * time is an address that answers with an error.
+ */
+interface FakeProxy {
+  urlFor(target: 'manager' | 'sillyTavern'): Promise<string | null>;
+  recordFor(target: 'manager' | 'sillyTavern'): Promise<{ url: string; origin: string | null } | null>;
+}
+
+/**
+ * A Worker deployed at `url` and pointing at `origin`.
+ *
+ * `deployed` is read on every call rather than copied, so a test can move the
+ * origin the way a finished redeploy does.
+ */
+function fakeProxy(deployed: Partial<Record<'manager' | 'sillyTavern', { url: string; origin: string | null }>>): FakeProxy {
+  return {
+    urlFor: async (target) => deployed[target]?.url ?? null,
+    recordFor: async (target) => deployed[target] ?? null,
+  };
 }
 
 /**
@@ -106,7 +135,10 @@ test('the console trusts its own fixed address, and signs in through it', async 
   const manager = await createServer({
     bootstrapPassword: 'correct horse battery staple',
     managerTunnel: tunnel,
-    proxy: { urlFor: async (target) => target === 'manager' ? 'https://stm.acme.workers.dev' : 'https://sillytavern.acme.workers.dev' },
+    proxy: fakeProxy({
+      manager: { url: 'https://stm.acme.workers.dev', origin: 'https://inspector-moss-hints-pitch.trycloudflare.com' },
+      sillyTavern: { url: 'https://sillytavern.acme.workers.dev', origin: null },
+    }),
   });
   t.after(() => manager.close());
   const base = serverUrl(manager);
@@ -1339,4 +1371,112 @@ test('a console on a machine somebody is sitting at stays on the loopback addres
   const address = manager.server.address();
   assert.ok(address && typeof address !== 'string');
   assert.equal(address.address, '127.0.0.1');
+});
+
+test('erasing everything needs the password, and leaves a manager nobody has set up yet', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-manager-'));
+  const manager = await createServer({ root });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  const headers = { cookie: auth.cookie, 'x-csrf-token': auth.csrfToken, 'content-type': 'application/json' };
+  // Something in the tree that only a reset would remove.
+  await mkdir(join(root, 'profiles', 'default'), { recursive: true });
+  await writeFile(join(root, 'profiles', 'default', 'chat.jsonl'), 'a conversation somebody had', 'utf8');
+
+  // A console left signed in on a desk is not somebody asking for this.
+  const wrong = await fetch(`${base}/api/v1/reset`, { method: 'POST', headers, body: JSON.stringify({ password: 'not the password' }) });
+  assert.equal(wrong.status, 403);
+  assert.equal((await wrong.json() as { error: { code: string } }).error.code, 'invalid_password');
+  assert.deepEqual(await readdir(join(root, 'profiles')), ['default'], 'and nothing was touched');
+
+  const erased = await fetch(`${base}/api/v1/reset`, { method: 'POST', headers, body: JSON.stringify({ password: 'correct horse battery staple' }) });
+  assert.equal(erased.status, 200);
+  assert.deepEqual(await erased.json(), { ok: true, erased: 7, failures: [] });
+  assert.deepEqual(await readdir(join(root, 'profiles')), []);
+  assert.deepEqual(await readdir(join(root, 'archives')), []);
+
+  // The password it was checked against is gone, so the session opened with it
+  // is over - the reply says so, and the manager asks to be set up again.
+  assert.match(erased.headers.get('set-cookie') ?? '', /stm_session=;/u);
+  const afterwards = await fetch(`${base}/api/v1/config/port`, { headers: { cookie: auth.cookie } });
+  assert.equal(afterwards.status, 401);
+  const status = await (await fetch(`${base}/api/v1/setup/status`)).json() as { setupRequired: boolean };
+  assert.equal(status.setupRequired, true);
+
+  // And it can be set up again, in the same process, without a restart.
+  const again = await signIn(base, 'a different password entirely');
+  assert.ok(again.csrfToken);
+});
+
+test('a reset leaves no store still listing what it read before', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-manager-'));
+  const manager = await createServer({ root });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  const headers = { cookie: auth.cookie, 'x-csrf-token': auth.csrfToken, 'content-type': 'application/json' };
+  // Read once, so the stores are holding what was on the disk.
+  await manager.profiles.list();
+  await manager.runtime.listInstallations();
+
+  await fetch(`${base}/api/v1/reset`, { method: 'POST', headers, body: JSON.stringify({ password: 'correct horse battery staple' }) });
+
+  // Asked again, they go back to the disk rather than to what they remember -
+  // otherwise the console lists a profile with no files behind it.
+  assert.deepEqual(await manager.profiles.list(), []);
+  assert.deepEqual(await manager.runtime.listInstallations(), []);
+  assert.equal((await manager.store.getPersisted()).adminPasswordHash, null);
+});
+
+test('a public address is not offered while the Worker in front of it is still being deployed', async (t) => {
+  const tunnel = fakeTunnel();
+  // A Worker from the last run, still pointing at the tunnel that has gone.
+  const deployed = { manager: { url: 'https://stm.acme.workers.dev', origin: 'https://yesterday.trycloudflare.com' as string | null } };
+  const manager = await createServer({
+    bootstrapPassword: 'correct horse battery staple',
+    managerTunnel: tunnel,
+    proxy: fakeProxy(deployed),
+    // Signed in with permission to deploy scripts, which is what makes a fixed
+    // address something to wait for rather than something that is not coming.
+    cloudflare: { workersAccount: async () => ({ id: 'account-1', name: 'Acme' }) },
+  });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  const read = async (): Promise<TunnelState> =>
+    await (await fetch(`${base}/api/v1/manager-tunnel`, { headers: { cookie: auth.cookie } })).json() as TunnelState;
+
+  await tunnel.start('quick');
+  tunnel.publish('https://today.trycloudflare.com');
+
+  // cloudflared has announced an address and the Worker has not caught up: the
+  // one it would show is about to be replaced, and the one it has deployed
+  // answers with an error. Neither is an address to hand anybody.
+  const waiting = await read();
+  assert.equal(waiting.proxyUrl, 'https://stm.acme.workers.dev');
+  assert.equal(waiting.proxyPending, true);
+
+  // The redeploy lands.
+  deployed.manager.origin = 'https://today.trycloudflare.com';
+  const ready = await read();
+  assert.equal(ready.proxyUrl, 'https://stm.acme.workers.dev');
+  assert.equal(ready.proxyPending, false);
+});
+
+test('without a Cloudflare account there is no fixed address to wait for', async (t) => {
+  const tunnel = fakeTunnel();
+  const manager = await createServer({ bootstrapPassword: 'correct horse battery staple', managerTunnel: tunnel, proxy: fakeProxy({}), cloudflare: { workersAccount: async () => null } });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  await tunnel.start('quick');
+  tunnel.publish('https://today.trycloudflare.com');
+
+  // Nothing is coming, so the tunnel's own address is the address, offered the
+  // moment it exists rather than behind a wait that would never end.
+  const state = await (await fetch(`${base}/api/v1/manager-tunnel`, { headers: { cookie: auth.cookie } })).json() as TunnelState;
+  assert.equal(state.proxyUrl, null);
+  assert.equal(state.proxyPending, false);
+  assert.equal(state.url, 'https://today.trycloudflare.com');
 });

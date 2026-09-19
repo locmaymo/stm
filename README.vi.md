@@ -371,6 +371,12 @@ Chỉ refresh token của Cloudflare được lưu, trong một file riêng mà 
 
 **Dùng khoá S3.** Nếu không muốn đăng nhập, mở **Nơi lưu bản sao lưu**, chọn **Key R2 hoặc S3** và nhập endpoint, bucket, cặp khoá lấy từ trang R2 trong bảng điều khiển Cloudflare, hoặc đặt trong `.env` (xem [`.env.example`](.env.example)). Mọi storage tương thích S3 đều dùng được theo cách này. Cả hai cách kết nối tới bucket đều nằm trong cùng một form đó; bấm lưu chính là chọn cách nào sẽ mang bản sao lưu đi.
 
+### Làm lại từ đầu
+
+**Cài đặt → Làm lại từ đầu** xoá sạch mọi thứ trình quản lý này giữ trên máy: chính SillyTavern, mọi hồ sơ cùng các đoạn chat và nhân vật trong đó, mọi bản sao lưu trên ổ đĩa này, kết nối R2, tunnel, mã PIN và mật khẩu trình quản lý. Nó hỏi hai lần - chờ một lúc nút mới bật lên, và phải gõ lại mật khẩu trình quản lý - vì một bảng điều khiển bỏ quên trên bàn không có nghĩa là có người muốn làm việc này.
+
+Những gì đã nằm trong bucket R2 của bạn vẫn còn nguyên; trên máy thì không còn gì cả. Sau đó trình quản lý trở lại đúng lúc bạn mới chạy nó lần đầu: bảng điều khiển tải lại về màn hình thiết lập và bắt đầu đặt mật khẩu lại từ đầu. cloudflared là thứ duy nhất được giữ lại, vì đó là chương trình tải về từ Cloudflare chứ không phải thứ bạn đặt vào đây.
+
 ## Cấu hình
 
 Mọi thứ đều đặt được trong panel. Các biến môi trường sau, đọc từ process hoặc từ file `.env` lúc khởi động, dành cho cài đặt tự động; giá trị đặt ở đây sẽ hiện trong panel và không sửa được ở đó.
