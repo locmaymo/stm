@@ -948,6 +948,69 @@ export interface AccessGatewayState {
 }
 
 /**
+ * What the manager itself is set to, kept in the bucket beside the data.
+ *
+ * The bucket has always held SillyTavern's data and nothing about the manager
+ * running it, so somebody who lost a machine got their chats back and then set
+ * everything up again by hand: the password on the console, the passcode that
+ * opens SillyTavern from a phone, how often to back up, how much of the free
+ * allowance to use, which release to install. None of that is large and all of
+ * it is the difference between "my data is back" and "I am back".
+ *
+ * The two password fields are the scrypt hashes the manager stores, never a
+ * password. They are in the bucket for the same reason the chats are: it is
+ * the reader's own account, reached with the reader's own credential, and a
+ * hash that comes back is what lets the door they already know still open.
+ *
+ * Nothing here is ever applied on its own. A manager that finds this offers it
+ * and says which machine wrote it and when; changing the password on a console
+ * because a bucket said so is not something to do while nobody is watching.
+ */
+export interface ManagerSettingsRecord {
+  readonly schemaVersion: 1;
+  /** The machine these came from, as the bucket's claim names it. */
+  readonly label: string;
+  readonly writtenAt: string;
+  /** The console's own password, as a hash. Null when none is set yet. */
+  readonly adminPasswordHash: string | null;
+  /** The credential in front of SillyTavern, as a hash. */
+  readonly accessPasswordHash: string | null;
+  /** Whether that credential is a six-digit passcode rather than a password. */
+  readonly accessPasscode: boolean;
+  /** Whether the door in front of SillyTavern answers on the local network. */
+  readonly accessLanEnabled: boolean;
+  readonly autoStartSillyTavern: boolean;
+  readonly sillyTavernPort: number;
+  /** How often a ZIP is taken on the machine; 0 is off. */
+  readonly localIntervalMinutes: number;
+  readonly r2: {
+    readonly hotIntervalMinutes: number;
+    readonly coldIntervalHours: number;
+    readonly reconcileIntervalHours: number;
+    readonly keepRecent: number;
+    readonly keepDaily: number;
+    readonly keepWeekly: number;
+    readonly maxStorageBytes: number;
+    readonly maxWriteOperations: number;
+    readonly maxReadOperations: number;
+  };
+  /** Which SillyTavern the machine was told to run, so a new one matches it. */
+  readonly versionSelector: string | null;
+}
+
+/** What the panel is told about settings waiting in the bucket. */
+export interface ManagerSettingsOffer {
+  readonly available: boolean;
+  readonly label: string | null;
+  readonly writtenAt: string | null;
+  /** Whether it was this installation that wrote them. */
+  readonly mine: boolean;
+  /** Whether it carries a console password, which replacing is worth saying. */
+  readonly hasAdminPassword: boolean;
+  readonly hasAccessPassword: boolean;
+}
+
+/**
  * The four things the console watches continuously, in one answer.
  *
  * They used to be four requests on one timer, which is four times the traffic

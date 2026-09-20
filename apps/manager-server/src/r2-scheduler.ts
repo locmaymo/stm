@@ -43,6 +43,14 @@ export interface BackupSchedulerOptions {
   readonly logger?: LogSink;
   readonly now?: () => Date;
   readonly tickIntervalMs?: number;
+  /**
+   * Keep the manager's own settings in the bucket too.
+   *
+   * Passed in rather than built here, because composing them needs the state
+   * store, the runtime and the backup schedule, and this scheduler knows about
+   * backups. It does nothing when the settings have not moved.
+   */
+  readonly saveSettings?: () => Promise<unknown>;
 }
 
 /** Small, bounded scheduler. It only runs after the manager is ready and never blocks requests. */
@@ -67,6 +75,7 @@ export class BackupScheduler {
   private lastSkip: string | null = null;
   /** When the frequent tier last went up, so its clock survives a tick that did nothing. */
   private lastHotUploadAt: number | null = null;
+  private readonly saveSettings: () => Promise<unknown>;
 
   public constructor(options: BackupSchedulerOptions) {
     this.backups = options.backups;
@@ -75,6 +84,7 @@ export class BackupScheduler {
     this.logger = options.logger ?? ((line) => console.log(logLineText(line)));
     this.now = options.now ?? (() => new Date());
     this.tickIntervalMs = options.tickIntervalMs ?? 60_000;
+    this.saveSettings = options.saveSettings ?? (async () => undefined);
   }
 
   public start(): void {
@@ -108,6 +118,10 @@ export class BackupScheduler {
       // used to, because this interval was read out of the R2 settings.
       const config = await this.r2.getConfig();
       if (!config.enabled || !config.configured) return;
+      // What the manager itself is set to, which is small, changes rarely, and
+      // is the difference between a new machine getting its data back and
+      // getting everything back. It does nothing when nothing has moved.
+      await this.saveSettings();
       await this.runRemoteSync(profile, fingerprint, config);
       this.lastSkip = null;
     } catch (error: unknown) {

@@ -29,6 +29,7 @@ import { BackupScheduler, syncProfileToR2 } from './r2-scheduler.js';
 import { fetchSnapshotToLibrary, recoverProfileFromR2 } from './r2-restore.js';
 import { TransferMeter } from './progress.js';
 import { MetricsStore } from './metrics.js';
+import { applyManagerSettings, managerSettingsOffer, saveManagerSettings } from './manager-settings.js';
 import { instrumentationLoaderPath } from '../../../packages/instrumentation/src/index.js';
 import { ConfigError, ConfigStore } from '../../../packages/config/src/index.js';
 import { DEFAULT_TELEMETRY_ENDPOINT, DEFAULT_TELEMETRY_ENROLLMENT_ENDPOINT, TelemetryTransport } from '../../../packages/telemetry/src/index.js';
@@ -448,7 +449,11 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   } catch {
     // The default interval applies, and the R2 routes report the file's problem.
   }
-  const scheduler = new BackupScheduler({ backups, profiles, r2, logger: (line) => { jobs.append('backup', line); baseLogger(line); } });
+  const scheduler = new BackupScheduler({
+    backups, profiles, r2,
+    logger: (line) => { jobs.append('backup', line); baseLogger(line); },
+    saveSettings: () => saveManagerSettings({ store, backups, r2, runtime, logger: baseLogger }),
+  });
   scheduler.start();
   // Uploads interrupted by a closed tab leave gigabyte part files whose id no
   // longer exists anywhere. A day is long enough for a slow connection to
@@ -1288,6 +1293,41 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
   // notification that went away.
   if (pathname === '/api/v1/r2/check' && method === 'POST') {
     sendJson(response, 200, { check: await r2.inspect(), config: await r2.getConfig() });
+    return;
+  }
+  /*
+   * The manager's own settings, as some machine left them in the bucket.
+   *
+   * Offered rather than applied: what comes back carries the hash of a console
+   * password, and replacing this console's password is not something to do
+   * without being asked. See `manager-settings.ts`.
+   */
+  if (pathname === '/api/v1/r2/settings' && method === 'GET') {
+    sendJson(response, 200, { settings: await managerSettingsOffer({ store, backups, r2, runtime, logger }) });
+    return;
+  }
+  if (pathname === '/api/v1/r2/settings' && method === 'POST') {
+    const saved = await saveManagerSettings({ store, backups, r2, runtime, logger });
+    sendJson(response, 200, { saved });
+    return;
+  }
+  if (pathname === '/api/v1/r2/settings/restore' && method === 'POST') {
+    const body = await readJson(request);
+    const record = await r2.loadManagerSettings().catch(() => null);
+    if (!record) { sendError(response, 404, 'manager_settings_missing', 'This account holds no manager settings'); return; }
+    const result = await applyManagerSettings({ store, backups, r2, runtime, logger }, record, {
+      // Both default to on: somebody who asked for this asked for all of it,
+      // and the panel is what offers the parts separately.
+      passwords: !isRecord(body) || body.passwords !== false,
+      schedules: !isRecord(body) || body.schedules !== false,
+      ports: { manager: ports.manager, access: ports.access },
+    });
+    // The gateway is holding the credential and the binding this machine had
+    // a moment ago, neither of which is what it was just told to use.
+    const restored = await store.getPersisted();
+    gateway.setPassword(restored.accessPasswordHash, restored.accessPasscode);
+    const security = await gateway.setLan(restored.accessLanEnabled);
+    sendJson(response, 200, { ...result, security });
     return;
   }
   if (pathname === '/api/v1/r2/objects' && method === 'GET') {

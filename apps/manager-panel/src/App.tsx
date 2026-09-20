@@ -31,7 +31,7 @@ import { DEFAULT_SILLYTAVERN_PORT, portRefusal } from './ports.js';
 import { isThisMachine, readTunnelOfferDeclined, saveTunnelOfferDeclined, shouldOfferManagerTunnel } from './hosting.js';
 import { availableUpdate, readDismissedUpdate, saveDismissedUpdate } from './updates.js';
 import { apiFetch, onSessionExpired, resetSessionWatch } from './session.js';
-import type { AccessGatewayState, BackupManifest, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LogEntry, LogSourceFilter, MetricsBucket, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, BackupManifest, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LogEntry, LogSourceFilter, ManagerSettingsOffer, MetricsBucket, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, isCloudJob, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
 import { usePoll } from './use-poll.js';
@@ -2372,6 +2372,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   const [scheduleSaving, setScheduleSaving] = useState(false);
   const [r2Snapshots, setR2Snapshots] = useState<R2SnapshotSummary[]>([]);
   const [r2Busy, setR2Busy] = useState<string | null>(null);
+  const [settingsOffer, setSettingsOffer] = useState<ManagerSettingsOffer | null>(null);
   const [profileOpen, setProfileOpen] = useState(false);
   const [backupOpen, setBackupOpen] = useState(false);
   const [renameTarget, setRenameTarget] = useState<BackupManifest | null>(null);
@@ -2499,6 +2500,29 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       // The next poll tries again.
     }
   }, { intervalMs: 10_000 });
+
+  /*
+   * Whether this account holds settings from another machine.
+   *
+   * Asked once, when a connection first works, and not on a clock: reading it
+   * is a charged request to the bucket, and the answer only changes when
+   * somebody sets a different machine up.
+   */
+  const connectedToR2 = r2Config?.configured === true && r2Config.enabled;
+  useEffect(() => {
+    if (!connectedToR2) { setSettingsOffer(null); return undefined; }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await apiFetch('/api/v1/r2/settings', { credentials: 'same-origin' });
+        if (!response.ok || cancelled) return;
+        setSettingsOffer((await response.json() as { settings: ManagerSettingsOffer }).settings);
+      } catch {
+        // Nothing is offered, which is the same as there being nothing to offer.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [connectedToR2]);
 
   /*
    * A job already in flight, picked up by a page that did not start it.
@@ -3017,6 +3041,24 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       done(t('console.r2TakenOver'));
     } catch { failed(t('console.r2TakeOverFailed')); } finally { setR2Busy(null); }
   };
+  /**
+   * Put back what another machine was set to.
+   *
+   * The console reloads afterwards rather than trying to reconcile what is on
+   * screen with what has just changed underneath it: the password this session
+   * signed in with may not be the password any more, and the honest thing to
+   * do about that is to ask again.
+   */
+  const restoreManagerSettings = async () => {
+    setR2Busy(t('console.r2SettingsRestore'));
+    try {
+      const response = await apiFetch('/api/v1/r2/settings/restore', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ passwords: true, schedules: true }) });
+      const payload = await response.json() as { applied?: string[]; error?: { message?: string } };
+      if (!response.ok || !payload.applied) { failed(fail.body(payload, t('console.r2SettingsRestoreFailed'))); return; }
+      done(t('console.r2SettingsRestored'));
+      window.setTimeout(() => { window.location.reload(); }, 1500);
+    } catch { failed(t('console.r2SettingsRestoreFailed')); } finally { setR2Busy(null); }
+  };
   const removeLegacy = async () => {
     setR2Busy(t('console.r2LegacyRemove'));
     try {
@@ -3228,6 +3270,24 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
           <AlertDescription className="grid gap-2">
             <span>{t('console.r2InUseBody', { name: r2Config.owner.label, when: new Date(r2Config.owner.lastSeenAt).toLocaleString() })}</span>
             <span><Button size="sm" variant="outline" onClick={() => void takeOverR2()} disabled={r2Busy !== null}>{t('console.r2TakeOver')}</Button></span>
+          </AlertDescription>
+        </Alert> : null}
+        {/*
+          * Settings another machine left here.
+          *
+          * The data coming back is half of "my computer is gone"; this is the
+          * other half - the console's password, the passcode that opens
+          * SillyTavern from a phone, the schedules, the release being run.
+          * Offered rather than applied, and never offered for settings this
+          * installation wrote itself.
+          */}
+        {settingsOffer?.available && !settingsOffer.mine ? <Alert>
+          <Settings2 />
+          <AlertTitle>{t('console.r2SettingsTitle')}</AlertTitle>
+          <AlertDescription className="grid gap-2">
+            <span>{t('console.r2SettingsBody', { name: settingsOffer.label ?? '', when: settingsOffer.writtenAt ? new Date(settingsOffer.writtenAt).toLocaleString() : '' })}</span>
+            {settingsOffer.hasAdminPassword ? <span className="text-xs">{t('console.r2SettingsPasswordWarning')}</span> : null}
+            <span><Button size="sm" variant="outline" onClick={() => void restoreManagerSettings()} disabled={r2Busy !== null}>{t('console.r2SettingsRestore')}</Button></span>
           </AlertDescription>
         </Alert> : null}
         {r2Config?.lastRecovery ? <Alert>

@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { hostname } from 'node:os';
 import { mkdir, open, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { formatBytes, logEvent, logLineText, type LogSink, type Profile, type R2CheckResult, type R2CloudflareUsage, type R2Config, type R2ConnectionMode, type R2UsageResponse, type R2UsageWarning, type R2EnvironmentField, type R2Object, type R2SnapshotSummary, type R2Usage, type TransferProgress } from '../../contracts/src/index.js';
+import { formatBytes, logEvent, logLineText, type LogSink, type ManagerSettingsRecord, type Profile, type R2CheckResult, type R2CloudflareUsage, type R2Config, type R2ConnectionMode, type R2UsageResponse, type R2UsageWarning, type R2EnvironmentField, type R2Object, type R2SnapshotSummary, type R2Usage, type TransferProgress } from '../../contracts/src/index.js';
 import { parseS3Endpoint, R2_FREE_TIER, readR2Usage } from '../../cloudflare/src/index.js';
 import { ioConcurrency, runPooled } from '../../platform/src/index.js';
 import type { PlatformPaths } from '../../platform/src/index.js';
@@ -12,6 +12,7 @@ import { S3ObjectStore, type R2Credentials } from './s3.js';
 import { R2Error, type Billing, type ObjectRecord, type ObjectStore } from './store.js';
 import { claimIsStale, readClaim, writeClaim, CLAIM_OBJECT, CLAIM_REFRESH_MS, type BucketClaim } from './owner.js';
 import { addOperations, monthKey, readUsage, writeUsage, USAGE_FLUSH_MS, USAGE_OBJECT } from './usage-record.js';
+import { readManagerSettings, settingsUnchanged, writeManagerSettings, MANAGER_SETTINGS_MIN_INTERVAL_MS, MANAGER_SETTINGS_OBJECT } from './manager-settings.js';
 import {
   blobKey,
   decodeBlob,
@@ -47,6 +48,7 @@ const BLOB_PREFIX = `${OBJECT_PREFIX}blobs/`;
 const SNAPSHOT_PREFIX = `${OBJECT_PREFIX}snapshots/`;
 const CLAIM_KEY = `${OBJECT_PREFIX}${CLAIM_OBJECT}`;
 const USAGE_KEY = `${OBJECT_PREFIX}${USAGE_OBJECT}`;
+const MANAGER_SETTINGS_KEY = `${OBJECT_PREFIX}${MANAGER_SETTINGS_OBJECT}`;
 /** How long Cloudflare's usage figures are reused before asking again. */
 const CLOUD_USAGE_TTL_MS = 15 * 60 * 1000;
 /** How old those figures may be and still count towards the ceilings before a backup. */
@@ -272,6 +274,9 @@ export class R2Manager {
   private chargesWrittenAt = 0;
   /** Held while the bucket's own count is being updated, which is itself charged. */
   private usageFlushing = false;
+  /** The manager settings last put in the bucket, so unchanged ones cost nothing. */
+  private settingsSent: ManagerSettingsRecord | null = null;
+  private settingsSentAt = 0;
 
   public constructor(options: R2ManagerOptions) {
     this.paths = options.paths;
@@ -712,7 +717,7 @@ export class R2Manager {
       const config = await this.requireUsable();
       const client = this.client(config);
       const objects = await this.listAll(config, OBJECT_PREFIX, client);
-      const legacy = objects.filter((object) => !object.key.startsWith(BLOB_PREFIX) && !object.key.startsWith(SNAPSHOT_PREFIX) && object.key !== CLAIM_KEY && object.key !== USAGE_KEY);
+      const legacy = objects.filter((object) => !object.key.startsWith(BLOB_PREFIX) && !object.key.startsWith(SNAPSHOT_PREFIX) && object.key !== CLAIM_KEY && object.key !== USAGE_KEY && object.key !== MANAGER_SETTINGS_KEY);
       let bytes = 0;
       for (const object of legacy) {
         await client.deleteObject(object.key);
@@ -1144,6 +1149,63 @@ export class R2Manager {
     }
   }
 
+  /**
+   * Keep the manager's own settings in the bucket, if they have moved.
+   *
+   * Called on the scheduler's clock with whatever the manager is currently set
+   * to. Almost every call does nothing: the record is compared with the last
+   * one sent, and these are things a person changes by hand. See
+   * `manager-settings.ts` for what is in it and why.
+   *
+   * Never throws. A bucket that cannot be reached means the settings are not
+   * backed up this time, which is not a reason to fail whatever asked.
+   */
+  public async saveManagerSettings(record: Omit<ManagerSettingsRecord, 'label' | 'writtenAt'>): Promise<boolean> {
+    const config = await this.load();
+    if (!config.enabled) return false;
+    const now = this.now();
+    const full: ManagerSettingsRecord = { ...record, schemaVersion: 1, label: this.installationLabel, writtenAt: now.toISOString() };
+    if (settingsUnchanged(this.settingsSent, full) && now.getTime() - this.settingsSentAt < MANAGER_SETTINGS_MIN_INTERVAL_MS) return false;
+    try {
+      await this.requireUsable();
+      const client = this.client(config);
+      // Read first: a record that already says this is one nothing has to be
+      // paid for. This is what stops a manager which restarts often from
+      // writing the same settings on every start.
+      const stored = await readManagerSettings(client, MANAGER_SETTINGS_KEY);
+      if (settingsUnchanged(stored, full)) {
+        this.settingsSent = stored;
+        this.settingsSentAt = now.getTime();
+        await this.recordCharges();
+        return false;
+      }
+      await writeManagerSettings(client, MANAGER_SETTINGS_KEY, full);
+      this.settingsSent = full;
+      this.settingsSentAt = now.getTime();
+      await this.recordCharges();
+      this.logger(logEvent('r2.settingsSaved', '[r2] the manager’s own settings are in the bucket, so a new machine can pick them up', {}));
+      return true;
+    } catch (error: unknown) {
+      this.logger(logEvent('r2.settingsSaveSkipped', `[r2] the manager’s own settings could not be saved to the bucket: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
+      return false;
+    }
+  }
+
+  /**
+   * The settings waiting in the bucket, if any machine has left some.
+   *
+   * Deliberately not part of any automatic path: what comes back is offered to
+   * whoever is looking at the panel, and applied only if they say so.
+   */
+  public async loadManagerSettings(): Promise<ManagerSettingsRecord | null> {
+    const config = await this.requireUsable();
+    try {
+      return await readManagerSettings(this.client(config), MANAGER_SETTINGS_KEY);
+    } finally {
+      await this.recordCharges().catch(() => undefined);
+    }
+  }
+
   /** Run one whole-store operation at a time, whatever else is asked for meanwhile. */
   private async exclusive<T>(operation: () => Promise<T>): Promise<T> {
     const run = this.busy.then(operation, operation);
@@ -1448,10 +1510,11 @@ function summarizeObjects(objects: readonly ObjectRecord[]): { blobs: Map<string
       continue;
     }
     if (object.key.startsWith(SNAPSHOT_PREFIX)) { snapshotKeys.push(object.key); continue; }
-    // Which installation holds the bucket, and what the bucket has been
-    // charged for. Neither is data, neither is an archive, and neither is
-    // something the legacy sweep may take away from the manager that wrote it.
-    if (object.key === CLAIM_KEY || object.key === USAGE_KEY) continue;
+    // Which installation holds the bucket, what the bucket has been charged
+    // for, and how the manager that wrote it is set up. None of them is data,
+    // none is an archive, and none is something the legacy sweep may take
+    // away from the manager that wrote it.
+    if (object.key === CLAIM_KEY || object.key === USAGE_KEY || object.key === MANAGER_SETTINGS_KEY) continue;
     // Whole-ZIP archives from the version before this one. They are not
     // read and not deleted behind the operator's back; the panel offers it.
     legacyObjectCount += 1;
