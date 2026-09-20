@@ -1,13 +1,15 @@
 import { createHmac, randomUUID } from 'node:crypto';
 import { appendFile, mkdir, open, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import type { PlatformKind, TelemetryBatch, TelemetryEnvelope, UsageEvent } from '../../contracts/src/index.js';
+import type { AppUsageDay, PlatformKind, TelemetryBatch, TelemetryEnvelope, UsageEvent } from '../../contracts/src/index.js';
 import { isUsageEvent } from '../../instrumentation/src/index.js';
 import type { PlatformPaths } from '../../platform/src/index.js';
 
 const OUTBOX_NAME = 'telemetry-outbox.jsonl';
 const CURSOR_NAME = 'telemetry-cursor.json';
 const MAX_BATCH_EVENTS = 100;
+/** Three months of finished days, which is more than can ever be waiting. */
+const MAX_BATCH_DAYS = 90;
 const MAX_OUTBOX_LINES = 1_000;
 const RETENTION_MS = 90 * 24 * 60 * 60 * 1_000;
 /** The longest a receiver that keeps failing is left alone before it is tried again. */
@@ -19,6 +21,13 @@ export const DEFAULT_TELEMETRY_ENROLLMENT_ENDPOINT = 'https://stm-telemetry.locm
 export interface TelemetryTransportOptions {
   readonly paths: PlatformPaths;
   readonly metricsFile: string;
+  /**
+   * Finished days of manager usage, appended by the activity meter.
+   *
+   * A second tail rather than a second transport: the same outbox, the same
+   * signature, the same back-off. Absent where nothing measures them.
+   */
+  readonly usageFile?: string;
   readonly installId: string;
   readonly platform: PlatformKind;
   readonly appVersion?: string;
@@ -50,9 +59,13 @@ export class TelemetryTransport {
   private readonly pollIntervalMs: number;
   private readonly flushIntervalMs: number;
   private readonly signingKeyPath: string;
+  private readonly usageFile: string | null;
   private metricsOffset = 0;
+  private usageOffset = 0;
   private remainder = '';
+  private usageRemainder = '';
   private pending: UsageEvent[] = [];
+  private pendingUsage: AppUsageDay[] = [];
   private pollTimer: NodeJS.Timeout | null = null;
   private flushTimer: NodeJS.Timeout | null = null;
   private busy = false;
@@ -71,6 +84,7 @@ export class TelemetryTransport {
   public constructor(options: TelemetryTransportOptions) {
     this.paths = options.paths;
     this.metricsFile = options.metricsFile;
+    this.usageFile = options.usageFile ?? null;
     this.installId = options.installId;
     this.platform = options.platform;
     this.appVersion = options.appVersion ?? '0.1.0';
@@ -121,35 +135,32 @@ export class TelemetryTransport {
     if (this.busy || this.closed) return;
     this.busy = true;
     try {
-      let handle;
-      try { handle = await open(this.metricsFile, 'r'); } catch (error: unknown) {
-        if (!isNotFound(error)) throw error;
-        return;
+      const events = await this.tail(this.metricsFile, this.metricsOffset, this.remainder);
+      if (events) {
+        this.metricsOffset = events.offset;
+        this.remainder = events.remainder;
+        for (const line of events.lines) {
+          try {
+            const parsed: unknown = JSON.parse(line);
+            if (isUsageEvent(parsed)) this.pending.push(sanitizeEvent(parsed));
+          } catch {
+            // An interrupted JSONL append is ignored until a complete line exists.
+          }
+        }
       }
-      const statistics = await handle.stat();
-      if (this.metricsOffset > statistics.size) {
-        this.metricsOffset = 0;
-        this.remainder = '';
-      }
-      const startOffset = this.metricsOffset;
-      const buffer = Buffer.alloc(Math.min(4 * 1024 * 1024, Math.max(0, statistics.size - startOffset)));
-      const { bytesRead } = buffer.byteLength === 0 ? { bytesRead: 0 } : await handle.read(buffer, 0, buffer.byteLength, startOffset);
-      await handle.close();
-      const chunk = buffer.subarray(0, bytesRead).toString('utf8');
-      const input = `${this.remainder}${chunk}`;
-      const lines = input.split(/\r?\n/u);
-      this.remainder = lines.pop() ?? '';
-      // The file offset includes an incomplete trailing line; that line is
-      // retained separately and combined with only newly appended bytes next
-      // time, preventing duplicate JSONL records.
-      this.metricsOffset = startOffset + bytesRead;
-      for (const line of lines) {
-        if (!line || line.length > 16 * 1024) continue;
-        try {
-          const parsed: unknown = JSON.parse(line);
-          if (isUsageEvent(parsed)) this.pending.push(sanitizeEvent(parsed));
-        } catch {
-          // An interrupted JSONL append is ignored until a complete line exists.
+      if (this.usageFile) {
+        const usage = await this.tail(this.usageFile, this.usageOffset, this.usageRemainder);
+        if (usage) {
+          this.usageOffset = usage.offset;
+          this.usageRemainder = usage.remainder;
+          for (const line of usage.lines) {
+            try {
+              const day = parseUsageDay(JSON.parse(line));
+              if (day) this.pendingUsage.push(day);
+            } catch {
+              // As above: a half-written line waits for the rest of itself.
+            }
+          }
         }
       }
       // Persist the cursor only after the events have reached the durable
@@ -160,6 +171,35 @@ export class TelemetryTransport {
       this.logger(`[telemetry] metrics poll skipped: ${error instanceof Error ? error.message : 'unknown error'}`);
     } finally {
       this.busy = false;
+    }
+  }
+
+  /**
+   * Read whatever has been appended to one JSONL file since last time.
+   *
+   * The offset includes an incomplete trailing line; that line is retained
+   * separately and combined with only newly appended bytes next time, which is
+   * what stops a record from being counted twice. Null when the file is not
+   * there yet, which is the ordinary state of both of these on a first run.
+   */
+  private async tail(path: string, offset: number, remainder: string): Promise<{ lines: string[]; offset: number; remainder: string } | null> {
+    let handle;
+    try { handle = await open(path, 'r'); } catch (error: unknown) {
+      if (!isNotFound(error)) throw error;
+      return null;
+    }
+    try {
+      const statistics = await handle.stat();
+      // The file was replaced or truncated under us; start again from the top.
+      const startOffset = offset > statistics.size ? 0 : offset;
+      const carried = offset > statistics.size ? '' : remainder;
+      const buffer = Buffer.alloc(Math.min(4 * 1024 * 1024, Math.max(0, statistics.size - startOffset)));
+      const { bytesRead } = buffer.byteLength === 0 ? { bytesRead: 0 } : await handle.read(buffer, 0, buffer.byteLength, startOffset);
+      const lines = `${carried}${buffer.subarray(0, bytesRead).toString('utf8')}`.split(/\r?\n/u);
+      const tail = lines.pop() ?? '';
+      return { lines: lines.filter((line) => line && line.length <= 16 * 1024), offset: startOffset + bytesRead, remainder: tail };
+    } finally {
+      await handle.close();
     }
   }
 
@@ -180,21 +220,25 @@ export class TelemetryTransport {
   }
 
   private async enqueuePending(): Promise<void> {
-    if (this.pending.length === 0) return;
+    if (this.pending.length === 0 && this.pendingUsage.length === 0) return;
     const batches: TelemetryBatch[] = [];
+    const head = { schemaVersion: 1 as const, installId: this.installId, appVersion: this.appVersion, platform: this.platform };
     for (let index = 0; index < this.pending.length; index += MAX_BATCH_EVENTS) {
-      batches.push({
-        schemaVersion: 1,
-        installId: this.installId,
-        appVersion: this.appVersion,
-        platform: this.platform,
-        sentAt: new Date().toISOString(),
-        events: this.pending.slice(index, index + MAX_BATCH_EVENTS),
-      });
+      batches.push({ ...head, sentAt: new Date().toISOString(), events: this.pending.slice(index, index + MAX_BATCH_EVENTS) });
+    }
+    // Finished days ride on the first batch there is, or make one of their own
+    // on a manager nobody has pointed at a provider. `usageDays` is absent
+    // unless there are some, so an ordinary batch is exactly what it was.
+    if (this.pendingUsage.length > 0) {
+      const days = this.pendingUsage.slice(0, MAX_BATCH_DAYS);
+      const first = batches[0];
+      if (first) batches[0] = { ...first, usageDays: days };
+      else batches.push({ ...head, sentAt: new Date().toISOString(), events: [], usageDays: days });
     }
     await mkdir(dirname(this.outboxPath), { recursive: true });
     await appendFile(this.outboxPath, batches.map((batch) => `${JSON.stringify(batch)}\n`).join(''), { encoding: 'utf8', mode: 0o600 });
     this.pending = [];
+    this.pendingUsage = [];
     await pruneOutbox(this.outboxPath);
   }
 
@@ -312,10 +356,40 @@ function sanitizeEvent(event: UsageEvent): UsageEvent {
 }
 
 function parseBatch(value: unknown): TelemetryBatch {
-  if (!isRecord(value) || value.schemaVersion !== 1 || typeof value.installId !== 'string' || typeof value.appVersion !== 'string' || typeof value.platform !== 'string' || typeof value.sentAt !== 'string' || !Array.isArray(value.events) || value.events.length === 0) throw new Error('invalid telemetry batch');
+  if (!isRecord(value) || value.schemaVersion !== 1 || typeof value.installId !== 'string' || typeof value.appVersion !== 'string' || typeof value.platform !== 'string' || typeof value.sentAt !== 'string' || !Array.isArray(value.events)) throw new Error('invalid telemetry batch');
   const events = value.events.filter(isUsageEvent).map(sanitizeEvent);
   if (events.length !== value.events.length) throw new Error('invalid telemetry event');
-  return { schemaVersion: 1, installId: value.installId.slice(0, 128), appVersion: value.appVersion.slice(0, 64), platform: value.platform as PlatformKind, sentAt: value.sentAt, events };
+  const usageDays = Array.isArray(value.usageDays) ? value.usageDays.map(parseUsageDay).filter((day): day is AppUsageDay => day !== null) : [];
+  // A batch with neither is one nothing would read.
+  if (events.length === 0 && usageDays.length === 0) throw new Error('invalid telemetry batch');
+  return {
+    schemaVersion: 1,
+    installId: value.installId.slice(0, 128),
+    appVersion: value.appVersion.slice(0, 64),
+    platform: value.platform as PlatformKind,
+    sentAt: value.sentAt,
+    events,
+    ...(usageDays.length > 0 ? { usageDays } : {}),
+  };
+}
+
+/**
+ * Read one day of manager usage back, or null when it is not one.
+ *
+ * The same check the meter applies on its way out, applied again on the way
+ * in: the outbox is a file on disk that outlives the process that wrote it.
+ */
+function parseUsageDay(value: unknown): AppUsageDay | null {
+  if (!isRecord(value) || typeof value.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/u.test(value.date)) return null;
+  const whole = (input: unknown): number => (typeof input === 'number' && Number.isFinite(input) && input > 0 ? Math.min(Math.round(input), 24 * 60 * 60) : 0);
+  return {
+    schemaVersion: 1,
+    date: value.date,
+    managerSeconds: whole(value.managerSeconds),
+    sillyTavernSeconds: whole(value.sillyTavernSeconds),
+    consoleSeconds: whole(value.consoleSeconds),
+    starts: whole(value.starts),
+  };
 }
 
 async function pruneOutbox(path: string): Promise<void> {

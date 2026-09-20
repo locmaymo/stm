@@ -83,3 +83,35 @@ test('telemetry cursor resumes an incomplete JSONL append without duplicating it
   assert.equal(outbox.length, 1);
   await transport.close();
 });
+
+test('how long the manager was used travels with the events, and alone when there are none', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-telemetry-usage-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const metrics = join(paths.metrics, 'usage-events.jsonl');
+  const usage = join(paths.metrics, 'app-usage.jsonl');
+  await mkdir(paths.metrics, { recursive: true });
+  await appendFile(usage, `${JSON.stringify({ schemaVersion: 1, date: '2026-09-19', managerSeconds: 3600, sillyTavernSeconds: 1800, consoleSeconds: 240, starts: 2 })}\n`, 'utf8');
+
+  // A manager nobody has pointed at a provider still has something to say:
+  // that it was installed, started, and left running.
+  const transport = new TelemetryTransport({ paths, metricsFile: metrics, usageFile: usage, installId: 'install-4', platform: 'linux', endpoint: '' });
+  await transport.start();
+  await transport.flushNow();
+  const first = (await readFile(transport.outboxPath, 'utf8')).trim().split(/\r?\n/u).filter(Boolean);
+  assert.equal(first.length, 1);
+  const alone = JSON.parse(first[0] ?? '{}') as { events: unknown[]; usageDays?: Array<{ date: string; consoleSeconds: number }> };
+  assert.deepEqual(alone.events, []);
+  assert.equal(alone.usageDays?.[0]?.date, '2026-09-19');
+  assert.equal(alone.usageDays?.[0]?.consoleSeconds, 240);
+
+  // A day already sent is not sent again, and a batch with only provider
+  // events carries no usage field at all.
+  await appendFile(metrics, `${JSON.stringify(event())}\n`, 'utf8');
+  await transport.pollNow();
+  await transport.flushNow();
+  const lines = (await readFile(transport.outboxPath, 'utf8')).trim().split(/\r?\n/u).filter(Boolean);
+  const latest = JSON.parse(lines.at(-1) ?? '{}') as { events: unknown[]; usageDays?: unknown };
+  assert.equal(latest.events.length, 1);
+  assert.equal('usageDays' in latest, false);
+  await transport.close();
+});

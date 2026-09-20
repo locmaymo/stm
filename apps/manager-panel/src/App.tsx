@@ -4479,6 +4479,14 @@ function MetricsPage({ t }: { t: Translate }) {
           />
           <StatTile icon={<Clock3 />} label={t('console.metricLatency')} value={metricDuration(snapshot.totals.averageLatencyMs)} />
         </div>
+        {/* How much the manager itself was used, which the counts above cannot
+            say: hours that produced no request to a provider are as much a
+            part of the picture as the requests are. */}
+        {snapshot.appUsage ? <div className="grid gap-3 sm:grid-cols-3">
+          <StatTile icon={<Clock3 />} label={t('console.usageManager')} value={usageDuration(t, snapshot.appUsage.totals.managerSeconds)} hint={t('console.usageStarts', { count: snapshot.appUsage.totals.starts.toLocaleString() })} />
+          <StatTile icon={<Play />} label={t('console.usageSillyTavern')} value={usageDuration(t, snapshot.appUsage.totals.sillyTavernSeconds)} />
+          <StatTile icon={<BrainCircuit />} label={t('console.usageConsole')} value={usageDuration(t, snapshot.appUsage.totals.consoleSeconds)} hint={t('console.usageConsoleHint')} />
+        </div> : null}
         <TrendChart t={t} daily={snapshot.daily} to={snapshot.range.to} days={days} />
         <div className="grid min-w-0 gap-4">
           <Card>
@@ -4634,6 +4642,20 @@ function TrendChart({ t, daily, to, days }: { t: Translate; daily: readonly Metr
 function metricCompact(value: number): string { return new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(value); }
 function metricDuration(value: number): string { return value >= 1000 ? `${(value / 1000).toFixed(1)} s` : `${Math.round(value)} ms`; }
 function formatMetricRate(value: number | null): string { return value === null ? '—' : `${(value * 100).toFixed(1)}%`; }
+
+/**
+ * A span of use, in the largest unit that still says something.
+ *
+ * Days for a manager that has been left running, hours for one that gets
+ * opened, minutes for one that was tried once. Seconds only under a minute,
+ * where anything larger would round the whole reading away to zero.
+ */
+function usageDuration(t: Translate, seconds: number): string {
+  if (seconds >= 48 * 60 * 60) return t('console.usageDays', { value: (seconds / 86_400).toFixed(1) });
+  if (seconds >= 60 * 60) return t('console.usageHours', { value: (seconds / 3_600).toFixed(1) });
+  if (seconds >= 60) return t('console.usageMinutes', { value: String(Math.round(seconds / 60)) });
+  return t('console.usageSeconds', { value: String(Math.round(seconds)) });
+}
 
 /**
  * The two passwords' page, and SillyTavern's own settings.

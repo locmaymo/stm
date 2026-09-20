@@ -29,6 +29,7 @@ import { BackupScheduler, syncProfileToR2 } from './r2-scheduler.js';
 import { fetchSnapshotToLibrary, recoverProfileFromR2 } from './r2-restore.js';
 import { TransferMeter } from './progress.js';
 import { MetricsStore } from './metrics.js';
+import { ActivityMeter } from './activity.js';
 import { applyManagerSettings, managerSettingsOffer, saveManagerSettings } from './manager-settings.js';
 import { instrumentationLoaderPath } from '../../../packages/instrumentation/src/index.js';
 import { ConfigError, ConfigStore } from '../../../packages/config/src/index.js';
@@ -569,9 +570,17 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     || process.execArgv.includes('--test');
   const telemetryEndpoint = env.STM_TELEMETRY_ENDPOINT ?? (testRuntime ? undefined : DEFAULT_TELEMETRY_ENDPOINT);
   const telemetryEnrollmentEndpoint = env.STM_TELEMETRY_ENROLLMENT_ENDPOINT ?? (testRuntime ? undefined : DEFAULT_TELEMETRY_ENROLLMENT_ENDPOINT);
+  /*
+   * How much the manager itself is used, which none of the counts above can
+   * say: a manager installed once and never opened looks exactly like one that
+   * was never installed. See `activity.ts`.
+   */
+  const activity = new ActivityMeter({ paths, sillyTavernRunning: () => supervisor.getState().status === 'running' });
+  await activity.start();
   const telemetry = options.telemetry ?? new TelemetryTransport({
     paths,
     metricsFile: metrics.filePath,
+    usageFile: activity.logPath,
     installId: persisted.installId,
     appVersion: persisted.managerVersion,
     platform: paths.platform,
@@ -641,6 +650,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       r2,
       cloudflare,
       metrics,
+      activity,
       config,
       system,
       proxy,
@@ -770,7 +780,9 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     metrics,
     config,
     telemetry,
-    close: async () => { await telemetry.close(); await scheduler.close(); await tunnel.close(); await managerTunnel.close(); await gateway.close(); await supervisor.close(); await backups.settle(); await profiles.settle(); await closeServer(server); },
+    // The meter closes first, so the part of today that has just been spent is
+    // written down before the transport looks for finished days.
+    close: async () => { await activity.close(); await telemetry.close(); await scheduler.close(); await tunnel.close(); await managerTunnel.close(); await gateway.close(); await supervisor.close(); await backups.settle(); await profiles.settle(); await closeServer(server); },
   };
 }
 
@@ -798,6 +810,8 @@ async function handleRequest(options: {
   readonly r2: R2Manager;
   readonly cloudflare: CloudflareConnection | null;
   readonly metrics: MetricsStore;
+  /** How much the manager itself is used; see `activity.ts`. */
+  readonly activity: ActivityMeter;
   readonly config: ConfigStore;
   readonly system: SystemStore;
   readonly proxy: ProxyWorkerManager | null;
@@ -814,7 +828,7 @@ async function handleRequest(options: {
   readonly autoInstall: boolean;
   readonly onShutdownRequest: (() => void) | undefined;
 }): Promise<void> {
-  const { request, response, store, sessions, rateLimiter, startedAt, publicOrigins, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, config, system, proxy, publishProxies, shutdownToken, autoInstall, onShutdownRequest } = options;
+  const { request, response, store, sessions, rateLimiter, startedAt, publicOrigins, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, proxy, publishProxies, shutdownToken, autoInstall, onShutdownRequest } = options;
   // Whether the browser's side of this connection is HTTPS, which is not the
   // same question as whether ours is: a hosted console is reached over HTTPS
   // that a proxy terminates before us, and only the proxy's own header says so.
@@ -973,7 +987,7 @@ async function handleRequest(options: {
     if (method !== 'GET' && !requireCsrf(context, session.csrfToken)) {
       return;
     }
-    await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, config, system, proxy, publishProxies, logger);
+    await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, proxy, publishProxies, logger);
     return;
   }
 
@@ -1059,7 +1073,7 @@ async function handleReset(context: RequestContext, deps: ResetDeps): Promise<vo
   });
 }
 
-async function handleRuntimeRequest(context: RequestContext, store: StateStore, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, managerTunnel: TunnelManager, gateway: AccessGateway, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, cloudflare: CloudflareConnection | null, metrics: MetricsStore, config: ConfigStore, system: SystemStore, proxy: ProxyWorkerManager | null, publishProxies: () => void, logger: LogSink): Promise<void> {
+async function handleRuntimeRequest(context: RequestContext, store: StateStore, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, managerTunnel: TunnelManager, gateway: AccessGateway, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, cloudflare: CloudflareConnection | null, metrics: MetricsStore, activity: ActivityMeter, config: ConfigStore, system: SystemStore, proxy: ProxyWorkerManager | null, publishProxies: () => void, logger: LogSink): Promise<void> {
   const { pathname, ports, request, response, searchParams } = context;
   const method = request.method ?? 'GET';
   if (pathname === '/api/v1/auth/password' && method === 'POST') {
@@ -1455,7 +1469,10 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       sendError(response, 400, 'invalid_metrics_range', 'Metrics range must be between 1 and 90 days');
       return;
     }
-    sendJson(response, 200, await metrics.snapshot(new Date(), requestedDays));
+    // How much the manager was used rides along with how much was asked of
+    // the providers, because the two are read together: hours that produced
+    // no requests are as much a part of the picture as requests are.
+    sendJson(response, 200, { ...(await metrics.snapshot(new Date(), requestedDays)), appUsage: await activity.summary(requestedDays) });
     return;
   }
   if (pathname === '/api/v1/versions' && method === 'GET') {
@@ -1827,6 +1844,10 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
    * against an older panel, or a script somebody wrote, still has them.
    */
   if (pathname === '/api/v1/status' && method === 'GET') {
+    // The one request the console makes on a clock, and so the one that says
+    // somebody is in front of it. It stops while the page is hidden, which is
+    // what makes this a measure of being read rather than of being open.
+    activity.seen();
     const status: ConsoleStatus = {
       process: supervisor.getState(),
       tunnel: await withProxyUrl(tunnel.getState(), proxy, cloudflare, 'sillyTavern'),

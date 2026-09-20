@@ -1110,6 +1110,45 @@ export interface MetricsSnapshot {
   readonly daily: readonly MetricsBucket[];
   readonly providers: readonly MetricsBucket[];
   readonly models: readonly MetricsBucket[];
+  /** How much the manager itself was used, which the counts above cannot say. */
+  readonly appUsage?: AppUsageSummary;
+}
+
+/**
+ * How long the manager was actually used on one day.
+ *
+ * Counting requests to an AI provider says how much somebody chatted; it says
+ * nothing about a manager that is installed and never opened, or one that is
+ * left running for a week while SillyTavern is off. Three numbers separate
+ * those: how long the manager ran, how long it kept SillyTavern up, and how
+ * long somebody actually had the console in front of them.
+ *
+ * The third is measured from requests the console already makes rather than
+ * from anything it is asked to send - and because those stop while the page is
+ * hidden, it counts a console being looked at rather than a tab left open.
+ *
+ * There is nothing here about what was done, only for how long, and a day is
+ * the finest grain: the point is to know whether the thing gets used, not when
+ * somebody is at their desk.
+ */
+export interface AppUsageDay {
+  readonly schemaVersion: 1;
+  /** The calendar day in UTC, `YYYY-MM-DD`. */
+  readonly date: string;
+  /** How long the manager process was running. */
+  readonly managerSeconds: number;
+  /** How long SillyTavern was up under it. */
+  readonly sillyTavernSeconds: number;
+  /** How long somebody had the console open and in front of them. */
+  readonly consoleSeconds: number;
+  /** How many times the manager was started that day. */
+  readonly starts: number;
+}
+
+/** What the panel shows about how much the manager itself is used. */
+export interface AppUsageSummary {
+  readonly days: readonly AppUsageDay[];
+  readonly totals: Omit<AppUsageDay, 'schemaVersion' | 'date'>;
 }
 
 /** A privacy-filtered batch queued for the future telemetry endpoint. */
@@ -1120,6 +1159,13 @@ export interface TelemetryBatch {
   readonly platform: PlatformKind;
   readonly sentAt: string;
   readonly events: readonly UsageEvent[];
+  /**
+   * Finished days of manager usage, when there are any.
+   *
+   * Additive: absent unless a day has closed since the last batch, so a batch
+   * of provider events is exactly what it has always been.
+   */
+  readonly usageDays?: readonly AppUsageDay[];
 }
 
 /** Transport envelope signed by the installation-specific telemetry key. */
