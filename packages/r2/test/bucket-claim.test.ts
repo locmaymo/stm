@@ -66,6 +66,44 @@ test('one machine backs up to an account, and the second is told whose it is', a
   assert.equal(turned.failure?.code, 'r2_in_use');
 });
 
+/*
+ * The two documents this manager keeps beside the recovery points go through
+ * the Worker like everything else, and the Worker refuses any key outside the
+ * manager's own prefix. Every other test of them talks to an S3 fake, which
+ * would not notice that rule - so both are written and read back here, through
+ * the deployed Worker source, on a signed-in account.
+ */
+test('what the bucket remembers about the account goes through the Worker too', async () => {
+  const clock = { now: Date.parse('2026-09-19T09:00:00.000Z') };
+  const { cloudflare, first } = await twoMachines(clock);
+
+  await first.r2.saveManagerSettings({
+    schemaVersion: 1,
+    adminPasswordHash: 'scrypt$16384$8$1$salt$key',
+    accessPasswordHash: null,
+    accessPasscode: false,
+    accessLanEnabled: true,
+    autoStartSillyTavern: true,
+    sillyTavernPort: 8002,
+    localIntervalMinutes: 60,
+    r2: { hotIntervalMinutes: 5, coldIntervalHours: 6, reconcileIntervalHours: 24, keepRecent: 24, keepDaily: 30, keepWeekly: 0, maxStorageBytes: 8_000_000_000, maxWriteOperations: 800_000, maxReadOperations: 8_000_000 },
+    versionSelector: 'latest',
+  });
+  const settings = await first.r2.loadManagerSettings();
+  assert.equal(settings?.label, 'laptop');
+  assert.equal(settings?.accessLanEnabled, true);
+
+  // Checking the bucket settles up the count of charged operations, which is
+  // the other document; both keys are under the prefix the Worker allows.
+  const checked = await first.r2.inspect();
+  assert.equal(checked.ok, true, checked.failure?.message ?? '');
+  assert.equal(checked.usage?.sharedRecord, true);
+
+  const keys = [...cloudflare.state.buckets.values()].flatMap((bucket) => [...bucket.objects.keys()]);
+  assert.ok(keys.includes('sillytavern-manager/manager.json'), keys.join(', '));
+  assert.ok(keys.includes('sillytavern-manager/usage.json'), keys.join(', '));
+});
+
 test('a claim nobody has refreshed for days is taken without asking', async () => {
   const clock = { now: Date.parse('2026-09-19T09:00:00.000Z') };
   const { first, second } = await twoMachines(clock);
