@@ -9,7 +9,7 @@ import { preferredNetworkHost, startManagerServer, type ManagerServer } from '..
 import type { AccessGatewayState, ConsoleStatus, Installation, ProcessState, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import type { TunnelManager } from '../../../packages/tunnel/src/index.js';
 import type { ProxyWorkerManager } from '../../../packages/cloudflare/src/index.js';
-import { decodeState } from '../../../packages/cloudflare/src/index.js';
+import { decodeState, encodeState } from '../../../packages/cloudflare/src/index.js';
 import type { CloudflareConnection } from '../../../packages/r2/src/index.js';
 import type { RuntimeManager } from '../../../packages/sillytavern-runtime/src/index.js';
 import type { ProcessSupervisor } from '../src/supervisor.js';
@@ -824,8 +824,8 @@ test('the console tunnel is separate from SillyTavern’s, and its address is tr
   const stranger = await fetch(`${base}/api/v1/health`, { headers: { origin: 'https://evil.example' } });
   assert.equal(stranger.status, 403);
 
-  // And it is where a Cloudflare sign-in is told to come back to.
-  const connect = await fetch(`${base}/api/v1/r2/cloudflare/connect`, { method: 'POST', headers });
+  // And a sign-in started through it comes back to it.
+  const connect = await fetch(`${base}/api/v1/r2/cloudflare/connect`, { method: 'POST', headers: { ...headers, origin: tunnelUrl } });
   assert.equal(connect.status, 200);
   const url = new URL((await connect.json() as { url: string }).url);
   assert.equal(decodeState(url.searchParams.get('state') ?? '')?.returnOrigin, tunnelUrl);
@@ -854,12 +854,86 @@ test('an address somebody wrote down outranks one the console opened for itself'
     assert.equal((await fetch(`${base}/api/v1/health`, { headers: { origin } })).status, 200, origin);
   }
 
-  // But a sign-in goes back to the one that was written down: a tunnel is the
-  // console guessing, and STM_PUBLIC_ORIGIN is somebody saying.
+  // A sign-in comes back to the address the browser that started it is on,
+  // whichever of them that is. The session is a cookie for one origin, so
+  // coming back to any other one arrives signed out - with the authorization
+  // code already spent.
+  for (const origin of [configured, tunnelUrl]) {
+    const connect = await fetch(`${base}/api/v1/r2/cloudflare/connect`, { method: 'POST', headers: { cookie: auth.cookie, 'x-csrf-token': auth.csrfToken, origin } });
+    assert.equal(connect.status, 200);
+    const url = new URL((await connect.json() as { url: string }).url);
+    assert.equal(decodeState(url.searchParams.get('state') ?? '')?.returnOrigin, origin, origin);
+  }
+
+  // The written-down address stands in for a loopback one, and for none at
+  // all. Something publishes this manager at an address of its own, and a
+  // proxy that rewrites the request on its way through is the reason a browser
+  // nowhere near this machine can still arrive claiming to be on it.
+  for (const headers of [{ origin: base }, {}]) {
+    const connect = await fetch(`${base}/api/v1/r2/cloudflare/connect`, { method: 'POST', headers: { cookie: auth.cookie, 'x-csrf-token': auth.csrfToken, ...headers } });
+    const url = new URL((await connect.json() as { url: string }).url);
+    assert.equal(decodeState(url.searchParams.get('state') ?? '')?.returnOrigin, configured);
+  }
+});
+
+test('opening the console to the internet does not break signing in from the machine itself', async (t) => {
+  const tunnelUrl = 'https://busy-lake-1234.trycloudflare.com';
+  const managerTunnel = fakeTunnel();
+  const manager = await createServer({ bootstrapPassword: 'correct horse battery staple', managerTunnel });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  await managerTunnel.start('quick');
+  managerTunnel.publish(tunnelUrl);
+
+  /*
+   * The reader is on this machine, with the tunnel open for their phone.
+   *
+   * The console used to prefer the tunnel's address over the one the browser
+   * was actually on, so the sign-in came back to a hostname this browser had
+   * no session for: "sign in to continue", on a page that could not be signed
+   * in to, with the authorization code already used up.
+   */
   const connect = await fetch(`${base}/api/v1/r2/cloudflare/connect`, { method: 'POST', headers: { cookie: auth.cookie, 'x-csrf-token': auth.csrfToken, origin: base } });
   assert.equal(connect.status, 200);
   const url = new URL((await connect.json() as { url: string }).url);
-  assert.equal(decodeState(url.searchParams.get('state') ?? '')?.returnOrigin, configured);
+  assert.equal(decodeState(url.searchParams.get('state') ?? '')?.returnOrigin, base);
+});
+
+test('a sign-in through the fixed address comes back to the fixed address', async (t) => {
+  const proxyUrl = 'https://stm.acme.workers.dev';
+  const managerTunnel = fakeTunnel();
+  const manager = await createServer({
+    bootstrapPassword: 'correct horse battery staple',
+    managerTunnel,
+    proxy: fakeProxy({ manager: { url: proxyUrl, origin: 'https://busy-lake-1234.trycloudflare.com' } }),
+    cloudflare: {
+      workersAccount: async () => ({ id: 'acct', name: 'Personal' }),
+      // Only the part this test reads: what address the sign-in is told to
+      // come back to, which the state carries.
+      beginConnect: (returnOrigin: string) => `https://dash.cloudflare.com/oauth2/auth?state=${encodeState(returnOrigin)}`,
+    },
+  });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  await managerTunnel.start('quick');
+  managerTunnel.publish('https://busy-lake-1234.trycloudflare.com');
+
+  /*
+   * The Worker in front of the tunnel is the address people are given, because
+   * it is the one that does not change when cloudflared restarts. A browser
+   * there sends it as `Origin`, while `Host` by the time the request arrives
+   * is the tunnel's random hostname - so the console has to believe the former
+   * or send the reader back to an address they never opened.
+   */
+  const connect = await fetch(`${base}/api/v1/r2/cloudflare/connect`, {
+    method: 'POST',
+    headers: { cookie: auth.cookie, 'x-csrf-token': auth.csrfToken, origin: proxyUrl, 'x-forwarded-host': 'stm.acme.workers.dev' },
+  });
+  assert.equal(connect.status, 200);
+  const url = new URL((await connect.json() as { url: string }).url);
+  assert.equal(decodeState(url.searchParams.get('state') ?? '')?.returnOrigin, proxyUrl);
 });
 
 test('a running backup can be stopped, and a finished one cannot', async (t) => {

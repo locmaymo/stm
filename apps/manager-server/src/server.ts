@@ -200,6 +200,8 @@ interface RequestContext {
   readonly originTrusted: boolean;
   /** Every address the panel is reached at from outside, best first. */
   readonly publicOrigins: readonly string[];
+  /** What a proxy in front of this manager publishes it at, if anything does. */
+  readonly proxiedOrigin: string | null;
   readonly ports: ServerPorts;
   readonly sessionToken: string | undefined;
 }
@@ -628,6 +630,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       startedAt,
       secureCookies,
       publicOrigins: publicOrigins(),
+      proxiedOrigin: environmentOrigin?.origin ?? null,
       ports: {
         // The port that was actually bound, which is not the one asked for when
         // the caller asked for an ephemeral one.
@@ -795,6 +798,15 @@ async function handleRequest(options: {
   readonly startedAt: number;
   readonly secureCookies: boolean;
   readonly publicOrigins: readonly string[];
+  /**
+   * The address a proxy in front of this manager publishes it at, if there is
+   * one: `STM_PUBLIC_ORIGIN`, or a Codespace's forwarded address.
+   *
+   * Its presence is the fact that matters, not its value: a manager reached
+   * through a proxy is one where the loopback address is not anywhere a
+   * browser is, whatever the headers say it is.
+   */
+  readonly proxiedOrigin: string | null;
   readonly ports: ServerPorts;
   readonly staticRoot: string;
   readonly platform: PlatformPaths['platform'];
@@ -828,7 +840,7 @@ async function handleRequest(options: {
   readonly autoInstall: boolean;
   readonly onShutdownRequest: (() => void) | undefined;
 }): Promise<void> {
-  const { request, response, store, sessions, rateLimiter, startedAt, publicOrigins, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, proxy, publishProxies, shutdownToken, autoInstall, onShutdownRequest } = options;
+  const { request, response, store, sessions, rateLimiter, startedAt, publicOrigins, proxiedOrigin, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, proxy, publishProxies, shutdownToken, autoInstall, onShutdownRequest } = options;
   // Whether the browser's side of this connection is HTTPS, which is not the
   // same question as whether ours is: a hosted console is reached over HTTPS
   // that a proxy terminates before us, and only the proxy's own header says so.
@@ -842,6 +854,7 @@ async function handleRequest(options: {
     searchParams: url.searchParams,
     originTrusted: isTrustedOrigin(request, platform, publicOrigins),
     publicOrigins,
+    proxiedOrigin,
     ports,
     sessionToken: parseSessionCookie(headerValue(request.headers.cookie), COOKIE_NAME),
   };
@@ -2177,13 +2190,8 @@ async function handleCloudflareRequest(context: RequestContext, cloudflare: Clou
     return;
   }
   if (pathname === '/api/v1/r2/cloudflare/connect' && method === 'POST') {
-    // The origin the panel is open on, so the relay can send the browser back
-    // to the same place - this machine, the LAN address or the tunnel. A
-    // port-forwarding proxy leaves the loopback address it connects to in both
-    // headers, so a known outside address is taken over what they say.
-    const origin = context.publicOrigins[0] ?? headerValue(request.headers.origin) ?? `http://${headerValue(request.headers.host) ?? 'localhost'}`;
-    let returnOrigin: string;
-    try { returnOrigin = new URL(origin).origin; } catch { sendError(response, 400, 'invalid_origin', 'The panel origin could not be read'); return; }
+    const returnOrigin = panelOrigin(context);
+    if (!returnOrigin) { sendError(response, 400, 'invalid_origin', 'The panel origin could not be read'); return; }
     sendJson(response, 200, { url: cloudflare.beginConnect(returnOrigin) });
     return;
   }
@@ -2519,6 +2527,48 @@ function checkRateLimit(context: RequestContext, rateLimiter: RateLimiter): bool
     return false;
   }
   return true;
+}
+
+/**
+ * Where the browser that made this request actually is.
+ *
+ * This is the address a Cloudflare sign-in has to come back to, and getting it
+ * wrong is not a cosmetic fault: the session lives in a cookie for one origin,
+ * so a sign-in started on `http://localhost:7860` and returned to the tunnel's
+ * address arrives with no session at all and is refused with `login_required`
+ * - having spent the authorization code on the way.
+ *
+ * That is exactly what used to happen. The console preferred the first public
+ * origin it knew over what the browser said, so opening the tunnel broke the
+ * sign-in for everybody still using the console on the machine itself.
+ *
+ * The browser's own `Origin` is therefore the answer whenever the console
+ * would accept a request from it - which covers this machine, the LAN address,
+ * the tunnel and the Worker in front of it.
+ *
+ * With one exception, which is what the old rule was reaching for. A port
+ * forwarder such as a Codespace rewrites the request on its way through, and
+ * what arrives says loopback for both `Host` and `Origin` although the browser
+ * is nowhere near this machine. So a loopback origin is believed only when no
+ * proxy publishes this manager: where one does, the loopback address is not
+ * anywhere a browser can come back to, and the published address is.
+ */
+function panelOrigin(context: RequestContext): string | null {
+  const stated = headerValue(context.request.headers.origin);
+  if (stated && stated !== 'null' && context.originTrusted) {
+    try {
+      const origin = new URL(stated);
+      if (!context.proxiedOrigin || !isLoopbackHost(origin.hostname)) return origin.origin;
+    } catch { /* fall through to what is known */ }
+  }
+  const fallback = context.proxiedOrigin ?? context.publicOrigins[0] ?? `http://${headerValue(context.request.headers.host) ?? 'localhost'}`;
+  try { return new URL(fallback).origin; } catch { return null; }
+}
+
+/** Whether a hostname is this machine talking to itself. */
+function isLoopbackHost(hostname: string): boolean {
+  const host = hostname.replace(/^\[|\]$/gu, '');
+  return host === 'localhost' || host === '::1' || host === '0.0.0.0' || /^127\./u.test(host);
 }
 
 function isTrustedOrigin(request: IncomingMessage, platform: PlatformPaths['platform'], publicOrigins: readonly string[]): boolean {
