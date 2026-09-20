@@ -159,6 +159,16 @@ type AuthMode = 'checking' | 'setup' | 'login' | 'ready';
  */
 function AuthGate() {
   const [mode, setMode] = useState<AuthMode>('checking');
+  /*
+   * Whether the session that is open was opened by setting the password for
+   * the first time, rather than by signing in.
+   *
+   * It is the one moment where offering a Cloudflare account is not an
+   * interruption: nothing has been set up yet, there is nothing to lose, and
+   * connecting now is what makes the machine's data outlive the machine - and
+   * what makes a machine set up on this account before hand everything back.
+   */
+  const [firstRun, setFirstRun] = useState(false);
   const [csrfToken, setCsrfToken] = useState<string | null>(null);
   const [signedOut, setSignedOut] = useState(false);
   const [preferences, setPreferences] = useState(() => readPreferences(browserStorage(), browserEnvironment()));
@@ -214,11 +224,12 @@ function AuthGate() {
     setMode('login');
   };
 
-  const signedIn = (token: string) => {
+  const signedIn = (token: string, setUp = false) => {
     // Arm the watch again: the session that expired is not the session now held.
     resetSessionWatch();
     setSignedOut(false);
     setCsrfToken(token);
+    setFirstRun(setUp);
     setMode('ready');
   };
 
@@ -229,7 +240,11 @@ function AuthGate() {
   const body = mode === 'checking'
     ? waiting
     : mode === 'ready'
-      ? csrfToken ? <ConsoleApp csrfToken={csrfToken} preferences={preferences} onPreferencesChange={changePreferences} onSignOut={signOut} /> : waiting
+      ? csrfToken
+        ? firstRun
+          ? <FirstRun t={t} csrfToken={csrfToken} preferences={preferences} onPreferencesChange={changePreferences} onDone={() => setFirstRun(false)} />
+          : <ConsoleApp csrfToken={csrfToken} preferences={preferences} onPreferencesChange={changePreferences} onSignOut={signOut} />
+        : waiting
       : <AuthScreen
         t={t}
         mode={mode}
@@ -251,7 +266,7 @@ function AuthGate() {
   return <Toaster closeLabel={t('common.close')}>{body}</Toaster>;
 }
 
-function AuthScreen({ t, mode, signedOut, preferences, onPreferencesChange, onSignedIn }: { t: Translate; mode: 'setup' | 'login'; signedOut: boolean; preferences: Preferences; onPreferencesChange: (value: Partial<Preferences>) => void; onSignedIn: (csrfToken: string) => void }) {
+function AuthScreen({ t, mode, signedOut, preferences, onPreferencesChange, onSignedIn }: { t: Translate; mode: 'setup' | 'login'; signedOut: boolean; preferences: Preferences; onPreferencesChange: (value: Partial<Preferences>) => void; onSignedIn: (csrfToken: string, setUp: boolean) => void }) {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [accepted, setAccepted] = useState(false);
@@ -283,7 +298,7 @@ function AuthScreen({ t, mode, signedOut, preferences, onPreferencesChange, onSi
         setError(key ? t(key) : fail.body(payload, t('setup.authError')));
         return;
       }
-      onSignedIn(payload.session.csrfToken);
+      onSignedIn(payload.session.csrfToken, setup);
     } catch { setError(t('setup.connectionError')); } finally { setBusy(false); }
   };
 
@@ -373,6 +388,91 @@ function AuthScreen({ t, mode, signedOut, preferences, onPreferencesChange, onSi
         document={legalDocument}
         onDocumentChange={setLegalDocument}
       />
+    </AuthLayout>
+  );
+}
+
+/**
+ * The one step between setting a password and the console, on a first run.
+ *
+ * Backing up to a Cloudflare account has always been on the settings page,
+ * which is where somebody goes once they have a problem - by which time the
+ * chats worth keeping are on a machine with no copy of them anywhere else.
+ * Offered here it costs one decision, at the only moment when there is nothing
+ * to lose by saying yes and nothing to undo by saying no.
+ *
+ * It is also how a machine set up on an account that already has one hands
+ * everything back: signing in brings the recovery points and the settings the
+ * other machine left, which is what the Data page says as soon as this ends.
+ *
+ * Skipped without being shown where signing in to Cloudflare is not available
+ * at all - no OAuth client configured, or a build set up for S3 keys only -
+ * because an offer that cannot be accepted is a step that wastes a click.
+ */
+function FirstRun({ t, csrfToken, preferences, onPreferencesChange, onDone }: { t: Translate; csrfToken: string; preferences: Preferences; onPreferencesChange: (value: Partial<Preferences>) => void; onDone: () => void }) {
+  const [available, setAvailable] = useState<boolean | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const fail = failures(preferences.locale);
+
+  useEffect(() => {
+    let cancelled = false;
+    void apiFetch('/api/v1/r2', { credentials: 'same-origin' })
+      .then(async (response) => (response.ok ? (await response.json() as { config: R2Config }).config : null))
+      .then((config) => {
+        if (cancelled) return;
+        // Already connected - a manager whose settings came from `.env`, say.
+        // There is nothing to offer and nothing to ask.
+        if (!config?.cloudflare || config.configured) { onDone(); return; }
+        setAvailable(true);
+      })
+      .catch(() => { if (!cancelled) onDone(); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const connect = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await apiFetch('/api/v1/r2/cloudflare/connect', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      const payload = await response.json() as { url?: string; error?: { message?: string } };
+      if (!response.ok || !payload.url) { setError(fail.body(payload, t('console.cfConnectFailed'))); return; }
+      // Cloudflare answers back to the console's own address, which lands on
+      // the Data page with the connection made; see handleCloudflareCallback.
+      window.location.assign(payload.url);
+    } catch { setError(t('console.cfConnectFailed')); } finally { setBusy(false); }
+  };
+
+  if (available !== true) return <div className="auth-shell" role="status" aria-busy="true" />;
+  return (
+    <AuthLayout
+      title={t('setup.cloudTitle')}
+      subtitle={t('setup.cloudSubtitle')}
+      controls={<>
+        <LanguageControl t={t} preferences={preferences} onChange={onPreferencesChange} />
+        <Button variant="ghost" size="icon-sm" className="size-9" aria-label={preferences.theme === 'dark' ? t('console.useLight') : t('console.useDark')} onClick={() => onPreferencesChange({ theme: preferences.theme === 'dark' ? 'light' : 'dark' })}>
+          {preferences.theme === 'dark' ? <Sun /> : <Moon />}
+        </Button>
+      </>}
+      footer={<LegalCredit t={t} />}
+    >
+      <Card className="rounded-2xl">
+        <CardContent className="grid gap-5 p-6">
+          <p className="text-sm text-muted-foreground">{t('setup.cloudBody')}</p>
+          <ul className="grid gap-2 text-sm text-muted-foreground">
+            <li>{t('setup.cloudPointFree')}</li>
+            <li>{t('setup.cloudPointRestore')}</li>
+            <li>{t('setup.cloudPointLater')}</li>
+          </ul>
+          {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
+          <div className="grid gap-2">
+            <Button size="lg" className="w-full" disabled={busy} onClick={() => void connect()}>
+              <CloudflareMark />{busy ? t('common.loading') : t('setup.cloudConnect')}
+            </Button>
+            <Button variant="ghost" size="lg" className="w-full" disabled={busy} onClick={onDone}>{t('setup.cloudSkip')}</Button>
+          </div>
+        </CardContent>
+      </Card>
     </AuthLayout>
   );
 }
