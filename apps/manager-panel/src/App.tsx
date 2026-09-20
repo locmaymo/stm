@@ -24,14 +24,14 @@ import {
   Tabs, TabsContent, TabsList, TabsTrigger, type TableQuery, Toaster, Tooltip,
   TooltipContent, TooltipTrigger, useSidebar, useToast,
 } from '../../../packages/ui/src/index.js';
-import { failures, logCatalog, translator, type Fail, type Translate } from './i18n.js';
+import { failures, logCatalog, translator, type Fail, type MessageKey, type Translate } from './i18n.js';
 import { browserEnvironment, browserStorage, readPreferences, savePreferences, type LocaleCode, type Preferences } from './preferences.js';
 import { authErrorKey } from './auth-error.js';
 import { DEFAULT_SILLYTAVERN_PORT, portRefusal } from './ports.js';
 import { isThisMachine, readTunnelOfferDeclined, saveTunnelOfferDeclined, shouldOfferManagerTunnel } from './hosting.js';
 import { availableUpdate, readDismissedUpdate, saveDismissedUpdate } from './updates.js';
 import { apiFetch, onSessionExpired, resetSessionWatch } from './session.js';
-import type { AccessGatewayState, BackupManifest, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LogEntry, LogSourceFilter, ManagerSettingsOffer, MetricsBucket, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, BackupManifest, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LogEntry, LogSourceFilter, ManagerSettingsOffer, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, isCloudJob, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
 import { usePoll } from './use-poll.js';
@@ -169,6 +169,14 @@ function AuthGate() {
    * what makes a machine set up on this account before hand everything back.
    */
   const [firstRun, setFirstRun] = useState(false);
+  /**
+   * Whether this manager can be opened with a Cloudflare account, and whose it
+   * already is.
+   *
+   * Null until the first answer, and on a build with no OAuth client at all -
+   * both of which mean the screen shows the password field and nothing else.
+   */
+  const [cloudflareSignIn, setCloudflareSignIn] = useState<SetupStatus['cloudflareSignIn'] | null>(null);
   const [csrfToken, setCsrfToken] = useState<string | null>(null);
   const [signedOut, setSignedOut] = useState(false);
   const [preferences, setPreferences] = useState(() => readPreferences(browserStorage(), browserEnvironment()));
@@ -191,10 +199,33 @@ function AuthGate() {
     setMode('login');
   }), []);
 
+  /*
+   * Coming back from a Cloudflare sign-in.
+   *
+   * The session is already set by the time the browser gets here, so a success
+   * needs nothing but tidying the address. A refusal does need saying: the
+   * reader pressed a button, went to Cloudflare, came back, and would
+   * otherwise be looking at the same sign-in screen with no idea why.
+   *
+   * Only the sign-in outcomes are taken here. Connecting storage answers on
+   * the Data page, which is where that was started from.
+   */
+  const [signInError, setSignInError] = useState<string | null>(null);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const outcome = params.get('cloudflare');
+    if (outcome !== 'signed_in' && outcome !== 'error') return;
+    const code = params.get('cloudflare_error') ?? '';
+    if (outcome === 'error' && !authErrorKey(code)) return;
+    window.history.replaceState(null, '', `${window.location.pathname}${window.location.hash}`);
+    if (outcome === 'error') setSignInError(t(authErrorKey(code) as MessageKey));
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
-    void apiFetch('/api/v1/setup/status').then(async (response) => response.json() as Promise<{ setupRequired: boolean }>).then(async (status) => {
+    void apiFetch('/api/v1/setup/status').then(async (response) => response.json() as Promise<SetupStatus>).then(async (status) => {
       if (cancelled) return;
+      setCloudflareSignIn(status.cloudflareSignIn ?? null);
       if (status.setupRequired) { setMode('setup'); return; }
       // The session probe and the sign-in form are the calls where a refusal
       // is an ordinary answer rather than a session running out, so they go
@@ -250,6 +281,8 @@ function AuthGate() {
         mode={mode}
         signedOut={signedOut}
         preferences={preferences}
+        cloudflare={cloudflareSignIn}
+        refusal={signInError}
         onPreferencesChange={changePreferences}
         onSignedIn={signedIn}
       />;
@@ -266,8 +299,9 @@ function AuthGate() {
   return <Toaster closeLabel={t('common.close')}>{body}</Toaster>;
 }
 
-function AuthScreen({ t, mode, signedOut, preferences, onPreferencesChange, onSignedIn }: { t: Translate; mode: 'setup' | 'login'; signedOut: boolean; preferences: Preferences; onPreferencesChange: (value: Partial<Preferences>) => void; onSignedIn: (csrfToken: string, setUp: boolean) => void }) {
+function AuthScreen({ t, mode, signedOut, preferences, cloudflare, refusal, onPreferencesChange, onSignedIn }: { t: Translate; mode: 'setup' | 'login'; signedOut: boolean; preferences: Preferences; onPreferencesChange: (value: Partial<Preferences>) => void; cloudflare: SetupStatus['cloudflareSignIn'] | null; refusal: string | null; onSignedIn: (csrfToken: string, setUp: boolean) => void }) {
   const [password, setPassword] = useState('');
+  const [cloudflareBusy, setCloudflareBusy] = useState(false);
   const [confirmPassword, setConfirmPassword] = useState('');
   const [accepted, setAccepted] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -301,6 +335,28 @@ function AuthScreen({ t, mode, signedOut, preferences, onPreferencesChange, onSi
       onSignedIn(payload.session.csrfToken, setup);
     } catch { setError(t('setup.connectionError')); } finally { setBusy(false); }
   };
+
+  /**
+   * Open the console with a Cloudflare account instead of a password.
+   *
+   * Nothing is typed and nothing comes back here: Cloudflare sends the browser
+   * to the callback, which starts the session and reloads onto the console. On
+   * a machine that has just been wiped it also brings the settings, the
+   * passcode and the chats back on its own - which is the reason this exists.
+   */
+  const signInWithCloudflare = async () => {
+    setCloudflareBusy(true); setError(null);
+    try {
+      const response = await fetch('/api/v1/auth/cloudflare', { method: 'POST', credentials: 'same-origin' });
+      const payload = await response.json() as { url?: string; error?: { code?: string; message?: string } };
+      if (!response.ok || !payload.url) { setError(fail.body(payload, t('setup.cloudSignInFailed'))); return; }
+      window.location.assign(payload.url);
+    } catch { setError(t('setup.connectionError')); } finally { setCloudflareBusy(false); }
+  };
+  // Offered on a first run only once the terms have been ticked, because
+  // signing in this way is what sets the manager up: there is no second screen
+  // afterwards on which to ask.
+  const cloudflareReady = cloudflare?.available === true && (!setup || accepted);
 
   return (
     <AuthLayout
@@ -373,10 +429,33 @@ function AuthScreen({ t, mode, signedOut, preferences, onPreferencesChange, onSi
                 </button>
               </div>
             ) : null}
-            {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
-            <Button type="submit" size="lg" className="w-full" disabled={busy || !ready}>
+            {/* A refusal from this form, or one that came back through the
+                Cloudflare redirect - which the reader has no other way of
+                being told about. */}
+            {error ?? refusal ? <Alert variant="destructive"><AlertDescription>{error ?? refusal}</AlertDescription></Alert> : null}
+            <Button type="submit" size="lg" className="w-full" disabled={busy || cloudflareBusy || !ready}>
               {busy ? t('common.loading') : setup ? t('setup.createAdmin') : t('setup.signIn')}
             </Button>
+            {/* The second way in, where this build has one. On a machine that
+                is wiped between runs it is the only one that is any use: a
+                password set here is gone with everything else by tomorrow,
+                and a Cloudflare account is not. */}
+            {cloudflare?.available ? <>
+              <div className="auth-divider"><span>{t('setup.or')}</span></div>
+              <Button
+                type="button"
+                variant="outline"
+                size="lg"
+                className="w-full"
+                disabled={busy || cloudflareBusy || !cloudflareReady}
+                onClick={() => void signInWithCloudflare()}
+              >
+                <CloudflareMark />{cloudflareBusy ? t('common.loading') : t('setup.cloudSignIn')}
+              </Button>
+              <p className="text-center text-xs text-balance text-muted-foreground">
+                {cloudflare.owner ? t('setup.cloudSignInOwned', { name: cloudflare.owner }) : t('setup.cloudSignInHint')}
+              </p>
+            </> : null}
           </form>
         </CardContent>
       </Card>

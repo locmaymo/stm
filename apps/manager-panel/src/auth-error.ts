@@ -20,6 +20,13 @@ const AUTH_ERRORS: Readonly<Record<string, MessageKey>> = {
   already_configured: 'setup.alreadyConfigured',
   setup_required: 'setup.setupNeeded',
   rate_limited: 'setup.rateLimited',
+  // Signing in with a Cloudflare account, which comes back through a redirect
+  // rather than through the form, so its refusals arrive here as well.
+  cloudflare_not_owner: 'setup.cloudNotOwner',
+  cloudflare_account_required: 'setup.cloudAccountRequired',
+  cloudflare_not_available: 'setup.cloudUnavailable',
+  cloudflare_authorization_denied: 'setup.cloudDenied',
+  cloudflare_state_mismatch: 'setup.cloudExpired',
 };
 
 export function authErrorKey(code: unknown): MessageKey | null {

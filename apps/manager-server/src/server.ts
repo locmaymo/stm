@@ -26,11 +26,11 @@ import { BackupError, BackupStore } from '../../../packages/backup/src/index.js'
 import { CloudflareConnection, R2Error, R2Manager, type R2UpdateInput } from '../../../packages/r2/src/index.js';
 import { CloudflareApiError, CloudflareOAuthError, CloudflareRateLimitError, DEFAULT_SCOPES, PROXY_WORKER_TARGETS, ProxyWorkerManager, type ProxyWorkerTarget } from '../../../packages/cloudflare/src/index.js';
 import { BackupScheduler, syncProfileToR2 } from './r2-scheduler.js';
-import { fetchSnapshotToLibrary, recoverProfileFromR2 } from './r2-restore.js';
+import { fetchSnapshotToLibrary, isProfileEmpty, recoverProfileFromR2 } from './r2-restore.js';
 import { TransferMeter } from './progress.js';
 import { MetricsStore } from './metrics.js';
 import { ActivityMeter } from './activity.js';
-import { applyManagerSettings, managerSettingsOffer, saveManagerSettings } from './manager-settings.js';
+import { applyManagerSettings, managerSettingsOffer, restoreFromBucketIfBlank, saveManagerSettings } from './manager-settings.js';
 import { instrumentationLoaderPath } from '../../../packages/instrumentation/src/index.js';
 import { ConfigError, ConfigStore } from '../../../packages/config/src/index.js';
 import { DEFAULT_TELEMETRY_ENDPOINT, DEFAULT_TELEMETRY_ENROLLMENT_ENDPOINT, TelemetryTransport } from '../../../packages/telemetry/src/index.js';
@@ -861,7 +861,10 @@ async function handleRequest(options: {
   };
 
   if (pathname === CLOUDFLARE_CALLBACK_PATH && (request.method ?? 'GET') === 'GET') {
-    await handleCloudflareCallback(context, sessions, cloudflare, r2, options.logger);
+    await handleCloudflareCallback(context, sessions, cloudflare, r2, options.logger, {
+      store, backups, runtime, secureCookies,
+      restoreEverything: () => restoreAfterSignIn({ store, backups, r2, runtime, jobs, profiles, gateway, metrics, ports, logger: options.logger }),
+    });
     return;
   }
   if (!pathname.startsWith('/api/v1/')) {
@@ -907,12 +910,37 @@ async function handleRequest(options: {
   if (pathname === '/api/v1/setup/status' && method === 'GET') {
     const state = await store.getPersisted();
     const status: SetupStatus = {
-      setupRequired: state.adminPasswordHash === null,
+      // A manager an account already owns is set up, password or no password:
+      // that account can open it, which is the whole of what setup produces.
+      setupRequired: state.adminPasswordHash === null && state.ownerAccountId === null,
       termsVersion: TERMS_VERSION,
       telemetryNoticeVersion: TELEMETRY_NOTICE_VERSION,
       notice: NOTICE,
+      cloudflareSignIn: { available: cloudflare !== null, owner: state.ownerAccountName ?? state.ownerAccountId },
     };
     sendJson(response, 200, status);
+    return;
+  }
+
+  /*
+   * Open the console with a Cloudflare account instead of a password.
+   *
+   * Unauthenticated on purpose - not having a session is the point - and rate
+   * limited like the password form beside it. The first account to sign in
+   * claims the manager; after that only that account is let in, which is the
+   * same rule as the first person to reach a manager with no password being
+   * the one who sets it.
+   *
+   * This is what makes a machine that is wiped every few days usable: there is
+   * nothing to set up again, because the sign-in is the setup and everything
+   * that was on the machine comes back with it.
+   */
+  if (pathname === '/api/v1/auth/cloudflare' && method === 'POST') {
+    if (!checkRateLimit(context, rateLimiter)) return;
+    if (!cloudflare) { sendError(response, 409, 'cloudflare_not_available', 'This manager has no Cloudflare sign-in configured'); return; }
+    const returnOrigin = panelOrigin(context);
+    if (!returnOrigin) { sendError(response, 400, 'invalid_origin', 'The panel origin could not be read'); return; }
+    sendJson(response, 200, { url: cloudflare.beginConnect(returnOrigin, 'signIn') });
     return;
   }
 
@@ -2282,12 +2310,12 @@ async function handleCloudflareRequest(context: RequestContext, cloudflare: Clou
  * top-level navigation back from Cloudflare still carries, so only a signed-in
  * admin can finish connecting this manager.
  */
-async function handleCloudflareCallback(context: RequestContext, sessions: SessionStore, cloudflare: CloudflareConnection | null, r2: R2Manager, logger: LogSink): Promise<void> {
+async function handleCloudflareCallback(context: RequestContext, sessions: SessionStore, cloudflare: CloudflareConnection | null, r2: R2Manager, logger: LogSink, signIn: CloudflareSignInDeps): Promise<void> {
   const { response, searchParams } = context;
-  const redirect = (outcome: string, code?: string): void => {
+  const redirect = (outcome: string, code?: string, page = '#data'): void => {
     const query = new URLSearchParams({ cloudflare: outcome, ...(code ? { cloudflare_error: code } : {}) });
     response.writeHead(303, {
-      location: `/?${query.toString()}#data`,
+      location: `/?${query.toString()}${page}`,
       'cache-control': 'no-store',
       // The address this was reached at holds the authorization code.
       'referrer-policy': 'no-referrer',
@@ -2295,6 +2323,16 @@ async function handleCloudflareCallback(context: RequestContext, sessions: Sessi
     response.end();
   };
   if (!cloudflare) { redirect('error', 'cloudflare_not_available'); return; }
+  /*
+   * A sign-in is finished without a session, because not having one is what it
+   * is for. Which of the two this is was decided when it was started, and is
+   * held in this process - not in the state Cloudflare hands back, which a
+   * browser could edit.
+   */
+  if (cloudflare.pendingPurpose() === 'signIn') {
+    await completeCloudflareSignIn(context, sessions, cloudflare, r2, logger, signIn, redirect);
+    return;
+  }
   if (!sessions.get(context.sessionToken)) { redirect('error', 'login_required'); return; }
   try {
     const status = await cloudflare.completeConnect({
@@ -2310,6 +2348,136 @@ async function handleCloudflareCallback(context: RequestContext, sessions: Sessi
     logger(logEvent('r2.cloudflareConnectFailed', `[r2] connecting to Cloudflare failed: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
     redirect('error', code);
   }
+}
+
+/**
+ * Put a blank machine back together, after its owner signed in.
+ *
+ * Three things, in the order they depend on each other. The settings first,
+ * because they carry the password that opens SillyTavern and the schedules
+ * everything after this runs on. Then the bucket, which may still be claimed
+ * by the installation this machine used to be - it has no disk any more, so
+ * the claim it left is not protecting anything, and taking it is the only way
+ * a host that is wiped repeatedly ever backs up again. Then the profile.
+ *
+ * Every step is allowed to fail on its own. A machine that gets its settings
+ * back and not its chats is better off than one that gets neither, and the
+ * console shows what happened.
+ */
+async function restoreAfterSignIn(deps: {
+  readonly store: StateStore;
+  readonly backups: BackupStore;
+  readonly r2: R2Manager;
+  readonly runtime: RuntimeManager;
+  readonly jobs: JobStore;
+  readonly profiles: ProfileStore;
+  readonly gateway: AccessGateway;
+  readonly metrics: MetricsStore;
+  readonly ports: ServerPorts;
+  readonly logger: LogSink;
+}): Promise<void> {
+  const { store, backups, r2, runtime, jobs, profiles, gateway, metrics, ports, logger } = deps;
+  const settings = { store, backups, r2, runtime, logger };
+  const restored = await restoreFromBucketIfBlank(settings, { ports: { manager: ports.manager, access: ports.access } }).catch((error: unknown) => {
+    logger(logEvent('r2.settingsRestoreFailed', `[r2] the settings in the bucket could not be applied: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
+    return null;
+  });
+  if (restored) {
+    const state = await store.getPersisted();
+    gateway.setPassword(state.accessPasswordHash, state.accessPasscode);
+    await gateway.setLan(state.accessLanEnabled).catch(() => undefined);
+  }
+  const profile = await profiles.getActive();
+  if (!profile) return;
+  /*
+   * The bucket may be claimed by what this machine used to be.
+   *
+   * Only where this machine's own profile is empty, which is the shape of a
+   * host that starts from nothing: a console with data of its own is never the
+   * one being put back together, and must not take a bucket from a machine
+   * that is still using it.
+   */
+  if (await isProfileEmpty(profile)) {
+    await r2.takeOwnership().catch((error: unknown) => {
+      logger(logEvent('r2.takeOwnershipFailed', `[r2] this machine could not take the bucket: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
+      return null;
+    });
+  }
+  await recoverEmptyProfile(() => Promise.resolve(profile), r2, backups, jobs, metrics.filePath);
+}
+
+/** What finishing a Cloudflare sign-in needs beyond the connection itself. */
+interface CloudflareSignInDeps {
+  readonly store: StateStore;
+  readonly backups: BackupStore;
+  readonly runtime: RuntimeManager;
+  readonly secureCookies: boolean;
+  /** Bring this machine's data and settings back, for one that has neither. */
+  readonly restoreEverything: () => Promise<void>;
+}
+
+/**
+ * Open the console because Cloudflare says who this is.
+ *
+ * The account that owns this manager is the credential. The first one to sign
+ * in claims it - the same rule as the first person to reach a manager with no
+ * password being the one who sets it - and after that only that account is let
+ * in, so a console exposed to the internet is not a door the next Cloudflare
+ * user gets a key to.
+ *
+ * What makes this worth having is what follows it. A machine that loses its
+ * disk every few days has nothing: no password, no profile, no settings, no
+ * idea where its backups are. One sign-in gives it all four, without a single
+ * question, because everything needed to answer them is in the bucket the
+ * account already owns.
+ */
+async function completeCloudflareSignIn(
+  context: RequestContext,
+  sessions: SessionStore,
+  cloudflare: CloudflareConnection,
+  r2: R2Manager,
+  logger: LogSink,
+  deps: CloudflareSignInDeps,
+  redirect: (outcome: string, code?: string, page?: string) => void,
+): Promise<void> {
+  const { searchParams } = context;
+  let status;
+  try {
+    status = await cloudflare.completeConnect({
+      state: searchParams.get('state') ?? '',
+      code: searchParams.get('code'),
+      error: searchParams.get('error'),
+      errorDescription: searchParams.get('error_description'),
+    }, await r2.keysBucket());
+  } catch (error: unknown) {
+    const code = isRecord(error) && typeof error.code === 'string' ? error.code : 'cloudflare_connect_failed';
+    logger(logEvent('auth.cloudflareFailed', `[auth] signing in with Cloudflare failed: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
+    redirect('error', code, '');
+    return;
+  }
+  const account = status.account;
+  if (!account) {
+    // Cloudflare returned without settling which account this is - more than
+    // one was offered and none chosen. There is nobody to let in yet.
+    redirect('error', 'cloudflare_account_required', '');
+    return;
+  }
+  const claim = await deps.store.claimCloudflareOwner(account.id, account.name);
+  if (!claim.allowed) {
+    logger(logEvent('auth.cloudflareRefused', `[auth] a Cloudflare sign-in was refused: this manager belongs to ${claim.owner ?? 'another account'}`, { owner: claim.owner ?? '' }));
+    redirect('error', 'cloudflare_not_owner', '');
+    return;
+  }
+  if (status.state === 'connected') await r2.update({ mode: 'cloudflare', enabled: true });
+  const created = sessions.create();
+  context.response.setHeader('Set-Cookie', sessionCookie(created.token, deps.secureCookies));
+  logger(logEvent('auth.cloudflareSignedIn', `[auth] signed in with the Cloudflare account ${account.name}`, { account: account.name }));
+  // Detached: putting a profile back is minutes of downloading, and the reader
+  // is waiting on a redirect. The console shows the job like any other.
+  void deps.restoreEverything().catch((error: unknown) => {
+    logger(logEvent('auth.cloudflareRestoreFailed', `[auth] this machine could not be restored after signing in: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
+  });
+  redirect(status.state === 'connected' ? 'signed_in' : status.state, undefined, '');
 }
 
 function isProtectedPath(pathname: string): boolean {

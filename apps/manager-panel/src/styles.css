@@ -887,6 +887,18 @@
 .terms-text:hover .terms-more { color: var(--link-hover); }
 .terms-more svg { width: 13px; height: 13px; }
 
+/*
+ * Between the password and the other way in.
+ *
+ * A rule with a word in it rather than a heading, because neither side is the
+ * main one: on a machine somebody owns the password is what they will use, and
+ * on one that is wiped every few days it is the Cloudflare account, and the
+ * screen cannot know which it is looking at.
+ */
+.auth-divider { display: flex; align-items: center; gap: 12px; color: var(--muted-foreground); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+.auth-divider::before,
+.auth-divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+
 /* Who wrote this and which version it is, under the sign-in card and in the
    footer of the About panel. Quiet by default; the repository is a real link. */
 .project-credit { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 7px; color: var(--muted-foreground); font-size: 12px; }

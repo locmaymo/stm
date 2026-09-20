@@ -144,6 +144,36 @@ export async function applyManagerSettings(deps: ManagerSettingsDeps, record: Ma
   return { applied, skipped };
 }
 
+/**
+ * Everything this machine is missing, without asking for any of it.
+ *
+ * For the one case where there is nobody to ask and nothing to lose: somebody
+ * has just opened a manager with a Cloudflare account, and the manager has no
+ * settings of its own to overwrite. A host that starts from the checkout every
+ * time is the reason this exists - one sign-in, and the machine is the machine
+ * it was, rather than a fresh install with the reader's chats in it.
+ *
+ * Deliberately narrow. Settings are applied only where this manager has none
+ * of its own, so a console somebody has already set up is never rearranged by
+ * signing in to it; the passwords go back only where none is set, so a sign-in
+ * cannot quietly replace the password somebody is using.
+ */
+export async function restoreFromBucketIfBlank(deps: ManagerSettingsDeps, options: { readonly ports: { readonly manager: number; readonly access: number } }): Promise<{ readonly applied: readonly string[] } | null> {
+  const logger: LogSink = deps.logger ?? ((line) => console.log(logLineText(line)));
+  const state = await deps.store.getPersisted();
+  const record = await deps.r2.loadManagerSettings().catch(() => null);
+  if (!record) return null;
+  // Somebody set this machine up by hand and is now adding a Cloudflare
+  // account to it. Their password stays theirs.
+  const blank = state.adminPasswordHash === null;
+  if (!blank) {
+    logger(logEvent('r2.settingsOffered', '[r2] this account holds settings from another machine; they are on the Data page rather than applied, because this one is already set up', {}));
+    return null;
+  }
+  const result = await applyManagerSettings(deps, record, { passwords: true, schedules: true, ports: options.ports });
+  return { applied: result.applied };
+}
+
 /** Whether the record in the bucket is the one this installation wrote. */
 async function isMine(deps: ManagerSettingsDeps, record: ManagerSettingsRecord): Promise<boolean> {
   const state = await deps.store.getPersisted();

@@ -56,6 +56,22 @@ export interface SetupStatus {
     readonly terms: string;
     readonly disclaimer: string;
   };
+  /**
+   * How this manager can be opened.
+   *
+   * A password is always one of them once one is set. A Cloudflare account is
+   * offered where this build has an OAuth client, and is what makes a machine
+   * that loses its disk usable: signing in is the whole of the setup, and
+   * everything that was on the machine before comes back with it.
+   *
+   * Absent on a manager too old to have been asked.
+   */
+  readonly cloudflareSignIn?: {
+    /** Whether this build can start a sign-in at all. */
+    readonly available: boolean;
+    /** What the account that already owns this manager is called, if one does. */
+    readonly owner: string | null;
+  };
 }
 
 export interface HealthResponse {

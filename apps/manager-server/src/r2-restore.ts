@@ -238,7 +238,7 @@ export async function recoverProfileFromR2(options: RecoverProfileOptions): Prom
  * and walking a profile of eleven thousand files to answer it would be the
  * slowest thing on the way up.
  */
-async function isProfileEmpty(profile: Profile): Promise<boolean> {
+export async function isProfileEmpty(profile: Profile): Promise<boolean> {
   try {
     return (await readdir(profile.dataPath)).length === 0;
   } catch {

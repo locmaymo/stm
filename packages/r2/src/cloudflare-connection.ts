@@ -35,6 +35,8 @@ const WORKER_RETRY_MS = 60 * 60 * 1000;
 const ROTATION_RETRY_MS = 10 * 60 * 1000;
 
 export type CloudflareDataPath = 'worker' | 'rest';
+/** What a sign-in with Cloudflare was started for; see `beginConnect`. */
+export type CloudflarePurpose = 'connect' | 'signIn';
 export type { CloudflareConnectionState, CloudflareConnectionStatus };
 
 interface StoredConnection {
@@ -99,6 +101,7 @@ export class CloudflareConnection {
   private stored: StoredConnection | null = null;
   private writeQueue: Promise<void> = Promise.resolve();
   private pending: PendingAuthorization | null = null;
+  private purpose: CloudflarePurpose = 'connect';
   private offeredAccounts: CloudflareAccount[] = [];
   private accessToken: { value: string; expiresAt: number | null } | null = null;
   private refreshing: Promise<string> | null = null;
@@ -146,10 +149,29 @@ export class CloudflareConnection {
     return (await this.status()).state === 'connected';
   }
 
-  /** Start signing in. Only the newest request can be completed. */
-  public beginConnect(returnOrigin: string): string {
+  /**
+   * Start a sign-in with Cloudflare, and say what it is for. Only the newest
+   * request can be completed.
+   *
+   * `connect` is somebody who is already in the console arranging where their
+   * backups go. `signIn` is somebody opening the console with their Cloudflare
+   * account instead of a password, which is a sign-in that has to be allowed
+   * to finish without a session - because not having one is the point.
+   *
+   * The purpose is held here rather than in the state Cloudflare hands back,
+   * so nothing a browser can edit decides whether a session is required. The
+   * cost is that it does not survive a restart of the manager, which is
+   * already true of the authorization it belongs to.
+   */
+  public beginConnect(returnOrigin: string, purpose: CloudflarePurpose = 'connect'): string {
     this.pending = createAuthorization(this.client, returnOrigin, this.now());
+    this.purpose = purpose;
     return this.pending.url;
+  }
+
+  /** What the authorization now in flight was started for, if one is. */
+  public pendingPurpose(): CloudflarePurpose | null {
+    return this.pending ? this.purpose : null;
   }
 
   /**
