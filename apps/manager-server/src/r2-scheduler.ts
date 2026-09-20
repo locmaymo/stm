@@ -51,6 +51,14 @@ export interface BackupSchedulerOptions {
    * backups. It does nothing when the settings have not moved.
    */
   readonly saveSettings?: () => Promise<unknown>;
+  /**
+   * Where the log of what was asked of each provider is, so it can ride along
+   * on the slow clock.
+   *
+   * It is not profile data and does not belong in a recovery point, but it is
+   * the one other thing on the machine that cannot be made again.
+   */
+  readonly metricsFile?: string;
 }
 
 /** Small, bounded scheduler. It only runs after the manager is ready and never blocks requests. */
@@ -76,6 +84,7 @@ export class BackupScheduler {
   /** When the frequent tier last went up, so its clock survives a tick that did nothing. */
   private lastHotUploadAt: number | null = null;
   private readonly saveSettings: () => Promise<unknown>;
+  private readonly metricsFile: string | null;
 
   public constructor(options: BackupSchedulerOptions) {
     this.backups = options.backups;
@@ -85,6 +94,7 @@ export class BackupScheduler {
     this.now = options.now ?? (() => new Date());
     this.tickIntervalMs = options.tickIntervalMs ?? 60_000;
     this.saveSettings = options.saveSettings ?? (async () => undefined);
+    this.metricsFile = options.metricsFile ?? null;
   }
 
   public start(): void {
@@ -164,6 +174,10 @@ export class BackupScheduler {
     if (!coldDue && (!hotDue || config.lastFingerprint === fingerprint)) return;
 
     const tier = coldDue ? 'cold' : 'hot';
+    // On the slow clock only, and before the profile rather than after: the
+    // log is appended to constantly, so on the fast clock it would be the only
+    // thing ever being sent.
+    if (coldDue && this.metricsFile) await this.r2.syncMetricsFile(this.metricsFile).catch(() => null);
     const result = await syncProfileToR2({ profile, backups: this.backups, r2: this.r2, tier, fingerprint, logger: this.logger });
     this.lastHotUploadAt = this.now().getTime();
     this.logger(logEvent('backup.r2Synced', `[backup] ${tier === 'cold' ? 'full' : 'frequent'} R2 backup: ${result.uploadedChunks} chunk(s) sent, ${result.fileCount} file(s) recorded`, { tier, chunks: result.uploadedChunks, files: result.fileCount }));

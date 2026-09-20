@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { hostname } from 'node:os';
 import { mkdir, open, readFile, rename, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { formatBytes, logEvent, logLineText, type LogSink, type ManagerSettingsRecord, type Profile, type R2CheckResult, type R2CloudflareUsage, type R2Config, type R2ConnectionMode, type R2UsageResponse, type R2UsageWarning, type R2EnvironmentField, type R2Object, type R2SnapshotSummary, type R2Usage, type TransferProgress } from '../../contracts/src/index.js';
 import { parseS3Endpoint, R2_FREE_TIER, readR2Usage } from '../../cloudflare/src/index.js';
 import { ioConcurrency, runPooled } from '../../platform/src/index.js';
@@ -13,12 +13,15 @@ import { R2Error, type Billing, type ObjectRecord, type ObjectStore } from './st
 import { claimIsStale, readClaim, writeClaim, CLAIM_OBJECT, CLAIM_REFRESH_MS, type BucketClaim } from './owner.js';
 import { addOperations, monthKey, readUsage, writeUsage, USAGE_FLUSH_MS, USAGE_OBJECT } from './usage-record.js';
 import { readManagerSettings, settingsUnchanged, writeManagerSettings, MANAGER_SETTINGS_MIN_INTERVAL_MS, MANAGER_SETTINGS_OBJECT } from './manager-settings.js';
+import { readMetricsArchive, writeMetricsArchive, METRICS_OBJECT } from './metrics-archive.js';
 import {
   blobKey,
   decodeBlob,
   decodeSnapshot,
   encodeBlob,
   encodeSnapshot,
+  hashFile,
+  looksUnchanged,
   referencedHashes,
   shouldCompress,
   snapshotKey,
@@ -49,6 +52,7 @@ const SNAPSHOT_PREFIX = `${OBJECT_PREFIX}snapshots/`;
 const CLAIM_KEY = `${OBJECT_PREFIX}${CLAIM_OBJECT}`;
 const USAGE_KEY = `${OBJECT_PREFIX}${USAGE_OBJECT}`;
 const MANAGER_SETTINGS_KEY = `${OBJECT_PREFIX}${MANAGER_SETTINGS_OBJECT}`;
+const METRICS_KEY = `${OBJECT_PREFIX}${METRICS_OBJECT}`;
 /** How long Cloudflare's usage figures are reused before asking again. */
 const CLOUD_USAGE_TTL_MS = 15 * 60 * 1000;
 /** How old those figures may be and still count towards the ceilings before a backup. */
@@ -159,6 +163,11 @@ interface StoredR2Config {
   readonly lastSnapshot: { readonly profileId: string; readonly id: string } | null;
   /** What the manager restored by itself on the way up; see R2Config.lastRecovery. */
   readonly lastRecovery: { readonly at: string; readonly createdAt: string; readonly fileCount: number; readonly sizeBytes?: number } | null;
+  /**
+   * The usage log as it was when it last went up, so a run that has nothing to
+   * add costs one stat rather than a read of the whole file.
+   */
+  readonly lastMetrics: HashedFile | null;
   /**
    * The bucket's claim as this manager last read it; see `owner.ts`.
    *
@@ -668,6 +677,17 @@ export class R2Manager {
         }
       }
       const wanted = referencedHashes(snapshots);
+      /*
+       * The usage log's chunks are named by its own index, not by any recovery
+       * point, and this sweep deletes by inference: without them the whole log
+       * would be collected as rubbish the first time a reconcile ran, and the
+       * next run would send all of it again.
+       *
+       * A missing index is not an empty one. If it cannot be read, nothing is
+       * collected at all rather than everything the log holds.
+       */
+      const archive = await readMetricsArchive(client, METRICS_KEY);
+      for (const chunk of archive?.chunks ?? []) wanted.add(chunk.hash);
       let collectedBlobs = 0;
       let collectedBytes = 0;
       const collected: string[] = [];
@@ -717,7 +737,7 @@ export class R2Manager {
       const config = await this.requireUsable();
       const client = this.client(config);
       const objects = await this.listAll(config, OBJECT_PREFIX, client);
-      const legacy = objects.filter((object) => !object.key.startsWith(BLOB_PREFIX) && !object.key.startsWith(SNAPSHOT_PREFIX) && object.key !== CLAIM_KEY && object.key !== USAGE_KEY && object.key !== MANAGER_SETTINGS_KEY);
+      const legacy = objects.filter((object) => !object.key.startsWith(BLOB_PREFIX) && !object.key.startsWith(SNAPSHOT_PREFIX) && object.key !== CLAIM_KEY && object.key !== USAGE_KEY && object.key !== MANAGER_SETTINGS_KEY && object.key !== METRICS_KEY);
       let bytes = 0;
       for (const object of legacy) {
         await client.deleteObject(object.key);
@@ -1192,6 +1212,76 @@ export class R2Manager {
   }
 
   /**
+   * Send whatever of the usage log the bucket does not already hold.
+   *
+   * The log of what was asked of each provider is append-only and grows for as
+   * long as the manager is used, so it goes up in chunks like the profile
+   * does, not as a document rewritten whole: appending changes only the chunk
+   * at the end, and the ledger already knows about every chunk before it. One
+   * chunk and one index per run, however large the log has become.
+   *
+   * Runs on the slow clock. The log is written on every request SillyTavern
+   * makes, so on the fast one it would be the only thing ever being sent.
+   */
+  public async syncMetricsFile(path: string): Promise<{ readonly uploadedChunks: number; readonly sizeBytes: number } | null> {
+    const config = await this.load();
+    if (!config.enabled) return null;
+    const file = await hashFile(METRICS_OBJECT, path);
+    if (!file || file.chunks.length === 0) return null;
+    // Nothing has been appended since the last run: the whole point of the
+    // stat is to make that case cost nothing at all.
+    if (looksUnchanged(config.lastMetrics ?? undefined, file.sizeBytes, file.mtimeMs)) return null;
+    return await this.exclusive(async () => {
+      const usable = await this.onTarget(await this.requireUsable());
+      await this.requireOwnership(usable);
+      const client = this.client(usable);
+      await this.ledger.load();
+      const missing = file.chunks.filter((chunk) => !this.ledger.has(chunk.hash));
+      const sent = missing.length === 0
+        ? { hashes: [], bytes: 0 }
+        : await this.uploadChunks(client, { source: { file, path }, chunks: missing });
+      if (!sent) return null;
+      await this.ledger.add(sent.hashes);
+      await writeMetricsArchive(client, METRICS_KEY, { schemaVersion: 1, updatedAt: this.now().toISOString(), sizeBytes: file.sizeBytes, chunks: file.chunks });
+      await this.save({ ...(await this.load()), lastMetrics: file });
+      await this.recordCharges();
+      this.logger(logEvent('r2.metricsSynced', `[r2] sent ${sent.hashes.length} chunk(s) of the usage log, now ${formatBytes(file.sizeBytes)}`, { chunks: sent.hashes.length, size: formatBytes(file.sizeBytes) }));
+      return { uploadedChunks: sent.hashes.length, sizeBytes: file.sizeBytes };
+    });
+  }
+
+  /**
+   * Put the usage log back, for a machine that has none.
+   *
+   * Only ever onto a machine with nothing of its own: this is a log, and two
+   * of them cannot be merged by concatenation - the result would double-count
+   * whatever both already had. A machine that has been running keeps what it
+   * recorded itself.
+   */
+  public async restoreMetricsFile(path: string): Promise<{ readonly sizeBytes: number } | null> {
+    const config = await this.requireUsable();
+    const client = this.client(config);
+    try {
+      const archive = await readMetricsArchive(client, METRICS_KEY);
+      if (!archive || archive.chunks.length === 0) return null;
+      await mkdir(dirname(path), { recursive: true });
+      const handle = await open(path, 'w');
+      try {
+        for (const chunk of archive.chunks) {
+          const body = await decodeBlob(await client.getObject(blobKey(OBJECT_PREFIX, chunk.hash)));
+          await handle.write(body, 0, body.byteLength, chunk.offset);
+        }
+      } finally {
+        await handle.close().catch(() => undefined);
+      }
+      this.logger(logEvent('r2.metricsRestored', `[r2] brought back ${formatBytes(archive.sizeBytes)} of usage history`, { size: formatBytes(archive.sizeBytes) }));
+      return { sizeBytes: archive.sizeBytes };
+    } finally {
+      await this.recordCharges().catch(() => undefined);
+    }
+  }
+
+  /**
    * The settings waiting in the bucket, if any machine has left some.
    *
    * Deliberately not part of any automatic path: what comes back is offered to
@@ -1514,7 +1604,7 @@ function summarizeObjects(objects: readonly ObjectRecord[]): { blobs: Map<string
     // for, and how the manager that wrote it is set up. None of them is data,
     // none is an archive, and none is something the legacy sweep may take
     // away from the manager that wrote it.
-    if (object.key === CLAIM_KEY || object.key === USAGE_KEY || object.key === MANAGER_SETTINGS_KEY) continue;
+    if (object.key === CLAIM_KEY || object.key === USAGE_KEY || object.key === MANAGER_SETTINGS_KEY || object.key === METRICS_KEY) continue;
     // Whole-ZIP archives from the version before this one. They are not
     // read and not deleted behind the operator's back; the panel offers it.
     legacyObjectCount += 1;
@@ -1606,6 +1696,7 @@ function defaultStoredConfig(now: Date): StoredR2Config {
     lastFingerprint: null,
     lastSnapshot: null,
     lastRecovery: null,
+    lastMetrics: null,
     claim: null,
     usage: {
       storageBytes: 0,

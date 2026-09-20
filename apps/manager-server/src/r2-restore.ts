@@ -148,6 +148,14 @@ export interface RecoverProfileOptions {
   readonly logger?: LogSink;
   /** Puts the fetched archive into the profile; the caller owns stopping SillyTavern. */
   readonly restore: (archivePath: string) => Promise<void>;
+  /**
+   * Where the usage log belongs on this machine, when it is wanted back too.
+   *
+   * Absent leaves it alone. It is not part of the recovery point - it is not
+   * profile data and restoring one must never write it into somebody's chat
+   * directory - so it is fetched separately, and only here.
+   */
+  readonly metricsFile?: string;
 }
 
 /**
@@ -200,6 +208,19 @@ export async function recoverProfileFromR2(options: RecoverProfileOptions): Prom
     const archivePath = await backups.getArchivePath(manifest.id);
     if (!archivePath) throw new Error('the fetched recovery point could not be found in the backup library');
     await options.restore(archivePath);
+    /*
+     * The usage history comes back with it, where there is one.
+     *
+     * Only onto a machine that was empty, which is the state this whole
+     * function is for: the log is append-only, and writing the bucket's copy
+     * over one that has been added to since would lose whatever was added.
+     */
+    if (options.metricsFile) {
+      await r2.restoreMetricsFile(options.metricsFile).catch((error: unknown) => {
+        logger?.(logEvent('r2.metricsRecoveryFailed', `[r2] the usage history could not be brought back: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
+        return null;
+      });
+    }
     logger?.(logEvent('r2.recovered', `[r2] the recovery point from ${candidate.createdAt} is back in this profile`, { createdAt: candidate.createdAt }));
     return { manifest, point: candidate };
   } catch (error: unknown) {

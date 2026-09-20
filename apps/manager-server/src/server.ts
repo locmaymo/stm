@@ -456,6 +456,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     backups, profiles, r2,
     logger: (line) => { jobs.append('backup', line); baseLogger(line); },
     saveSettings: () => saveManagerSettings({ store, backups, r2, runtime, logger: baseLogger }),
+    metricsFile: metrics.filePath,
   });
   scheduler.start();
   // Uploads interrupted by a closed tab leave gigabyte part files whose id no
@@ -735,7 +736,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       // Before the config is written and before SillyTavern is started, so what
       // comes back is what gets configured and started rather than something
       // laid over a profile already in use.
-      if (activeProfile) await recoverEmptyProfile(() => Promise.resolve(activeProfile), r2, backups, jobs);
+      if (activeProfile) await recoverEmptyProfile(() => Promise.resolve(activeProfile), r2, backups, jobs, metrics.filePath);
       // Reading it first turns a missing config into the handled error below
       // rather than a fault during startup.
       const currentConfig = activeProfile ? await config.read(activeProfile, readyInstallation) : null;
@@ -932,7 +933,7 @@ async function handleRequest(options: {
       if ((await runtime.listInstallations()).length > 0) return;
       if (!await store.claimFirstInstall()) return;
       try {
-        await beginInstallation({ runtime, jobs, supervisor, profiles, backups, r2, system }, 'latest');
+        await beginInstallation({ runtime, jobs, supervisor, profiles, backups, r2, system, metrics }, 'latest');
         logger(logEvent('installer.firstRun', '[installer] installing SillyTavern, because this manager has just been set up and has none'));
       } catch (error: unknown) {
         // Nothing is owed here: the console shows Install, and the reader can
@@ -1519,7 +1520,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       return;
     }
     try {
-      const started = await beginInstallation({ runtime, jobs, supervisor, profiles, backups, r2, system }, selector as VersionSelector);
+      const started = await beginInstallation({ runtime, jobs, supervisor, profiles, backups, r2, system, metrics }, selector as VersionSelector);
       sendJson(response, 202, { installationId: started.installationId, job: started.job });
     } catch (error: unknown) {
       if (error instanceof RuntimeError) { sendError(response, 409, error.code, error.message); return; }
@@ -1923,6 +1924,8 @@ async function withProxyUrl(state: TunnelState, proxy: ProxyWorkerManager | null
 /** What starting an installation needs, whoever asked for it. */
 interface InstallationDeps {
   readonly runtime: RuntimeManager;
+  /** Where the usage log is, so a recovered machine gets its history back too. */
+  readonly metrics: MetricsStore;
   readonly jobs: JobStore;
   readonly supervisor: ProcessSupervisor;
   readonly profiles: ProfileStore;
@@ -2005,7 +2008,7 @@ async function beginInstallation(deps: InstallationDeps, selector: VersionSelect
         // before SillyTavern is started on an empty profile.
         // The profile is made inside, so the slot is held before it exists
         // and the scheduler cannot find it half-restored.
-        await recoverEmptyProfile(() => profiles.ensureDefault({ installationId: installation.id, runtimePath: installation.runtimePath }), r2, backups, jobs);
+        await recoverEmptyProfile(() => profiles.ensureDefault({ installationId: installation.id, runtimePath: installation.runtimePath }), r2, backups, jobs, deps.metrics.filePath);
       }
       await runtime.cleanupLegacyRuntimeCopies?.(installation.id);
       // There is a profile now where a moment ago there was none, and on the
@@ -2814,7 +2817,7 @@ async function announceRecoverable(r2: R2Manager, logger: LogSink): Promise<void
   }
 }
 
-async function recoverEmptyProfile(settle: () => Promise<Profile>, r2: R2Manager, backups: BackupStore, jobs: JobStore): Promise<void> {
+async function recoverEmptyProfile(settle: () => Promise<Profile>, r2: R2Manager, backups: BackupStore, jobs: JobStore, metricsFile: string): Promise<void> {
   /*
    * The backup slot is held from before the profile exists.
    *
@@ -2843,6 +2846,7 @@ async function recoverEmptyProfile(settle: () => Promise<Profile>, r2: R2Manager
       // Nobody is here to be asked, and the profile this writes into is empty,
       // so there is nothing an odd-looking recovery point could destroy.
       restore: async (archivePath) => { await backups.restore(profile, archivePath, { mode: 'replace', force: true }); },
+      metricsFile,
     });
     // Nobody was watching while this ran. The card says it happened, and says it
     // of the recovery point rather than of the archive that carried it here:

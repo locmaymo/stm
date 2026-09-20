@@ -10,12 +10,21 @@ import { R2HttpError, type ObjectStore } from './store.js';
  * the sweep that collects unreferenced chunks is a whole-bucket operation and
  * runs against whatever the other one has uploaded but not yet pointed at.
  *
- * It is a claim, not a lock. A manager that reads it stops on its own; the
- * takeover also takes the other machine's key off the Worker, which is what
- * stops one that is not reading it. The claim survives the machine that made
- * it - that is the point of keeping it in the bucket rather than on a disk -
- * so a machine whose disk was emptied comes back as a stranger and has to say
- * out loud that it is taking over, unless the claim has been left to go stale.
+ * It is a claim, not a lock. A manager that reads it stops on its own, and
+ * every operation that writes to the bucket reads it first, so that is what
+ * the guarantee rests on.
+ *
+ * The takeover also takes the other machine's key off the Worker. That stops
+ * it at its next request rather than at its next check - but only until it
+ * mints itself a new one, which a running manager does without being asked.
+ * Observed against a live account: a minute after being evicted the other
+ * installation had a key again. It was then stopped by this claim, which is
+ * the part that holds.
+ *
+ * The claim survives the machine that made it - that is the point of keeping
+ * it in the bucket rather than on a disk - so a machine whose disk was emptied
+ * comes back as a stranger and has to say out loud that it is taking over,
+ * unless the claim has been left to go stale.
  */
 export interface BucketClaim {
   readonly schemaVersion: 1;
