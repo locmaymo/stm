@@ -32,7 +32,7 @@ import { isThisMachine, readTunnelOfferDeclined, saveTunnelOfferDeclined, should
 import { availableUpdate, readDismissedUpdate, saveDismissedUpdate } from './updates.js';
 import { readDismissedRecovery, readDismissedSettings, saveDismissedRecovery, saveDismissedSettings, shouldOfferSettings, shouldShowRecovery } from './settings-offer.js';
 import { apiFetch, onSessionExpired, resetSessionWatch, sessionToken, setSessionToken } from './session.js';
-import { collectCloudflareResult, framed, openReturnWindow, whenAbandoned, type CollectedResult } from './oauth.js';
+import { collectCloudflareResult, framed, openReturnWindow, popupsBlocked, whenAbandoned, type CollectedResult } from './oauth.js';
 import type { AccessGatewayState, BackupManifest, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LogEntry, LogSourceFilter, ManagerSettingsOffer, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, isCloudJob, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
@@ -411,32 +411,48 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, refusal, onPr
   const signInWithCloudflare = async () => {
     setHandOverUrl(null);
     collecting.current?.();
-    // Cloudflare's sign-in will not load in a frame, so a console inside
-    // another site's page sends the reader to a window of its own - opened
-    // now, while the click is still a click, or the browser takes it for a
-    // pop-up. That window cannot answer back, so the answer is collected from
-    // the manager instead; see oauth.ts.
+    /*
+     * Cloudflare's sign-in will not load in a frame, so a console inside
+     * another site's page sends the reader to a window of its own - opened
+     * now, while the click is still a click, or the browser takes it for a
+     * pop-up. That window cannot answer back, so the answer is collected from
+     * the manager instead; see oauth.ts.
+     *
+     * A browser that has already refused this console a window is not asked
+     * again. The refusal is a property of the frame rather than of the press,
+     * so trying costs a second pop-up warning and buys nothing - and the thing
+     * that does work is a press on an ordinary link, which is what the button
+     * turns into below.
+     */
     const inFrame = framed();
-    const opened = inFrame ? openReturnWindow() : null;
+    const opened = inFrame && !popupsBlocked() ? openReturnWindow() : null;
     setCloudflareBusy(true); setError(null);
     try {
-      const response = await fetch(`/api/v1/auth/cloudflare${opened ? '?handoff=1' : ''}`, { method: 'POST', credentials: 'same-origin' });
+      // Inside a frame the answer is always collected from the manager,
+      // whether the window was opened here or by the reader: either way it
+      // cannot carry the answer home by itself.
+      const response = await fetch(`/api/v1/auth/cloudflare${inFrame ? '?handoff=1' : ''}`, { method: 'POST', credentials: 'same-origin' });
       const payload = await response.json() as { url?: string; handoff?: string; error?: { code?: string; message?: string } };
       if (!response.ok || !payload.url) { opened?.close(); setCloudflareBusy(false); setError(fail.body(payload, t('setup.cloudSignInFailed'))); return; }
-      if (opened) {
-        opened.location.href = payload.url;
-        if (payload.handoff) {
-          const stopCollecting = collectCloudflareResult(payload.handoff, collected);
-          const stopWatching = whenAbandoned(opened, () => { stopCollecting(); setCloudflareBusy(false); });
-          collecting.current = () => { stopCollecting(); stopWatching(); };
-          return;
-        }
+      if (!inFrame) { window.location.assign(payload.url); return; }
+      if (payload.handoff) {
+        const stopCollecting = collectCloudflareResult(payload.handoff, collected);
+        const stopWatching = opened ? whenAbandoned(opened, () => { stopCollecting(); setCloudflareBusy(false); }) : null;
+        collecting.current = () => { stopCollecting(); stopWatching?.(); };
       }
-      // A frame that may not open windows has nowhere to send them: following
-      // the address here would only blank the console, since Cloudflare
-      // refuses to be framed. So hand the address over instead.
-      if (inFrame) { opened?.close(); setCloudflareBusy(false); setHandOverUrl(payload.url); return; }
-      window.location.assign(payload.url);
+      if (opened) { opened.location.href = payload.url; return; }
+      /*
+       * No window, so the reader opens it: the same button, one more press,
+       * now an ordinary link that no browser blocks.
+       *
+       * This used to be a banner carrying the whole address, a Copy button and
+       * an Open button - which was a lot of screen for something that ends in
+       * one press on a link, and the link it offered was the very thing the
+       * reader had already pressed a button for. The sign-in is already
+       * started and already being collected; all that is missing is the press.
+       */
+      setCloudflareBusy(false);
+      setHandOverUrl(payload.url);
     } catch { opened?.close(); setCloudflareBusy(false); setError(t('setup.connectionError')); }
   };
   /*
@@ -456,20 +472,32 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, refusal, onPr
    */
   const cloudflareWay = cloudflare?.available ? <>
     <div className="auth-divider"><span>{t('setup.or')}</span></div>
+    {/* One line, because there is one thing left to do and the button under it
+        is the thing. */}
+    {handOverUrl ? <Alert><CloudflareMark /><AlertDescription>{t('console.cfConnectPopupBlocked')}</AlertDescription></Alert> : null}
     <div className="cloud-way">
-      <Button
-        type="button"
-        size="lg"
-        className="w-full hover:opacity-90"
-        style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }}
-        disabled={busy || cloudflareBusy}
-        // Live whether or not the box is ticked. Signing in this way is what
-        // sets the manager up, so the agreement is still required first - it
-        // is asked for by pointing at it, not by refusing to respond.
-        onClick={() => { if (consented()) void signInWithCloudflare(); }}
-      >
-        <CloudflareMark />{cloudflareBusy ? t('common.loading') : t('setup.cloudSignIn')}
-      </Button>
+      {handOverUrl
+        ? <Button
+          asChild
+          size="lg"
+          className="w-full hover:opacity-90"
+          style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }}
+        >
+          <a href={handOverUrl} target="_blank" rel="noopener noreferrer"><CloudflareMark />{t('setup.cloudSignIn')}</a>
+        </Button>
+        : <Button
+          type="button"
+          size="lg"
+          className="w-full hover:opacity-90"
+          style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }}
+          disabled={busy || cloudflareBusy}
+          // Live whether or not the box is ticked. Signing in this way is what
+          // sets the manager up, so the agreement is still required first - it
+          // is asked for by pointing at it, not by refusing to respond.
+          onClick={() => { if (consented()) void signInWithCloudflare(); }}
+        >
+          <CloudflareMark />{cloudflareBusy ? t('common.loading') : t('setup.cloudSignIn')}
+        </Button>}
       <span className="cloud-way-tag" aria-hidden="true">{t('setup.cloudRecommended')}</span>
     </div>
   </> : null;
@@ -535,7 +563,6 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, refusal, onPr
                 Cloudflare redirect - which the reader has no other way of
                 being told about. */}
             {error ?? refusal ? <Alert variant="destructive"><AlertDescription>{error ?? refusal}</AlertDescription></Alert> : null}
-            {handOverUrl ? <CloudflareSignInBanner t={t} url={handOverUrl} onDismiss={() => setHandOverUrl(null)} /> : null}
             <Button type="submit" size="lg" className="w-full" disabled={busy || cloudflareBusy || !ready}>
               {busy ? t('common.loading') : setup ? t('setup.createAdmin') : t('setup.signIn')}
             </Button>
@@ -3371,36 +3398,36 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   };
   const connectCloudflare = async () => {
     setCloudflareSignInUrl(null);
-    // Cloudflare's sign-in refuses to load in a frame. When the panel is shown
-    // inside another page, the sign-in gets a tab of its own, opened now while
-    // the click still counts as one so it is not taken for a pop-up.
+    /*
+     * Cloudflare's sign-in refuses to load in a frame. When the panel is shown
+     * inside another page, the sign-in gets a tab of its own, opened now while
+     * the click still counts as one so it is not taken for a pop-up.
+     *
+     * Unless this browser has already said no once, in which case it is not
+     * asked again: the answer belongs to the frame rather than to the press.
+     * The button below becomes a plain link instead, and a press on a link is
+     * the one thing that is never blocked.
+     */
     const inFrame = framed();
-    const tab = inFrame ? openReturnWindow() : null;
+    const tab = inFrame && !popupsBlocked() ? openReturnWindow() : null;
     setCloudflareBusy(true);
     try {
-      // A window that was opened needs a name to bring the answer back under,
-      // because it cannot bring it back itself; see oauth.ts.
-      const response = await apiFetch(`/api/v1/r2/cloudflare/connect${tab ? '?handoff=1' : ''}`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      // Inside a frame the answer is collected from the manager however the
+      // sign-in was opened, because the tab cannot bring it back itself; see
+      // oauth.ts.
+      const response = await apiFetch(`/api/v1/r2/cloudflare/connect${inFrame ? '?handoff=1' : ''}`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       const payload = await response.json() as { url?: string; handoff?: string; error?: { message?: string } };
       if (!response.ok || !payload.url) { tab?.close(); failed(fail.body(payload, t('console.cfConnectFailed'))); return; }
-      if (tab) {
-        tab.location.href = payload.url;
-        if (payload.handoff) {
-          const stopCollecting = collectCloudflareResult(payload.handoff, (result) => settleCloudflare(result.outcome, result.code));
-          const stopWatching = whenAbandoned(tab, stopCollecting);
-          collecting.current = () => { stopCollecting(); stopWatching(); };
-        }
-        return;
+      if (!inFrame) { window.location.assign(payload.url); return; }
+      if (payload.handoff) {
+        const stopCollecting = collectCloudflareResult(payload.handoff, (result) => settleCloudflare(result.outcome, result.code));
+        const stopWatching = tab ? whenAbandoned(tab, stopCollecting) : null;
+        collecting.current = () => { stopCollecting(); stopWatching?.(); };
       }
-      // A frame that is not allowed to open tabs leaves nowhere to send the
-      // reader: this one cannot show Cloudflare's sign-in, and sending it
-      // somewhere it will be refused would only blank the console. So hand
-      // over the address instead and let them open it themselves.
-      if (inFrame) {
-        setCloudflareSignInUrl(payload.url);
-        return;
-      }
-      window.location.assign(payload.url);
+      if (tab) { tab.location.href = payload.url; return; }
+      // No tab, so the reader opens one. The sign-in is already started and
+      // already being collected; the address goes on the button they pressed.
+      setCloudflareSignInUrl(payload.url);
     } catch { tab?.close(); failed(t('console.cfConnectFailed')); } finally { setCloudflareBusy(false); }
   };
   const chooseCloudflareAccount = async (accountId: string): Promise<string | null> => {
@@ -3762,7 +3789,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       <CardContent className="grid gap-4">
         {/* The address the dialog handed over, still here after the dialog has
             been closed on top of it. */}
-        {cloudflareSignInUrl && !destinationOpen ? <CloudflareSignInBanner t={t} url={cloudflareSignInUrl} onDismiss={() => setCloudflareSignInUrl(null)} /> : null}
+        {cloudflareSignInUrl && !destinationOpen ? <CloudflareSignInNotice t={t} url={cloudflareSignInUrl} onDismiss={() => setCloudflareSignInUrl(null)} /> : null}
         {/* Said above the settings, and only while it is off: once it is on,
             this is a sales pitch for something the reader has already bought. */}
         {!(r2Config?.enabled && r2Config.configured) ? <p className="cloud-pitch">
@@ -4243,41 +4270,29 @@ function RestoreDialog({ t, catalog, displayName, backup, preview, mode, onModeC
 }
 
 /**
- * The Cloudflare sign-in address, for a page that cannot open it itself.
+ * One line saying the sign-in window was blocked, and where the press goes now.
  *
  * Cloudflare's sign-in refuses to load in a frame, so a console shown inside
- * another page has to hand the address over instead of following it. That used
- * to be a notification, which is the wrong shape for it twice over: it goes
- * away while the reader is still looking at it, and it left them nothing to
- * press but Copy - so the one path out of a framed console was copy the link,
- * find the address bar, paste. A banner stays, and carries both: open it here,
- * or take the address somewhere else.
+ * another page opens a window for it - and some frames are not allowed to open
+ * windows at all. This used to be a banner carrying a title, the whole
+ * authorization address in monospace, an Open button, a Copy button and a
+ * Close: a paragraph of screen and a wall of query string, for something that
+ * ends in one press.
+ *
+ * And the press always worked. The address was fine; the browser simply would
+ * not let a script open it, while an ordinary link the reader presses
+ * themselves opens every time. So the address goes onto the button that was
+ * pressed in the first place - `url` here, and the Cloudflare button itself
+ * where there is one - and this is left saying the one thing the reader could
+ * not have guessed: press it again.
  */
-function CloudflareSignInBanner({ t, url, onDismiss }: { t: Translate; url: string; onDismiss: () => void }) {
-  const [copied, setCopied] = useState(false);
-  const { toast } = useToast();
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(url);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1600);
-    } catch {
-      // The address is on screen and can be selected, so a clipboard the
-      // browser will not hand over is worth saying and nothing more.
-      toast({ title: t('console.copyFailed'), tone: 'destructive' });
-    }
-  };
+function CloudflareSignInNotice({ t, url, onDismiss }: { t: Translate; url?: string | null; onDismiss: () => void }) {
   return <Alert>
     <CloudflareMark />
-    <AlertTitle>{t('console.cfConnectOpenHere')}</AlertTitle>
-    <AlertDescription className="grid gap-2">
-      <span>{t('console.cfConnectPopupBlocked')}</span>
-      <a className="break-all font-mono text-xs underline underline-offset-4" href={url} target="_blank" rel="noopener noreferrer">{url}</a>
-      <div className="flex flex-wrap gap-2">
-        <Button size="sm" asChild><a href={url} target="_blank" rel="noopener noreferrer"><ArrowUpRight />{t('console.openInTab')}</a></Button>
-        <Button variant="outline" size="sm" onClick={() => void copy()}><Copy />{copied ? t('console.linkCopied') : t('dashboard.copyLink')}</Button>
-        <Button variant="ghost" size="sm" onClick={onDismiss}>{t('common.close')}</Button>
-      </div>
+    <AlertDescription className="flex flex-wrap items-center gap-2">
+      <span className="mr-auto">{t(url ? 'console.cfConnectOpenHere' : 'console.cfConnectPopupBlocked')}</span>
+      {url ? <Button size="sm" asChild><a href={url} target="_blank" rel="noopener noreferrer"><ArrowUpRight />{t('console.openInTab')}</a></Button> : null}
+      <Button variant="ghost" size="sm" onClick={onDismiss}>{t('common.close')}</Button>
     </AlertDescription>
   </Alert>;
 }
@@ -4384,7 +4399,7 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled
       </DialogHeader>
       <DialogBody className="grid gap-4">
         {fromEnvironment.size > 0 ? <Alert><AlertDescription>{t('console.r2FromEnv')}</AlertDescription></Alert> : null}
-        {signInUrl ? <CloudflareSignInBanner t={t} url={signInUrl} onDismiss={onDismissSignIn} /> : null}
+        {signInUrl ? <CloudflareSignInNotice t={t} onDismiss={onDismissSignIn} /> : null}
         <RadioGroup value={choice} onValueChange={(value) => setChoice(value as R2ConnectionMode)} aria-label={t('console.r2DestinationTitle')}>
           {/* Signing in first, and marked as the one to reach for: it makes the
               bucket, keeps its own keys and is the only one that can show what
@@ -4408,6 +4423,7 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled
               account={account}
               onAccountChange={setAccount}
               onConnect={onConnect}
+              signInUrl={signInUrl}
               onChooseAccount={async () => { setError(await onChooseAccount(account)); }}
               onChooseBucket={async (name) => { setError(await onChooseBucket(name)); }}
               onDisconnect={onDisconnect}
@@ -4458,11 +4474,19 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled
  * dialog of its own on top of this one. The buckets are asked for when this
  * first shows connected, which is the only moment the list is wanted.
  */
-function CloudflareMethod({ t, status, busy, account, onAccountChange, onConnect, onChooseAccount, onChooseBucket, onDisconnect }: {
+function CloudflareMethod({ t, status, busy, account, signInUrl, onAccountChange, onConnect, onChooseAccount, onChooseBucket, onDisconnect }: {
   t: Translate;
   status: NonNullable<R2Config['cloudflare']>;
   busy: boolean;
   account: string;
+  /**
+   * The sign-in this page started but could not open a window for.
+   *
+   * Set only where the browser refused the window, and it turns the button
+   * below into a plain link to the same address - a press the browser has
+   * never been known to block.
+   */
+  signInUrl: string | null;
   onAccountChange: (id: string) => void;
   onConnect: () => void;
   onChooseAccount: () => Promise<void>;
@@ -4490,14 +4514,21 @@ function CloudflareMethod({ t, status, busy, account, onAccountChange, onConnect
     return () => { cancelled = true; };
   }, [connected, status.bucket]);
 
+  // The same button either way, so "press it again" means what it says.
+  const connectButton = (label: string, icon: ReactNode) => (signInUrl
+    ? <Button size="sm" style={brand} className="w-fit hover:opacity-90" asChild>
+      <a href={signInUrl} target="_blank" rel="noopener noreferrer">{icon}{label}</a>
+    </Button>
+    : <Button size="sm" style={brand} className="w-fit hover:opacity-90" onClick={onConnect} disabled={busy}>{icon}{label}</Button>);
+
   if (status.state === 'disconnected') {
-    return <Button size="sm" style={brand} className="w-fit hover:opacity-90" onClick={onConnect} disabled={busy}><CloudflareMark />{t('console.cfConnect')}</Button>;
+    return connectButton(t('console.cfConnect'), <CloudflareMark />);
   }
   if (status.state === 'reconnect_required') {
     return <div className="grid gap-2">
       <p className="text-xs text-muted-foreground">{t('console.cfReconnectHint')}</p>
       <div className="flex flex-wrap gap-2">
-        <Button size="sm" style={brand} className="hover:opacity-90" onClick={onConnect} disabled={busy}><RefreshCw />{t('console.cfReconnect')}</Button>
+        {connectButton(t('console.cfReconnect'), <RefreshCw />)}
         <Button variant="outline" size="sm" onClick={onDisconnect} disabled={busy}>{t('console.cfDisconnect')}</Button>
       </div>
     </div>;

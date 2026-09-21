@@ -183,13 +183,64 @@ export function whenAbandoned(watched: Window, abandoned: () => void, options: {
  * address: a window opened later, out of a promise, is a pop-up as far as the
  * browser is concerned and is blocked. Null means it was blocked anyway, and
  * the caller has to offer the address instead.
+ *
+ * Whichever way it goes is written down, because the answer does not change
+ * from one press to the next and a second failed attempt is a second pop-up
+ * warning in the browser's own bar for nothing.
  */
-export function openReturnWindow(): Window | null {
+export function openReturnWindow(storage?: PopupStorage): Window | null {
   const width = 600;
   const height = 720;
   const left = Math.max(0, window.screenX + (window.outerWidth - width) / 2);
   const top = Math.max(0, window.screenY + (window.outerHeight - height) / 2);
-  return window.open('', RETURN_WINDOW, `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`);
+  const opened = window.open('', RETURN_WINDOW, `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`);
+  savePopupsBlocked(opened === null, storage ?? safeLocalStorage());
+  return opened;
+}
+
+/** Where a browser that will not give this console a window is remembered. */
+const POPUPS_BLOCKED_KEY = 'stm-popups-blocked';
+
+export type PopupStorage = Pick<Storage, 'getItem' | 'setItem'>;
+
+/**
+ * Whether this browser has already refused this console a window.
+ *
+ * Remembered so the refusal happens once. A console inside another site's page
+ * is often in a frame that is simply not allowed to open windows at all - the
+ * answer is the same every time, and trying again on every press costs the
+ * reader a pop-up warning and costs this console the chance to offer the one
+ * thing that does work: an ordinary link they press themselves.
+ */
+export function popupsBlocked(storage?: PopupStorage): boolean {
+  try {
+    return (storage ?? safeLocalStorage())?.getItem(POPUPS_BLOCKED_KEY) === 'yes';
+  } catch {
+    return false;
+  }
+}
+
+export function savePopupsBlocked(blocked: boolean, storage?: PopupStorage): void {
+  try {
+    (storage ?? safeLocalStorage())?.setItem(POPUPS_BLOCKED_KEY, blocked ? 'yes' : 'no');
+  } catch {
+    // A private window, or site data the browser will not keep. Without it the
+    // console tries a window again next time, which is where it started.
+  }
+}
+
+/**
+ * `localStorage`, where reaching for it is not itself a throw.
+ *
+ * In a frame with site data blocked, the property access raises rather than
+ * returning null, and this runs on exactly that kind of page.
+ */
+function safeLocalStorage(): PopupStorage | undefined {
+  try {
+    return window.localStorage;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Whether this console is a document inside some other site's page. */
