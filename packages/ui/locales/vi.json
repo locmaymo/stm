@@ -600,7 +600,16 @@
     "aboutLicence": "Bản quyền © 2026 locmaymo",
     "tunnelBadge": "Nên thử",
     "tunnelWhy": "Mở SillyTavern từ điện thoại, ở bất cứ đâu",
-    "lanWhy": "Mở SillyTavern trên thiết bị khác cùng Wi-Fi"
+    "lanWhy": "Mở SillyTavern trên thiết bị khác cùng Wi-Fi",
+    "r2RestoreAllTitle": "Khôi phục máy này từ tài khoản này",
+    "r2RestoreAllBody": "Tài khoản Cloudflare này đang giữ thiết lập của {name}, ghi lần cuối {when}. Khôi phục sẽ đưa toàn bộ về đây trong một lần:",
+    "r2RestoreAllData": "Chat, nhân vật, lorebook và preset từ điểm khôi phục mới nhất.",
+    "r2RestoreAllVersion": "Đúng phiên bản SillyTavern máy đó đang chạy, sẽ cài lại nếu máy này đang ở phiên bản khác.",
+    "r2RestoreAllSettings": "Mật khẩu bảng điều khiển, mật mã mở SillyTavern, các cổng, tunnel và lịch sao lưu.",
+    "r2RestoreAllMetrics": "Lịch sử sử dụng, sẽ thay cho những gì máy này đã ghi.",
+    "r2RestoreAllPasswordWarning": "Mật khẩu bảng điều khiển sẽ đổi thành mật khẩu của máy đó. Sau khi xong hãy đăng nhập bằng mật khẩu đó.",
+    "r2RestoreAllSafety": "SillyTavern sẽ dừng trong lúc chạy, và bản sao của những gì đang có ở đây được giữ trong mục Sao lưu, nên không có gì bị vứt đi.",
+    "r2RestoreAll": "Khôi phục tất cả"
   },
   "dashboard": {
     "start": "Chạy",

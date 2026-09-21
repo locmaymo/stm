@@ -1115,6 +1115,17 @@ export interface ConsoleStatus {
    */
   readonly install: Job | null;
   readonly operation: Job | null;
+  /**
+   * Which ports this manager holds, including the one SillyTavern is on.
+   *
+   * Here because the console used to ask once, as it loaded, and the port is
+   * one of the things a restore moves: a machine brought back from the bucket
+   * started SillyTavern on the port the bucket remembered - 8004, say - while
+   * the settings page went on showing the default it had read at load, until
+   * somebody reloaded the page. Read from memory, so it costs this answer
+   * nothing.
+   */
+  readonly ports: PortSettings;
 }
 
 /** The complete allowlist written by the SillyTavern fetch instrumentation. */

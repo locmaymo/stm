@@ -32,6 +32,7 @@ import { TransferMeter } from './progress.js';
 import { MetricsStore } from './metrics.js';
 import { ActivityMeter } from './activity.js';
 import { applyManagerSettings, managerSettingsOffer, restoreFromBucketIfBlank, saveManagerSettings, type ManagerSettingsDeps } from './manager-settings.js';
+import type { ManagerSettingsRecord } from '../../../packages/contracts/src/index.js';
 import { instrumentationLoaderPath } from '../../../packages/instrumentation/src/index.js';
 import { ConfigError, ConfigStore } from '../../../packages/config/src/index.js';
 import { DEFAULT_TELEMETRY_ENDPOINT, DEFAULT_TELEMETRY_ENROLLMENT_ENDPOINT, TelemetryTransport } from '../../../packages/telemetry/src/index.js';
@@ -924,7 +925,7 @@ async function handleRequest(options: {
     await handleCloudflareCallback(context, sessions, cloudflare, r2, options.logger, handoffs, {
       store, backups, runtime, secureCookies, rateLimiter,
       restoreEverything: () => restoreAfterSignIn({
-        store, backups, r2, runtime, jobs, profiles, gateway, metrics,
+        store, backups, r2, runtime, jobs, profiles, gateway, metrics, supervisor,
         tunnel, managerTunnel, ports, firstInstall, adoptSillyTavernPort, logger: options.logger,
       }),
     });
@@ -1491,6 +1492,40 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
   if (pathname === '/api/v1/r2/settings' && method === 'POST') {
     const saved = await saveManagerSettings({ store, backups, r2, runtime, tunnel, managerTunnel, gateway, logger });
     sendJson(response, 200, { saved });
+    return;
+  }
+  /*
+   * Everything this account remembers about a machine, put back here, now.
+   *
+   * One press rather than the three it used to take - restore the settings,
+   * then notice which release they named and install it, then find the
+   * recovery point and restore that - each on a different card, each needing
+   * the reader to know the other two existed.
+   *
+   * It is the same work a Cloudflare sign-in does by itself on a blank
+   * machine, which is why it is the same function: there is one way a machine
+   * is put back together, and a press and a sign-in must not drift apart.
+   */
+  if (pathname === '/api/v1/r2/restore' && method === 'POST') {
+    /*
+     * The release the bucket remembers, installed whatever is here already.
+     *
+     * Not the first-run install, which stands down the moment it finds an
+     * installation - right for something nobody asked for, and the opposite of
+     * what a press means when the machine is on the wrong release.
+     */
+    const installRelease = async (wanted?: string | null): Promise<void> => {
+      await beginInstallation({ runtime, jobs, supervisor, profiles, backups, r2, system, metrics }, releaseToInstall(wanted));
+    };
+    // Detached: this is minutes of installing and downloading, and the console
+    // follows it as the ordinary background job it is.
+    void restoreAfterSignIn({
+      store, backups, r2, runtime, jobs, profiles, gateway, metrics, supervisor,
+      tunnel, managerTunnel, ports, firstInstall: installRelease, adoptSillyTavernPort, logger, force: true,
+    }).catch((error: unknown) => {
+      logger(logEvent('r2.settingsRestoreFailed', `[r2] this machine could not be brought back from the bucket: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
+    });
+    sendJson(response, 202, { started: true });
     return;
   }
   if (pathname === '/api/v1/r2/settings/restore' && method === 'POST') {
@@ -2061,9 +2096,10 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       tunnel: await withProxyUrl(tunnel.getState(), proxy, cloudflare, 'sillyTavern'),
       managerTunnel: await withProxyUrl(managerTunnel.getState(), proxy, cloudflare, 'manager'),
       security: gateway.getState(),
-      // Both read from memory, so they cost this answer nothing.
+      // All read from memory, so they cost this answer nothing.
       install: jobs.activeInstallation(),
       operation: jobs.activeOperation(),
+      ports: { port: ports.sillyTavern(), reserved: { manager: ports.manager, access: ports.access } },
     };
     sendJson(response, 200, status);
     return;
@@ -2610,6 +2646,24 @@ interface RestoreAfterSignInDeps {
   readonly firstInstall: (wanted?: string | null) => Promise<void>;
   /** Move the running manager onto the port the settings brought back. */
   readonly adoptSillyTavernPort: (port: number) => Promise<void>;
+  /** Stops SillyTavern around a restore that writes over a profile in use. */
+  readonly supervisor: ProcessSupervisor;
+  /**
+   * Somebody pressed Restore everything, rather than this being a sign-in.
+   *
+   * The automatic path is deliberately timid: it applies settings only where
+   * this machine has none, and brings data back only into a profile that holds
+   * nothing. That is right when nobody asked - it cannot take away anything
+   * somebody has.
+   *
+   * A press is somebody asking, in front of a card that says what it will do.
+   * Then the settings go back whatever this machine has of its own, the
+   * release the bucket remembers is installed even if another one is here
+   * already, and the newest recovery point is put into the profile - through
+   * the ordinary restore, which stops SillyTavern and takes a safety copy
+   * first, so what was here is still in the backup library afterwards.
+   */
+  readonly force?: boolean;
   readonly logger: LogSink;
 }
 
@@ -2666,7 +2720,7 @@ async function bringThisMachineBack(
    * of the argument.
    */
   await claimForThisMachine(r2, logger);
-  const restored = await restoreFromBucketIfBlank(settings, { ports: { manager: ports.manager, access: ports.access } }).catch((error: unknown) => {
+  const restored = await restoreSettings(deps, settings).catch((error: unknown) => {
     logger(logEvent('r2.settingsRestoreFailed', `[r2] the settings in the bucket could not be applied: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
     return null;
   });
@@ -2682,7 +2736,7 @@ async function bringThisMachineBack(
      * A machine put back together with months of chats and a metrics page
      * reading zero looks like a restore that half worked.
      */
-    if (await metricsFileIsEmpty(metrics.filePath)) {
+    if (deps.force || await metricsFileIsEmpty(metrics.filePath)) {
       await r2.restoreMetricsFile(metrics.filePath).catch((error: unknown) => {
         logger(logEvent('r2.metricsRecoveryFailed', `[r2] the usage history could not be brought back: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
         return null;
@@ -2707,7 +2761,95 @@ async function bringThisMachineBack(
    * and nothing else while the reader sat waiting for something to happen.
    */
   if (!profile) { await deps.firstInstall(restored?.record.versionRef); return; }
+  /*
+   * A press, onto a machine that already has an installation and a profile.
+   *
+   * The automatic path stops here - it writes only into an empty profile - and
+   * stopping here is exactly what somebody pressing Restore everything did not
+   * want.
+   *
+   * Which of the two things they get depends on what is already here. A
+   * machine running a different release than the bucket remembers is
+   * reinstalled onto that release, and installing makes a profile of its own,
+   * which is empty, which the install then fills from the bucket - the whole
+   * of the press in the path that already existed. A machine already on the
+   * right release only needs the data, so the newest recovery point goes in
+   * through the ordinary restore: SillyTavern stopped, a safety copy of what
+   * is here taken, and the point put in its place.
+   */
+  if (deps.force) {
+    const wanted = restored?.record.versionRef ?? null;
+    const active = await deps.runtime.getActiveInstallation();
+    if (wanted && active?.resolvedRef !== wanted) { await deps.firstInstall(wanted); return; }
+    await refillProfile(deps, profile, running);
+    return;
+  }
   await recoverEmptyProfile(() => Promise.resolve(profile), r2, backups, jobs, metrics.filePath, running);
+}
+
+/**
+ * The settings in the bucket, applied as far as this run is allowed to.
+ *
+ * A sign-in applies them only onto a machine that has none of its own; a press
+ * applies them whatever this machine has, because that is what the press said.
+ * Either way what comes back is reported, because it carries more than was
+ * applied: which release this machine was running is not a setting to write
+ * down, it is a thing to go and install.
+ */
+async function restoreSettings(
+  deps: RestoreAfterSignInDeps,
+  settings: ManagerSettingsDeps,
+): Promise<{ readonly applied: readonly string[]; readonly record: ManagerSettingsRecord } | null> {
+  const ports = { manager: deps.ports.manager, access: deps.ports.access };
+  if (!deps.force) return await restoreFromBucketIfBlank(settings, { ports });
+  const record = await deps.r2.loadManagerSettings().catch(() => null);
+  if (!record) return null;
+  const result = await applyManagerSettings(settings, record, { passwords: true, schedules: true, ports });
+  // The gateway is holding the credential and the binding this machine had a
+  // moment ago, neither of which is what it has just been told to use.
+  const state = await deps.store.getPersisted();
+  deps.gateway.setPassword(state.accessPasswordHash, state.accessPasscode);
+  await deps.gateway.setLan(state.accessLanEnabled).catch(() => undefined);
+  return { applied: result.applied, record };
+}
+
+/**
+ * Put the newest recovery point over a profile that already has data in it.
+ *
+ * Only ever from a press. The restore underneath is the one the Data page
+ * uses: it stops SillyTavern, takes a safety copy into the backup library, and
+ * replaces the profile - so somebody who pressed this having misread the card
+ * still has what they had, under Backups.
+ */
+async function refillProfile(
+  deps: RestoreAfterSignInDeps,
+  profile: Profile,
+  running: { readonly job: Job; readonly signal: AbortSignal },
+): Promise<void> {
+  const { r2, backups, jobs, supervisor, logger } = deps;
+  const newest = (await r2.listSnapshots())[0];
+  if (!newest) {
+    logger(logEvent('r2.recoveryFailed', '[r2] no recovery point in the bucket could be brought back: the bucket holds none', { reason: 'the bucket holds none' }));
+    return;
+  }
+  const meter = new TransferMeter();
+  const { manifest } = await fetchSnapshotToLibrary({
+    profile, r2, backups, snapshotId: newest.id, sourceProfileId: newest.profileId, signal: running.signal,
+    logger: (line) => jobs.append('backup', line),
+    onProgress: (progress) => {
+      const { percent, params } = meter.update(progress);
+      jobs.updateOperation(running.job.id, percent, logEvent('job.fetchingChunks', `Fetching ${String(params.done)} of ${String(params.total)} - ${String(params.rate)}, ${String(params.eta)} left`, params));
+    },
+  });
+  const archivePath = await backups.getArchivePath(manifest.id);
+  if (!archivePath) throw new Error('the fetched recovery point could not be found in the backup library');
+  await restoreWithProcess({
+    profile, backups, archivePath, backupId: manifest.id, mode: 'replace', force: true, supervisor,
+    signal: running.signal,
+    onProgress: (progress, step) => jobs.updateOperation(running.job.id, progress, step),
+  });
+  await r2.recordRecovery({ createdAt: newest.createdAt, fileCount: manifest.fileCount, sizeBytes: manifest.sizeBytes });
+  logger(logEvent('r2.recovered', `[r2] the recovery point from ${newest.createdAt} is back in this profile`, { createdAt: newest.createdAt }));
 }
 
 /**

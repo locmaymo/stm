@@ -796,6 +796,18 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
   const [managerTunnelState, setManagerTunnelState] = useState<TunnelState>({ mode: 'off', status: 'stopped', url: null, startedAt: null, error: null });
   const [configDocument, setConfigDocument] = useState<ConfigDocument | null>(null);
   const [portSettings, setPortSettings] = useState<PortSettings | null>(null);
+  /*
+   * What this account remembers about a machine, and whether it is this one.
+   *
+   * Kept here rather than on the Data page, because the offer to put a machine
+   * back together is not a fact about backups - it is the first thing somebody
+   * who has just signed in on an empty machine needs, whichever page they land
+   * on, and they land on the Overview. It sat on the Data page, below the
+   * backup table, behind a tab nobody had a reason to open yet.
+   */
+  const [settingsOffer, setSettingsOffer] = useState<ManagerSettingsOffer | null>(null);
+  const [dismissedSettings, setDismissedSettings] = useState<string | null>(() => readDismissedSettings(browserStorage()));
+  const [restoringEverything, setRestoringEverything] = useState(false);
   const [tunnelOfferOpen, setTunnelOfferOpen] = useState(false);
   const [accessSecurity, setAccessSecurity] = useState<AccessGatewayState>({ status: 'stopped', host: null, port: 8001, lan: false, passwordConfigured: false, passcode: false, sessions: 0, error: null });
   const t = translator(preferences.locale);
@@ -841,6 +853,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
 
   // Not tied to an installation: which ports this manager holds is true before
   // anything is installed, and the page that shows them says so either way.
+  // Kept current afterwards by the status poll, which a restore moves.
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
@@ -850,6 +863,40 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     void load();
     return () => { cancelled = true; };
   }, []);
+
+  /*
+   * Whether this account holds a machine's setup, and whether it is this one.
+   *
+   * Asked as the console opens and again once a background operation ends -
+   * which is when it changes, because that is when a restore has just made
+   * this machine the one the record describes. Not on a clock: reading it is a
+   * charged request to the bucket, and it is one small document.
+   */
+  const askAboutSettings = async (): Promise<void> => {
+    try {
+      const response = await apiFetch('/api/v1/r2/settings', { credentials: 'same-origin' });
+      if (!response.ok) return;
+      setSettingsOffer((await response.json() as { settings: ManagerSettingsOffer }).settings);
+    } catch {
+      // Nothing is offered, which is the same as there being nothing to offer.
+    }
+  };
+  useEffect(() => { void askAboutSettings(); }, []);
+
+  const restoreEverything = async (): Promise<void> => {
+    setRestoringEverything(true);
+    try {
+      const response = await apiFetch('/api/v1/r2/restore', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      if (!response.ok) { setRestoringEverything(false); return; }
+      // The work itself is a background job, which the console already shows
+      // with its own bar and its own Stop button. What is left here is to stop
+      // offering a card for work that has started.
+      const when = settingsOffer?.writtenAt;
+      if (when) { saveDismissedSettings(when, browserStorage()); setDismissedSettings(when); }
+    } catch {
+      setRestoringEverything(false);
+    }
+  };
 
   /*
    * The four things the console watches, in one request on one clock.
@@ -868,6 +915,10 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     setManagerTunnelState(status.managerTunnel);
     setTunnelAnswered(true);
     setAccessSecurity(status.security);
+    // A restore moves SillyTavern's port, and the page that shows it used to
+    // ask once as it loaded - so the console said 8002 over a SillyTavern on
+    // 8004 until somebody reloaded it.
+    setPortSettings(status.ports);
     /*
      * Work this machine started for itself, adopted whenever it appears.
      *
@@ -880,7 +931,13 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
      */
     // A recovery that has just finished has written into the profile, and may
     // have made the first backup this console has ever had.
-    if (backgroundJobSeen.current !== null && status.operation === null) reloadProfiles();
+    if (backgroundJobSeen.current !== null && status.operation === null) {
+      reloadProfiles();
+      // A restore that has just finished has made this machine the one the
+      // record in the bucket describes, so the card that offered it goes.
+      setRestoringEverything(false);
+      void askAboutSettings();
+    }
     backgroundJobSeen.current = status.operation?.id ?? null;
     setBackgroundJob(status.operation);
     if (status.install && installJobId === null) {
@@ -1320,6 +1377,23 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
                 and the Overview of a machine with nothing installed, where the
                 SillyTavern card is already saying it in place of its Install
                 button. */}
+            {/* Above the work, and above the page, because on a machine
+                that has just been put in front of somebody this is the whole
+                of what there is to do. */}
+            {shouldOfferSettings(settingsOffer, dismissedSettings) && settingsOffer
+              ? <div className="mb-(--section-gap)"><RestoreEverythingCard
+                t={t}
+                offer={settingsOffer}
+                busy={restoringEverything || backgroundJob !== null}
+                onRestore={() => void restoreEverything()}
+                onDismiss={() => {
+                  const when = settingsOffer.writtenAt;
+                  if (!when) return;
+                  saveDismissedSettings(when, browserStorage());
+                  setDismissedSettings(when);
+                }}
+              /></div>
+              : null}
             {backgroundJob && page !== 'data' && !(page === 'overview' && !activeInstallationId)
               ? <div className="mb-(--section-gap)"><BackgroundTaskCard t={t} catalog={catalog} job={backgroundJob} /></div>
               : null}
@@ -1344,6 +1418,54 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
       />
     </>
   );
+}
+
+/**
+ * Everything this account remembers about a machine, offered in one press.
+ *
+ * It used to take three, spread over two pages and a table: restore the
+ * settings from a notice under the backup list, notice that they named a
+ * release and go and install it, then find the newest recovery point among the
+ * rows and restore that. Each was a separate decision, each on a card somebody
+ * had to already know was there, and the one page they were on is the one page
+ * a reader has no reason to open until something has already gone wrong.
+ *
+ * So it is one card, at the top of whatever page they are looking at. What it
+ * does is listed rather than summarised, because the reader is being asked to
+ * let a machine be replaced by the memory of another one, and the console's
+ * password is in that memory.
+ */
+function RestoreEverythingCard({ t, offer, busy, onRestore, onDismiss }: {
+  t: Translate;
+  offer: ManagerSettingsOffer;
+  busy: boolean;
+  onRestore: () => void;
+  onDismiss: () => void;
+}) {
+  return <Card className="cloud-card">
+    <PanelHeading icon={<History />}>{t('console.r2RestoreAllTitle')}</PanelHeading>
+    <CardContent className="grid gap-3">
+      <p className="text-sm text-muted-foreground">
+        {t('console.r2RestoreAllBody', { name: offer.label ?? '', when: offer.writtenAt ? new Date(offer.writtenAt).toLocaleString() : '' })}
+      </p>
+      <ul className="grid gap-1 text-sm text-muted-foreground">
+        <li>{t('console.r2RestoreAllData')}</li>
+        <li>{t('console.r2RestoreAllVersion')}</li>
+        <li>{t('console.r2RestoreAllSettings')}</li>
+        <li>{t('console.r2RestoreAllMetrics')}</li>
+      </ul>
+      {/* The one part that can take something away, said where it cannot be
+          missed: this console's password becomes the other machine's. */}
+      {offer.hasAdminPassword ? <Alert><ShieldCheck /><AlertDescription>{t('console.r2RestoreAllPasswordWarning')}</AlertDescription></Alert> : null}
+      <p className="text-xs text-muted-foreground">{t('console.r2RestoreAllSafety')}</p>
+      <div className="flex flex-wrap gap-2">
+        <Button size="sm" onClick={onRestore} disabled={busy}><History />{busy ? t('common.loading') : t('console.r2RestoreAll')}</Button>
+        {/* Saying no is an answer. Without it this is a card about somebody
+            else's machine that stays on every page for good. */}
+        <Button size="sm" variant="ghost" onClick={onDismiss} disabled={busy}>{t('console.r2SettingsDismiss')}</Button>
+      </div>
+    </CardContent>
+  </Card>;
 }
 
 /**
@@ -2900,7 +3022,6 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   const [r2Snapshots, setR2Snapshots] = useState<R2SnapshotSummary[]>([]);
   const [r2Busy, setR2Busy] = useState<string | null>(null);
   const [settingsOffer, setSettingsOffer] = useState<ManagerSettingsOffer | null>(null);
-  const [dismissedSettings, setDismissedSettings] = useState<string | null>(() => readDismissedSettings(browserStorage()));
   const [dismissedRecovery, setDismissedRecovery] = useState<string | null>(() => readDismissedRecovery(browserStorage()));
   const [profileOpen, setProfileOpen] = useState(false);
   const [backupOpen, setBackupOpen] = useState(false);
@@ -3578,7 +3699,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
    * Take the bucket from the machine that holds it.
    *
   /**
-   * Put back what another machine was set to.
+   * Put back what another machine was set to - the settings alone.
    *
    * The console reloads afterwards rather than trying to reconcile what is on
    * screen with what has just changed underneath it: the password this session
@@ -3824,30 +3945,23 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
           </AlertDescription>
         </Alert> : null}
         {/*
-          * Settings another machine left here.
+          * Settings another machine left here, on their own.
           *
-          * The data coming back is half of "my computer is gone"; this is the
-          * other half - the console's password, the passcode that opens
-          * SillyTavern from a phone, the schedules, the release being run.
-          * Offered rather than applied, and never offered for settings this
-          * installation wrote itself.
+          * The card at the top of every page is the answer for somebody
+          * putting a machine back together, and it is the whole of it: the
+          * data, the release, the settings, the usage history. This is the
+          * narrow version, for somebody who is already set up and wants only
+          * the schedules and the passwords - which is a thing to come looking
+          * for on the page about backups, not a thing to be offered.
           */}
-{shouldOfferSettings(settingsOffer, dismissedSettings) && settingsOffer ? <Alert>
+        {settingsOffer?.available && !settingsOffer.mine ? <Alert>
           <Settings2 />
           <AlertTitle>{t('console.r2SettingsTitle')}</AlertTitle>
           <AlertDescription className="grid gap-2">
             <span>{t('console.r2SettingsBody', { name: settingsOffer.label ?? '', when: settingsOffer.writtenAt ? new Date(settingsOffer.writtenAt).toLocaleString() : '' })}</span>
             {settingsOffer.hasAdminPassword ? <span className="text-xs">{t('console.r2SettingsPasswordWarning')}</span> : null}
-            {/* Saying no is an answer. Without it this was a card about
-                somebody else's machine that stayed on the page for good. */}
             <span className="flex flex-wrap gap-2">
               <Button size="sm" variant="outline" onClick={() => void restoreManagerSettings()} disabled={r2Busy !== null}>{t('console.r2SettingsRestore')}</Button>
-              <Button size="sm" variant="ghost" onClick={() => {
-                const when = settingsOffer.writtenAt;
-                if (!when) return;
-                saveDismissedSettings(when, browserStorage());
-                setDismissedSettings(when);
-              }}>{t('console.r2SettingsDismiss')}</Button>
             </span>
           </AlertDescription>
         </Alert> : null}

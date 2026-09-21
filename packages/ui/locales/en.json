@@ -600,7 +600,16 @@
     "aboutLicence": "Copyright © 2026 locmaymo",
     "tunnelBadge": "Must try",
     "tunnelWhy": "Open SillyTavern from your phone, anywhere",
-    "lanWhy": "Open SillyTavern on other devices on this Wi-Fi"
+    "lanWhy": "Open SillyTavern on other devices on this Wi-Fi",
+    "r2RestoreAllTitle": "Bring this machine back from this account",
+    "r2RestoreAllBody": "This Cloudflare account holds the setup of {name}, last written {when}. Restoring puts all of it here, in one go:",
+    "r2RestoreAllData": "The chats, characters, lorebooks and presets from the newest recovery point.",
+    "r2RestoreAllVersion": "The SillyTavern release that machine was running, installed if this one is on a different release.",
+    "r2RestoreAllSettings": "The console password, the passcode for SillyTavern, the ports, the tunnels and the backup schedules.",
+    "r2RestoreAllMetrics": "The usage history, which replaces whatever this machine has recorded.",
+    "r2RestoreAllPasswordWarning": "The console password becomes that machine’s password. Sign in with that one afterwards.",
+    "r2RestoreAllSafety": "SillyTavern is stopped while this runs, and a copy of what is here now is kept under Backups, so nothing is thrown away.",
+    "r2RestoreAll": "Restore everything"
   },
   "dashboard": {
     "start": "Start",
