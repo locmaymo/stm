@@ -330,6 +330,38 @@ test('the startup setting is not readable without signing in', async (t) => {
   assert.equal(anonymous.status, 401);
 });
 
+test('a console whose cookie the browser drops signs in with the token instead', async (t) => {
+  // What a console inside another site's page is up against: its cookie is a
+  // third-party cookie, and a browser that declines to keep it leaves a panel
+  // where the password was accepted and every call after it answers 401.
+  const manager = await createServer({ bootstrapPassword: 'correct horse battery staple' });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const login = await fetch(`${base}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'correct horse battery staple' }) });
+  const body = await login.json() as { session: { csrfToken: string }; token: string };
+  assert.ok(body.token, 'the sign-in hands the session token to the panel');
+  assert.notEqual(body.token, body.session.csrfToken);
+
+  const bearer = { authorization: `Bearer ${body.token}` };
+  assert.equal((await fetch(`${base}/api/v1/process`, { headers: bearer })).status, 200);
+  // And says which session it was, so a window that has one can hand it on.
+  const probed = await fetch(`${base}/api/v1/auth/session`, { headers: bearer });
+  assert.equal(probed.status, 200);
+  assert.equal((await probed.json() as { token: string }).token, body.token);
+
+  // No cookie and no header is still nobody, and a token that was never issued
+  // is nobody either - the header is a way to present a session, not to skip one.
+  assert.equal((await fetch(`${base}/api/v1/process`)).status, 401);
+  assert.equal((await fetch(`${base}/api/v1/process`, { headers: { authorization: 'Bearer not-a-session' } })).status, 401);
+  // Nor is the address a place to put it: a token in a URL is a token in the
+  // history, the access log, and whatever Referer the next page sends.
+  assert.equal((await fetch(`${base}/api/v1/process?token=${body.token}`)).status, 401);
+
+  // Signing out ends the session however it was presented.
+  assert.equal((await fetch(`${base}/api/v1/auth/logout`, { method: 'POST', headers: { ...bearer, 'x-csrf-token': body.session.csrfToken } })).status, 200);
+  assert.equal((await fetch(`${base}/api/v1/process`, { headers: bearer })).status, 401);
+});
+
 test('authenticated admins can change the manager password without losing persistence', async (t) => {
   const manager = await createServer({ bootstrapPassword: '123456' });
   t.after(() => manager.close());
@@ -852,6 +884,33 @@ test('the console tunnel is separate from SillyTavern’s, and its address is tr
   managerTunnel.publish(null);
   const closed = await fetch(`${base}/api/v1/health`, { headers: { origin: tunnelUrl } });
   assert.equal(closed.status, 403, 'a link that is no longer open is no longer one of our addresses');
+});
+
+test('a sign-in that comes back to a window of its own still belongs to the console that started it', async (t) => {
+  // Cloudflare will not load in a frame, so a framed console sends the reader
+  // to a window of its own - where the console's cookie is not the same cookie,
+  // because a window and a frame are different places for one. The callback
+  // therefore arrives holding no session, and answering "sign in first" to
+  // somebody who never signed out is the one reply that cannot be acted on.
+  const manager = await createServer({ bootstrapPassword: 'correct horse battery staple' });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  const connect = await fetch(`${base}/api/v1/r2/cloudflare/connect`, { method: 'POST', headers: { cookie: auth.cookie, 'x-csrf-token': auth.csrfToken, origin: base } });
+  assert.equal(connect.status, 200);
+  const state = new URL((await connect.json() as { url: string }).url).searchParams.get('state') ?? '';
+
+  const returned = await fetch(`${base}/oauth/cloudflare/callback?code=an-authorization-code&state=${encodeURIComponent(state)}`, { redirect: 'manual' });
+  assert.equal(returned.status, 303);
+  const outcome = new URL(returned.headers.get('location') ?? '', base).searchParams;
+  // It gets as far as Cloudflare, which is where a test without one stops.
+  // What matters is that it was not turned away at the door.
+  assert.notEqual(outcome.get('cloudflare_error'), 'login_required');
+
+  // A callback belonging to no sign-in this manager started is still nobody:
+  // the session is taken from what is held here, not from what is handed in.
+  const forged = await fetch(`${base}/oauth/cloudflare/callback?code=an-authorization-code&state=${encodeURIComponent(encodeState(base))}`, { redirect: 'manual' });
+  assert.equal(new URL(forged.headers.get('location') ?? '', base).searchParams.get('cloudflare_error'), 'cloudflare_state_mismatch');
 });
 
 test('an address somebody wrote down outranks one the console opened for itself', async (t) => {

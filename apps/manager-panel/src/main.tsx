@@ -1,7 +1,9 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App.js';
+import { CloudflareReturn } from './cloudflare-return.js';
 import { Gallery } from './gallery.js';
+import { cloudflareOutcome, isReturnWindow } from './oauth.js';
 import { browserEnvironment, browserStorage, readPreferences } from './preferences.js';
 import './styles.css';
 
@@ -15,14 +17,32 @@ if (!root) {
 // primitive can be looked at in both themes and at both widths before a page
 // is built out of it.
 const gallery = window.location.hash === '#gallery';
-if (gallery) {
-  const { theme, locale } = readPreferences(browserStorage(), browserEnvironment());
-  document.documentElement.classList.toggle('dark', theme === 'dark');
-  document.documentElement.lang = locale;
+
+/*
+ * A window opened to take a Cloudflare sign-in and bring it back.
+ *
+ * Decided here rather than inside the console, because the console is what it
+ * must not become: Cloudflare returns to this manager, and left alone this
+ * window would load a second signed-in console while the one the reader is
+ * looking at - in a frame somewhere, which is why a window was needed at all -
+ * carried on showing the sign-in screen. See oauth.ts.
+ */
+const returning = isReturnWindow(window) ? cloudflareOutcome(window.location.search) : null;
+
+// Neither of these is the console, and the console is what usually settles the
+// theme and the language, so the two of them settle it here instead.
+const chrome = gallery || returning ? readPreferences(browserStorage(), browserEnvironment()) : null;
+if (chrome) {
+  document.documentElement.classList.toggle('dark', chrome.theme === 'dark');
+  document.documentElement.lang = chrome.locale;
 }
 
 createRoot(root).render(
-  <StrictMode>{gallery ? <Gallery /> : <App />}</StrictMode>,
+  <StrictMode>
+    {returning
+      ? <CloudflareReturn outcome={returning.outcome} code={returning.code} locale={chrome?.locale ?? 'en'} />
+      : gallery ? <Gallery /> : <App />}
+  </StrictMode>,
 );
 
 /*

@@ -11,6 +11,13 @@
  * Because it forwards to an address it is handed, it only does so on its own for
  * the places a manager usually runs. Anywhere else it shows the address and waits
  * for a click, so it cannot be used as a silent redirect to another site.
+ *
+ * Those places are all addresses that reach one particular machine: this one,
+ * something on the same network, or a tunnel named for the manager at the end
+ * of it. Shared hosting is deliberately not among them - a whole provider's
+ * domain admits every tenant on it, so forwarding there on sight would hand
+ * anyone who rents a subdomain a redirect out of this page. Managers hosted
+ * that way are one click away instead, which is the price of not being one.
  */
 
 export const CALLBACK_PATH = '/oauth/cloudflare/callback';
@@ -39,7 +46,6 @@ export function isUsualManagerHost(hostname) {
   const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
   if (host === 'localhost' || host.endsWith('.localhost') || host === '::1' || host.endsWith('.local')) return true;
   if (host.endsWith('.trycloudflare.com')) return true;
-  if (host === 'modelscope.ai' || host.endsWith('.modelscope.ai') || host === 'ms.fun' || host.endsWith('.ms.fun')) return true;
   const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
   if (!ipv4) return false;
   const [a, b] = [Number(ipv4[1]), Number(ipv4[2])];

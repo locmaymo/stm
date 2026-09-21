@@ -76,12 +76,13 @@ test('signing in to Cloudflare connects the backup bucket end to end, and discon
   assert.equal(csrfless.status, 403);
 
   const stateParam = await beginConnect(base, auth);
-  // Without the admin's session the callback cannot finish, and says why.
-  const anonymous = await callback(base, { state: stateParam, code: 'good-code' });
-  assert.equal(anonymous.status, 303);
-  assert.equal(anonymous.headers.get('location'), '/?cloudflare=error&cloudflare_error=login_required#data');
-
-  const landed = await callback(base, { state: stateParam, code: 'good-code' }, auth.cookie);
+  // The callback arrives carrying no session at all and finishes anyway,
+  // because the sign-in remembers which console started it. That is not an
+  // edge case: Cloudflare refuses to load in a frame, so a framed console
+  // sends the reader to a window of its own, and a window is not the same
+  // place for a cookie that a frame is. The browser that comes back is
+  // therefore not the browser that left, as far as the session goes.
+  const landed = await callback(base, { state: stateParam, code: 'good-code' });
   assert.equal(landed.status, 303);
   assert.equal(landed.headers.get('location'), '/?cloudflare=connected#data');
   assert.equal(landed.headers.get('referrer-policy'), 'no-referrer');
@@ -119,6 +120,14 @@ test('a callback that does not match the sign-in, or that Cloudflare refused, la
   assert.equal(denied.headers.get('location'), '/?cloudflare=error&cloudflare_error=cloudflare_authorization_denied#data');
   const config = await (await fetch(`${base}/api/v1/r2`, { headers: { cookie: auth.cookie } })).json() as ConfigBody;
   assert.equal(config.config.mode, 'keys');
+
+  // A sign-in belongs to the console that started it, so it ends when that
+  // console does. Signing out while away at Cloudflare leaves nobody for the
+  // callback to finish on behalf of, which is what this still has to say.
+  const abandoned = await beginConnect(base, auth);
+  assert.equal((await fetch(`${base}/api/v1/auth/logout`, { method: 'POST', headers: { cookie: auth.cookie, 'x-csrf-token': auth.csrf, origin: base } })).status, 200);
+  const orphaned = await callback(base, { state: abandoned, code: 'good-code' });
+  assert.equal(orphaned.headers.get('location'), '/?cloudflare=error&cloudflare_error=login_required#data');
 });
 
 test('with several accounts the panel is sent to choose, and choosing connects', async (t) => {

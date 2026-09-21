@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createSessionWatch, isSessionRefusal } from '../src/session.js';
+import { createSessionWatch, isSessionRefusal, sessionToken, setSessionToken } from '../src/session.js';
 
 function responder(statuses: readonly number[]) {
   let index = 0;
@@ -38,6 +38,44 @@ test('a call site can still set its own options', async () => {
   await watch.fetch('/api/v1/process', { method: 'POST', headers: { 'x-csrf-token': 'abc' } });
   assert.equal(stub.seen[0]?.method, 'POST');
   assert.equal(stub.seen[0]?.credentials, 'same-origin');
+});
+
+test('the session token rides along, for a browser that keeps no cookie', async () => {
+  // Inside another site's page the cookie is a third-party cookie and may
+  // never be stored. The header is what keeps that console signed in.
+  const stub = responder([200]);
+  const watch = createSessionWatch(stub.fetch, () => 'token-value');
+  await watch.fetch('/api/v1/process');
+  assert.equal(new Headers(stub.seen[0]?.headers).get('authorization'), 'Bearer token-value');
+});
+
+test('a call site that set its own authorization keeps it', async () => {
+  const stub = responder([200]);
+  const watch = createSessionWatch(stub.fetch, () => 'token-value');
+  await watch.fetch('/api/v1/process', { headers: { authorization: 'Bearer something-else' } });
+  assert.equal(new Headers(stub.seen[0]?.headers).get('authorization'), 'Bearer something-else');
+});
+
+test('a console with no token sends no header at all', async () => {
+  const stub = responder([200]);
+  const watch = createSessionWatch(stub.fetch, () => null);
+  await watch.fetch('/api/v1/process');
+  assert.equal(new Headers(stub.seen[0]?.headers).has('authorization'), false);
+});
+
+test('the token is held and given up', () => {
+  setSessionToken('token-value');
+  assert.equal(sessionToken(), 'token-value');
+  setSessionToken(null);
+  assert.equal(sessionToken(), null);
+});
+
+test('a refusal throws the token away, so a reload does not present it again', async () => {
+  setSessionToken('token-value');
+  const stub = responder([401]);
+  const watch = createSessionWatch(stub.fetch);
+  await watch.fetch('/api/v1/process');
+  assert.equal(sessionToken(), null);
 });
 
 test('the expiry is announced once, however many calls are refused', async () => {

@@ -35,10 +35,14 @@ test('a query that did not come from a manager sign-in goes nowhere', () => {
 });
 
 test('usual manager addresses forward at once; anything else waits for a click', () => {
-  for (const host of ['localhost', '127.0.0.1', '10.0.0.8', '172.20.1.1', '192.168.1.5', '100.101.102.103', 'nas.local', '[::1]', 'blue-sky.trycloudflare.com', 'locmay-stm.ms.fun', 'www.modelscope.ai']) {
+  for (const host of ['localhost', '127.0.0.1', '10.0.0.8', '172.20.1.1', '192.168.1.5', '100.101.102.103', 'nas.local', '[::1]', 'blue-sky.trycloudflare.com']) {
     assert.equal(isUsualManagerHost(host), true, host);
   }
-  for (const host of ['evil.example', '172.32.0.1', '8.8.8.8', 'trycloudflare.com.evil.example', 'modelscope.ai.evil.example']) {
+  // Shared hosting waits for the click like anywhere else: one provider's
+  // domain is every tenant on it, and none of them is this manager in
+  // particular. The cost is a click; the alternative is a redirect out of
+  // this page that anyone who rents a subdomain there can aim.
+  for (const host of ['evil.example', '172.32.0.1', '8.8.8.8', 'trycloudflare.com.evil.example', 'stm.example-host.app', 'a-studio.example-cloud.com']) {
     assert.equal(isUsualManagerHost(host), false, host);
   }
   const custom = decide(`?code=abc&state=${encodeState('https://tavern.example.com')}`);
