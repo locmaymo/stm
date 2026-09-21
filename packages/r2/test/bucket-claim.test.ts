@@ -54,16 +54,28 @@ test('one machine backs up to an account, and the second is told whose it is', a
   assert.equal(seen?.mine, false);
   await assert.rejects(second.r2.reconcile(), (error: unknown) => error instanceof R2Error && error.code === 'r2_in_use');
 
-  // Taking over is asked for by hand, and takes the other machine's key off
-  // the Worker so it stops at its next request rather than at its next check.
+  // Signing in takes it, and takes the other machine's key off the Worker so
+  // it stops at its next request rather than at its next check. Nobody is
+  // asked: whoever just signed in holds the account, and the machine they are
+  // sitting in front of is the one they mean.
   const config = await second.r2.takeOwnership();
   assert.deepEqual(config.owner, { label: 'studio', lastSeenAt: new Date(clock.now).toISOString(), mine: true });
   assert.equal((await second.r2.inspect()).ok, true);
 
-  // And now it is the first machine that stops.
+  /*
+   * And now it is the first machine that stops - knowing why, and by whom.
+   *
+   * This is the half that was missing. The first machine went on backing up
+   * until a request came back `401 unauthorized`, which named nobody and left
+   * nothing to press. The fact is in the claim, so the refusal carries the
+   * other machine's name and the one thing there is to do about it.
+   */
   const turned = await first.r2.inspect();
   assert.equal(turned.ok, false);
   assert.equal(turned.failure?.code, 'r2_in_use');
+  assert.match(turned.failure?.message ?? '', /studio/u);
+  assert.match(turned.failure?.message ?? '', /Sign in to Cloudflare again/u);
+  assert.equal((await first.r2.getConfig()).owner?.mine, false);
 });
 
 /*

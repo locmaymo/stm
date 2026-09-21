@@ -3577,20 +3577,6 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   /**
    * Take the bucket from the machine that holds it.
    *
-   * Pressed by somebody who has read whose it is, so it does not ask again.
-   * The check that follows is the proof: it is the first thing this manager
-   * does as the holder, and it either works or says why not.
-   */
-  const takeOverR2 = async () => {
-    setR2Busy(t('console.r2TakeOver'));
-    try {
-      const response = await apiFetch('/api/v1/r2/cloudflare/takeover', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
-      const payload = await response.json() as { config?: R2Config; error?: { message?: string } };
-      if (!response.ok || !payload.config) { failed(fail.body(payload, t('console.r2TakeOverFailed'))); return; }
-      setR2Config(payload.config);
-      done(t('console.r2TakenOver'));
-    } catch { failed(t('console.r2TakeOverFailed')); } finally { setR2Busy(null); }
-  };
   /**
    * Put back what another machine was set to.
    *
@@ -3817,19 +3803,24 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
           * indistinguishable from a machine that happened to still have it.
           */}
         {/*
-          * Another machine is using this account.
+          * Another manager signed in with this Cloudflare account and took it.
           *
           * One manager per bucket: two of them never see each other's recovery
-          * points but do collect each other's chunks. The one that is not the
-          * holder stops and says so here, with the one thing there is to do
-          * about it - take it over, which stops the other one.
+          * points but do collect each other's chunks. Which one wins is no
+          * longer a question anybody is asked - signing in takes it - so the
+          * machine that lost is the only one with something to be told, and
+          * until now the only thing it was told was `401 unauthorized`, with
+          * nothing to press.
+          *
+          * The way back is the same way the other machine took it: sign in to
+          * Cloudflare again, here.
           */}
         {r2Config?.owner && !r2Config.owner.mine ? <Alert variant="destructive">
           <ShieldCheck />
-          <AlertTitle>{t('console.r2InUseTitle')}</AlertTitle>
+          <AlertTitle>{t('console.r2DisplacedTitle')}</AlertTitle>
           <AlertDescription className="grid gap-2">
-            <span>{t('console.r2InUseBody', { name: r2Config.owner.label, when: new Date(r2Config.owner.lastSeenAt).toLocaleString() })}</span>
-            <span><Button size="sm" variant="outline" onClick={() => void takeOverR2()} disabled={r2Busy !== null}>{t('console.r2TakeOver')}</Button></span>
+            <span>{t('console.r2DisplacedBody', { name: r2Config.owner.label, when: new Date(r2Config.owner.lastSeenAt).toLocaleString() })}</span>
+            <span><Button size="sm" style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }} className="hover:opacity-90" onClick={() => void connectCloudflare()} disabled={cloudflareBusy}><CloudflareMark />{t('console.r2DisplacedSignIn')}</Button></span>
           </AlertDescription>
         </Alert> : null}
         {/*

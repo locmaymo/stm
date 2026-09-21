@@ -23,7 +23,7 @@ import {
 import type { CloudflareAccountProblem, CloudflareConnectionState, CloudflareConnectionStatus } from '../../contracts/src/index.js';
 import type { PlatformPaths } from '../../platform/src/index.js';
 import { RequestPacer, RestObjectStore } from './rest.js';
-import { R2Error, type Billing, type ObjectRecord, type ObjectStore } from './store.js';
+import { R2Error, R2HttpError, type Billing, type ObjectRecord, type ObjectStore } from './store.js';
 import { WorkerObjectStore } from './worker-store.js';
 
 const CONNECTION_FILE = 'cloudflare-connection.json';
@@ -416,7 +416,33 @@ export class CloudflareConnection {
     const route = async <T>(operation: (store: ObjectStore) => Promise<T>): Promise<T> => {
       const path = await this.choosePath();
       this.lastPath = path;
-      return await operation(path === 'worker' ? workerStore : await restStore());
+      if (path !== 'worker') return await operation(await restStore());
+      try {
+        return await operation(workerStore);
+      } catch (error: unknown) {
+        /*
+         * The Worker does not know this key any more.
+         *
+         * Which happens for one reason in practice: another manager signed in
+         * with this Cloudflare account and took it, and taking it removes the
+         * other machine's key. The refusal itself says none of that - it is a
+         * flat `401 unauthorized`, which is what the console used to show and
+         * what nobody could act on.
+         *
+         * The fact is in the bucket, in the claim, and reading the claim needs
+         * a way in. The OAuth grant still works - eviction only removed a
+         * Worker key - so the data goes the slow way for a while, this request
+         * finishes, and the next check reads the claim and can finally say who
+         * took the account and what to do about it.
+         */
+        if (!(error instanceof R2HttpError) || error.status !== 401) throw error;
+        this.session = null;
+        this.opening = null;
+        this.workerUnavailableUntil = this.now() + WORKER_RETRY_MS;
+        this.lastPath = 'rest';
+        await this.recordError('The backup Worker no longer accepts this machine’s key, so backups go over the slower REST API while this is sorted out.');
+        return await operation(await restStore());
+      }
     };
     return {
       listObjects: async (prefix: string, maxKeys: number, cursor?: string): Promise<{ objects: ObjectRecord[]; cursor: string | undefined }> => await route((store) => store.listObjects(prefix, maxKeys, cursor)),

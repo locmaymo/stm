@@ -894,9 +894,20 @@ export class R2Manager {
     const now = this.now().getTime();
     const claim = await readClaim(this.client(config), CLAIM_KEY);
     if (claim && claim.keyId !== keyId && !claimIsStale(claim, now)) {
+      /*
+       * Another manager signed in with this account and took it.
+       *
+       * Signing in is what takes it now, so this is never a surprise to
+       * whoever did it - and it is always a surprise to this machine, which
+       * was backing up a minute ago and has no way of knowing why it stopped.
+       * The claim is the only place that says who, so it is written down here
+       * for the console to read: the answer is to sign in to Cloudflare again
+       * from this machine, which takes it back the same way.
+       */
       await this.rememberClaim(claim, false);
       await this.recordCharges();
-      throw new R2Error('r2_in_use', `Another installation (${claim.label}) is backing up to this bucket. Take it over from this machine, or disconnect this Cloudflare account.`);
+      this.logger(logEvent('r2.displaced', `[r2] ${claim.label} signed in with this Cloudflare account, so this machine has stopped backing up; sign in to Cloudflare again here to take it back`, { label: claim.label }));
+      throw new R2Error('r2_in_use', `${claim.label} signed in with this Cloudflare account, so this machine has stopped backing up. Sign in to Cloudflare again from this machine to take it back.`);
     }
     const mine: BucketClaim = {
       schemaVersion: 1,

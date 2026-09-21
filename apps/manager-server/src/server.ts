@@ -2438,6 +2438,7 @@ async function handleCloudflareRequest(context: RequestContext, cloudflare: Clou
     const name = isRecord(body) && typeof body.name === 'string' ? body.name.trim() : '';
     if (!name) { sendError(response, 400, 'invalid_bucket', 'A bucket name is required'); return; }
     const status = await cloudflare.chooseBucket(name);
+    if (status.state === 'connected') await claimForThisMachine(r2, logger);
     sendJson(response, 200, { cloudflare: status, config: await r2.getConfig() });
     return;
   }
@@ -2448,24 +2449,13 @@ async function handleCloudflareRequest(context: RequestContext, cloudflare: Clou
     const status = await cloudflare.chooseAccount(accountId, await r2.keysBucket());
     if (status.state === 'connected') {
       await r2.update({ mode: 'cloudflare', enabled: true });
+      await claimForThisMachine(r2, logger);
       // There is somewhere to put the fixed addresses now. Not waited for: a
       // deploy takes seconds and the reader is waiting to see their account
       // connected, not to see two Workers appear.
       publishProxies();
     }
     sendJson(response, 200, { cloudflare: status, config: await r2.getConfig() });
-    return;
-  }
-  if (pathname === '/api/v1/r2/cloudflare/takeover' && method === 'POST') {
-    /*
-     * This machine takes the bucket, and the one that had it stops.
-     *
-     * Asked for by hand because the alternative is a machine deciding for
-     * itself that another one is finished with an account - which, for the
-     * pair of machines somebody is deliberately running side by side, is a
-     * decision nobody asked it to make.
-     */
-    sendJson(response, 200, { config: await r2.takeOwnership(), cloudflare: await cloudflare.status() });
     return;
   }
   if (pathname === '/api/v1/r2/cloudflare/disconnect' && method === 'POST') {
@@ -2666,32 +2656,21 @@ async function bringThisMachineBack(
   running: { readonly job: Job; readonly signal: AbortSignal },
 ): Promise<void> {
   const { r2, backups, jobs, profiles, metrics, ports, logger } = deps;
+  /*
+   * The bucket first, before anything needs to write to it.
+   *
+   * It may be claimed by whatever this machine used to be - the claim lives in
+   * the bucket precisely so that it outlives the disk - or by a different
+   * machine on the same account. Either way the person who just signed in
+   * holds the account and is sitting in front of this one, which is the whole
+   * of the argument.
+   */
+  await claimForThisMachine(r2, logger);
   const restored = await restoreFromBucketIfBlank(settings, { ports: { manager: ports.manager, access: ports.access } }).catch((error: unknown) => {
     logger(logEvent('r2.settingsRestoreFailed', `[r2] the settings in the bucket could not be applied: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
     return null;
   });
   if (restored) {
-    /*
-     * The bucket, before anything else needs to write to it.
-     *
-     * It may still be claimed by whatever this machine used to be: the claim
-     * lives in the bucket precisely so that it outlives the disk, and a
-     * machine that has just been wiped comes back holding none of the
-     * identifiers it left. Taken here rather than asked about, because
-     * `restored` is only true on a manager that had no settings of its own -
-     * it has nothing to protect, and the claim standing in its way is its own
-     * from yesterday.
-     *
-     * Without this, the first backup after a sign-in was refused with
-     * "another machine is backing up to this bucket", naming this machine,
-     * and the console offered a Take over button for a machine that does not
-     * exist any more. Recovering the profile was refused for the same reason,
-     * so a sign-in meant to bring everything back brought nothing.
-     */
-    await r2.takeOwnership().catch((error: unknown) => {
-      logger(logEvent('r2.takeOwnershipFailed', `[r2] this machine could not take the bucket: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
-      return null;
-    });
     /*
      * The usage history, which is not part of a recovery point and so comes
      * back on its own.
@@ -2728,19 +2707,6 @@ async function bringThisMachineBack(
    * and nothing else while the reader sat waiting for something to happen.
    */
   if (!profile) { await deps.firstInstall(restored?.record.versionRef); return; }
-  /*
-   * A profile that exists and is empty is the older shape of the same case: an
-   * installation survived and its data did not. The bucket may be claimed by
-   * what this machine used to be, and a console with data of its own is never
-   * the one being put back together, so it must not take a bucket from a
-   * machine that is still using it.
-   */
-  if (!restored && await isProfileEmpty(profile)) {
-    await r2.takeOwnership().catch((error: unknown) => {
-      logger(logEvent('r2.takeOwnershipFailed', `[r2] this machine could not take the bucket: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
-      return null;
-    });
-  }
   await recoverEmptyProfile(() => Promise.resolve(profile), r2, backups, jobs, metrics.filePath, running);
 }
 
@@ -2757,6 +2723,30 @@ async function metricsFileIsEmpty(path: string): Promise<boolean> {
   } catch {
     return true;
   }
+}
+
+/**
+ * The machine that just signed in becomes the machine that backs up.
+ *
+ * Signing in to Cloudflare is proof of holding the account, and the account
+ * holder's newest manager is the one they mean: somebody who moved to a new
+ * machine has thrown the old one away, and the old one is the one that used to
+ * win. It used to take a button, on a console that first had to work out why
+ * its backups had stopped - and what it was told was `401 unauthorized`.
+ *
+ * So it is not asked about any more. The claim in the bucket moves here, the
+ * other machine's Worker key goes with it, and that machine finds out at its
+ * next check and is told who took it and how to take it back: sign in again,
+ * from there.
+ *
+ * Best effort. A sign-in that worked is not undone by a bucket that could not
+ * be written to, and the claim is read before every write anyway.
+ */
+async function claimForThisMachine(r2: R2Manager, logger: LogSink): Promise<void> {
+  await r2.takeOwnership().catch((error: unknown) => {
+    logger(logEvent('r2.takeOwnershipFailed', `[r2] this machine could not take the bucket: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
+    return null;
+  });
 }
 
 /** What finishing a Cloudflare sign-in needs beyond the connection itself. */
