@@ -31,7 +31,7 @@ import { fetchSnapshotToLibrary, isProfileEmpty, recoverProfileFromR2 } from './
 import { TransferMeter } from './progress.js';
 import { MetricsStore } from './metrics.js';
 import { ActivityMeter } from './activity.js';
-import { applyManagerSettings, managerSettingsOffer, restoreFromBucketIfBlank, saveManagerSettings, type ManagerSettingsDeps } from './manager-settings.js';
+import { applyManagerSettings, foreignManagerSettings, managerSettingsOffer, restoreFromBucketIfBlank, saveManagerSettings, type ManagerSettingsDeps } from './manager-settings.js';
 import type { ManagerSettingsRecord } from '../../../packages/contracts/src/index.js';
 import { instrumentationLoaderPath } from '../../../packages/instrumentation/src/index.js';
 import { ConfigError, ConfigStore } from '../../../packages/config/src/index.js';
@@ -1530,7 +1530,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
   }
   if (pathname === '/api/v1/r2/settings/restore' && method === 'POST') {
     const body = await readJson(request);
-    const record = await r2.loadManagerSettings().catch(() => null);
+    const record = await foreignManagerSettings({ store, backups, r2, runtime, tunnel, managerTunnel, gateway, logger });
     if (!record) { sendError(response, 404, 'manager_settings_missing', 'This account holds no manager settings'); return; }
     const result = await applyManagerSettings({ store, backups, r2, runtime, tunnel, managerTunnel, gateway, adoptSillyTavernPort, logger }, record, {
       // Both default to on: somebody who asked for this asked for all of it,
@@ -2802,7 +2802,9 @@ async function restoreSettings(
 ): Promise<{ readonly applied: readonly string[]; readonly record: ManagerSettingsRecord } | null> {
   const ports = { manager: deps.ports.manager, access: deps.ports.access };
   if (!deps.force) return await restoreFromBucketIfBlank(settings, { ports });
-  const record = await deps.r2.loadManagerSettings().catch(() => null);
+  // The machine the card named, which may be the record kept beside the
+  // current one; see `foreignManagerSettings`.
+  const record = await foreignManagerSettings(settings);
   if (!record) return null;
   const result = await applyManagerSettings(settings, record, { passwords: true, schedules: true, ports });
   // The gateway is holding the credential and the binding this machine had a

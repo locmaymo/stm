@@ -12,7 +12,7 @@ import type { TunnelManager } from '../../../packages/tunnel/src/index.js';
 import type { AccessGateway } from '../src/gateway.js';
 import type { TunnelState } from '../../../packages/contracts/src/index.js';
 import { StateStore } from '../src/state.js';
-import { applyManagerSettings, currentManagerSettings, managerSettingsOffer, saveManagerSettings, type ManagerSettingsDeps } from '../src/manager-settings.js';
+import { applyManagerSettings, currentManagerSettings, foreignManagerSettings, managerSettingsOffer, saveManagerSettings, type ManagerSettingsDeps } from '../src/manager-settings.js';
 import { hashPassword, verifyPassword } from '../src/password.js';
 import { releaseToInstall } from '../src/server.js';
 
@@ -42,6 +42,14 @@ function sharedBucket(): { fetchImpl: typeof fetch; objects: Map<string, Buffer>
       const body = objects.get(key);
       if (!body) return new Response('<Error><Code>NoSuchKey</Code></Error>', { status: 404 });
       return new Response(new Uint8Array(body), { status: 200 });
+    }
+    // Honoured rather than merely acknowledged: the copy of a record kept
+    // across a handover is thrown away by deleting it, and a fake that keeps
+    // it would let this pass over a console that goes on offering settings it
+    // has already restored.
+    if (method === 'DELETE') {
+      objects.delete(key);
+      return new Response('', { status: 204 });
     }
     return new Response('', { status: 200 });
   };
@@ -152,8 +160,9 @@ test('a machine that is gone leaves behind enough to be a machine again', async 
   assert.equal((await desktop.r2.getConfig()).schedule.hotIntervalMinutes, 15);
   assert.equal((await desktop.r2.getConfig()).retention.keepDaily, 7);
 
-  // And now it is this machine's record, so it is not offered again.
-  assert.equal((await managerSettingsOffer(desktop)).mine, true);
+  // And now it is this machine's record, so there is nothing left to offer -
+  // including the copy kept aside while the handover was still unanswered.
+  assert.equal((await managerSettingsOffer(desktop)).available, false);
 });
 
 test('only the parts that were asked for are put back', async () => {
@@ -275,4 +284,52 @@ test('a machine put back together installs the release it was running', async ()
   assert.equal(releaseToInstall(null), 'latest');
   assert.equal(releaseToInstall(''), 'latest');
   assert.equal(releaseToInstall('../../etc/passwd'), 'latest');
+});
+
+test('the machine being offered survives this one writing its own settings', async () => {
+  /*
+   * One bucket describes one machine, so a machine that takes the bucket
+   * writes its own settings over whatever was there. That is right - it is the
+   * machine now - and it was quietly destroying the thing the console was in
+   * the middle of offering.
+   *
+   * The window was one scheduler tick. Sign in on a machine that is already
+   * set up, wait about a minute, and the card still said "this account holds
+   * the setup of <the old machine>" while the record behind it had become this
+   * machine's own - so pressing Restore everything restored this machine onto
+   * itself, and the log named the wrong machine while doing it. Seen against a
+   * live account before it was written down here.
+   */
+  const bucket = sharedBucket();
+  const laptop = await machine(bucket.fetchImpl, 'laptop');
+  await laptop.store.saveAdminPassword(hashPassword('console password'));
+  await laptop.backups.setSchedule({ intervalMinutes: 180 });
+  assert.equal(await saveManagerSettings(laptop), true);
+
+  const desktop = await machine(bucket.fetchImpl, 'desktop');
+  await desktop.store.saveAdminPassword(hashPassword('a different password'));
+  await desktop.backups.setSchedule({ intervalMinutes: 15 });
+  assert.equal((await managerSettingsOffer(desktop)).label, 'laptop');
+
+  // The scheduler, a minute after signing in.
+  assert.equal(await saveManagerSettings(desktop), true);
+
+  // The current record is this machine's now, and the laptop is still the
+  // machine the console is offering to bring back.
+  assert.equal((await desktop.r2.loadManagerSettings())?.label, 'desktop');
+  const offer = await managerSettingsOffer(desktop);
+  assert.equal(offer.available, true);
+  assert.equal(offer.label, 'laptop');
+  assert.equal(offer.mine, false);
+
+  // And restoring it restores the laptop, not this machine onto itself.
+  const record = await foreignManagerSettings(desktop);
+  assert.equal(record?.label, 'laptop');
+  await applyManagerSettings(desktop, record!, { passwords: true, schedules: true, ports: { manager: 7860, access: 8001 } });
+  const state = await desktop.store.getPersisted();
+  assert.ok(state.adminPasswordHash && verifyPassword('console password', state.adminPasswordHash));
+  assert.equal((await desktop.backups.getSchedule()).intervalMinutes, 180);
+
+  // Answered, so it stops being offered.
+  assert.equal((await managerSettingsOffer(desktop)).available, false);
 });

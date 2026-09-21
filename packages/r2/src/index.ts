@@ -12,7 +12,7 @@ import { S3ObjectStore, type R2Credentials } from './s3.js';
 import { R2Error, type Billing, type ObjectRecord, type ObjectStore } from './store.js';
 import { claimIsStale, readClaim, writeClaim, CLAIM_OBJECT, CLAIM_REFRESH_MS, type BucketClaim } from './owner.js';
 import { addOperations, monthKey, readUsage, writeUsage, USAGE_FLUSH_MS, USAGE_OBJECT } from './usage-record.js';
-import { readManagerSettings, settingsUnchanged, writeManagerSettings, MANAGER_SETTINGS_MIN_INTERVAL_MS, MANAGER_SETTINGS_OBJECT } from './manager-settings.js';
+import { readManagerSettings, settingsUnchanged, writeManagerSettings, MANAGER_SETTINGS_MIN_INTERVAL_MS, MANAGER_SETTINGS_OBJECT, MANAGER_SETTINGS_PREVIOUS_OBJECT } from './manager-settings.js';
 import { readMetricsArchive, writeMetricsArchive, METRICS_OBJECT } from './metrics-archive.js';
 import {
   blobKey,
@@ -52,6 +52,7 @@ const SNAPSHOT_PREFIX = `${OBJECT_PREFIX}snapshots/`;
 const CLAIM_KEY = `${OBJECT_PREFIX}${CLAIM_OBJECT}`;
 const USAGE_KEY = `${OBJECT_PREFIX}${USAGE_OBJECT}`;
 const MANAGER_SETTINGS_KEY = `${OBJECT_PREFIX}${MANAGER_SETTINGS_OBJECT}`;
+const MANAGER_SETTINGS_PREVIOUS_KEY = `${OBJECT_PREFIX}${MANAGER_SETTINGS_PREVIOUS_OBJECT}`;
 const METRICS_KEY = `${OBJECT_PREFIX}${METRICS_OBJECT}`;
 /** How long Cloudflare's usage figures are reused before asking again. */
 const CLOUD_USAGE_TTL_MS = 15 * 60 * 1000;
@@ -737,7 +738,7 @@ export class R2Manager {
       const config = await this.requireUsable();
       const client = this.client(config);
       const objects = await this.listAll(config, OBJECT_PREFIX, client);
-      const legacy = objects.filter((object) => !object.key.startsWith(BLOB_PREFIX) && !object.key.startsWith(SNAPSHOT_PREFIX) && object.key !== CLAIM_KEY && object.key !== USAGE_KEY && object.key !== MANAGER_SETTINGS_KEY && object.key !== METRICS_KEY);
+      const legacy = objects.filter((object) => !object.key.startsWith(BLOB_PREFIX) && !object.key.startsWith(SNAPSHOT_PREFIX) && object.key !== CLAIM_KEY && object.key !== USAGE_KEY && object.key !== MANAGER_SETTINGS_KEY && object.key !== MANAGER_SETTINGS_PREVIOUS_KEY && object.key !== METRICS_KEY);
       let bytes = 0;
       for (const object of legacy) {
         await client.deleteObject(object.key);
@@ -1220,6 +1221,22 @@ export class R2Manager {
         await this.recordCharges();
         return false;
       }
+      /*
+       * The record being replaced, kept, when it belongs to another machine.
+       *
+       * This is a handover: one bucket describes one machine, and this one is
+       * now that machine. But the console may be in the middle of offering to
+       * put the other machine back, and this write is the only thing standing
+       * between the reader and that offer - a minute after signing in, the
+       * card still named the old machine while the record behind it had
+       * already become this one's.
+       *
+       * Best effort, and before the write rather than after: a copy that fails
+       * must not stop this machine's settings from being kept at all.
+       */
+      if (stored && stored.installId && full.installId && stored.installId !== full.installId) {
+        await writeManagerSettings(client, MANAGER_SETTINGS_PREVIOUS_KEY, stored).catch(() => undefined);
+      }
       await writeManagerSettings(client, MANAGER_SETTINGS_KEY, full);
       this.settingsSent = full;
       this.settingsSentAt = now.getTime();
@@ -1321,6 +1338,45 @@ export class R2Manager {
     const config = await this.requireUsable();
     try {
       return await readManagerSettings(this.client(config), MANAGER_SETTINGS_KEY);
+    } finally {
+      await this.recordCharges().catch(() => undefined);
+    }
+  }
+
+  /**
+   * Throw the kept copy away, once somebody has done something about it.
+   *
+   * It exists to survive the window between a handover and the reader
+   * answering the card, and a copy nobody threw away would be offered again
+   * for the life of the bucket - including to the machine that has just
+   * finished restoring it.
+   *
+   * Best effort: an offer that comes back once is a card to dismiss, not data
+   * lost.
+   */
+  public async forgetPreviousManagerSettings(): Promise<void> {
+    const config = await this.load();
+    if (!config.enabled) return;
+    try {
+      await this.client(config).deleteObject(MANAGER_SETTINGS_PREVIOUS_KEY);
+    } catch {
+      // Already gone is the outcome that was wanted.
+    } finally {
+      await this.recordCharges().catch(() => undefined);
+    }
+  }
+
+  /**
+   * The record this bucket held before the machine using it changed.
+   *
+   * Written only on a handover; see `MANAGER_SETTINGS_PREVIOUS_OBJECT`. The
+   * console reads it when the current record turns out to be this machine's
+   * own, which is what a machine that has already signed in finds.
+   */
+  public async loadPreviousManagerSettings(): Promise<ManagerSettingsRecord | null> {
+    const config = await this.requireUsable();
+    try {
+      return await readManagerSettings(this.client(config), MANAGER_SETTINGS_PREVIOUS_KEY);
     } finally {
       await this.recordCharges().catch(() => undefined);
     }
@@ -1634,7 +1690,7 @@ function summarizeObjects(objects: readonly ObjectRecord[]): { blobs: Map<string
     // for, and how the manager that wrote it is set up. None of them is data,
     // none is an archive, and none is something the legacy sweep may take
     // away from the manager that wrote it.
-    if (object.key === CLAIM_KEY || object.key === USAGE_KEY || object.key === MANAGER_SETTINGS_KEY || object.key === METRICS_KEY) continue;
+    if (object.key === CLAIM_KEY || object.key === USAGE_KEY || object.key === MANAGER_SETTINGS_KEY || object.key === MANAGER_SETTINGS_PREVIOUS_KEY || object.key === METRICS_KEY) continue;
     // Whole-ZIP archives from the version before this one. They are not
     // read and not deleted behind the operator's back; the panel offers it.
     legacyObjectCount += 1;
