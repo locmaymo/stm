@@ -38,7 +38,7 @@ export interface ProxyWorkerOptions {
   readonly stateDirectory: string;
   readonly fetchImpl?: typeof fetch;
   readonly now?: () => Date;
-  readonly logger?: (message: string, params?: Record<string, string | number>) => void;
+  readonly logger?: (code: string, message: string, params?: Record<string, string | number>) => void;
 }
 
 /**
@@ -64,7 +64,7 @@ export class ProxyWorkerManager {
   private readonly stateDirectory: string;
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => Date;
-  private readonly logger: (message: string, params?: Record<string, string | number>) => void;
+  private readonly logger: (code: string, message: string, params?: Record<string, string | number>) => void;
   private stored: StoredProxyState | null = null;
   private writeQueue: Promise<void> = Promise.resolve();
   /** One publish per target at a time, so two tunnel changes cannot interleave. */
@@ -170,7 +170,7 @@ export class ProxyWorkerManager {
     try {
       await this.publish(stored.accountId, target, origin);
     } catch (error: unknown) {
-      this.logger(`[cloudflare] the fixed address for ${target === 'manager' ? 'the console' : 'SillyTavern'} could not be brought back to the tunnel that is up: ${error instanceof Error ? error.message : 'unknown error'}`, { target });
+      this.logger('cloudflare.proxyRepublishFailed', `[cloudflare] the fixed address for ${target === 'manager' ? 'the console' : 'SillyTavern'} could not be brought back to the tunnel that is up: ${error instanceof Error ? error.message : 'unknown error'}`, { target, reason: error instanceof Error ? error.message : 'unknown error' });
     }
   }
 
@@ -230,9 +230,13 @@ export class ProxyWorkerManager {
       publishedAt: this.now().toISOString(),
     };
     await this.save({ ...forAccount, subdomain, workers: { ...forAccount.workers, [target]: record } });
-    this.logger(wanted
-      ? `[cloudflare] ${record.url} now forwards to ${wanted}`
-      : `[cloudflare] ${record.url} has no tunnel behind it and says so`, { url: record.url, ...(wanted ? { origin: wanted } : {}) });
+    this.logger(
+      wanted ? 'cloudflare.proxyForwarding' : 'cloudflare.proxyIdle',
+      wanted
+        ? `[cloudflare] ${record.url} now forwards to ${wanted}`
+        : `[cloudflare] ${record.url} has no tunnel behind it and says so`,
+      { url: record.url, ...(wanted ? { origin: wanted } : {}) },
+    );
     return record;
   }
 
@@ -257,7 +261,7 @@ export class ProxyWorkerManager {
     const workers = { ...stored.workers };
     delete workers[target];
     await this.save({ ...stored, workers });
-    this.logger(`[cloudflare] the ${name} Worker was removed`, { name });
+    this.logger('cloudflare.proxyRemoved', `[cloudflare] the ${name} Worker was removed`, { name });
     return true;
   }
 

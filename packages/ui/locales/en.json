@@ -726,7 +726,9 @@
       "dataErased": "Every file this manager kept was erased ({count} directories)",
       "dataPartlyErased": "{count} directories were erased and {failed} would not go",
       "browserOpened": "Opened {url}",
-      "requestFailed": "Request failed: {reason}"
+      "requestFailed": "Request failed: {reason}",
+      "portMoved": "Port {from} is already in use; the console is on {to} instead",
+      "portTaken": "Port {port} was asked for and is already in use; starting there anyway and letting it fail"
     },
     "setup": {
       "passwordBootstrapped": "Admin password taken from STM_ADMIN_PASSWORD"
@@ -734,7 +736,11 @@
     "config": {
       "updated": "Updated {path}",
       "managedDefaults": "Returned the managed settings in {path} to their defaults",
-      "restoredDefaults": "Restored {path} to the defaults shipped with {ref}"
+      "restoredDefaults": "Restored {path} to the defaults shipped with {ref}",
+      "portAdoptFailed": "SillyTavern could not be moved onto the restored port {port}: {reason}",
+      "portBusy": "Port {port} is in use and no free port was found near it; SillyTavern will start there and may fail",
+      "portMoved": "Port {from} is already in use; SillyTavern is on {to} instead",
+      "portReset": "SillyTavern’s port {port} is no longer usable ({reason}); using {fallback}"
     },
     "sillytavern": {
       "starting": "Starting {ref} on 127.0.0.1:{port}",
@@ -753,7 +759,8 @@
       "stoppedShutdown": "Stopped: the manager is shutting down",
       "stoppedStartupFailed": "Stopped: it did not finish starting",
       "exited": "Exited on its own ({detail})",
-      "stoppedUninstall": "Stopped: removing SillyTavern"
+      "stoppedUninstall": "Stopped: removing SillyTavern",
+      "autoStartOff": "Not started: starting it with the manager is switched off"
     },
     "installer": {
       "ready": "Installation {ref} is ready",
@@ -765,7 +772,10 @@
       "removedLegacyCopy": "Removed legacy runtime copy {id}",
       "canceled": "The installation was stopped",
       "canceledCleanup": "The stopped installation was removed",
-      "removed": "SillyTavern was removed; your profiles were left alone"
+      "removed": "SillyTavern was removed; your profiles were left alone",
+      "firstRun": "Installing SillyTavern, because this manager has just been set up and has none",
+      "firstRunPinned": "Installing SillyTavern {version}, the release this machine was running before it was lost",
+      "firstRunFailed": "The first installation could not be started: {reason}"
     },
     "install": {
       "waiting": "Waiting to start",
@@ -843,7 +853,8 @@
       "reconnecting": "Reconnecting in {seconds}s",
       "resuming": "Restoring the tunnel that was running before",
       "resumeFailed": "The tunnel could not be restored: {reason}",
-      "stateNotSaved": "The tunnel setting could not be saved: {reason}"
+      "stateNotSaved": "The tunnel setting could not be saved: {reason}",
+      "transportSwitched": "{reason}; trying again over HTTP/2"
     },
     "r2": {
       "uploaded": "Uploaded {name} ({bytes} bytes)",
@@ -853,7 +864,35 @@
       "reconciled": "{chunks} stored chunk(s), {size}; collected {collected}",
       "legacyRemoved": "Removed {count} archive(s) in the old whole-file format, {size}",
       "fetching": "Fetching recovery point {createdAt} ({files} files)",
-      "fetched": "Recovery point {createdAt} is in the backup library as {name}"
+      "fetched": "Recovery point {createdAt} is in the backup library as {name}",
+      "awaitingInstall": "The bucket holds {count} recovery point(s), the newest from {createdAt}; installing SillyTavern brings the newest one back automatically",
+      "checkFailed": "The bucket could not be read: {reason}",
+      "checked": "The bucket answered: {objects} object(s), {size}, {points} recovery point(s)",
+      "claimed": "This machine ({label}) is now the one backing up to this bucket",
+      "claimReleaseFailed": "The bucket claim could not be given up: {reason}",
+      "claimTaken": "The previous machine ({label}) had not used this bucket for days, so this one took it over",
+      "claimTakenOver": "This machine took the bucket over from {label}",
+      "cloudflareConnectFailed": "Connecting to Cloudflare failed: {reason}",
+      "metricsRecoveryFailed": "The usage history could not be brought back: {reason}",
+      "metricsRestored": "Brought back {size} of usage history",
+      "metricsSynced": "Sent {chunks} chunk(s) of the usage log, now {size}",
+      "recovered": "The recovery point from {createdAt} is back in this profile",
+      "recovering": "This profile is empty and the bucket holds a recovery point from {createdAt}; bringing it back",
+      "recoveryFailed": "No recovery point in the bucket could be brought back: {reason}",
+      "recoveryPointFailed": "The recovery point from {createdAt} could not be read back ({reason}); trying the one before it",
+      "recoveryUnavailable": "The bucket could not be checked for a recovery point: {reason}",
+      "settingsOffered": "This account holds settings from another machine; they are on the Data page rather than applied, because this one is already set up",
+      "settingsRestored": "Restored the manager’s settings from {from}: {applied}",
+      "settingsRestoreFailed": "The settings in the bucket could not be applied: {reason}",
+      "settingsSaved": "The manager’s own settings are in the bucket, so a new machine can pick them up",
+      "settingsSaveSkipped": "The manager’s own settings could not be saved to the bucket: {reason}",
+      "takeOwnershipFailed": "This machine could not take the bucket: {reason}",
+      "targetChanged": "Backups now go to a different bucket, which already holds {chunks} chunk(s); only what it is missing is sent",
+      "uploadNowSettings": "The manager’s own settings are up to date in the bucket",
+      "uploadNowSettingsSame": "The bucket already holds these manager settings",
+      "uploadNowMetrics": "The usage history is up to date in the bucket ({chunks} chunk(s) sent)",
+      "uploadNowMetricsSame": "The bucket already holds this usage history",
+      "usageRecordSkipped": "The bucket’s own count of charged operations could not be updated: {reason}"
     },
     "job": {
       "preparingBackup": "Preparing backup",
@@ -909,7 +948,29 @@
       "signedIn": "Signed in from {address}",
       "rejected": "Refused a sign-in from {address}",
       "upstreamFailed": "The request for {path} did not reach SillyTavern: {reason}",
-      "signedOutAll": "Signed every device out of SillyTavern ({count})"
+      "signedOutAll": "Signed every device out of SillyTavern ({count})",
+      "consoleSession": "Opened SillyTavern for the signed-in console",
+      "portMoved": "Port {from} is already in use; the access gateway is on {to} instead",
+      "portTaken": "Port {port} was asked for and is already in use",
+      "targetPort": "Now serving SillyTavern on port {port}"
+    },
+    "storage": {
+      "notDurable": "{path} is on {filesystem}, which this machine does not keep across a restart; connect Cloudflare R2 so backups are held somewhere else",
+      "notVerified": "This manager cannot tell whether {path} survives a restart here, so treat it as storage that may be temporary; connect Cloudflare R2 so backups are held somewhere else"
+    },
+    "cloudflare": {
+      "proxyFailed": "The fixed address could not be updated: {reason}",
+      "proxyRemoveFailed": "A fixed address Worker could not be removed: {reason}",
+      "proxyRepublishFailed": "The fixed address could not be pointed back at the tunnel that is up: {reason}",
+      "proxyForwarding": "{url} now forwards to {origin}",
+      "proxyIdle": "{url} has no tunnel behind it and says so",
+      "proxyRemoved": "The {name} Worker was removed"
+    },
+    "auth": {
+      "cloudflareSignedIn": "Signed in with the Cloudflare account {account}",
+      "cloudflareRefused": "A Cloudflare sign-in was refused: this manager belongs to {owner}",
+      "cloudflareFailed": "Signing in with Cloudflare failed: {reason}",
+      "cloudflareRestoreFailed": "This machine could not be restored after signing in: {reason}"
     }
   },
   "system": {

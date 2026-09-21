@@ -257,7 +257,11 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     ? new ProxyWorkerManager({
       api: cloudflare.cloudflareApi(),
       stateDirectory: paths.state,
-      logger: (message, params) => logger(logEvent('cloudflare.proxyPublished', message, params)),
+      // The Worker manager names its own lines, so they can be read in the
+      // reader's language like every other line the manager writes. It used to
+      // hand over one code for all of them, which left the English text as the
+      // only thing there was to show.
+      logger: (code, message, params) => logger(logEvent(code, message, params)),
     })
     : null);
   /**
@@ -544,7 +548,11 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   try {
     sillyTavernPort = checkSillyTavernPort(persisted.sillyTavernPort, { manager: consolePort, access: accessPort });
   } catch (error: unknown) {
-    logger(logEvent('config.portReset', `[config] SillyTavern's port ${persisted.sillyTavernPort} is no longer usable (${error instanceof Error ? error.message : 'unknown reason'}); using ${SILLYTAVERN_PORT}`, { port: persisted.sillyTavernPort }));
+    logger(logEvent('config.portReset', `[config] SillyTavern's port ${persisted.sillyTavernPort} is no longer usable (${error instanceof Error ? error.message : 'unknown reason'}); using ${SILLYTAVERN_PORT}`, {
+      port: persisted.sillyTavernPort,
+      fallback: SILLYTAVERN_PORT,
+      reason: error instanceof Error ? error.message : 'unknown reason',
+    }));
     sillyTavernPort = SILLYTAVERN_PORT;
   }
   /*

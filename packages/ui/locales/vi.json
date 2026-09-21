@@ -726,7 +726,9 @@
       "dataErased": "Đã xoá mọi tệp trình quản lý này giữ ({count} thư mục)",
       "dataPartlyErased": "Đã xoá {count} thư mục, còn {failed} thư mục không xoá được",
       "browserOpened": "Đã mở {url}",
-      "requestFailed": "Yêu cầu thất bại: {reason}"
+      "requestFailed": "Yêu cầu thất bại: {reason}",
+      "portMoved": "Cổng {from} đang bị chiếm; bảng điều khiển chạy ở {to} thay thế",
+      "portTaken": "Cổng {port} được yêu cầu nhưng đang bị chiếm; vẫn khởi động ở đó và để nó báo lỗi"
     },
     "setup": {
       "passwordBootstrapped": "Đã lấy mật khẩu quản trị từ STM_ADMIN_PASSWORD"
@@ -734,7 +736,11 @@
     "config": {
       "updated": "Đã cập nhật {path}",
       "managedDefaults": "Đã đưa các thiết lập do trình quản lý giữ trong {path} về mặc định",
-      "restoredDefaults": "Đã khôi phục {path} về mặc định của bản {ref}"
+      "restoredDefaults": "Đã khôi phục {path} về mặc định của bản {ref}",
+      "portAdoptFailed": "Không chuyển được SillyTavern sang cổng {port} vừa khôi phục: {reason}",
+      "portBusy": "Cổng {port} đang bị chiếm và không tìm được cổng trống nào gần đó; SillyTavern vẫn khởi động ở đó và có thể lỗi",
+      "portMoved": "Cổng {from} đang bị chiếm; SillyTavern chạy ở {to} thay thế",
+      "portReset": "Cổng {port} của SillyTavern không còn dùng được ({reason}); dùng {fallback}"
     },
     "sillytavern": {
       "starting": "Đang khởi động {ref} trên 127.0.0.1:{port}",
@@ -753,7 +759,8 @@
       "stoppedShutdown": "Đã dừng: trình quản lý đang tắt",
       "stoppedStartupFailed": "Đã dừng: khởi động không hoàn tất",
       "exited": "Tự thoát ({detail})",
-      "stoppedUninstall": "Đã dừng: đang gỡ SillyTavern"
+      "stoppedUninstall": "Đã dừng: đang gỡ SillyTavern",
+      "autoStartOff": "Chưa khởi động: tuỳ chọn khởi động cùng trình quản lý đang tắt"
     },
     "installer": {
       "ready": "Bản cài {ref} đã sẵn sàng",
@@ -765,7 +772,10 @@
       "removedLegacyCopy": "Đã xoá bản sao runtime cũ {id}",
       "canceled": "Đã dừng cài đặt",
       "canceledCleanup": "Đã xoá bản cài dở dang",
-      "removed": "Đã gỡ SillyTavern; hồ sơ của bạn vẫn còn nguyên"
+      "removed": "Đã gỡ SillyTavern; hồ sơ của bạn vẫn còn nguyên",
+      "firstRun": "Đang cài SillyTavern, vì trình quản lý vừa được thiết lập và chưa có bản nào",
+      "firstRunPinned": "Đang cài SillyTavern {version}, đúng phiên bản máy này chạy trước khi bị mất",
+      "firstRunFailed": "Không khởi động được lần cài đặt đầu tiên: {reason}"
     },
     "install": {
       "waiting": "Đang chờ bắt đầu",
@@ -843,7 +853,8 @@
       "reconnecting": "Sẽ kết nối lại sau {seconds}s",
       "resuming": "Đang mở lại đường dẫn công khai đã chạy trước đó",
       "resumeFailed": "Không mở lại được đường dẫn công khai: {reason}",
-      "stateNotSaved": "Không lưu được thiết lập đường dẫn công khai: {reason}"
+      "stateNotSaved": "Không lưu được thiết lập đường dẫn công khai: {reason}",
+      "transportSwitched": "{reason}; đang thử lại qua HTTP/2"
     },
     "r2": {
       "uploaded": "Đã tải {name} lên ({bytes} byte)",
@@ -853,7 +864,35 @@
       "reconciled": "{chunks} khối đang lưu, {size}; đã thu hồi {collected}",
       "legacyRemoved": "Đã xoá {count} bản lưu định dạng nguyên tệp cũ, {size}",
       "fetching": "Đang tải điểm khôi phục {createdAt} ({files} tệp)",
-      "fetched": "Điểm khôi phục {createdAt} đã nằm trong thư viện sao lưu với tên {name}"
+      "fetched": "Điểm khôi phục {createdAt} đã nằm trong thư viện sao lưu với tên {name}",
+      "awaitingInstall": "Bucket đang giữ {count} điểm khôi phục, mới nhất từ {createdAt}; cài SillyTavern sẽ tự lấy lại điểm mới nhất",
+      "checkFailed": "Không đọc được bucket: {reason}",
+      "checked": "Bucket đã trả lời: {objects} đối tượng, {size}, {points} điểm khôi phục",
+      "claimed": "Máy này ({label}) giờ là máy đang sao lưu vào bucket này",
+      "claimReleaseFailed": "Không trả lại được quyền giữ bucket: {reason}",
+      "claimTaken": "Máy trước ({label}) đã nhiều ngày không dùng bucket này, nên máy này tiếp quản",
+      "claimTakenOver": "Máy này đã tiếp quản bucket từ {label}",
+      "cloudflareConnectFailed": "Kết nối tới Cloudflare thất bại: {reason}",
+      "metricsRecoveryFailed": "Không lấy lại được lịch sử sử dụng: {reason}",
+      "metricsRestored": "Đã lấy lại {size} lịch sử sử dụng",
+      "metricsSynced": "Đã gửi {chunks} mảnh của nhật ký sử dụng, hiện là {size}",
+      "recovered": "Điểm khôi phục từ {createdAt} đã trở lại hồ sơ này",
+      "recovering": "Hồ sơ này đang trống và bucket có một điểm khôi phục từ {createdAt}; đang lấy về",
+      "recoveryFailed": "Không lấy lại được điểm khôi phục nào trong bucket: {reason}",
+      "recoveryPointFailed": "Không đọc lại được điểm khôi phục từ {createdAt} ({reason}); đang thử điểm trước đó",
+      "recoveryUnavailable": "Không kiểm tra được bucket để tìm điểm khôi phục: {reason}",
+      "settingsOffered": "Tài khoản này đang giữ thiết lập của một máy khác; thiết lập nằm ở trang Dữ liệu chứ không được áp dụng, vì máy này đã được thiết lập rồi",
+      "settingsRestored": "Đã khôi phục thiết lập của trình quản lý từ {from}: {applied}",
+      "settingsRestoreFailed": "Không áp dụng được thiết lập trong bucket: {reason}",
+      "settingsSaved": "Thiết lập của trình quản lý đã nằm trong bucket, nên một máy mới có thể lấy về",
+      "settingsSaveSkipped": "Không lưu được thiết lập của trình quản lý vào bucket: {reason}",
+      "takeOwnershipFailed": "Máy này không tiếp quản được bucket: {reason}",
+      "targetChanged": "Bản sao lưu giờ đi tới một bucket khác, nơi đã có sẵn {chunks} mảnh; chỉ gửi phần còn thiếu",
+      "uploadNowSettings": "Thiết lập của trình quản lý đã được cập nhật trong bucket",
+      "uploadNowSettingsSame": "Bucket đã có sẵn thiết lập này của trình quản lý",
+      "uploadNowMetrics": "Lịch sử sử dụng đã được cập nhật trong bucket (đã gửi {chunks} mảnh)",
+      "uploadNowMetricsSame": "Bucket đã có sẵn lịch sử sử dụng này",
+      "usageRecordSkipped": "Không cập nhật được số thao tác tính phí mà bucket tự ghi: {reason}"
     },
     "job": {
       "preparingBackup": "Đang chuẩn bị sao lưu",
@@ -909,7 +948,29 @@
       "signedIn": "Đã đăng nhập từ {address}",
       "rejected": "Đã từ chối một lần đăng nhập từ {address}",
       "upstreamFailed": "Yêu cầu tới {path} không đến được SillyTavern: {reason}",
-      "signedOutAll": "Đã đăng xuất mọi thiết bị khỏi SillyTavern ({count})"
+      "signedOutAll": "Đã đăng xuất mọi thiết bị khỏi SillyTavern ({count})",
+      "consoleSession": "Đã mở SillyTavern cho bảng điều khiển đang đăng nhập",
+      "portMoved": "Cổng {from} đang bị chiếm; cổng truy cập chạy ở {to} thay thế",
+      "portTaken": "Cổng {port} được yêu cầu nhưng đang bị chiếm",
+      "targetPort": "Đang phục vụ SillyTavern ở cổng {port}"
+    },
+    "storage": {
+      "notDurable": "{path} nằm trên {filesystem}, máy này không giữ lại sau khi khởi động lại; hãy kết nối Cloudflare R2 để bản sao lưu nằm ở nơi khác",
+      "notVerified": "Trình quản lý không thể biết chắc {path} có còn sau khi khởi động lại hay không, nên hãy coi đây là bộ nhớ có thể chỉ là tạm thời; hãy kết nối Cloudflare R2 để bản sao lưu nằm ở nơi khác"
+    },
+    "cloudflare": {
+      "proxyFailed": "Không cập nhật được địa chỉ cố định: {reason}",
+      "proxyRemoveFailed": "Không gỡ được Worker của địa chỉ cố định: {reason}",
+      "proxyRepublishFailed": "Không trỏ được địa chỉ cố định về tunnel đang chạy: {reason}",
+      "proxyForwarding": "{url} bây giờ chuyển tiếp tới {origin}",
+      "proxyIdle": "{url} không có tunnel nào phía sau và sẽ báo đúng như vậy",
+      "proxyRemoved": "Đã gỡ Worker {name}"
+    },
+    "auth": {
+      "cloudflareSignedIn": "Đã đăng nhập bằng tài khoản Cloudflare {account}",
+      "cloudflareRefused": "Một lần đăng nhập Cloudflare bị từ chối: trình quản lý này thuộc về {owner}",
+      "cloudflareFailed": "Đăng nhập bằng Cloudflare thất bại: {reason}",
+      "cloudflareRestoreFailed": "Không khôi phục được máy này sau khi đăng nhập: {reason}"
     }
   },
   "system": {
