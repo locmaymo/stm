@@ -1180,12 +1180,22 @@ export class R2Manager {
    * Never throws. A bucket that cannot be reached means the settings are not
    * backed up this time, which is not a reason to fail whatever asked.
    */
-  public async saveManagerSettings(record: Omit<ManagerSettingsRecord, 'label' | 'writtenAt'>): Promise<boolean> {
+  public async saveManagerSettings(record: Omit<ManagerSettingsRecord, 'label' | 'writtenAt'>, options: { readonly force?: boolean } = {}): Promise<boolean> {
     const config = await this.load();
     if (!config.enabled) return false;
     const now = this.now();
     const full: ManagerSettingsRecord = { ...record, schemaVersion: 1, label: this.installationLabel, writtenAt: now.toISOString() };
-    if (settingsUnchanged(this.settingsSent, full) && now.getTime() - this.settingsSentAt < MANAGER_SETTINGS_MIN_INTERVAL_MS) return false;
+    /*
+     * The shortcut that makes this free on the scheduler's clock, and that a
+     * person pressing a button must not be given.
+     *
+     * Somebody who presses Back up now is asking about the bucket, not about
+     * what this process happens to remember sending. The memory is wrong
+     * whenever the bucket has moved underneath it - another machine wrote
+     * over the record, or this one failed a write and does not know it - and
+     * in exactly those cases the press has to go and look.
+     */
+    if (!options.force && settingsUnchanged(this.settingsSent, full) && now.getTime() - this.settingsSentAt < MANAGER_SETTINGS_MIN_INTERVAL_MS) return false;
     try {
       await this.requireUsable();
       const client = this.client(config);
@@ -1223,26 +1233,23 @@ export class R2Manager {
    * Runs on the slow clock. The log is written on every request SillyTavern
    * makes, so on the fast one it would be the only thing ever being sent.
    */
-  /**
-   * Whether this installation has ever put its usage log in the bucket.
-   *
-   * Read off this machine's own record rather than by asking the bucket, so
-   * the question costs nothing and can be asked on every tick. The scheduler
-   * asks it to let the first upload go up straight away instead of waiting for
-   * the slow clock - see the note there.
-   */
-  public async metricsArchived(): Promise<boolean> {
-    return (await this.load()).lastMetrics !== null;
-  }
-
-  public async syncMetricsFile(path: string): Promise<{ readonly uploadedChunks: number; readonly sizeBytes: number } | null> {
+  public async syncMetricsFile(path: string, options: { readonly force?: boolean } = {}): Promise<{ readonly uploadedChunks: number; readonly sizeBytes: number } | null> {
     const config = await this.load();
     if (!config.enabled) return null;
     const file = await hashFile(METRICS_OBJECT, path);
     if (!file || file.chunks.length === 0) return null;
-    // Nothing has been appended since the last run: the whole point of the
-    // stat is to make that case cost nothing at all.
-    if (looksUnchanged(config.lastMetrics ?? undefined, file.sizeBytes, file.mtimeMs)) return null;
+    /*
+     * Nothing has been appended since the last run: the whole point of the
+     * stat is to make that case cost nothing at all.
+     *
+     * Skipped for a press, for the same reason the settings skip theirs. The
+     * record it compares against is this machine's note of what it believes
+     * it sent, and a press is how somebody asks whether that belief is true.
+     * The chunks it then finds are almost always already in the ledger, so
+     * looking costs a hash of a file this machine already has and nothing on
+     * the network.
+     */
+    if (!options.force && looksUnchanged(config.lastMetrics ?? undefined, file.sizeBytes, file.mtimeMs)) return null;
     return await this.exclusive(async () => {
       const usable = await this.onTarget(await this.requireUsable());
       await this.requireOwnership(usable);

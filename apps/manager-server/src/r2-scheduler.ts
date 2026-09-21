@@ -36,6 +36,24 @@ const HOT_PREFIXES = [
 ];
 const HOT_FILES = ['settings.json', 'secrets.json', 'stats.json', 'config.yaml', 'config.yml'];
 
+/**
+ * How often the usage log is allowed to go up, at the most.
+ *
+ * It used to ride the slow clock, six hours by default, on the reasoning that
+ * it is appended to on every request SillyTavern makes and would otherwise be
+ * the only thing ever sent. That reasoning was about how often it *changes*,
+ * not about what sending it costs - and sending it costs a hash of a local
+ * file, plus one chunk and one small index when the file has actually grown.
+ * A few operations every quarter of an hour is a rounding error against a free
+ * month, and six hours of metrics is six hours of somebody's history that a
+ * wipe takes with it.
+ *
+ * So it gets a clock of its own, floored here and otherwise following whatever
+ * the reader chose for the frequent tier: somebody who moved that to an hour
+ * to save quota gets the same answer for this.
+ */
+const METRICS_MIN_INTERVAL_MINUTES = 15;
+
 export interface BackupSchedulerOptions {
   readonly backups: BackupStore;
   readonly profiles: ProfileStore;
@@ -52,8 +70,7 @@ export interface BackupSchedulerOptions {
    */
   readonly saveSettings?: () => Promise<unknown>;
   /**
-   * Where the log of what was asked of each provider is, so it can ride along
-   * on the slow clock.
+   * Where the log of what was asked of each provider is, so it goes up too.
    *
    * It is not profile data and does not belong in a recovery point, but it is
    * the one other thing on the machine that cannot be made again.
@@ -83,6 +100,8 @@ export class BackupScheduler {
   private lastSkip: string | null = null;
   /** When the frequent tier last went up, so its clock survives a tick that did nothing. */
   private lastHotUploadAt: number | null = null;
+  /** The same, for the usage log, which now has a clock rather than a tier. */
+  private lastMetricsUploadAt: number | null = null;
   private readonly saveSettings: () => Promise<unknown>;
   private readonly metricsFile: string | null;
 
@@ -142,6 +161,16 @@ export class BackupScheduler {
        * It does nothing when nothing has moved.
        */
       if (remote) await this.saveSettings();
+      /*
+       * The usage log, which needs no profile either.
+       *
+       * It used to be sent from inside the profile sync, behind the same early
+       * return the settings used to be behind - so a machine with nothing
+       * installed recorded usage and never sent any of it. It is not profile
+       * data, it does not belong in a recovery point, and the only thing it
+       * has in common with one is the bucket it goes to.
+       */
+      if (remote) await this.syncMetrics(config);
       const profile = await this.profiles.getActive();
       if (!profile) return;
       // Safety copies expire on a clock, not only when something new is written.
@@ -183,28 +212,36 @@ export class BackupScheduler {
     return manifest;
   }
 
+  /**
+   * The usage log, on its own clock.
+   *
+   * The first one goes up as soon as there is anything to send, whatever the
+   * clock says: until it has been up once there is nothing in the bucket for a
+   * wiped machine to come back to, so a machine wiped before its first tick
+   * lost every figure it had ever recorded and came back reading zero - which
+   * is the state every new installation starts in, on an account that is also
+   * new.
+   *
+   * After that it is the interval above. A tick where the file has not grown
+   * costs one stat and no request at all, which is what makes a quarter of an
+   * hour affordable.
+   */
+  private async syncMetrics(config: Awaited<ReturnType<R2Manager['getConfig']>>): Promise<void> {
+    if (!this.metricsFile) return;
+    const intervalMs = Math.max(config.schedule.hotIntervalMinutes, METRICS_MIN_INTERVAL_MINUTES) * 60 * 1000;
+    const due = this.lastMetricsUploadAt === null
+      ? true
+      : this.now().getTime() - this.lastMetricsUploadAt >= intervalMs;
+    if (!due) return;
+    // Recorded whether or not anything was sent: the clock is about how often
+    // the question is asked, and asking it is the part that has a cost.
+    this.lastMetricsUploadAt = this.now().getTime();
+    await this.r2.syncMetricsFile(this.metricsFile).catch(() => null);
+  }
+
   private async runRemoteSync(profile: Profile, fingerprint: string, config: Awaited<ReturnType<R2Manager['getConfig']>>): Promise<void> {
     const coldDue = await this.r2.coldDue();
     const hotDue = this.lastHotUploadAt === null || this.now().getTime() - this.lastHotUploadAt >= config.schedule.hotIntervalMinutes * 60 * 1000;
-    /*
-     * The usage log, before the profile rather than after.
-     *
-     * On the slow clock, because it is appended to on every request SillyTavern
-     * makes and on the fast clock it would be the only thing ever being sent -
-     * except for the first one, which goes up as soon as there is anything to
-     * send. Until it has been up once there is nothing in the bucket for a
-     * wiped machine to come back to, so a machine wiped before its first slow
-     * tick lost every figure it had ever recorded and came back reading zero -
-     * which is the state every new installation starts in, on an account that
-     * is also new. One upload of a log measured in kilobytes is not a cost
-     * worth six hours of that.
-     *
-     * Asked of this machine's own record, so the question itself is free, and
-     * answered yes for good after the first upload lands.
-     */
-    const metricsDue = coldDue || !await this.r2.metricsArchived();
-    if (metricsDue && this.metricsFile) await this.r2.syncMetricsFile(this.metricsFile).catch(() => null);
-
     // Nothing has changed and the slow clock is not up: the cheapest tick there
     // is, and the common one. No further request is made at all.
     if (!coldDue && (!hotDue || config.lastFingerprint === fingerprint)) return;

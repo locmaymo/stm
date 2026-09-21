@@ -1607,10 +1607,28 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
      * worth a progress bar and it keeps one.
      */
     void (async () => {
-      await saveManagerSettings({ store, backups, r2, runtime, tunnel, managerTunnel, gateway, logger });
+      /*
+       * Forced, both of them, because this is a press rather than a tick.
+       *
+       * Each of these has a shortcut that makes it free on the scheduler's
+       * clock: the settings are compared with what this process remembers
+       * sending, and the usage log with a stat this process wrote down. Both
+       * are beliefs about the bucket rather than facts about it, and a press
+       * is exactly how somebody asks whether the belief is true - so the press
+       * goes and looks. That is what "Back up now" was not doing: it reported
+       * success having sent neither, on a machine whose record in the bucket
+       * had been overwritten by another one.
+       */
+      const settingsSent = await saveManagerSettings({ store, backups, r2, runtime, tunnel, managerTunnel, gateway, logger }, { force: true });
+      jobs.append('backup', settingsSent
+        ? logEvent('r2.uploadNowSettings', '[r2] the manager’s own settings are up to date in the bucket')
+        : logEvent('r2.uploadNowSettingsSame', '[r2] the bucket already holds these manager settings'));
       // Its own catch: the usage log is the one part nobody restores by hand,
       // but it is also the one nobody would want to lose a backup over.
-      await r2.syncMetricsFile(metrics.filePath).catch(() => null);
+      const metricsSent = await r2.syncMetricsFile(metrics.filePath, { force: true }).catch(() => null);
+      jobs.append('backup', metricsSent
+        ? logEvent('r2.uploadNowMetrics', `[r2] the usage history is up to date in the bucket (${String(metricsSent.uploadedChunks)} chunk(s) sent)`, { chunks: metricsSent.uploadedChunks })
+        : logEvent('r2.uploadNowMetricsSame', '[r2] the bucket already holds this usage history'));
       await syncProfileToR2({
         profile, backups, r2, tier: 'cold', signal,
         logger: (line) => jobs.append('backup', line),

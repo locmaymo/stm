@@ -84,9 +84,15 @@ export async function currentManagerSettings(deps: ManagerSettingsDeps): Promise
   };
 }
 
-/** Put them in the bucket if they have moved since the last time. */
-export async function saveManagerSettings(deps: ManagerSettingsDeps): Promise<boolean> {
-  return await deps.r2.saveManagerSettings(await currentManagerSettings(deps));
+/**
+ * Put them in the bucket if they have moved since the last time.
+ *
+ * `force` is for a person who pressed a button: it goes and reads the record
+ * in the bucket instead of trusting what this process remembers sending. See
+ * `R2Manager.saveManagerSettings`.
+ */
+export async function saveManagerSettings(deps: ManagerSettingsDeps, options: { readonly force?: boolean } = {}): Promise<boolean> {
+  return await deps.r2.saveManagerSettings(await currentManagerSettings(deps), options);
 }
 
 /** What the panel is told about settings some machine has left in the bucket. */

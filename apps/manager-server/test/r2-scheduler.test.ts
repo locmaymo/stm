@@ -32,13 +32,8 @@ test('a local schedule that was turned off takes nothing', async () => {
   assert.deepEqual(created, []);
 });
 
-/**
- * A scheduler wired to a bucket that is on, with nothing due on any clock.
- *
- * `archived` is whether this installation has ever sent its usage log, which
- * is the only thing the first-upload rule turns on.
- */
-function remoteScheduler(options: { archived: boolean; coldDue?: boolean }) {
+/** A scheduler wired to a bucket that is on, with nothing due on any clock. */
+function remoteScheduler(options: { coldDue?: boolean; now?: () => Date } = {}) {
   const metricsSyncs: string[] = [];
   const backups = {
     isOperationRunning: () => false,
@@ -52,7 +47,6 @@ function remoteScheduler(options: { archived: boolean; coldDue?: boolean }) {
     // Nothing has moved since the last run, so the profile itself is not due.
     getConfig: async () => ({ enabled: true, configured: true, schedule: { hotIntervalMinutes: 5 }, lastFingerprint: 'unchanged' }),
     coldDue: async () => options.coldDue ?? false,
-    metricsArchived: async () => options.archived,
     syncMetricsFile: async (path: string) => { metricsSyncs.push(path); return null; },
     pruneDue: async () => false,
     reconcileDue: async () => false,
@@ -61,32 +55,61 @@ function remoteScheduler(options: { archived: boolean; coldDue?: boolean }) {
     backups, profiles, r2, logger: () => undefined,
     saveSettings: async () => false,
     metricsFile: '/tmp/usage.jsonl',
+    ...(options.now ? { now: options.now } : {}),
   });
   return { metricsSyncs, instance };
 }
 
-test('the first usage log goes up without waiting for the slow clock', async () => {
+test('the usage log goes up on a clock of its own, not on the slow tier', async () => {
   /*
-   * Until it has been up once there is nothing in the bucket for a wiped
-   * machine to come back to. A new installation on a new account - which is
-   * every first run - was six hours away from having any history worth
-   * keeping, so being wiped inside that window came back reading zero.
+   * It used to ride the six-hour clock, so a machine wiped inside that window
+   * came back reading zero - which is the state every new installation starts
+   * in, on an account that is also new. Sending it costs a hash of a local
+   * file and, when it has actually grown, one chunk and one small index; a
+   * quarter of an hour of that is a rounding error against a free month.
    */
-  const { metricsSyncs, instance } = remoteScheduler({ archived: false });
+  let clock = Date.parse('2026-01-01T00:00:00Z');
+  const { metricsSyncs, instance } = remoteScheduler({ now: () => new Date(clock) });
+
+  // The first tick, whatever the clock says: until it has been up once there
+  // is nothing in the bucket for a wiped machine to come back to.
   await instance.tick();
   assert.deepEqual(metricsSyncs, ['/tmp/usage.jsonl']);
+
+  // A minute later it is not due again, so the tick costs nothing.
+  clock += 60_000;
+  await instance.tick();
+  assert.equal(metricsSyncs.length, 1);
+
+  clock += 15 * 60_000;
+  await instance.tick();
+  assert.equal(metricsSyncs.length, 2);
 });
 
-test('once the usage log is in the bucket it goes back to the slow clock', async () => {
-  // It is appended to on every request SillyTavern makes, so on the fast clock
-  // it would be the only thing ever being sent.
-  const quiet = remoteScheduler({ archived: true });
-  await quiet.instance.tick();
-  assert.deepEqual(quiet.metricsSyncs, [], 'nothing is due, so nothing is sent');
+test('the usage log goes up on a machine with nothing installed', async () => {
+  // It is not profile data, so waiting for a profile meant a machine somebody
+  // was in the middle of setting up recorded usage and sent none of it.
+  const metricsSyncs: string[] = [];
+  const scheduler = new BackupScheduler({
+    backups: {
+      isOperationRunning: () => false,
+      pruneCreated: async () => 0,
+      fingerprint: async () => 'unchanged',
+      getSchedule: async () => ({ intervalMinutes: 0 }),
+      list: async () => [],
+    } as unknown as BackupStore,
+    profiles: { getActive: async () => null } as unknown as ProfileStore,
+    r2: {
+      getConfig: async () => ({ enabled: true, configured: true, schedule: { hotIntervalMinutes: 5 }, lastFingerprint: null }),
+      syncMetricsFile: async (path: string) => { metricsSyncs.push(path); return null; },
+    } as unknown as R2Manager,
+    logger: () => undefined,
+    saveSettings: async () => false,
+    metricsFile: '/tmp/usage.jsonl',
+  });
 
-  const slow = remoteScheduler({ archived: true, coldDue: true });
-  await slow.instance.tick();
-  assert.deepEqual(slow.metricsSyncs, ['/tmp/usage.jsonl']);
+  await scheduler.tick();
+  assert.deepEqual(metricsSyncs, ['/tmp/usage.jsonl']);
 });
 
 test('the manager’s own settings go up before there is anything installed', async () => {
