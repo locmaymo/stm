@@ -32,7 +32,7 @@ import { isThisMachine, readTunnelOfferDeclined, saveTunnelOfferDeclined, should
 import { availableUpdate, readDismissedUpdate, saveDismissedUpdate } from './updates.js';
 import { readDismissedRecovery, readDismissedSettings, saveDismissedRecovery, saveDismissedSettings, shouldOfferSettings, shouldShowRecovery } from './settings-offer.js';
 import { apiFetch, onSessionExpired, resetSessionWatch, sessionToken, setSessionToken } from './session.js';
-import { framed, openReturnWindow, readCloudflareResult, type CloudflareResult } from './oauth.js';
+import { collectCloudflareResult, framed, openReturnWindow, whenAbandoned, type CollectedResult } from './oauth.js';
 import type { AccessGatewayState, BackupManifest, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LogEntry, LogSourceFilter, ManagerSettingsOffer, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, isCloudJob, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
@@ -223,32 +223,6 @@ function AuthGate() {
     if (outcome === 'error') setSignInError(t(authErrorKey(code) as MessageKey));
   }, []);
 
-  /*
-   * The same outcomes again, from a window rather than from this one's address.
-   *
-   * A console inside another site's page cannot send itself to Cloudflare, so
-   * it opens a window and the answer comes back through that; see oauth.ts.
-   * The session comes with it, because the window has a cookie this frame may
-   * not - so this is where a framed console actually becomes signed in.
-   */
-  useEffect(() => {
-    const heard = (event: MessageEvent) => {
-      if (event.origin !== window.location.origin) return;
-      const result = readCloudflareResult(event.data);
-      if (!result) return;
-      if (result.outcome === 'error') {
-        const key = authErrorKey(result.code);
-        if (key) setSignInError(t(key));
-        return;
-      }
-      if (result.outcome !== 'signed_in' || !result.session) return;
-      setSessionToken(result.session.token);
-      signedIn(result.session.csrfToken);
-    };
-    window.addEventListener('message', heard);
-    return () => window.removeEventListener('message', heard);
-  }, [t]);
-
   useEffect(() => {
     let cancelled = false;
     void apiFetch('/api/v1/setup/status').then(async (response) => response.json() as Promise<SetupStatus>).then(async (status) => {
@@ -410,26 +384,60 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, refusal, onPr
    * a machine that has just been wiped it also brings the settings, the
    * passcode and the chats back on its own - which is the reason this exists.
    */
+  /*
+   * What the reader is waiting on while the window is open.
+   *
+   * Kept so it stops when this screen goes away, and so a second press does
+   * not leave the first one still asking.
+   */
+  const collecting = useRef<(() => void) | null>(null);
+  useEffect(() => () => collecting.current?.(), []);
+
+  const collected = (result: CollectedResult) => {
+    setCloudflareBusy(false);
+    if (result.outcome === 'error') {
+      const key = authErrorKey(result.code);
+      setError(key ? t(key) : t('setup.cloudSignInFailed'));
+      return;
+    }
+    // A sign-in that ended anywhere but signed in - an account still to be
+    // chosen, say - is not this screen's to finish, and saying nothing would
+    // leave the reader watching a spinner that has stopped meaning anything.
+    if (!result.session) { setError(t('setup.cloudSignInFailed')); return; }
+    setSessionToken(result.session.token);
+    onSignedIn(result.session.csrfToken, setup);
+  };
+
   const signInWithCloudflare = async () => {
     setHandOverUrl(null);
+    collecting.current?.();
     // Cloudflare's sign-in will not load in a frame, so a console inside
     // another site's page sends the reader to a window of its own - opened
     // now, while the click is still a click, or the browser takes it for a
-    // pop-up. What comes back arrives as a message; see oauth.ts.
+    // pop-up. That window cannot answer back, so the answer is collected from
+    // the manager instead; see oauth.ts.
     const inFrame = framed();
     const opened = inFrame ? openReturnWindow() : null;
     setCloudflareBusy(true); setError(null);
     try {
-      const response = await fetch('/api/v1/auth/cloudflare', { method: 'POST', credentials: 'same-origin' });
-      const payload = await response.json() as { url?: string; error?: { code?: string; message?: string } };
-      if (!response.ok || !payload.url) { opened?.close(); setError(fail.body(payload, t('setup.cloudSignInFailed'))); return; }
-      if (opened) { opened.location.href = payload.url; return; }
-      // A frame that may not open windows either has nowhere to send them:
-      // following the address here would only blank the console, since
-      // Cloudflare refuses to be framed. So hand the address over instead.
-      if (inFrame) { setHandOverUrl(payload.url); return; }
+      const response = await fetch(`/api/v1/auth/cloudflare${opened ? '?handoff=1' : ''}`, { method: 'POST', credentials: 'same-origin' });
+      const payload = await response.json() as { url?: string; handoff?: string; error?: { code?: string; message?: string } };
+      if (!response.ok || !payload.url) { opened?.close(); setCloudflareBusy(false); setError(fail.body(payload, t('setup.cloudSignInFailed'))); return; }
+      if (opened) {
+        opened.location.href = payload.url;
+        if (payload.handoff) {
+          const stopCollecting = collectCloudflareResult(payload.handoff, collected);
+          const stopWatching = whenAbandoned(opened, () => { stopCollecting(); setCloudflareBusy(false); });
+          collecting.current = () => { stopCollecting(); stopWatching(); };
+          return;
+        }
+      }
+      // A frame that may not open windows has nowhere to send them: following
+      // the address here would only blank the console, since Cloudflare
+      // refuses to be framed. So hand the address over instead.
+      if (inFrame) { opened?.close(); setCloudflareBusy(false); setHandOverUrl(payload.url); return; }
       window.location.assign(payload.url);
-    } catch { opened?.close(); setError(t('setup.connectionError')); } finally { setCloudflareBusy(false); }
+    } catch { opened?.close(); setCloudflareBusy(false); setError(t('setup.connectionError')); }
   };
   /*
    * The second way in, where this build has one.
@@ -2942,6 +2950,10 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
    * open a window because Cloudflare refuses to be framed - it arrives as a
    * message from that window. Both end up here.
    */
+  // Stopped when this page goes away, so a console left on another tab is not
+  // still asking about a sign-in nobody is waiting for.
+  const collecting = useRef<(() => void) | null>(null);
+  useEffect(() => () => collecting.current?.(), []);
   const settleCloudflare = (outcome: string, code: string) => {
     if (outcome === 'connected') {
       void apiFetch('/api/v1/r2', { credentials: 'same-origin' })
@@ -2976,19 +2988,6 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
     window.history.replaceState(null, '', `${window.location.pathname}${window.location.hash}`);
     settleCloudflare(outcome, code);
   }, []);
-
-  useEffect(() => {
-    const heard = (event: MessageEvent) => {
-      if (event.origin !== window.location.origin) return;
-      const result = readCloudflareResult(event.data);
-      // A sign-in is the console's business, not this page's; it is answered
-      // where the sign-in screen is.
-      if (!result || result.outcome === 'signed_in') return;
-      settleCloudflare(result.outcome, result.code);
-    };
-    window.addEventListener('message', heard);
-    return () => window.removeEventListener('message', heard);
-  }, [t]);
 
   /*
    * The R2 card follows the scheduler the same way the list does.
@@ -3379,10 +3378,20 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
     const tab = inFrame ? openReturnWindow() : null;
     setCloudflareBusy(true);
     try {
-      const response = await apiFetch('/api/v1/r2/cloudflare/connect', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
-      const payload = await response.json() as { url?: string; error?: { message?: string } };
+      // A window that was opened needs a name to bring the answer back under,
+      // because it cannot bring it back itself; see oauth.ts.
+      const response = await apiFetch(`/api/v1/r2/cloudflare/connect${tab ? '?handoff=1' : ''}`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      const payload = await response.json() as { url?: string; handoff?: string; error?: { message?: string } };
       if (!response.ok || !payload.url) { tab?.close(); failed(fail.body(payload, t('console.cfConnectFailed'))); return; }
-      if (tab) { tab.location.href = payload.url; return; }
+      if (tab) {
+        tab.location.href = payload.url;
+        if (payload.handoff) {
+          const stopCollecting = collectCloudflareResult(payload.handoff, (result) => settleCloudflare(result.outcome, result.code));
+          const stopWatching = whenAbandoned(tab, stopCollecting);
+          collecting.current = () => { stopCollecting(); stopWatching(); };
+        }
+        return;
+      }
       // A frame that is not allowed to open tabs leaves nowhere to send the
       // reader: this one cannot show Cloudflare's sign-in, and sending it
       // somewhere it will be refused would only blank the console. So hand

@@ -1,62 +1,40 @@
 import { useEffect } from 'react';
-import { CLOUDFLARE_RESULT, type CloudflareOutcome, type HandedSession } from './oauth.js';
+import type { CloudflareOutcome } from './oauth.js';
 import { translator } from './i18n.js';
 import type { LocaleCode } from './preferences.js';
 
 /**
- * The window a Cloudflare sign-in came back to, handing the result on.
+ * The window a Cloudflare sign-in came back to, getting out of the way.
  *
  * Rendered instead of the console, never beside it: the reader is looking at
- * the console in the frame, and a second one opening here - signed in, with
- * its own idea of what is going on - is the whole problem this exists to fix.
- * So this window shows a line, gives what it came back with to the window that
- * opened it, and closes.
+ * the console in the frame that sent them here, and a second one opening in
+ * this window - signed in, with its own idea of what is going on - is the
+ * whole problem this exists to avoid.
  *
- * A sign-in also carries the session. This window's own cookie works, because
- * a window of its own is not a frame and its cookie is nobody's third party;
- * the console waiting in the frame may have no cookie at all. Asking here and
- * handing over what comes back is what makes that console signed in.
+ * It carries nothing back. It cannot: the opener was severed by Cloudflare's
+ * `Cross-Origin-Opener-Policy` on the way out, and what storage this window
+ * has is in a different partition from the frame's. The answer goes home
+ * through the manager instead, and by the time this renders it is already
+ * there waiting to be collected; see oauth.ts. So this says a line and closes.
  *
- * Addressed to this exact origin. The message holds a live session token, and
- * a `*` would post it to whatever page opened this window - which, for a
- * window anybody can open at this address, is not necessarily the console.
- *
- * Having an opener is only a guess that this is such a window, because nothing
- * stronger survives the trip through Cloudflare. So the guess is checked by
- * acting on it: a window that was opened by a script closes when it asks to,
- * and one that was not is still here a moment later - and becomes the console
- * it would have been, having lost nothing but the moment.
+ * A window that will not close is one that was not opened by a script, which
+ * means it is somebody's console after all - reached by a link, with the
+ * sign-in finished in it. It becomes that console rather than sitting here.
  */
 
-/** Long enough for a window that may close to have done it. */
+/** Long enough for a window that is going to close to have done it. */
 const CLOSE_GRACE_MS = 1200;
-export function CloudflareReturn({ outcome, code, locale }: { outcome: CloudflareOutcome; code: string; locale: LocaleCode }) {
+
+export function CloudflareReturn({ outcome, locale }: { outcome: CloudflareOutcome; locale: LocaleCode }) {
   const t = translator(locale);
   useEffect(() => {
-    let done = false;
-    const hand = (session?: HandedSession) => {
-      if (done) return;
-      done = true;
-      try {
-        (window.opener as Window | null)?.postMessage({ type: CLOUDFLARE_RESULT, outcome, code, ...(session ? { session } : {}) }, window.location.origin);
-      } catch {
-        // Nothing to be done from here; the line below is what is left.
-      }
-      window.close();
-      // Still open means this was never one of those windows. Carry on as the
-      // console, at the plain address so this does not run a second time.
-      window.setTimeout(() => window.location.replace(`${window.location.pathname}${window.location.hash}`), CLOSE_GRACE_MS);
-    };
-    if (outcome !== 'signed_in') { hand(); return undefined; }
-    const controller = new AbortController();
-    void fetch('/api/v1/auth/session', { credentials: 'same-origin', signal: controller.signal })
-      .then(async (response) => response.ok ? await response.json() as { session: { csrfToken: string }; token?: string } : null)
-      .then((payload) => {
-        hand(payload?.token ? { csrfToken: payload.session.csrfToken, token: payload.token } : undefined);
-      })
-      .catch(() => hand());
-    return () => controller.abort();
-  }, [outcome, code]);
+    window.close();
+    const settled = window.setTimeout(
+      () => window.location.replace(`${window.location.pathname}${window.location.hash}`),
+      CLOSE_GRACE_MS,
+    );
+    return () => window.clearTimeout(settled);
+  }, []);
   return <div className="auth-shell" role="status">
     <p className="text-sm text-muted-foreground text-center">
       {outcome === 'error' ? t('setup.cloudSignInFailed') : t('setup.cloudReturning')}

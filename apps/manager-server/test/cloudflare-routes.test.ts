@@ -108,6 +108,70 @@ test('signing in to Cloudflare connects the backup bucket end to end, and discon
   assert.equal(result.config.cloudflare?.state, 'disconnected');
 });
 
+test('a sign-in that happened in a window is collected by the console that started it', async (t) => {
+  /*
+   * The whole point of the handoff, end to end and with nothing shared.
+   *
+   * A console inside another site's page opens a window, because Cloudflare
+   * will not be framed. That window comes home with its opener severed by
+   * Cloudflare's own `Cross-Origin-Opener-Policy`, its storage in a different
+   * partition from the frame's, and a session cookie the frame cannot read.
+   * Every request below therefore carries no cookie at all - which is exactly
+   * what the frame has to work with.
+   */
+  const { manager, base } = await start();
+  t.after(() => manager.close());
+
+  const started = await fetch(`${base}/api/v1/auth/cloudflare?handoff=1`, { method: 'POST', headers: { origin: base } });
+  assert.equal(started.status, 200);
+  const begun = await started.json() as { url: string; handoff: string };
+  assert.ok(begun.handoff, 'the console is given a name to collect the answer under');
+
+  // Nothing yet: the reader is still at Cloudflare.
+  const early = await fetch(`${base}/api/v1/cloudflare/handoff`, { method: 'POST', headers: { origin: base, 'content-type': 'application/json' }, body: JSON.stringify({ handoff: begun.handoff }) });
+  assert.equal(early.status, 200);
+  assert.deepEqual(await early.json(), { ready: false });
+
+  const state = new URL(begun.url).searchParams.get('state') ?? '';
+  const landed = await callback(base, { state, code: 'good-code' });
+  assert.equal(landed.status, 303);
+  // The window is told it is a window, in the one place that survives the trip.
+  assert.equal(landed.headers.get('location'), '/?cloudflare=signed_in&handoff=1');
+
+  const collected = await fetch(`${base}/api/v1/cloudflare/handoff`, { method: 'POST', headers: { origin: base, 'content-type': 'application/json' }, body: JSON.stringify({ handoff: begun.handoff }) });
+  assert.equal(collected.status, 200);
+  const answer = await collected.json() as { ready: boolean; outcome: string; session: { csrfToken: string }; token: string };
+  assert.equal(answer.ready, true);
+  assert.equal(answer.outcome, 'signed_in');
+  assert.ok(answer.token, 'the session opened by the sign-in comes back with it');
+
+  // And it is a real session: the frame is signed in on the strength of it,
+  // holding no cookie of any kind.
+  const bearer = { authorization: `Bearer ${answer.token}` };
+  assert.equal((await fetch(`${base}/api/v1/r2`, { headers: bearer })).status, 200);
+  assert.equal((await fetch(`${base}/api/v1/auth/session`, { headers: bearer })).status, 200);
+
+  // Spent once. A second collection hands the session to nobody.
+  const again = await fetch(`${base}/api/v1/cloudflare/handoff`, { method: 'POST', headers: { origin: base, 'content-type': 'application/json' }, body: JSON.stringify({ handoff: begun.handoff }) });
+  assert.equal(again.status, 404);
+  // As does a name that was never issued.
+  const guessed = await fetch(`${base}/api/v1/cloudflare/handoff`, { method: 'POST', headers: { origin: base, 'content-type': 'application/json' }, body: JSON.stringify({ handoff: 'not-a-name' }) });
+  assert.equal(guessed.status, 404);
+});
+
+test('a console that can send itself to Cloudflare is given no name, and the window is not told it is one', async (t) => {
+  // The ordinary, unframed way round: the outcome is read from this page's own
+  // address when it comes back, and there is nothing to collect.
+  const { manager, base } = await start();
+  t.after(() => manager.close());
+  const started = await fetch(`${base}/api/v1/auth/cloudflare`, { method: 'POST', headers: { origin: base } });
+  const begun = await started.json() as { url: string; handoff?: string };
+  assert.equal(begun.handoff, undefined);
+  const state = new URL(begun.url).searchParams.get('state') ?? '';
+  const landed = await callback(base, { state, code: 'good-code' });
+  assert.equal(landed.headers.get('location'), '/?cloudflare=signed_in');
+});
+
 test('a callback that does not match the sign-in, or that Cloudflare refused, lands on an error', async (t) => {
   const { manager, base } = await start();
   t.after(() => manager.close());
