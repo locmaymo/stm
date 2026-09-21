@@ -2827,29 +2827,47 @@ async function refillProfile(
   running: { readonly job: Job; readonly signal: AbortSignal },
 ): Promise<void> {
   const { r2, backups, jobs, supervisor, logger } = deps;
-  const newest = (await r2.listSnapshots())[0];
-  if (!newest) {
-    logger(logEvent('r2.recoveryFailed', '[r2] no recovery point in the bucket could be brought back: the bucket holds none', { reason: 'the bucket holds none' }));
-    return;
+  /*
+   * The backup slot is held across the whole of this, fetch included.
+   *
+   * The scheduler ticks every minute, and a minute into a restore it would
+   * find a profile holding whatever had arrived so far and write that to the
+   * bucket as a recovery point - which is then the newest one there, and the
+   * one the next machine would be given back. A backup of a profile caught
+   * mid-restore is worse than no backup: it is the shape of the reader's data
+   * with nothing in it.
+   *
+   * Reserved rather than queued, because the restore below takes the slot
+   * itself and waiting for a slot this already holds would wait forever.
+   */
+  const release = backups.reserve();
+  try {
+    const newest = (await r2.listSnapshots())[0];
+    if (!newest) {
+      logger(logEvent('r2.recoveryFailed', '[r2] no recovery point in the bucket could be brought back: the bucket holds none', { reason: 'the bucket holds none' }));
+      return;
+    }
+    const meter = new TransferMeter();
+    const { manifest } = await fetchSnapshotToLibrary({
+      profile, r2, backups, snapshotId: newest.id, sourceProfileId: newest.profileId, signal: running.signal,
+      logger: (line) => jobs.append('backup', line),
+      onProgress: (progress) => {
+        const { percent, params } = meter.update(progress);
+        jobs.updateOperation(running.job.id, percent, logEvent('job.fetchingChunks', `Fetching ${String(params.done)} of ${String(params.total)} - ${String(params.rate)}, ${String(params.eta)} left`, params));
+      },
+    });
+    const archivePath = await backups.getArchivePath(manifest.id);
+    if (!archivePath) throw new Error('the fetched recovery point could not be found in the backup library');
+    await restoreWithProcess({
+      profile, backups, archivePath, backupId: manifest.id, mode: 'replace', force: true, supervisor,
+      signal: running.signal,
+      onProgress: (progress, step) => jobs.updateOperation(running.job.id, progress, step),
+    });
+    await r2.recordRecovery({ createdAt: newest.createdAt, fileCount: manifest.fileCount, sizeBytes: manifest.sizeBytes });
+    logger(logEvent('r2.recovered', `[r2] the recovery point from ${newest.createdAt} is back in this profile`, { createdAt: newest.createdAt }));
+  } finally {
+    release();
   }
-  const meter = new TransferMeter();
-  const { manifest } = await fetchSnapshotToLibrary({
-    profile, r2, backups, snapshotId: newest.id, sourceProfileId: newest.profileId, signal: running.signal,
-    logger: (line) => jobs.append('backup', line),
-    onProgress: (progress) => {
-      const { percent, params } = meter.update(progress);
-      jobs.updateOperation(running.job.id, percent, logEvent('job.fetchingChunks', `Fetching ${String(params.done)} of ${String(params.total)} - ${String(params.rate)}, ${String(params.eta)} left`, params));
-    },
-  });
-  const archivePath = await backups.getArchivePath(manifest.id);
-  if (!archivePath) throw new Error('the fetched recovery point could not be found in the backup library');
-  await restoreWithProcess({
-    profile, backups, archivePath, backupId: manifest.id, mode: 'replace', force: true, supervisor,
-    signal: running.signal,
-    onProgress: (progress, step) => jobs.updateOperation(running.job.id, progress, step),
-  });
-  await r2.recordRecovery({ createdAt: newest.createdAt, fileCount: manifest.fileCount, sizeBytes: manifest.sizeBytes });
-  logger(logEvent('r2.recovered', `[r2] the recovery point from ${newest.createdAt} is back in this profile`, { createdAt: newest.createdAt }));
 }
 
 /**
