@@ -4,7 +4,7 @@
  *
  * Cloudflare only returns to a redirect registered on the OAuth client, matched
  * exactly, and a manager can be open on any address: this machine, the LAN, a
- * tunnel, ModelScope. So the registered redirect is this page, and the manager
+ * tunnel, a hosted workspace. So the registered redirect is this page, and the manager
  * puts its own origin in `state`. Nothing here is secret or stored: the
  * authorization code is useless without the PKCE verifier the manager kept.
  *

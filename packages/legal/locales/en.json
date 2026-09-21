@@ -256,7 +256,7 @@
           "body": [
             "Cloudflare only returns a browser to an address registered on the OAuth client, matched exactly, and a manager can be open on any address. So the registered address is a static page on this site, which forwards the browser back to the manager that started the sign-in.",
             "That page stores nothing, sets no cookie and runs no analytics. The authorization code it forwards is useless without the PKCE verifier, which never leaves your manager.",
-            "It forwards on its own only to loopback, private-network, .local, trycloudflare.com and ModelScope addresses. Anywhere else, it shows the destination and waits for a click, so it cannot be used as a silent redirect to another site."
+            "It forwards on its own only to loopback, private-network, .local and trycloudflare.com addresses. Anywhere else - including any hosting platform - it shows the destination and waits for a click, so it cannot be used as a silent redirect to another site."
           ]
         },
         "website": {

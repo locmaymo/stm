@@ -17,7 +17,7 @@ import { SILLYTAVERN_PORT } from '../src/ports.js';
 
 async function createServer(options: {
   bootstrapPassword?: string;
-  platform?: 'linux' | 'modelscope';
+  platform?: 'linux' | 'hosted';
   /** An existing data directory, for starting the same manager again. */
   root?: string;
   /** Runs before the server starts, for leaving files an older version wrote. */
@@ -33,7 +33,7 @@ async function createServer(options: {
 } = {}): Promise<ManagerServer> {
   const root = options.root ?? await mkdtemp(join(tmpdir(), 'stm-manager-'));
   const basePaths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
-  const paths = options.platform === 'modelscope' ? { ...basePaths, platform: 'modelscope' as const } : basePaths;
+  const paths = options.platform === 'hosted' ? { ...basePaths, platform: 'hosted' as const } : basePaths;
   const staticRoot = join(root, 'panel');
   await mkdir(staticRoot, { recursive: true });
   await writeFile(join(staticRoot, 'index.html'), '<!doctype html><title>Manager panel</title>', 'utf8');
@@ -126,17 +126,24 @@ function fakeTunnel(): FakeTunnel {
   };
 }
 
-test('ModelScope proxy origins are accepted while unrelated origins remain blocked', async (t) => {
-  const manager = await createServer({ platform: 'modelscope', bootstrapPassword: 'correct horse battery staple' });
+test('no hosting platform is trusted by name, whatever the manager is running on', async (t) => {
+  /*
+   * There used to be a list of hosting domains here that were let through on
+   * sight. A provider's domain admits every tenant on it, so trusting one by
+   * name trusted everybody who rents a subdomain of it - and this project has
+   * no relationship with any provider that would let it tell them apart.
+   *
+   * So there is no list. A console reached through a platform names its own
+   * address in `STM_PUBLIC_ORIGIN`, which is somebody deciding on purpose.
+   */
+  const manager = await createServer({ platform: 'hosted', bootstrapPassword: 'correct horse battery staple' });
   t.after(() => manager.close());
   const base = serverUrl(manager);
-  const proxied = await fetch(`${base}/api/v1/health`, { headers: { origin: 'https://www.modelscope.ai' } });
-  assert.equal(proxied.status, 200);
-  const studioFrame = await fetch(`${base}/api/v1/health`, { headers: { origin: 'https://locmay-stm.ms.fun' } });
-  assert.equal(studioFrame.status, 200);
-  const unrelated = await fetch(`${base}/api/v1/health`, { headers: { origin: 'https://evil.example' } });
-  assert.equal(unrelated.status, 403);
-  assert.equal((await unrelated.json() as { error: { code: string } }).error.code, 'origin_rejected');
+  for (const origin of ['https://www.some-platform.example', 'https://tenant-stm.workspaces.example', 'https://evil.example']) {
+    const refused = await fetch(`${base}/api/v1/health`, { headers: { origin } });
+    assert.equal(refused.status, 403, origin);
+    assert.equal((await refused.json() as { error: { code: string } }).error.code, 'origin_rejected');
+  }
 });
 
 test('the console trusts its own fixed address, and signs in through it', async (t) => {

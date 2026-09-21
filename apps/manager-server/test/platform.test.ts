@@ -1,12 +1,12 @@
 import test from 'node:test';
 import { posix } from 'node:path';
 import assert from 'node:assert/strict';
-import { createIoLimiter, detectPlatform, getPlatformPaths, ioConcurrency, runPooled, storageDurability } from '../../../packages/platform/src/index.js';
+import { createIoLimiter, detectPlatform, getPlatformPaths, ioConcurrency, runPooled, storageAssurance, storageDurability } from '../../../packages/platform/src/index.js';
 
 test('platform paths follow the documented durable roots', () => {
   assert.equal(detectPlatform({ platform: 'win32', env: {} }), 'windows');
   assert.equal(detectPlatform({ platform: 'linux', env: { PREFIX: '/data/data/com.termux/files/usr' } }), 'termux');
-  assert.equal(detectPlatform({ platform: 'linux', env: { STM_DATA_DIR: '/mnt/workspace/sillytavern-manager' } }), 'modelscope');
+  assert.equal(detectPlatform({ platform: 'linux', env: { STM_DATA_DIR: '/mnt/workspace/sillytavern-manager' } }), 'hosted');
   assert.equal(detectPlatform({ platform: 'linux', env: { STM_DOCKER: '1' } }), 'docker');
 
   const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: 'D:/manager-test-data' } });
@@ -103,4 +103,28 @@ test('whether the data survives a restart is asked of the filesystem, not the pl
   for (const root of ['/data/sillytavern-manager', '/data/./sillytavern-manager', '/data/nested/../sillytavern-manager']) {
     assert.deepEqual(storageDurability(root, container), { durable: false, filesystem: 'overlay' }, root);
   }
+});
+
+test('a machine is only vouched for when it is the reader’s own', () => {
+  // A filesystem that is thrown away with the machine, wherever it is.
+  assert.equal(storageAssurance('linux', { durable: false, filesystem: 'overlay' }), 'temporary');
+  assert.equal(storageAssurance('hosted', { durable: false, filesystem: 'tmpfs' }), 'temporary');
+
+  // An installation on somebody's own computer, on a filesystem that is
+  // plainly a disk. The only case worth staying quiet about.
+  assert.equal(storageAssurance('windows', { durable: true, filesystem: null }), 'durable');
+  assert.equal(storageAssurance('linux', { durable: true, filesystem: 'ext4' }), 'durable');
+  assert.equal(storageAssurance('termux', { durable: true, filesystem: 'f2fs' }), 'durable');
+
+  /*
+   * A container or a hosted workspace, on a volume that looks entirely real.
+   *
+   * This is the case the filesystem answer gets wrong: the mount says ext4
+   * and the machine is still rebuilt from a checkout the next time somebody
+   * opens it. No hosting platform is recognised by name here, so there is
+   * nothing to check it against and the honest answer is that it is unknown.
+   */
+  assert.equal(storageAssurance('hosted', { durable: true, filesystem: 'ext4' }), 'unverified');
+  assert.equal(storageAssurance('docker', { durable: true, filesystem: 'ext4' }), 'unverified');
+  assert.equal(storageAssurance('unknown', { durable: true, filesystem: null }), 'unverified');
 });

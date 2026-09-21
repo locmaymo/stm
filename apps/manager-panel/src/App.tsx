@@ -3738,8 +3738,14 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
     {/* Said above the card rather than inside it, because it is the reason to
         read the card at all. It stops being shown once backups are leaving this
         machine: at that point the storage is still temporary and it no longer
-        costs the reader anything, so repeating it would only be noise. */}
-    {storage && !storage.durable && !(r2Config?.enabled && r2Config.configured) ? <Alert variant="destructive">
+        costs the reader anything, so repeating it would only be noise.
+
+        Said about anything that is not plainly the reader's own computer, not
+        only about a filesystem caught being temporary. This console recognises
+        no hosting platform by name and so cannot vouch for any of them; an
+        unverified machine is told about in the same words as one already known
+        to be thrown away, because for the reader they are the same risk. */}
+    {storage && storage.assurance !== 'durable' && !(r2Config?.enabled && r2Config.configured) ? <Alert variant="destructive">
       <TriangleAlert />
       <AlertTitle>{t('console.storageTemporaryTitle')}</AlertTitle>
       <AlertDescription>{t('console.storageTemporaryBody')}</AlertDescription>

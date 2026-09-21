@@ -16,10 +16,10 @@ reads which manager started the sign-in from the OAuth `state` and sends the
 
 Cloudflare only redirects to an address registered on the OAuth client, matched
 exactly, while a manager can be open on any port or host: this machine, the LAN, a
-tunnel, ModelScope. So one address is registered, this page, and it forwards.
+tunnel, a hosted workspace. So one address is registered, this page, and it forwards.
 
 It forwards on its own only to loopback, private-network, `.local`,
-`*.trycloudflare.com` and ModelScope hosts. Any other address is shown with a
+and `*.trycloudflare.com` hosts. Any other address - hosting platforms included, since none of them is trusted by name - is shown with a
 **Continue** button, so the page cannot be used as a silent redirect to another site.
 The authorization code is useless without the PKCE verifier, which never leaves the
 manager.

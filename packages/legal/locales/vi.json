@@ -256,7 +256,7 @@
           "body": [
             "Cloudflare chỉ đưa trình duyệt quay lại một địa chỉ đã đăng ký trên OAuth client, khớp chính xác, trong khi một trình quản lý có thể mở ở bất kỳ địa chỉ nào. Vì vậy địa chỉ đăng ký là một trang tĩnh trên site này, và nó chuyển trình duyệt về đúng trình quản lý đã khởi tạo phiên đăng nhập.",
             "Trang đó không lưu gì, không đặt cookie và không chạy công cụ phân tích nào. Mã uỷ quyền mà nó chuyển tiếp là vô dụng nếu thiếu bộ xác minh PKCE, và bộ xác minh này không bao giờ rời khỏi trình quản lý của bạn.",
-            "Trang chỉ tự động chuyển tiếp tới các địa chỉ loopback, mạng riêng, .local, trycloudflare.com và ModelScope. Với mọi địa chỉ khác, nó hiển thị đích đến và chờ bạn bấm, nên không thể bị lợi dụng để âm thầm chuyển hướng sang trang khác."
+            "Trang chỉ tự động chuyển tiếp tới các địa chỉ loopback, mạng riêng, .local và trycloudflare.com. Với mọi địa chỉ khác - kể cả mọi nền tảng lưu trữ - nó hiển thị đích đến và chờ bạn bấm, nên không thể bị lợi dụng để âm thầm chuyển hướng sang trang khác."
           ]
         },
         "website": {

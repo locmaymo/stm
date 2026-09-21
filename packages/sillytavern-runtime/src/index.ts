@@ -113,7 +113,7 @@ export class RuntimeManager {
     this.npmCommand = options.npmCommand ?? 'npm';
     this.installDependencies = options.installDependencies ?? ((path, log, signal) => runNpmInstall(path, this.npmCommand, log, signal));
     // SillyTavern performs content seeding and frontend compilation on its first
-    // launch. Two minutes is too short for a free ModelScope/low-CPU workspace.
+    // launch. Two minutes is too short for a free low-CPU hosted workspace.
     this.healthCheckTimeoutMs = options.healthCheckTimeoutMs ?? 300_000;
     this.useGit = options.useGit ?? options.fetch === undefined;
     this.gitCommand = options.gitCommand ?? 'git';
@@ -727,7 +727,7 @@ export interface GitFetchAttempt {
  * A fetch into a checkout that already holds objects offers those objects to
  * the server, which answers with a thin pack; Git then rereads the temporary
  * packfile it has just written in order to rewrite its header and checksum.
- * The network-backed volume a ModelScope Studio keeps its data on can fail that
+ * The network-backed volume a hosted workspace keeps its data on can fail that
  * reread even though the write went through, and says so in the only words it
  * has:
  *

@@ -6,7 +6,7 @@ import { networkInterfaces } from 'node:os';
 import { createSocket } from 'node:dgram';
 import { extname, join, relative, resolve, sep } from 'node:path';
 import { applyQuery, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, OPERATION_JOB_KINDS, type ApiErrorBody, type ConfigUpdateInput, type ConsoleStatus, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogSink, type LogSourceFilter, type ManagerPorts, type PortSettings, type Profile, type ProfileLayout, type SetupStatus, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
-import { getPlatformPaths, storageDurability, type PlatformPaths } from '../../../packages/platform/src/index.js';
+import { getPlatformPaths, storageDurability, storageReport, type PlatformPaths } from '../../../packages/platform/src/index.js';
 import { INSTALL_CANCELED, RuntimeError, RuntimeManager, type InstallationProgress } from '../../../packages/sillytavern-runtime/src/index.js';
 import { hashPassword, MIN_PASSWORD_LENGTH, validatePasscode, validatePassword, verifyPassword } from './password.js';
 import { RateLimiter } from './rate-limit.js';
@@ -320,12 +320,12 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
    * The loopback address on a machine somebody is sitting at, so the console is
    * not on the house network until they say so. Every address in a container,
    * because the only thing that can reach a container's loopback is the
-   * container - Docker and ModelScope have always been that case, and a host
-   * that named the port it publishes in `PORT` is the same case wearing a
+   * container - Docker and every hosted workspace have always been that case,
+   * and a host that named the port it publishes in `PORT` is the same case wearing a
    * different name: something in front of this process is going to connect to
    * it, and it will not be connecting from inside.
    */
-  const defaultHost = paths.platform === 'docker' || paths.platform === 'modelscope' || consolePortChoice.source === 'platform' ? '0.0.0.0' : '127.0.0.1';
+  const defaultHost = paths.platform === 'docker' || paths.platform === 'hosted' || consolePortChoice.source === 'platform' ? '0.0.0.0' : '127.0.0.1';
   const host = options.host ?? env.STM_HOST ?? defaultHost;
   /**
    * The console's own port, settled before anything else asks for one.
@@ -527,9 +527,14 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   const staticRoot = options.staticRoot ? resolve(options.staticRoot) : panelStaticRoot(env);
   // Said once, at the top of the log, where somebody setting this up is
   // already looking. The console says it again where it can be acted on.
-  const durability = storageDurability(paths.root);
-  if (!durability.durable) {
+  const durability = storageReport(paths);
+  if (durability.assurance === 'temporary') {
     logger(logEvent('storage.notDurable', `[manager] ${paths.root} is on ${durability.filesystem ?? 'temporary storage'}, which this machine does not keep across a restart; connect Cloudflare R2 so backups are held somewhere else`, { path: paths.root, filesystem: durability.filesystem ?? 'unknown' }));
+  } else if (durability.assurance === 'unverified') {
+    // Not a fault, and not silence either. This manager cannot tell whether
+    // the machine under it is kept, and the one thing that makes the answer
+    // not matter is a copy somewhere else.
+    logger(logEvent('storage.notVerified', `[manager] this manager cannot tell whether ${paths.root} survives a restart here, so treat it as storage that may be temporary; connect Cloudflare R2 so backups are held somewhere else`, { path: paths.root, filesystem: durability.filesystem ?? 'unknown' }));
   }
   let persisted = await store.load();
   // A stored port that would now collide - because `STM_PORT` or
@@ -863,7 +868,7 @@ async function handleRequest(options: {
     response,
     pathname,
     searchParams: url.searchParams,
-    originTrusted: isTrustedOrigin(request, platform, publicOrigins),
+    originTrusted: isTrustedOrigin(request, publicOrigins),
     publicOrigins,
     proxiedOrigin,
     ports,
@@ -1424,7 +1429,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     // The durability of this machine's disk rides along with the backup
     // settings because it is the same question: whether a copy somewhere else
     // is a precaution or the only thing keeping the data.
-    sendJson(response, 200, { config: await r2.getConfig(), storage: storageDurability(store.paths.root) });
+    sendJson(response, 200, { config: await r2.getConfig(), storage: storageReport(store.paths) });
     return;
   }
   if (pathname === '/api/v1/r2' && method === 'PUT') {
@@ -2288,7 +2293,7 @@ export async function restoreWithProcess(options: {
     // A safety copy has to exist before the restore overwrites anything, but it
     // does not have to be a second copy of every file. Writing one compressed
     // archive is a single large sequential write; copying the tree file by file
-    // measured 639 seconds on a ModelScope volume for the same data. It only
+    // measured 639 seconds on a hosted network volume for the same data. It only
     // An unchanged profile can reuse the backup it already has.
     onProgress?.(15, logEvent('job.creatingSafetySnapshot', 'Creating safety snapshot'));
     const safetySnapshot = safetyCopy = await backups.createSafetyCopy(profile, {
@@ -3175,7 +3180,7 @@ function isLoopbackHost(hostname: string): boolean {
   return host === 'localhost' || host === '::1' || host === '0.0.0.0' || /^127\./u.test(host);
 }
 
-function isTrustedOrigin(request: IncomingMessage, platform: PlatformPaths['platform'], publicOrigins: readonly string[]): boolean {
+function isTrustedOrigin(request: IncomingMessage, publicOrigins: readonly string[]): boolean {
   const origin = headerValue(request.headers.origin);
   if (!origin) {
     return true;
@@ -3196,7 +3201,18 @@ function isTrustedOrigin(request: IncomingMessage, platform: PlatformPaths['plat
     // permission first, in a preflight this console never grants.
     const forwardedHost = forwardedValue(request, 'x-forwarded-host');
     if (forwardedHost && parsed.host === forwardedHost) return true;
-    return platform === 'modelscope' && isModelScopeOrigin(parsed.hostname);
+    /*
+     * Anything else is another site asking, and is refused.
+     *
+     * There is deliberately no list of hosting domains here. A provider's
+     * domain admits every tenant on it, so trusting one by name trusts
+     * everybody who rents a subdomain of it - and this project has no
+     * relationship with any provider that would let it tell them apart. A
+     * console reached through a platform names the address it is reached at
+     * in `STM_PUBLIC_ORIGIN`, which is somebody deciding on purpose rather
+     * than this file deciding for them.
+     */
+    return false;
   } catch {
     return false;
   }
@@ -3300,13 +3316,6 @@ export function publicOriginFromEnvironment(env: NodeJS.ProcessEnv, port: number
     return { origin: `https://${codespace}-${port.toString(10)}.${forwardingDomain}`, source: 'platform' };
   }
   return null;
-}
-
-function isModelScopeOrigin(hostname: string): boolean {
-  return hostname === 'modelscope.ai'
-    || hostname.endsWith('.modelscope.ai')
-    || hostname === 'ms.fun'
-    || hostname.endsWith('.ms.fun');
 }
 
 async function readJson(request: IncomingMessage): Promise<unknown> {

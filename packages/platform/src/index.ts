@@ -2,7 +2,7 @@ import { homedir } from 'node:os';
 import { existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, posix, resolve } from 'node:path';
-import type { PlatformKind } from '../../contracts/src/index.js';
+import type { PlatformKind, StorageAssurance } from '../../contracts/src/index.js';
 
 const DEFAULT_IO_CONCURRENCY = 8;
 const MAX_IO_CONCURRENCY = 64;
@@ -111,8 +111,12 @@ export function detectPlatform(options: PlatformPathOptions = {}): PlatformKind 
   const env = options.env ?? process.env;
   const platform = options.platform ?? process.platform;
 
+  // A workspace volume mounted at /mnt/workspace is how hosted providers hand
+  // a container somewhere to write. Which provider it is is not asked and not
+  // recorded: they are all the same machine as far as this is concerned, one
+  // that may be rebuilt from a checkout between two visits.
   if (platform === 'linux' && (env.STM_DATA_DIR?.startsWith('/mnt/workspace') || existsSync('/mnt/workspace'))) {
-    return 'modelscope';
+    return 'hosted';
   }
   if (hasTruthyEnvironmentValue(env.STM_DOCKER) || env.DOCKER_CONTAINER === 'true' || env.CONTAINER === 'docker') {
     return 'docker';
@@ -136,7 +140,7 @@ function defaultRoot(kind: PlatformKind, options: PlatformPathOptions, env: Node
   if (env.STM_DATA_DIR) {
     return resolve(env.STM_DATA_DIR);
   }
-  if (kind === 'modelscope') {
+  if (kind === 'hosted') {
     return '/mnt/workspace/sillytavern-manager';
   }
   if (kind === 'docker') {
@@ -205,6 +209,42 @@ export function storageDurability(dataRoot: string, mountTable?: string): Storag
 }
 
 /**
+ * Platforms where an installation writes to the reader's own computer.
+ *
+ * A Windows install, a Termux install and an ordinary Linux install all put
+ * the data directory on a disk that belongs to whoever is running it, and the
+ * mount table - where there is one - confirms it. Those are the only cases
+ * this stays quiet about.
+ */
+const OWN_MACHINE_PLATFORMS = new Set<PlatformKind>(['windows', 'linux', 'termux']);
+
+/**
+ * How far this machine can be trusted to still hold the data tomorrow.
+ *
+ * Three answers rather than two, because "durable" was being read off a
+ * filesystem that answers a narrower question than the one people have. A
+ * hosted workspace can mount a perfectly real volume at the data directory and
+ * still be rebuilt from a checkout the next time somebody opens it - the mount
+ * table says ext4, the chats are gone anyway.
+ *
+ * So a filesystem known to be thrown away is `temporary`, an installation on
+ * the reader's own computer is `durable`, and everything else - a container, a
+ * hosted workspace, a machine this cannot place - is `unverified`. This
+ * project has no relationship with any hosting provider and recognises none of
+ * them by name, so `unverified` is the honest answer about all of them.
+ */
+export function storageAssurance(platform: PlatformKind, durability: StorageDurability): StorageAssurance {
+  if (!durability.durable) return 'temporary';
+  return OWN_MACHINE_PLATFORMS.has(platform) ? 'durable' : 'unverified';
+}
+
+/** The whole answer, in the shape the console is given it. */
+export function storageReport(paths: Pick<PlatformPaths, 'platform' | 'root'>, mountTable?: string): StorageDurability & { readonly assurance: StorageAssurance } {
+  const durability = mountTable === undefined ? storageDurability(paths.root) : storageDurability(paths.root, mountTable);
+  return { ...durability, assurance: storageAssurance(paths.platform, durability) };
+}
+
+/**
  * `dataRoot` as a path the mount table can be compared against.
  *
  * A mount table is a POSIX idea, so the paths in it are POSIX paths, and the
@@ -242,7 +282,7 @@ export function getPlatformPaths(options: PlatformPathOptions = {}): PlatformPat
   const root = defaultRoot(platform, options, env);
   const scratchRoot = env.STM_TMP_DIR
     ? resolve(env.STM_TMP_DIR)
-    : platform === 'modelscope' || platform === 'docker'
+    : platform === 'hosted' || platform === 'docker'
       ? join(tmpdir(), 'sillytavern-manager')
       : join(root, 'tmp');
   return {

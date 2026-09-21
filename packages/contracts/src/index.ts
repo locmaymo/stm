@@ -1,7 +1,16 @@
 export * from './table-query.js';
 export * from './table-fields.js';
 
-export type PlatformKind = 'windows' | 'linux' | 'termux' | 'docker' | 'modelscope' | 'unknown';
+/**
+ * What kind of machine this manager is on.
+ *
+ * `hosted` is any workspace a provider runs for somebody: a container built
+ * from a checkout, started on demand and stopped when nobody is looking. It is
+ * deliberately not named after a provider - this project has no relationship
+ * with any of them, trusts none of them by name, and treats every one of them
+ * the same: as a machine whose storage may not be kept.
+ */
+export type PlatformKind = 'windows' | 'linux' | 'termux' | 'docker' | 'hosted' | 'unknown';
 
 /** The ports this project ships with, before anything moves them. */
 export interface ManagerPorts {
@@ -332,7 +341,24 @@ export interface StorageDurabilityReport {
   readonly durable: boolean;
   /** What the data directory is on, when that is what decided it. */
   readonly filesystem: string | null;
+  /**
+   * How much this machine can vouch for that answer.
+   *
+   * `durable` is the only one worth staying quiet about: an installation on
+   * somebody's own computer, writing to a filesystem that is plainly a disk.
+   *
+   * `temporary` is a filesystem that is known to be thrown away with the
+   * machine. `unverified` is everything else - a container, a hosted
+   * workspace, anything this manager cannot place - and it is the answer the
+   * console gives about infrastructure it has never heard of, which is all of
+   * it. Saying "this may not be kept" about a machine that keeps it costs a
+   * sentence; saying nothing about one that does not costs somebody their
+   * chats.
+   */
+  readonly assurance: StorageAssurance;
 }
+
+export type StorageAssurance = 'durable' | 'unverified' | 'temporary';
 
 export interface R2Config {
   readonly mode: R2ConnectionMode;
