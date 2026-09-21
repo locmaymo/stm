@@ -6,91 +6,174 @@
  * document inside another site's page cannot send itself there: it has to open
  * a window of its own and wait.
  *
- * Which leaves the return trip. Cloudflare sends the browser back to the
- * manager, so what lands is a second copy of the console, in the window that
- * was opened, signed in - and the console the reader is actually looking at,
- * in the frame, still showing the sign-in screen and knowing nothing about it.
+ * Which leaves the return trip, and the window comes back a stranger. Every
+ * way a browser has of letting two windows recognise each other is gone by
+ * then:
  *
- * This is the way back. The opened window recognises itself as one, hands the
- * result to the window that opened it and closes; the console in the frame
- * hears it and carries on as though it had never left. The handover is
- * `postMessage` addressed to this exact origin - never `*`, because a session
- * token travels in it and `*` would hand it to whatever page happened to open
- * this one.
+ * - `window.opener` is null. Cloudflare's sign-in answers with
+ *   `Cross-Origin-Opener-Policy: same-origin`, which puts the window into a
+ *   browsing context group of its own and severs the opener for good; coming
+ *   home afterwards does not bring it back.
+ * - `window.name` is cleared on the way out to another site. Browsers restore
+ *   it on the way back, but that is a courtesy, and not the same courtesy in
+ *   each of them.
+ * - `BroadcastChannel`, `localStorage` and the session cookie are partitioned
+ *   by the site at the top of the page. A window is its own top; a frame's top
+ *   is the site around it. They are in different partitions and share nothing.
+ *
+ * So the manager carries it instead. The console asks for a sign-in and is
+ * given a name to collect the answer under; the window goes to Cloudflare and
+ * comes back; the callback leaves the answer with the manager; the console
+ * collects it and is signed in. None of that asks the browser to agree that
+ * the two windows have anything to do with each other.
+ *
+ * The window's only remaining job is to not become a second console, and it
+ * cannot work that out by itself either - so the manager tells it, in the one
+ * place that survives the trip: the address it is sent home to.
  */
 
-/**
- * The name the window is opened under, so a second press reuses it rather than
- * opening another. Deliberately not what it is recognised by on the way back:
- * browsers clear a window's name when it navigates to another site, which is
- * exactly what this window does on its way to Cloudflare.
- */
+/** The name the window is opened under, so a second press reuses it. */
 export const RETURN_WINDOW = 'stm_cloudflare';
-
-export const CLOUDFLARE_RESULT = 'stm:cloudflare-result';
 
 /** What a sign-in ended as; `error` carries the reason in `code`. */
 export type CloudflareOutcome = 'signed_in' | 'connected' | 'choose_account' | 'error';
 
 const OUTCOMES: readonly string[] = ['signed_in', 'connected', 'choose_account', 'error'];
 
-/** The session a sign-in opened, for the window that has to be given it. */
-export interface HandedSession {
+/** How often to ask whether the window has finished, and for how long. */
+const ASK_EVERY_MS = 1200;
+const ASK_FOR_MS = 10 * 60 * 1000;
+
+export interface CloudflareReturn {
+  readonly outcome: CloudflareOutcome;
+  /** The error code where the outcome is `error`, and empty otherwise. */
+  readonly code: string;
+  /** Whether a console is waiting to collect this, so this page is a window. */
+  readonly collected: boolean;
+}
+
+/** The session a sign-in opened, for the console collecting it. */
+export interface CollectedSession {
   readonly csrfToken: string;
   readonly token: string;
 }
 
-export interface CloudflareResult {
-  readonly type: typeof CLOUDFLARE_RESULT;
+export interface CollectedResult {
   readonly outcome: CloudflareOutcome;
-  /** The error code where the outcome is `error`, and empty otherwise. */
   readonly code: string;
-  /** Set when the outcome is a sign-in, so the waiting console becomes it. */
-  readonly session?: HandedSession;
+  readonly session: CollectedSession | null;
 }
 
-/** What Cloudflare sent this window back with, if it sent it back at all. */
-export function cloudflareOutcome(search: string): { outcome: CloudflareOutcome; code: string } | null {
+/** What Cloudflare sent this page back with, if it sent it back at all. */
+export function cloudflareReturn(search: string): CloudflareReturn | null {
   const params = new URLSearchParams(search);
   const outcome = params.get('cloudflare');
   if (!outcome || !OUTCOMES.includes(outcome)) return null;
-  return { outcome: outcome as CloudflareOutcome, code: params.get('cloudflare_error') ?? '' };
+  return {
+    outcome: outcome as CloudflareOutcome,
+    code: params.get('cloudflare_error') ?? '',
+    collected: params.get('handoff') === '1',
+  };
 }
 
 /**
- * Whether this window might exist to carry a result back to another one.
+ * Whether this page is the window a sign-in happened in, rather than a console.
  *
- * Having an opener is all that is asked, because it is all that survives the
- * trip: a window's name does not outlive a navigation to another site. So this
- * is a guess, and it is allowed to be wrong in one direction only. A window
- * that guesses yes and turns out to be nobody's - the console opened from some
- * other page's link, signed in the ordinary way - finds that its message goes
- * nowhere and it is not allowed to close, and becomes an ordinary console a
- * moment later; see the return view. A window with no opener at all is
- * certainly not one of these and is never delayed.
+ * The manager's own word for it comes first and is the only reliable half. An
+ * opener is accepted as well, for a window this manager was never told about,
+ * and a page with neither is certainly a console and is never held up.
  */
-export function isReturnWindow(win: Pick<Window, 'opener'>): boolean {
-  return Boolean(win.opener) && win.opener !== win;
+export function isReturnWindow(returned: CloudflareReturn | null, win: Pick<Window, 'opener'>): boolean {
+  if (!returned) return false;
+  return returned.collected || (Boolean(win.opener) && win.opener !== win);
 }
 
-/** A result posted by such a window, or null for anything else on the wire. */
-export function readCloudflareResult(data: unknown): CloudflareResult | null {
-  if (typeof data !== 'object' || data === null) return null;
-  const message = data as Record<string, unknown>;
-  if (message.type !== CLOUDFLARE_RESULT) return null;
-  if (typeof message.outcome !== 'string' || !OUTCOMES.includes(message.outcome)) return null;
-  const session = message.session;
-  const handed = typeof session === 'object' && session !== null
-    && typeof (session as Record<string, unknown>).csrfToken === 'string'
-    && typeof (session as Record<string, unknown>).token === 'string'
-    ? session as unknown as HandedSession
-    : undefined;
-  return {
-    type: CLOUDFLARE_RESULT,
-    outcome: message.outcome as CloudflareOutcome,
-    code: typeof message.code === 'string' ? message.code : '',
-    ...(handed ? { session: handed } : {}),
+/**
+ * Ask the manager for the answer, until it has one.
+ *
+ * Polling rather than waiting to be told, because there is nobody to tell it:
+ * see the note at the top. The manager answers `ready: false` while the reader
+ * is still at Cloudflare, and a name it does not know - spent, expired, or
+ * never issued - ends this rather than being asked about forever.
+ *
+ * Returns a function that stops it, for a console that is unmounted or that
+ * heard the answer some other way.
+ */
+export function collectCloudflareResult(handoff: string, settle: (result: CollectedResult) => void, options: {
+  fetchImpl?: typeof fetch;
+  now?: () => number;
+  wait?: (run: () => void, ms: number) => void;
+} = {}): () => void {
+  const fetchImpl = options.fetchImpl ?? ((input: RequestInfo | URL, init?: RequestInit) => globalThis.fetch(input, init));
+  const now = options.now ?? Date.now;
+  const wait = options.wait ?? ((run, ms) => { setTimeout(run, ms); });
+  const giveUpAt = now() + ASK_FOR_MS;
+  let stopped = false;
+
+  const ask = async (): Promise<void> => {
+    if (stopped) return;
+    try {
+      const response = await fetchImpl('/api/v1/cloudflare/handoff', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ handoff }),
+      });
+      // The name is spent or was never ours. Asking again cannot change that.
+      if (response.status === 404) { stopped = true; return; }
+      if (response.ok) {
+        const payload = await response.json() as { ready?: boolean; outcome?: string; code?: string; session?: { csrfToken?: string }; token?: string };
+        if (payload.ready === true && typeof payload.outcome === 'string' && OUTCOMES.includes(payload.outcome)) {
+          stopped = true;
+          const csrfToken = payload.session?.csrfToken;
+          settle({
+            outcome: payload.outcome as CloudflareOutcome,
+            code: typeof payload.code === 'string' ? payload.code : '',
+            session: typeof csrfToken === 'string' && typeof payload.token === 'string' ? { csrfToken, token: payload.token } : null,
+          });
+          return;
+        }
+      }
+    } catch {
+      // The manager is busy putting a machine back together, or the network
+      // blinked. The answer is kept until it is collected, so asking again is
+      // the whole of the fix.
+    }
+    if (!stopped && now() < giveUpAt) wait(() => void ask(), ASK_EVERY_MS);
   };
+  void ask();
+  return () => { stopped = true; };
+}
+
+/** How often to look at the window, and how long to keep collecting after it goes. */
+const WATCH_EVERY_MS = 500;
+const AFTER_CLOSED_MS = 3000;
+
+/**
+ * Notice a window the reader shut without finishing.
+ *
+ * Without this, a sign-in abandoned halfway leaves the console waiting on an
+ * answer that is never coming - and waiting with its buttons disabled, so the
+ * reader cannot start another one either. The console is stuck for as long as
+ * the collecting runs, over a window they closed deliberately.
+ *
+ * The wait afterwards is because a window that finished also closes, and
+ * closes the moment it gets home - before the console has had time to collect
+ * what it left. So a closed window is only abandoned if nothing turns up in
+ * the seconds after it.
+ */
+export function whenAbandoned(watched: Window, abandoned: () => void, options: {
+  wait?: (run: () => void, ms: number) => void;
+} = {}): () => void {
+  const wait = options.wait ?? ((run, ms) => { setTimeout(run, ms); });
+  let stopped = false;
+  const look = () => {
+    if (stopped) return;
+    if (!watched.closed) { wait(look, WATCH_EVERY_MS); return; }
+    wait(() => { if (!stopped) abandoned(); }, AFTER_CLOSED_MS);
+  };
+  wait(look, WATCH_EVERY_MS);
+  return () => { stopped = true; };
 }
 
 /**

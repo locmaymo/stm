@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { App } from './App.js';
 import { CloudflareReturn } from './cloudflare-return.js';
 import { Gallery } from './gallery.js';
-import { cloudflareOutcome, isReturnWindow } from './oauth.js';
+import { cloudflareReturn, isReturnWindow } from './oauth.js';
 import { browserEnvironment, browserStorage, readPreferences } from './preferences.js';
 import './styles.css';
 
@@ -27,7 +27,8 @@ const gallery = window.location.hash === '#gallery';
  * looking at - in a frame somewhere, which is why a window was needed at all -
  * carried on showing the sign-in screen. See oauth.ts.
  */
-const returning = isReturnWindow(window) ? cloudflareOutcome(window.location.search) : null;
+const returned = cloudflareReturn(window.location.search);
+const returning = isReturnWindow(returned, window) ? returned : null;
 
 // Neither of these is the console, and the console is what usually settles the
 // theme and the language, so the two of them settle it here instead.
@@ -40,7 +41,7 @@ if (chrome) {
 createRoot(root).render(
   <StrictMode>
     {returning
-      ? <CloudflareReturn outcome={returning.outcome} code={returning.code} locale={chrome?.locale ?? 'en'} />
+      ? <CloudflareReturn outcome={returning.outcome} locale={chrome?.locale ?? 'en'} />
       : gallery ? <Gallery /> : <App />}
   </StrictMode>,
 );

@@ -11,6 +11,7 @@ import { INSTALL_CANCELED, RuntimeError, RuntimeManager, type InstallationProgre
 import { hashPassword, MIN_PASSWORD_LENGTH, validatePasscode, validatePassword, verifyPassword } from './password.js';
 import { RateLimiter } from './rate-limit.js';
 import { parseSessionCookie, SessionStore, clearSessionCookie, sessionCookie } from './sessions.js';
+import { HandoffStore } from './cloudflare-handoff.js';
 import { StateStore } from './state.js';
 import { LOG_LIMITS, LogBuffer } from './log-buffer.js';
 import { eraseManagerData } from './reset.js';
@@ -304,6 +305,9 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   // known before the tunnel has come back and asked for a redeploy.
   void proxy?.urlFor('manager').then((url) => { managerProxyOrigin = url; }).catch(() => undefined);
   const metrics = options.metrics ?? new MetricsStore(paths);
+  // Sign-ins that happened in a window of their own, waiting to be collected
+  // by the console that started them; see cloudflare-handoff.ts.
+  const handoffs = new HandoffStore();
   const config = options.config ?? new ConfigStore({ managedPort: () => sillyTavernPort, logger: (line) => { jobs.append('manager', line); baseLogger(line); } });
   // Where the console binds, which is also which addresses its ports have to be
   // free on. Read here rather than at `listen` below, because everything from
@@ -632,6 +636,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       store,
       sessions,
       rateLimiter,
+      handoffs,
       startedAt,
       secureCookies,
       publicOrigins: publicOrigins(),
@@ -800,6 +805,7 @@ async function handleRequest(options: {
   readonly store: StateStore;
   readonly sessions: SessionStore;
   readonly rateLimiter: RateLimiter;
+  readonly handoffs: HandoffStore;
   readonly startedAt: number;
   readonly secureCookies: boolean;
   readonly publicOrigins: readonly string[];
@@ -845,7 +851,7 @@ async function handleRequest(options: {
   readonly autoInstall: boolean;
   readonly onShutdownRequest: (() => void) | undefined;
 }): Promise<void> {
-  const { request, response, store, sessions, rateLimiter, startedAt, publicOrigins, proxiedOrigin, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, proxy, publishProxies, shutdownToken, autoInstall, onShutdownRequest } = options;
+  const { request, response, store, sessions, rateLimiter, handoffs, startedAt, publicOrigins, proxiedOrigin, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, proxy, publishProxies, shutdownToken, autoInstall, onShutdownRequest } = options;
   // Whether the browser's side of this connection is HTTPS, which is not the
   // same question as whether ours is: a hosted console is reached over HTTPS
   // that a proxy terminates before us, and only the proxy's own header says so.
@@ -902,7 +908,7 @@ async function handleRequest(options: {
   };
 
   if (pathname === CLOUDFLARE_CALLBACK_PATH && (request.method ?? 'GET') === 'GET') {
-    await handleCloudflareCallback(context, sessions, cloudflare, r2, options.logger, {
+    await handleCloudflareCallback(context, sessions, cloudflare, r2, options.logger, handoffs, {
       store, backups, runtime, secureCookies, rateLimiter,
       restoreEverything: () => restoreAfterSignIn({
         store, backups, r2, runtime, jobs, profiles, gateway, metrics,
@@ -984,7 +990,36 @@ async function handleRequest(options: {
     if (!cloudflare) { sendError(response, 409, 'cloudflare_not_available', 'This manager has no Cloudflare sign-in configured'); return; }
     const returnOrigin = panelOrigin(context);
     if (!returnOrigin) { sendError(response, 400, 'invalid_origin', 'The panel origin could not be read'); return; }
-    sendJson(response, 200, { url: cloudflare.beginConnect(returnOrigin, 'signIn') });
+    const url = cloudflare.beginConnect(returnOrigin, 'signIn');
+    sendJson(response, 200, { url, ...openHandoff(context, handoffs, url) });
+    return;
+  }
+
+  /*
+   * Collect a sign-in that finished in a window of its own.
+   *
+   * Unauthenticated, because a sign-in is how a console gets a session in the
+   * first place - the name is the credential, and it is one this manager
+   * issued a moment ago to the page now asking for it. See
+   * cloudflare-handoff.ts for why the browser cannot carry this itself.
+   */
+  if (pathname === '/api/v1/cloudflare/handoff' && method === 'POST') {
+    const body = await readJson(request);
+    const secret = isRecord(body) && typeof body.handoff === 'string' ? body.handoff : '';
+    const claim = secret ? handoffs.claim(secret) : null;
+    // Nothing is waiting under that name: never issued, already collected, or
+    // out of time. Said plainly, so the console stops asking.
+    if (!claim) { sendError(response, 404, 'not_found', 'There is no sign-in waiting under that name'); return; }
+    if (claim.status === 'waiting') { sendJson(response, 200, { ready: false }); return; }
+    const { outcome, code, sessionToken } = claim.result;
+    sendJson(response, 200, {
+      ready: true,
+      outcome,
+      code,
+      ...(sessionToken && sessions.get(sessionToken)
+        ? { session: sessions.get(sessionToken), token: sessionToken }
+        : {}),
+    });
     return;
   }
 
@@ -1053,7 +1088,7 @@ async function handleRequest(options: {
     if (method !== 'GET' && !requireCsrf(context, session.csrfToken)) {
       return;
     }
-    await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, proxy, publishProxies, logger);
+    await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, proxy, publishProxies, logger, handoffs);
     return;
   }
 
@@ -1184,7 +1219,7 @@ async function adoptRestoredPort(deps: PortAdoptionDeps, port: number): Promise<
   }
 }
 
-async function handleRuntimeRequest(context: RequestContext, store: StateStore, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, managerTunnel: TunnelManager, gateway: AccessGateway, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, cloudflare: CloudflareConnection | null, metrics: MetricsStore, activity: ActivityMeter, config: ConfigStore, system: SystemStore, proxy: ProxyWorkerManager | null, publishProxies: () => void, logger: LogSink): Promise<void> {
+async function handleRuntimeRequest(context: RequestContext, store: StateStore, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, managerTunnel: TunnelManager, gateway: AccessGateway, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, cloudflare: CloudflareConnection | null, metrics: MetricsStore, activity: ActivityMeter, config: ConfigStore, system: SystemStore, proxy: ProxyWorkerManager | null, publishProxies: () => void, logger: LogSink, handoffs: HandoffStore): Promise<void> {
   const { pathname, ports, request, response, searchParams } = context;
   const method = request.method ?? 'GET';
   const adoptSillyTavernPort = (port: number): Promise<void> =>
@@ -1419,7 +1454,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     return;
   }
   if (pathname.startsWith('/api/v1/r2/cloudflare')) {
-    await handleCloudflareRequest(context, cloudflare, r2, proxy, publishProxies, logger);
+    await handleCloudflareRequest(context, cloudflare, r2, proxy, publishProxies, logger, handoffs);
     return;
   }
   // The one question about the bucket: is it reachable, and what is in it. It
@@ -2344,7 +2379,7 @@ function cloudflareConnectionFromEnvironment(paths: PlatformPaths, env: NodeJS.P
  * the signed-in bucket the one backed up to, and disconnecting it switches R2
  * backups off rather than leaving them failing on a schedule.
  */
-async function handleCloudflareRequest(context: RequestContext, cloudflare: CloudflareConnection | null, r2: R2Manager, proxy: ProxyWorkerManager | null, publishProxies: () => void, logger: LogSink): Promise<void> {
+async function handleCloudflareRequest(context: RequestContext, cloudflare: CloudflareConnection | null, r2: R2Manager, proxy: ProxyWorkerManager | null, publishProxies: () => void, logger: LogSink, handoffs: HandoffStore): Promise<void> {
   const { pathname, request, response } = context;
   const method = request.method ?? 'GET';
   if (!cloudflare) { sendError(response, 404, 'cloudflare_not_available', 'This manager has no Cloudflare sign-in configured'); return; }
@@ -2357,7 +2392,8 @@ async function handleCloudflareRequest(context: RequestContext, cloudflare: Clou
     if (!returnOrigin) { sendError(response, 400, 'invalid_origin', 'The panel origin could not be read'); return; }
     // Named here so the callback can find its way back to this session even
     // when the browser returns to a window that carries none; see beginConnect.
-    sendJson(response, 200, { url: cloudflare.beginConnect(returnOrigin, 'connect', context.sessionToken) });
+    const url = cloudflare.beginConnect(returnOrigin, 'connect', context.sessionToken);
+    sendJson(response, 200, { url, ...openHandoff(context, handoffs, url) });
     return;
   }
   if (pathname === '/api/v1/r2/cloudflare/buckets' && method === 'GET') {
@@ -2444,10 +2480,27 @@ async function handleCloudflareRequest(context: RequestContext, cloudflare: Clou
  * top-level navigation back from Cloudflare still carries, so only a signed-in
  * admin can finish connecting this manager.
  */
-async function handleCloudflareCallback(context: RequestContext, sessions: SessionStore, cloudflare: CloudflareConnection | null, r2: R2Manager, logger: LogSink, signIn: CloudflareSignInDeps): Promise<void> {
+async function handleCloudflareCallback(context: RequestContext, sessions: SessionStore, cloudflare: CloudflareConnection | null, r2: R2Manager, logger: LogSink, handoffs: HandoffStore, signIn: CloudflareSignInDeps): Promise<void> {
   const { response, searchParams } = context;
-  const redirect = (outcome: string, code?: string, page = '#data'): void => {
-    const query = new URLSearchParams({ cloudflare: outcome, ...(code ? { cloudflare_error: code } : {}) });
+  const state = searchParams.get('state') ?? '';
+  /*
+   * Whether a console is waiting to collect this, rather than reading it here.
+   *
+   * It decides both halves of the answer: the result is left where that
+   * console can fetch it, and the page this redirects to is told it is a
+   * window to be closed rather than a console to become. Said in the address
+   * because the address is the one thing that survives the trip - the window
+   * comes back from Cloudflare with its opener severed and its storage in a
+   * different partition, and can no longer tell what it is on its own.
+   */
+  const collected = handoffs.isOpen(state);
+  const redirect = (outcome: string, code?: string, page = '#data', sessionToken: string | null = null): void => {
+    if (collected) handoffs.settle(state, { outcome, code: code ?? '', sessionToken });
+    const query = new URLSearchParams({
+      cloudflare: outcome,
+      ...(code ? { cloudflare_error: code } : {}),
+      ...(collected ? { handoff: '1' } : {}),
+    });
     response.writeHead(303, {
       location: `/?${query.toString()}${page}`,
       'cache-control': 'no-store',
@@ -2463,7 +2516,7 @@ async function handleCloudflareCallback(context: RequestContext, sessions: Sessi
    * held in this process - not in the state Cloudflare hands back, which a
    * browser could edit.
    */
-  const purpose = cloudflare.pendingPurpose(searchParams.get('state') ?? '');
+  const purpose = cloudflare.pendingPurpose(state);
   if (purpose === 'signIn') {
     await completeCloudflareSignIn(context, sessions, cloudflare, r2, logger, signIn, redirect);
     return;
@@ -2475,7 +2528,6 @@ async function handleCloudflareCallback(context: RequestContext, sessions: Sessi
    * is the one answer that cannot be acted on; what happened is that this
    * particular sign-in is no longer the one to finish.
    */
-  const state = searchParams.get('state') ?? '';
   if (!purpose && !sessions.get(context.sessionToken)) { redirect('error', 'cloudflare_state_mismatch'); return; }
   /*
    * Whoever started this, rather than whoever is standing here.
@@ -2710,7 +2762,7 @@ async function completeCloudflareSignIn(
   r2: R2Manager,
   logger: LogSink,
   deps: CloudflareSignInDeps,
-  redirect: (outcome: string, code?: string, page?: string) => void,
+  redirect: (outcome: string, code?: string, page?: string, sessionToken?: string | null) => void,
 ): Promise<void> {
   const { searchParams } = context;
   let status;
@@ -2752,7 +2804,9 @@ async function completeCloudflareSignIn(
   void deps.restoreEverything().catch((error: unknown) => {
     logger(logEvent('auth.cloudflareRestoreFailed', `[auth] this machine could not be restored after signing in: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
   });
-  redirect(status.state === 'connected' ? 'signed_in' : status.state, undefined, '');
+  // The session goes with it, for a console that is waiting to collect this
+  // rather than reading it in its own address; see cloudflare-handoff.ts.
+  redirect(status.state === 'connected' ? 'signed_in' : status.state, undefined, '', created.token);
 }
 
 function isProtectedPath(pathname: string): boolean {
@@ -3166,6 +3220,21 @@ function isTrustedOrigin(request: IncomingMessage, platform: PlatformPaths['plat
  * token in the browser's history, in a `Referer` sent to another site, and in
  * whatever writes the access log.
  */
+/**
+ * Name this sign-in for collection, where the console says it needs one.
+ *
+ * Asked for by the page rather than decided here, because it is the page that
+ * knows: a console that can send itself to Cloudflare reads the answer in its
+ * own address when it comes back, and has nothing to collect.
+ */
+function openHandoff(context: RequestContext, handoffs: HandoffStore, url: string): { handoff?: string } {
+  // A plain option on the request, not a secret, so the query string is the
+  // right place for it. What comes back is the secret, and that is in the body.
+  if (context.searchParams.get('handoff') !== '1') return {};
+  const state = new URL(url).searchParams.get('state');
+  return state ? { handoff: handoffs.open(state) } : {};
+}
+
 function parseSessionToken(request: IncomingMessage): string | undefined {
   const authorization = headerValue(request.headers.authorization);
   if (authorization && /^Bearer /i.test(authorization)) {
