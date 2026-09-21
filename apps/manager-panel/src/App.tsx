@@ -808,6 +808,16 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
   const [settingsOffer, setSettingsOffer] = useState<ManagerSettingsOffer | null>(null);
   const [dismissedSettings, setDismissedSettings] = useState<string | null>(() => readDismissedSettings(browserStorage()));
   const [restoringEverything, setRestoringEverything] = useState(false);
+  /*
+   * Which machine the account says is backing up, when it is not this one.
+   *
+   * Kept beside the offer above and asked for in the same breath, because the
+   * two are the same moment from opposite sides: one console has just taken
+   * the account and is being offered the other machine's setup, and the other
+   * console has just lost it and has been told nothing.
+   */
+  const [r2Owner, setR2Owner] = useState<R2Config['owner'] | null>(null);
+  const [reconnectUrl, setReconnectUrl] = useState<string | null>(null);
   const [tunnelOfferOpen, setTunnelOfferOpen] = useState(false);
   const [accessSecurity, setAccessSecurity] = useState<AccessGatewayState>({ status: 'stopped', host: null, port: 8001, lan: false, passwordConfigured: false, passcode: false, sessions: 0, error: null });
   const t = translator(preferences.locale);
@@ -876,12 +886,38 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     try {
       const response = await apiFetch('/api/v1/r2/settings', { credentials: 'same-origin' });
       if (!response.ok) return;
-      setSettingsOffer((await response.json() as { settings: ManagerSettingsOffer }).settings);
+      const payload = await response.json() as { settings: ManagerSettingsOffer; owner?: R2Config['owner'] | null };
+      setSettingsOffer(payload.settings);
+      setR2Owner(payload.owner ?? null);
     } catch {
       // Nothing is offered, which is the same as there being nothing to offer.
     }
   };
   useEffect(() => { void askAboutSettings(); }, []);
+
+  /**
+   * Take the account back, from the console that lost it.
+   *
+   * The same sign-in the other machine used, so this is symmetrical: whoever
+   * signs in last is the one that backs up. The window is opened while the
+   * click is still a click, unless this browser has already refused one - in
+   * which case the button below becomes a plain link; see oauth.ts.
+   */
+  const signInToCloudflareAgain = async (): Promise<void> => {
+    const inFrame = framed();
+    const opened = inFrame && !popupsBlocked() ? openReturnWindow() : null;
+    try {
+      const response = await apiFetch(`/api/v1/r2/cloudflare/connect${inFrame ? '?handoff=1' : ''}`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      const payload = await response.json() as { url?: string };
+      if (!response.ok || !payload.url) { opened?.close(); return; }
+      if (!inFrame) { window.location.assign(payload.url); return; }
+      if (opened) { opened.location.href = payload.url; return; }
+      setReconnectUrl(payload.url);
+    } catch {
+      opened?.close();
+      // The card stays, and pressing again tries again.
+    }
+  };
 
   const restoreEverything = async (): Promise<void> => {
     setRestoringEverything(true);
@@ -1377,6 +1413,23 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
                 and the Overview of a machine with nothing installed, where the
                 SillyTavern card is already saying it in place of its Install
                 button. */}
+            {/* The account has been taken by another manager, so this one
+                has stopped backing up. First of everything, because nothing
+                else on the page is true while it is. */}
+            {r2Owner && !r2Owner.mine
+              ? <div className="mb-(--section-gap)"><Alert variant="destructive">
+                <ShieldCheck />
+                <AlertTitle>{t('console.r2DisplacedTitle')}</AlertTitle>
+                <AlertDescription className="grid gap-2">
+                  <span>{t('console.r2DisplacedBody', { name: r2Owner.label, when: new Date(r2Owner.lastSeenAt).toLocaleString() })}</span>
+                  <span>{reconnectUrl
+                    ? <Button size="sm" asChild style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }} className="hover:opacity-90">
+                      <a href={reconnectUrl} target="_blank" rel="noopener noreferrer"><CloudflareMark />{t('console.r2DisplacedSignIn')}</a>
+                    </Button>
+                    : <Button size="sm" style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }} className="hover:opacity-90" onClick={() => void signInToCloudflareAgain()}><CloudflareMark />{t('console.r2DisplacedSignIn')}</Button>}</span>
+                </AlertDescription>
+              </Alert></div>
+              : null}
             {/* Above the work, and above the page, because on a machine
                 that has just been put in front of somebody this is the whole
                 of what there is to do. */}
@@ -3923,27 +3976,10 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
           * opened the console. Said here because it is otherwise
           * indistinguishable from a machine that happened to still have it.
           */}
-        {/*
-          * Another manager signed in with this Cloudflare account and took it.
-          *
-          * One manager per bucket: two of them never see each other's recovery
-          * points but do collect each other's chunks. Which one wins is no
-          * longer a question anybody is asked - signing in takes it - so the
-          * machine that lost is the only one with something to be told, and
-          * until now the only thing it was told was `401 unauthorized`, with
-          * nothing to press.
-          *
-          * The way back is the same way the other machine took it: sign in to
-          * Cloudflare again, here.
-          */}
-        {r2Config?.owner && !r2Config.owner.mine ? <Alert variant="destructive">
-          <ShieldCheck />
-          <AlertTitle>{t('console.r2DisplacedTitle')}</AlertTitle>
-          <AlertDescription className="grid gap-2">
-            <span>{t('console.r2DisplacedBody', { name: r2Config.owner.label, when: new Date(r2Config.owner.lastSeenAt).toLocaleString() })}</span>
-            <span><Button size="sm" style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }} className="hover:opacity-90" onClick={() => void connectCloudflare()} disabled={cloudflareBusy}><CloudflareMark />{t('console.r2DisplacedSignIn')}</Button></span>
-          </AlertDescription>
-        </Alert> : null}
+        {/* Another manager signed in with this Cloudflare account and took
+            it. Said at the top of every page rather than here: a console that
+            has stopped backing up is not news about the backup card, and the
+            reader may never open this page. */}
         {/*
           * Settings another machine left here, on their own.
           *

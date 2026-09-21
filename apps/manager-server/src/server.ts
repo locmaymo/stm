@@ -1486,7 +1486,21 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
    * without being asked. See `manager-settings.ts`.
    */
   if (pathname === '/api/v1/r2/settings' && method === 'GET') {
-    sendJson(response, 200, { settings: await managerSettingsOffer({ store, backups, r2, runtime, tunnel, managerTunnel, gateway, logger }) });
+    /*
+     * Who holds the bucket, asked here because this is what a console asks as
+     * it opens.
+     *
+     * The claim is otherwise only read on the way into a write, and a manager
+     * with nothing to send does not write - so a machine that had the account
+     * taken from it went on saying "this machine is backing up", which is
+     * exactly the machine somebody opens the console on to find out why their
+     * backups stopped. One charged read, at most once a minute.
+     */
+    await r2.refreshClaim({ atMostEvery: 60_000 }).catch(() => undefined);
+    sendJson(response, 200, {
+      settings: await managerSettingsOffer({ store, backups, r2, runtime, tunnel, managerTunnel, gateway, logger }),
+      owner: (await r2.getConfig()).owner ?? null,
+    });
     return;
   }
   if (pathname === '/api/v1/r2/settings' && method === 'POST') {

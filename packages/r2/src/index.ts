@@ -973,11 +973,46 @@ export class R2Manager {
     await this.recordCharges();
   }
 
+  /**
+   * Go and look at who holds the bucket, for a console somebody just opened.
+   *
+   * The claim is otherwise only read on the way into a write, and a manager
+   * whose profile has not changed does not write - so a machine that had the
+   * account taken from it went on showing "this machine is backing up" for as
+   * long as it had nothing to send. Which is precisely the machine somebody
+   * opens the console on to find out why their backups stopped.
+   *
+   * Rate-limited rather than free: it is one charged read, and the console
+   * asks whenever a page is opened. Never throws; a bucket that cannot be
+   * reached leaves what was last known in place, which is what the console
+   * already says it is showing.
+   */
+  public async refreshClaim(options: { readonly atMostEvery?: number } = {}): Promise<void> {
+    const config = await this.load();
+    if (config.mode !== 'cloudflare' || !this.cloudflare || !config.enabled) return;
+    const now = this.now().getTime();
+    const since = config.claim ? now - Date.parse(config.claim.checkedAt) : Number.POSITIVE_INFINITY;
+    if (options.atMostEvery !== undefined && Number.isFinite(since) && since < options.atMostEvery) return;
+    try {
+      if (!await this.cloudflare.usable()) return;
+      const keyId = await this.cloudflare.installationId();
+      const claim = await readClaim(this.client(config), CLAIM_KEY);
+      if (claim) await this.rememberClaim(claim, claim.keyId === keyId);
+      else await this.forgetClaim();
+    } catch {
+      // What was last known stays. The console says when it was known.
+    } finally {
+      await this.recordCharges().catch(() => undefined);
+    }
+  }
+
   private async rememberClaim(claim: BucketClaim, mine: boolean): Promise<void> {
     const config = await this.load();
     const next = { keyId: claim.keyId, label: claim.label, lastSeenAt: claim.lastSeenAt, mine, checkedAt: new Date(this.now()).toISOString() };
     const current = config.claim;
-    if (current && current.keyId === next.keyId && current.mine === next.mine && current.lastSeenAt === next.lastSeenAt) return;
+    // Written even when only `checkedAt` moved: it is what the rate limit on
+    // `refreshClaim` reads, and a stale one would stop it ever looking again.
+    if (current && current.keyId === next.keyId && current.mine === next.mine && current.lastSeenAt === next.lastSeenAt && this.now().getTime() - Date.parse(current.checkedAt) < CLAIM_REFRESH_MS) return;
     await this.save({ ...config, claim: next });
   }
 
