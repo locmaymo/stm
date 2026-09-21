@@ -55,6 +55,39 @@ test('a callback for a sign-in this manager did not start, or a denied one, is r
   assert.equal((await connection.status()).state, 'disconnected');
 });
 
+/*
+ * A console reachable at more than one address is usually open at more than
+ * one of them. There was one slot for a sign-in in flight, so the tab that
+ * pressed the button second cancelled the first, and the first came back to
+ * "started somewhere else" while the second was let in.
+ */
+test('a sign-in started in one tab still finishes after another tab starts its own', async () => {
+  const { connection } = await setup();
+  const first = new URL(connection.beginConnect('http://127.0.0.1:7860', 'signIn'));
+  const second = new URL(connection.beginConnect('https://stm.acme.workers.dev', 'signIn'));
+  const firstState = first.searchParams.get('state') ?? '';
+  const secondState = second.searchParams.get('state') ?? '';
+  // Both are still ours, and each still knows what it was started for.
+  assert.equal(connection.pendingPurpose(firstState), 'signIn');
+  assert.equal(connection.pendingPurpose(secondState), 'signIn');
+  assert.equal(connection.pendingPurpose('not-one-of-ours'), null);
+  // The tab that started first comes back first, and is let in.
+  assert.equal((await connection.completeConnect({ state: firstState, code: 'good-code' })).state, 'connected');
+  // Spending one does not spend the other, and a state is still good only once.
+  assert.equal(connection.pendingPurpose(secondState), 'signIn');
+  await assert.rejects(connection.completeConnect({ state: firstState, code: 'good-code' }), (error: unknown) => error instanceof R2Error && error.code === 'cloudflare_state_mismatch');
+});
+
+test('a sign-in left unfinished stops being answerable once it has run out of time', async () => {
+  const clock = { now: Date.UTC(2026, 0, 1) };
+  const { connection } = await setup({}, { clock });
+  const stale = new URL(connection.beginConnect('http://127.0.0.1:7860', 'signIn'));
+  const state = stale.searchParams.get('state') ?? '';
+  clock.now += 11 * 60 * 1000;
+  assert.equal(connection.pendingPurpose(state), null);
+  await assert.rejects(connection.completeConnect({ state, code: 'good-code' }), (error: unknown) => error instanceof R2Error && error.code === 'cloudflare_state_mismatch');
+});
+
 test('with several accounts the user chooses, and only an offered account can be chosen', async () => {
   const { connection, cloudflare } = await setup({ accounts: [{ id: ACCOUNT_ID, name: 'Personal' }, { id: OTHER_ACCOUNT_ID, name: 'Team' }] });
   const status = await connect(connection);
@@ -204,8 +237,11 @@ test('disconnecting removes this installation\'s Worker key, revokes the grant a
   await connection.objectStore(() => undefined).putObject('sillytavern-manager/blobs/a', new Uint8Array([7]), 'application/octet-stream');
   assert.equal(cloudflare.state.secrets.size, 1);
   const refresh = cloudflare.state.refreshToken;
-  assert.deepEqual(await connection.disconnect(), { revoked: true, workerKeyRemoved: true });
+  // The key and then the Worker itself: nothing of this manager's is left in
+  // somebody's account after they have asked for the connection to be gone.
+  assert.deepEqual(await connection.disconnect(), { revoked: true, workerKeyRemoved: true, workerRemoved: true });
   assert.equal(cloudflare.state.secrets.size, 0);
+  assert.equal(cloudflare.state.deployed, null, 'the backup Worker is gone from the account');
   assert.deepEqual(cloudflare.state.revoked, [refresh]);
   assert.equal((await connection.status()).state, 'disconnected');
   assert.doesNotMatch(await readFile(join(paths.state, 'cloudflare-connection.json'), 'utf8'), /refresh-/u);

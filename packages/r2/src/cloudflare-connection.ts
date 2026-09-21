@@ -6,6 +6,7 @@ import {
   CloudflareApi,
   CloudflareApiError,
   CloudflareOAuthError,
+  AUTHORIZATION_TTL_MS,
   createAuthorization,
   DEFAULT_SCOPES,
   exchangeCode,
@@ -33,8 +34,32 @@ const ACCESS_TOKEN_MARGIN_MS = 60_000;
 const WORKER_RETRY_MS = 60 * 60 * 1000;
 /** After a rotation failed, how long the current key is used before trying again. */
 const ROTATION_RETRY_MS = 10 * 60 * 1000;
+/**
+ * How many sign-ins may be on their way to Cloudflare at once.
+ *
+ * More than one, because a console that can be reached at more than one
+ * address is usually open at more than one of them: the machine it runs on,
+ * and the link that was opened so a phone could reach it too. There was a
+ * single slot here, so pressing the Cloudflare button in the second tab
+ * cancelled the first - and the first tab came back from Cloudflare to "this
+ * sign-in was started somewhere else" while the second was let in. What that
+ * looks like from the desk is a console refusing the address it is being read
+ * at and accepting the one on the phone, at random.
+ *
+ * Small, because each is a live authorization and each expires on its own
+ * within ten minutes. Oldest out first when the room runs out.
+ */
+const PENDING_SIGN_IN_LIMIT = 4;
+
+/** One sign-in on its way to Cloudflare, and what it was started for. */
+interface PendingSignIn {
+  readonly authorization: PendingAuthorization;
+  readonly purpose: CloudflarePurpose;
+}
 
 export type CloudflareDataPath = 'worker' | 'rest';
+/** What a sign-in with Cloudflare was started for; see `beginConnect`. */
+export type CloudflarePurpose = 'connect' | 'signIn';
 export type { CloudflareConnectionState, CloudflareConnectionStatus };
 
 interface StoredConnection {
@@ -98,7 +123,7 @@ export class CloudflareConnection {
   private readonly pacer = new RequestPacer();
   private stored: StoredConnection | null = null;
   private writeQueue: Promise<void> = Promise.resolve();
-  private pending: PendingAuthorization | null = null;
+  private pending: PendingSignIn[] = [];
   private offeredAccounts: CloudflareAccount[] = [];
   private accessToken: { value: string; expiresAt: number | null } | null = null;
   private refreshing: Promise<string> | null = null;
@@ -146,10 +171,51 @@ export class CloudflareConnection {
     return (await this.status()).state === 'connected';
   }
 
-  /** Start signing in. Only the newest request can be completed. */
-  public beginConnect(returnOrigin: string): string {
-    this.pending = createAuthorization(this.client, returnOrigin, this.now());
-    return this.pending.url;
+  /**
+   * Start a sign-in with Cloudflare, and say what it is for.
+   *
+   * `connect` is somebody who is already in the console arranging where their
+   * backups go. `signIn` is somebody opening the console with their Cloudflare
+   * account instead of a password, which is a sign-in that has to be allowed
+   * to finish without a session - because not having one is the point.
+   *
+   * The purpose is held here rather than in the state Cloudflare hands back,
+   * so nothing a browser can edit decides whether a session is required. The
+   * cost is that it does not survive a restart of the manager, which is
+   * already true of the authorization it belongs to.
+   *
+   * Several can be in flight together; see `PENDING_SIGN_IN_LIMIT`.
+   */
+  public beginConnect(returnOrigin: string, purpose: CloudflarePurpose = 'connect'): string {
+    const authorization = createAuthorization(this.client, returnOrigin, this.now());
+    // Expired ones first, so the room is spent on sign-ins that can still finish.
+    this.prunePending().push({ authorization, purpose });
+    while (this.pending.length > PENDING_SIGN_IN_LIMIT) this.pending.shift();
+    return authorization.url;
+  }
+
+  /** What the sign-in this callback belongs to was started for, if it is one of ours. */
+  public pendingPurpose(state: string): CloudflarePurpose | null {
+    return this.prunePending().find((entry) => matchesPending(entry.authorization, state, this.now()))?.purpose ?? null;
+  }
+
+  /** Drop the sign-ins that have run out of time, and return what is left. */
+  private prunePending(): PendingSignIn[] {
+    const now = this.now();
+    this.pending = this.pending.filter((entry) => now - entry.authorization.createdAt <= AUTHORIZATION_TTL_MS);
+    return this.pending;
+  }
+
+  /**
+   * The sign-in this callback belongs to, spent.
+   *
+   * Taken out of the list whether or not what follows succeeds: a state is
+   * good once, and a code that was refused must not be answerable again.
+   */
+  private takePending(state: string): PendingSignIn | null {
+    const index = this.prunePending().findIndex((entry) => matchesPending(entry.authorization, state, this.now()));
+    if (index === -1) return null;
+    return this.pending.splice(index, 1)[0] ?? null;
   }
 
   /**
@@ -159,9 +225,9 @@ export class CloudflareConnection {
    * so a failure later in setup never loses the grant the user just gave.
    */
   public async completeConnect(callback: { state: string; code?: string | null; error?: string | null; errorDescription?: string | null }, known: KnownBucket | null = null): Promise<CloudflareConnectionStatus> {
-    const pending = this.pending;
-    if (!matchesPending(pending, callback.state, this.now())) throw new R2Error('cloudflare_state_mismatch', 'This sign-in link has expired or was not started here. Connect again.');
-    this.pending = null;
+    const entry = this.takePending(callback.state);
+    if (!entry) throw new R2Error('cloudflare_state_mismatch', 'This sign-in link has expired or was not started here. Connect again.');
+    const pending = entry.authorization;
     if (callback.error) {
       const reason = callback.error === 'access_denied' ? 'Access was not granted on Cloudflare.' : `Cloudflare refused the sign-in: ${callback.errorDescription ?? callback.error}`;
       throw new R2Error('cloudflare_authorization_denied', reason);
@@ -263,22 +329,56 @@ export class CloudflareConnection {
    * asked for it to be gone. A revocation that failed is still reported, since
    * the grant may then live on until the user revokes it in the dashboard.
    */
-  public async disconnect(): Promise<{ revoked: boolean; workerKeyRemoved: boolean }> {
+  public async disconnect(): Promise<{ revoked: boolean; workerKeyRemoved: boolean; workerRemoved: boolean }> {
     const stored = await this.load();
     let workerKeyRemoved = false;
+    let workerRemoved = false;
     let revoked = false;
     if (stored.refreshToken) {
       if (stored.account && stored.scopes.includes(DEFAULT_SCOPES.workersScriptsWrite)) {
         workerKeyRemoved = await this.worker.removeKey(stored.account.id, stored.installationKeyId).then(() => true, () => false);
+        /*
+         * And the Worker itself, once nothing else holds a key on it.
+         *
+         * Removing only this installation's key left the script deployed, on
+         * the account's own subdomain, bound to the bucket, for a reader who
+         * had just asked for the connection to be gone. Another machine
+         * backing up to the same account is the one reason to leave it, and
+         * its key is how it says so.
+         */
+        workerRemoved = await this.worker.keyIds(stored.account.id)
+          .then(async (keyIds) => keyIds.length === 0 && await this.worker.remove(stored.account?.id ?? ''))
+          .catch(() => false);
       }
       revoked = await revokeToken(this.client.clientId, stored.refreshToken, { fetchImpl: this.fetchImpl }).then(() => true, () => false);
     }
     this.resetSession();
     this.accessToken = null;
-    this.pending = null;
+    this.pending = [];
     this.offeredAccounts = [];
     await this.save({ ...stored, refreshToken: null, scopes: [], account: null, bucket: null, connectedAt: null, reconnectRequired: false, lastError: null, problem: null });
-    return { revoked, workerKeyRemoved };
+    return { revoked, workerKeyRemoved, workerRemoved };
+  }
+
+  /** This installation, as the bucket's claim names it. Stable across reconnects. */
+  public async installationId(): Promise<string> {
+    return (await this.load()).installationKeyId;
+  }
+
+  /**
+   * Stop another installation from reaching the bucket through the Worker.
+   *
+   * The claim in the bucket is what one manager reads to know it is not the
+   * one using this account, and a manager that respects it stops on its own.
+   * This is the other half: the key it signs with is taken off the Worker, so
+   * a machine that is not listening - an older version, one mid-run - stops
+   * too, at the first request rather than at the next check.
+   */
+  public async evict(keyId: string): Promise<boolean> {
+    const stored = await this.load();
+    if (!stored.account || !stored.scopes.includes(DEFAULT_SCOPES.workersScriptsWrite)) return false;
+    if (keyId === stored.installationKeyId) return false;
+    return await this.worker.removeKey(stored.account.id, keyId).then(() => true, () => false);
   }
 
   /**

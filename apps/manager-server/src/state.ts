@@ -63,6 +63,24 @@ interface PersistedManagerState {
    * installing itself again on the next start.
    */
   readonly firstInstallStartedAt: string | null;
+  /**
+   * The Cloudflare account allowed to sign in to this manager, if one has
+   * claimed it.
+   *
+   * A manager can be opened with a password, with a Cloudflare account, or
+   * with either - and the second is what makes a machine that loses its disk
+   * every few days usable at all: there is nothing to set up again, because
+   * the sign-in is the setup. The first account to sign in claims the manager,
+   * exactly as the first person to reach a manager with no password is the one
+   * who sets it; afterwards only that account is let in.
+   *
+   * The account's identifier, never a token. The tokens live in the Cloudflare
+   * connection's own file, and this says nothing about whether one is valid -
+   * only about whose manager this is.
+   */
+  readonly ownerAccountId: string | null;
+  /** What to call that account on screen, so a refusal can name it. */
+  readonly ownerAccountName: string | null;
 }
 
 export interface StateStoreOptions {
@@ -127,6 +145,8 @@ export class StateStore {
         telemetryNoticeVersion: TELEMETRY_NOTICE_VERSION,
         autoStartSillyTavern: true,
         firstInstallStartedAt: null,
+        ownerAccountId: null,
+        ownerAccountName: null,
       };
       await this.write(state);
       this.state = state;
@@ -248,6 +268,37 @@ export class StateStore {
     return this.saveAdminPassword(passwordHash);
   }
 
+  /**
+   * Set the console's password, whether or not there was one before.
+   *
+   * `saveAdminPassword` refuses when one exists and `changeAdminPassword`
+   * refuses when one does not, which between them cover setup and the settings
+   * page - but not the console that was opened with a Cloudflare account and
+   * has never had a password at all. Somebody there asking for one was told to
+   * "finish setting the manager up first", on a manager they were already
+   * signed in to. This is for callers that have already established who is
+   * asking and only need the hash written.
+   */
+  public async setAdminPassword(passwordHash: string): Promise<void> {
+    const operation = async (): Promise<void> => {
+      const state = await this.load();
+      const now = this.now().toISOString();
+      const updated: PersistedManagerState = {
+        ...state,
+        adminPasswordHash: passwordHash,
+        // A manager claimed by a Cloudflare account accepted the terms on the
+        // screen that offered the sign-in, so this is usually already set.
+        setupAcceptedAt: state.setupAcceptedAt ?? now,
+        updatedAt: now,
+      };
+      await this.write(updated);
+      this.state = updated;
+    };
+    const previous = this.adminWriteQueue;
+    this.adminWriteQueue = previous.then(operation, operation);
+    await this.adminWriteQueue;
+  }
+
   public async changeAdminPassword(passwordHash: string): Promise<boolean> {
     let changed = false;
     const operation = async (): Promise<void> => {
@@ -268,6 +319,59 @@ export class StateStore {
     this.adminWriteQueue = previous.then(operation, operation);
     await this.adminWriteQueue;
     return changed;
+  }
+
+  /**
+   * Let a Cloudflare account open this manager, or find out it already may.
+   *
+   * The first account to ask claims it, and the answer says whether it was
+   * this one. An account that is not the owner is refused rather than added:
+   * a manager with an owner is not a door that the next person to arrive gets
+   * a key to.
+   *
+   * Through the same queue as every other write, so two sign-ins landing
+   * together cannot both be told they are the owner.
+   */
+  public async claimCloudflareOwner(accountId: string, accountName: string): Promise<{ readonly allowed: boolean; readonly owner: string | null }> {
+    let allowed = false;
+    let owner: string | null = null;
+    const operation = async (): Promise<void> => {
+      const state = await this.load();
+      owner = state.ownerAccountName ?? state.ownerAccountId;
+      if (state.ownerAccountId !== null) { allowed = state.ownerAccountId === accountId; return; }
+      const now = this.now().toISOString();
+      const updated: PersistedManagerState = {
+        ...state,
+        ownerAccountId: accountId,
+        ownerAccountName: accountName,
+        // Claiming a manager with a Cloudflare account is setting it up, so
+        // the terms were accepted on the screen that offered the sign-in.
+        setupAcceptedAt: state.setupAcceptedAt ?? now,
+        updatedAt: now,
+      };
+      await this.write(updated);
+      this.state = updated;
+      allowed = true;
+      owner = accountName;
+    };
+    const previous = this.adminWriteQueue;
+    this.adminWriteQueue = previous.then(operation, operation);
+    await this.adminWriteQueue;
+    return { allowed, owner };
+  }
+
+  /** Stop letting a Cloudflare account open this manager. */
+  public async releaseCloudflareOwner(): Promise<void> {
+    const operation = async (): Promise<void> => {
+      const state = await this.load();
+      if (state.ownerAccountId === null) return;
+      const updated: PersistedManagerState = { ...state, ownerAccountId: null, ownerAccountName: null, updatedAt: this.now().toISOString() };
+      await this.write(updated);
+      this.state = updated;
+    };
+    const previous = this.adminWriteQueue;
+    this.adminWriteQueue = previous.then(operation, operation);
+    await this.adminWriteQueue;
   }
 
   public async getPersisted(): Promise<PersistedManagerState> {
@@ -382,7 +486,11 @@ export class StateStore {
     // is settled a moment later by there already being one.
     const autoStartSillyTavern = input.autoStartSillyTavern !== false;
     const firstInstallStartedAt = isNullableString(input.firstInstallStartedAt) ? input.firstInstallStartedAt : null;
-    return { ...input, accessPasswordHash, accessPasscode, accessLanEnabled, sillyTavernPort, autoStartSillyTavern, firstInstallStartedAt } as unknown as PersistedManagerState;
+    // Absent in a file written before a Cloudflare account could open this
+    // manager, which is a manager nobody has claimed that way.
+    const ownerAccountId = isNullableString(input.ownerAccountId) ? input.ownerAccountId : null;
+    const ownerAccountName = isNullableString(input.ownerAccountName) ? input.ownerAccountName : null;
+    return { ...input, accessPasswordHash, accessPasscode, accessLanEnabled, sillyTavernPort, autoStartSillyTavern, firstInstallStartedAt, ownerAccountId, ownerAccountName } as unknown as PersistedManagerState;
   }
 }
 

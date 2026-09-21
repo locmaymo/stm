@@ -14,7 +14,16 @@ export interface LiveLogs {
   readonly loadingOlder: boolean;
 }
 
-export function useLiveLogs(source: LogSourceFilter): LiveLogs {
+/**
+ * Follow one log source.
+ *
+ * `intervalMs` is how long to wait between asking. The console keeps this
+ * short while the log is on screen and long while it is not: the tail is still
+ * followed when nobody is reading it, because the header carries a dot that
+ * says something new has arrived, but a dot is worth one request every twenty
+ * seconds rather than forty a minute.
+ */
+export function useLiveLogs(source: LogSourceFilter, intervalMs = 1_500): LiveLogs {
   const [entries, setEntries] = useState<LogEntry[]>([]);
   const [hasOlder, setHasOlder] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
@@ -22,6 +31,16 @@ export function useLiveLogs(source: LogSourceFilter): LiveLogs {
   // oldest id lives in a ref rather than being read from stale state.
   const oldestId = useRef<number | null>(null);
   const inFlight = useRef(false);
+  /*
+   * How long to wait, read at each turn rather than baked into the loop.
+   *
+   * Opening the log speeds the tail up and closing it slows it down, and
+   * neither is a reason to restart the follow: restarting clears what is on
+   * screen and asks for the whole retained buffer again, which is a flicker
+   * and a large reply in exchange for nothing.
+   */
+  const pace = useRef(intervalMs);
+  pace.current = intervalMs;
 
   useEffect(() => {
     const controller = new AbortController();
@@ -33,6 +52,9 @@ export function useLiveLogs(source: LogSourceFilter): LiveLogs {
     inFlight.current = false;
     const poll = async () => {
       try {
+        // Nothing is read while the page is hidden. The cursor does not move,
+        // so coming back collects everything that was said meanwhile.
+        if (document.hidden) return;
         const response = await apiFetch(`/api/v1/logs?source=${source}&after=${cursor}`, { credentials: 'same-origin', signal: controller.signal });
         if (!response.ok) return;
         const payload = await response.json() as { entries: LogEntry[]; nextCursor: number };
@@ -49,11 +71,27 @@ export function useLiveLogs(source: LogSourceFilter): LiveLogs {
       } catch {
         // Retry after a temporary network failure. Aborting stops this source entirely.
       } finally {
-        if (!controller.signal.aborted) timer = setTimeout(() => void poll(), 1500);
+        if (!controller.signal.aborted) timer = setTimeout(() => void poll(), pace.current);
       }
     };
     void poll();
-    return () => { controller.abort(); clearTimeout(timer); };
+    /*
+     * Coming back to a hidden page catches up at once rather than after the
+     * rest of an interval, which at the slow clock is twenty seconds of a
+     * console showing a log that stops before the present.
+     *
+     * The pending turn is cancelled first. Each turn schedules the next one,
+     * so starting one without stopping the one already waiting leaves two
+     * chains following the same log - and every switch away and back adds
+     * another.
+     */
+    const onVisible = () => {
+      if (document.hidden) return;
+      clearTimeout(timer);
+      void poll();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => { controller.abort(); clearTimeout(timer); document.removeEventListener('visibilitychange', onVisible); };
   }, [source]);
 
   const loadOlder = useCallback(() => {

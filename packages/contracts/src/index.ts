@@ -56,6 +56,22 @@ export interface SetupStatus {
     readonly terms: string;
     readonly disclaimer: string;
   };
+  /**
+   * How this manager can be opened.
+   *
+   * A password is always one of them once one is set. A Cloudflare account is
+   * offered where this build has an OAuth client, and is what makes a machine
+   * that loses its disk usable: signing in is the whole of the setup, and
+   * everything that was on the machine before comes back with it.
+   *
+   * Absent on a manager too old to have been asked.
+   */
+  readonly cloudflareSignIn?: {
+    /** Whether this build can start a sign-in at all. */
+    readonly available: boolean;
+    /** What the account that already owns this manager is called, if one does. */
+    readonly owner: string | null;
+  };
 }
 
 export interface HealthResponse {
@@ -393,6 +409,27 @@ export interface R2Config {
      */
     readonly sizeBytes?: number;
   } | null;
+  /**
+   * Which installation is backing up to this bucket, as last read from it.
+   *
+   * One account, one manager. Two of them share a bucket without ever seeing
+   * each other - they write under different profile ids - while the sweep that
+   * collects chunks nothing points at is a whole-bucket operation and would
+   * run against whatever the other one had uploaded but not yet indexed. So
+   * the bucket carries a claim, and a manager that is not the one named in it
+   * stops and says so here instead.
+   *
+   * Null when nothing has been read yet, when the bucket was connected with
+   * manual keys - somebody carrying their own credentials between machines is
+   * doing it on purpose - or on an older manager's answer.
+   */
+  readonly owner?: {
+    /** What the holding machine calls itself, usually its hostname. */
+    readonly label: string;
+    readonly lastSeenAt: string;
+    /** Whether the holder is this manager. */
+    readonly mine: boolean;
+  } | null;
 }
 
 export interface R2OperationCounts {
@@ -461,6 +498,21 @@ export interface R2Usage {
   readonly legacyObjectCount: number;
   readonly legacyBytes: number;
   readonly lastReconciledAt: string | null;
+  /**
+   * When a manager first counted operations against this bucket.
+   *
+   * The count is kept in the bucket, so it starts at zero the first time an
+   * account is connected and then survives the machine: a reinstall, a new
+   * computer, or a hosted studio that starts each time from nothing all read
+   * back the month that is actually being billed. Absent until a bucket has
+   * been read, and on a manager too old to keep the record.
+   */
+  readonly countingSince?: string;
+  /**
+   * Whether the two figures above come from that shared record rather than
+   * from this machine's own memory of what it has done.
+   */
+  readonly sharedRecord?: boolean;
 }
 
 /**
@@ -562,11 +614,51 @@ export interface RestorePreview {
    * that cannot be undone.
    */
   readonly warnings: readonly LogEvent[];
+  /**
+   * Whether this archive is a SillyTavern profile at all.
+   *
+   * A zip reaches the manager because a person handed it over, and people hand
+   * over the wrong file: an installer, a character card, a folder of holiday
+   * photos. Nothing checked, so the wrong file restored - a replace emptied
+   * the profile of everything the archive did not mention, and the run
+   * reported success. Restoring one of these is now refused unless the reader
+   * says in the dialog that they meant it.
+   *
+   * Absent on an older manager's answer, which is read as recognised: there
+   * was nothing else it could have meant.
+   */
+  readonly recognized?: boolean;
+  /**
+   * Where inside the archive the profile starts; `''` when it is at the root.
+   *
+   * A zip of `data/default-user/`, or of the folder rather than its contents,
+   * is a profile one or two directories down. Carried so the panel can say
+   * which part of the archive is going to be read.
+   */
+  readonly root?: string;
 }
 
 export type JobState = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled';
 
-export type JobKind = 'installation' | 'backup' | 'restore';
+/**
+ * What a job is doing, in the reader's terms rather than in its result's.
+ *
+ * Sending to R2 and bringing a recovery point back were both filed as
+ * `backup`, because a fetch does end with an archive in the library. A panel
+ * that came back to a job it had not started - a tab switched away from and
+ * returned to - had only this to name it by, so a download of a gigabyte
+ * announced itself as "Back up now" in the local backup card while the cloud
+ * card, which had started it, showed nothing.
+ */
+export type JobKind = 'installation' | 'backup' | 'restore' | 'r2Upload' | 'r2Fetch';
+
+/** The jobs a panel reattaches to and shows progress for; an install is its own screen. */
+export const OPERATION_JOB_KINDS: readonly JobKind[] = ['backup', 'restore', 'r2Upload', 'r2Fetch'];
+
+/** Whether this job belongs to the cloud card rather than the local backup card. */
+export function isCloudJob(kind: JobKind): boolean {
+  return kind === 'r2Upload' || kind === 'r2Fetch';
+}
 
 export interface Job {
   readonly id: string;
@@ -871,6 +963,134 @@ export interface AccessGatewayState {
   readonly error: string | null;
 }
 
+/**
+ * What the manager itself is set to, kept in the bucket beside the data.
+ *
+ * The bucket has always held SillyTavern's data and nothing about the manager
+ * running it, so somebody who lost a machine got their chats back and then set
+ * everything up again by hand: the password on the console, the passcode that
+ * opens SillyTavern from a phone, how often to back up, how much of the free
+ * allowance to use, which release to install. None of that is large and all of
+ * it is the difference between "my data is back" and "I am back".
+ *
+ * The two password fields are the scrypt hashes the manager stores, never a
+ * password. They are in the bucket for the same reason the chats are: it is
+ * the reader's own account, reached with the reader's own credential, and a
+ * hash that comes back is what lets the door they already know still open.
+ *
+ * Nothing here is ever applied on its own. A manager that finds this offers it
+ * and says which machine wrote it and when; changing the password on a console
+ * because a bucket said so is not something to do while nobody is watching.
+ */
+export interface ManagerSettingsRecord {
+  readonly schemaVersion: 1;
+  /** The machine these came from, as the bucket's claim names it. */
+  readonly label: string;
+  /**
+   * The installation that wrote them, so it can recognise its own.
+   *
+   * A hostname cannot do this job: two machines share one, and one machine
+   * that is wiped and set up again keeps it. Without this the console offered
+   * a machine its own settings back, minutes after it had written them -
+   * which reads as somebody else being on the account.
+   *
+   * Null on a record written before this field existed.
+   */
+  readonly installId: string | null;
+  readonly writtenAt: string;
+  /** The console's own password, as a hash. Null when none is set yet. */
+  readonly adminPasswordHash: string | null;
+  /** The credential in front of SillyTavern, as a hash. */
+  readonly accessPasswordHash: string | null;
+  /** Whether that credential is a six-digit passcode rather than a password. */
+  readonly accessPasscode: boolean;
+  /** Whether the door in front of SillyTavern answers on the local network. */
+  readonly accessLanEnabled: boolean;
+  /**
+   * Whether a Quick Tunnel was open in front of SillyTavern, and in front of
+   * the console.
+   *
+   * The quick kind only. A Named Tunnel is started with a token, which is a
+   * live credential and has no business being in a bucket, so a machine
+   * putting itself back together is left with that one off rather than with
+   * one it cannot start. Without these two, a machine that had been reached
+   * from a phone came back reachable from nothing, with the passcode restored
+   * and no door for it to open - which looked exactly like the restore having
+   * done nothing.
+   */
+  readonly tunnelQuick: boolean;
+  readonly managerTunnelQuick: boolean;
+  readonly autoStartSillyTavern: boolean;
+  readonly sillyTavernPort: number;
+  /** How often a ZIP is taken on the machine; 0 is off. */
+  readonly localIntervalMinutes: number;
+  readonly r2: {
+    readonly hotIntervalMinutes: number;
+    readonly coldIntervalHours: number;
+    readonly reconcileIntervalHours: number;
+    readonly keepRecent: number;
+    readonly keepDaily: number;
+    readonly keepWeekly: number;
+    readonly maxStorageBytes: number;
+    readonly maxWriteOperations: number;
+    readonly maxReadOperations: number;
+  };
+  /** Which SillyTavern the machine was told to run, so a new one matches it. */
+  readonly versionSelector: string | null;
+  /**
+   * The release that was actually running, resolved.
+   *
+   * `versionSelector` is what the reader picked, and "latest" is not a
+   * version: a machine put back together from it a month later gets whatever
+   * is newest that day, which is not the SillyTavern their data was written
+   * by. This is the tag `latest` had resolved to - or `release`/`staging`
+   * where that is what was chosen, which resolve to themselves - so a
+   * recovered machine comes back running the same build it lost.
+   */
+  readonly versionRef: string | null;
+}
+
+/** What the panel is told about settings waiting in the bucket. */
+export interface ManagerSettingsOffer {
+  readonly available: boolean;
+  readonly label: string | null;
+  readonly writtenAt: string | null;
+  /** Whether it was this installation that wrote them. */
+  readonly mine: boolean;
+  /** Whether it carries a console password, which replacing is worth saying. */
+  readonly hasAdminPassword: boolean;
+  readonly hasAccessPassword: boolean;
+}
+
+/**
+ * The four things the console watches continuously, in one answer.
+ *
+ * They used to be four requests on one timer, which is four times the traffic
+ * for one screenful of state - and through a Cloudflare Worker, where the
+ * console's own address is a Worker and every request is charged against a
+ * daily allowance, four times the bill. Nothing here is computed: each field is
+ * what its own endpoint returns, which still exists and still answers.
+ */
+export interface ConsoleStatus {
+  readonly process: ProcessState;
+  readonly tunnel: TunnelState;
+  readonly managerTunnel: TunnelState;
+  readonly security: AccessGatewayState;
+  /**
+   * Work the manager started by itself, for a panel that did not start it.
+   *
+   * A console asks about these once when it loads, which is only ever right by
+   * luck: a manager set up with a Cloudflare account begins installing and
+   * downloading seconds *after* the redirect lands, so the one question the
+   * page asked had already been answered "nothing is running" - and the reader
+   * sat in front of an empty Overview for the several minutes it took, with
+   * one line in the log to go on. They are in this answer because this is the
+   * one the console asks on a clock.
+   */
+  readonly install: Job | null;
+  readonly operation: Job | null;
+}
+
 /** The complete allowlist written by the SillyTavern fetch instrumentation. */
 export interface UsageEvent {
   readonly schemaVersion: 1;
@@ -955,6 +1175,45 @@ export interface MetricsSnapshot {
   readonly daily: readonly MetricsBucket[];
   readonly providers: readonly MetricsBucket[];
   readonly models: readonly MetricsBucket[];
+  /** How much the manager itself was used, which the counts above cannot say. */
+  readonly appUsage?: AppUsageSummary;
+}
+
+/**
+ * How long the manager was actually used on one day.
+ *
+ * Counting requests to an AI provider says how much somebody chatted; it says
+ * nothing about a manager that is installed and never opened, or one that is
+ * left running for a week while SillyTavern is off. Three numbers separate
+ * those: how long the manager ran, how long it kept SillyTavern up, and how
+ * long somebody actually had the console in front of them.
+ *
+ * The third is measured from requests the console already makes rather than
+ * from anything it is asked to send - and because those stop while the page is
+ * hidden, it counts a console being looked at rather than a tab left open.
+ *
+ * There is nothing here about what was done, only for how long, and a day is
+ * the finest grain: the point is to know whether the thing gets used, not when
+ * somebody is at their desk.
+ */
+export interface AppUsageDay {
+  readonly schemaVersion: 1;
+  /** The calendar day in UTC, `YYYY-MM-DD`. */
+  readonly date: string;
+  /** How long the manager process was running. */
+  readonly managerSeconds: number;
+  /** How long SillyTavern was up under it. */
+  readonly sillyTavernSeconds: number;
+  /** How long somebody had the console open and in front of them. */
+  readonly consoleSeconds: number;
+  /** How many times the manager was started that day. */
+  readonly starts: number;
+}
+
+/** What the panel shows about how much the manager itself is used. */
+export interface AppUsageSummary {
+  readonly days: readonly AppUsageDay[];
+  readonly totals: Omit<AppUsageDay, 'schemaVersion' | 'date'>;
 }
 
 /** A privacy-filtered batch queued for the future telemetry endpoint. */
@@ -965,6 +1224,13 @@ export interface TelemetryBatch {
   readonly platform: PlatformKind;
   readonly sentAt: string;
   readonly events: readonly UsageEvent[];
+  /**
+   * Finished days of manager usage, when there are any.
+   *
+   * Additive: absent unless a day has closed since the last batch, so a batch
+   * of provider events is exactly what it has always been.
+   */
+  readonly usageDays?: readonly AppUsageDay[];
 }
 
 /** Transport envelope signed by the installation-specific telemetry key. */

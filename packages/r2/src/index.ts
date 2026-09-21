@@ -1,7 +1,8 @@
 import { randomBytes } from 'node:crypto';
+import { hostname } from 'node:os';
 import { mkdir, open, readFile, rename, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
-import { formatBytes, logEvent, logLineText, type LogSink, type Profile, type R2CheckResult, type R2CloudflareUsage, type R2Config, type R2ConnectionMode, type R2UsageResponse, type R2UsageWarning, type R2EnvironmentField, type R2Object, type R2SnapshotSummary, type R2Usage, type TransferProgress } from '../../contracts/src/index.js';
+import { dirname, join } from 'node:path';
+import { formatBytes, logEvent, logLineText, type LogSink, type ManagerSettingsRecord, type Profile, type R2CheckResult, type R2CloudflareUsage, type R2Config, type R2ConnectionMode, type R2UsageResponse, type R2UsageWarning, type R2EnvironmentField, type R2Object, type R2SnapshotSummary, type R2Usage, type TransferProgress } from '../../contracts/src/index.js';
 import { parseS3Endpoint, R2_FREE_TIER, readR2Usage } from '../../cloudflare/src/index.js';
 import { ioConcurrency, runPooled } from '../../platform/src/index.js';
 import type { PlatformPaths } from '../../platform/src/index.js';
@@ -9,12 +10,18 @@ import type { CloudflareConnection, KnownBucket } from './cloudflare-connection.
 import { BlobLedger } from './ledger.js';
 import { S3ObjectStore, type R2Credentials } from './s3.js';
 import { R2Error, type Billing, type ObjectRecord, type ObjectStore } from './store.js';
+import { claimIsStale, readClaim, writeClaim, CLAIM_OBJECT, CLAIM_REFRESH_MS, type BucketClaim } from './owner.js';
+import { addOperations, monthKey, readUsage, writeUsage, USAGE_FLUSH_MS, USAGE_OBJECT } from './usage-record.js';
+import { readManagerSettings, settingsUnchanged, writeManagerSettings, MANAGER_SETTINGS_MIN_INTERVAL_MS, MANAGER_SETTINGS_OBJECT } from './manager-settings.js';
+import { readMetricsArchive, writeMetricsArchive, METRICS_OBJECT } from './metrics-archive.js';
 import {
   blobKey,
   decodeBlob,
   decodeSnapshot,
   encodeBlob,
   encodeSnapshot,
+  hashFile,
+  looksUnchanged,
   referencedHashes,
   shouldCompress,
   snapshotKey,
@@ -42,6 +49,10 @@ const MASKED_SECRET = '********';
 const OBJECT_PREFIX = 'sillytavern-manager/';
 const BLOB_PREFIX = `${OBJECT_PREFIX}blobs/`;
 const SNAPSHOT_PREFIX = `${OBJECT_PREFIX}snapshots/`;
+const CLAIM_KEY = `${OBJECT_PREFIX}${CLAIM_OBJECT}`;
+const USAGE_KEY = `${OBJECT_PREFIX}${USAGE_OBJECT}`;
+const MANAGER_SETTINGS_KEY = `${OBJECT_PREFIX}${MANAGER_SETTINGS_OBJECT}`;
+const METRICS_KEY = `${OBJECT_PREFIX}${METRICS_OBJECT}`;
 /** How long Cloudflare's usage figures are reused before asking again. */
 const CLOUD_USAGE_TTL_MS = 15 * 60 * 1000;
 /** How old those figures may be and still count towards the ceilings before a backup. */
@@ -87,6 +98,28 @@ interface StoredUsage {
   readonly legacyObjectCount: number;
   readonly legacyBytes: number;
   readonly lastReconciledAt: string | null;
+  /**
+   * How much of this month's local count has been added to the bucket's own
+   * record; see `usage-record.ts`.
+   *
+   * The difference between this and the counts above is what this machine
+   * still owes the record, which is what the next flush adds. Kept rather than
+   * recomputed so that a manager which is stopped mid-month adds what it spent
+   * exactly once, however many times it is started again.
+   */
+  readonly reportedOperations: { readonly classA: number; readonly classB: number };
+  /**
+   * This month as the bucket's record last had it: every machine's operations,
+   * including the part of this one's that has already been reported.
+   *
+   * Null until a bucket has been read. Kept so the panel can show the month's
+   * real total without a request behind every poll of the settings.
+   */
+  readonly bucketOperations: { readonly classA: number; readonly classB: number; readonly month: string; readonly readAt: string } | null;
+  /** When this machine last added its spending to the record in the bucket. */
+  readonly reportedAt: string | null;
+  /** When a manager first used this bucket, as that record says. */
+  readonly countingSince: string | null;
 }
 
 interface StoredR2Config {
@@ -130,6 +163,19 @@ interface StoredR2Config {
   readonly lastSnapshot: { readonly profileId: string; readonly id: string } | null;
   /** What the manager restored by itself on the way up; see R2Config.lastRecovery. */
   readonly lastRecovery: { readonly at: string; readonly createdAt: string; readonly fileCount: number; readonly sizeBytes?: number } | null;
+  /**
+   * The usage log as it was when it last went up, so a run that has nothing to
+   * add costs one stat rather than a read of the whole file.
+   */
+  readonly lastMetrics: HashedFile | null;
+  /**
+   * The bucket's claim as this manager last read it; see `owner.ts`.
+   *
+   * Kept here so the panel can say who holds the bucket without a request to
+   * R2 behind every poll of the settings. It is what was true at `checkedAt`,
+   * which is enough for a line on a card and never enough to act on.
+   */
+  readonly claim: { readonly keyId: string; readonly label: string; readonly lastSeenAt: string; readonly mine: boolean; readonly checkedAt: string } | null;
   readonly usage: StoredUsage;
 }
 
@@ -141,6 +187,8 @@ export interface R2ManagerOptions {
   readonly fetchImpl?: typeof fetch;
   /** The signed-in connection, when this manager has a Cloudflare OAuth client. */
   readonly cloudflare?: CloudflareConnection;
+  /** What this machine is called in the bucket's claim; its hostname by default. */
+  readonly installationLabel?: string;
 }
 
 export interface R2UpdateInput {
@@ -209,6 +257,7 @@ export class R2Manager {
   private readonly fetchImpl: typeof fetch;
   private readonly ledger: BlobLedger;
   private readonly cloudflare: CloudflareConnection | null;
+  private readonly installationLabel: string;
   private configState: StoredR2Config | null = null;
   /** The local backup interval an older version kept in this file, until it is handed over. */
   private legacyLocalInterval: number | null = null;
@@ -232,6 +281,11 @@ export class R2Manager {
   private charges = { write: 0, read: 0 };
   private cloudUsage: { readonly at: number; readonly usage: R2CloudflareUsage } | null = null;
   private chargesWrittenAt = 0;
+  /** Held while the bucket's own count is being updated, which is itself charged. */
+  private usageFlushing = false;
+  /** The manager settings last put in the bucket, so unchanged ones cost nothing. */
+  private settingsSent: ManagerSettingsRecord | null = null;
+  private settingsSentAt = 0;
 
   public constructor(options: R2ManagerOptions) {
     this.paths = options.paths;
@@ -241,6 +295,7 @@ export class R2Manager {
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.ledger = new BlobLedger({ path: join(this.paths.state, R2_LEDGER_FILE) });
     this.cloudflare = options.cloudflare ?? null;
+    this.installationLabel = (options.installationLabel ?? hostname() ?? '').slice(0, 120) || 'this machine';
   }
 
   public async getConfig(): Promise<R2Config> {
@@ -312,6 +367,10 @@ export class R2Manager {
     const bucket = await this.bucketName();
     try {
       const config = await this.requireUsable();
+      // Pressing Check is the first thing done after connecting, and the
+      // answer somebody most needs then is that this account is already
+      // somebody else's.
+      await this.requireOwnership(config);
       const objects = await this.listAll(config, OBJECT_PREFIX);
       const found = summarizeObjects(objects);
       const previous = await this.currentPeriod(config);
@@ -325,6 +384,10 @@ export class R2Manager {
       };
       await this.save({ ...(await this.load()), usage });
       await this.recordCharges();
+      // Pressing Check is the moment to settle up: it is what somebody does
+      // after connecting an account on a new machine, and the figures they are
+      // about to read are the month's, not this installation's.
+      await this.syncUsageRecord({ force: true });
       this.logger(logEvent('r2.checked', `[r2] the bucket answered: ${objects.length} object(s), ${formatBytes(found.totalBytes)}, ${found.snapshotKeys.length} recovery point(s)`, { objects: objects.length, size: formatBytes(found.totalBytes), points: found.snapshotKeys.length }));
       return {
         ok: true,
@@ -335,7 +398,10 @@ export class R2Manager {
         snapshotCount: found.snapshotKeys.length,
         legacyObjectCount: found.legacyObjectCount,
         legacyBytes: found.legacyBytes,
-        usage: toPublicUsage(usage),
+        // Read back rather than reported from the variable above, so the
+        // answer carries what the bucket's own record just said about the
+        // month rather than only what this machine had counted.
+        usage: toPublicUsage((await this.load()).usage),
         failure: null,
       };
     } catch (error: unknown) {
@@ -382,6 +448,7 @@ export class R2Manager {
   public async syncProfile(input: R2SyncInput): Promise<R2SyncResult> {
     return await this.exclusive(async () => {
       const config = await this.onTarget(await this.requireUsable());
+      await this.requireOwnership(config);
       const usage = await this.currentPeriod(config);
       // Cloudflare sees what this manager's own count cannot: another machine
       // on the same bucket, or objects put there some other way. The larger of
@@ -460,6 +527,9 @@ export class R2Manager {
         usage: nextUsage,
       });
       await this.recordCharges();
+      // On its own clock, so an upload every five minutes does not mean two
+      // more requests every five minutes.
+      await this.syncUsageRecord();
       if (dropped.size > 0) this.logger(logEvent('r2.skippedMissingFiles', `[r2] skipped ${dropped.size} file(s) removed while the upload was running`, { count: dropped.size }));
       this.logger(logEvent('r2.synced', `[r2] sent ${uploadedChunks} changed chunk(s), ${formatBytes(uploadedBytes)}, of ${files.length} file(s)`, { chunks: uploadedChunks, bytes: formatBytes(uploadedBytes), files: files.length }));
       return {
@@ -590,6 +660,9 @@ export class R2Manager {
   public async reconcile(): Promise<R2ReconcileResult> {
     return await this.exclusive(async () => {
       const config = await this.requireUsable();
+      // The one operation that deletes by inference rather than by name, and
+      // the one that another machine's half-finished upload looks like rubbish to.
+      await this.requireOwnership(config);
       const client = this.client(config);
       const objects = await this.listAll(config, OBJECT_PREFIX, client);
       const { blobs, snapshotKeys, legacyObjectCount, legacyBytes } = summarizeObjects(objects);
@@ -604,6 +677,17 @@ export class R2Manager {
         }
       }
       const wanted = referencedHashes(snapshots);
+      /*
+       * The usage log's chunks are named by its own index, not by any recovery
+       * point, and this sweep deletes by inference: without them the whole log
+       * would be collected as rubbish the first time a reconcile ran, and the
+       * next run would send all of it again.
+       *
+       * A missing index is not an empty one. If it cannot be read, nothing is
+       * collected at all rather than everything the log holds.
+       */
+      const archive = await readMetricsArchive(client, METRICS_KEY);
+      for (const chunk of archive?.chunks ?? []) wanted.add(chunk.hash);
       let collectedBlobs = 0;
       let collectedBytes = 0;
       const collected: string[] = [];
@@ -622,20 +706,22 @@ export class R2Manager {
       const blobBytesTotal = [...blobs.values()].reduce((sum, object) => sum + object.sizeBytes, 0);
       const previous = await this.currentPeriod(config);
       const usage: StoredUsage = {
+        ...previous,
         storageBytes: blobBytesTotal + snapshotBytesTotal + legacyBytes,
         blobCount: blobs.size,
         snapshotCount: snapshots.length,
-        writeOperations: previous.writeOperations,
-        readOperations: previous.readOperations,
-        periodStartedAt: previous.periodStartedAt,
         legacyObjectCount,
         legacyBytes,
         lastReconciledAt: this.now().toISOString(),
       };
       await this.save({ ...(await this.load()), ledgerTarget: await this.storageTarget(config), usage });
       await this.recordCharges();
+      // The sweep is the most expensive thing the manager does to a bucket -
+      // one listing per thousand objects - so what it spent is worth writing
+      // down rather than waiting for the next upload to carry it.
+      await this.syncUsageRecord({ force: true });
       this.logger(logEvent('r2.reconciled', `[r2] ${blobs.size} stored chunk(s), ${formatBytes(usage.storageBytes)}; collected ${collectedBlobs}`, { chunks: blobs.size, size: formatBytes(usage.storageBytes), collected: collectedBlobs }));
-      return { blobCount: blobs.size, collectedBlobs, collectedBytes, usage: toPublicUsage(usage) };
+      return { blobCount: blobs.size, collectedBlobs, collectedBytes, usage: toPublicUsage((await this.load()).usage) };
     });
   }
 
@@ -651,7 +737,7 @@ export class R2Manager {
       const config = await this.requireUsable();
       const client = this.client(config);
       const objects = await this.listAll(config, OBJECT_PREFIX, client);
-      const legacy = objects.filter((object) => !object.key.startsWith(BLOB_PREFIX) && !object.key.startsWith(SNAPSHOT_PREFIX));
+      const legacy = objects.filter((object) => !object.key.startsWith(BLOB_PREFIX) && !object.key.startsWith(SNAPSHOT_PREFIX) && object.key !== CLAIM_KEY && object.key !== USAGE_KEY && object.key !== MANAGER_SETTINGS_KEY && object.key !== METRICS_KEY);
       let bytes = 0;
       for (const object of legacy) {
         await client.deleteObject(object.key);
@@ -783,6 +869,112 @@ export class R2Manager {
     return objects;
   }
 
+  /**
+   * Take the bucket, or stop because another installation has it.
+   *
+   * One account, one manager. Two of them share a bucket without ever seeing
+   * each other: they upload under different profile ids, so neither reads the
+   * other's recovery points, while the sweep that collects chunks nothing
+   * points at is a whole-bucket operation and runs against whatever the other
+   * one has uploaded but not yet written an index for.
+   *
+   * The claim is read before anything is written, and this is also where it is
+   * kept alive: the holder writes it again every few hours, and a claim nobody
+   * has refreshed for days is taken without asking. That is what makes a
+   * machine whose disk was emptied - a hosted studio restarted, a reinstall -
+   * able to come back by itself rather than needing a button pressed.
+   *
+   * Only for a bucket connected by signing in. Manual keys are somebody
+   * carrying their own credentials between machines on purpose, and refusing
+   * them here would take away a way of working that already worked.
+   */
+  private async requireOwnership(config: StoredR2Config): Promise<void> {
+    if (config.mode !== 'cloudflare' || !this.cloudflare) return;
+    const keyId = await this.cloudflare.installationId();
+    const now = this.now().getTime();
+    const claim = await readClaim(this.client(config), CLAIM_KEY);
+    if (claim && claim.keyId !== keyId && !claimIsStale(claim, now)) {
+      await this.rememberClaim(claim, false);
+      await this.recordCharges();
+      throw new R2Error('r2_in_use', `Another installation (${claim.label}) is backing up to this bucket. Take it over from this machine, or disconnect this Cloudflare account.`);
+    }
+    const mine: BucketClaim = {
+      schemaVersion: 1,
+      keyId,
+      label: this.installationLabel,
+      claimedAt: claim?.keyId === keyId ? claim.claimedAt : new Date(now).toISOString(),
+      lastSeenAt: new Date(now).toISOString(),
+    };
+    // Writing it on every run would be a charged operation every five minutes
+    // for a fact that does not change.
+    const fresh = claim?.keyId === keyId && now - Date.parse(claim.lastSeenAt) < CLAIM_REFRESH_MS;
+    if (!fresh) {
+      await writeClaim(this.client(config), CLAIM_KEY, mine);
+      if (!claim) this.logger(logEvent('r2.claimed', `[r2] this machine (${mine.label}) is now the one backing up to this bucket`, { label: mine.label }));
+      else if (claim.keyId !== keyId) this.logger(logEvent('r2.claimTaken', `[r2] the previous machine (${claim.label}) had not used this bucket for days, so this one took it over`, { label: claim.label }));
+    }
+    await this.rememberClaim(fresh && claim ? claim : mine, true);
+    await this.recordCharges();
+  }
+
+  /**
+   * Hand the bucket to this machine, whatever the claim says.
+   *
+   * The other installation's Worker key goes with it, so a machine that is not
+   * reading the claim - an older version, one in the middle of a run - stops
+   * at its next request rather than at its next check.
+   */
+  public async takeOwnership(): Promise<R2Config> {
+    const config = await this.requireUsable();
+    if (config.mode !== 'cloudflare' || !this.cloudflare) throw new R2Error('r2_not_connected_account', 'Only a bucket connected by signing in to Cloudflare has an owner to take over');
+    const keyId = await this.cloudflare.installationId();
+    const client = this.client(config);
+    const previous = await readClaim(client, CLAIM_KEY);
+    if (previous && previous.keyId !== keyId) {
+      await this.cloudflare.evict(previous.keyId).catch(() => false);
+      this.logger(logEvent('r2.claimTakenOver', `[r2] this machine took the bucket over from ${previous.label}`, { label: previous.label }));
+    }
+    const at = new Date(this.now()).toISOString();
+    await writeClaim(client, CLAIM_KEY, { schemaVersion: 1, keyId, label: this.installationLabel, claimedAt: at, lastSeenAt: at });
+    await this.rememberClaim({ schemaVersion: 1, keyId, label: this.installationLabel, claimedAt: at, lastSeenAt: at }, true);
+    await this.recordCharges();
+    return await this.getConfig();
+  }
+
+  /**
+   * Give the bucket up, so the next machine to connect does not have to argue
+   * with a claim nobody is behind any more. Best effort: a sign-out that
+   * cannot reach the bucket is still a sign-out.
+   */
+  public async releaseOwnership(): Promise<void> {
+    const config = await this.load();
+    if (config.mode !== 'cloudflare' || !this.cloudflare || !config.enabled) { await this.forgetClaim(); return; }
+    try {
+      const keyId = await this.cloudflare.installationId();
+      const client = this.client(config);
+      const claim = await readClaim(client, CLAIM_KEY);
+      if (claim?.keyId === keyId) await client.deleteObject(CLAIM_KEY);
+    } catch {
+      // The grant may already be gone. The claim goes stale on its own.
+    }
+    await this.forgetClaim();
+    await this.recordCharges();
+  }
+
+  private async rememberClaim(claim: BucketClaim, mine: boolean): Promise<void> {
+    const config = await this.load();
+    const next = { keyId: claim.keyId, label: claim.label, lastSeenAt: claim.lastSeenAt, mine, checkedAt: new Date(this.now()).toISOString() };
+    const current = config.claim;
+    if (current && current.keyId === next.keyId && current.mine === next.mine && current.lastSeenAt === next.lastSeenAt) return;
+    await this.save({ ...config, claim: next });
+  }
+
+  private async forgetClaim(): Promise<void> {
+    const config = await this.load();
+    if (config.claim === null) return;
+    await this.save({ ...config, claim: null });
+  }
+
   private async requireUsable(): Promise<StoredR2Config> {
     const config = await this.load();
     if (!config.enabled) throw new R2Error('r2_disabled', 'R2 backup is switched off');
@@ -855,11 +1047,29 @@ export class R2Manager {
     return switched;
   }
 
-  /** The usage counters, with the charged-write count reset when the month turns over. */
+  /**
+   * The usage counters, with the operation counts reset when the month turns
+   * over.
+   *
+   * Cloudflare's allowance is monthly and so are both counts. Only the write
+   * count used to be reset here, so the read count was a running total since
+   * the manager was installed, held against a monthly ceiling - a figure that
+   * could only ever grow towards a limit it was never measured against.
+   *
+   * What has been reported to the bucket is reset with them: it is a position
+   * within a month, and in a new month this machine has reported nothing.
+   */
   private async currentPeriod(config: StoredR2Config): Promise<StoredUsage> {
     const period = monthStart(this.now());
     if (config.usage.periodStartedAt === period) return config.usage;
-    return { ...config.usage, writeOperations: 0, periodStartedAt: period };
+    return {
+      ...config.usage,
+      writeOperations: 0,
+      readOperations: 0,
+      periodStartedAt: period,
+      reportedOperations: { classA: 0, classB: 0 },
+      bucketOperations: null,
+    };
   }
 
   private client(config: StoredR2Config): ObjectStore {
@@ -896,6 +1106,208 @@ export class R2Manager {
     });
   }
 
+  /**
+   * Add what this machine has spent to the record kept in the bucket, and read
+   * back the month's total.
+   *
+   * See `usage-record.ts` for why the count lives there. Two requests, once
+   * every quarter of an hour at most, which is what makes a figure that
+   * outlives this machine cost about three hundred operations a month out of a
+   * million.
+   *
+   * Nothing here is allowed to fail an operation. A bucket that cannot be
+   * reached leaves the local count exactly as it was, so the next flush adds
+   * everything that was owed rather than losing it; the figure on screen falls
+   * back to what this machine remembers, which is what it always used to be.
+   */
+  private async syncUsageRecord(options: { readonly force?: boolean } = {}): Promise<void> {
+    if (this.usageFlushing) return;
+    const config = await this.load();
+    if (!config.enabled && !options.force) return;
+    const usage = await this.currentPeriod(config);
+    const owed = {
+      classA: Math.max(0, usage.writeOperations - usage.reportedOperations.classA),
+      classB: Math.max(0, usage.readOperations - usage.reportedOperations.classB),
+    };
+    const now = this.now();
+    const since = usage.reportedAt === null ? Number.POSITIVE_INFINITY : now.getTime() - Date.parse(usage.reportedAt);
+    if (!options.force && since < USAGE_FLUSH_MS) return;
+    // Nothing owed and a record already read this month: there is nothing the
+    // bucket could tell us that we do not know, so it is not asked.
+    if (!options.force && owed.classA === 0 && owed.classB === 0 && usage.bucketOperations?.month === monthKey(now)) return;
+    this.usageFlushing = true;
+    try {
+      const client = this.client(config);
+      const month = monthKey(now);
+      const previous = await readUsage(client, USAGE_KEY);
+      const next = addOperations(previous, month, owed, now);
+      await writeUsage(client, USAGE_KEY, next);
+      const total = next.months[month] ?? { classA: 0, classB: 0 };
+      // Reading and writing the record are themselves a charged read and a
+      // charged write. They are counted like any others and owed to the next
+      // flush, rather than quietly left out of the figure they produce.
+      await this.recordCharges();
+      const current = await this.load();
+      const fresh = await this.currentPeriod(current);
+      await this.save({
+        ...current,
+        usage: {
+          ...fresh,
+          // Against `fresh`, not against what was read at the top: an upload
+          // running beside this one has been charged meanwhile, and that part
+          // is owed to the next flush rather than written off by this one.
+          reportedOperations: { classA: Math.min(fresh.writeOperations, usage.reportedOperations.classA + owed.classA), classB: Math.min(fresh.readOperations, usage.reportedOperations.classB + owed.classB) },
+          bucketOperations: { classA: total.classA, classB: total.classB, month, readAt: now.toISOString() },
+          reportedAt: now.toISOString(),
+          countingSince: next.startedAt,
+        },
+      });
+    } catch (error: unknown) {
+      this.logger(logEvent('r2.usageRecordSkipped', `[r2] the bucket's own count of charged operations could not be updated: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
+    } finally {
+      this.usageFlushing = false;
+    }
+  }
+
+  /**
+   * Keep the manager's own settings in the bucket, if they have moved.
+   *
+   * Called on the scheduler's clock with whatever the manager is currently set
+   * to. Almost every call does nothing: the record is compared with the last
+   * one sent, and these are things a person changes by hand. See
+   * `manager-settings.ts` for what is in it and why.
+   *
+   * Never throws. A bucket that cannot be reached means the settings are not
+   * backed up this time, which is not a reason to fail whatever asked.
+   */
+  public async saveManagerSettings(record: Omit<ManagerSettingsRecord, 'label' | 'writtenAt'>): Promise<boolean> {
+    const config = await this.load();
+    if (!config.enabled) return false;
+    const now = this.now();
+    const full: ManagerSettingsRecord = { ...record, schemaVersion: 1, label: this.installationLabel, writtenAt: now.toISOString() };
+    if (settingsUnchanged(this.settingsSent, full) && now.getTime() - this.settingsSentAt < MANAGER_SETTINGS_MIN_INTERVAL_MS) return false;
+    try {
+      await this.requireUsable();
+      const client = this.client(config);
+      // Read first: a record that already says this is one nothing has to be
+      // paid for. This is what stops a manager which restarts often from
+      // writing the same settings on every start.
+      const stored = await readManagerSettings(client, MANAGER_SETTINGS_KEY);
+      if (settingsUnchanged(stored, full)) {
+        this.settingsSent = stored;
+        this.settingsSentAt = now.getTime();
+        await this.recordCharges();
+        return false;
+      }
+      await writeManagerSettings(client, MANAGER_SETTINGS_KEY, full);
+      this.settingsSent = full;
+      this.settingsSentAt = now.getTime();
+      await this.recordCharges();
+      this.logger(logEvent('r2.settingsSaved', '[r2] the manager’s own settings are in the bucket, so a new machine can pick them up', {}));
+      return true;
+    } catch (error: unknown) {
+      this.logger(logEvent('r2.settingsSaveSkipped', `[r2] the manager’s own settings could not be saved to the bucket: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
+      return false;
+    }
+  }
+
+  /**
+   * Send whatever of the usage log the bucket does not already hold.
+   *
+   * The log of what was asked of each provider is append-only and grows for as
+   * long as the manager is used, so it goes up in chunks like the profile
+   * does, not as a document rewritten whole: appending changes only the chunk
+   * at the end, and the ledger already knows about every chunk before it. One
+   * chunk and one index per run, however large the log has become.
+   *
+   * Runs on the slow clock. The log is written on every request SillyTavern
+   * makes, so on the fast one it would be the only thing ever being sent.
+   */
+  /**
+   * Whether this installation has ever put its usage log in the bucket.
+   *
+   * Read off this machine's own record rather than by asking the bucket, so
+   * the question costs nothing and can be asked on every tick. The scheduler
+   * asks it to let the first upload go up straight away instead of waiting for
+   * the slow clock - see the note there.
+   */
+  public async metricsArchived(): Promise<boolean> {
+    return (await this.load()).lastMetrics !== null;
+  }
+
+  public async syncMetricsFile(path: string): Promise<{ readonly uploadedChunks: number; readonly sizeBytes: number } | null> {
+    const config = await this.load();
+    if (!config.enabled) return null;
+    const file = await hashFile(METRICS_OBJECT, path);
+    if (!file || file.chunks.length === 0) return null;
+    // Nothing has been appended since the last run: the whole point of the
+    // stat is to make that case cost nothing at all.
+    if (looksUnchanged(config.lastMetrics ?? undefined, file.sizeBytes, file.mtimeMs)) return null;
+    return await this.exclusive(async () => {
+      const usable = await this.onTarget(await this.requireUsable());
+      await this.requireOwnership(usable);
+      const client = this.client(usable);
+      await this.ledger.load();
+      const missing = file.chunks.filter((chunk) => !this.ledger.has(chunk.hash));
+      const sent = missing.length === 0
+        ? { hashes: [], bytes: 0 }
+        : await this.uploadChunks(client, { source: { file, path }, chunks: missing });
+      if (!sent) return null;
+      await this.ledger.add(sent.hashes);
+      await writeMetricsArchive(client, METRICS_KEY, { schemaVersion: 1, updatedAt: this.now().toISOString(), sizeBytes: file.sizeBytes, chunks: file.chunks });
+      await this.save({ ...(await this.load()), lastMetrics: file });
+      await this.recordCharges();
+      this.logger(logEvent('r2.metricsSynced', `[r2] sent ${sent.hashes.length} chunk(s) of the usage log, now ${formatBytes(file.sizeBytes)}`, { chunks: sent.hashes.length, size: formatBytes(file.sizeBytes) }));
+      return { uploadedChunks: sent.hashes.length, sizeBytes: file.sizeBytes };
+    });
+  }
+
+  /**
+   * Put the usage log back, for a machine that has none.
+   *
+   * Only ever onto a machine with nothing of its own: this is a log, and two
+   * of them cannot be merged by concatenation - the result would double-count
+   * whatever both already had. A machine that has been running keeps what it
+   * recorded itself.
+   */
+  public async restoreMetricsFile(path: string): Promise<{ readonly sizeBytes: number } | null> {
+    const config = await this.requireUsable();
+    const client = this.client(config);
+    try {
+      const archive = await readMetricsArchive(client, METRICS_KEY);
+      if (!archive || archive.chunks.length === 0) return null;
+      await mkdir(dirname(path), { recursive: true });
+      const handle = await open(path, 'w');
+      try {
+        for (const chunk of archive.chunks) {
+          const body = await decodeBlob(await client.getObject(blobKey(OBJECT_PREFIX, chunk.hash)));
+          await handle.write(body, 0, body.byteLength, chunk.offset);
+        }
+      } finally {
+        await handle.close().catch(() => undefined);
+      }
+      this.logger(logEvent('r2.metricsRestored', `[r2] brought back ${formatBytes(archive.sizeBytes)} of usage history`, { size: formatBytes(archive.sizeBytes) }));
+      return { sizeBytes: archive.sizeBytes };
+    } finally {
+      await this.recordCharges().catch(() => undefined);
+    }
+  }
+
+  /**
+   * The settings waiting in the bucket, if any machine has left some.
+   *
+   * Deliberately not part of any automatic path: what comes back is offered to
+   * whoever is looking at the panel, and applied only if they say so.
+   */
+  public async loadManagerSettings(): Promise<ManagerSettingsRecord | null> {
+    const config = await this.requireUsable();
+    try {
+      return await readManagerSettings(this.client(config), MANAGER_SETTINGS_KEY);
+    } finally {
+      await this.recordCharges().catch(() => undefined);
+    }
+  }
+
   /** Run one whole-store operation at a time, whatever else is asked for meanwhile. */
   private async exclusive<T>(operation: () => Promise<T>): Promise<T> {
     const run = this.busy.then(operation, operation);
@@ -905,6 +1317,10 @@ export class R2Manager {
 
   private async toPublic(config: StoredR2Config): Promise<R2Config> {
     const cloudflare = this.cloudflare ? await this.cloudflare.status() : null;
+    // The month is rolled over for the reader as well as for the writer. Taken
+    // straight from the file, the panel went on showing last month's figures
+    // against this month's allowance until something happened to write them.
+    const usage = await this.currentPeriod(config);
     return {
       mode: config.mode,
       cloudflare,
@@ -925,9 +1341,10 @@ export class R2Manager {
       },
       retention: { keepRecent: config.keepRecent, keepDaily: config.keepDaily, keepWeekly: config.keepWeekly },
       limits: { maxStorageBytes: config.maxStorageBytes, maxWriteOperations: config.maxWriteOperations, maxReadOperations: config.maxReadOperations },
-      usage: toPublicUsage(config.usage),
+      usage: toPublicUsage(usage),
       lastFingerprint: config.lastFingerprint,
       lastRecovery: config.lastRecovery,
+      owner: config.claim ? { label: config.claim.label, lastSeenAt: config.claim.lastSeenAt, mine: config.claim.mine } : null,
     };
   }
 
@@ -1195,6 +1612,11 @@ function summarizeObjects(objects: readonly ObjectRecord[]): { blobs: Map<string
       continue;
     }
     if (object.key.startsWith(SNAPSHOT_PREFIX)) { snapshotKeys.push(object.key); continue; }
+    // Which installation holds the bucket, what the bucket has been charged
+    // for, and how the manager that wrote it is set up. None of them is data,
+    // none is an archive, and none is something the legacy sweep may take
+    // away from the manager that wrote it.
+    if (object.key === CLAIM_KEY || object.key === USAGE_KEY || object.key === MANAGER_SETTINGS_KEY || object.key === METRICS_KEY) continue;
     // Whole-ZIP archives from the version before this one. They are not
     // read and not deleted behind the operator's back; the panel offers it.
     legacyObjectCount += 1;
@@ -1286,6 +1708,8 @@ function defaultStoredConfig(now: Date): StoredR2Config {
     lastFingerprint: null,
     lastSnapshot: null,
     lastRecovery: null,
+    lastMetrics: null,
+    claim: null,
     usage: {
       storageBytes: 0,
       blobCount: 0,
@@ -1296,12 +1720,39 @@ function defaultStoredConfig(now: Date): StoredR2Config {
       legacyObjectCount: 0,
       legacyBytes: 0,
       lastReconciledAt: null,
+      reportedOperations: { classA: 0, classB: 0 },
+      bucketOperations: null,
+      reportedAt: null,
+      countingSince: null,
     },
   };
 }
 
+/**
+ * The counts to show, which are the bucket's where the bucket has them.
+ *
+ * The local figure is what this machine has spent since it last started
+ * counting; the record in the bucket is what every machine has spent this
+ * month, and is the one that survives a reinstall or a move to another
+ * computer. What has not been added to the record yet is added here, so the
+ * figure on screen does not sit still for fifteen minutes during a backup.
+ */
 function toPublicUsage(usage: StoredUsage): R2Usage {
-  return { ...usage };
+  const bucket = usage.bucketOperations;
+  const owed = { classA: Math.max(0, usage.writeOperations - usage.reportedOperations.classA), classB: Math.max(0, usage.readOperations - usage.reportedOperations.classB) };
+  return {
+    storageBytes: usage.storageBytes,
+    blobCount: usage.blobCount,
+    snapshotCount: usage.snapshotCount,
+    writeOperations: bucket ? bucket.classA + owed.classA : usage.writeOperations,
+    readOperations: bucket ? bucket.classB + owed.classB : usage.readOperations,
+    periodStartedAt: usage.periodStartedAt,
+    legacyObjectCount: usage.legacyObjectCount,
+    legacyBytes: usage.legacyBytes,
+    lastReconciledAt: usage.lastReconciledAt,
+    ...(usage.countingSince ? { countingSince: usage.countingSince } : {}),
+    sharedRecord: bucket !== null,
+  };
 }
 
 function normalizeNullable(value: string | null): string | null {

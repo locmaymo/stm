@@ -148,6 +148,26 @@ export interface RecoverProfileOptions {
   readonly logger?: LogSink;
   /** Puts the fetched archive into the profile; the caller owns stopping SillyTavern. */
   readonly restore: (archivePath: string) => Promise<void>;
+  /**
+   * Where the usage log belongs on this machine, when it is wanted back too.
+   *
+   * Absent leaves it alone. It is not part of the recovery point - it is not
+   * profile data and restoring one must never write it into somebody's chat
+   * directory - so it is fetched separately, and only here.
+   */
+  readonly metricsFile?: string;
+  /**
+   * Where the bytes are, while they are coming.
+   *
+   * A profile is gigabytes and this runs without anybody having asked for it,
+   * so the one thing the reader can be given is a bar that moves. Without it
+   * the console showed a line in the log and then nothing at all for however
+   * long a few thousand files take, which is the shape of a manager that has
+   * hung on first use.
+   */
+  readonly onProgress?: (progress: TransferProgress) => void;
+  /** Stops the download, so a recovery nobody wants is not a thing to sit out. */
+  readonly signal?: AbortSignal;
 }
 
 /**
@@ -175,12 +195,12 @@ export interface RecoverProfileOptions {
 export async function recoverProfileFromR2(options: RecoverProfileOptions): Promise<{ manifest: BackupManifest; point: R2SnapshotSummary } | null> {
   const { profile, r2, backups, logger } = options;
   if (!await isProfileEmpty(profile)) return null;
-  let candidate;
+  let candidates: readonly R2SnapshotSummary[];
   try {
     // Every profile in the bucket, not this one: the identifier this machine
     // just made for itself has never been written to the bucket, so asking for
     // its own points would always come back empty.
-    [candidate] = await r2.listSnapshots();
+    candidates = await r2.listSnapshots();
   } catch (error: unknown) {
     // A bucket that cannot be reached on the way up is not a reason to refuse
     // to start. The profile is empty either way, and the reader can restore by
@@ -188,24 +208,66 @@ export async function recoverProfileFromR2(options: RecoverProfileOptions): Prom
     logger?.(logEvent('r2.recoveryUnavailable', `[r2] the bucket could not be checked for a recovery point: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
     return null;
   }
-  if (!candidate) return null;
-  logger?.(logEvent('r2.recovering', `[r2] this profile is empty and the bucket holds a recovery point from ${candidate.createdAt}; bringing it back`, { createdAt: candidate.createdAt }));
-  try {
-    const { manifest } = await fetchSnapshotToLibrary({
-      profile, r2, backups,
-      snapshotId: candidate.id,
-      sourceProfileId: candidate.profileId,
-      ...(logger ? { logger } : {}),
-    });
-    const archivePath = await backups.getArchivePath(manifest.id);
-    if (!archivePath) throw new Error('the fetched recovery point could not be found in the backup library');
-    await options.restore(archivePath);
-    logger?.(logEvent('r2.recovered', `[r2] the recovery point from ${candidate.createdAt} is back in this profile`, { createdAt: candidate.createdAt }));
-    return { manifest, point: candidate };
-  } catch (error: unknown) {
-    logger?.(logEvent('r2.recoveryFailed', `[r2] the recovery point could not be brought back: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
-    return null;
+  if (candidates.length === 0) return null;
+  /*
+   * Newest first, and down the list until one comes back.
+   *
+   * A recovery point is an index naming chunks, and the two are written
+   * separately. A run killed between them - or one whose uploads were refused
+   * partway, which is what a bucket two machines were arguing over produces -
+   * leaves an index pointing at chunks that are not there, and reading it
+   * fails with a flat 404 on the first one missing. That was the end of it:
+   * the newest point was the only one tried, so a machine with six good
+   * recovery points behind one broken one came back with nothing, said one
+   * line about it in the log, and started SillyTavern on an empty profile.
+   *
+   * Older is a worse answer than newest and an enormously better answer than
+   * nothing, so each is tried in turn and the one that works is named in the
+   * log - the reader can see they are a few minutes behind rather than
+   * wondering why their chats are gone.
+   */
+  const failures: string[] = [];
+  for (const candidate of candidates) {
+    logger?.(logEvent('r2.recovering', `[r2] this profile is empty and the bucket holds a recovery point from ${candidate.createdAt}; bringing it back`, { createdAt: candidate.createdAt }));
+    try {
+      const { manifest } = await fetchSnapshotToLibrary({
+        profile, r2, backups,
+        snapshotId: candidate.id,
+        sourceProfileId: candidate.profileId,
+        ...(logger ? { logger } : {}),
+        ...(options.onProgress ? { onProgress: options.onProgress } : {}),
+        ...(options.signal ? { signal: options.signal } : {}),
+      });
+      const archivePath = await backups.getArchivePath(manifest.id);
+      if (!archivePath) throw new Error('the fetched recovery point could not be found in the backup library');
+      await options.restore(archivePath);
+      /*
+       * The usage history comes back with it, where there is one.
+       *
+       * Only onto a machine that was empty, which is the state this whole
+       * function is for: the log is append-only, and writing the bucket's copy
+       * over one that has been added to since would lose whatever was added.
+       */
+      if (options.metricsFile) {
+        await r2.restoreMetricsFile(options.metricsFile).catch((error: unknown) => {
+          logger?.(logEvent('r2.metricsRecoveryFailed', `[r2] the usage history could not be brought back: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
+          return null;
+        });
+      }
+      logger?.(logEvent('r2.recovered', `[r2] the recovery point from ${candidate.createdAt} is back in this profile`, { createdAt: candidate.createdAt }));
+      return { manifest, point: candidate };
+    } catch (error: unknown) {
+      const reason = error instanceof Error ? error.message : 'unknown error';
+      failures.push(reason);
+      logger?.(logEvent('r2.recoveryPointFailed', `[r2] the recovery point from ${candidate.createdAt} could not be read back (${reason}); trying the one before it`, { createdAt: candidate.createdAt, reason }));
+      // The restore only runs on a point that arrived whole, so nothing has
+      // been written into the profile and the next one starts from the same
+      // empty directory this one did.
+      if (!await isProfileEmpty(profile)) break;
+    }
   }
+  logger?.(logEvent('r2.recoveryFailed', `[r2] no recovery point in the bucket could be brought back: ${failures[0] ?? 'unknown error'}`, { reason: failures[0] ?? 'unknown error' }));
+  return null;
 }
 
 /**
@@ -217,7 +279,7 @@ export async function recoverProfileFromR2(options: RecoverProfileOptions): Prom
  * and walking a profile of eleven thousand files to answer it would be the
  * slowest thing on the way up.
  */
-async function isProfileEmpty(profile: Profile): Promise<boolean> {
+export async function isProfileEmpty(profile: Profile): Promise<boolean> {
   try {
     return (await readdir(profile.dataPath)).length === 0;
   } catch {

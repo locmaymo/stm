@@ -69,6 +69,11 @@ export class ProxyWorkerManager {
   private writeQueue: Promise<void> = Promise.resolve();
   /** One publish per target at a time, so two tunnel changes cannot interleave. */
   private readonly inFlight = new Map<ProxyWorkerTarget, Promise<ProxyWorkerRecord>>();
+  /**
+   * The tunnel address each target could not be published at, while that is
+   * still the tunnel that is up. See `failedOrigin`.
+   */
+  private readonly failed = new Map<ProxyWorkerTarget, string | null>();
 
   public constructor(options: ProxyWorkerOptions) {
     this.api = options.api;
@@ -110,17 +115,100 @@ export class ProxyWorkerManager {
    * exists.
    */
   public async publish(accountId: string, target: ProxyWorkerTarget, origin: string | null): Promise<ProxyWorkerRecord> {
-    const pending = this.inFlight.get(target);
-    if (pending) {
-      // Wait for the one in flight and then do this one, so the last origin
-      // asked for is the one that ends up deployed.
-      await pending.catch(() => undefined);
-    }
-    const work = this.publishNow(accountId, target, origin).finally(() => {
-      if (this.inFlight.get(target) === work) this.inFlight.delete(target);
-    });
+    /*
+     * Chained, not awaited-then-started.
+     *
+     * This used to await whatever was in flight and only then take the slot,
+     * which is not a queue: two callers arriving while a first publish was
+     * running both waited on that same one, and both then started - at the
+     * same time, with different origins, each writing the record when it
+     * finished. The older origin finishing last left this manager certain it
+     * had deployed a Worker pointing at a tunnel that had already been
+     * replaced, and nothing ever asked again. The console waited for a fixed
+     * address that was already deployed, and the only way out was to turn the
+     * tunnel off and on, which produced a publish that overwrote the lie.
+     *
+     * Taking the slot before the first await is what makes this a queue: the
+     * next caller in the same tick sees this promise, not the one before it.
+     */
+    const previous = this.inFlight.get(target);
+    const work: Promise<ProxyWorkerRecord> = (previous ? previous.catch(() => undefined) : Promise.resolve())
+      .then(async () => await this.publishNow(accountId, target, origin))
+      .then(
+        (record) => { this.failed.delete(target); return record; },
+        (error: unknown) => { this.failed.set(target, origin); throw error; },
+      )
+      .finally(() => {
+        if (this.inFlight.get(target) === work) this.inFlight.delete(target);
+      });
     this.inFlight.set(target, work);
     return await work;
+  }
+
+  /** Whether a publish for this target is running right now. */
+  public publishing(target: ProxyWorkerTarget): boolean {
+    return this.inFlight.has(target);
+  }
+
+  /**
+   * Point this target at the tunnel that is up, into whichever account the
+   * Workers are already in.
+   *
+   * For a redeploy nobody asked for: an address was announced while this
+   * manager was not listening, or was listening and lost the answer, and the
+   * Worker is left pointing at a tunnel that is gone. The caller has noticed
+   * the two disagree and has nothing to hand but the address; the account is
+   * the one these scripts are already deployed in, which is the only account
+   * that could be meant.
+   *
+   * Never throws, and does nothing where there is no account yet. It is
+   * called speculatively, from a request that is answering something else.
+   */
+  public async republish(target: ProxyWorkerTarget, origin: string | null): Promise<void> {
+    const stored = await this.load();
+    if (!stored.accountId) return;
+    try {
+      await this.publish(stored.accountId, target, origin);
+    } catch (error: unknown) {
+      this.logger(`[cloudflare] the fixed address for ${target === 'manager' ? 'the console' : 'SillyTavern'} could not be brought back to the tunnel that is up: ${error instanceof Error ? error.message : 'unknown error'}`, { target });
+    }
+  }
+
+  /**
+   * Whether this target is already deployed, in this account, at this origin.
+   *
+   * Asked before publishing, so redeploying a Worker that already points where
+   * it should is not a write to somebody's Cloudflare account that changes
+   * nothing. The account is part of the question because a different account
+   * is different scripts on a different subdomain, and what was deployed into
+   * the old one says nothing about the new one.
+   */
+  public async isPublished(accountId: string, target: ProxyWorkerTarget, origin: string | null): Promise<boolean> {
+    const stored = await this.load();
+    if (stored.accountId !== accountId) return false;
+    const record = stored.workers[target];
+    if (!record) return false;
+    return record.origin === (origin ? normalizeOrigin(origin) : null);
+  }
+
+  /**
+   * The tunnel address this target could not be published at, or null.
+   *
+   * Publishing is best effort - it is a write to somebody else's Cloudflare
+   * account over a network that fails - and the tunnel works perfectly well
+   * without it. What did not work was telling anybody: a console waiting for
+   * the fixed address had no way to know it was never coming, so it sat on
+   * "getting the address ready" for as long as the manager ran, with a working
+   * tunnel address it refused to show.
+   *
+   * So a failure is remembered against the address it was for. A caller
+   * comparing it with the tunnel that is up can tell "still deploying" from
+   * "this one is not going to be deployed", and show the tunnel's own address
+   * rather than nothing at all. It is cleared by the next publish that works,
+   * which is what a later tunnel or a reconnect produces.
+   */
+  public failedOrigin(target: ProxyWorkerTarget): string | null {
+    return this.failed.get(target) ?? null;
   }
 
   private async publishNow(accountId: string, target: ProxyWorkerTarget, origin: string | null): Promise<ProxyWorkerRecord> {
@@ -188,17 +276,12 @@ export class ProxyWorkerManager {
    * record was lost with its data directory.
    */
   private async assertNameFree(accountId: string, name: string): Promise<void> {
-    let exists: boolean;
-    try {
-      await this.api.call('GET', `/accounts/${segment(accountId)}/workers/scripts/${name}`);
-      exists = true;
-    } catch (error: unknown) {
-      if (error instanceof CloudflareApiError && error.status === 404) return;
-      // Cloudflare could not answer. Deploying over something unknown is the
-      // one outcome worth avoiding, so an unclear answer is a no.
-      throw error;
-    }
-    if (!exists) return;
+    // By status code, not by envelope: this endpoint answers with the script
+    // itself, which has no envelope, and reading it as one turned "the name is
+    // taken" into "Cloudflare could not answer". A real refusal still throws,
+    // because deploying over something unknown is the outcome worth avoiding
+    // and an unclear answer has to stay a no.
+    if (!await this.api.exists(`/accounts/${segment(accountId)}/workers/scripts/${name}`)) return;
     const subdomain = await this.subdomain(accountId).catch(() => null);
     if (subdomain && await this.isOurs(`https://${name}.${subdomain}.workers.dev`)) return;
     throw new CloudflareApiError(

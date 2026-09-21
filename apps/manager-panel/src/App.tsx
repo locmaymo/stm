@@ -24,16 +24,19 @@ import {
   Tabs, TabsContent, TabsList, TabsTrigger, type TableQuery, Toaster, Tooltip,
   TooltipContent, TooltipTrigger, useSidebar, useToast,
 } from '../../../packages/ui/src/index.js';
-import { failures, logCatalog, translator, type Fail, type Translate } from './i18n.js';
+import { failures, logCatalog, translator, type Fail, type MessageKey, type Translate } from './i18n.js';
 import { browserEnvironment, browserStorage, readPreferences, savePreferences, type LocaleCode, type Preferences } from './preferences.js';
 import { authErrorKey } from './auth-error.js';
 import { DEFAULT_SILLYTAVERN_PORT, portRefusal } from './ports.js';
 import { isThisMachine, readTunnelOfferDeclined, saveTunnelOfferDeclined, shouldOfferManagerTunnel } from './hosting.js';
 import { availableUpdate, readDismissedUpdate, saveDismissedUpdate } from './updates.js';
+import { readDismissedRecovery, readDismissedSettings, saveDismissedRecovery, saveDismissedSettings, shouldOfferSettings, shouldShowRecovery } from './settings-offer.js';
 import { apiFetch, onSessionExpired, resetSessionWatch } from './session.js';
-import type { AccessGatewayState, BackupManifest, ConfigDocument, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LogEntry, LogSourceFilter, MetricsBucket, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
-import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, BackupManifest, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LogEntry, LogSourceFilter, ManagerSettingsOffer, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, isCloudJob, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
+import { usePoll } from './use-poll.js';
+import { POLL_BACKGROUND_MS, POLL_CARD_MS, POLL_LIVE_MS, statusIntervalMs } from './polling.js';
 import { translateLogEntry, translateStep } from './log-format.js';
 import { QrCode } from './qr-code.js';
 import { CLOUDFLARE_ORANGE, CloudflareMark } from './cloudflare-mark.js';
@@ -157,6 +160,24 @@ type AuthMode = 'checking' | 'setup' | 'login' | 'ready';
  */
 function AuthGate() {
   const [mode, setMode] = useState<AuthMode>('checking');
+  /*
+   * Whether the session that is open was opened by setting the password for
+   * the first time, rather than by signing in.
+   *
+   * It is the one moment where offering a Cloudflare account is not an
+   * interruption: nothing has been set up yet, there is nothing to lose, and
+   * connecting now is what makes the machine's data outlive the machine - and
+   * what makes a machine set up on this account before hand everything back.
+   */
+  const [firstRun, setFirstRun] = useState(false);
+  /**
+   * Whether this manager can be opened with a Cloudflare account, and whose it
+   * already is.
+   *
+   * Null until the first answer, and on a build with no OAuth client at all -
+   * both of which mean the screen shows the password field and nothing else.
+   */
+  const [cloudflareSignIn, setCloudflareSignIn] = useState<SetupStatus['cloudflareSignIn'] | null>(null);
   const [csrfToken, setCsrfToken] = useState<string | null>(null);
   const [signedOut, setSignedOut] = useState(false);
   const [preferences, setPreferences] = useState(() => readPreferences(browserStorage(), browserEnvironment()));
@@ -179,10 +200,33 @@ function AuthGate() {
     setMode('login');
   }), []);
 
+  /*
+   * Coming back from a Cloudflare sign-in.
+   *
+   * The session is already set by the time the browser gets here, so a success
+   * needs nothing but tidying the address. A refusal does need saying: the
+   * reader pressed a button, went to Cloudflare, came back, and would
+   * otherwise be looking at the same sign-in screen with no idea why.
+   *
+   * Only the sign-in outcomes are taken here. Connecting storage answers on
+   * the Data page, which is where that was started from.
+   */
+  const [signInError, setSignInError] = useState<string | null>(null);
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const outcome = params.get('cloudflare');
+    if (outcome !== 'signed_in' && outcome !== 'error') return;
+    const code = params.get('cloudflare_error') ?? '';
+    if (outcome === 'error' && !authErrorKey(code)) return;
+    window.history.replaceState(null, '', `${window.location.pathname}${window.location.hash}`);
+    if (outcome === 'error') setSignInError(t(authErrorKey(code) as MessageKey));
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
-    void apiFetch('/api/v1/setup/status').then(async (response) => response.json() as Promise<{ setupRequired: boolean }>).then(async (status) => {
+    void apiFetch('/api/v1/setup/status').then(async (response) => response.json() as Promise<SetupStatus>).then(async (status) => {
       if (cancelled) return;
+      setCloudflareSignIn(status.cloudflareSignIn ?? null);
       if (status.setupRequired) { setMode('setup'); return; }
       // The session probe and the sign-in form are the calls where a refusal
       // is an ordinary answer rather than a session running out, so they go
@@ -212,11 +256,12 @@ function AuthGate() {
     setMode('login');
   };
 
-  const signedIn = (token: string) => {
+  const signedIn = (token: string, setUp = false) => {
     // Arm the watch again: the session that expired is not the session now held.
     resetSessionWatch();
     setSignedOut(false);
     setCsrfToken(token);
+    setFirstRun(setUp);
     setMode('ready');
   };
 
@@ -227,12 +272,18 @@ function AuthGate() {
   const body = mode === 'checking'
     ? waiting
     : mode === 'ready'
-      ? csrfToken ? <ConsoleApp csrfToken={csrfToken} preferences={preferences} onPreferencesChange={changePreferences} onSignOut={signOut} /> : waiting
+      ? csrfToken
+        ? firstRun
+          ? <FirstRun t={t} csrfToken={csrfToken} preferences={preferences} onPreferencesChange={changePreferences} onDone={() => setFirstRun(false)} />
+          : <ConsoleApp csrfToken={csrfToken} preferences={preferences} onPreferencesChange={changePreferences} onSignOut={signOut} />
+        : waiting
       : <AuthScreen
         t={t}
         mode={mode}
         signedOut={signedOut}
         preferences={preferences}
+        cloudflare={cloudflareSignIn}
+        refusal={signInError}
         onPreferencesChange={changePreferences}
         onSignedIn={signedIn}
       />;
@@ -249,14 +300,23 @@ function AuthGate() {
   return <Toaster closeLabel={t('common.close')}>{body}</Toaster>;
 }
 
-function AuthScreen({ t, mode, signedOut, preferences, onPreferencesChange, onSignedIn }: { t: Translate; mode: 'setup' | 'login'; signedOut: boolean; preferences: Preferences; onPreferencesChange: (value: Partial<Preferences>) => void; onSignedIn: (csrfToken: string) => void }) {
+function AuthScreen({ t, mode, signedOut, preferences, cloudflare, refusal, onPreferencesChange, onSignedIn }: { t: Translate; mode: 'setup' | 'login'; signedOut: boolean; preferences: Preferences; onPreferencesChange: (value: Partial<Preferences>) => void; cloudflare: SetupStatus['cloudflareSignIn'] | null; refusal: string | null; onSignedIn: (csrfToken: string, setUp: boolean) => void }) {
   const [password, setPassword] = useState('');
+  const [cloudflareBusy, setCloudflareBusy] = useState(false);
   const [confirmPassword, setConfirmPassword] = useState('');
   const [accepted, setAccepted] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [legalOpen, setLegalOpen] = useState(false);
   const [legalDocument, setLegalDocument] = useState<LegalDocumentId>('terms');
+  /*
+   * How many times a button has been pressed with the box still unticked.
+   *
+   * Counted rather than flagged so the sentence can be pointed at again on the
+   * second press: the animation is restarted by remounting on this key, and a
+   * boolean that is already true remounts nothing.
+   */
+  const [nudges, setNudges] = useState(0);
   const termsId = useId();
   const setup = mode === 'setup';
   const fail = failures(preferences.locale);
@@ -264,10 +324,32 @@ function AuthScreen({ t, mode, signedOut, preferences, onPreferencesChange, onSi
   // the moment the two differ - a mismatch warning under a half-typed password
   // is noise that goes away on its own.
   const mismatch = setup && confirmPassword.length > 0 && !password.startsWith(confirmPassword);
+  /*
+   * The two passwords, which is all that decides whether the buttons are live.
+   *
+   * The box is deliberately not part of this. A greyed-out button says "not
+   * yet" and nothing else - so somebody who had typed a password twice and was
+   * looking at a dead Cloudflare button had no way of learning that the reason
+   * was a checkbox further down the card, and the obvious reading is that the
+   * sign-in is broken. Pressing now points at the sentence instead, which
+   * answers the question being asked.
+   */
   const ready = password.length >= MIN_MANAGER_PASSWORD
-    && (!setup || (accepted && password === confirmPassword));
+    && (!setup || password === confirmPassword);
+  /**
+   * Whether this press may go through, and if not, why not - visibly.
+   *
+   * Returns false and shakes the consent sentence rather than doing nothing,
+   * because doing nothing is indistinguishable from being broken.
+   */
+  const consented = (): boolean => {
+    if (!setup || accepted) return true;
+    setNudges((count) => count + 1);
+    return false;
+  };
 
   const submit = async () => {
+    if (!consented()) return;
     setBusy(true); setError(null);
     try {
       // Not `apiFetch`: see the note on the session probe above.
@@ -281,9 +363,61 @@ function AuthScreen({ t, mode, signedOut, preferences, onPreferencesChange, onSi
         setError(key ? t(key) : fail.body(payload, t('setup.authError')));
         return;
       }
-      onSignedIn(payload.session.csrfToken);
+      onSignedIn(payload.session.csrfToken, setup);
     } catch { setError(t('setup.connectionError')); } finally { setBusy(false); }
   };
+
+  /**
+   * Open the console with a Cloudflare account instead of a password.
+   *
+   * Nothing is typed and nothing comes back here: Cloudflare sends the browser
+   * to the callback, which starts the session and reloads onto the console. On
+   * a machine that has just been wiped it also brings the settings, the
+   * passcode and the chats back on its own - which is the reason this exists.
+   */
+  const signInWithCloudflare = async () => {
+    setCloudflareBusy(true); setError(null);
+    try {
+      const response = await fetch('/api/v1/auth/cloudflare', { method: 'POST', credentials: 'same-origin' });
+      const payload = await response.json() as { url?: string; error?: { code?: string; message?: string } };
+      if (!response.ok || !payload.url) { setError(fail.body(payload, t('setup.cloudSignInFailed'))); return; }
+      window.location.assign(payload.url);
+    } catch { setError(t('setup.connectionError')); } finally { setCloudflareBusy(false); }
+  };
+  /*
+   * The second way in, where this build has one.
+   *
+   * On a first run it sits above the terms rather than below the password,
+   * because it is the way in this project recommends: on a machine that is
+   * wiped between runs a password set here is gone with everything else by
+   * tomorrow, and the account that comes back with the chats and the settings
+   * is not. It wears Cloudflare's own orange, the same as the button on the
+   * Data page, because it hands the reader over to Cloudflare and they decide
+   * whether to trust it by recognising it.
+   *
+   * Nothing is written underneath it. A paragraph explaining what a sign-in is
+   * for is read by nobody standing in front of two buttons; the tag on the
+   * corner says the one thing that changes which one they press.
+   */
+  const cloudflareWay = cloudflare?.available ? <>
+    <div className="auth-divider"><span>{t('setup.or')}</span></div>
+    <div className="cloud-way">
+      <Button
+        type="button"
+        size="lg"
+        className="w-full hover:opacity-90"
+        style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }}
+        disabled={busy || cloudflareBusy}
+        // Live whether or not the box is ticked. Signing in this way is what
+        // sets the manager up, so the agreement is still required first - it
+        // is asked for by pointing at it, not by refusing to respond.
+        onClick={() => { if (consented()) void signInWithCloudflare(); }}
+      >
+        <CloudflareMark />{cloudflareBusy ? t('common.loading') : t('setup.cloudSignIn')}
+      </Button>
+      <span className="cloud-way-tag" aria-hidden="true">{t('setup.cloudRecommended')}</span>
+    </div>
+  </> : null;
 
   return (
     <AuthLayout
@@ -330,36 +464,26 @@ function AuthScreen({ t, mode, signedOut, preferences, onPreferencesChange, onSi
                 />
               </Field>
             ) : null}
-            {/* The tick and the text are separate controls on purpose. The
-                text is the way into the documents, which is what somebody
-                asked to accept terms actually needs; the box beside it is the
-                only thing that agrees to them, so reading cannot accidentally
-                be consent and consent cannot be given by a stray click. */}
+            {setup ? cloudflareWay : null}
             {setup ? (
-              <div className="terms-consent">
-                <Checkbox
-                  id={termsId}
-                  checked={accepted}
-                  onCheckedChange={(checked) => setAccepted(checked === true)}
-                  aria-label={t('setup.terms')}
-                  className="mt-0.5"
-                />
-                <button
-                  type="button"
-                  className="terms-text"
-                  aria-haspopup="dialog"
-                  title={t('setup.termsOpen')}
-                  onClick={() => { setLegalDocument('terms'); setLegalOpen(true); }}
-                >
-                  <span>{t('setup.terms')}</span>
-                  <span className="terms-more">{t('setup.termsAction')}<ArrowUpRight /></span>
-                </button>
-              </div>
+              <TermsConsent
+                t={t}
+                locale={preferences.locale}
+                nudges={nudges}
+                id={termsId}
+                checked={accepted}
+                onCheckedChange={setAccepted}
+                onOpenDocument={(document) => { setLegalDocument(document); setLegalOpen(true); }}
+              />
             ) : null}
-            {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
-            <Button type="submit" size="lg" className="w-full" disabled={busy || !ready}>
+            {/* A refusal from this form, or one that came back through the
+                Cloudflare redirect - which the reader has no other way of
+                being told about. */}
+            {error ?? refusal ? <Alert variant="destructive"><AlertDescription>{error ?? refusal}</AlertDescription></Alert> : null}
+            <Button type="submit" size="lg" className="w-full" disabled={busy || cloudflareBusy || !ready}>
               {busy ? t('common.loading') : setup ? t('setup.createAdmin') : t('setup.signIn')}
             </Button>
+            {!setup ? cloudflareWay : null}
           </form>
         </CardContent>
       </Card>
@@ -371,6 +495,187 @@ function AuthScreen({ t, mode, signedOut, preferences, onPreferencesChange, onSi
         document={legalDocument}
         onDocumentChange={setLegalDocument}
       />
+    </AuthLayout>
+  );
+}
+
+/** The documents the consent sentence names, in the order it names them. */
+const CONSENT_DOCUMENTS = ['terms', 'disclaimer'] as const;
+type ConsentDocument = typeof CONSENT_DOCUMENTS[number];
+
+/**
+ * The consent sentence, with the documents in it as the way into them.
+ *
+ * It used to be one button carrying the whole sentence and a "Read the full
+ * text" underneath it, which made the two things somebody does here fight each
+ * other: reading opened a dialog and agreeing needed the small box, and the
+ * words that name the documents - the words a reader actually reaches for -
+ * did nothing at all.
+ *
+ * So the sentence is split at the document names. Those are links, in the
+ * accent colour every other link on the console uses, and each opens its own
+ * document. Everything else is a label for the box, so clicking the text
+ * agrees, which is what clicking a consent sentence is expected to do.
+ *
+ * The names come from the legal bundle rather than from the sentence, so they
+ * read exactly as the dialog titles the reader lands on, in either language.
+ */
+function TermsConsent({ t, locale, id, nudges, checked, onCheckedChange, onOpenDocument }: {
+  t: Translate;
+  locale: LocaleCode;
+  id: string;
+  /** Presses made with the box unticked; each one shakes the sentence once. */
+  nudges: number;
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+  onOpenDocument: (document: LegalDocumentId) => void;
+}) {
+  const bundle = legalBundle(locale);
+  const titleOf = (document: ConsentDocument): string =>
+    bundle.documents.find((entry) => entry.id === document)?.title ?? document;
+  const template = t('setup.terms');
+  // The same sentence with the names filled in, for anybody who meets the box
+  // through a screen reader rather than through the text beside it.
+  const plain = t('setup.terms', Object.fromEntries(CONSENT_DOCUMENTS.map((document) => [document, titleOf(document)])));
+  /*
+   * Keyed on the count so the animation runs again on every press.
+   *
+   * A CSS animation plays once per element, and the element is otherwise the
+   * same element - so the second press would light nothing up and read as the
+   * button having gone dead after all. Remounting is cheap here and there is
+   * no state inside to lose: the box is controlled from above.
+   */
+  return <div className={nudges > 0 ? 'terms-consent terms-nudge' : 'terms-consent'} key={nudges}>
+    <Checkbox
+      id={id}
+      checked={checked}
+      onCheckedChange={(next) => onCheckedChange(next === true)}
+      aria-label={plain}
+      className="mt-0.5"
+    />
+    <label className="terms-text" htmlFor={id}>
+      {splitOnPlaceholders(template).map((piece, index) => (piece.placeholder === null
+        ? <span key={index}>{piece.text}</span>
+        : <button
+          key={index}
+          type="button"
+          className="terms-link"
+          aria-haspopup="dialog"
+          title={t('setup.termsOpen', { name: titleOf(piece.placeholder as ConsentDocument) })}
+          // The label would otherwise pass the click on to the box, so
+          // opening a document would also agree to it.
+          onClick={(event) => { event.preventDefault(); onOpenDocument(piece.placeholder as LegalDocumentId); }}
+        >{titleOf(piece.placeholder as ConsentDocument)}<ArrowUpRight /></button>))}
+    </label>
+  </div>;
+}
+
+/**
+ * A sentence cut into its literal parts and its `{name}` slots, in order.
+ *
+ * `interpolate` turns a slot into a string, and a link is not a string - so
+ * the sentence is split here instead and each slot handed to the caller to
+ * render however it likes. A slot this caller does not know is left as the
+ * literal text it was written as, which is what every other unfilled
+ * placeholder in the panel does.
+ */
+function splitOnPlaceholders(template: string): Array<{ text: string; placeholder: string | null }> {
+  const pieces: Array<{ text: string; placeholder: string | null }> = [];
+  let at = 0;
+  for (const match of template.matchAll(/\{([^{}]+)\}/gu)) {
+    const start = match.index;
+    const name = match[1] ?? '';
+    if (start > at) pieces.push({ text: template.slice(at, start), placeholder: null });
+    pieces.push(CONSENT_DOCUMENTS.includes(name as ConsentDocument)
+      ? { text: '', placeholder: name }
+      : { text: match[0], placeholder: null });
+    at = start + match[0].length;
+  }
+  if (at < template.length) pieces.push({ text: template.slice(at), placeholder: null });
+  return pieces;
+}
+
+/**
+ * The one step between setting a password and the console, on a first run.
+ *
+ * Backing up to a Cloudflare account has always been on the settings page,
+ * which is where somebody goes once they have a problem - by which time the
+ * chats worth keeping are on a machine with no copy of them anywhere else.
+ * Offered here it costs one decision, at the only moment when there is nothing
+ * to lose by saying yes and nothing to undo by saying no.
+ *
+ * It is also how a machine set up on an account that already has one hands
+ * everything back: signing in brings the recovery points and the settings the
+ * other machine left, which is what the Data page says as soon as this ends.
+ *
+ * Skipped without being shown where signing in to Cloudflare is not available
+ * at all - no OAuth client configured, or a build set up for S3 keys only -
+ * because an offer that cannot be accepted is a step that wastes a click.
+ */
+function FirstRun({ t, csrfToken, preferences, onPreferencesChange, onDone }: { t: Translate; csrfToken: string; preferences: Preferences; onPreferencesChange: (value: Partial<Preferences>) => void; onDone: () => void }) {
+  const [available, setAvailable] = useState<boolean | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const fail = failures(preferences.locale);
+
+  useEffect(() => {
+    let cancelled = false;
+    void apiFetch('/api/v1/r2', { credentials: 'same-origin' })
+      .then(async (response) => (response.ok ? (await response.json() as { config: R2Config }).config : null))
+      .then((config) => {
+        if (cancelled) return;
+        // Already connected - a manager whose settings came from `.env`, say.
+        // There is nothing to offer and nothing to ask.
+        if (!config?.cloudflare || config.configured) { onDone(); return; }
+        setAvailable(true);
+      })
+      .catch(() => { if (!cancelled) onDone(); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const connect = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await apiFetch('/api/v1/r2/cloudflare/connect', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      const payload = await response.json() as { url?: string; error?: { message?: string } };
+      if (!response.ok || !payload.url) { setError(fail.body(payload, t('console.cfConnectFailed'))); return; }
+      // Cloudflare answers back to the console's own address, which lands on
+      // the Data page with the connection made; see handleCloudflareCallback.
+      window.location.assign(payload.url);
+    } catch { setError(t('console.cfConnectFailed')); } finally { setBusy(false); }
+  };
+
+  if (available !== true) return <div className="auth-shell" role="status" aria-busy="true" />;
+  return (
+    <AuthLayout
+      title={t('setup.cloudTitle')}
+      subtitle={t('setup.cloudSubtitle')}
+      controls={<>
+        <LanguageControl t={t} preferences={preferences} onChange={onPreferencesChange} />
+        <Button variant="ghost" size="icon-sm" className="size-9" aria-label={preferences.theme === 'dark' ? t('console.useLight') : t('console.useDark')} onClick={() => onPreferencesChange({ theme: preferences.theme === 'dark' ? 'light' : 'dark' })}>
+          {preferences.theme === 'dark' ? <Sun /> : <Moon />}
+        </Button>
+      </>}
+      footer={<LegalCredit t={t} />}
+    >
+      <Card className="rounded-2xl">
+        <CardContent className="grid gap-5 p-6">
+          <p className="text-sm text-muted-foreground">{t('setup.cloudBody')}</p>
+          <ul className="grid gap-2 text-sm text-muted-foreground">
+            <li>{t('setup.cloudPointFree')}</li>
+            <li>{t('setup.cloudPointRestore')}</li>
+            <li>{t('setup.cloudPointLater')}</li>
+          </ul>
+          {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
+          <div className="grid gap-2">
+            <Button size="lg" className="w-full" disabled={busy} onClick={() => void connect()}>
+              <CloudflareMark />{busy ? t('common.loading') : t('setup.cloudConnect')}
+            </Button>
+            <Button variant="ghost" size="lg" className="w-full" disabled={busy} onClick={onDone}>{t('setup.cloudSkip')}</Button>
+          </div>
+        </CardContent>
+      </Card>
     </AuthLayout>
   );
 }
@@ -388,6 +693,15 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
   const [pendingInstallationId, setPendingInstallationId] = useState<string | null>(null);
   /** The job behind the install in flight, which is what stopping it asks for. */
   const [installJobId, setInstallJobId] = useState<string | null>(null);
+  /**
+   * A backup, an upload or a recovery the manager is running on its own.
+   *
+   * Held here rather than on the Data page, because the page somebody is
+   * looking at when a machine puts itself back together is the Overview.
+   */
+  const [backgroundJob, setBackgroundJob] = useState<Job | null>(null);
+  /** The job the last poll saw, so the moment one finishes can be noticed. */
+  const backgroundJobSeen = useRef<string | null>(null);
   /** What the manager does with SillyTavern on its own way up. Null until read. */
   const [startup, setStartup] = useState<StartupSettings | null>(null);
   const [logSource, setLogSource] = useState<LogSourceFilter>('all');
@@ -454,25 +768,44 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     return () => { cancelled = true; };
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    const refresh = async () => {
-      const [processResponse, tunnelResponse, managerTunnelResponse, securityResponse] = await Promise.all([
-        apiFetch('/api/v1/process', { credentials: 'same-origin' }),
-        apiFetch('/api/v1/tunnel', { credentials: 'same-origin' }),
-        apiFetch('/api/v1/manager-tunnel', { credentials: 'same-origin' }),
-        apiFetch('/api/v1/access/security', { credentials: 'same-origin' }),
-      ]);
-      if (cancelled) return;
-      if (processResponse.ok) setProcessState(await processResponse.json() as ProcessState);
-      if (tunnelResponse.ok) setTunnelState(await tunnelResponse.json() as TunnelState);
-      if (managerTunnelResponse.ok) { setManagerTunnelState(await managerTunnelResponse.json() as TunnelState); setTunnelAnswered(true); }
-      if (securityResponse.ok) setAccessSecurity(await securityResponse.json() as AccessGatewayState);
-    };
-    void refresh();
-    const timer = window.setInterval(() => { void refresh(); }, 1500);
-    return () => { cancelled = true; window.clearInterval(timer); };
-  }, []);
+  /*
+   * The four things the console watches, in one request on one clock.
+   *
+   * The clock is fast while something is moving and slow while it is not; see
+   * `polling.ts` for why that distinction is worth making and what it costs
+   * not to. An install is in motion too, and is the one thing here the server
+   * does not report in this answer, so it is passed in.
+   */
+  usePoll(async () => {
+    const response = await apiFetch('/api/v1/status', { credentials: 'same-origin' });
+    if (!response.ok) return;
+    const status = await response.json() as ConsoleStatus;
+    setProcessState(status.process);
+    setTunnelState(status.tunnel);
+    setManagerTunnelState(status.managerTunnel);
+    setTunnelAnswered(true);
+    setAccessSecurity(status.security);
+    /*
+     * Work this machine started for itself, adopted whenever it appears.
+     *
+     * The page used to ask about this once, as it loaded. A manager opened
+     * with a Cloudflare account begins installing SillyTavern and downloading
+     * the profile *after* the redirect has landed, so the one question this
+     * page asked was always asked a few seconds too early - and the answer
+     * was kept for the several minutes that followed. The reader watched an
+     * empty Overview with one line in the log while gigabytes came down.
+     */
+    // A recovery that has just finished has written into the profile, and may
+    // have made the first backup this console has ever had.
+    if (backgroundJobSeen.current !== null && status.operation === null) reloadProfiles();
+    backgroundJobSeen.current = status.operation?.id ?? null;
+    setBackgroundJob(status.operation);
+    if (status.install && installJobId === null) {
+      setInstalling(true);
+      setPendingInstallationId(status.install.installationId);
+      setInstallJobId(status.install.id);
+    }
+  }, { intervalMs: statusIntervalMs({ process: processState, tunnel: tunnelState, managerTunnel: managerTunnelState, working: installing || backgroundJob !== null }) });
 
   useEffect(() => {
     const onHashChange = () => {
@@ -528,31 +861,45 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
    * safety copy a restore or a profile switch takes, a copy that became an
    * automatic backup - and the list used to show them only after a reload or
    * a trip to another page and back. The list is the manager's own file, read
-   * from memory, so asking every few seconds costs nothing worth saving; it is
-   * skipped while the tab is hidden, and a reply identical to what is on
-   * screen changes nothing.
+   * from memory, but it still costs a request, so the fast clock is kept for
+   * the page that shows the list and the other pages, which show at most the
+   * newest one, ask rarely. A reply identical to what is on screen changes
+   * nothing.
    */
-  useEffect(() => {
-    let cancelled = false;
-    let last = '';
-    const poll = async () => {
-      if (document.hidden) return;
-      try {
-        const response = await apiFetch('/api/v1/backups', { credentials: 'same-origin' });
-        if (!response.ok || cancelled) return;
-        const text = await response.text();
-        if (cancelled || text === last) return;
-        last = text;
-        setBackups((JSON.parse(text) as { backups: BackupManifest[] }).backups);
-      } catch {
-        // The next poll tries again.
-      }
-    };
-    const timer = window.setInterval(() => { void poll(); }, 4000);
-    const onVisible = () => { if (!document.hidden) void poll(); };
-    document.addEventListener('visibilitychange', onVisible);
-    return () => { cancelled = true; window.clearInterval(timer); document.removeEventListener('visibilitychange', onVisible); };
-  }, []);
+  const backupsSeen = useRef('');
+  usePoll(async () => {
+    try {
+      const response = await apiFetch('/api/v1/backups', { credentials: 'same-origin' });
+      if (!response.ok) return;
+      const text = await response.text();
+      if (text === backupsSeen.current) return;
+      backupsSeen.current = text;
+      setBackups((JSON.parse(text) as { backups: BackupManifest[] }).backups);
+    } catch {
+      // The next poll tries again.
+    }
+  }, { intervalMs: page === 'data' ? 4_000 : POLL_BACKGROUND_MS });
+
+  /**
+   * The profiles, read again after something that makes or fills one.
+   *
+   * They are read once when the page loads, which is right for a console
+   * somebody opens and then uses. It is wrong for the minutes after a
+   * Cloudflare sign-in: the first install creates the profile and the recovery
+   * fills it, both of them afterwards and neither of them asked for here. The
+   * card went on saying "No profiles yet" over a machine that had just brought
+   * back two hundred files.
+   */
+  const reloadProfiles = (): void => {
+    void apiFetch('/api/v1/profiles', { credentials: 'same-origin' })
+      .then(async (response) => response.ok ? await response.json() as { profiles: Profile[]; activeProfileId: string | null } : null)
+      .then((payload) => {
+        if (!payload) return;
+        setProfiles(payload.profiles);
+        setActiveProfileId(payload.activeProfileId);
+      })
+      .catch(() => undefined);
+  };
 
   useEffect(() => {
     if (!installing) return undefined;
@@ -590,6 +937,8 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
             setInstallations(payload.installations);
             setActiveInstallationId(payload.activeInstallationId);
           }).catch(() => undefined);
+          // An install makes the profile that goes with it.
+          reloadProfiles();
         }
       }).catch(() => undefined);
     }, 1200);
@@ -619,7 +968,15 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
 
   const navigate: Navigate = (next) => { window.location.hash = next; setPage(next); window.scrollTo({ top: 0 }); };
   const changePreferences = onPreferencesChange;
-  const liveLogs = useLiveLogs(logSource);
+  /*
+   * Three speeds, for three ways of looking at a log.
+   *
+   * The sheet is the log opened to be read, and gets the fast clock. The card
+   * among the other cards on the Overview page is worth keeping current but is
+   * not what anybody is reading. Everywhere else the tail is followed only so
+   * that the dot in the header can say something new arrived.
+   */
+  const liveLogs = useLiveLogs(logSource, logsExpanded ? POLL_LIVE_MS : page === 'overview' ? POLL_CARD_MS : POLL_BACKGROUND_MS);
   /*
    * Whether anything has arrived in the log since it was last looked at.
    *
@@ -635,7 +992,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     if (seenLogId === null || logsExpanded) setSeenLogId(newestLogId);
   }, [newestLogId, logsExpanded, seenLogId]);
   const hasNewLogs = seenLogId !== null && newestLogId !== null && newestLogId > seenLogId;
-  const { snapshot: systemSnapshot, remeasure } = useSystemSnapshot(csrfToken);
+  const { snapshot: systemSnapshot, remeasure } = useSystemSnapshot(csrfToken, page === 'overview');
   const updateRuntime = async (path: string, body?: unknown) => {
     const init: RequestInit = { method: body === undefined ? 'POST' : 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken } };
     if (body !== undefined) init.body = JSON.stringify(body);
@@ -754,10 +1111,12 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
    * switch reports "starting" until cloudflared announces it - and moving the
    * reader to a link that does not exist yet would land them on nothing.
    */
-  const setManagerTunnel = async (on: boolean): Promise<string | null> => {
+  const setManagerTunnel = async (on: boolean): Promise<ActionFailure | null> => {
     const response = await apiFetch('/api/v1/manager-tunnel', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ mode: on ? 'quick' : 'off' }) });
-    const payload = await response.json() as TunnelState & { error?: { message?: string } };
-    if (!response.ok) return fail.body(payload, t('console.managerTunnelFailed'));
+    const payload = await response.json() as TunnelState & { error?: { code?: string; message?: string } };
+    // The code travels with the sentence, because one of the refusals here has
+    // an answer the card can offer rather than only describe. See ConfigPage.
+    if (!response.ok) return { code: payload.error?.code ?? null, text: fail.body(payload, t('console.managerTunnelFailed')) };
     setManagerTunnelState(payload);
     return null;
   };
@@ -820,6 +1179,10 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     networkHost={configDocument?.networkHost ?? null}
     installed={Boolean(activeInstallationId)}
     installing={installing}
+    // Only while there is nothing installed, which is the window this is for.
+    // A scheduled backup of a machine that is up is not news about SillyTavern
+    // and does not belong on SillyTavern's card.
+    recovering={activeInstallationId ? null : backgroundJob}
     canCancelInstall={installJobId !== null}
     onCancelInstall={cancelInstall}
     active={activeInstallation}
@@ -869,6 +1232,14 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
             </div>
           </header>
           <PageContainer>
+            {/* Left out in two places: the Data page, which shows this work
+                under the card it belongs to with the Stop button beside it,
+                and the Overview of a machine with nothing installed, where the
+                SillyTavern card is already saying it in place of its Install
+                button. */}
+            {backgroundJob && page !== 'data' && !(page === 'overview' && !activeInstallationId)
+              ? <div className="mb-(--section-gap)"><BackgroundTaskCard t={t} catalog={catalog} job={backgroundJob} /></div>
+              : null}
             {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} locale={preferences.locale} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} startup={startup} onSetAutoStart={setAutoStartSillyTavern} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} onEraseEverything={eraseEverything} /> : <ResourcePanel page={page} t={t} />}
           </PageContainer>
           <MobileNav
@@ -901,12 +1272,12 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
  * the whole point of the offer is to hand the reader that address. So the
  * dialog becomes the place it arrives, with a button that moves there.
  */
-function ManagerTunnelOffer({ t, open, hostname, tunnel, onDecline, onAccept }: { t: Translate; open: boolean; hostname: string; tunnel: TunnelState; onDecline: () => void; onAccept: (on: boolean) => Promise<string | null> }) {
+function ManagerTunnelOffer({ t, open, hostname, tunnel, onDecline, onAccept }: { t: Translate; open: boolean; hostname: string; tunnel: TunnelState; onDecline: () => void; onAccept: (on: boolean) => Promise<ActionFailure | null> }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const accept = async () => {
     setBusy(true); setError(null);
-    try { setError(await onAccept(true)); } finally { setBusy(false); }
+    try { setError((await onAccept(true))?.text ?? null); } finally { setBusy(false); }
   };
   // The address worth handing over, which is not the tunnel's own while the
   // fixed one in front of it is still being put there.
@@ -1142,13 +1513,23 @@ function Unavailable({ t, children }: { t: Translate; children: ReactNode }) {
  * two buttons the pointer is over.
  */
 function RuntimeCard({
-  t, fail, catalog, process, tunnel, security, sillyTavernPort, networkHost, installed, installing, active, dataBytes, profileName,
+  t, fail, catalog, process, tunnel, security, sillyTavernPort, networkHost, installed, installing, recovering, active, dataBytes, profileName,
   version, onVersionChange, versions, onPendingInstallationId, csrfToken, onInstalling, onInstallJob, onRemove,
   canCancelInstall, onCancelInstall,
   onStart, onStop, onSetPassword, onPublish, onShowAddresses, onOpenSettings,
 }: {
   t: Translate; fail: Fail; catalog: Record<string, unknown>; process: ProcessState; tunnel: TunnelState;
   security: AccessGatewayState; sillyTavernPort: number; networkHost: string | null; installed: boolean; installing: boolean;
+  /**
+   * Work this machine started for itself, or null.
+   *
+   * On this card because of the seconds right after a Cloudflare sign-in: the
+   * console reloads onto the Overview while the manager is still reading the
+   * account, and what it showed was "not installed" with a live Install button
+   * - offered to the one person who has just asked for the machine to put
+   * itself back together, and who would therefore press it.
+   */
+  recovering: Job | null;
   active: Installation | undefined; dataBytes: number | null; profileName: string | null; version: string;
   onVersionChange: (value: string) => void; versions: VersionOption[];
   onPendingInstallationId: (value: string | null) => void; csrfToken: string | null;
@@ -1429,7 +1810,7 @@ function RuntimeCard({
               </Select>
               {alreadyInstalled
                 ? <Tooltip><TooltipTrigger asChild><span className="inline-flex"><Button variant="outline" size="sm" disabled><Download />{t('console.versionInstalled')}</Button></span></TooltipTrigger><TooltipContent>{t('console.versionInstalledHint')}</TooltipContent></Tooltip>
-                : <Button variant="success" size="sm" onClick={requestInstall} disabled={!csrfToken || installing}><Download />{installing ? t('common.loading') : t('dashboard.install')}</Button>}
+                : <Button variant="success" size="sm" onClick={requestInstall} disabled={!csrfToken || installing || recovering !== null}><Download />{installing || recovering ? t('common.loading') : t('dashboard.install')}</Button>}
             </dd>
           </div>
 
@@ -1442,6 +1823,17 @@ function RuntimeCard({
             </dd>
           </div>
 
+          {/* Before the install job exists there is still work, and saying so
+              is what makes the greyed-out button above mean something rather
+              than look broken. */}
+          {!installingNow && recovering !== null ? <div className="runtime-row">
+            <dt>{t('console.progressLabel')}</dt>
+            <dd className="runtime-progress">
+              <TaskLine task={jobLabel(t, recovering.kind)} step={translateStep(recovering.step, catalog, recovering.stepCode, recovering.stepParams)} percent={recovering.progress} />
+              <TaskBar percent={recovering.progress} />
+            </dd>
+          </div> : null}
+
           {installingNow && active ? <div className="runtime-row">
             <dt>{t('console.progressLabel')}</dt>
             <dd className="runtime-progress">
@@ -1453,7 +1845,10 @@ function RuntimeCard({
                   is taken back by the server, so the machine is left as it was
                   found rather than holding half a checkout. */}
               {canCancelInstall ? <div className="runtime-progress-actions">
-                <Button variant="outline" size="sm" disabled={stoppingInstall} onClick={() => void stopInstall()}>
+                {/* Red, like every other stop in the console. An outline button
+                    beside a progress bar read as a second, milder choice; it is
+                    not - it ends the work the bar is measuring. */}
+                <Button variant="destructive" size="sm" disabled={stoppingInstall} onClick={() => void stopInstall()}>
                   {stoppingInstall ? <LoaderCircle className="animate-spin" /> : <Square />}{stoppingInstall ? t('console.installStopping') : t('console.installStop')}
                 </Button>
               </div> : null}
@@ -1712,6 +2107,7 @@ function AccessPanel({ t, process, tunnel, config, security, sillyTavernPort, on
             url={publicUrl}
             display={publicUrl ?? ''}
             disabledHint={tunnelWanted ? t('console.addressComing') : t('console.tunnelOffShort')}
+            pending={tunnelWanted}
             {...(publicUrl && tunnel.proxyUrl && tunnel.url ? { alternates: [tunnel.url] } : {})}
           />
           <AddressRow t={t} label={t('console.lanAddress')} url={lan ? lanUrl : null} display={lanHost} disabledHint={t('console.lanOffShort')} />
@@ -1903,12 +2299,16 @@ function AddressLink({ t, href, children }: { t: Translate; href: string; childr
  * the button beside it opens the sheet that holds the code, the copy and the
  * open - for that address, not for whichever one the footer had in mind.
  */
-function AddressRow({ t, label, url, display, disabledHint, alternates }: { t: Translate; label: string; url: string | null; display: string; disabledHint?: string; alternates?: readonly string[] }) {
+function AddressRow({ t, label, url, display, disabledHint, pending, alternates }: { t: Translate; label: string; url: string | null; display: string; disabledHint?: string; pending?: boolean; alternates?: readonly string[] }) {
   const [open, setOpen] = useState(false);
   return <div className="address-row">
     <span className="address-name">{label}</span>
     <span className="address-value">
-      {url ? <AddressLink t={t} href={url}>{display}</AddressLink> : <code className="address-absent">{disabledHint ?? '—'}</code>}
+      {/* An address on its way is the same wait the manager's own link shows
+          on the settings page, so it is shown the same way: the words sweep
+          while something is happening behind them. Standing text here read as
+          a state that had settled, next to a switch that was already on. */}
+      {url ? <AddressLink t={t} href={url}>{display}</AddressLink> : <code className={pending ? 'address-absent thinking' : 'address-absent'}>{disabledHint ?? '—'}</code>}
     </span>
     <Button
       variant="ghost"
@@ -2304,6 +2704,19 @@ function r2ScheduleSummary(t: Translate, config: R2Config): string {
 }
 
 /**
+ * What to call a job that this page did not start.
+ *
+ * The name a button carries when it starts the work, so a page returning to
+ * work already running says the same thing it would have said all along.
+ */
+function jobLabel(t: Translate, kind: Job['kind']): string {
+  if (kind === 'restore') return t('console.restore');
+  if (kind === 'r2Upload') return t('console.r2UploadLatest');
+  if (kind === 'r2Fetch') return t('console.r2Fetch');
+  return t('dashboard.backupNow');
+}
+
+/**
  * The profiles, the backups and the off-machine copy.
  *
  * The page used to be three cards of exposed machinery: a disclosure triangle
@@ -2331,6 +2744,8 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   const [restoreMode, setRestoreMode] = useState<RestoreMode>('replace');
   const [selectedBackup, setSelectedBackup] = useState<BackupManifest | null>(null);
   const [selectedPreview, setSelectedPreview] = useState<RestorePreview | null>(null);
+  /** The reader has been shown that this archive is not a profile and said to go ahead. */
+  const [restoreAnyway, setRestoreAnyway] = useState(false);
   const [operationProgress, setOperationProgress] = useState<{ percent: number; step: string } | null>(null);
   const [uploading, setUploading] = useState(false);
   // What the Stop button acts on: a server job by id, or the upload in flight.
@@ -2350,6 +2765,9 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   const [scheduleSaving, setScheduleSaving] = useState(false);
   const [r2Snapshots, setR2Snapshots] = useState<R2SnapshotSummary[]>([]);
   const [r2Busy, setR2Busy] = useState<string | null>(null);
+  const [settingsOffer, setSettingsOffer] = useState<ManagerSettingsOffer | null>(null);
+  const [dismissedSettings, setDismissedSettings] = useState<string | null>(() => readDismissedSettings(browserStorage()));
+  const [dismissedRecovery, setDismissedRecovery] = useState<string | null>(() => readDismissedRecovery(browserStorage()));
   const [profileOpen, setProfileOpen] = useState(false);
   const [backupOpen, setBackupOpen] = useState(false);
   const [renameTarget, setRenameTarget] = useState<BackupManifest | null>(null);
@@ -2461,38 +2879,63 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
    * time says there is a new one to list.
    */
   const lastUploadSeen = useRef<string | null | undefined>(undefined);
-  useEffect(() => {
-    let cancelled = false;
-    const poll = async () => {
-      if (document.hidden) return;
-      try {
-        const response = await apiFetch('/api/v1/r2', { credentials: 'same-origin' });
-        if (!response.ok || cancelled) return;
-        const config = (await response.json() as { config: R2Config }).config;
-        if (cancelled) return;
-        setR2Config(config);
-        const previous = lastUploadSeen.current;
-        lastUploadSeen.current = config.lastUploadAt;
-        if (previous !== undefined && previous !== config.lastUploadAt && config.configured) {
-          const snapshots = await apiFetch('/api/v1/r2/snapshots', { credentials: 'same-origin' });
-          if (snapshots.ok && !cancelled) setR2Snapshots((await snapshots.json() as { snapshots: R2SnapshotSummary[] }).snapshots);
-        }
-      } catch {
-        // The next poll tries again.
+  usePoll(async () => {
+    try {
+      const response = await apiFetch('/api/v1/r2', { credentials: 'same-origin' });
+      if (!response.ok) return;
+      const config = (await response.json() as { config: R2Config }).config;
+      setR2Config(config);
+      const previous = lastUploadSeen.current;
+      lastUploadSeen.current = config.lastUploadAt;
+      if (previous !== undefined && previous !== config.lastUploadAt && config.configured) {
+        const snapshots = await apiFetch('/api/v1/r2/snapshots', { credentials: 'same-origin' });
+        if (snapshots.ok) setR2Snapshots((await snapshots.json() as { snapshots: R2SnapshotSummary[] }).snapshots);
       }
-    };
-    void poll();
-    const timer = window.setInterval(() => { void poll(); }, 10_000);
-    return () => { cancelled = true; window.clearInterval(timer); };
-  }, []);
+    } catch {
+      // The next poll tries again.
+    }
+  }, { intervalMs: 10_000 });
 
-  // A restore runs in the server for minutes. Reloading the page must show the
-  // one already in flight rather than an idle screen the operator would be
-  // tempted to start a second restore from.
+  /*
+   * Whether this account holds settings from another machine.
+   *
+   * Asked once, when a connection first works, and not on a clock: reading it
+   * is a charged request to the bucket, and the answer only changes when
+   * somebody sets a different machine up.
+   */
+  const connectedToR2 = r2Config?.configured === true && r2Config.enabled;
+  useEffect(() => {
+    if (!connectedToR2) { setSettingsOffer(null); return undefined; }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await apiFetch('/api/v1/r2/settings', { credentials: 'same-origin' });
+        if (!response.ok || cancelled) return;
+        setSettingsOffer((await response.json() as { settings: ManagerSettingsOffer }).settings);
+      } catch {
+        // Nothing is offered, which is the same as there being nothing to offer.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [connectedToR2]);
+
+  /*
+   * A job already in flight, picked up by a page that did not start it.
+   *
+   * A restore runs in the server for minutes, and this page is left and come
+   * back to - another tab, a reload - while it does. Showing an idle screen
+   * then invites starting the same work a second time.
+   *
+   * What it is showing is taken from the job's kind, so it comes back where it
+   * was started and under the name it was started with. Kind used to say only
+   * "backup", so a recovery point coming down from R2 reappeared as "Back up
+   * now" in the local backup card, with a download's progress under it.
+   */
   useEffect(() => {
     let cancelled = false;
     void (async () => {
       let kind: Job['kind'] | null = null;
+      const setBusy = (label: string | null) => { if (kind && isCloudJob(kind)) setR2Busy(label); else setBusyAction(label); };
       try {
         const response = await apiFetch('/api/v1/jobs/active', { credentials: 'same-origin' });
         if (!response.ok) return;
@@ -2500,18 +2943,26 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
         if (cancelled || !payload.job) return;
         const running = payload.job;
         kind = running.kind;
-        setBusyAction(running.kind === 'restore' ? t('console.restore') : t('dashboard.backupNow'));
+        setBusy(jobLabel(t, kind));
         setOperationProgress({ percent: running.progress, step: jobStep(running) });
         setRunningJobId(running.id);
-        await waitForOperation(running.id, (job) => { if (!cancelled) setOperationProgress({ percent: job.progress, step: jobStep(job) }); });
-        if (!cancelled) await refresh();
+        const finished = await waitForOperation(running.id, (job) => { if (!cancelled) setOperationProgress({ percent: job.progress, step: jobStep(job) }); });
+        if (cancelled) return;
+        await refresh();
+        // A fetch that finishes while this page is watching ends where it ends
+        // when this page started it: at the question of what to do with what
+        // came down, rather than at a row in a list to go and find.
+        if (kind === 'r2Fetch') {
+          const landed = finished.resultBackupId ? await readBackup(finished.resultBackupId) : null;
+          if (!cancelled && landed && await openRestoreFor(landed)) return;
+        }
       } catch (error: unknown) {
         if (cancelled) return;
         if (error instanceof StoppedError) done(t(kind === 'restore' ? 'console.restoreStopped' : 'console.backupStopped'));
         else if (error instanceof RollbackFailedError) setMixedProfile(t('console.restoreStoppedPartway'));
-        else failed(error instanceof Error ? error.message : t('console.backupRestoreFailed'));
+        else failed(error instanceof Error ? error.message : t(kind === 'r2Fetch' ? 'console.r2FetchFailed' : kind === 'r2Upload' ? 'console.r2UploadFailed' : 'console.backupRestoreFailed'));
       } finally {
-        if (!cancelled) { setBusyAction(null); setOperationProgress(null); setRunningJobId(null); }
+        if (!cancelled) { setBusy(null); setOperationProgress(null); setRunningJobId(null); }
       }
     })();
     return () => { cancelled = true; };
@@ -2645,11 +3096,14 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       const payload = await response.json() as RestorePreview | { error?: { message?: string } };
       if (!response.ok || !('files' in payload)) { failed(fail.body(payload, t('console.backupPreviewFailed'))); return false; }
       setRestoreMode('replace');
+      // Said once, for this archive. An archive that has to be insisted on is
+      // asked about again the next time it is opened.
+      setRestoreAnyway(false);
       setSelectedBackup(backup); setSelectedPreview(payload);
       return true;
     } catch { failed(t('console.backupPreviewFailed')); return false; }
   };
-  const closeRestore = () => { setSelectedBackup(null); setSelectedPreview(null); };
+  const closeRestore = () => { setSelectedBackup(null); setSelectedPreview(null); setRestoreAnyway(false); };
   const restoreSelected = async () => {
     if (!selectedBackup || !selectedPreview) return;
     const backupId = selectedBackup.id;
@@ -2658,7 +3112,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
     closeRestore();
     setBusyAction(t('console.restore')); setOperationProgress(null); setMixedProfile(null);
     try {
-      const response = await apiFetch(`/api/v1/backups/${backupId}/restore`, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ mode: restoreMode }) });
+      const response = await apiFetch(`/api/v1/backups/${backupId}/restore`, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ mode: restoreMode, ...(restoreAnyway ? { force: true } : {}) }) });
       const payload = await response.json() as { jobId?: string; error?: { message?: string } };
       if (!response.ok || !payload.jobId) { failed(fail.body(payload, t('console.backupRestoreFailed'))); return; }
       setRunningJobId(payload.jobId);
@@ -2965,6 +3419,41 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       if (!(error instanceof StoppedError)) failed(error instanceof Error ? error.message : t('console.r2FetchFailed'));
     } finally { setR2Busy(null); setOperationProgress(null); setRunningJobId(null); }
   };
+  /**
+   * Take the bucket from the machine that holds it.
+   *
+   * Pressed by somebody who has read whose it is, so it does not ask again.
+   * The check that follows is the proof: it is the first thing this manager
+   * does as the holder, and it either works or says why not.
+   */
+  const takeOverR2 = async () => {
+    setR2Busy(t('console.r2TakeOver'));
+    try {
+      const response = await apiFetch('/api/v1/r2/cloudflare/takeover', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      const payload = await response.json() as { config?: R2Config; error?: { message?: string } };
+      if (!response.ok || !payload.config) { failed(fail.body(payload, t('console.r2TakeOverFailed'))); return; }
+      setR2Config(payload.config);
+      done(t('console.r2TakenOver'));
+    } catch { failed(t('console.r2TakeOverFailed')); } finally { setR2Busy(null); }
+  };
+  /**
+   * Put back what another machine was set to.
+   *
+   * The console reloads afterwards rather than trying to reconcile what is on
+   * screen with what has just changed underneath it: the password this session
+   * signed in with may not be the password any more, and the honest thing to
+   * do about that is to ask again.
+   */
+  const restoreManagerSettings = async () => {
+    setR2Busy(t('console.r2SettingsRestore'));
+    try {
+      const response = await apiFetch('/api/v1/r2/settings/restore', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ passwords: true, schedules: true }) });
+      const payload = await response.json() as { applied?: string[]; error?: { message?: string } };
+      if (!response.ok || !payload.applied) { failed(fail.body(payload, t('console.r2SettingsRestoreFailed'))); return; }
+      done(t('console.r2SettingsRestored'));
+      window.setTimeout(() => { window.location.reload(); }, 1500);
+    } catch { failed(t('console.r2SettingsRestoreFailed')); } finally { setR2Busy(null); }
+  };
   const removeLegacy = async () => {
     setR2Busy(t('console.r2LegacyRemove'));
     try {
@@ -3005,6 +3494,10 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
     },
   ];
   const cloudflare = r2Config?.cloudflare ?? null;
+  // The recovery this machine carried out on its own, before anybody
+  // opened the console. Held here so the notice below can name it and the
+  // button beside it can remember which one was waved away.
+  const lastRecovery = r2Config?.lastRecovery ?? null;
   // Backups go through the signed-in account, as opposed to it merely being connected.
   const signedIn = r2Config?.mode === 'cloudflare' && cloudflare?.state === 'connected';
   const keysConfigured = Boolean(r2Config?.endpoint && r2Config.bucket && r2Config.accessKeyIdMasked && r2Config.secretAccessKeyConfigured);
@@ -3162,16 +3655,69 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
           * opened the console. Said here because it is otherwise
           * indistinguishable from a machine that happened to still have it.
           */}
-        {r2Config?.lastRecovery ? <Alert>
+        {/*
+          * Another machine is using this account.
+          *
+          * One manager per bucket: two of them never see each other's recovery
+          * points but do collect each other's chunks. The one that is not the
+          * holder stops and says so here, with the one thing there is to do
+          * about it - take it over, which stops the other one.
+          */}
+        {r2Config?.owner && !r2Config.owner.mine ? <Alert variant="destructive">
+          <ShieldCheck />
+          <AlertTitle>{t('console.r2InUseTitle')}</AlertTitle>
+          <AlertDescription className="grid gap-2">
+            <span>{t('console.r2InUseBody', { name: r2Config.owner.label, when: new Date(r2Config.owner.lastSeenAt).toLocaleString() })}</span>
+            <span><Button size="sm" variant="outline" onClick={() => void takeOverR2()} disabled={r2Busy !== null}>{t('console.r2TakeOver')}</Button></span>
+          </AlertDescription>
+        </Alert> : null}
+        {/*
+          * Settings another machine left here.
+          *
+          * The data coming back is half of "my computer is gone"; this is the
+          * other half - the console's password, the passcode that opens
+          * SillyTavern from a phone, the schedules, the release being run.
+          * Offered rather than applied, and never offered for settings this
+          * installation wrote itself.
+          */}
+{shouldOfferSettings(settingsOffer, dismissedSettings) && settingsOffer ? <Alert>
+          <Settings2 />
+          <AlertTitle>{t('console.r2SettingsTitle')}</AlertTitle>
+          <AlertDescription className="grid gap-2">
+            <span>{t('console.r2SettingsBody', { name: settingsOffer.label ?? '', when: settingsOffer.writtenAt ? new Date(settingsOffer.writtenAt).toLocaleString() : '' })}</span>
+            {settingsOffer.hasAdminPassword ? <span className="text-xs">{t('console.r2SettingsPasswordWarning')}</span> : null}
+            {/* Saying no is an answer. Without it this was a card about
+                somebody else's machine that stayed on the page for good. */}
+            <span className="flex flex-wrap gap-2">
+              <Button size="sm" variant="outline" onClick={() => void restoreManagerSettings()} disabled={r2Busy !== null}>{t('console.r2SettingsRestore')}</Button>
+              <Button size="sm" variant="ghost" onClick={() => {
+                const when = settingsOffer.writtenAt;
+                if (!when) return;
+                saveDismissedSettings(when, browserStorage());
+                setDismissedSettings(when);
+              }}>{t('console.r2SettingsDismiss')}</Button>
+            </span>
+          </AlertDescription>
+        </Alert> : null}
+        {lastRecovery && shouldShowRecovery(lastRecovery.createdAt, dismissedRecovery) ? <Alert>
           <History />
           <AlertTitle>{t('console.r2RecoveredTitle')}</AlertTitle>
           {/* How much came back, not how many files: a size is something the
               reader can weigh against what they remember having. A recovery
               recorded before the size was kept says the rest without it,
               rather than claiming 0 B came back. */}
-          <AlertDescription>{r2Config.lastRecovery.sizeBytes === undefined
-            ? t('console.r2RecoveredBodyNoSize', { when: new Date(r2Config.lastRecovery.createdAt).toLocaleString() })
-            : t('console.r2RecoveredBody', { when: new Date(r2Config.lastRecovery.createdAt).toLocaleString(), size: formatBytes(r2Config.lastRecovery.sizeBytes) })}</AlertDescription>
+          <AlertDescription className="grid gap-2">
+            <span>{lastRecovery.sizeBytes === undefined
+              ? t('console.r2RecoveredBodyNoSize', { when: new Date(lastRecovery.createdAt).toLocaleString() })
+              : t('console.r2RecoveredBody', { when: new Date(lastRecovery.createdAt).toLocaleString(), size: formatBytes(lastRecovery.sizeBytes) })}</span>
+            {/* News about something that has already finished. Read once, it
+                has nothing left to say, and without this it stayed on the page
+                for the life of the installation. */}
+            <span><Button size="sm" variant="ghost" onClick={() => {
+              saveDismissedRecovery(lastRecovery.createdAt, browserStorage());
+              setDismissedRecovery(lastRecovery.createdAt);
+            }}>{t('common.dismiss')}</Button></span>
+          </AlertDescription>
         </Alert> : null}
         <div>
           {/* Whether anything leaves this machine at all, first: it is the
@@ -3208,14 +3754,15 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
               and look at it. Everything else that used to be a button here
               answered some part of "look at it" and is folded into Check. */}
           {r2Config?.configured ? <DetailRow label={t('console.r2LastUpload')} hint={r2Config.lastUploadAt ? new Date(r2Config.lastUploadAt).toLocaleString() : '—'}>
-            {/* One under the other, not side by side. Two buttons in a row
-                needed more width than the card has on a phone, and what gave
-                way was the label beside them. Stacked, each keeps its own
-                width and the name of the row stays on one line. */}
-            <div className="grid gap-2">
+            {/* Side by side, and one under the other only on a phone. Two
+                buttons in a row need more width than the card has on a narrow
+                screen, and what gives way there is the label beside them - but
+                a desktop card has the width, and stacking them there left a
+                column of two short buttons against a row with a name on it. */}
+            <div className="flex flex-col gap-2 sm:flex-row">
               <Button size="sm" onClick={() => void uploadR2()} disabled={r2Busy !== null || !r2Config.enabled}><Upload />{t('console.r2UploadLatest')}</Button>
               <Tooltip><TooltipTrigger asChild><span className="inline-flex">
-                <Button variant="outline" size="sm" className="w-full" onClick={() => void checkR2()} disabled={r2Busy !== null}><ShieldCheck />{t('console.r2CheckNow')}</Button>
+                <Button variant="outline" size="sm" className="w-full sm:w-auto" onClick={() => void checkR2()} disabled={r2Busy !== null}><ShieldCheck />{t('console.r2CheckNow')}</Button>
               </span></TooltipTrigger><TooltipContent>{t('console.r2CheckHint')}</TooltipContent></Tooltip>
             </div>
             {/* Backups taken under the old whole-file scheme. Nothing reads them
@@ -3260,7 +3807,6 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
               pageSizes={[5, 10, 25]}
               empty={<EmptyState icon={<Cloud />} title={t('console.r2NoSnapshots')} description={t('console.r2NoSnapshotsBody')} />}
             />
-            <p className="text-xs text-muted-foreground">{t('console.r2FetchNote')}</p>
           </div>
         </> : null}
       </CardContent>
@@ -3306,7 +3852,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       cancelLabel={t('common.cancel')}
       onConfirm={deleteBackup}
     />
-    <RestoreDialog t={t} catalog={catalog} displayName={displayName} backup={selectedBackup} preview={selectedPreview} mode={restoreMode} onModeChange={setRestoreMode} onClose={closeRestore} onRestore={restoreSelected} />
+    <RestoreDialog t={t} catalog={catalog} displayName={displayName} backup={selectedBackup} preview={selectedPreview} mode={restoreMode} onModeChange={setRestoreMode} anyway={restoreAnyway} onAnywayChange={setRestoreAnyway} onClose={closeRestore} onRestore={restoreSelected} />
     <R2DestinationDialog
       t={t}
       open={destinationOpen}
@@ -3417,6 +3963,30 @@ function TaskBar({ percent }: { percent?: number }) {
 }
 
 /**
+ * Work the manager started for itself, while it is running.
+ *
+ * Everything on this console that takes minutes used to be something somebody
+ * pressed, and so was reported on the card they pressed it on. A machine that
+ * has just been opened with a Cloudflare account starts an install and a
+ * download of the whole profile without being asked - which is the point of
+ * signing in that way - and there was no card, because there had been no
+ * press. The reader got one line in the log and an Overview with nothing on
+ * it, for as long as several gigabytes take.
+ *
+ * So it is said where they are: what is running, how far it has got, and the
+ * step it is on. Stopping it is on the Data page, under the card it belongs
+ * to, which is also where this is left out to avoid saying it twice.
+ */
+function BackgroundTaskCard({ t, catalog, job }: { t: Translate; catalog: Record<string, unknown>; job: Job }) {
+  return <Card className="rounded-2xl">
+    <CardContent className="grid gap-2.5 p-4">
+      <TaskLine task={jobLabel(t, job.kind)} step={translateStep(job.step, catalog, job.stepCode, job.stepParams)} percent={job.progress} />
+      <TaskBar percent={job.progress} />
+    </CardContent>
+  </Card>;
+}
+
+/**
  * One field, and the button that uses it.
  *
  * Naming a new profile, naming a backup and renaming one are the same question
@@ -3470,9 +4040,23 @@ function NameDialog({ t, open, onOpenChange, title, label, hint, initial = '', s
  * where the choice is made, and the choice is made in a dialog, because one of
  * them deletes everything that is there.
  */
-function RestoreDialog({ t, catalog, displayName, backup, preview, mode, onModeChange, onClose, onRestore }: { t: Translate; catalog: Record<string, unknown>; displayName: (backup: BackupManifest) => string; backup: BackupManifest | null; preview: RestorePreview | null; mode: RestoreMode; onModeChange: (mode: RestoreMode) => void; onClose: () => void; onRestore: () => Promise<void> }) {
+function RestoreDialog({ t, catalog, displayName, backup, preview, mode, onModeChange, anyway, onAnywayChange, onClose, onRestore }: { t: Translate; catalog: Record<string, unknown>; displayName: (backup: BackupManifest) => string; backup: BackupManifest | null; preview: RestorePreview | null; mode: RestoreMode; onModeChange: (mode: RestoreMode) => void; anyway: boolean; onAnywayChange: (anyway: boolean) => void; onClose: () => void; onRestore: () => Promise<void> }) {
   const group = useId();
+  const anywayId = useId();
   if (!backup || !preview) return null;
+  /*
+   * An archive that is not a profile is refused here rather than restored.
+   *
+   * A replace deletes everything the archive does not mention, so restoring
+   * the wrong zip does not restore anything - it empties the profile. It used
+   * to be a line of small print under the buttons, which is the shape of a
+   * remark rather than of a question, and the button beside it was ready to
+   * press.
+   *
+   * An older manager answers without saying either way, and that is read as
+   * recognised: there was nothing else it could have meant.
+   */
+  const unrecognized = preview.recognized === false;
   /*
    * Replace is the one to reach for, and says so.
    *
@@ -3500,12 +4084,25 @@ function RestoreDialog({ t, catalog, displayName, backup, preview, mode, onModeC
             </div>
           </div>)}
         </RadioGroup>
-        {preview.warnings.length > 0 ? <Alert><AlertDescription>{preview.warnings.map((warning) => translateStep(warning.message, catalog, warning.code, warning.params)).join(' ')}</AlertDescription></Alert> : null}
+        {preview.warnings.length > 0
+          ? <Alert variant={unrecognized ? 'destructive' : 'default'}>
+            <AlertDescription className="grid gap-2">
+              <span>{preview.warnings.map((warning) => translateStep(warning.message, catalog, warning.code, warning.params)).join(' ')}</span>
+              {unrecognized ? <>
+                <span>{t('console.restoreUnknownBody')}</span>
+                <Label htmlFor={anywayId} className="flex items-start gap-2 font-normal">
+                  <Checkbox id={anywayId} checked={anyway} onCheckedChange={(checked) => onAnywayChange(checked === true)} className="mt-0.5" />
+                  <span>{t('console.restoreUnknownAnyway')}</span>
+                </Label>
+              </> : null}
+            </AlertDescription>
+          </Alert>
+          : null}
         <p className="text-xs text-muted-foreground">{t('console.restoreSafety')}</p>
       </DialogBody>
       <DialogFooter>
         <Button variant="ghost" onClick={onClose}>{t('common.cancel')}</Button>
-        <Button variant={mode === 'replace' ? 'destructive' : 'default'} onClick={() => void onRestore()}>{t('console.restoreStart')}</Button>
+        <Button variant={mode === 'replace' ? 'destructive' : 'default'} disabled={unrecognized && !anyway} onClick={() => void onRestore()}>{t('console.restoreStart')}</Button>
       </DialogFooter>
     </DialogContent>
   </Dialog>;
@@ -4029,7 +4626,13 @@ function R2Usage({ t, config }: { t: Translate; config: R2Config }) {
       <span className={cn('text-xs', bar.filled >= 0.9 ? 'text-destructive' : 'text-muted-foreground')}>{bar.label}: {bar.text}</span>
       <span className="progress-track"><span className="progress-value" style={{ width: `${Math.max(1, bar.filled * 100)}%` }} /></span>
     </div>)}
-    <p className="text-xs text-muted-foreground">{t('console.r2UsageNote')}</p>
+    {/* Where the counts come from, which is the difference between a figure
+        that resets when this machine is replaced and one that does not. */}
+    <p className="text-xs text-muted-foreground">
+      {config.usage.sharedRecord && config.usage.countingSince
+        ? t('console.r2UsageShared', { since: new Date(config.usage.countingSince).toLocaleDateString() })
+        : t('console.r2UsageNote')}
+    </p>
   </div>;
 }
 
@@ -4054,7 +4657,13 @@ function formatDuration(seconds: number): string {
  * they are asked in three different cards. One poll serves all of them rather
  * than each card opening its own.
  */
-function useSystemSnapshot(csrfToken: string): { snapshot: SystemSnapshot | null; remeasure: () => Promise<void> } {
+/**
+ * Three live readings of the machine, taken only while they are on screen.
+ *
+ * `enabled` is what page is showing: these are meters, and a meter nobody is
+ * looking at is worth nothing and still costs a request every five seconds.
+ */
+function useSystemSnapshot(csrfToken: string, enabled: boolean): { snapshot: SystemSnapshot | null; remeasure: () => Promise<void> } {
   const [snapshot, setSnapshot] = useState<SystemSnapshot | null>(null);
   const remeasure = async () => {
     try {
@@ -4064,22 +4673,14 @@ function useSystemSnapshot(csrfToken: string): { snapshot: SystemSnapshot | null
       // The next poll reports the sizes whether or not this request landed.
     }
   };
-  useEffect(() => {
-    const controller = new AbortController();
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const poll = async () => {
-      try {
-        const response = await apiFetch('/api/v1/system', { credentials: 'same-origin', signal: controller.signal });
-        if (response.ok && !controller.signal.aborted) setSnapshot(await response.json() as SystemSnapshot);
-      } catch {
-        // A dropped reading is replaced by the next one.
-      } finally {
-        if (!controller.signal.aborted) timer = setTimeout(() => void poll(), 5000);
-      }
-    };
-    void poll();
-    return () => { controller.abort(); clearTimeout(timer); };
-  }, []);
+  usePoll(async () => {
+    try {
+      const response = await apiFetch('/api/v1/system', { credentials: 'same-origin' });
+      if (response.ok) setSnapshot(await response.json() as SystemSnapshot);
+    } catch {
+      // A dropped reading is replaced by the next one.
+    }
+  }, { intervalMs: 5_000, enabled });
   return { snapshot, remeasure };
 }
 
@@ -4185,7 +4786,6 @@ function MetricsPage({ t }: { t: Translate }) {
     },
     { id: 'requests', header: t('console.metricRequests'), sortable: true, align: 'end', cell: (row) => <span className="tabular-nums">{row.requests.toLocaleString()}</span> },
     { id: 'totalTokens', header: t('console.metricTokens'), sortable: true, align: 'end', showFrom: 'sm', cell: (row) => <span className="tabular-nums text-muted-foreground">{row.totalTokens.toLocaleString()}</span> },
-    { id: 'averageLatencyMs', header: t('console.metricLatency'), sortable: true, align: 'end', showFrom: 'md', cell: (row) => <span className="whitespace-nowrap tabular-nums text-muted-foreground">{metricDuration(row.averageLatencyMs)}</span> },
   ];
 
   return <div className="grid min-w-0 gap-4">
@@ -4218,7 +4818,13 @@ function MetricsPage({ t }: { t: Translate }) {
             value={formatMetricRate(snapshot.totals.cacheHitRate)}
             {...(snapshot.totals.cacheObservedRequests > 0 ? { hint: `${snapshot.totals.cacheObservedRequests.toLocaleString()} ${t('console.metricCacheRequests')}` } : {})}
           />
-          <StatTile icon={<Clock3 />} label={t('console.metricLatency')} value={metricDuration(snapshot.totals.averageLatencyMs)} />
+          {/* How long SillyTavern was actually up, which none of the three
+              beside it can say: hours that produced no request to a provider
+              are as much a part of the picture as the requests are. The
+              manager's own uptime and the time the console was open are
+              measured too, and are in the telemetry rather than here - they
+              say something about the project, not about this machine. */}
+          <StatTile icon={<Play />} label={t('console.usageSillyTavern')} value={usageDuration(t, snapshot.appUsage?.totals.sillyTavernSeconds ?? 0)} />
         </div>
         <TrendChart t={t} daily={snapshot.daily} to={snapshot.range.to} days={days} />
         <div className="grid min-w-0 gap-4">
@@ -4373,8 +4979,21 @@ function TrendChart({ t, daily, to, days }: { t: Translate; daily: readonly Metr
 }
 
 function metricCompact(value: number): string { return new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(value); }
-function metricDuration(value: number): string { return value >= 1000 ? `${(value / 1000).toFixed(1)} s` : `${Math.round(value)} ms`; }
 function formatMetricRate(value: number | null): string { return value === null ? '—' : `${(value * 100).toFixed(1)}%`; }
+
+/**
+ * A span of use, in the largest unit that still says something.
+ *
+ * Days for a manager that has been left running, hours for one that gets
+ * opened, minutes for one that was tried once. Seconds only under a minute,
+ * where anything larger would round the whole reading away to zero.
+ */
+function usageDuration(t: Translate, seconds: number): string {
+  if (seconds >= 48 * 60 * 60) return t('console.usageDays', { value: (seconds / 86_400).toFixed(1) });
+  if (seconds >= 60 * 60) return t('console.usageHours', { value: (seconds / 3_600).toFixed(1) });
+  if (seconds >= 60) return t('console.usageMinutes', { value: String(Math.round(seconds / 60)) });
+  return t('console.usageSeconds', { value: String(Math.round(seconds)) });
+}
 
 /**
  * The two passwords' page, and SillyTavern's own settings.
@@ -4548,7 +5167,19 @@ function SettingsGroup({ icon, title }: { icon: ReactNode; title: string }) {
   </div>;
 }
 
-function ConfigPage({ t, locale, config, security, ports, managerTunnel, process, catalog, startup, onSetAutoStart, onSetManagerTunnel, onPortChange, onConfigUpdate, onConfigReset, onChangeManagerPassword, onSetPassword, onSignOut, onSignOutDevices, onEraseEverything }: { t: Translate; locale: LocaleCode; config: ConfigDocument | null; security: AccessGatewayState; ports: PortSettings | null; managerTunnel: TunnelState; process: ProcessState; catalog: Record<string, unknown>; startup: StartupSettings | null; onSetAutoStart: (enabled: boolean) => Promise<string | null>; onSetManagerTunnel: (on: boolean) => Promise<string | null>; onPortChange: (port: number) => Promise<string | null>; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onConfigReset: () => Promise<string | null>; onChangeManagerPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSignOut: () => Promise<void>; onSignOutDevices: () => Promise<string | null>; onEraseEverything: (password: string) => Promise<string | null> }) {
+/**
+ * A refusal the console can act on, rather than only print.
+ *
+ * Most failures are a sentence and nothing more. A few name a thing the reader
+ * is one dialog away from fixing, and for those the code has to survive the
+ * trip from the server to the card that knows what to do about it.
+ */
+interface ActionFailure {
+  readonly code: string | null;
+  readonly text: string;
+}
+
+function ConfigPage({ t, locale, config, security, ports, managerTunnel, process, catalog, startup, onSetAutoStart, onSetManagerTunnel, onPortChange, onConfigUpdate, onConfigReset, onChangeManagerPassword, onSetPassword, onSignOut, onSignOutDevices, onEraseEverything }: { t: Translate; locale: LocaleCode; config: ConfigDocument | null; security: AccessGatewayState; ports: PortSettings | null; managerTunnel: TunnelState; process: ProcessState; catalog: Record<string, unknown>; startup: StartupSettings | null; onSetAutoStart: (enabled: boolean) => Promise<string | null>; onSetManagerTunnel: (on: boolean) => Promise<ActionFailure | null>; onPortChange: (port: number) => Promise<string | null>; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onConfigReset: () => Promise<string | null>; onChangeManagerPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSignOut: () => Promise<void>; onSignOutDevices: () => Promise<string | null>; onEraseEverything: (password: string) => Promise<string | null> }) {
   const [form, setForm] = useState<ConfigSettingsInput>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -4561,6 +5192,9 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
   const [managerTunnelBusy, setManagerTunnelBusy] = useState(false);
   const [managerTunnelError, setManagerTunnelError] = useState<string | null>(null);
   const [managerTunnelClosing, setManagerTunnelClosing] = useState(false);
+  // Whether the password form on screen was opened by the link switch, which
+  // decides both what it says and what happens when it succeeds.
+  const [managerPasswordFirst, setManagerPasswordFirst] = useState(false);
   const [legalOpen, setLegalOpen] = useState(false);
   const [legalDocument, setLegalDocument] = useState<LegalDocumentId>('terms');
   const { toast } = useToast();
@@ -4585,7 +5219,22 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
     setManagerTunnelBusy(true); setManagerTunnelError(null);
     try {
       const failure = await onSetManagerTunnel(on);
-      setManagerTunnelError(failure);
+      /*
+       * The console has no password yet, so the link will not open.
+       *
+       * Saying so and stopping there left a switch that would not move and a
+       * line of English underneath it pointing at a row further up the same
+       * card - which the reader then had to recognise as the thing to do
+       * next. The press was a request to open the link; the password is what
+       * that request needs, so the form that sets one opens, and the link
+       * opens behind it the moment it is saved.
+       */
+      if (failure?.code === 'manager_password_required') {
+        setManagerPasswordFirst(true);
+        setManagerPasswordOpen(true);
+        return;
+      }
+      setManagerTunnelError(failure?.text ?? null);
       if (!failure) toast({ title: on ? t('console.managerTunnelOnDone') : t('console.managerTunnelOffDone'), tone: 'success' });
     } finally { setManagerTunnelBusy(false); }
   };
@@ -4612,8 +5261,11 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
   };
   const saveManagerPassword = async (password: string, confirmPassword: string): Promise<string | null> => {
     const failure = await onChangeManagerPassword(password, confirmPassword);
-    if (!failure) toast({ title: t('console.managerPasswordSaved'), tone: 'success' });
-    return failure;
+    if (failure) return failure;
+    toast({ title: t('console.managerPasswordSaved'), tone: 'success' });
+    // Set because the link asked for it, so finish what the switch started.
+    if (managerPasswordFirst) { setManagerPasswordFirst(false); void applyManagerTunnel(true); }
+    return null;
   };
   const set = <K extends keyof ConfigSettingsInput>(key: K, value: ConfigSettingsInput[K]) =>
     setForm((current) => ({ ...current, [key]: value }));
@@ -4749,7 +5401,21 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
     />
     <StartupCard t={t} startup={startup} onSetAutoStart={onSetAutoStart} />
     <PortsCard t={t} ports={ports} process={process} busy={busy} onPortChange={onPortChange} />
-    <PasswordDialog t={t} open={managerPasswordOpen} onOpenChange={setManagerPasswordOpen} title={t('console.managerPasswordTitle')} description={t('console.managerPasswordHint')} note={t('console.passwordChangeSignsOut')} minLength={MIN_MANAGER_PASSWORD} hint={t('console.managerPasswordMin')} submitLabel={t('console.changePassword')} onSubmit={saveManagerPassword} />
+    {/* One form, two errands. Opened from the row above it changes a password
+        that exists; opened by the link switch it sets the first one there has
+        ever been, and says why it is being asked for. */}
+    <PasswordDialog
+      t={t}
+      open={managerPasswordOpen}
+      onOpenChange={(open) => { setManagerPasswordOpen(open); if (!open) setManagerPasswordFirst(false); }}
+      title={managerPasswordFirst ? t('console.managerPasswordSetTitle') : t('console.managerPasswordTitle')}
+      description={managerPasswordFirst ? t('console.managerTunnelNeedsPassword') : t('console.managerPasswordHint')}
+      note={managerPasswordFirst ? null : t('console.passwordChangeSignsOut')}
+      minLength={MIN_MANAGER_PASSWORD}
+      hint={t('console.managerPasswordMin')}
+      submitLabel={managerPasswordFirst ? t('console.managerPasswordSet') : t('console.changePassword')}
+      onSubmit={saveManagerPassword}
+    />
     <PasscodeDialog t={t} open={sillyPasswordOpen} onOpenChange={setSillyPasswordOpen} note={security.passwordConfigured ? t('console.passwordChangeSignsOut') : null} onSubmit={onSetPassword} />
     {!config
       ? <Card><CardContent className="px-0"><EmptyState icon={<Settings2 />} title={t('console.noConfiguration')} /></CardContent></Card>

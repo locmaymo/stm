@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chmod, mkdtemp, mkdir, readFile, readdir, utimes, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, readFile, readdir, stat, utimes, writeFile } from 'node:fs/promises';
+import { Readable } from 'node:stream';
 import { randomBytes } from 'node:crypto';
 import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -352,6 +353,54 @@ test('each kind of backup is kept by its own rule', async () => {
   assert.ok((await store.list(fixture.profile.id)).some((manifest) => manifest.id === manual.id));
 });
 
+/*
+ * The archive a restore is reading outlives the sweep that restore triggers.
+ *
+ * Restoring the safety copy from before the last restore is the one case
+ * where the archive being read is also the archive the next sweep would drop:
+ * a restore writes a safety copy of the profile as it stands before it
+ * overwrites anything, that copy becomes the newest one, and the sweep keeps
+ * only the newest. The file went while the restore was still holding its
+ * path, and the restore ended on a missing archive it had been shown a moment
+ * earlier.
+ */
+test('the archive a restore is reading is not swept away by the safety copy it takes first', async () => {
+  const fixture = await createFixture();
+  let clock = new Date(2026, 8, 19, 17, 0).getTime();
+  const store = new BackupStore({ paths: fixture.paths, now: () => new Date(clock) });
+  const change = async (label: string) => { clock += 60_000; await writeFile(join(fixture.profile.dataPath, 'chats', `${label}.json`), `{"message":"${label}"}`, 'utf8'); };
+  const chosen = await store.create(fixture.profile, { kind: 'before-restore' });
+  await change('later');
+
+  const release = store.hold(chosen.id);
+  // What a restore does before it writes: a safety copy of the profile as it
+  // stands, which sweeps the library on its way out.
+  await store.createSafetyCopy(fixture.profile, { kind: 'before-restore' });
+  const archive = await store.getArchivePath(chosen.id);
+  assert.ok(archive, 'the archive being restored is still in the library');
+  const preview = await store.restore(fixture.profile, archive, { mode: 'replace' });
+  assert.ok(preview.fileCount > 0);
+
+  // Let go, and it is an ordinary superseded safety copy again.
+  release();
+  await change('after');
+  await store.createSafetyCopy(fixture.profile, { kind: 'before-restore' });
+  assert.equal(await store.getArchivePath(chosen.id), null);
+});
+
+test('a restore whose archive has gone says so in words rather than in a path', async () => {
+  const fixture = await createFixture();
+  const store = new BackupStore({ paths: fixture.paths });
+  const manifest = await store.create(fixture.profile);
+  const archive = await store.getArchivePath(manifest.id);
+  assert.ok(archive);
+  await store.remove(manifest.id);
+  await assert.rejects(
+    () => store.restore(fixture.profile, archive, { mode: 'replace' }),
+    (error: unknown) => error instanceof BackupError && error.code === 'backup_archive_missing',
+  );
+});
+
 test('a safety copy that guarded nothing becomes the newest automatic backup', async () => {
   const fixture = await createFixture();
   let clock = new Date(2026, 8, 16, 16, 5).getTime();
@@ -408,6 +457,114 @@ test('assembles chunked uploads in order without buffering the archive', async (
   assert.equal(await readFile(archive, 'utf8'), 'hello world');
   await store.removeTemporary(archive);
   await assert.rejects(() => store.finishUpload(uploadId), (error: unknown) => error instanceof BackupError && error.code === 'upload_incomplete');
+});
+
+/** Whether a restore put something where it was expected. */
+async function exists(path: string): Promise<boolean> {
+  try { await stat(path); return true; } catch { return false; }
+}
+
+/*
+ * The shapes a zip actually arrives in.
+ *
+ * People hand the manager the folder they had rather than its contents: the
+ * `data` directory, the whole SillyTavern directory, a `public/` tree from
+ * before the data directory existed. Every one of those used to restore as
+ * though its wrapper were part of the profile - `default-user/default-user`,
+ * a `public` directory inside the user directory - and a replace deleted the
+ * real files on the way, because the archive did not "mention" them.
+ */
+async function archiveOf(store: BackupStore, profile: Profile, names: readonly string[]): Promise<string> {
+  const { manifest } = await store.importFromEntries(profile, {
+    entries: (async function* entries() {
+      for (const name of names) yield { name, body: Readable.from([Buffer.from(`content of ${name}`, 'utf8')]) };
+    })(),
+  });
+  const path = await store.getArchivePath(manifest.id);
+  assert.ok(path);
+  return path;
+}
+
+/** A profile in the modern layout, with nothing in it yet. */
+async function modernProfile(fixture: Awaited<ReturnType<typeof createFixture>>, name: string): Promise<Profile> {
+  const runtimePath = join(fixture.root, name);
+  const dataPath = join(runtimePath, 'data');
+  await mkdir(join(dataPath, 'default-user'), { recursive: true });
+  await writeFile(join(runtimePath, 'config.yaml'), 'listen: true\n', 'utf8');
+  return { ...fixture.profile, runtimePath, dataPath, configPath: join(runtimePath, 'config.yaml') };
+}
+
+test('a zip of the data directory restores the user directory inside it, not the wrapper', async () => {
+  const fixture = await createFixture();
+  const store = new BackupStore({ paths: fixture.paths });
+  const target = await modernProfile(fixture, 'data-wrapper-target');
+  const archive = await archiveOf(store, fixture.profile, [
+    'data/default-user/settings.json',
+    'data/default-user/chats/session.jsonl',
+    // SillyTavern's own state sits beside the user directory. It belongs to
+    // the running instance, not to the profile being restored.
+    'data/_storage/000000.json',
+  ]);
+  const preview = await store.preview(archive, target.layout);
+  assert.equal(preview.recognized, true);
+  assert.equal(preview.root, 'data/default-user/');
+  await store.restore(target, archive, { mode: 'replace' });
+  const userRoot = join(target.dataPath, 'default-user');
+  assert.equal(await readFile(join(userRoot, 'chats', 'session.jsonl'), 'utf8'), 'content of data/default-user/chats/session.jsonl');
+  assert.equal(await exists(join(userRoot, 'default-user')), false, 'the wrapper is not restored as a directory of its own');
+  assert.equal(await exists(join(userRoot, '_storage')), false, 'and neither is SillyTavern’s running state');
+  await store.settle();
+});
+
+test('a public/ tree from before the data directory restores as the user directory', async () => {
+  const fixture = await createFixture();
+  const store = new BackupStore({ paths: fixture.paths });
+  const target = await modernProfile(fixture, 'legacy-public-target');
+  const archive = await archiveOf(store, fixture.profile, ['public/settings.json', 'public/characters/Aqua.png']);
+  assert.equal((await store.preview(archive, target.layout)).root, 'public/');
+  await store.restore(target, archive, { mode: 'replace' });
+  assert.equal(await readFile(join(target.dataPath, 'default-user', 'characters', 'Aqua.png'), 'utf8'), 'content of public/characters/Aqua.png');
+  await store.settle();
+});
+
+test('the manager’s config is the manager’s, however deep the profile sits', async () => {
+  const fixture = await createFixture();
+  const store = new BackupStore({ paths: fixture.paths });
+  const target = await modernProfile(fixture, 'nested-target');
+  const archive = await archiveOf(store, fixture.profile, [
+    'config.yaml',
+    'SillyTavern/data/default-user/settings.json',
+    'SillyTavern/data/default-user/worlds/lore.json',
+  ]);
+  await store.restore(target, archive, { mode: 'replace' });
+  assert.equal(await readFile(target.configPath, 'utf8'), 'content of config.yaml');
+  assert.equal(await readFile(join(target.dataPath, 'default-user', 'worlds', 'lore.json'), 'utf8'), 'content of SillyTavern/data/default-user/worlds/lore.json');
+  await store.settle();
+});
+
+/*
+ * The wrong file does not restore a profile - it empties one.
+ *
+ * A replace deletes everything the archive does not mention, so a zip of
+ * holiday photos leaves a profile holding holiday photos. It used to restore
+ * with a line of small print in the dialog and a ready button beside it.
+ */
+test('an archive that is not a profile is refused, and restores only when insisted on', async () => {
+  const fixture = await createFixture();
+  const store = new BackupStore({ paths: fixture.paths });
+  const target = await modernProfile(fixture, 'not-a-profile-target');
+  const archive = await archiveOf(store, fixture.profile, ['holiday/beach.txt', 'holiday/sunset.txt']);
+  const preview = await store.preview(archive, target.layout);
+  assert.equal(preview.recognized, false);
+  assert.equal(preview.warnings[0]?.code, 'backup.unknownArchive');
+  await assert.rejects(
+    () => store.restore(target, archive, { mode: 'replace' }),
+    (error: unknown) => error instanceof BackupError && error.code === 'unrecognized_archive',
+  );
+  // Said out loud, it goes in as it lies.
+  await store.restore(target, archive, { mode: 'replace', force: true });
+  assert.equal(await exists(join(target.dataPath, 'default-user', 'holiday', 'beach.txt')), true);
+  await store.settle();
 });
 
 async function writeStoredZip(path: string, name: string, content: string): Promise<void> {

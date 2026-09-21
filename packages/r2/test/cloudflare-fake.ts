@@ -49,10 +49,21 @@ export async function fakeCloudflare(overrides: Partial<FakeCloudflareState> = {
   const worker = await loadWorker();
   const ok = (result: unknown, resultInfo?: unknown) => Response.json({ success: true, errors: [], messages: [], result, ...(resultInfo ? { result_info: resultInfo } : {}) });
   const fail = (status: number, message: string, code = 10000) => Response.json({ success: false, errors: [{ code, message }], result: null }, { status });
+  /*
+   * Every access token this fake has issued is still accepted.
+   *
+   * Only the newest one used to be, which is indistinguishable from one
+   * manager signing in until two of them share an account - the shape the
+   * claim in the bucket exists for. A token this fake never issued is still
+   * refused, which is what the check is for.
+   */
+  const issued = new Set<string>();
   const issue = () => {
     state.accessTokenSerial += 1;
     state.refreshToken = `refresh-${state.accessTokenSerial}`;
-    return Response.json({ access_token: `access-${state.accessTokenSerial}`, refresh_token: state.refreshToken, expires_in: state.expiresIn, token_type: 'bearer', scope: state.grantedScopes.join(' ') });
+    const accessToken = `access-${state.accessTokenSerial}`;
+    issued.add(accessToken);
+    return Response.json({ access_token: accessToken, refresh_token: state.refreshToken, expires_in: state.expiresIn, token_type: 'bearer', scope: state.grantedScopes.join(' ') });
   };
 
   const fetchImpl: typeof fetch = async (input, init) => {
@@ -79,7 +90,7 @@ export async function fakeCloudflare(overrides: Partial<FakeCloudflareState> = {
     }
 
     const authorization = new Headers(init?.headers as HeadersInit).get('authorization');
-    if (authorization !== `Bearer access-${state.accessTokenSerial}`) return fail(401, 'Invalid access token');
+    if (!authorization?.startsWith('Bearer ') || !issued.has(authorization.slice('Bearer '.length))) return fail(401, 'Invalid access token');
     const path = url.pathname.replace('/client/v4', '');
     state.calls.push(`api ${method} ${path.replace(`/accounts/${ACCOUNT_ID}`, '').replace(`/accounts/${OTHER_ACCOUNT_ID}`, '')}`);
     if (path === '/accounts') return ok(state.accounts, { total_pages: 1 });
@@ -129,6 +140,16 @@ export async function fakeCloudflare(overrides: Partial<FakeCloudflareState> = {
       const secret = JSON.parse(String(init?.body)) as { name: string; text: string };
       state.secrets.set(secret.name, secret.text);
       return ok({});
+    }
+    if (rest === `/workers/scripts/${WORKER_SCRIPT_NAME}/secrets` && method === 'GET') {
+      if (!state.deployed) return fail(404, 'script not found');
+      return ok([...state.secrets.keys()].map((name) => ({ name, type: 'secret_text' })));
+    }
+    if (rest === `/workers/scripts/${WORKER_SCRIPT_NAME}` && method === 'DELETE') {
+      if (!state.deployed) return fail(404, 'script not found');
+      state.deployed = null;
+      state.secrets.clear();
+      return ok(null);
     }
     if (rest.startsWith(`/workers/scripts/${WORKER_SCRIPT_NAME}/secrets/`) && method === 'DELETE') {
       return state.secrets.delete(rest.slice(`/workers/scripts/${WORKER_SCRIPT_NAME}/secrets/`.length)) ? ok(null) : fail(404, 'secret');

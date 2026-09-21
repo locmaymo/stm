@@ -43,6 +43,22 @@ export interface BackupSchedulerOptions {
   readonly logger?: LogSink;
   readonly now?: () => Date;
   readonly tickIntervalMs?: number;
+  /**
+   * Keep the manager's own settings in the bucket too.
+   *
+   * Passed in rather than built here, because composing them needs the state
+   * store, the runtime and the backup schedule, and this scheduler knows about
+   * backups. It does nothing when the settings have not moved.
+   */
+  readonly saveSettings?: () => Promise<unknown>;
+  /**
+   * Where the log of what was asked of each provider is, so it can ride along
+   * on the slow clock.
+   *
+   * It is not profile data and does not belong in a recovery point, but it is
+   * the one other thing on the machine that cannot be made again.
+   */
+  readonly metricsFile?: string;
 }
 
 /** Small, bounded scheduler. It only runs after the manager is ready and never blocks requests. */
@@ -56,8 +72,19 @@ export class BackupScheduler {
   private timer: NodeJS.Timeout | null = null;
   private running = false;
   private reportedBusy = false;
+  /**
+   * The last reason a tick gave up, so a standing one is said once.
+   *
+   * Every minute is often enough that a reason which is not going to change on
+   * its own - another machine holds the bucket, the ceiling is reached, the
+   * network is down - fills the log with itself and buries the lines somebody
+   * is reading it for.
+   */
+  private lastSkip: string | null = null;
   /** When the frequent tier last went up, so its clock survives a tick that did nothing. */
   private lastHotUploadAt: number | null = null;
+  private readonly saveSettings: () => Promise<unknown>;
+  private readonly metricsFile: string | null;
 
   public constructor(options: BackupSchedulerOptions) {
     this.backups = options.backups;
@@ -66,6 +93,8 @@ export class BackupScheduler {
     this.logger = options.logger ?? ((line) => console.log(logLineText(line)));
     this.now = options.now ?? (() => new Date());
     this.tickIntervalMs = options.tickIntervalMs ?? 60_000;
+    this.saveSettings = options.saveSettings ?? (async () => undefined);
+    this.metricsFile = options.metricsFile ?? null;
   }
 
   public start(): void {
@@ -88,21 +117,46 @@ export class BackupScheduler {
     this.reportedBusy = false;
     this.running = true;
     try {
+      // Read here rather than after the local snapshot, because the settings
+      // below need to know whether there is a bucket. Reading it is a local
+      // file and decides nothing about the copy taken on this machine: a
+      // bucket that is off, not set up or unreadable still has no say over
+      // that, which is what it used to have when this interval came out of
+      // the R2 settings.
+      const config = await this.r2.getConfig();
+      const remote = config.enabled && config.configured;
+      /*
+       * What the manager itself is set to: the password, the passcode, the
+       * port, the schedules, the release being run.
+       *
+       * Before the profile and not behind it, because it does not need one
+       * and used to be stuck behind the return below. A machine with nothing
+       * installed yet is exactly the machine whose settings are worth having
+       * in the bucket - it is a machine somebody is in the middle of setting
+       * up - and it was the one machine that never sent them. Somebody who
+       * set a password, moved SillyTavern's port, turned the tunnel on and
+       * was then wiped before the install finished came back to none of it,
+       * because the first upload of any of it was waiting on a profile that
+       * did not exist yet.
+       *
+       * It does nothing when nothing has moved.
+       */
+      if (remote) await this.saveSettings();
       const profile = await this.profiles.getActive();
       if (!profile) return;
       // Safety copies expire on a clock, not only when something new is written.
       await this.backups.pruneCreated(profile.id);
       const fingerprint = await this.backups.fingerprint(profile);
       await this.runLocalSnapshot(profile, fingerprint, (await this.backups.getSchedule()).intervalMinutes);
-      // R2 is asked only after the local copy is taken. A bucket that is off,
-      // not set up or unreadable has no say over backups on this machine; it
-      // used to, because this interval was read out of the R2 settings.
-      const config = await this.r2.getConfig();
-      if (!config.enabled || !config.configured) return;
+      if (!remote) return;
       await this.runRemoteSync(profile, fingerprint, config);
+      this.lastSkip = null;
     } catch (error: unknown) {
       const reason = error instanceof Error ? error.message : 'unknown error';
-      this.logger(logEvent('backup.scheduleSkipped', `[backup] scheduled backup skipped: ${reason}`, { reason }));
+      if (reason !== this.lastSkip) {
+        this.lastSkip = reason;
+        this.logger(logEvent('backup.scheduleSkipped', `[backup] scheduled backup skipped: ${reason}`, { reason }));
+      }
     } finally {
       this.running = false;
     }
@@ -132,8 +186,27 @@ export class BackupScheduler {
   private async runRemoteSync(profile: Profile, fingerprint: string, config: Awaited<ReturnType<R2Manager['getConfig']>>): Promise<void> {
     const coldDue = await this.r2.coldDue();
     const hotDue = this.lastHotUploadAt === null || this.now().getTime() - this.lastHotUploadAt >= config.schedule.hotIntervalMinutes * 60 * 1000;
+    /*
+     * The usage log, before the profile rather than after.
+     *
+     * On the slow clock, because it is appended to on every request SillyTavern
+     * makes and on the fast clock it would be the only thing ever being sent -
+     * except for the first one, which goes up as soon as there is anything to
+     * send. Until it has been up once there is nothing in the bucket for a
+     * wiped machine to come back to, so a machine wiped before its first slow
+     * tick lost every figure it had ever recorded and came back reading zero -
+     * which is the state every new installation starts in, on an account that
+     * is also new. One upload of a log measured in kilobytes is not a cost
+     * worth six hours of that.
+     *
+     * Asked of this machine's own record, so the question itself is free, and
+     * answered yes for good after the first upload lands.
+     */
+    const metricsDue = coldDue || !await this.r2.metricsArchived();
+    if (metricsDue && this.metricsFile) await this.r2.syncMetricsFile(this.metricsFile).catch(() => null);
+
     // Nothing has changed and the slow clock is not up: the cheapest tick there
-    // is, and the common one. No request is made at all.
+    // is, and the common one. No further request is made at all.
     if (!coldDue && (!hotDue || config.lastFingerprint === fingerprint)) return;
 
     const tier = coldDue ? 'cold' : 'hot';

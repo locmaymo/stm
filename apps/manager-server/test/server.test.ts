@@ -6,10 +6,10 @@ import { join } from 'node:path';
 import { getPlatformPaths } from '../../../packages/platform/src/index.js';
 import { StateStore } from '../src/state.js';
 import { preferredNetworkHost, startManagerServer, type ManagerServer } from '../src/server.js';
-import type { AccessGatewayState, Installation, ProcessState, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, ConsoleStatus, Installation, ProcessState, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import type { TunnelManager } from '../../../packages/tunnel/src/index.js';
 import type { ProxyWorkerManager } from '../../../packages/cloudflare/src/index.js';
-import { decodeState } from '../../../packages/cloudflare/src/index.js';
+import { decodeState, encodeState } from '../../../packages/cloudflare/src/index.js';
 import type { CloudflareConnection } from '../../../packages/r2/src/index.js';
 import type { RuntimeManager } from '../../../packages/sillytavern-runtime/src/index.js';
 import type { ProcessSupervisor } from '../src/supervisor.js';
@@ -66,6 +66,13 @@ async function createServer(options: {
 interface FakeProxy {
   urlFor(target: 'manager' | 'sillyTavern'): Promise<string | null>;
   recordFor(target: 'manager' | 'sillyTavern'): Promise<{ url: string; origin: string | null } | null>;
+  failedOrigin(target: 'manager' | 'sillyTavern'): string | null;
+  /** Whether a redeploy is already on its way, so the console does not ask twice. */
+  publishing(target: 'manager' | 'sillyTavern'): boolean;
+  /** Point a Worker back at the tunnel that is up; the console asks for this itself. */
+  republish(target: 'manager' | 'sillyTavern', origin: string | null): Promise<void>;
+  /** Every repair asked for, in order, so a test can say whether one happened. */
+  readonly repairs: Array<{ target: string; origin: string | null }>;
 }
 
 /**
@@ -74,10 +81,19 @@ interface FakeProxy {
  * `deployed` is read on every call rather than copied, so a test can move the
  * origin the way a finished redeploy does.
  */
-function fakeProxy(deployed: Partial<Record<'manager' | 'sillyTavern', { url: string; origin: string | null }>>): FakeProxy {
+function fakeProxy(
+  deployed: Partial<Record<'manager' | 'sillyTavern', { url: string; origin: string | null }>>,
+  failed: Partial<Record<'manager' | 'sillyTavern', string | null>> = {},
+  options: { readonly publishing?: boolean } = {},
+): FakeProxy {
+  const repairs: Array<{ target: string; origin: string | null }> = [];
   return {
     urlFor: async (target) => deployed[target]?.url ?? null,
     recordFor: async (target) => deployed[target] ?? null,
+    failedOrigin: (target) => failed[target] ?? null,
+    publishing: () => options.publishing === true,
+    republish: async (target, origin) => { repairs.push({ target, origin }); },
+    repairs,
   };
 }
 
@@ -824,8 +840,8 @@ test('the console tunnel is separate from SillyTavern’s, and its address is tr
   const stranger = await fetch(`${base}/api/v1/health`, { headers: { origin: 'https://evil.example' } });
   assert.equal(stranger.status, 403);
 
-  // And it is where a Cloudflare sign-in is told to come back to.
-  const connect = await fetch(`${base}/api/v1/r2/cloudflare/connect`, { method: 'POST', headers });
+  // And a sign-in started through it comes back to it.
+  const connect = await fetch(`${base}/api/v1/r2/cloudflare/connect`, { method: 'POST', headers: { ...headers, origin: tunnelUrl } });
   assert.equal(connect.status, 200);
   const url = new URL((await connect.json() as { url: string }).url);
   assert.equal(decodeState(url.searchParams.get('state') ?? '')?.returnOrigin, tunnelUrl);
@@ -854,12 +870,120 @@ test('an address somebody wrote down outranks one the console opened for itself'
     assert.equal((await fetch(`${base}/api/v1/health`, { headers: { origin } })).status, 200, origin);
   }
 
-  // But a sign-in goes back to the one that was written down: a tunnel is the
-  // console guessing, and STM_PUBLIC_ORIGIN is somebody saying.
+  // A sign-in comes back to the address the browser that started it is on,
+  // whichever of them that is. The session is a cookie for one origin, so
+  // coming back to any other one arrives signed out - with the authorization
+  // code already spent.
+  for (const origin of [configured, tunnelUrl]) {
+    const connect = await fetch(`${base}/api/v1/r2/cloudflare/connect`, { method: 'POST', headers: { cookie: auth.cookie, 'x-csrf-token': auth.csrfToken, origin } });
+    assert.equal(connect.status, 200);
+    const url = new URL((await connect.json() as { url: string }).url);
+    assert.equal(decodeState(url.searchParams.get('state') ?? '')?.returnOrigin, origin, origin);
+  }
+
+  // The written-down address stands in for a loopback one, and for none at
+  // all. Something publishes this manager at an address of its own, and a
+  // proxy that rewrites the request on its way through is the reason a browser
+  // nowhere near this machine can still arrive claiming to be on it.
+  for (const headers of [{ origin: base }, {}]) {
+    const connect = await fetch(`${base}/api/v1/r2/cloudflare/connect`, { method: 'POST', headers: { cookie: auth.cookie, 'x-csrf-token': auth.csrfToken, ...headers } });
+    const url = new URL((await connect.json() as { url: string }).url);
+    assert.equal(decodeState(url.searchParams.get('state') ?? '')?.returnOrigin, configured);
+  }
+});
+
+test('opening the console to the internet does not break signing in from the machine itself', async (t) => {
+  const tunnelUrl = 'https://busy-lake-1234.trycloudflare.com';
+  const managerTunnel = fakeTunnel();
+  const manager = await createServer({ bootstrapPassword: 'correct horse battery staple', managerTunnel });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  await managerTunnel.start('quick');
+  managerTunnel.publish(tunnelUrl);
+
+  /*
+   * The reader is on this machine, with the tunnel open for their phone.
+   *
+   * The console used to prefer the tunnel's address over the one the browser
+   * was actually on, so the sign-in came back to a hostname this browser had
+   * no session for: "sign in to continue", on a page that could not be signed
+   * in to, with the authorization code already used up.
+   */
   const connect = await fetch(`${base}/api/v1/r2/cloudflare/connect`, { method: 'POST', headers: { cookie: auth.cookie, 'x-csrf-token': auth.csrfToken, origin: base } });
   assert.equal(connect.status, 200);
   const url = new URL((await connect.json() as { url: string }).url);
-  assert.equal(decodeState(url.searchParams.get('state') ?? '')?.returnOrigin, configured);
+  assert.equal(decodeState(url.searchParams.get('state') ?? '')?.returnOrigin, base);
+});
+
+test('a sign-in through the fixed address comes back to the fixed address', async (t) => {
+  const proxyUrl = 'https://stm.acme.workers.dev';
+  const managerTunnel = fakeTunnel();
+  const manager = await createServer({
+    bootstrapPassword: 'correct horse battery staple',
+    managerTunnel,
+    proxy: fakeProxy({ manager: { url: proxyUrl, origin: 'https://busy-lake-1234.trycloudflare.com' } }),
+    cloudflare: {
+      workersAccount: async () => ({ id: 'acct', name: 'Personal' }),
+      // Only the part this test reads: what address the sign-in is told to
+      // come back to, which the state carries.
+      beginConnect: (returnOrigin: string) => `https://dash.cloudflare.com/oauth2/auth?state=${encodeState(returnOrigin)}`,
+    },
+  });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  await managerTunnel.start('quick');
+  managerTunnel.publish('https://busy-lake-1234.trycloudflare.com');
+
+  /*
+   * The Worker in front of the tunnel is the address people are given, because
+   * it is the one that does not change when cloudflared restarts. A browser
+   * there sends it as `Origin`, while `Host` by the time the request arrives
+   * is the tunnel's random hostname - so the console has to believe the former
+   * or send the reader back to an address they never opened.
+   */
+  const connect = await fetch(`${base}/api/v1/r2/cloudflare/connect`, {
+    method: 'POST',
+    headers: { cookie: auth.cookie, 'x-csrf-token': auth.csrfToken, origin: proxyUrl, 'x-forwarded-host': 'stm.acme.workers.dev' },
+  });
+  assert.equal(connect.status, 200);
+  const url = new URL((await connect.json() as { url: string }).url);
+  assert.equal(decodeState(url.searchParams.get('state') ?? '')?.returnOrigin, proxyUrl);
+});
+
+/*
+ * The other half of the test above. There the browser said where it was and
+ * was believed; here the request carries no `Origin` at all, and the console
+ * used to answer with the first address it publishes - so a sign-in begun on
+ * the machine itself was sent back to the console's Worker, leaving the page
+ * that started it on the sign-in screen while an address nobody was looking at
+ * became the one that was signed in.
+ */
+test('a sign-in with nothing to go on comes back to the address the request names', async (t) => {
+  const managerTunnel = fakeTunnel();
+  const manager = await createServer({
+    bootstrapPassword: 'correct horse battery staple',
+    managerTunnel,
+    proxy: fakeProxy({ manager: { url: 'https://stm.acme.workers.dev', origin: 'https://busy-lake-1234.trycloudflare.com' } }),
+    cloudflare: {
+      workersAccount: async () => ({ id: 'acct', name: 'Personal' }),
+      beginConnect: (returnOrigin: string) => `https://dash.cloudflare.com/oauth2/auth?state=${encodeState(returnOrigin)}`,
+    },
+  });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  await managerTunnel.start('quick');
+  managerTunnel.publish('https://busy-lake-1234.trycloudflare.com');
+
+  const connect = await fetch(`${base}/api/v1/r2/cloudflare/connect`, {
+    method: 'POST',
+    headers: { cookie: auth.cookie, 'x-csrf-token': auth.csrfToken },
+  });
+  assert.equal(connect.status, 200);
+  const url = new URL((await connect.json() as { url: string }).url);
+  assert.equal(decodeState(url.searchParams.get('state') ?? '')?.returnOrigin, base);
 });
 
 test('a running backup can be stopped, and a finished one cannot', async (t) => {
@@ -907,6 +1031,52 @@ test('a running backup can be stopped, and a finished one cannot', async (t) => 
   assert.equal(again.status, 409);
   const missing = await fetch(`${base}/api/v1/jobs/job-nothing/cancel`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf } });
   assert.equal(missing.status, 404);
+});
+
+/*
+ * What a job says it is, for a panel that did not start it.
+ *
+ * Sending to R2 and bringing a recovery point back both end with an archive,
+ * and both used to be filed as backups. A panel coming back to one - a tab
+ * left and returned to - had only the kind to go on, so a download announced
+ * itself as "Back up now" under the local backup card.
+ */
+test('sending to R2 and fetching a recovery point are jobs of their own kind', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-r2-job-kind-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const runtimePath = join(root, 'runtime');
+  await mkdir(runtimePath, { recursive: true });
+  const now = new Date().toISOString();
+  const installation: Installation = { id: 'install-1', selector: 'latest', resolvedRef: '1.2.3', channel: 'release', runtimePath, markerPath: join(runtimePath, '.stm-installation.json'), status: 'ready', progress: 100, step: 'Installation ready', error: null, createdAt: now, updatedAt: now, activatedAt: now };
+  const fakeRuntime = { listVersions: async () => [], listInstallations: async () => [installation], getActiveInstallation: async () => installation, getInstallation: async (id: string) => id === installation.id ? installation : null } as unknown as RuntimeManager;
+  const manager = await startManagerServer({ host: '127.0.0.1', port: 0, paths, env: { STM_ADMIN_PASSWORD: 'correct horse battery staple' }, secureCookies: false,
+    accessPort: 0, runtime: fakeRuntime, logger: () => undefined });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const login = await fetch(`${base}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'correct horse battery staple' }) });
+  const cookie = cookieFrom(login);
+  const csrf = (await login.json() as { session: { csrfToken: string } }).session.csrfToken;
+  const headers = { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' };
+  // A bucket nothing answers for: the work fails on its own a moment later,
+  // and the kind is decided before the first request goes out.
+  const saved = await fetch(`${base}/api/v1/r2`, { method: 'PUT', headers, body: JSON.stringify({ enabled: true, endpoint: 'http://127.0.0.1:9', bucket: 'stm-test-bucket', accessKeyId: 'access-key-1234', secretAccessKey: 'secret-key-5678' }) });
+  assert.equal(saved.status, 200);
+
+  const upload = await fetch(`${base}/api/v1/r2/sync`, { method: 'POST', headers });
+  assert.equal(upload.status, 202);
+  const uploadJob = (await upload.json() as { job: { id: string; kind: string } }).job;
+  assert.equal(uploadJob.kind, 'r2Upload');
+  await fetch(`${base}/api/v1/jobs/${uploadJob.id}/cancel`, { method: 'POST', headers });
+
+  const fetched = await fetch(`${base}/api/v1/r2/snapshots/point-1/fetch`, { method: 'POST', headers, body: JSON.stringify({}) });
+  assert.equal(fetched.status, 202);
+  const fetchJob = (await fetched.json() as { job: { id: string; kind: string } }).job;
+  assert.equal(fetchJob.kind, 'r2Fetch');
+  // Whichever is still running is the one a panel would reattach to, and it
+  // carries the same kind there.
+  const active = (await (await fetch(`${base}/api/v1/jobs/active`, { headers: { cookie } })).json() as { job: { kind: string } | null }).job;
+  if (active) assert.ok(active.kind === 'r2Fetch' || active.kind === 'r2Upload', `a panel would call this job ${active.kind}`);
+  await fetch(`${base}/api/v1/jobs/${fetchJob.id}/cancel`, { method: 'POST', headers });
 });
 
 test('the launcher shutdown route exists only for the launcher that started the manager', async (t) => {
@@ -1464,6 +1634,100 @@ test('a public address is not offered while the Worker in front of it is still b
   assert.equal(ready.proxyPending, false);
 });
 
+test('a console waiting on a fixed address asks for the redeploy itself', async (t) => {
+  /*
+   * A redeploy is started by cloudflared announcing an address. An
+   * announcement that is missed - lost between a restore starting the tunnel
+   * and the listener being ready, or overtaken by another publish - is never
+   * made again, so the Worker sits pointing at a tunnel that is gone and the
+   * console waits for an address that is not coming. It waited for as long as
+   * the manager ran, on top of a tunnel address that worked the whole time,
+   * and the only way out was to turn the tunnel off and on.
+   *
+   * So the console repairs it. This is the one place that knows both halves:
+   * what the tunnel is saying and what was last deployed.
+   */
+  const tunnel = fakeTunnel();
+  const deployed = { manager: { url: 'https://stm.acme.workers.dev', origin: 'https://yesterday.trycloudflare.com' as string | null } };
+  const proxy = fakeProxy(deployed);
+  const manager = await createServer({
+    bootstrapPassword: 'correct horse battery staple',
+    managerTunnel: tunnel,
+    proxy,
+    cloudflare: { workersAccount: async () => ({ id: 'account-1', name: 'Acme' }) },
+  });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  const read = async (): Promise<TunnelState> =>
+    await (await fetch(`${base}/api/v1/manager-tunnel`, { headers: { cookie: auth.cookie } })).json() as TunnelState;
+
+  await tunnel.start('quick');
+  tunnel.publish('https://today.trycloudflare.com');
+  assert.equal((await read()).proxyPending, true);
+  assert.deepEqual(proxy.repairs, [{ target: 'manager', origin: 'https://today.trycloudflare.com' }]);
+
+  // Once the Worker agrees with the tunnel there is nothing to repair, and
+  // asking again would be a write to somebody's account that changes nothing.
+  proxy.repairs.length = 0;
+  deployed.manager.origin = 'https://today.trycloudflare.com';
+  assert.equal((await read()).proxyPending, false);
+  assert.deepEqual(proxy.repairs, []);
+});
+
+test('a redeploy already on its way is not asked for twice', async (t) => {
+  // The console asks on its own clock, several times a minute. A publish takes
+  // seconds, and starting a second one on top of the first is what the queue
+  // inside the proxy exists to survive - not something to do on purpose.
+  const tunnel = fakeTunnel();
+  const proxy = fakeProxy({ manager: { url: 'https://stm.acme.workers.dev', origin: 'https://yesterday.trycloudflare.com' as string | null } }, {}, { publishing: true });
+  const manager = await createServer({
+    bootstrapPassword: 'correct horse battery staple',
+    managerTunnel: tunnel,
+    proxy,
+    cloudflare: { workersAccount: async () => ({ id: 'account-1', name: 'Acme' }) },
+  });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  await tunnel.start('quick');
+  tunnel.publish('https://today.trycloudflare.com');
+
+  const state = await (await fetch(`${base}/api/v1/manager-tunnel`, { headers: { cookie: auth.cookie } })).json() as TunnelState;
+  assert.equal(state.proxyPending, true, 'still waiting, because it genuinely is');
+  assert.deepEqual(proxy.repairs, []);
+});
+
+test('a fixed address that could not be deployed stops being waited for', async (t) => {
+  /*
+   * Publishing is a write to somebody else's Cloudflare account, and it fails:
+   * a Worker of theirs by the same name, a grant without the scope, a network
+   * that is down. The tunnel is up and working throughout. Before this, the
+   * console said "getting the address ready" for as long as the manager ran
+   * and refused to show the address that worked.
+   */
+  const tunnel = fakeTunnel();
+  const manager = await createServer({
+    bootstrapPassword: 'correct horse battery staple',
+    managerTunnel: tunnel,
+    // Deployed once, at an earlier tunnel, and the redeploy at this one failed.
+    proxy: fakeProxy({ manager: { url: 'https://stm.acme.workers.dev', origin: 'https://yesterday.trycloudflare.com' } }, { manager: 'https://today.trycloudflare.com' }),
+    cloudflare: { workersAccount: async () => ({ id: 'acct', name: 'Acme' }) },
+  });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  await tunnel.start('quick');
+  tunnel.publish('https://today.trycloudflare.com');
+
+  const state = await (await fetch(`${base}/api/v1/manager-tunnel`, { headers: { cookie: auth.cookie } })).json() as TunnelState;
+  assert.equal(state.proxyPending, false);
+  // Not the Worker's address either: it still points at yesterday's tunnel,
+  // which is a deployed address that answers with an error.
+  assert.equal(state.proxyUrl, null);
+  assert.equal(state.url, 'https://today.trycloudflare.com');
+});
+
 test('without a Cloudflare account there is no fixed address to wait for', async (t) => {
   const tunnel = fakeTunnel();
   const manager = await createServer({ bootstrapPassword: 'correct horse battery staple', managerTunnel: tunnel, proxy: fakeProxy({}), cloudflare: { workersAccount: async () => null } });
@@ -1479,4 +1743,37 @@ test('without a Cloudflare account there is no fixed address to wait for', async
   assert.equal(state.proxyUrl, null);
   assert.equal(state.proxyPending, false);
   assert.equal(state.url, 'https://today.trycloudflare.com');
+});
+
+test('everything the console watches comes back in one answer', async (t) => {
+  const managerTunnel = fakeTunnel();
+  const manager = await createServer({ bootstrapPassword: 'correct horse battery staple', managerTunnel });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  const headers = { cookie: auth.cookie };
+
+  const status = await (await fetch(`${base}/api/v1/status`, { headers })).json() as ConsoleStatus;
+
+  // Each field is what its own endpoint says, which is the whole point: the
+  // console makes one request instead of four for the same screenful.
+  const [process, tunnel, mine, security] = await Promise.all([
+    (await fetch(`${base}/api/v1/process`, { headers })).json() as Promise<ProcessState>,
+    (await fetch(`${base}/api/v1/tunnel`, { headers })).json() as Promise<TunnelState>,
+    (await fetch(`${base}/api/v1/manager-tunnel`, { headers })).json() as Promise<TunnelState>,
+    (await fetch(`${base}/api/v1/access/security`, { headers })).json() as Promise<AccessGatewayState>,
+  ]);
+  assert.deepEqual(status.process, process);
+  assert.deepEqual(status.tunnel, tunnel);
+  assert.deepEqual(status.managerTunnel, mine);
+  assert.deepEqual(status.security, security);
+
+  // It follows the state rather than reporting a fixed answer.
+  await managerTunnel.start('quick');
+  managerTunnel.publish('https://busy-lake-1234.trycloudflare.com');
+  const opened = await (await fetch(`${base}/api/v1/status`, { headers })).json() as ConsoleStatus;
+  assert.equal(opened.managerTunnel.url, 'https://busy-lake-1234.trycloudflare.com');
+
+  // And it is behind the same door as everything else.
+  assert.equal((await fetch(`${base}/api/v1/status`)).status, 401);
 });

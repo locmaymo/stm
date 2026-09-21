@@ -33,7 +33,29 @@ const DEFAULT_USER_HANDLE = 'default-user';
  * cookie secret breaks the process rather than restoring anything.
  */
 const PRESERVED_DATA_ROOT_NAMES = new Set(['_storage', '_cache', '_uploads', '_webpack', 'cookie-secret.txt']);
-const RECOGNIZED_DATA_NAMES = new Set(['settings.json', 'characters', 'chats', 'worlds', 'groups', 'movingUI']);
+/**
+ * What a SillyTavern user directory holds, as SillyTavern itself names them.
+ *
+ * Used to decide whether an archive is a profile at all, and where inside it
+ * the profile starts. The list is SillyTavern's own directory template plus
+ * the files it keeps beside it, so a backup of any version lands on several of
+ * these however old it is - and a zip of holiday photos lands on none.
+ */
+const RECOGNIZED_DATA_NAMES = new Set([
+  'settings.json', 'secrets.json', 'content.log', 'stats.json',
+  'characters', 'chats', 'groups', 'group chats', 'worlds', 'backgrounds', 'themes', 'movingUI',
+  'User Avatars', 'user', 'thumbnails', 'extensions', 'assets', 'vectors', 'backups',
+  'instruct', 'context', 'sysprompt', 'reasoning', 'QuickReplies',
+  'NovelAI Settings', 'KoboldAI Settings', 'OpenAI Settings', 'TextGen Settings',
+]);
+/**
+ * How many directories an archive may be wrapped in before it is not a profile.
+ *
+ * People hand the manager the folder they had rather than its contents:
+ * `data/default-user/`, `SillyTavern/data/default-user/`, a `public/` from
+ * before the data directory existed. Each of those is one honest layer.
+ */
+const MAX_ARCHIVE_WRAPPER_DEPTH = 4;
 const OVERWRITE_ATTEMPTS = 4;
 const READ_CHUNK_BYTES = 64 * 1024;
 const DEFAULT_LOCAL_RETENTION = 1;
@@ -86,6 +108,14 @@ export interface RestoreOptions {
   readonly onStatus?: (step: LogEvent) => void;
   /** Aborted when the operator stops the operation from the panel. */
   readonly signal?: AbortSignal;
+  /**
+   * Restore an archive that does not look like a profile anyway.
+   *
+   * Set only when the reader has been shown what is wrong with it and said to
+   * go ahead: the check exists because the wrong file emptied a profile, and a
+   * caller that passes this by default has turned it back off for everybody.
+   */
+  readonly force?: boolean;
 }
 
 interface PersistedBackups {
@@ -126,6 +156,14 @@ export class BackupStore {
   private operationTail: Promise<void> = Promise.resolve();
   private cleanupTail: Promise<void> = Promise.resolve();
   private pendingOperations = 0;
+  /**
+   * Archives something is reading right now, and how many readers each has.
+   *
+   * Counted rather than flagged: a restore of one archive can be running while
+   * something else holds the same one, and the first to let go must not let go
+   * for both.
+   */
+  private readonly inUse = new Map<string, number>();
 
   public constructor(options: BackupStoreOptions) {
     this.paths = options.paths;
@@ -175,6 +213,27 @@ export class BackupStore {
 
   public async get(id: string): Promise<BackupManifest | null> {
     return (await this.load()).find((manifest) => manifest.id === id) ?? null;
+  }
+
+  /**
+   * Keep this archive while something is reading it. Returns the way to let go.
+   *
+   * A restore reads one archive and, before it does, writes a safety copy of
+   * the profile as it stands. Writing that copy sweeps the library, and the
+   * sweep keeps only the newest safety copy - so restoring the safety copy
+   * from before the last restore deleted the very file the restore was about
+   * to open, and the restore failed on a missing archive it had been shown a
+   * moment earlier.
+   */
+  public hold(id: string): () => void {
+    this.inUse.set(id, (this.inUse.get(id) ?? 0) + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const held = (this.inUse.get(id) ?? 1) - 1;
+      if (held > 0) this.inUse.set(id, held); else this.inUse.delete(id);
+    };
   }
 
   public async getArchivePath(id: string): Promise<string | null> {
@@ -396,7 +455,9 @@ export class BackupStore {
       const newer = newestFirst.some((other) => other.createdAt > manifest.createdAt);
       return newer && now - Date.parse(manifest.createdAt) > SAFETY_COPY_MAX_AGE_MS;
     });
-    const superseded = [...scheduled.slice(localRetention()), ...expired];
+    // Never the archive something is reading: a sweep that removes it turns
+    // the restore that asked for it into a missing file.
+    const superseded = [...scheduled.slice(localRetention()), ...expired].filter((manifest) => !this.inUse.has(manifest.id));
     if (superseded.length === 0) return 0;
     const removed = new Set(superseded.map((manifest) => manifest.id));
     // Leave the library first: an interrupted sweep should leave a stray file,
@@ -540,8 +601,19 @@ export class BackupStore {
    */
   private async restoreUnlocked(profile: Profile, archivePath: string, options: RestoreOptions): Promise<RestorePreview> {
     throwIfStopped(options.signal);
-    const entries = await readZipDirectory(archivePath);
+    // An archive that has gone between being chosen and being read is a
+    // sentence, not a filesystem error code from a path nobody recognises.
+    const entries = await readZipDirectory(archivePath).catch((error: unknown) => {
+      if (isFileNotFound(error)) throw new BackupError('backup_archive_missing', 'That backup is no longer in the library');
+      throw error;
+    });
     const preview = previewEntries(entries, profile.layout);
+    // The one moment that cannot be undone, and the last place to ask. A
+    // replace deletes what the archive does not mention, so an archive that is
+    // not a profile does not restore a profile - it empties one.
+    if (!preview.recognized && !options.force) {
+      throw new BackupError('unrecognized_archive', 'This archive holds none of the folders a SillyTavern profile usually has');
+    }
     const dataDestination = await resolveProfileDataRoot(profile);
     const plan = planEntries(entries, { dataDestination, configPath: resolve(profile.configPath) });
     const keep = new Set(plan.map((item) => item.target));
@@ -1064,7 +1136,6 @@ async function collectTree(root: string, current: string): Promise<ArchiveSource
 
 function previewEntries(entries: ZipEntry[], fallbackLayout: ProfileLayout): RestorePreview {
   const files: BackupFilePreview[] = [];
-  const topNames = new Set<string>();
   let totalBytes = 0;
   for (const entry of entries) {
     validateArchiveEntryName(entry.name);
@@ -1072,13 +1143,13 @@ function previewEntries(entries: ZipEntry[], fallbackLayout: ProfileLayout): Res
     if (entry.directory) continue;
     files.push({ name: entry.name, sizeBytes: entry.uncompressedSize });
     totalBytes += entry.uncompressedSize;
-    topNames.add(entry.name.split('/')[0] ?? '');
   }
-  const hasRecognized = [...topNames].some((name) => RECOGNIZED_DATA_NAMES.has(name));
-  const warnings = !hasRecognized && files.length > 0
-    ? [logEvent('backup.unknownArchive', 'This archive holds none of the folders a SillyTavern profile usually has.')]
-    : [];
-  return { layout: fallbackLayout, fileCount: files.length, totalBytes, files, warnings };
+  const shape = readArchiveShape(entries);
+  // An empty archive holds nothing to recognise and nothing to restore; it is
+  // refused as the wrong file rather than described as an unusual profile.
+  const recognized = shape.recognized && files.length > 0;
+  const warnings = recognized ? [] : [logEvent('backup.unknownArchive', 'This archive holds none of the folders a SillyTavern profile usually has.')];
+  return { layout: fallbackLayout, fileCount: files.length, totalBytes, files, warnings, recognized, root: shape.prefix };
 }
 
 interface PlannedEntry {
@@ -1104,17 +1175,20 @@ interface PlanOptions {
  * config at the root.
  */
 function planEntries(entries: ZipEntry[], options: PlanOptions): PlannedEntry[] {
-  const prefix = hasDefaultUserWrapper(entries) ? `${DEFAULT_USER_HANDLE}/` : '';
+  const { prefix } = readArchiveShape(entries);
   const planned: PlannedEntry[] = [];
   const taken = new Set<string>();
   for (const entry of entries) {
     if (entry.directory) continue;
     validateArchiveEntryName(entry.name);
-    const name = entry.name.replaceAll('\\', '/');
-    if (prefix && !name.startsWith(prefix)) continue;
-    const relative = prefix ? name.slice(prefix.length) : name;
+    const name = normalizeSeparators(entry.name);
+    // The config is the manager's, wherever the profile turned out to start.
+    // Anything outside the wrapper is another handle's user directory or
+    // SillyTavern's own running state, and neither belongs in this profile.
+    if (!isConfigName(name) && prefix && !name.startsWith(prefix)) continue;
+    const relative = isConfigName(name) ? name : prefix ? name.slice(prefix.length) : name;
     if (!relative) continue;
-    const target = !prefix && (relative === 'config.yaml' || relative === 'config.yml')
+    const target = isConfigName(relative)
       ? options.configPath
       : safePath(options.dataDestination, relative);
     if (taken.has(target)) throw new BackupError('unsafe_archive', `Duplicate archive entry: ${entry.name}`);
@@ -1360,9 +1434,55 @@ async function removeAll(paths: readonly string[]): Promise<void> {
   });
 }
 
-function hasDefaultUserWrapper(entries: ZipEntry[]): boolean {
-  const files = entries.filter((entry) => !entry.directory).map((entry) => entry.name);
-  return files.length > 0 && files.every((name) => name.startsWith(`${DEFAULT_USER_HANDLE}/`));
+/** Archive names use forward slashes; a zip written on Windows may not have. */
+function normalizeSeparators(name: string): string {
+  return name.split('\\').join('/');
+}
+
+/** Whether this name is the manager's own config rather than one of the user's files. */
+function isConfigName(name: string): boolean {
+  return name === 'config.yaml' || name === 'config.yml';
+}
+
+/**
+ * Where inside an archive the profile starts, and whether it is a profile.
+ *
+ * Only two shapes used to be read: the contents of the user directory at the
+ * archive root, and everything wrapped in `default-user/`. Anything else was
+ * restored as though it were the first, so a zip of the `data` directory - the
+ * folder somebody would think to copy - put `default-user` and `_storage`
+ * *inside* the user directory, and a zip of a `public/` tree from before the
+ * data directory existed did the same with `public`. Both restored, both
+ * reported success, and neither put a single chat back.
+ *
+ * So the wrappers are looked through instead: a layer holding everything is
+ * the folder rather than its contents, and a `data/` holds the user's own
+ * directory beside SillyTavern's running state, which is not the operator's to
+ * restore. What is left has to look like a user directory, or this is not an
+ * archive of one.
+ */
+function readArchiveShape(entries: ZipEntry[]): { prefix: string; recognized: boolean } {
+  // The manager's config sits beside the profile rather than inside it, so it
+  // says nothing about where the profile starts.
+  const names = entries.filter((entry) => !entry.directory).map((entry) => normalizeSeparators(entry.name)).filter((name) => !isConfigName(name));
+  let prefix = '';
+  for (let depth = 0; depth <= MAX_ARCHIVE_WRAPPER_DEPTH; depth += 1) {
+    const under = names.filter((name) => name.startsWith(prefix)).map((name) => name.slice(prefix.length)).filter(Boolean);
+    if (under.length === 0) break;
+    const top = [...new Set(under.map((name) => name.split('/')[0] ?? ''))];
+    if (top.some((name) => RECOGNIZED_DATA_NAMES.has(name))) return { prefix, recognized: true };
+    const directories = top.filter((name) => under.some((entry) => entry.startsWith(`${name}/`)));
+    // One directory holding everything is a wrapper. A data directory holds
+    // one user directory per handle, and the manager keeps one profile per
+    // handle, so `default-user` is the one meant.
+    const next = directories.length === 1 ? directories[0]
+      : directories.includes(DEFAULT_USER_HANDLE) ? DEFAULT_USER_HANDLE
+        : undefined;
+    if (next === undefined) break;
+    prefix = `${prefix}${next}/`;
+  }
+  // Nothing recognisable. Read it as it lies, for a reader who insists.
+  return { prefix: '', recognized: false };
 }
 
 async function exists(path: string): Promise<boolean> {
