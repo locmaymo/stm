@@ -45,7 +45,15 @@ function fakeCloudflare(initial: Partial<FakeAccount> = {}): { account: FakeAcco
         if (existing) existing.subdomainEnabled = true;
         return ok({ enabled: true });
       }
-      if (method === 'GET') return account.scripts.has(name) ? ok({ id: name }) : fail(404, 10007);
+      // As Cloudflare answers it: the script itself, not a REST envelope.
+      // A fake that answered with an envelope here hid the fault that made
+      // this endpoint report "failed (200)" against a real account.
+      if (method === 'GET') {
+        const existing = account.scripts.get(name);
+        return existing
+          ? new Response(existing.source, { headers: { 'content-type': 'application/javascript+module' } })
+          : fail(404, 10007);
+      }
       if (method === 'DELETE') return account.scripts.delete(name) ? ok(null) : fail(404, 10007);
       if (method === 'PUT') {
         const form = init?.body as FormData;
@@ -122,6 +130,27 @@ test('a Worker of the account owner\'s by the same name is never replaced', asyn
   assert.equal(await proxy.urlFor('manager'), null);
 });
 
+test('a name the account uses for something else is read from the status, not the body', async () => {
+  /*
+   * Asking whether a script exists answers with the script, which has no REST
+   * envelope in it. Read as one, a plain 200 became "Cloudflare API GET ...
+   * failed (200)", the publish was abandoned, and the console waited for a
+   * fixed address that was never coming - on exactly the machines this whole
+   * feature exists for, the ones that had deployed the Worker once already.
+   */
+  const { api } = fakeCloudflare({ scripts: new Map([['sillytavern', { bindings: {}, source: 'export default { fetch: () => new Response("theirs") }', subdomainEnabled: true }]]) });
+  const proxy = new ProxyWorkerManager({
+    api,
+    stateDirectory: await stateDirectory(),
+    fetchImpl: async () => new Response('theirs', { status: 200 }),
+  });
+  // The name is taken, said as that - not as an account that could not be reached.
+  await assert.rejects(
+    () => proxy.publish(ACCOUNT, 'sillyTavern', 'https://one.trycloudflare.com'),
+    (error: unknown) => error instanceof CloudflareApiError && error.code === 'proxy_worker_name_taken',
+  );
+});
+
 test('a proxy this manager lost the record of is recognised as its own', async () => {
   // A data directory that did not survive a restart, with the Worker still
   // deployed and still answering. Refusing here would leave the reader with an
@@ -192,4 +221,65 @@ test('whatever the caller hands over, the binding is an origin and nothing more'
   // request the Worker forwards.
   assert.equal(normalizeOrigin('https://one.trycloudflare.com/'), 'https://one.trycloudflare.com');
   assert.equal(normalizeOrigin('https://one.trycloudflare.com/some/path?x=1'), 'https://one.trycloudflare.com');
+});
+
+test('the last address asked for is the one that ends up deployed', async () => {
+  /*
+   * Three publishes in the same tick, which is what a sign-in produces: one to
+   * create the Workers before any tunnel is up, and one per tunnel as each
+   * announces itself a few seconds later.
+   *
+   * This used to await whatever was in flight and only then take the slot,
+   * which is not a queue - the second and third both waited on the first and
+   * then ran at the same time. Whichever finished last wrote the record, so
+   * the manager could end up certain it had deployed a Worker pointing at a
+   * tunnel that had already been replaced. Nothing asks again after that: a
+   * redeploy is started by an address being announced, and that announcement
+   * has been and gone. The console then waited for a fixed address that was
+   * already deployed, over a tunnel address that worked, until somebody
+   * turned the tunnel off and on again.
+   */
+  const { account, api } = fakeCloudflare();
+  const proxy = new ProxyWorkerManager({ api, stateDirectory: await stateDirectory() });
+
+  const all = await Promise.all([
+    proxy.publish(ACCOUNT, 'sillyTavern', null),
+    proxy.publish(ACCOUNT, 'sillyTavern', 'https://first.trycloudflare.com'),
+    proxy.publish(ACCOUNT, 'sillyTavern', 'https://second.trycloudflare.com'),
+  ]);
+
+  assert.equal(all.length, 3);
+  assert.equal(account.scripts.get('sillytavern')?.bindings.ORIGIN, 'https://second.trycloudflare.com');
+  // And this manager's own record agrees with the account, which is what the
+  // console compares the running tunnel against.
+  assert.equal((await proxy.recordFor('sillyTavern'))?.origin, 'https://second.trycloudflare.com');
+});
+
+test('a Worker already pointing at this tunnel is not deployed again', async () => {
+  // The console asks for a repair on its own clock now, so the question "is
+  // there anything to do" has to be answerable without writing to somebody's
+  // Cloudflare account to find out.
+  const { account, api } = fakeCloudflare();
+  const proxy = new ProxyWorkerManager({ api, stateDirectory: await stateDirectory() });
+  await proxy.publish(ACCOUNT, 'sillyTavern', 'https://only.trycloudflare.com');
+
+  assert.equal(await proxy.isPublished(ACCOUNT, 'sillyTavern', 'https://only.trycloudflare.com'), true);
+  // A trailing slash is the same origin; the binding is normalised on the way in.
+  assert.equal(await proxy.isPublished(ACCOUNT, 'sillyTavern', 'https://only.trycloudflare.com/'), true);
+  assert.equal(await proxy.isPublished(ACCOUNT, 'sillyTavern', 'https://other.trycloudflare.com'), false);
+  // A different account is different scripts on a different subdomain, so what
+  // was deployed into this one says nothing about that one.
+  assert.equal(await proxy.isPublished('f'.repeat(32), 'sillyTavern', 'https://only.trycloudflare.com'), false);
+  assert.equal(account.calls.filter((call) => call.startsWith('PUT /workers/scripts/')).length, 1);
+});
+
+test('a Worker left behind by a missed announcement is deployed again on its own', async () => {
+  const { account, api } = fakeCloudflare();
+  const proxy = new ProxyWorkerManager({ api, stateDirectory: await stateDirectory() });
+  await proxy.publish(ACCOUNT, 'sillyTavern', 'https://yesterday.trycloudflare.com');
+
+  // No account is passed: the caller that notices this has the address the
+  // tunnel is answering on and nothing else.
+  await proxy.republish('sillyTavern', 'https://today.trycloudflare.com');
+  assert.equal(account.scripts.get('sillytavern')?.bindings.ORIGIN, 'https://today.trycloudflare.com');
 });

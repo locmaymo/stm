@@ -3,6 +3,8 @@ import { logEvent, logLineText, type LogSink } from '../../../packages/contracts
 import type { BackupStore } from '../../../packages/backup/src/index.js';
 import type { R2Manager } from '../../../packages/r2/src/index.js';
 import type { RuntimeManager } from '../../../packages/sillytavern-runtime/src/index.js';
+import type { TunnelManager } from '../../../packages/tunnel/src/index.js';
+import type { AccessGateway } from './gateway.js';
 import type { StateStore } from './state.js';
 import { checkSillyTavernPort, PortError } from './ports.js';
 
@@ -25,6 +27,26 @@ export interface ManagerSettingsDeps {
   readonly backups: BackupStore;
   readonly r2: R2Manager;
   readonly runtime: RuntimeManager;
+  /** The two doors onto the internet, which are part of how a machine was set up. */
+  readonly tunnel: TunnelManager;
+  readonly managerTunnel: TunnelManager;
+  /** The door the tunnels publish, which has to know the credential first. */
+  readonly gateway: AccessGateway;
+  /**
+   * Put the running manager on the SillyTavern port that came back.
+   *
+   * Writing the state file is not enough, and this is the part that was
+   * missing. A running manager does not read the port from the file: the
+   * gateway it forwards through, the health check that waits for SillyTavern
+   * to answer and the writer of config.yaml each took the port when the
+   * manager started and hold it. So a machine restored from its own settings
+   * showed 8006 on its settings page, wrote 8006 into the state file, and
+   * started SillyTavern on the default - which is the one part of a restore
+   * the reader notices the minute they open it.
+   *
+   * Optional, because reading and writing the record needs none of this.
+   */
+  readonly adoptSillyTavernPort?: (port: number) => Promise<void>;
   readonly logger?: LogSink;
 }
 
@@ -36,10 +58,13 @@ export async function currentManagerSettings(deps: ManagerSettingsDeps): Promise
   const installation = await deps.runtime.getActiveInstallation();
   return {
     schemaVersion: 1,
+    installId: state.installId,
     adminPasswordHash: state.adminPasswordHash,
     accessPasswordHash: state.accessPasswordHash,
     accessPasscode: state.accessPasscode,
     accessLanEnabled: state.accessLanEnabled,
+    tunnelQuick: deps.tunnel.getState().mode === 'quick',
+    managerTunnelQuick: deps.managerTunnel.getState().mode === 'quick',
     autoStartSillyTavern: state.autoStartSillyTavern,
     sillyTavernPort: state.sillyTavernPort,
     localIntervalMinutes: schedule.intervalMinutes,
@@ -55,6 +80,7 @@ export async function currentManagerSettings(deps: ManagerSettingsDeps): Promise
       maxReadOperations: r2.limits.maxReadOperations,
     },
     versionSelector: installation?.selector ?? null,
+    versionRef: installation?.resolvedRef ?? null,
   };
 }
 
@@ -107,11 +133,9 @@ export async function applyManagerSettings(deps: ManagerSettingsDeps, record: Ma
 
   if (wanted.passwords) {
     if (record.adminPasswordHash) {
-      // The console's own door. `changeAdminPassword` replaces an existing
-      // hash; `bootstrapAdminPassword` sets a first one. A machine restoring
-      // settings may be in either state.
-      const changed = await deps.store.changeAdminPassword(record.adminPasswordHash);
-      if (!changed) await deps.store.bootstrapAdminPassword(record.adminPasswordHash);
+      // The console's own door, set whether or not this machine already has
+      // one: a machine restoring settings may be in either state.
+      await deps.store.setAdminPassword(record.adminPasswordHash);
       applied.push('managerPassword');
     } else skipped.push('managerPassword');
     if (record.accessPasswordHash) {
@@ -120,6 +144,30 @@ export async function applyManagerSettings(deps: ManagerSettingsDeps, record: Ma
     } else skipped.push('accessPassword');
     await deps.store.setAccessLan(record.accessLanEnabled);
     applied.push('accessNetwork');
+    /*
+     * The gateway is still holding the credential and the binding this machine
+     * had a moment ago, neither of which is what it has just been told to use.
+     *
+     * Told here rather than after this returns, because a tunnel refuses to
+     * open in front of a door with no password on it - so a restore that set
+     * the passcode in the state file and told the gateway afterwards started
+     * the tunnel in between and had it refused, on a machine whose passcode
+     * had just come back.
+     */
+    const access = await deps.store.getPersisted();
+    deps.gateway.setPassword(access.accessPasswordHash, access.accessPasscode);
+    await deps.gateway.setLan(access.accessLanEnabled).catch(() => undefined);
+    /*
+     * The tunnels, which are the other half of how this machine was reached.
+     *
+     * Restoring the passcode and leaving the tunnel off gives somebody the key
+     * to a door that is not there - and it is the one part of a restore that
+     * is visible from the phone they were using, so its absence read as the
+     * whole restore having failed. Starting one takes seconds and can fail on
+     * its own; it is not allowed to take the rest of the restore with it.
+     */
+    if (await restoreQuickTunnel(deps.tunnel, record.tunnelQuick)) applied.push('accessTunnel');
+    if (await restoreQuickTunnel(deps.managerTunnel, record.managerTunnelQuick)) applied.push('managerTunnel');
   }
 
   if (wanted.schedules) {
@@ -132,6 +180,9 @@ export async function applyManagerSettings(deps: ManagerSettingsDeps, record: Ma
   try {
     const port = checkSillyTavernPort(record.sillyTavernPort, wanted.ports);
     await deps.store.setSillyTavernPort(port);
+    // The file and the running manager, not the file alone. See the note on
+    // `adoptSillyTavernPort`.
+    await deps.adoptSillyTavernPort?.(port);
     applied.push('sillyTavernPort');
   } catch (error: unknown) {
     // Held by something else here, or out of range. The manager keeps the port
@@ -141,6 +192,16 @@ export async function applyManagerSettings(deps: ManagerSettingsDeps, record: Ma
   }
 
   logger(logEvent('r2.settingsRestored', `[r2] restored the manager’s settings from ${record.label}: ${applied.join(', ') || 'nothing'}`, { from: record.label, applied: applied.join(', ') }));
+  /*
+   * The record in the bucket now describes this machine, so it should say so.
+   *
+   * Without this the console went on offering the restore it had just carried
+   * out, for as long as the record kept the previous installation's id - which
+   * reads as the restore not having worked. Best effort: the bucket may not be
+   * this machine's to write to yet, and the scheduler writes these anyway. A
+   * restore that happened is not undone by a write that did not.
+   */
+  await saveManagerSettings(deps).catch(() => false);
   return { applied, skipped };
 }
 
@@ -158,7 +219,7 @@ export async function applyManagerSettings(deps: ManagerSettingsDeps, record: Ma
  * signing in to it; the passwords go back only where none is set, so a sign-in
  * cannot quietly replace the password somebody is using.
  */
-export async function restoreFromBucketIfBlank(deps: ManagerSettingsDeps, options: { readonly ports: { readonly manager: number; readonly access: number } }): Promise<{ readonly applied: readonly string[] } | null> {
+export async function restoreFromBucketIfBlank(deps: ManagerSettingsDeps, options: { readonly ports: { readonly manager: number; readonly access: number } }): Promise<{ readonly applied: readonly string[]; readonly record: ManagerSettingsRecord } | null> {
   const logger: LogSink = deps.logger ?? ((line) => console.log(logLineText(line)));
   const state = await deps.store.getPersisted();
   const record = await deps.r2.loadManagerSettings().catch(() => null);
@@ -171,13 +232,47 @@ export async function restoreFromBucketIfBlank(deps: ManagerSettingsDeps, option
     return null;
   }
   const result = await applyManagerSettings(deps, record, { passwords: true, schedules: true, ports: options.ports });
-  return { applied: result.applied };
+  // The record comes back with the outcome because it says more than was
+  // applied here: which release this machine was running is not a setting to
+  // write down, it is a thing to go and install.
+  return { applied: result.applied, record };
 }
 
-/** Whether the record in the bucket is the one this installation wrote. */
+/**
+ * Put a Quick Tunnel back the way the record found it, and say whether it moved.
+ *
+ * Only the quick kind is restored, because only the quick kind can be: a Named
+ * Tunnel needs its token, which is not in the record. A machine that was
+ * running one is therefore left alone rather than having it turned off.
+ */
+async function restoreQuickTunnel(tunnel: TunnelManager, wanted: boolean): Promise<boolean> {
+  const mode = tunnel.getState().mode;
+  if (mode === 'named') return false;
+  if (wanted === (mode === 'quick')) return false;
+  try {
+    if (wanted) await tunnel.start('quick');
+    else await tunnel.disable();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether the record in the bucket is the one this installation wrote.
+ *
+ * By installation id, which is made once per data directory and written into
+ * the record. It used to be the console's password hash, which is wrong twice
+ * over: a manager opened with a Cloudflare account has no password at all, so
+ * every such machine was offered its own settings back minutes after writing
+ * them - "another machine has settings here", about itself - and two machines
+ * that happened to share a password would each have claimed the other's.
+ *
+ * The hash is still the answer for a record written before the id existed,
+ * where it is the only thing there is to go on.
+ */
 async function isMine(deps: ManagerSettingsDeps, record: ManagerSettingsRecord): Promise<boolean> {
   const state = await deps.store.getPersisted();
-  // The hash is what makes it this machine's: two installations never share
-  // one, and the label is only a hostname, which two machines can share.
+  if (record.installId !== null) return record.installId === state.installId;
   return state.adminPasswordHash !== null && state.adminPasswordHash === record.adminPasswordHash;
 }

@@ -59,11 +59,14 @@ export function parseManagerSettings(value: unknown): ManagerSettingsRecord | nu
   return {
     schemaVersion: 1,
     label: text(record.label) ?? 'another machine',
+    installId: text(record.installId),
     writtenAt,
     adminPasswordHash: text(record.adminPasswordHash),
     accessPasswordHash: text(record.accessPasswordHash),
     accessPasscode: record.accessPasscode === true,
     accessLanEnabled: record.accessLanEnabled === true,
+    tunnelQuick: record.tunnelQuick === true,
+    managerTunnelQuick: record.managerTunnelQuick === true,
     autoStartSillyTavern: record.autoStartSillyTavern !== false,
     sillyTavernPort: whole(record.sillyTavernPort, 1, 65_535) ?? 8002,
     localIntervalMinutes: whole(record.localIntervalMinutes, 0, 7 * 24 * 60) ?? 0,
@@ -79,6 +82,7 @@ export function parseManagerSettings(value: unknown): ManagerSettingsRecord | nu
       maxReadOperations: whole(r2.maxReadOperations, 1000, 1_000_000_000) ?? 8_000_000,
     },
     versionSelector: text(record.versionSelector),
+    versionRef: text(record.versionRef),
   };
 }
 
@@ -91,7 +95,7 @@ export function parseManagerSettings(value: unknown): ManagerSettingsRecord | nu
  */
 export function settingsUnchanged(left: ManagerSettingsRecord | null, right: ManagerSettingsRecord): boolean {
   if (!left) return false;
-  const strip = (record: ManagerSettingsRecord): string => JSON.stringify({ ...record, label: '', writtenAt: '' });
+  const strip = (record: ManagerSettingsRecord): string => JSON.stringify({ ...record, label: '', installId: '', writtenAt: '' });
   return strip(left) === strip(right);
 }
 

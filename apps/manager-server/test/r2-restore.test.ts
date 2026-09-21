@@ -171,6 +171,42 @@ test('a machine that came back empty puts its profile back from the bucket by it
   assert.deepEqual(await readFile(join(second.dataRoot, 'chats', 'long.jsonl')), chat);
 });
 
+test('a newest recovery point that cannot be read falls back to the one before it', async () => {
+  /*
+   * An index and the chunks it names are written separately, so a run that was
+   * interrupted - or whose uploads were refused halfway, which is what a bucket
+   * two machines were arguing over leaves behind - can leave a recovery point
+   * pointing at chunks that are not there. Reading it fails with a flat 404 on
+   * the first one missing.
+   *
+   * Only the newest was ever tried, so one broken point at the top of the list
+   * meant a machine with a bucket full of good ones came back with nothing and
+   * started SillyTavern on an empty profile. Older is a worse answer than
+   * newest and an enormously better answer than that.
+   */
+  const first = await createWorld();
+  await writeFile(join(first.dataRoot, 'settings.json'), '{"day":"monday"}', 'utf8');
+  await syncProfileToR2({ profile: first.profile, backups: first.backups, r2: first.r2, tier: 'cold' });
+  const good = new Set(first.objects.keys());
+
+  // A second, newer point whose data never finished going up.
+  await writeFile(join(first.dataRoot, 'settings.json'), '{"day":"tuesday"}', 'utf8');
+  await syncProfileToR2({ profile: first.profile, backups: first.backups, r2: first.r2, tier: 'cold' });
+  const broken = await r2Snapshots(first.r2, first.profile.id);
+  assert.equal(broken.length, 2, 'the bucket holds two recovery points');
+  for (const key of first.objects.keys()) if (key.includes('/blobs/') && !good.has(key)) first.objects.delete(key);
+
+  const second = await createWorld({ objects: first.objects, profileId: 'profile-after-reset' });
+  await rm(second.dataRoot, { recursive: true, force: true });
+  const recovered = await recoverProfileFromR2({
+    profile: second.profile, r2: second.r2, backups: second.backups,
+    restore: async (archivePath) => { await second.backups.restore(second.profile, archivePath, { mode: 'replace' }); },
+  });
+
+  assert.ok(recovered, 'the older point is brought back rather than nothing at all');
+  assert.equal(await readFile(join(second.dataRoot, 'settings.json'), 'utf8'), '{"day":"monday"}');
+});
+
 test('recovery leaves a profile that already holds something exactly as it was', async () => {
   const first = await createWorld();
   await writeFile(join(first.dataRoot, 'settings.json'), '{"from":"the bucket"}', 'utf8');

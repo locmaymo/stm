@@ -218,6 +218,39 @@ export class CloudflareApi {
     return await this.request(method, path, options);
   }
 
+  /**
+   * Whether something is there, judged by the status line and nothing else.
+   *
+   * Most of this API answers with the REST envelope, and `request` insists on
+   * one - but not all of it does. `GET /accounts/{id}/workers/scripts/{name}`
+   * answers with the script: JavaScript, or a multipart body when the script
+   * has more than one module. There is no envelope in it to parse, so asking
+   * that question through `request` is a 200 that fails to parse and is
+   * reported as "failed (200)" - which is how a caller that only wanted to
+   * know whether a name was taken came to be told that Cloudflare could not
+   * answer, and how a machine that had deployed its own Worker once could
+   * never publish a fixed address again.
+   *
+   * So this asks what the status line already says. 404 is not there, any
+   * other success is there, and a real refusal - no permission, rate limited -
+   * is still an error, because "cannot tell" must not read as "free".
+   */
+  public async exists(path: string, signal?: AbortSignal): Promise<boolean> {
+    const response = await this.fetchImpl(new URL(`${this.baseUrl}${path}`), {
+      method: 'GET',
+      headers: { accept: 'application/json', authorization: `Bearer ${await this.accessToken()}` },
+      ...(signal ? { signal } : {}),
+    });
+    this.observeRateLimit(response.headers);
+    // Nothing here reads the body, and a response left unread holds the
+    // connection open until the socket times out.
+    await response.body?.cancel().catch(() => undefined);
+    if (response.status === 429) throw new CloudflareRateLimitError(retryAfter(response.headers));
+    if (response.status === 404) return false;
+    if (response.ok) return true;
+    throw new CloudflareApiError(errorCode(response.status), response.status, `Cloudflare API GET ${path} failed (${response.status})`);
+  }
+
   private async request(method: string, path: string, options: RequestOptions = {}): Promise<Envelope> {
     const url = new URL(`${this.baseUrl}${path}`);
     for (const [key, value] of Object.entries(options.query ?? {})) if (value !== undefined) url.searchParams.set(key, value);

@@ -18,6 +18,9 @@ const CREDENTIALS = {
 
 const SETTINGS: Omit<ManagerSettingsRecord, 'label' | 'writtenAt'> = {
   schemaVersion: 1,
+  installId: "install-under-test",
+  tunnelQuick: true,
+  managerTunnelQuick: false,
   adminPasswordHash: 'scrypt$16384$8$1$salt$key',
   accessPasswordHash: 'scrypt$16384$8$1$other$key',
   accessPasscode: true,
@@ -31,6 +34,7 @@ const SETTINGS: Omit<ManagerSettingsRecord, 'label' | 'writtenAt'> = {
     maxStorageBytes: 5_000_000_000, maxWriteOperations: 500_000, maxReadOperations: 5_000_000,
   },
   versionSelector: 'staging',
+  versionRef: 'staging',
 };
 
 function sharedBucket(): { fetchImpl: typeof fetch; objects: Map<string, Buffer>; writes: number } {
@@ -106,6 +110,7 @@ test('one machine leaves its settings, and the next one finds them', async () =>
   assert.equal(found?.sillyTavernPort, 8123);
   assert.equal(found?.r2.keepDaily, 14);
   assert.equal(found?.versionSelector, 'staging');
+  assert.equal(found?.versionRef, 'staging');
 });
 
 test('a bucket nobody has set up yet simply has nothing to offer', async () => {

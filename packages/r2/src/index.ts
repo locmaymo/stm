@@ -1223,6 +1223,18 @@ export class R2Manager {
    * Runs on the slow clock. The log is written on every request SillyTavern
    * makes, so on the fast one it would be the only thing ever being sent.
    */
+  /**
+   * Whether this installation has ever put its usage log in the bucket.
+   *
+   * Read off this machine's own record rather than by asking the bucket, so
+   * the question costs nothing and can be asked on every tick. The scheduler
+   * asks it to let the first upload go up straight away instead of waiting for
+   * the slow clock - see the note there.
+   */
+  public async metricsArchived(): Promise<boolean> {
+    return (await this.load()).lastMetrics !== null;
+  }
+
   public async syncMetricsFile(path: string): Promise<{ readonly uploadedChunks: number; readonly sizeBytes: number } | null> {
     const config = await this.load();
     if (!config.enabled) return null;

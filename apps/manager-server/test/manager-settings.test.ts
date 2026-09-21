@@ -8,9 +8,13 @@ import type { Installation } from '../../../packages/contracts/src/index.js';
 import { BackupStore } from '../../../packages/backup/src/index.js';
 import { R2Manager } from '../../../packages/r2/src/index.js';
 import type { RuntimeManager } from '../../../packages/sillytavern-runtime/src/index.js';
+import type { TunnelManager } from '../../../packages/tunnel/src/index.js';
+import type { AccessGateway } from '../src/gateway.js';
+import type { TunnelState } from '../../../packages/contracts/src/index.js';
 import { StateStore } from '../src/state.js';
 import { applyManagerSettings, currentManagerSettings, managerSettingsOffer, saveManagerSettings, type ManagerSettingsDeps } from '../src/manager-settings.js';
 import { hashPassword, verifyPassword } from '../src/password.js';
+import { releaseToInstall } from '../src/server.js';
 
 const CREDENTIALS = {
   endpoint: 'https://account.r2.cloudflarestorage.com',
@@ -44,9 +48,41 @@ function sharedBucket(): { fetchImpl: typeof fetch; objects: Map<string, Buffer>
   return { fetchImpl, objects };
 }
 
-const INSTALLATION = { id: 'install-1', selector: 'latest', status: 'ready' } as unknown as Installation;
+const INSTALLATION = { id: 'install-1', selector: 'latest', resolvedRef: '1.13.2', status: 'ready' } as unknown as Installation;
 
-async function machine(fetchImpl: typeof fetch, label: string): Promise<ManagerSettingsDeps> {
+/**
+ * A tunnel that only remembers whether it was asked to be on.
+ *
+ * Enough for these: what the record carries is the mode, and what a restore
+ * does with it is start or stop the quick kind. Starting a real one would
+ * download cloudflared and open a link to the internet from a test run.
+ */
+/**
+ * The door in front of SillyTavern, as much of it as a restore touches.
+ *
+ * It has to be told the credential before a tunnel is started, because a
+ * tunnel refuses to open in front of a door with no password on it.
+ */
+function fakeGateway(): AccessGateway {
+  let passwordConfigured = false;
+  let lan = false;
+  return {
+    setPassword: (hash: string | null) => { passwordConfigured = hash !== null; },
+    setLan: async (next: boolean) => { lan = next; return { passwordConfigured, lan }; },
+    getState: () => ({ passwordConfigured, lan }),
+  } as unknown as AccessGateway;
+}
+
+function fakeTunnel(mode: TunnelState['mode'] = 'off'): TunnelManager {
+  let state = { mode, status: 'stopped', url: null, startedAt: null, error: null } as TunnelState;
+  return {
+    getState: () => state,
+    start: async () => { state = { ...state, mode: 'quick', status: 'running' }; return state; },
+    disable: async () => { state = { ...state, mode: 'off', status: 'stopped' }; return state; },
+  } as unknown as TunnelManager;
+}
+
+async function machine(fetchImpl: typeof fetch, label: string, tunnels: { tunnel?: TunnelManager; managerTunnel?: TunnelManager } = {}): Promise<ManagerSettingsDeps> {
   const root = await mkdtemp(join(tmpdir(), `stm-mgr-${label}-`));
   const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
   const store = new StateStore({ paths });
@@ -55,12 +91,19 @@ async function machine(fetchImpl: typeof fetch, label: string): Promise<ManagerS
   const r2 = new R2Manager({ paths, env: { STM_DATA_DIR: root }, logger: () => undefined, fetchImpl, installationLabel: label });
   await r2.update({ ...CREDENTIALS });
   const runtime = { getActiveInstallation: async () => INSTALLATION } as unknown as RuntimeManager;
-  return { store, backups, r2, runtime, logger: () => undefined };
+  return {
+    store, backups, r2, runtime,
+    tunnel: tunnels.tunnel ?? fakeTunnel(),
+    managerTunnel: tunnels.managerTunnel ?? fakeTunnel(),
+    gateway: fakeGateway(),
+    logger: () => undefined,
+  };
 }
 
 test('a machine that is gone leaves behind enough to be a machine again', async () => {
   const bucket = sharedBucket();
-  const laptop = await machine(bucket.fetchImpl, 'laptop');
+  // The laptop was reached from a phone, which means a Quick Tunnel was open.
+  const laptop = await machine(bucket.fetchImpl, 'laptop', { tunnel: fakeTunnel('quick') });
 
   // The laptop as somebody actually set it up: a console password, a passcode
   // on the door in front of SillyTavern, reachable over the house Wi-Fi, a
@@ -94,6 +137,16 @@ test('a machine that is gone leaves behind enough to be a machine again', async 
   assert.ok(state.accessPasswordHash && verifyPassword('123456', state.accessPasswordHash));
   assert.equal(state.accessPasscode, true);
   assert.equal(state.accessLanEnabled, true);
+  // The passcode without the door it opens is half a restore. This is the part
+  // that is visible from the phone somebody was using, and the part whose
+  // absence read as nothing having been restored at all.
+  assert.ok(result.applied.includes('accessTunnel'));
+  assert.equal(desktop.tunnel.getState().mode, 'quick');
+  // The door has the credential before the tunnel is put in front of it: a
+  // tunnel refuses to open onto a door with no password on it, so restoring
+  // them the other way round left the tunnel refused on the one machine whose
+  // passcode had just come back.
+  assert.equal(desktop.gateway.getState().passwordConfigured, true);
   assert.equal(state.autoStartSillyTavern, false);
   assert.equal((await desktop.backups.getSchedule()).intervalMinutes, 180);
   assert.equal((await desktop.r2.getConfig()).schedule.hotIntervalMinutes, 15);
@@ -140,6 +193,56 @@ test('a port this machine cannot have is reported rather than taken', async () =
   assert.equal((await desktop.store.getPersisted()).sillyTavernPort, before, 'the port that works here is kept');
 });
 
+/*
+ * The state file was never the whole of it. A running manager holds the port
+ * in the gateway it forwards through, in the health check that waits for
+ * SillyTavern to answer and in the writer of config.yaml - all taken at
+ * startup. A restore that wrote only the file left every one of them on the
+ * default, so a machine put back together said 8006 and ran SillyTavern on
+ * 8002, with every other restored setting right.
+ */
+test('the port that comes back reaches the running manager, not only the file', async () => {
+  const bucket = sharedBucket();
+  const laptop = await machine(bucket.fetchImpl, 'laptop');
+  await laptop.store.setSillyTavernPort(8006);
+  await saveManagerSettings(laptop);
+
+  const adopted: number[] = [];
+  const desktop = await machine(bucket.fetchImpl, 'desktop');
+  const record = await desktop.r2.loadManagerSettings();
+  assert.ok(record);
+  const result = await applyManagerSettings(
+    { ...desktop, adoptSillyTavernPort: async (port) => { adopted.push(port); } },
+    record,
+    { passwords: false, schedules: false, ports: { manager: 7860, access: 8001 } },
+  );
+
+  assert.ok(result.applied.includes('sillyTavernPort'));
+  assert.equal((await desktop.store.getPersisted()).sillyTavernPort, 8006);
+  assert.deepEqual(adopted, [8006], 'the manager is told, not only the state file');
+});
+
+/** A port this machine cannot have never reaches the running manager either. */
+test('a refused port is not handed to the running manager', async () => {
+  const bucket = sharedBucket();
+  const laptop = await machine(bucket.fetchImpl, 'laptop');
+  await laptop.store.setSillyTavernPort(7860);
+  await saveManagerSettings(laptop);
+
+  const adopted: number[] = [];
+  const desktop = await machine(bucket.fetchImpl, 'desktop');
+  const record = await desktop.r2.loadManagerSettings();
+  assert.ok(record);
+  const result = await applyManagerSettings(
+    { ...desktop, adoptSillyTavernPort: async (port) => { adopted.push(port); } },
+    record,
+    { passwords: false, schedules: false, ports: { manager: 7860, access: 8001 } },
+  );
+
+  assert.ok(result.skipped.includes('sillyTavernPort'));
+  assert.deepEqual(adopted, []);
+});
+
 test('what is sent is what the manager is actually set to', async () => {
   const bucket = sharedBucket();
   const only = await machine(bucket.fetchImpl, 'laptop');
@@ -147,7 +250,29 @@ test('what is sent is what the manager is actually set to', async () => {
   const record = await currentManagerSettings(only);
   assert.equal(record.sillyTavernPort, 8123);
   assert.equal(record.versionSelector, 'latest');
+  // Resolved, so a machine put back together gets the release it was running
+  // rather than whatever is newest on the day it comes back.
+  assert.equal(record.versionRef, '1.13.2');
   // Nothing is invented: a manager with no password set says so rather than
   // sending an empty string that would restore as a password of nothing.
   assert.equal(record.adminPasswordHash, null);
+});
+
+test('a machine put back together installs the release it was running', async () => {
+  /*
+   * The record carries both: what the reader picked and what that resolved to
+   * on the day. Only the second is a version. Installing "latest" onto a
+   * machine being rebuilt a month later and then restoring a profile written
+   * by the SillyTavern before it is an upgrade nobody asked for, performed on
+   * the reader's only copy of their data.
+   */
+  assert.equal(releaseToInstall('1.13.2'), '1.13.2');
+  // A branch resolves to itself, and following it is what was chosen.
+  assert.equal(releaseToInstall('staging'), 'staging');
+  // A record from before this was written down, or one holding something the
+  // runtime would refuse. Latest is a worse answer than the right version and
+  // an enormously better one than nothing installed at all.
+  assert.equal(releaseToInstall(null), 'latest');
+  assert.equal(releaseToInstall(''), 'latest');
+  assert.equal(releaseToInstall('../../etc/passwd'), 'latest');
 });

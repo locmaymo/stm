@@ -79,6 +79,9 @@ test('what the bucket remembers about the account goes through the Worker too', 
 
   await first.r2.saveManagerSettings({
     schemaVersion: 1,
+    installId: 'install-under-test',
+    tunnelQuick: false,
+    managerTunnelQuick: false,
     adminPasswordHash: 'scrypt$16384$8$1$salt$key',
     accessPasswordHash: null,
     accessPasscode: false,
@@ -88,6 +91,7 @@ test('what the bucket remembers about the account goes through the Worker too', 
     localIntervalMinutes: 60,
     r2: { hotIntervalMinutes: 5, coldIntervalHours: 6, reconcileIntervalHours: 24, keepRecent: 24, keepDaily: 30, keepWeekly: 0, maxStorageBytes: 8_000_000_000, maxWriteOperations: 800_000, maxReadOperations: 8_000_000 },
     versionSelector: 'latest',
+    versionRef: '1.13.2',
   });
   const settings = await first.r2.loadManagerSettings();
   assert.equal(settings?.label, 'laptop');

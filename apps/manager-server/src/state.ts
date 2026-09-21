@@ -268,6 +268,37 @@ export class StateStore {
     return this.saveAdminPassword(passwordHash);
   }
 
+  /**
+   * Set the console's password, whether or not there was one before.
+   *
+   * `saveAdminPassword` refuses when one exists and `changeAdminPassword`
+   * refuses when one does not, which between them cover setup and the settings
+   * page - but not the console that was opened with a Cloudflare account and
+   * has never had a password at all. Somebody there asking for one was told to
+   * "finish setting the manager up first", on a manager they were already
+   * signed in to. This is for callers that have already established who is
+   * asking and only need the hash written.
+   */
+  public async setAdminPassword(passwordHash: string): Promise<void> {
+    const operation = async (): Promise<void> => {
+      const state = await this.load();
+      const now = this.now().toISOString();
+      const updated: PersistedManagerState = {
+        ...state,
+        adminPasswordHash: passwordHash,
+        // A manager claimed by a Cloudflare account accepted the terms on the
+        // screen that offered the sign-in, so this is usually already set.
+        setupAcceptedAt: state.setupAcceptedAt ?? now,
+        updatedAt: now,
+      };
+      await this.write(updated);
+      this.state = updated;
+    };
+    const previous = this.adminWriteQueue;
+    this.adminWriteQueue = previous.then(operation, operation);
+    await this.adminWriteQueue;
+  }
+
   public async changeAdminPassword(passwordHash: string): Promise<boolean> {
     let changed = false;
     const operation = async (): Promise<void> => {

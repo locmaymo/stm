@@ -874,18 +874,78 @@
 /*
  * Accepting the terms, and reading them.
  *
- * The tick and the sentence are two controls side by side, so the sentence can
- * be pressed to open the documents without that press being taken as consent.
- * It is styled as a target rather than as a link: the whole line lights up,
- * because a reader looking for the terms is looking for the line about terms,
- * not for the two underlined words inside it.
+ * The sentence is the box's label, so pressing the words agrees - which is
+ * what pressing a consent sentence is expected to do. The document names
+ * inside it are the exception: they are links, in the same colour as every
+ * other link on the console, and each opens the document it names rather than
+ * ticking the box. That is the whole rule a reader has to learn here, and it
+ * is the one they already know from every other sentence with a link in it.
  */
 .terms-consent { display: flex; align-items: flex-start; gap: 10px; font-size: 13px; }
-.terms-text { display: grid; gap: 4px; margin: -6px -8px; padding: 6px 8px; border-radius: 8px; text-align: start; color: var(--muted-foreground); line-height: 1.5; transition: background-color .15s ease, color .15s ease; }
+.terms-text { margin: -6px -8px; padding: 6px 8px; border-radius: 8px; text-align: start; color: var(--muted-foreground); line-height: 1.6; cursor: pointer; transition: background-color .15s ease, color .15s ease; }
 .terms-text:hover { background: var(--accent); color: var(--foreground); }
-.terms-more { display: inline-flex; align-items: center; gap: 4px; color: var(--link); font-weight: 600; }
-.terms-text:hover .terms-more { color: var(--link-hover); }
-.terms-more svg { width: 13px; height: 13px; }
+/* Inline, so a name that lands at the end of a line wraps with the sentence
+   rather than being pushed onto one of its own. The arrow marks it as
+   something that opens, the way the repository link in the footer does. */
+.terms-link { display: inline; color: var(--link); font-weight: 600; text-underline-offset: 3px; border-radius: 4px; }
+.terms-link:hover { color: var(--link-hover); text-decoration: underline; }
+.terms-link:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.terms-link svg { display: inline; width: 12px; height: 12px; margin-inline-start: 2px; vertical-align: -1px; }
+
+/*
+ * The sentence, pointed at when a button was pressed without it.
+ *
+ * The buttons on the first-run card are live whether or not the box is ticked,
+ * because a button that is merely grey cannot say which of the things on the
+ * card is missing - and the one thing it is never read as is "tick the box
+ * further down". So the press lands somewhere: the sentence shakes, the box
+ * beside it comes with it, and the eye goes to the part that is incomplete.
+ *
+ * Small and short on purpose. This is a correction, not a rejection; somebody
+ * who was about to tick it anyway should not be made to wait for an animation
+ * to finish before they can.
+ */
+@keyframes terms-nudge {
+  0%, 100% { transform: translateX(0); }
+  15% { transform: translateX(-7px); }
+  30% { transform: translateX(7px); }
+  50% { transform: translateX(-5px); }
+  70% { transform: translateX(4px); }
+  85% { transform: translateX(-2px); }
+}
+.terms-nudge { animation: terms-nudge .45s ease-in-out; }
+/*
+ * Somewhere motion is unwelcome the same thing is said by lighting it up.
+ *
+ * Not by dropping the animation and saying nothing: the whole point of this is
+ * that the press has a visible answer, and a reader who has asked for less
+ * motion has not asked to be left guessing why nothing happened.
+ */
+@media (prefers-reduced-motion: reduce) {
+  @keyframes terms-nudge-flash {
+    from { background: var(--accent); box-shadow: 0 0 0 3px var(--ring); }
+    to { background: transparent; box-shadow: 0 0 0 3px transparent; }
+  }
+  .terms-nudge { animation: terms-nudge-flash 1s ease-out; border-radius: 8px; }
+}
+
+/*
+ * The way in this project recommends, marked as such.
+ *
+ * A tag on the corner of the button rather than a sentence under it: somebody
+ * choosing between two buttons reads the buttons, and one word overlapping the
+ * one they should press is the whole of what there is to say. The ring in the
+ * card's own colour cuts it out of the button's edge so it reads as a tag
+ * stuck on rather than as part of the label.
+ */
+.cloud-way { position: relative; }
+.cloud-way-tag {
+  position: absolute; top: -7px; inset-inline-end: -4px; z-index: 1;
+  padding: 1px 8px; border-radius: 999px; box-shadow: 0 0 0 2px var(--card);
+  background: var(--success); color: var(--success-foreground);
+  font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+  pointer-events: none;
+}
 
 /*
  * Between the password and the other way in.

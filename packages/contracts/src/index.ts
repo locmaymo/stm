@@ -986,6 +986,17 @@ export interface ManagerSettingsRecord {
   readonly schemaVersion: 1;
   /** The machine these came from, as the bucket's claim names it. */
   readonly label: string;
+  /**
+   * The installation that wrote them, so it can recognise its own.
+   *
+   * A hostname cannot do this job: two machines share one, and one machine
+   * that is wiped and set up again keeps it. Without this the console offered
+   * a machine its own settings back, minutes after it had written them -
+   * which reads as somebody else being on the account.
+   *
+   * Null on a record written before this field existed.
+   */
+  readonly installId: string | null;
   readonly writtenAt: string;
   /** The console's own password, as a hash. Null when none is set yet. */
   readonly adminPasswordHash: string | null;
@@ -995,6 +1006,20 @@ export interface ManagerSettingsRecord {
   readonly accessPasscode: boolean;
   /** Whether the door in front of SillyTavern answers on the local network. */
   readonly accessLanEnabled: boolean;
+  /**
+   * Whether a Quick Tunnel was open in front of SillyTavern, and in front of
+   * the console.
+   *
+   * The quick kind only. A Named Tunnel is started with a token, which is a
+   * live credential and has no business being in a bucket, so a machine
+   * putting itself back together is left with that one off rather than with
+   * one it cannot start. Without these two, a machine that had been reached
+   * from a phone came back reachable from nothing, with the passcode restored
+   * and no door for it to open - which looked exactly like the restore having
+   * done nothing.
+   */
+  readonly tunnelQuick: boolean;
+  readonly managerTunnelQuick: boolean;
   readonly autoStartSillyTavern: boolean;
   readonly sillyTavernPort: number;
   /** How often a ZIP is taken on the machine; 0 is off. */
@@ -1012,6 +1037,17 @@ export interface ManagerSettingsRecord {
   };
   /** Which SillyTavern the machine was told to run, so a new one matches it. */
   readonly versionSelector: string | null;
+  /**
+   * The release that was actually running, resolved.
+   *
+   * `versionSelector` is what the reader picked, and "latest" is not a
+   * version: a machine put back together from it a month later gets whatever
+   * is newest that day, which is not the SillyTavern their data was written
+   * by. This is the tag `latest` had resolved to - or `release`/`staging`
+   * where that is what was chosen, which resolve to themselves - so a
+   * recovered machine comes back running the same build it lost.
+   */
+  readonly versionRef: string | null;
 }
 
 /** What the panel is told about settings waiting in the bucket. */
@@ -1040,6 +1076,19 @@ export interface ConsoleStatus {
   readonly tunnel: TunnelState;
   readonly managerTunnel: TunnelState;
   readonly security: AccessGatewayState;
+  /**
+   * Work the manager started by itself, for a panel that did not start it.
+   *
+   * A console asks about these once when it loads, which is only ever right by
+   * luck: a manager set up with a Cloudflare account begins installing and
+   * downloading seconds *after* the redirect lands, so the one question the
+   * page asked had already been answered "nothing is running" - and the reader
+   * sat in front of an empty Overview for the several minutes it took, with
+   * one line in the log to go on. They are in this answer because this is the
+   * one the console asks on a clock.
+   */
+  readonly install: Job | null;
+  readonly operation: Job | null;
 }
 
 /** The complete allowlist written by the SillyTavern fetch instrumentation. */

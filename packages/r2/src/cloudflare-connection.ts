@@ -6,6 +6,7 @@ import {
   CloudflareApi,
   CloudflareApiError,
   CloudflareOAuthError,
+  AUTHORIZATION_TTL_MS,
   createAuthorization,
   DEFAULT_SCOPES,
   exchangeCode,
@@ -33,6 +34,28 @@ const ACCESS_TOKEN_MARGIN_MS = 60_000;
 const WORKER_RETRY_MS = 60 * 60 * 1000;
 /** After a rotation failed, how long the current key is used before trying again. */
 const ROTATION_RETRY_MS = 10 * 60 * 1000;
+/**
+ * How many sign-ins may be on their way to Cloudflare at once.
+ *
+ * More than one, because a console that can be reached at more than one
+ * address is usually open at more than one of them: the machine it runs on,
+ * and the link that was opened so a phone could reach it too. There was a
+ * single slot here, so pressing the Cloudflare button in the second tab
+ * cancelled the first - and the first tab came back from Cloudflare to "this
+ * sign-in was started somewhere else" while the second was let in. What that
+ * looks like from the desk is a console refusing the address it is being read
+ * at and accepting the one on the phone, at random.
+ *
+ * Small, because each is a live authorization and each expires on its own
+ * within ten minutes. Oldest out first when the room runs out.
+ */
+const PENDING_SIGN_IN_LIMIT = 4;
+
+/** One sign-in on its way to Cloudflare, and what it was started for. */
+interface PendingSignIn {
+  readonly authorization: PendingAuthorization;
+  readonly purpose: CloudflarePurpose;
+}
 
 export type CloudflareDataPath = 'worker' | 'rest';
 /** What a sign-in with Cloudflare was started for; see `beginConnect`. */
@@ -100,8 +123,7 @@ export class CloudflareConnection {
   private readonly pacer = new RequestPacer();
   private stored: StoredConnection | null = null;
   private writeQueue: Promise<void> = Promise.resolve();
-  private pending: PendingAuthorization | null = null;
-  private purpose: CloudflarePurpose = 'connect';
+  private pending: PendingSignIn[] = [];
   private offeredAccounts: CloudflareAccount[] = [];
   private accessToken: { value: string; expiresAt: number | null } | null = null;
   private refreshing: Promise<string> | null = null;
@@ -150,8 +172,7 @@ export class CloudflareConnection {
   }
 
   /**
-   * Start a sign-in with Cloudflare, and say what it is for. Only the newest
-   * request can be completed.
+   * Start a sign-in with Cloudflare, and say what it is for.
    *
    * `connect` is somebody who is already in the console arranging where their
    * backups go. `signIn` is somebody opening the console with their Cloudflare
@@ -162,16 +183,39 @@ export class CloudflareConnection {
    * so nothing a browser can edit decides whether a session is required. The
    * cost is that it does not survive a restart of the manager, which is
    * already true of the authorization it belongs to.
+   *
+   * Several can be in flight together; see `PENDING_SIGN_IN_LIMIT`.
    */
   public beginConnect(returnOrigin: string, purpose: CloudflarePurpose = 'connect'): string {
-    this.pending = createAuthorization(this.client, returnOrigin, this.now());
-    this.purpose = purpose;
-    return this.pending.url;
+    const authorization = createAuthorization(this.client, returnOrigin, this.now());
+    // Expired ones first, so the room is spent on sign-ins that can still finish.
+    this.prunePending().push({ authorization, purpose });
+    while (this.pending.length > PENDING_SIGN_IN_LIMIT) this.pending.shift();
+    return authorization.url;
   }
 
-  /** What the authorization now in flight was started for, if one is. */
-  public pendingPurpose(): CloudflarePurpose | null {
-    return this.pending ? this.purpose : null;
+  /** What the sign-in this callback belongs to was started for, if it is one of ours. */
+  public pendingPurpose(state: string): CloudflarePurpose | null {
+    return this.prunePending().find((entry) => matchesPending(entry.authorization, state, this.now()))?.purpose ?? null;
+  }
+
+  /** Drop the sign-ins that have run out of time, and return what is left. */
+  private prunePending(): PendingSignIn[] {
+    const now = this.now();
+    this.pending = this.pending.filter((entry) => now - entry.authorization.createdAt <= AUTHORIZATION_TTL_MS);
+    return this.pending;
+  }
+
+  /**
+   * The sign-in this callback belongs to, spent.
+   *
+   * Taken out of the list whether or not what follows succeeds: a state is
+   * good once, and a code that was refused must not be answerable again.
+   */
+  private takePending(state: string): PendingSignIn | null {
+    const index = this.prunePending().findIndex((entry) => matchesPending(entry.authorization, state, this.now()));
+    if (index === -1) return null;
+    return this.pending.splice(index, 1)[0] ?? null;
   }
 
   /**
@@ -181,9 +225,9 @@ export class CloudflareConnection {
    * so a failure later in setup never loses the grant the user just gave.
    */
   public async completeConnect(callback: { state: string; code?: string | null; error?: string | null; errorDescription?: string | null }, known: KnownBucket | null = null): Promise<CloudflareConnectionStatus> {
-    const pending = this.pending;
-    if (!matchesPending(pending, callback.state, this.now())) throw new R2Error('cloudflare_state_mismatch', 'This sign-in link has expired or was not started here. Connect again.');
-    this.pending = null;
+    const entry = this.takePending(callback.state);
+    if (!entry) throw new R2Error('cloudflare_state_mismatch', 'This sign-in link has expired or was not started here. Connect again.');
+    const pending = entry.authorization;
     if (callback.error) {
       const reason = callback.error === 'access_denied' ? 'Access was not granted on Cloudflare.' : `Cloudflare refused the sign-in: ${callback.errorDescription ?? callback.error}`;
       throw new R2Error('cloudflare_authorization_denied', reason);
@@ -310,7 +354,7 @@ export class CloudflareConnection {
     }
     this.resetSession();
     this.accessToken = null;
-    this.pending = null;
+    this.pending = [];
     this.offeredAccounts = [];
     await this.save({ ...stored, refreshToken: null, scopes: [], account: null, bucket: null, connectedAt: null, reconnectRequired: false, lastError: null, problem: null });
     return { revoked, workerKeyRemoved, workerRemoved };

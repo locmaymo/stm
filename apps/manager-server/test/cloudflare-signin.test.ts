@@ -87,6 +87,35 @@ test('a manager with no password is opened by the first Cloudflare account to as
   assert.equal(config.config.enabled, true);
 });
 
+/*
+ * The console is open in two places at once, which is the ordinary state of a
+ * manager that has just been given a link for a phone: the machine it runs on,
+ * and the link. There was one slot for a sign-in on its way to Cloudflare, so
+ * the second press cancelled the first - and the tab that started first came
+ * back to "started somewhere else" while the other one was let in, which reads
+ * as the console refusing the address it is being read at.
+ */
+test('a sign-in started in one tab is not cancelled by one started in another', async (t) => {
+  const { manager, base } = await start();
+  t.after(() => manager.close());
+
+  const first = await begin(base);
+  const second = await begin(base);
+
+  const firstLanded = await callback(base, { state: first, code: 'good-code' });
+  assert.equal(firstLanded.headers.get('location'), '/?cloudflare=signed_in');
+  assert.ok(cookieFrom(firstLanded), 'the tab that started first is let in');
+
+  // The other one is still answerable, because it was never cancelled.
+  const secondLanded = await callback(base, { state: second, code: 'good-code' });
+  assert.equal(secondLanded.headers.get('location'), '/?cloudflare=signed_in');
+  assert.ok(cookieFrom(secondLanded));
+
+  // And a state stays good only once, however many are in flight.
+  const again = await callback(base, { state: first, code: 'good-code' });
+  assert.match(again.headers.get('location') ?? '', /cloudflare_error=cloudflare_state_mismatch/u);
+});
+
 test('a second account is refused, rather than handed a key', async (t) => {
   const { manager, base, state } = await start({ cloudflare: { accounts: [{ id: ACCOUNT_ID, name: 'Personal' }] } });
   t.after(() => manager.close());
@@ -154,4 +183,43 @@ test('a link nobody started here cannot open a session', async (t) => {
   assert.equal(forged.status, 303);
   assert.equal(cookieFrom(forged), null);
   assert.equal((await (await fetch(`${base}/api/v1/setup/status`)).json() as SetupStatus).setupRequired, true);
+});
+
+test('a console opened with an account can still be given a password of its own', async (t) => {
+  /*
+   * Somebody who signed in with Cloudflare and then wants a password too -
+   * to reach the console from a machine that is not signed in, or simply
+   * because they want one.
+   *
+   * This used to be refused with "finish setting the manager up first", on a
+   * manager they were signed in to and using. The route only knew how to
+   * change a password, and a console opened with an account has none to
+   * change; the screen that sets a first one is the one they can no longer
+   * reach, so there was no way out of it at all.
+   */
+  const { manager, base } = await start();
+  t.after(() => manager.close());
+
+  const landed = await callback(base, { state: await begin(base), code: 'good-code' });
+  const cookie = cookieFrom(landed);
+  assert.ok(cookie);
+  const csrf = (await (await fetch(`${base}/api/v1/auth/session`, { headers: { cookie } })).json() as { session: { csrfToken: string } }).session.csrfToken;
+
+  const set = await fetch(`${base}/api/v1/auth/password`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie, 'x-csrf-token': csrf, origin: base },
+    body: JSON.stringify({ password: 'correct horse battery staple', confirmPassword: 'correct horse battery staple' }),
+  });
+  assert.equal(set.status, 200, await set.text());
+
+  // And it is a real password: it opens the console on its own.
+  const signedIn = await fetch(`${base}/api/v1/auth/login`, {
+    method: 'POST', headers: { 'content-type': 'application/json', origin: base },
+    body: JSON.stringify({ password: 'correct horse battery staple' }),
+  });
+  assert.equal(signedIn.status, 200);
+
+  // The account that owns the manager still owns it. Setting a password is
+  // adding a second key, not handing the manager to whoever set it.
+  assert.equal((await (await fetch(`${base}/api/v1/setup/status`)).json() as SetupStatus).cloudflareSignIn?.owner, 'Personal');
 });
