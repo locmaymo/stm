@@ -31,7 +31,8 @@ import { DEFAULT_SILLYTAVERN_PORT, portRefusal } from './ports.js';
 import { isThisMachine, readTunnelOfferDeclined, saveTunnelOfferDeclined, shouldOfferManagerTunnel } from './hosting.js';
 import { availableUpdate, readDismissedUpdate, saveDismissedUpdate } from './updates.js';
 import { readDismissedRecovery, readDismissedSettings, saveDismissedRecovery, saveDismissedSettings, shouldOfferSettings, shouldShowRecovery } from './settings-offer.js';
-import { apiFetch, onSessionExpired, resetSessionWatch } from './session.js';
+import { apiFetch, onSessionExpired, resetSessionWatch, sessionToken, setSessionToken } from './session.js';
+import { framed, openReturnWindow, readCloudflareResult, type CloudflareResult } from './oauth.js';
 import type { AccessGatewayState, BackupManifest, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LogEntry, LogSourceFilter, ManagerSettingsOffer, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, isCloudJob, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
@@ -222,6 +223,32 @@ function AuthGate() {
     if (outcome === 'error') setSignInError(t(authErrorKey(code) as MessageKey));
   }, []);
 
+  /*
+   * The same outcomes again, from a window rather than from this one's address.
+   *
+   * A console inside another site's page cannot send itself to Cloudflare, so
+   * it opens a window and the answer comes back through that; see oauth.ts.
+   * The session comes with it, because the window has a cookie this frame may
+   * not - so this is where a framed console actually becomes signed in.
+   */
+  useEffect(() => {
+    const heard = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      const result = readCloudflareResult(event.data);
+      if (!result) return;
+      if (result.outcome === 'error') {
+        const key = authErrorKey(result.code);
+        if (key) setSignInError(t(key));
+        return;
+      }
+      if (result.outcome !== 'signed_in' || !result.session) return;
+      setSessionToken(result.session.token);
+      signedIn(result.session.csrfToken);
+    };
+    window.addEventListener('message', heard);
+    return () => window.removeEventListener('message', heard);
+  }, [t]);
+
   useEffect(() => {
     let cancelled = false;
     void apiFetch('/api/v1/setup/status').then(async (response) => response.json() as Promise<SetupStatus>).then(async (status) => {
@@ -233,9 +260,13 @@ function AuthGate() {
       // straight to `fetch`. Routed through the watch, a first visit would be
       // met by a notice saying the reader had been signed out of something,
       // and a mistyped password would say the same.
-      const response = await fetch('/api/v1/auth/session', { credentials: 'same-origin' });
-      if (!response.ok) { if (!cancelled) setMode('login'); return; }
-      const payload = await response.json() as { session: { csrfToken: string } };
+      const held = sessionToken();
+      const response = await fetch('/api/v1/auth/session', { credentials: 'same-origin', ...(held ? { headers: { authorization: `Bearer ${held}` } } : {}) });
+      if (!response.ok) { setSessionToken(null); if (!cancelled) setMode('login'); return; }
+      const payload = await response.json() as { session: { csrfToken: string }; token?: string };
+      // Held for the calls after this one, which may be the only thing keeping
+      // a console inside another site's page signed in; see session.ts.
+      if (payload.token) setSessionToken(payload.token);
       if (!cancelled) { setCsrfToken(payload.session.csrfToken); setMode('ready'); }
     }).catch(() => { if (!cancelled) setMode('login'); });
     return () => { cancelled = true; };
@@ -250,6 +281,7 @@ function AuthGate() {
    */
   const signOut = async () => {
     await apiFetch('/api/v1/auth/logout', { method: 'POST', credentials: 'same-origin', headers: csrfToken ? { 'x-csrf-token': csrfToken } : {} }).catch(() => undefined);
+    setSessionToken(null);
     resetSessionWatch();
     setSignedOut(false);
     setCsrfToken(null);
@@ -303,6 +335,8 @@ function AuthGate() {
 function AuthScreen({ t, mode, signedOut, preferences, cloudflare, refusal, onPreferencesChange, onSignedIn }: { t: Translate; mode: 'setup' | 'login'; signedOut: boolean; preferences: Preferences; onPreferencesChange: (value: Partial<Preferences>) => void; cloudflare: SetupStatus['cloudflareSignIn'] | null; refusal: string | null; onSignedIn: (csrfToken: string, setUp: boolean) => void }) {
   const [password, setPassword] = useState('');
   const [cloudflareBusy, setCloudflareBusy] = useState(false);
+  /** Set when this page could not open Cloudflare's sign-in and handed it over. */
+  const [handOverUrl, setHandOverUrl] = useState<string | null>(null);
   const [confirmPassword, setConfirmPassword] = useState('');
   const [accepted, setAccepted] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -357,12 +391,13 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, refusal, onPr
         method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' },
         body: JSON.stringify(setup ? { password, termsAccepted: accepted, telemetryAccepted: accepted } : { password }),
       });
-      const payload = await response.json() as { session?: { csrfToken: string }; error?: { code?: string; message?: string } };
+      const payload = await response.json() as { session?: { csrfToken: string }; token?: string; error?: { code?: string; message?: string } };
       if (!response.ok || !payload.session) {
         const key = authErrorKey(payload.error?.code);
         setError(key ? t(key) : fail.body(payload, t('setup.authError')));
         return;
       }
+      if (payload.token) setSessionToken(payload.token);
       onSignedIn(payload.session.csrfToken, setup);
     } catch { setError(t('setup.connectionError')); } finally { setBusy(false); }
   };
@@ -376,13 +411,25 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, refusal, onPr
    * passcode and the chats back on its own - which is the reason this exists.
    */
   const signInWithCloudflare = async () => {
+    setHandOverUrl(null);
+    // Cloudflare's sign-in will not load in a frame, so a console inside
+    // another site's page sends the reader to a window of its own - opened
+    // now, while the click is still a click, or the browser takes it for a
+    // pop-up. What comes back arrives as a message; see oauth.ts.
+    const inFrame = framed();
+    const opened = inFrame ? openReturnWindow() : null;
     setCloudflareBusy(true); setError(null);
     try {
       const response = await fetch('/api/v1/auth/cloudflare', { method: 'POST', credentials: 'same-origin' });
       const payload = await response.json() as { url?: string; error?: { code?: string; message?: string } };
-      if (!response.ok || !payload.url) { setError(fail.body(payload, t('setup.cloudSignInFailed'))); return; }
+      if (!response.ok || !payload.url) { opened?.close(); setError(fail.body(payload, t('setup.cloudSignInFailed'))); return; }
+      if (opened) { opened.location.href = payload.url; return; }
+      // A frame that may not open windows either has nowhere to send them:
+      // following the address here would only blank the console, since
+      // Cloudflare refuses to be framed. So hand the address over instead.
+      if (inFrame) { setHandOverUrl(payload.url); return; }
       window.location.assign(payload.url);
-    } catch { setError(t('setup.connectionError')); } finally { setCloudflareBusy(false); }
+    } catch { opened?.close(); setError(t('setup.connectionError')); } finally { setCloudflareBusy(false); }
   };
   /*
    * The second way in, where this build has one.
@@ -480,6 +527,7 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, refusal, onPr
                 Cloudflare redirect - which the reader has no other way of
                 being told about. */}
             {error ?? refusal ? <Alert variant="destructive"><AlertDescription>{error ?? refusal}</AlertDescription></Alert> : null}
+            {handOverUrl ? <CloudflareSignInBanner t={t} url={handOverUrl} onDismiss={() => setHandOverUrl(null)} /> : null}
             <Button type="submit" size="lg" className="w-full" disabled={busy || cloudflareBusy || !ready}>
               {busy ? t('common.loading') : setup ? t('setup.createAdmin') : t('setup.signIn')}
             </Button>
@@ -1388,6 +1436,59 @@ interface PreviewManifest {
 const STILL_WIDTH = 640;
 
 /**
+ * A preview picture, fetched rather than linked.
+ *
+ * These are the reader's own files - their wallpaper, their characters - and
+ * the manager will not hand them to somebody who is not signed in. A browser
+ * asking for an `<img src>` sends the cookie and nothing else, which is fine
+ * until the console is a document inside another site's page: the cookie is a
+ * third-party cookie there, and where it is not stored the whole preview comes
+ * back 401 and the panel draws an empty frame.
+ *
+ * So these go through `apiFetch` like every other call, which carries the
+ * session however this console is holding it, and what reaches the `<img>` is
+ * a blob of bytes already in hand. The other way out would be to put the token
+ * in the address - which puts a live credential in the page source, the
+ * browser's history and every access log between here and there.
+ *
+ * `name` is null for a picture there is nothing to fetch yet, so a preview
+ * still loading does not ask the manager for a file with no name.
+ */
+function usePreviewImage(kind: 'background' | 'avatar' | 'logo', name?: string | null): string | null {
+  const [source, setSource] = useState<string | null>(null);
+  useEffect(() => {
+    setSource(null);
+    if (name === null) return undefined;
+    const controller = new AbortController();
+    let objectUrl: string | null = null;
+    const query = name === undefined ? `kind=${kind}` : `kind=${kind}&name=${encodeURIComponent(name)}`;
+    void apiFetch(`/api/v1/preview/image?${query}`, { credentials: 'same-origin', signal: controller.signal })
+      .then(async (response) => response.ok ? await response.blob() : null)
+      .then((bytes) => {
+        if (!bytes || controller.signal.aborted) return;
+        objectUrl = URL.createObjectURL(bytes);
+        setSource(objectUrl);
+      })
+      .catch(() => undefined);
+    // Handed back, or the tab holds every wallpaper it has drawn until reload.
+    return () => { controller.abort(); if (objectUrl) URL.revokeObjectURL(objectUrl); };
+  }, [kind, name]);
+  return source;
+}
+
+/**
+ * One of those pictures, or a shape the same size while it is not there.
+ *
+ * Never a broken-image icon and never a hole: the still is a drawing of an
+ * interface, and a file that is missing or still arriving should leave the
+ * drawing looking the way it does when that part of it is simply empty.
+ */
+function PreviewImage({ kind, name, className, placeholder }: { kind: 'background' | 'avatar' | 'logo'; name?: string | null; className: string; placeholder?: string }) {
+  const source = usePreviewImage(kind, name);
+  return source ? <img className={className} src={source} alt="" /> : <i className={placeholder ?? className} />;
+}
+
+/**
  * SillyTavern's own front page, redrawn small.
  *
  * Not a screenshot - there is no headless browser here to take one - but not a
@@ -1427,10 +1528,8 @@ function SillyTavernStill({ generation }: { generation: string }) {
     return () => observer.disconnect();
   }, []);
 
-  const image = (kind: 'background' | 'avatar' | 'logo', name?: string) =>
-    name === undefined
-      ? `/api/v1/preview/image?kind=${kind}`
-      : `/api/v1/preview/image?kind=${kind}&name=${encodeURIComponent(name)}`;
+  // Once, for the two places it is drawn.
+  const logo = usePreviewImage('logo');
   const theme = manifest?.theme ?? null;
   const rows = manifest?.recent ?? [];
   const width = theme?.chatWidth ?? 50;
@@ -1445,7 +1544,7 @@ function SillyTavernStill({ generation }: { generation: string }) {
   } as CSSProperties;
 
   return <div className="st-still" ref={frame} aria-hidden="true">
-    {manifest?.background ? <img className="st-still-bg" src={image('background', manifest.background)} alt="" /> : null}
+    <PreviewImage kind="background" name={manifest?.background ?? null} className="st-still-bg" />
     {/*
       * One column, the width SillyTavern is set to, running the whole height
       * of the window - the toolbar is the top of that column rather than a
@@ -1457,7 +1556,7 @@ function SillyTavernStill({ generation }: { generation: string }) {
         <div className="st-still-top">{Array.from({ length: 9 }, (_, index) => <i key={index} />)}</div>
         <div className="st-still-panel">
           <div className="st-still-head">
-            <img className="st-still-logo" src={image('logo')} alt="" />
+            {logo ? <img className="st-still-logo" src={logo} alt="" /> : <i className="st-still-logo" />}
             <b />
             <span className="st-still-chips"><i /><i /><i /><i /></span>
           </div>
@@ -1465,7 +1564,7 @@ function SillyTavernStill({ generation }: { generation: string }) {
           {[0, 1, 2].map((index) => {
             const row = rows[index];
             return <div key={index} className="st-still-recent">
-              {row?.avatar ? <img src={image('avatar', row.avatar)} alt="" /> : <i className="st-still-blank" />}
+              <PreviewImage kind="avatar" name={row?.avatar ?? null} className="st-still-avatar" placeholder="st-still-blank" />
               <span className="st-still-lines">
                 <b style={{ width: `${40 + index * 14}%` }} />
                 <u style={{ width: `${86 - index * 11}%` }} />
@@ -1475,7 +1574,7 @@ function SillyTavernStill({ generation }: { generation: string }) {
           <span className="st-still-more" />
         </div>
         <div className="st-still-message">
-          <img className="st-still-avatar" src={image('logo')} alt="" />
+          {logo ? <img className="st-still-avatar" src={logo} alt="" /> : <i className="st-still-avatar" />}
           <span className="st-still-lines">
             <b style={{ width: '34%' }} />
             <u style={{ width: '82%' }} />
@@ -2835,18 +2934,15 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   useEffect(() => { void refresh(); }, []);
 
   /*
-   * Coming back from Cloudflare.
+   * Coming back from Cloudflare, by either of the two ways back.
    *
-   * The server finished the sign-in before the browser got here and says how it
-   * went in the address. That is said once, then taken out of the address so a
-   * reload does not say it again.
+   * The server finishes the sign-in before the browser gets here and says how
+   * it went. Where this page sent itself, that arrives in its own address;
+   * where it could not - a console inside another site's page, which has to
+   * open a window because Cloudflare refuses to be framed - it arrives as a
+   * message from that window. Both end up here.
    */
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const outcome = params.get('cloudflare');
-    if (!outcome) return;
-    const code = params.get('cloudflare_error') ?? '';
-    window.history.replaceState(null, '', `${window.location.pathname}${window.location.hash}`);
+  const settleCloudflare = (outcome: string, code: string) => {
     if (outcome === 'connected') {
       void apiFetch('/api/v1/r2', { credentials: 'same-origin' })
         .then(async (response) => (response.ok ? (await response.json() as { config: R2Config }).config : null))
@@ -2869,7 +2965,30 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
     } else {
       failed(cloudflareErrorText(t, code));
     }
+  };
+
+  // Said once, then taken out of the address so a reload does not say it again.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const outcome = params.get('cloudflare');
+    if (!outcome) return;
+    const code = params.get('cloudflare_error') ?? '';
+    window.history.replaceState(null, '', `${window.location.pathname}${window.location.hash}`);
+    settleCloudflare(outcome, code);
   }, []);
+
+  useEffect(() => {
+    const heard = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      const result = readCloudflareResult(event.data);
+      // A sign-in is the console's business, not this page's; it is answered
+      // where the sign-in screen is.
+      if (!result || result.outcome === 'signed_in') return;
+      settleCloudflare(result.outcome, result.code);
+    };
+    window.addEventListener('message', heard);
+    return () => window.removeEventListener('message', heard);
+  }, [t]);
 
   /*
    * The R2 card follows the scheduler the same way the list does.
@@ -3256,8 +3375,8 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
     // Cloudflare's sign-in refuses to load in a frame. When the panel is shown
     // inside another page, the sign-in gets a tab of its own, opened now while
     // the click still counts as one so it is not taken for a pop-up.
-    const framed = window.self !== window.top;
-    const tab = framed ? window.open('', '_blank') : null;
+    const inFrame = framed();
+    const tab = inFrame ? openReturnWindow() : null;
     setCloudflareBusy(true);
     try {
       const response = await apiFetch('/api/v1/r2/cloudflare/connect', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
@@ -3268,7 +3387,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       // reader: this one cannot show Cloudflare's sign-in, and sending it
       // somewhere it will be refused would only blank the console. So hand
       // over the address instead and let them open it themselves.
-      if (framed) {
+      if (inFrame) {
         setCloudflareSignInUrl(payload.url);
         return;
       }

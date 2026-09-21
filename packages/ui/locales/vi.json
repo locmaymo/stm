@@ -52,6 +52,8 @@
     "cloudUnavailable": "Trình quản lý này không đăng nhập được bằng Cloudflare.",
     "cloudDenied": "Cloudflare chưa được cấp quyền truy cập.",
     "cloudExpired": "Liên kết đăng nhập đó đã hết hạn. Hãy bắt đầu lại.",
+    "cloudReturning": "Đã đăng nhập. Đang quay lại trình quản lý...",
+    "cloudReturningClose": "Bạn có thể đóng cửa sổ này.",
     "mismatch": "Hai mật khẩu không giống nhau",
     "signedOut": "Bạn đã bị đăng xuất. Hãy đăng nhập lại để tiếp tục.",
     "reveal": "Hiện mật khẩu",

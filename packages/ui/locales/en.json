@@ -52,6 +52,8 @@
     "cloudUnavailable": "This manager cannot sign in with Cloudflare.",
     "cloudDenied": "Access was not granted on Cloudflare.",
     "cloudExpired": "That sign-in link has expired. Start again.",
+    "cloudReturning": "Signed in. Returning to the manager...",
+    "cloudReturningClose": "You can close this window.",
     "mismatch": "The two passwords are not the same",
     "signedOut": "You were signed out. Sign in again to carry on.",
     "reveal": "Show password",

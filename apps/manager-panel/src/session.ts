@@ -33,7 +33,45 @@ export function isSessionRefusal(status: number): boolean {
   return status === 401;
 }
 
-export function createSessionWatch(fetchImpl: (input: string, init?: RequestInit) => Promise<Response>): SessionWatch {
+/**
+ * The session token, held here as well as in the cookie.
+ *
+ * A cookie is enough everywhere the console is a page of its own. Shown inside
+ * another site's frame it is not: the cookie is then a third-party cookie, and
+ * a browser that declines to store it leaves a console where the password is
+ * accepted and the very next call comes back 401. So the token the sign-in
+ * handed over is kept here too, and sent as `Authorization: Bearer` on every
+ * call - which no browser withholds, and no other site can make this one send.
+ *
+ * `sessionStorage`, not `localStorage`: this is a credential, and it should
+ * last exactly as long as the tab that was signed in. Reading it can throw
+ * where storage is walled off inside a frame, which is why it is also held in
+ * a variable - a console that cannot store anything still works until reload.
+ */
+const TOKEN_KEY = 'stm_session';
+let held: string | null = null;
+
+export function setSessionToken(token: string | null): void {
+  held = token;
+  try {
+    if (token) globalThis.sessionStorage?.setItem(TOKEN_KEY, token);
+    else globalThis.sessionStorage?.removeItem(TOKEN_KEY);
+  } catch {
+    // Storage walled off; the variable above is the whole store for this page.
+  }
+}
+
+export function sessionToken(): string | null {
+  if (held) return held;
+  try {
+    held = globalThis.sessionStorage?.getItem(TOKEN_KEY) ?? null;
+  } catch {
+    held = null;
+  }
+  return held;
+}
+
+export function createSessionWatch(fetchImpl: (input: string, init?: RequestInit) => Promise<Response>, token: () => string | null = sessionToken): SessionWatch {
   const listeners = new Set<SessionListener>();
   let expired = false;
 
@@ -42,12 +80,19 @@ export function createSessionWatch(fetchImpl: (input: string, init?: RequestInit
     // the screen must not be torn down three times.
     if (expired) return;
     expired = true;
+    // Whatever the manager has stopped accepting, sending it again will not
+    // help, and a stale one left in storage outlives the tab's next reload.
+    setSessionToken(null);
     for (const listener of [...listeners]) listener();
   };
 
   return {
     fetch: async (input, init) => {
-      const response = await fetchImpl(input, { credentials: 'same-origin', ...init });
+      const bearer = token();
+      const headers = new Headers(init?.headers);
+      // Not overwritten: a call site that set its own is saying something.
+      if (bearer && !headers.has('authorization')) headers.set('authorization', `Bearer ${bearer}`);
+      const response = await fetchImpl(input, { credentials: 'same-origin', ...init, headers });
       if (isSessionRefusal(response.status)) notify();
       return response;
     },

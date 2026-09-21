@@ -116,12 +116,24 @@ export function parseSessionCookie(cookieHeader: string | undefined, cookieName 
  * `SameSite=None` is what a cookie in a frame needs, and browsers only accept
  * it together with `Secure`, so the two travel together here.
  *
+ * `Partitioned` goes with them. Third-party cookies without it are being
+ * withdrawn browser by browser, and a cookie the browser will not store is the
+ * same broken sign-in again; with it, the console gets a cookie jar of its own
+ * per embedding site, which is what it wants anyway - a console framed by one
+ * site and a console open in its own tab are not the same session, and should
+ * not share one. It also means the cookie cannot follow the reader from site
+ * to site, which is the thing the withdrawal is for.
+ *
  * What `Lax` was guarding against is guarded twice over regardless: every
  * request that changes anything carries a CSRF token no other site can read,
  * and its Origin has to match the console's own.
+ *
+ * None of this is relied on. A browser that stores no third-party cookie at
+ * all still signs in, because the panel sends the session token as a bearer
+ * header as well; see `parseSessionToken` in the server.
  */
 function cookieAttributes(secure: boolean): string {
-  return secure ? '; SameSite=None; Secure' : '; SameSite=Lax';
+  return secure ? '; SameSite=None; Secure; Partitioned' : '; SameSite=Lax';
 }
 
 export function sessionCookie(token: string, secure: boolean): string {

@@ -55,6 +55,8 @@ const PENDING_SIGN_IN_LIMIT = 4;
 interface PendingSignIn {
   readonly authorization: PendingAuthorization;
   readonly purpose: CloudflarePurpose;
+  /** The console session that started it, where one did; see `beginConnect`. */
+  readonly startedBy?: string;
 }
 
 export type CloudflareDataPath = 'worker' | 'rest';
@@ -184,19 +186,37 @@ export class CloudflareConnection {
    * cost is that it does not survive a restart of the manager, which is
    * already true of the authorization it belongs to.
    *
+   * A `connect` is also told which console session asked for it, because the
+   * browser that comes back from Cloudflare is not always the one that left.
+   * Cloudflare will not load in a frame, so a framed console sends the reader
+   * out to a window of its own - and a window of its own is a different place
+   * for cookies than a frame is, so the callback can arrive carrying no
+   * session at all while the console that started it is still signed in two
+   * inches away. Remembering the session here settles it in this process,
+   * rather than asking the returning browser to prove something it cannot.
+   *
    * Several can be in flight together; see `PENDING_SIGN_IN_LIMIT`.
    */
-  public beginConnect(returnOrigin: string, purpose: CloudflarePurpose = 'connect'): string {
+  public beginConnect(returnOrigin: string, purpose: CloudflarePurpose = 'connect', startedBy?: string): string {
     const authorization = createAuthorization(this.client, returnOrigin, this.now());
     // Expired ones first, so the room is spent on sign-ins that can still finish.
-    this.prunePending().push({ authorization, purpose });
+    this.prunePending().push({ authorization, purpose, ...(startedBy ? { startedBy } : {}) });
     while (this.pending.length > PENDING_SIGN_IN_LIMIT) this.pending.shift();
     return authorization.url;
   }
 
   /** What the sign-in this callback belongs to was started for, if it is one of ours. */
   public pendingPurpose(state: string): CloudflarePurpose | null {
-    return this.prunePending().find((entry) => matchesPending(entry.authorization, state, this.now()))?.purpose ?? null;
+    return this.findPending(state)?.purpose ?? null;
+  }
+
+  /** The console session that started this sign-in, if one did and it is still ours. */
+  public pendingStartedBy(state: string): string | null {
+    return this.findPending(state)?.startedBy ?? null;
+  }
+
+  private findPending(state: string): PendingSignIn | undefined {
+    return this.prunePending().find((entry) => matchesPending(entry.authorization, state, this.now()));
   }
 
   /** Drop the sign-ins that have run out of time, and return what is left. */

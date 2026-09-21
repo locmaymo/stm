@@ -861,7 +861,7 @@ async function handleRequest(options: {
     publicOrigins,
     proxiedOrigin,
     ports,
-    sessionToken: parseSessionCookie(headerValue(request.headers.cookie), COOKIE_NAME),
+    sessionToken: parseSessionToken(request),
   };
 
   /*
@@ -1001,7 +1001,10 @@ async function handleRequest(options: {
   if (pathname === '/api/v1/auth/session' && method === 'GET') {
     const session = requireSession(context, sessions);
     if (!session) return;
-    sendJson(response, 200, { session });
+    // The token comes back with it; see `parseSessionToken`. This request
+    // already carried the session, so saying which one it was grants nothing
+    // the caller did not just present.
+    sendJson(response, 200, { session, token: context.sessionToken });
     return;
   }
 
@@ -2352,7 +2355,9 @@ async function handleCloudflareRequest(context: RequestContext, cloudflare: Clou
   if (pathname === '/api/v1/r2/cloudflare/connect' && method === 'POST') {
     const returnOrigin = panelOrigin(context);
     if (!returnOrigin) { sendError(response, 400, 'invalid_origin', 'The panel origin could not be read'); return; }
-    sendJson(response, 200, { url: cloudflare.beginConnect(returnOrigin) });
+    // Named here so the callback can find its way back to this session even
+    // when the browser returns to a window that carries none; see beginConnect.
+    sendJson(response, 200, { url: cloudflare.beginConnect(returnOrigin, 'connect', context.sessionToken) });
     return;
   }
   if (pathname === '/api/v1/r2/cloudflare/buckets' && method === 'GET') {
@@ -2470,11 +2475,25 @@ async function handleCloudflareCallback(context: RequestContext, sessions: Sessi
    * is the one answer that cannot be acted on; what happened is that this
    * particular sign-in is no longer the one to finish.
    */
+  const state = searchParams.get('state') ?? '';
   if (!purpose && !sessions.get(context.sessionToken)) { redirect('error', 'cloudflare_state_mismatch'); return; }
-  if (!sessions.get(context.sessionToken)) { redirect('error', 'login_required'); return; }
+  /*
+   * Whoever started this, rather than whoever is standing here.
+   *
+   * Cloudflare will not load inside a frame, so a framed console sends the
+   * reader to a window of its own - which is a different place for cookies
+   * than the frame is. The browser coming back can therefore hold no session
+   * while the console that sent it is still signed in, and answering "sign in
+   * first" to somebody who never signed out is the one reply that cannot be
+   * acted on. The session is taken from the sign-in this callback belongs to,
+   * which is held here and not in anything the browser can edit.
+   */
+  const startedBy = cloudflare.pendingStartedBy(state);
+  const connecting = startedBy && sessions.get(startedBy) ? startedBy : context.sessionToken;
+  if (!sessions.get(connecting)) { redirect('error', 'login_required'); return; }
   try {
     const status = await cloudflare.completeConnect({
-      state: searchParams.get('state') ?? '',
+      state,
       code: searchParams.get('code'),
       error: searchParams.get('error'),
       errorDescription: searchParams.get('error_description'),
@@ -2914,7 +2933,7 @@ async function handlePasswordSetup(
   const created = sessions.create();
   context.response.setHeader('Set-Cookie', sessionCookie(created.token, secureCookies));
   const session = created.session;
-  sendJson(context.response, 201, { ok: true, setupRequired: false, session });
+  sendJson(context.response, 201, { ok: true, setupRequired: false, session, token: created.token });
   // After the answer, not before it: what follows takes minutes, and the
   // reader is waiting to be let into the console.
   if (afterSetup) await afterSetup().catch(() => undefined);
@@ -2944,7 +2963,8 @@ async function handleLogin(
   clearRateLimit(context, rateLimiter);
   const created = sessions.create();
   context.response.setHeader('Set-Cookie', sessionCookie(created.token, secureCookies));
-  sendJson(context.response, 200, { ok: true, session: created.session });
+  // Also in the body, for a panel whose cookie the browser will not keep.
+  sendJson(context.response, 200, { ok: true, session: created.session, token: created.token });
 }
 
 function requireSession(context: RequestContext, sessions: SessionStore): { csrfToken: string } | null {
@@ -3126,6 +3146,33 @@ function isTrustedOrigin(request: IncomingMessage, platform: PlatformPaths['plat
   } catch {
     return false;
   }
+}
+
+/**
+ * The session this request is making, from wherever the browser could put it.
+ *
+ * The cookie is the ordinary answer and stays the fallback. It is not the only
+ * one because the console is sometimes a document inside another site's page,
+ * where its cookie is a third-party cookie and the browser may decline to
+ * store it at all - the password is accepted, and every call after it is
+ * refused for want of a session that was never kept.
+ *
+ * So the panel is also handed the token outright at sign-in and sends it back
+ * as `Authorization: Bearer`, which nothing blocks. A header is read first
+ * because a panel that sets one is naming the session it means, and a cookie
+ * left over from some other session in the same browser must not win over it.
+ *
+ * Deliberately not read from the query string. A token in an address is a
+ * token in the browser's history, in a `Referer` sent to another site, and in
+ * whatever writes the access log.
+ */
+function parseSessionToken(request: IncomingMessage): string | undefined {
+  const authorization = headerValue(request.headers.authorization);
+  if (authorization && /^Bearer /i.test(authorization)) {
+    const token = authorization.slice(7).trim();
+    if (token) return token;
+  }
+  return parseSessionCookie(headerValue(request.headers.cookie), COOKIE_NAME);
 }
 
 /**

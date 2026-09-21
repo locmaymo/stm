@@ -34,11 +34,15 @@ test('a console read over HTTPS gets a cookie a frame can keep', () => {
   assert.match(cookie, /SameSite=None/);
   // Which browsers accept only together with Secure, so the two never separate.
   assert.match(cookie, /Secure/);
-  assert.match(clearSessionCookie(true), /SameSite=None; Secure/);
+  // And a jar of its own per embedding site, for the browsers that have
+  // stopped storing third-party cookies without it.
+  assert.match(cookie, /Partitioned/);
+  assert.match(clearSessionCookie(true), /SameSite=None; Secure; Partitioned/);
   // A cookie set one way has to be cleared the same way, or signing out sets a
   // second cookie beside the first instead of replacing it.
   assert.match(clearSessionCookie(false), /SameSite=Lax/);
   assert.doesNotMatch(clearSessionCookie(false), /Secure/);
+  assert.doesNotMatch(clearSessionCookie(false), /Partitioned/);
 });
 
 test('rate limiter blocks after the configured attempts', () => {
