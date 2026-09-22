@@ -5,7 +5,7 @@ import { createReadStream } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import { createSocket } from 'node:dgram';
 import { extname, join, relative, resolve, sep } from 'node:path';
-import { applyQuery, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, KEEP_ONLINE_DEFAULT_MINUTES, OPERATION_JOB_KINDS, type ApiErrorBody, type ConfigUpdateInput, type ConsoleStatus, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogSink, type LogSourceFilter, type LegalReview, type ManagerPorts, type ManagerUpdateStatus, type OnlineState, type PortSettings, type Profile, type ProfileLayout, type SetupStatus, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
+import { applyQuery, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, KEEP_ONLINE_DEFAULT_MINUTES, OPERATION_JOB_KINDS, type AccessGatewayState, type ApiErrorBody, type ConfigUpdateInput, type ConsoleStatus, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogSink, type LogSourceFilter, type LegalReview, type ManagerPorts, type ManagerUpdateStatus, type OnlineState, type PortSettings, type Profile, type ProfileLayout, type SetupStatus, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
 import { getPlatformPaths, storageDurability, storageReport, type PlatformPaths } from '../../../packages/platform/src/index.js';
 import { INSTALL_CANCELED, RuntimeError, RuntimeManager, type InstallationProgress } from '../../../packages/sillytavern-runtime/src/index.js';
 import { hashPassword, MIN_PASSWORD_LENGTH, validatePasscode, validatePassword, verifyPassword } from './password.js';
@@ -1506,7 +1506,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     return;
   }
   if (pathname === '/api/v1/access/security' && method === 'GET') {
-    sendJson(response, 200, gateway.getState());
+    sendJson(response, 200, await decorateSecurity(gateway.getState()));
     return;
   }
   if (pathname === '/api/v1/access/password' && method === 'POST') {
@@ -1524,7 +1524,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     // next restart.
     gateway.setPassword(passwordHash, true);
     if (gateway.getState().status !== 'running') await gateway.start();
-    sendJson(response, 200, gateway.getState());
+    sendJson(response, 200, await decorateSecurity(gateway.getState()));
     return;
   }
   /*
@@ -1540,7 +1540,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     if (gateway.getState().status !== 'running') await gateway.start();
     const { token, maxAgeSeconds } = gateway.issueSession();
     response.setHeader('Set-Cookie', gateway.sessionCookie(request, token, maxAgeSeconds));
-    sendJson(response, 200, gateway.getState());
+    sendJson(response, 200, await decorateSecurity(gateway.getState()));
     return;
   }
   /*
@@ -1577,7 +1577,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
   }
   if (pathname === '/api/v1/access/sessions' && method === 'DELETE') {
     gateway.signOutEveryone();
-    sendJson(response, 200, gateway.getState());
+    sendJson(response, 200, await decorateSecurity(gateway.getState()));
     return;
   }
   if (pathname === '/api/v1/access/network' && method === 'PUT') {
@@ -1588,7 +1588,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       return;
     }
     await store.setAccessLan(body.lan);
-    sendJson(response, 200, await gateway.setLan(body.lan));
+    sendJson(response, 200, await decorateSecurity(await gateway.setLan(body.lan)));
     return;
   }
   if (pathname === '/api/v1/r2' && method === 'GET') {
@@ -2350,7 +2350,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       process: supervisor.getState(),
       tunnel: await withProxyUrl(tunnel.getState(), proxy, cloudflare, 'sillyTavern'),
       managerTunnel: await withProxyUrl(managerTunnel.getState(), proxy, cloudflare, 'manager'),
-      security: gateway.getState(),
+      security: await decorateSecurity(gateway.getState()),
       // All read from memory, so they cost this answer nothing.
       install: jobs.activeInstallation(),
       operation: jobs.activeOperation(),
@@ -3391,6 +3391,35 @@ function parseConfigUpdateInput(value: unknown): ConfigUpdateInput {
 async function decorateConfig(document: Awaited<ReturnType<ConfigStore['read']>>): Promise<Awaited<ReturnType<ConfigStore['read']>>> {
   const host = await networkHost();
   return host ? { ...document, networkHost: host } : document;
+}
+
+/**
+ * How long an answer about this machine's network address is reused.
+ *
+ * The gateway state below rides on the console's polling clock, and asking
+ * the operating system which interface it would leave by opens a socket each
+ * time. A laptop carried to another Wi-Fi is on the old answer for at most
+ * this long, which is shorter than the walk between two rooms.
+ */
+const NETWORK_HOST_TTL_MS = 15_000;
+let networkHostSeen: { readonly at: number; readonly host: string | null } | null = null;
+
+/**
+ * The gateway's state, and where its door can be reached from the network.
+ *
+ * The console shows that address beside the local network switch and hides
+ * the switch entirely without one. It cannot read it off the configuration
+ * document, which carries the same address: that document does not exist
+ * until SillyTavern is installed, and the switch is on screen before then -
+ * so on a machine with a perfectly good Wi-Fi the switch would be refused for
+ * the whole of the first visit.
+ */
+async function decorateSecurity(state: AccessGatewayState): Promise<AccessGatewayState> {
+  const now = Date.now();
+  if (!networkHostSeen || now - networkHostSeen.at >= NETWORK_HOST_TTL_MS) {
+    networkHostSeen = { at: now, host: (await networkHost()) ?? null };
+  }
+  return { ...state, networkHost: networkHostSeen.host };
 }
 
 /**

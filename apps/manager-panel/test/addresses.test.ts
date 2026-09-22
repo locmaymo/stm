@@ -104,3 +104,21 @@ test('read from anywhere but the machine itself, the loopback address is not off
   const published = reachableAddresses({ url: 'https://example.trycloudflare.com' }, { lan: true, port: 8001 }, '10.0.0.4', 8000, false);
   assert.deepEqual(published.map((address) => address.kind), ['tunnel', 'lan']);
 });
+
+test('a machine with no network of its own offers no address on one', () => {
+  // A hosted container has no Wi-Fi to be on, so `networkHost` is null. The
+  // address used to fall back to the hostname in the reader's browser, which
+  // is where the reader is and says nothing about where this machine answers:
+  // on a hosted studio it produced `something.run.app:8001`, shown under "on
+  // this Wi-Fi" though the platform serves no such port and the phone being
+  // invited is on another network entirely.
+  const hosted = reachableAddresses({ url: null }, { lan: true, port: 8001 }, null, 8000, false);
+  assert.deepEqual(hosted, []);
+  // Sharing being switched on does not conjure one, and the addresses that do
+  // work are untouched.
+  const published = reachableAddresses({ url: 'https://example.trycloudflare.com' }, { lan: true, port: 8001 }, null, 8000, true);
+  assert.deepEqual(published.map((address) => address.kind), ['tunnel', 'local']);
+  // A machine that does have one still gets it.
+  const athome = reachableAddresses({ url: null }, { lan: true, port: 8001 }, '192.168.1.20', 8000, true);
+  assert.deepEqual(athome.map((address) => address.host), ['192.168.1.20:8001', '127.0.0.1:8000']);
+});

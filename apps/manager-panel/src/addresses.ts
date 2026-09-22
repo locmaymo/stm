@@ -57,6 +57,14 @@ export interface ReachableAddress {
  * address whatever else was on, which from a phone is an address that goes
  * nowhere.
  *
+ * `networkHost` is this machine's own address on the network around it, and
+ * null when it has none - a hosted container has no Wi-Fi to be on. It used
+ * to fall back to the address in the reader's browser, which is where the
+ * *reader* is and says nothing about where this machine can be reached: on a
+ * hosted studio that produced `something.run.app:8001`, offered as "on this
+ * Wi-Fi" though the platform serves no such port and the reader's phone is on
+ * another network entirely. No address is the honest answer.
+ *
  * `onThisMachine` is whether the console is being read on the machine it is
  * running on, and it decides whether the loopback address is an address at all.
  * It is not, anywhere else: not from a phone on the same Wi-Fi, and least of
@@ -67,7 +75,7 @@ export interface ReachableAddress {
  * SillyTavern was the one press guaranteed not to. An empty list is the honest
  * answer, and the console can then offer the thing that would actually work.
  */
-export function reachableAddresses(tunnel: PublicTunnel, security: Pick<AccessGatewayState, 'lan' | 'port'>, networkHost: string, sillyTavernPort: number, onThisMachine: boolean): ReachableAddress[] {
+export function reachableAddresses(tunnel: PublicTunnel, security: Pick<AccessGatewayState, 'lan' | 'port'>, networkHost: string | null, sillyTavernPort: number, onThisMachine: boolean): ReachableAddress[] {
   const addresses: ReachableAddress[] = [];
   /*
    * The fixed address wins over the tunnel's own.
@@ -91,7 +99,7 @@ export function reachableAddresses(tunnel: PublicTunnel, security: Pick<AccessGa
     const via = tunnel.proxyUrl && tunnel.url ? { via: bareHost(tunnel.url) } : {};
     addresses.push({ kind: 'tunnel', url: publicUrl, host: bareHost(publicUrl), ...via });
   }
-  if (security.lan) {
+  if (security.lan && networkHost) {
     const host = `${networkHost}:${security.port}`;
     addresses.push({ kind: 'lan', url: `http://${host}`, host });
   }

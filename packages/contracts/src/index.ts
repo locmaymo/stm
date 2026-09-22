@@ -1103,6 +1103,22 @@ export interface AccessGatewayState {
   readonly port: number;
   /** Whether it is reachable from the local network rather than this machine. */
   readonly lan: boolean;
+  /**
+   * This machine's own address on the network around it, when it has one.
+   *
+   * The address the LAN door answers at, and so the one the console shows
+   * beside that switch. Null on a machine with no network of its own - a
+   * hosted container has no Wi-Fi for another device to share - and there the
+   * switch is not offered at all, rather than opening a door onto nothing.
+   *
+   * It rides on this state rather than on the configuration document, which
+   * also carries it: that document does not exist until SillyTavern is
+   * installed, and the switch is on screen well before then.
+   *
+   * Additive: absent where nothing decorates the state, which is every
+   * caller inside the gateway itself.
+   */
+  readonly networkHost?: string | null;
   readonly passwordConfigured: boolean;
   /**
    * Whether that credential is a six-digit passcode rather than a password.

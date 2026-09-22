@@ -1526,7 +1526,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     tunnel={tunnelState}
     security={accessSecurity}
     sillyTavernPort={sillyTavernPort}
-    networkHost={configDocument?.networkHost ?? null}
+    networkHost={accessSecurity.networkHost ?? null}
     installed={Boolean(activeInstallationId)}
     installing={installing}
     // Only while there is nothing installed, which is the window this is for.
@@ -1919,19 +1919,62 @@ function ManagerTunnelOffer({ t, open, hostname, tunnel, onDecline, onAccept }: 
   // The address worth handing over, which is not the tunnel's own while the
   // fixed one in front of it is still being put there.
   const offered = publicAddress(tunnel);
+  // The link is on its way: cloudflared has been asked but has not announced
+  // an address yet, or the fixed one in front of it is still being deployed.
+  const opening = !offered && tunnel.mode !== 'off';
   return <Dialog open={open} onOpenChange={(next) => { if (!next) onDecline(); }}>
     <DialogContent className="sm:max-w-md">
-      <DialogHeader>
-        <DialogTitle>{t('console.tunnelOfferTitle')}</DialogTitle>
-        <DialogDescription>{t('console.tunnelOfferBody', { host: hostname })}</DialogDescription>
+      <DialogHeader className="flex-row items-start gap-3">
+        <span className="mt-0.5 grid size-9 shrink-0 place-items-center rounded-lg" style={{ color: CLOUDFLARE_ORANGE, backgroundColor: `color-mix(in srgb, ${CLOUDFLARE_ORANGE} 14%, transparent)` }} aria-hidden="true">
+          <CloudflareMark size={18} />
+        </span>
+        <div className="grid gap-1.5">
+          <DialogTitle>{t('console.tunnelOfferTitle')}</DialogTitle>
+          <DialogDescription>{t('console.tunnelOfferBody')}</DialogDescription>
+        </div>
       </DialogHeader>
-      <DialogBody className="grid gap-3">
-        <p className="text-sm text-muted-foreground">{t('console.tunnelOfferNote')}</p>
-        {offered
-          ? <code className="break-all rounded-lg border bg-muted/40 p-3 font-mono text-sm">{offered}</code>
-          : tunnel.mode !== 'off'
-            ? <div className="grid gap-2 rounded-lg border bg-muted/40 p-3" role="status"><span className="thinking">{t('console.tunnelOfferOpening')}</span><TaskBar /></div>
-            : null}
+      <DialogBody className="grid gap-4">
+        {/* The two addresses, one under the other, because the whole offer is
+            the difference between them. Written as prose this was a hostname
+            sixty characters long wrapped across three lines in the middle of a
+            sentence, where it could not be read as an address at all. */}
+        <div className="grid overflow-hidden rounded-lg border">
+          <div className="grid gap-1.5 px-3 py-2.5">
+            <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">{t('console.tunnelOfferNow')}</span>
+            <span className="flex items-start gap-2">
+              <Globe2 className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+              <span className="min-w-0 font-mono text-xs leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">{hostname}</span>
+            </span>
+          </div>
+          <div className="relative grid gap-1.5 border-t bg-muted/40 px-3 py-2.5">
+            {/* Sat on the divider, so the card reads as one address becoming
+                another rather than as two unrelated rows. */}
+            <span className="absolute -top-3 left-1/2 grid size-6 -translate-x-1/2 place-items-center rounded-full border bg-popover text-muted-foreground" aria-hidden="true">
+              <ArrowDown className="size-3" />
+            </span>
+            <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">{t('console.tunnelOfferOwn')}</span>
+            {opening
+              ? <span className="grid gap-2" role="status"><span className="thinking text-sm">{t('console.tunnelOfferOpening')}</span><TaskBar /></span>
+              : <span className="flex items-start gap-2">
+                <span className="mt-0.5 shrink-0" style={{ color: CLOUDFLARE_ORANGE }} aria-hidden="true"><CloudflareMark size={14} /></span>
+                {offered
+                  ? <a href={offered} target="_blank" rel="noopener noreferrer" className="min-w-0 font-mono text-xs leading-relaxed font-medium underline-offset-4 [overflow-wrap:anywhere] hover:underline">{bareHost(offered)}</a>
+                  : <span className="text-sm font-medium">{t('console.tunnelOfferOwnPending')}</span>}
+              </span>}
+          </div>
+        </div>
+        {/* Two reasons, one line each with a mark to sort them by. They were
+            one grey paragraph carrying both, which is where a reader skims. */}
+        <ul className="grid gap-2.5">
+          <li className="flex items-start gap-2.5 text-sm text-muted-foreground">
+            <KeyRound className="mt-0.5 size-4 shrink-0 opacity-70" aria-hidden="true" />
+            <span>{t('console.tunnelOfferReasonSignIn')}</span>
+          </li>
+          <li className="flex items-start gap-2.5 text-sm text-muted-foreground">
+            <ShieldCheck className="mt-0.5 size-4 shrink-0 opacity-70" aria-hidden="true" />
+            <span>{t('console.tunnelOfferReasonPassword')}</span>
+          </li>
+        </ul>
         {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
       </DialogBody>
       <DialogFooter>
@@ -2388,7 +2431,7 @@ function RuntimeCard({
     } catch { report(t('console.embedFailed')); } finally { setEmbedOpening(false); }
   };
 
-  const addresses = reachableAddresses(tunnel, security, networkHost ?? window.location.hostname, sillyTavernPort, onThisMachine);
+  const addresses = reachableAddresses(tunnel, security, networkHost, sillyTavernPort, onThisMachine);
   /*
    * The best address there is, or none at all.
    *
@@ -2713,9 +2756,21 @@ function AccessPanel({ t, process, tunnel, config, security, sillyTavernPort, on
   // loopback address names the reader's own computer, so it is shown as what it
   // is rather than offered as a link into a machine it was never going to reach.
   const onThisMachine = isThisMachine(window.location.hostname);
-  const lanHost = `${config?.networkHost ?? window.location.hostname ?? 'localhost'}:${security.port}`;
+  /*
+   * Null where this machine has no address on a network around it, which is
+   * the whole of a hosted container: there is no Wi-Fi for another device to
+   * share. It fell back to the address in the reader's browser, which on a
+   * hosted studio is the platform's own hostname - offered here as "on this
+   * Wi-Fi" though the platform serves no such port, and the phone being
+   * invited is on a different network altogether.
+   *
+   * Read off the gateway state rather than the configuration document, which
+   * carries the same address: that document arrives only once SillyTavern is
+   * installed, and this switch is on screen from the first visit.
+   */
+  const lanHost = security.networkHost ? `${security.networkHost}:${security.port}` : null;
   const localUrl = `http://${local}`;
-  const lanUrl = `http://${lanHost}`;
+  const lanUrl = lanHost ? `http://${lanHost}` : null;
   /*
    * What this card reports is whether the doors are answering, which is not
    * the same question as whether either switch is on.
@@ -2773,12 +2828,19 @@ function AccessPanel({ t, process, tunnel, config, security, sillyTavernPort, on
               suits them, and the address is ready before it is needed. */}
           <Switch id="tunnel-switch" checked={tunnelWanted} onCheckedChange={toggleTunnel} disabled={busy} aria-label={t('console.enableTunnel')} />
         </div>
+        {/* Offered only where it can work. With no address of its own on a
+            network, this switch opens a door onto nothing: it cannot be
+            turned on, and the line says why rather than inviting a phone
+            onto a Wi-Fi this machine is not on. Already on - a setting
+            restored from a machine that did have a network - it stays
+            switchable, because turning something off is never the press
+            that needs protecting from. */}
         <div className="access-row">
           <div>
             <strong>{t('console.lanAccess')}</strong>
-            <span>{t('console.lanWhy')}</span>
+            <span>{lanHost ? t('console.lanWhy') : t('console.lanNoNetwork')}</span>
           </div>
-          <Switch id="listen-switch" checked={lan} onCheckedChange={toggleLan} disabled={securityBusy} aria-label={t('console.enableLan')} />
+          <Switch id="listen-switch" checked={lan} onCheckedChange={toggleLan} disabled={securityBusy || (!lan && lanHost === null)} aria-label={t('console.enableLan')} />
         </div>
       </div>
       {/* With SillyTavern down every one of these leads nowhere, so the whole
@@ -2798,7 +2860,7 @@ function AccessPanel({ t, process, tunnel, config, security, sillyTavernPort, on
             pending={tunnelWanted}
             {...(publicUrl && tunnel.proxyUrl && tunnel.url ? { alternates: [tunnel.url] } : {})}
           />
-          <AddressRow t={t} label={t('console.lanAddress')} url={lan ? lanUrl : null} display={lanHost} disabledHint={t('console.lanOffShort')} />
+          {lanHost ? <AddressRow t={t} label={t('console.lanAddress')} url={lan ? lanUrl : null} display={lanHost} disabledHint={t('console.lanOffShort')} /> : null}
           <AddressRow t={t} label={t('console.local')} url={onThisMachine ? localUrl : null} display={local} disabledHint={t('console.localElsewhere')} />
         </div>
       </> : null}
