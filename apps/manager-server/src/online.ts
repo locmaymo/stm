@@ -3,24 +3,35 @@ import { KEEP_ONLINE_DEFAULT_MINUTES, KEEP_ONLINE_MAX_MINUTES, KEEP_ONLINE_MIN_M
 /**
  * Keeping the manager online where being unused is treated as being finished.
  *
- * On somebody's own computer this does nothing and is not needed: the program
- * runs until it is stopped. Elsewhere - anywhere the manager is running on a
- * machine somebody else operates - a process that nobody has asked anything of
- * for a while is a process that can be put to sleep, and SillyTavern then goes
- * with it. The reader finds out by opening the address they were given and
- * waiting on a page that never arrives, or finds their chat gone mid-sentence.
+ * A process that nobody has asked anything of for a while is a process that
+ * can be put to sleep - by the platform it is running on, or by the power
+ * management of somebody's own laptop - and SillyTavern goes with it. The
+ * reader finds out by opening the address they were given and waiting on a
+ * page that never arrives, or finds their chat gone mid-sentence.
  *
  * So the manager reaches its own address on a clock, which is the plainest
  * possible statement that it is still in use. It asks for the health route,
  * which reads nothing, writes nothing and costs one small answer.
  *
- * The address is the machine's own - what the platform serves this manager at,
- * or whatever `STM_PUBLIC_ORIGIN` names. Deliberately not the Worker in front
- * of the tunnel and not the tunnel's own hostname: both of those leave the
+ * Which address, in order:
+ *
+ * 1. What somebody wrote down, in `STM_PUBLIC_ORIGIN` or by running somewhere
+ *    that names itself in the environment.
+ * 2. The address a browser actually reached this console at. Nobody should
+ *    have to set a variable to say what the machine is already being told on
+ *    every request - the console knows what to call itself well enough to
+ *    offer a link, and this is the same knowledge. Learned from requests that
+ *    carry a session, so it is the reader's browser that teaches it and not
+ *    whoever can reach the port with a `Host` header of their choosing.
+ * 3. This machine's own loopback address. Not a fallback that does nothing: a
+ *    battery saver on somebody's own computer is watching whether this process
+ *    does anything at all, and loopback answers that.
+ *
+ * Deliberately never the Worker in front of the tunnel and never the tunnel's
+ * own hostname, even when the reader arrived through one: both leave the
  * machine, cross Cloudflare and come back, which spends an allowance that
- * exists for readers on a request no reader made, and neither is the door the
- * platform is watching. A manager with no address of its own does nothing at
- * all.
+ * exists for readers on a request no reader made, and neither is the door
+ * anything is watching.
  *
  * It does not skip a turn because somebody is reading the console, which is
  * what it used to do on the reasoning that a console being read is already
@@ -45,15 +56,35 @@ const TIMEOUT_MS = 20_000;
 /** The route asked for: it reads nothing, writes nothing and needs no session. */
 const HEALTH_PATH = '/api/v1/health';
 
+/**
+ * How many failures in a row retire an address that was learned rather than
+ * given.
+ *
+ * A platform that hands out a URL hands out a different one after a redeploy,
+ * and the one remembered from before is then somebody else's hostname or
+ * nobody's. Three quarters of an hour of no answer is enough to stop sending
+ * anything there and go back to loopback; the next console that opens teaches
+ * the new address immediately. An address somebody wrote down is never retired
+ * - that one is an instruction, not a guess.
+ */
+const FORGET_AFTER_FAILURES = 3;
+
 export interface OnlineKeeperOptions {
   /**
-   * This machine's own address from outside, or null when it has none.
-   *
-   * Settled once, from the environment, so it is a value rather than something
-   * to ask again: a tunnel coming up does not change what the platform serves
-   * this manager at, and the tunnel is not what is kept open here.
+   * The address somebody wrote down, when they did: `STM_PUBLIC_ORIGIN`, or a
+   * platform that names itself in the environment. It outranks everything.
    */
-  readonly origin: string | null;
+  readonly configuredOrigin: string | null;
+  /**
+   * The address a browser last reached this console at, as the state file
+   * remembers it - so a manager restarted while nobody was looking still knows
+   * where it is, which is exactly the machine this exists for.
+   */
+  readonly seenOrigin?: string | null;
+  /** This machine's own loopback address, which is always something to hold. */
+  readonly localOrigin: () => string;
+  /** Write a newly learned or retired address down, so the next start has it. */
+  readonly rememberOrigin?: (origin: string | null) => void;
   /** Whether this is switched on, as the state file had it at startup. */
   readonly enabled: boolean;
   /** How many minutes between attempts, as the state file had it. */
@@ -70,10 +101,13 @@ export function intervalMinutes(value: unknown): number {
 }
 
 export class OnlineKeeper {
-  private readonly origin: string | null;
+  private readonly configuredOrigin: string | null;
+  private readonly localOrigin: () => string;
+  private readonly rememberOrigin: (origin: string | null) => void;
   private readonly fetcher: typeof globalThis.fetch;
   private readonly now: () => Date;
   private readonly logger: LogSink | null;
+  private seenOrigin: string | null;
   private minutes: number;
   private enabled: boolean;
   private timer: NodeJS.Timeout | null = null;
@@ -83,14 +117,47 @@ export class OnlineKeeper {
   private error: string | null = null;
   /** So a standing failure is said once rather than every few turns. */
   private reported = false;
+  /** Failures in a row, which is what retires an address that was learned. */
+  private failures = 0;
 
   public constructor(options: OnlineKeeperOptions) {
-    this.origin = options.origin;
+    this.configuredOrigin = options.configuredOrigin;
+    this.seenOrigin = options.seenOrigin ?? null;
+    this.localOrigin = options.localOrigin;
+    this.rememberOrigin = options.rememberOrigin ?? (() => undefined);
     this.enabled = options.enabled;
     this.minutes = intervalMinutes(options.minutes);
     this.fetcher = options.fetch ?? globalThis.fetch;
     this.now = options.now ?? (() => new Date());
     this.logger = options.logger ?? null;
+  }
+
+  /**
+   * A browser reached this console at this address, so it is one that works.
+   *
+   * Called from the one request the console makes on a clock, which carries a
+   * session - so what teaches this is a reader's browser rather than anything
+   * that can reach the port. The caller decides what is worth learning: the
+   * Worker and the tunnel are addresses a reader genuinely arrives at and are
+   * deliberately not among them.
+   *
+   * A different address replaces the one held. That is a redeploy, or a
+   * machine that has moved, and the newest one a browser actually used is the
+   * best answer there is.
+   */
+  public seen(origin: string | null): void {
+    if (!origin || origin === this.seenOrigin) return;
+    this.seenOrigin = origin;
+    this.failures = 0;
+    this.reported = false;
+    this.rememberOrigin(origin);
+  }
+
+  /** The address that will be reached, and where it came from. */
+  public target(): { readonly origin: string; readonly source: OnlineState['source'] } {
+    if (this.configuredOrigin) return { origin: this.configuredOrigin, source: 'configured' };
+    if (this.seenOrigin) return { origin: this.seenOrigin, source: 'seen' };
+    return { origin: this.localOrigin(), source: 'local' };
   }
 
   public start(): void {
@@ -133,11 +200,13 @@ export class OnlineKeeper {
   }
 
   public state(): OnlineState {
+    const target = this.target();
     return {
       enabled: this.enabled,
       minutes: this.minutes,
-      address: this.enabled ? this.origin : null,
-      status: this.status(),
+      address: this.enabled ? target.origin : null,
+      source: target.source,
+      status: this.enabled ? (this.reachable === false ? 'unreachable' : 'holding') : 'off',
       lastAt: this.lastAt?.toISOString() ?? null,
       error: this.error,
     };
@@ -152,8 +221,7 @@ export class OnlineKeeper {
    */
   public async tick(): Promise<void> {
     if (!this.enabled || this.running) return;
-    const address = this.origin;
-    if (!address) return;
+    const { origin: address, source } = this.target();
     this.running = true;
     try {
       const response = await this.fetcher(`${address}${HEALTH_PATH}`, {
@@ -166,36 +234,45 @@ export class OnlineKeeper {
       // the whole of the point - but it is read so the connection can close
       // rather than being left holding a socket open between turns.
       await response.arrayBuffer().catch(() => undefined);
-      this.settle(true, null);
+      this.settle(address, source, true, null);
     } catch (error: unknown) {
-      this.settle(false, reasonFor(error));
+      this.settle(address, source, false, reasonFor(error));
     } finally {
       this.running = false;
     }
   }
 
-  private settle(reachable: boolean, error: string | null): void {
+  private settle(address: string, source: OnlineState['source'], reachable: boolean, error: string | null): void {
     const was = this.reachable;
     this.lastAt = this.now();
     this.reachable = reachable;
     this.error = error;
+    this.failures = reachable ? 0 : this.failures + 1;
     if (!reachable && !this.reported) {
       this.reported = true;
       const reason = error ?? 'unknown error';
-      this.logger?.(logEvent('online.unreachable', `[manager] this manager could not reach its own address at ${this.origin ?? 'nowhere'}: ${reason}`, { address: this.origin ?? '', reason }));
-      return;
-    }
-    if (reachable && was === false) {
+      this.logger?.(logEvent('online.unreachable', `[manager] this manager could not reach its own address at ${address}: ${reason}`, { address, reason }));
+    } else if (reachable && was === false) {
       this.reported = false;
-      this.logger?.(logEvent('online.reachable', `[manager] this manager can reach its own address again at ${this.origin ?? 'nowhere'}`, { address: this.origin ?? '' }));
+      this.logger?.(logEvent('online.reachable', `[manager] this manager can reach its own address again at ${address}`, { address }));
     }
-  }
-
-  private status(): OnlineState['status'] {
-    if (!this.enabled) return 'off';
-    if (!this.origin) return 'no_address';
-    if (this.reachable === false) return 'unreachable';
-    return 'holding';
+    /*
+     * An address that was learned and has stopped answering is let go.
+     *
+     * A platform that hands out a URL hands out a different one after a
+     * redeploy, and going on sending requests to the old one is sending them
+     * to somebody else's hostname. Loopback is what is left until a console
+     * opens and teaches the new one, which takes one page load.
+     */
+    if (source === 'seen' && this.failures >= FORGET_AFTER_FAILURES) {
+      this.seenOrigin = null;
+      this.failures = 0;
+      this.reachable = null;
+      this.error = null;
+      this.reported = false;
+      this.rememberOrigin(null);
+      this.logger?.(logEvent('online.forgotten', `[manager] ${address} has not answered for a while, so this manager has stopped treating it as its own address`, { address }));
+    }
   }
 }
 

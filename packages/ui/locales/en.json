@@ -169,7 +169,7 @@
     "keepOnlineMinutes": "{count} minutes",
     "keepOnlineHolding": "Holding {address} open.",
     "keepOnlineUnreachable": "{address} is not answering.",
-    "keepOnlineNoAddress": "This manager has no address of its own to keep open, so there is nothing to do.",
+    "keepOnlineLocal": "Nothing outside has opened this console yet, so it holds itself at {address}.",
     "keepOnlineLast": "Last checked {when}.",
     "keepOnlineSaveFailed": "Could not save that setting",
     "keepOnlineSaved": "Saved.",
@@ -773,7 +773,8 @@
     },
     "online": {
       "unreachable": "This manager could not reach its own address at {address}: {reason}",
-      "reachable": "This manager can reach its own address again at {address}"
+      "reachable": "This manager can reach its own address again at {address}",
+      "forgotten": "{address} has not answered for a while, so this manager has stopped treating it as its own address"
     },
     "config": {
       "updated": "Updated {path}",

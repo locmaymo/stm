@@ -5857,8 +5857,11 @@ function KeepOnlineCard({ t, locale, online, onSetKeepOnline }: {
   // cut the scheme in half and left `http....0.1:7876`.
   const address = shortenHost(bareHost(online?.address ?? ''));
   const note = !online || !online.enabled ? null
-    : online.status === 'no_address' ? t('console.keepOnlineNoAddress')
-      : online.status === 'unreachable' ? t('console.keepOnlineUnreachable', { address })
+    : online.status === 'unreachable' ? t('console.keepOnlineUnreachable', { address })
+      // Loopback, because nothing from outside has reached this manager yet.
+      // Worth saying rather than reporting an address as held without
+      // explaining why it is this one.
+      : online.source === 'local' ? t('console.keepOnlineLocal', { address })
         : t('console.keepOnlineHolding', { address });
   // Whatever is stored belongs in the list even when it is not one of the
   // offered values, so a console cannot quietly change a choice by showing a
@@ -5889,7 +5892,7 @@ function KeepOnlineCard({ t, locale, online, onSetKeepOnline }: {
       {note
         ? <p className={online?.status === 'unreachable' ? 'install-error' : 'text-xs text-muted-foreground'}>
           {note}
-          {online?.lastAt && online.status !== 'no_address'
+          {online?.lastAt
             ? ` ${t('console.keepOnlineLast', { when: new Date(online.lastAt).toLocaleTimeString(locale === 'vi' ? 'vi-VN' : 'en-GB') })}`
             : ''}
         </p>

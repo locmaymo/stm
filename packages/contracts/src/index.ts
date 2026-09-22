@@ -148,16 +148,16 @@ export interface StartupSettings {
 /**
  * Whether the manager keeps itself online where being unused ends a program.
  *
- * On somebody's own computer this is nothing: the program runs until it is
- * stopped. Elsewhere, a battery saver or the place this is running can put it
- * to sleep once nothing has used it for a while, and SillyTavern goes with it
- * - so the manager reaches its own address on a clock, which says it is still
- * in use.
+ * A battery saver, or the place this is running, can put the manager to sleep
+ * once nothing has used it for a while, and SillyTavern goes with it - so the
+ * manager reaches its own address on a clock, which says it is still in use.
  *
  * The address is the machine's own, never the Worker or the tunnel in front of
  * it: those leave the machine and come back through Cloudflare, which spends
- * an allowance on a request no reader made. A manager with no address of its
- * own does nothing at all.
+ * an allowance on a request no reader made. There is always one, so this is
+ * never a switch that does nothing: where nothing from outside has reached
+ * this manager, it holds its own loopback address, which is what a battery
+ * saver on somebody's own computer is watching anyway.
  */
 /**
  * How often the manager reaches its own address, and the range that allows.
@@ -176,13 +176,25 @@ export interface OnlineState {
   readonly enabled: boolean;
   /** How many minutes between attempts. */
   readonly minutes: number;
-  /** The address being kept reachable; null when this manager has none. */
+  /** The address being kept reachable; null only when this is switched off. */
   readonly address: string | null;
   /**
-   * `off` when switched off, `no_address` when there is nothing to reach,
-   * `holding` while the address answers, `unreachable` when it stopped.
+   * Where that address came from.
+   *
+   * `configured` is somebody having written it down in `STM_PUBLIC_ORIGIN`, or
+   * a platform that names itself in the environment. `seen` is the address a
+   * browser actually reached this console at - which on a platform that hands
+   * out a URL is that URL, learned rather than asked for, the same way the
+   * console already knows what to call itself when it offers a link of its
+   * own. `local` is this machine's own loopback address, which is what is left
+   * when nothing else has been seen.
    */
-  readonly status: 'off' | 'no_address' | 'holding' | 'unreachable';
+  readonly source: 'configured' | 'seen' | 'local';
+  /**
+   * `off` when switched off, `holding` while the address answers,
+   * `unreachable` when it stopped.
+   */
+  readonly status: 'off' | 'holding' | 'unreachable';
   /** When the last attempt was made, or null before there has been one. */
   readonly lastAt: string | null;
   /** Why the last attempt failed, in the words of whatever refused it. */

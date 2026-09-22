@@ -169,7 +169,7 @@
     "keepOnlineMinutes": "{count} phút",
     "keepOnlineHolding": "Đang giữ {address}.",
     "keepOnlineUnreachable": "{address} không trả lời.",
-    "keepOnlineNoAddress": "Trình quản lý này không có địa chỉ gốc để giữ, nên không cần làm gì.",
+    "keepOnlineLocal": "Chưa có địa chỉ nào từ bên ngoài mở bảng điều khiển này, nên STM tự giữ chính nó ở {address}.",
     "keepOnlineLast": "Kiểm tra lần cuối lúc {when}.",
     "keepOnlineSaveFailed": "Không lưu được tuỳ chọn này",
     "keepOnlineSaved": "Đã lưu.",
@@ -773,7 +773,8 @@
     },
     "online": {
       "unreachable": "Trình quản lý không tới được địa chỉ của chính nó tại {address}: {reason}",
-      "reachable": "Trình quản lý đã tới được địa chỉ của chính nó tại {address}"
+      "reachable": "Trình quản lý đã tới được địa chỉ của chính nó tại {address}",
+      "forgotten": "{address} đã lâu không trả lời, nên trình quản lý thôi coi đó là địa chỉ của mình"
     },
     "config": {
       "updated": "Đã cập nhật {path}",

@@ -88,6 +88,20 @@ interface PersistedManagerState {
   /** How many minutes between attempts when it is on; see `online.ts`. */
   readonly keepOnlineMinutes: number;
   /**
+   * The address a browser last reached this console at, when one has.
+   *
+   * Remembered across restarts because a restart is exactly when it matters: a
+   * manager that has just been brought back up while nobody is looking has no
+   * idea where it is, and the thing it is trying to prevent is being put to
+   * sleep again before anybody opens it. Null until a console teaches it one,
+   * and null again if that address stops answering for long enough.
+   *
+   * Not in the record the bucket keeps. It says where this machine is, not how
+   * it was set up, and a machine restored somewhere else would inherit an
+   * address belonging to the machine it replaced.
+   */
+  readonly keepOnlineOrigin: string | null;
+  /**
    * The Cloudflare account allowed to sign in to this manager, if one has
    * claimed it.
    *
@@ -172,6 +186,7 @@ export class StateStore {
         firstInstallStartedAt: null,
         keepOnline: true,
         keepOnlineMinutes: KEEP_ONLINE_DEFAULT_MINUTES,
+        keepOnlineOrigin: null,
         ownerAccountId: null,
         ownerAccountName: null,
       };
@@ -278,6 +293,26 @@ export class StateStore {
       const state = await this.load();
       if (state.keepOnline === enabled && state.keepOnlineMinutes === wanted) return;
       const updated: PersistedManagerState = { ...state, keepOnline: enabled, keepOnlineMinutes: wanted, updatedAt: this.now().toISOString() };
+      await this.write(updated);
+      this.state = updated;
+    };
+    const previous = this.adminWriteQueue;
+    this.adminWriteQueue = previous.then(operation, operation);
+    await this.adminWriteQueue;
+  }
+
+  /**
+   * Write down the address a browser reached this console at.
+   *
+   * Written rarely - it changes when the machine moves or is redeployed, not
+   * on every request - and through the same queue as every other change, so it
+   * cannot land between another write's read and its save.
+   */
+  public async setKeepOnlineOrigin(origin: string | null): Promise<void> {
+    const operation = async (): Promise<void> => {
+      const state = await this.load();
+      if (state.keepOnlineOrigin === origin) return;
+      const updated: PersistedManagerState = { ...state, keepOnlineOrigin: origin, updatedAt: this.now().toISOString() };
       await this.write(updated);
       this.state = updated;
     };
@@ -456,6 +491,21 @@ export class StateStore {
   }
 
   /**
+   * Wait for every write already queued to reach the disk.
+   *
+   * The same idea as the backup and profile stores' own `settle`. Most writes
+   * here are awaited by whoever asked for them, but not all: the address a
+   * console teaches the manager is written without anything waiting on it,
+   * because nothing needs it until the next start.
+   */
+  public async settle(): Promise<void> {
+    const previous = this.adminWriteQueue;
+    const done = previous.then(() => undefined, () => undefined);
+    this.adminWriteQueue = done;
+    await done;
+  }
+
+  /**
    * Forget the state held in memory, so the next read is of the disk again.
    *
    * For the one caller that deletes the file underneath this store: a reset.
@@ -569,6 +619,7 @@ export class StateStore {
     // nonsense number is corrected rather than obeyed or refused.
     const keepOnline = input.keepOnline !== false;
     const keepOnlineMinutes = intervalMinutes(input.keepOnlineMinutes);
+    const keepOnlineOrigin = isNullableString(input.keepOnlineOrigin) ? input.keepOnlineOrigin : null;
     // Absent in a file written before a Cloudflare account could open this
     // manager, which is a manager nobody has claimed that way.
     const ownerAccountId = isNullableString(input.ownerAccountId) ? input.ownerAccountId : null;
@@ -576,7 +627,7 @@ export class StateStore {
     // Absent in every file written before the terms could be revised under a
     // running installation, which is one that has never been asked.
     const noticeAcknowledgedAt = isNullableString(input.noticeAcknowledgedAt) ? input.noticeAcknowledgedAt : null;
-    return { ...input, accessPasswordHash, accessPasscode, accessLanEnabled, sillyTavernPort, autoStartSillyTavern, firstInstallStartedAt, keepOnline, keepOnlineMinutes, ownerAccountId, ownerAccountName, noticeAcknowledgedAt } as unknown as PersistedManagerState;
+    return { ...input, accessPasswordHash, accessPasscode, accessLanEnabled, sillyTavernPort, autoStartSillyTavern, firstInstallStartedAt, keepOnline, keepOnlineMinutes, keepOnlineOrigin, ownerAccountId, ownerAccountName, noticeAcknowledgedAt } as unknown as PersistedManagerState;
   }
 }
 
