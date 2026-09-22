@@ -1302,9 +1302,9 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     return null;
   };
 
-  /** Whether the manager keeps itself online. Reported back so the switch can go back. */
-  const setKeepOnline = async (enabled: boolean): Promise<string | null> => {
-    const response = await apiFetch('/api/v1/online', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ enabled }) });
+  /** Whether the manager keeps itself online, and how often. Reported back so the switch can go back. */
+  const setKeepOnline = async (enabled: boolean, minutes: number): Promise<string | null> => {
+    const response = await apiFetch('/api/v1/online', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ enabled, minutes }) });
     const payload: unknown = await response.json();
     if (!response.ok) return fail.body(payload, t('console.keepOnlineSaveFailed'));
     setOnline(payload as OnlineState);
@@ -5814,14 +5814,18 @@ function StartupCard({ t, startup, onSetAutoStart }: { t: Translate; startup: St
   </Card>;
 }
 
+/** The intervals offered; anything else somebody sets is shown as it is. */
+const KEEP_ONLINE_MINUTES = [5, 10, 15, 30, 60] as const;
+
 /**
  * Keeping the manager online where being unused is treated as being finished.
  *
  * On somebody's own computer this does nothing and the card says so: the
- * program runs until it is stopped, and there is no outside address to keep.
- * It earns its place on a machine somebody else operates, where a manager
- * nobody has asked anything of for a few minutes can be put to sleep and take
- * SillyTavern with it, mid-sentence, with nothing the reader can do about it.
+ * program runs until it is stopped, and there is no address of its own to
+ * keep. It earns its place where a battery saver or the machine underneath can
+ * shut the manager down once nothing has used it for a while, and SillyTavern
+ * goes with it, mid-sentence, with nothing the reader can do from where they
+ * are.
  *
  * What it reports is the address, because that is the part worth checking: a
  * switch that is on over a manager with nowhere to be reached is doing
@@ -5831,38 +5835,57 @@ function KeepOnlineCard({ t, locale, online, onSetKeepOnline }: {
   t: Translate;
   locale: LocaleCode;
   online: OnlineState | null;
-  onSetKeepOnline: (enabled: boolean) => Promise<string | null>;
+  onSetKeepOnline: (enabled: boolean, minutes: number) => Promise<string | null>;
 }) {
-  // What the switch shows while the answer is in flight, so it moves under the
-  // press rather than a second later.
-  const [pending, setPending] = useState<boolean | null>(null);
+  // What the controls show while the answer is in flight, so they move under
+  // the press rather than a second later.
+  const [pending, setPending] = useState<{ enabled: boolean; minutes: number } | null>(null);
   const [busy, setBusy] = useState(false);
   const { toast } = useToast();
-  const checked = pending ?? online?.enabled ?? null;
-  const save = async (next: boolean) => {
-    setPending(next); setBusy(true);
+  const checked = pending?.enabled ?? online?.enabled ?? null;
+  const minutes = pending?.minutes ?? online?.minutes ?? null;
+  const save = async (enabled: boolean, next: number) => {
+    setPending({ enabled, minutes: next }); setBusy(true);
     try {
-      const failure = await onSetKeepOnline(next);
+      const failure = await onSetKeepOnline(enabled, next);
       if (failure) { toast({ title: failure, tone: 'destructive' }); return; }
       toast({ title: t('console.keepOnlineSaved'), tone: 'success' });
     } finally { setPending(null); setBusy(false); }
   };
   // The address as a reader recognises it: no scheme, and the middle taken out
-  // of a long tunnel hostname. `shortenHost` wants a bare host - handed a
-  // whole URL it cut the scheme in half and left `http....0.1:7876`.
+  // of a long hostname. `shortenHost` wants a bare host - handed a whole URL it
+  // cut the scheme in half and left `http....0.1:7876`.
   const address = shortenHost(bareHost(online?.address ?? ''));
   const note = !online || !online.enabled ? null
     : online.status === 'no_address' ? t('console.keepOnlineNoAddress')
       : online.status === 'unreachable' ? t('console.keepOnlineUnreachable', { address })
         : t('console.keepOnlineHolding', { address });
+  // Whatever is stored belongs in the list even when it is not one of the
+  // offered values, so a console cannot quietly change a choice by showing a
+  // different one next to it.
+  const offered = minutes !== null && !KEEP_ONLINE_MINUTES.includes(minutes as typeof KEEP_ONLINE_MINUTES[number])
+    ? [...KEEP_ONLINE_MINUTES, minutes].sort((left, right) => left - right)
+    : [...KEEP_ONLINE_MINUTES];
   return <Card>
     <PanelHeading icon={<Globe2 />}>{t('console.keepOnlineTitle')}</PanelHeading>
     <CardContent className="grid gap-3">
       <DetailRow label={t('console.keepOnline')} hint={t('console.keepOnlineHint')}>
         {checked === null
           ? <Skeleton className="h-5 w-9" />
-          : <Switch checked={checked} disabled={busy} onCheckedChange={(next) => void save(next)} aria-label={t('console.keepOnline')} />}
+          : <Switch checked={checked} disabled={busy} onCheckedChange={(next) => void save(next, minutes ?? 15)} aria-label={t('console.keepOnline')} />}
       </DetailRow>
+      {checked && minutes !== null
+        ? <DetailRow label={t('console.keepOnlineEvery')} hint={t('console.keepOnlineEveryHint')}>
+          <Select value={minutes.toString(10)} disabled={busy} onValueChange={(next) => void save(true, Number(next))}>
+            <SelectTrigger className="w-36" aria-label={t('console.keepOnlineEvery')}><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {offered.map((value) => (
+                <SelectItem key={value} value={value.toString(10)}>{t('console.keepOnlineMinutes', { count: value.toString(10) })}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </DetailRow>
+        : null}
       {note
         ? <p className={online?.status === 'unreachable' ? 'install-error' : 'text-xs text-muted-foreground'}>
           {note}
@@ -5961,7 +5984,7 @@ interface ActionFailure {
   readonly text: string;
 }
 
-function ConfigPage({ t, locale, config, security, ports, managerTunnel, process, catalog, startup, online, onSetAutoStart, onSetKeepOnline, onSetManagerTunnel, onPortChange, onConfigUpdate, onConfigReset, onChangeManagerPassword, onSetPassword, onSignOut, onSignOutDevices, onEraseEverything }: { t: Translate; locale: LocaleCode; config: ConfigDocument | null; security: AccessGatewayState; ports: PortSettings | null; managerTunnel: TunnelState; process: ProcessState; catalog: Record<string, unknown>; startup: StartupSettings | null; online: OnlineState | null; onSetAutoStart: (enabled: boolean) => Promise<string | null>; onSetKeepOnline: (enabled: boolean) => Promise<string | null>; onSetManagerTunnel: (on: boolean) => Promise<ActionFailure | null>; onPortChange: (port: number) => Promise<string | null>; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onConfigReset: () => Promise<string | null>; onChangeManagerPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSignOut: () => Promise<void>; onSignOutDevices: () => Promise<string | null>; onEraseEverything: (password: string) => Promise<string | null> }) {
+function ConfigPage({ t, locale, config, security, ports, managerTunnel, process, catalog, startup, online, onSetAutoStart, onSetKeepOnline, onSetManagerTunnel, onPortChange, onConfigUpdate, onConfigReset, onChangeManagerPassword, onSetPassword, onSignOut, onSignOutDevices, onEraseEverything }: { t: Translate; locale: LocaleCode; config: ConfigDocument | null; security: AccessGatewayState; ports: PortSettings | null; managerTunnel: TunnelState; process: ProcessState; catalog: Record<string, unknown>; startup: StartupSettings | null; online: OnlineState | null; onSetAutoStart: (enabled: boolean) => Promise<string | null>; onSetKeepOnline: (enabled: boolean, minutes: number) => Promise<string | null>; onSetManagerTunnel: (on: boolean) => Promise<ActionFailure | null>; onPortChange: (port: number) => Promise<string | null>; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onConfigReset: () => Promise<string | null>; onChangeManagerPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSignOut: () => Promise<void>; onSignOutDevices: () => Promise<string | null>; onEraseEverything: (password: string) => Promise<string | null> }) {
   const [form, setForm] = useState<ConfigSettingsInput>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);

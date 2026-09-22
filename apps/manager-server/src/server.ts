@@ -32,7 +32,7 @@ import { TransferMeter } from './progress.js';
 import { MetricsStore } from './metrics.js';
 import { ActivityMeter } from './activity.js';
 import { ReleaseWatch } from './manager-release.js';
-import { OnlineKeeper } from './online.js';
+import { DEFAULT_INTERVAL_MINUTES, OnlineKeeper } from './online.js';
 import { applyManagerSettings, foreignManagerSettings, managerSettingsOffer, restoreFromBucketIfBlank, saveManagerSettings, type ManagerSettingsDeps } from './manager-settings.js';
 import type { ManagerSettingsRecord } from '../../../packages/contracts/src/index.js';
 import { instrumentationLoaderPath } from '../../../packages/instrumentation/src/index.js';
@@ -692,14 +692,18 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   /*
    * Keeping this manager online where being unused is treated as being over.
    *
-   * It reaches the first of the addresses above - the one this manager is
-   * actually handed out at - and does nothing at all when there is none, which
-   * is every manager reachable only from the computer it runs on. Nothing
-   * waits on it and nothing depends on it; see `online.ts`.
+   * The machine's own address, and only that: `publicOrigins` also carries the
+   * Worker in front of the tunnel and the tunnel's own hostname, and reaching
+   * either of those leaves the machine, crosses Cloudflare and comes back -
+   * spending an allowance that exists for readers on a request no reader made,
+   * at an address the platform underneath is not watching anyway.
+   *
+   * Nothing waits on it and nothing depends on it; see `online.ts`.
    */
   const online = options.online ?? new OnlineKeeper({
-    addresses: publicOrigins,
+    origin: environmentOrigin?.origin ?? null,
     enabled: persisted.keepOnline,
+    minutes: persisted.keepOnlineMinutes,
     logger: baseLogger,
   });
   online.start();
@@ -1221,8 +1225,15 @@ async function handleRequest(options: {
         sendError(response, 400, 'invalid_input', 'enabled must be true or false');
         return;
       }
-      await store.setKeepOnline(body.enabled);
-      online.setEnabled(body.enabled);
+      if (body.minutes !== undefined && (typeof body.minutes !== 'number' || !Number.isFinite(body.minutes))) {
+        sendError(response, 400, 'invalid_input', 'minutes must be a number');
+        return;
+      }
+      // Absent leaves the interval where it is, so a console that only moved
+      // the switch does not also reset a schedule somebody chose.
+      const minutes = body.minutes === undefined ? online.state().minutes : body.minutes;
+      await store.setKeepOnline(body.enabled, minutes);
+      online.setEnabled(body.enabled, minutes);
       // Not waited for. The answer is the switch having moved; what the first
       // attempt finds arrives in the next read, and this one must not sit on a
       // request to somewhere that may be timing out.
@@ -1322,7 +1333,7 @@ async function handleReset(context: RequestContext, deps: ResetDeps): Promise<vo
   // Back to what a manager nobody has touched does, along with everything
   // else: the file that said otherwise has just been deleted, and a keeper
   // still holding the old answer would disagree with the state it is in.
-  online.setEnabled(true);
+  online.setEnabled(true, DEFAULT_INTERVAL_MINUTES);
   sessions.revokeAll();
   response.setHeader('Set-Cookie', clearSessionCookie(secureCookies));
   sendJson(response, 200, {

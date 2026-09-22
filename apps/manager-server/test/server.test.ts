@@ -16,7 +16,7 @@ import type { CloudflareConnection } from '../../../packages/r2/src/index.js';
 import type { RuntimeManager } from '../../../packages/sillytavern-runtime/src/index.js';
 import type { ProcessSupervisor } from '../src/supervisor.js';
 import { ReleaseWatch } from '../src/manager-release.js';
-import { OnlineKeeper } from '../src/online.js';
+import { DEFAULT_INTERVAL_MINUTES, MAX_INTERVAL_MINUTES, OnlineKeeper } from '../src/online.js';
 import { SILLYTAVERN_PORT } from '../src/ports.js';
 
 async function createServer(options: {
@@ -2064,7 +2064,7 @@ test('a manager set up under the revision in force is never asked about it', asy
 test('the switch that keeps this manager online is written down and acted on', async (t) => {
   const reached: string[] = [];
   const online = new OnlineKeeper({
-    addresses: () => ['https://console.example.invalid'],
+    origin: 'https://console.example.invalid',
     enabled: true,
     fetch: (async (input: unknown) => { reached.push(String(input)); return new Response('{}', { status: 200 }); }) as unknown as typeof globalThis.fetch,
   });
@@ -2079,6 +2079,7 @@ test('the switch that keeps this manager online is written down and acted on', a
   const first = await (await fetch(`${base}/api/v1/online`, { headers })).json() as OnlineState;
   assert.equal(first.enabled, true);
   assert.equal(first.address, 'https://console.example.invalid');
+  assert.equal(first.minutes, DEFAULT_INTERVAL_MINUTES);
 
   const put = async (body: unknown): Promise<Response> => await fetch(`${base}/api/v1/online`, {
     method: 'PUT',
@@ -2087,13 +2088,25 @@ test('the switch that keeps this manager online is written down and acted on', a
   });
 
   assert.equal((await put({ enabled: 'yes' })).status, 400);
+  assert.equal((await put({ enabled: true, minutes: 'often' })).status, 400);
+
+  // How often is the reader's to choose, and it is held inside what the
+  // keeper will actually do rather than refused.
+  const slower = await (await put({ enabled: true, minutes: 45 })).json() as OnlineState;
+  assert.equal(slower.minutes, 45);
+  const clamped = await (await put({ enabled: true, minutes: 9_999 })).json() as OnlineState;
+  assert.equal(clamped.minutes, MAX_INTERVAL_MINUTES);
+  await put({ enabled: true, minutes: 45 });
 
   const off = await (await put({ enabled: false })).json() as OnlineState;
   assert.equal(off.enabled, false);
   assert.equal(off.status, 'off');
+  // Moving the switch alone leaves the schedule somebody chose where it is.
+  assert.equal(off.minutes, 45);
   // Written down, so the next start of this manager agrees with this console.
-  const stored = JSON.parse(await readFile(join(manager.store.paths.state, 'manager-state.json'), 'utf8')) as { keepOnline: boolean };
+  const stored = JSON.parse(await readFile(join(manager.store.paths.state, 'manager-state.json'), 'utf8')) as { keepOnline: boolean; keepOnlineMinutes: number };
   assert.equal(stored.keepOnline, false);
+  assert.equal(stored.keepOnlineMinutes, 45);
   // And acted on here: a turn of the clock while it is off reaches nothing.
   reached.length = 0;
   await manager.online.tick();
@@ -2108,4 +2121,29 @@ test('the switch that keeps this manager online is written down and acted on', a
   assert.deepEqual([...new Set(reached)], ['https://console.example.invalid/api/v1/health']);
 
   assert.equal((await fetch(`${base}/api/v1/online`)).status, 401);
+});
+test('the Worker and the tunnel are not what is kept open - the machine own address is', async (t) => {
+  const managerTunnel = fakeTunnel();
+  const manager = await createServer({
+    bootstrapPassword: 'correct horse battery staple',
+    managerTunnel,
+    proxy: fakeProxy({ manager: { url: 'https://stm.acme.workers.dev', origin: 'https://busy-lake-1234.trycloudflare.com' } }),
+    publicOrigin: 'https://this-machine.example.invalid',
+  });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+
+  // Both of the other ways in are up, and both are addresses this console is
+  // genuinely reachable at.
+  await managerTunnel.start('quick');
+  managerTunnel.publish('https://busy-lake-1234.trycloudflare.com');
+  const reachable = await (await fetch(`${base}/api/v1/manager-tunnel`, { headers: { cookie: auth.cookie } })).json() as TunnelState;
+  assert.match(reachable.url ?? '', /cloudflare|workers\.dev/u, 'the console really is reachable that way too');
+
+  const state = await (await fetch(`${base}/api/v1/online`, { headers: { cookie: auth.cookie } })).json() as OnlineState;
+  // Neither of them is this. Reaching either leaves the machine, crosses
+  // Cloudflare and comes back, spending an allowance that exists for readers
+  // on a request no reader made.
+  assert.equal(state.address, 'https://this-machine.example.invalid');
 });

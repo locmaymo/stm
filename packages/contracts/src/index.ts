@@ -149,16 +149,20 @@ export interface StartupSettings {
  * Whether the manager keeps itself online where being unused ends a program.
  *
  * On somebody's own computer this is nothing: the program runs until it is
- * stopped. On a machine somebody else operates, a process nobody has asked
- * anything of for a while can be put to sleep, and SillyTavern goes with it -
- * so the manager reaches its own outside address on a clock, which says it is
- * still in use.
+ * stopped. Elsewhere, a battery saver or the place this is running can put it
+ * to sleep once nothing has used it for a while, and SillyTavern goes with it
+ * - so the manager reaches its own address on a clock, which says it is still
+ * in use.
  *
- * A manager with no outside address does nothing at all, which is every
- * manager reachable only from the computer it runs on.
+ * The address is the machine's own, never the Worker or the tunnel in front of
+ * it: those leave the machine and come back through Cloudflare, which spends
+ * an allowance on a request no reader made. A manager with no address of its
+ * own does nothing at all.
  */
 export interface OnlineState {
   readonly enabled: boolean;
+  /** How many minutes between attempts. */
+  readonly minutes: number;
   /** The address being kept reachable; null when this manager has none. */
   readonly address: string | null;
   /**

@@ -10,31 +10,40 @@ import { logEvent, type LogSink, type OnlineState } from '../../../packages/cont
  * with it. The reader finds out by opening the address they were given and
  * waiting on a page that never arrives, or finds their chat gone mid-sentence.
  *
- * So the manager reaches its own outside address on a clock, which is the
- * plainest possible statement that it is still in use. It asks for the health
- * route, which reads nothing, writes nothing and costs one small answer.
+ * So the manager reaches its own address on a clock, which is the plainest
+ * possible statement that it is still in use. It asks for the health route,
+ * which reads nothing, writes nothing and costs one small answer.
  *
- * A manager with no outside address does nothing at all, which is every
- * manager reachable only from the computer it runs on.
+ * The address is the machine's own - what the platform serves this manager at,
+ * or whatever `STM_PUBLIC_ORIGIN` names. Deliberately not the Worker in front
+ * of the tunnel and not the tunnel's own hostname: both of those leave the
+ * machine, cross Cloudflare and come back, which spends an allowance that
+ * exists for readers on a request no reader made, and neither is the door the
+ * platform is watching. A manager with no address of its own does nothing at
+ * all.
  *
  * It does not skip a turn because somebody is reading the console, which is
  * what it used to do on the reasoning that a console being read is already
  * reaching this manager several times a minute. The reasoning is an inference
- * and the inference can be false - the reader may have arrived at the local
- * address while the one that needs keeping open is a tunnel - and what it
- * produced was a card reporting an address as held that nothing had touched.
- * A request every four minutes is a rounding error against any allowance
- * worth counting; an answer that is confidently wrong is not.
+ * and the inference can be false - the reader may have arrived somewhere other
+ * than the address being kept open - and what it produced was a card reporting
+ * an address as held that nothing had touched. An answer that is confidently
+ * wrong costs more than a request every quarter of an hour.
  */
 
 /**
- * How often the address is reached.
+ * How often the address is reached, unless somebody says otherwise.
  *
- * Under five minutes, which is the shortest of the intervals this has to stay
- * inside, and far enough under it that one refused attempt does not put the
- * manager over. It is a handful of small requests an hour.
+ * Fifteen minutes: often enough for the places that give an idle program half
+ * an hour, and rare enough to be four requests an hour against a machine that
+ * is not paying attention to them anyway. Somebody whose machine goes quiet
+ * sooner than that can say so.
  */
-const INTERVAL_MS = 4 * 60 * 1000;
+export const DEFAULT_INTERVAL_MINUTES = 15;
+
+/** What the interval may be set to, in minutes, at either end. */
+export const MIN_INTERVAL_MINUTES = 1;
+export const MAX_INTERVAL_MINUTES = 180;
 
 /** Long enough for a slow link, short enough not to overlap the next one. */
 const TIMEOUT_MS = 20_000;
@@ -43,44 +52,56 @@ const TIMEOUT_MS = 20_000;
 const HEALTH_PATH = '/api/v1/health';
 
 export interface OnlineKeeperOptions {
-  /** Every address this manager answers on from outside, best first. */
-  readonly addresses: () => readonly string[];
+  /**
+   * This machine's own address from outside, or null when it has none.
+   *
+   * Settled once, from the environment, so it is a value rather than something
+   * to ask again: a tunnel coming up does not change what the platform serves
+   * this manager at, and the tunnel is not what is kept open here.
+   */
+  readonly origin: string | null;
   /** Whether this is switched on, as the state file had it at startup. */
   readonly enabled: boolean;
+  /** How many minutes between attempts, as the state file had it. */
+  readonly minutes?: number;
   readonly fetch?: typeof globalThis.fetch;
   readonly now?: () => Date;
   readonly logger?: LogSink;
-  readonly intervalMs?: number;
+}
+
+/** A stored or requested interval, held inside what this will actually do. */
+export function intervalMinutes(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_INTERVAL_MINUTES;
+  return Math.min(MAX_INTERVAL_MINUTES, Math.max(MIN_INTERVAL_MINUTES, Math.round(value)));
 }
 
 export class OnlineKeeper {
-  private readonly addresses: () => readonly string[];
+  private readonly origin: string | null;
   private readonly fetcher: typeof globalThis.fetch;
   private readonly now: () => Date;
   private readonly logger: LogSink | null;
-  private readonly intervalMs: number;
+  private minutes: number;
   private enabled: boolean;
   private timer: NodeJS.Timeout | null = null;
   private running = false;
-  private address: string | null = null;
   private lastAt: Date | null = null;
   private reachable: boolean | null = null;
   private error: string | null = null;
-  /** So a standing failure is said once rather than every few minutes. */
+  /** So a standing failure is said once rather than every few turns. */
   private reported = false;
 
   public constructor(options: OnlineKeeperOptions) {
-    this.addresses = options.addresses;
+    this.origin = options.origin;
     this.enabled = options.enabled;
+    this.minutes = intervalMinutes(options.minutes);
     this.fetcher = options.fetch ?? globalThis.fetch;
     this.now = options.now ?? (() => new Date());
     this.logger = options.logger ?? null;
-    this.intervalMs = options.intervalMs ?? INTERVAL_MS;
   }
 
   public start(): void {
     if (this.timer) return;
-    this.timer = setInterval(() => { void this.tick(); }, this.intervalMs);
+    this.timer = setInterval(() => { void this.tick(); }, this.minutes * 60_000);
     // The manager is not kept alive by this timer. A process whose only
     // remaining work is holding itself awake has nothing left to be awake for.
     this.timer.unref();
@@ -92,27 +113,37 @@ export class OnlineKeeper {
   }
 
   /**
-   * Turn it on or off, for a reader who has said which.
+   * Turn it on or off and say how often, for a reader who has said which.
    *
    * Switching off forgets what the last attempt found. Leaving "unreachable"
    * standing on a switch that is now off would be reporting a failure of
    * something that is no longer being tried.
+   *
+   * A changed interval restarts the clock rather than waiting out the one
+   * already running: somebody who has just moved this from an hour to five
+   * minutes did it because their machine goes quiet sooner than they thought,
+   * and making them wait out the hour to find out is the wrong answer.
    */
-  public setEnabled(enabled: boolean): void {
-    if (this.enabled === enabled) return;
-    this.enabled = enabled;
-    this.reachable = null;
-    this.error = null;
-    this.reported = false;
-    if (!enabled) this.lastAt = null;
+  public setEnabled(enabled: boolean, minutes = this.minutes): void {
+    const next = intervalMinutes(minutes);
+    const moved = next !== this.minutes;
+    this.minutes = next;
+    if (this.enabled !== enabled) {
+      this.enabled = enabled;
+      this.reachable = null;
+      this.error = null;
+      this.reported = false;
+      if (!enabled) this.lastAt = null;
+    }
+    if (moved && this.timer) { this.close(); this.start(); }
   }
 
   public state(): OnlineState {
-    const address = this.enabled ? this.addresses()[0] ?? null : this.address;
     return {
       enabled: this.enabled,
-      address: this.enabled ? address : null,
-      status: this.status(address),
+      minutes: this.minutes,
+      address: this.enabled ? this.origin : null,
+      status: this.status(),
       lastAt: this.lastAt?.toISOString() ?? null,
       error: this.error,
     };
@@ -123,12 +154,11 @@ export class OnlineKeeper {
    *
    * Public so a test can take a turn without one, and so the server can take
    * the first one as soon as the switch is turned on rather than leaving the
-   * reader looking at a card that says nothing for four minutes.
+   * reader looking at a card that says nothing until the interval is up.
    */
   public async tick(): Promise<void> {
     if (!this.enabled || this.running) return;
-    const address = this.addresses()[0] ?? null;
-    this.address = address;
+    const address = this.origin;
     if (!address) return;
     this.running = true;
     try {
@@ -140,7 +170,7 @@ export class OnlineKeeper {
       if (!response.ok) throw new Error(`the address answered HTTP ${response.status.toString(10)}`);
       // The body is not read for what it says - reaching the address at all is
       // the whole of the point - but it is read so the connection can close
-      // rather than being left holding a socket open every four minutes.
+      // rather than being left holding a socket open between turns.
       await response.arrayBuffer().catch(() => undefined);
       this.settle(true, null);
     } catch (error: unknown) {
@@ -158,18 +188,18 @@ export class OnlineKeeper {
     if (!reachable && !this.reported) {
       this.reported = true;
       const reason = error ?? 'unknown error';
-      this.logger?.(logEvent('online.unreachable', `[manager] this manager could not reach its own address at ${this.address ?? 'nowhere'}: ${reason}`, { address: this.address ?? '', reason }));
+      this.logger?.(logEvent('online.unreachable', `[manager] this manager could not reach its own address at ${this.origin ?? 'nowhere'}: ${reason}`, { address: this.origin ?? '', reason }));
       return;
     }
     if (reachable && was === false) {
       this.reported = false;
-      this.logger?.(logEvent('online.reachable', `[manager] this manager can reach its own address again at ${this.address ?? 'nowhere'}`, { address: this.address ?? '' }));
+      this.logger?.(logEvent('online.reachable', `[manager] this manager can reach its own address again at ${this.origin ?? 'nowhere'}`, { address: this.origin ?? '' }));
     }
   }
 
-  private status(address: string | null): OnlineState['status'] {
+  private status(): OnlineState['status'] {
     if (!this.enabled) return 'off';
-    if (!address) return 'no_address';
+    if (!this.origin) return 'no_address';
     if (this.reachable === false) return 'unreachable';
     return 'holding';
   }

@@ -5,6 +5,7 @@ import type { ManagerState } from '../../../packages/contracts/src/index.js';
 import { getPlatformPaths, type PlatformPaths } from '../../../packages/platform/src/index.js';
 import { LEGAL_META } from '../../../packages/legal/src/index.js';
 import { SILLYTAVERN_PORT } from './ports.js';
+import { DEFAULT_INTERVAL_MINUTES, intervalMinutes } from './online.js';
 import { MANAGER_VERSION } from './version.js';
 
 const STATE_FILE_NAME = 'manager-state.json';
@@ -84,6 +85,8 @@ interface PersistedManagerState {
    * would rather the machine be allowed to go quiet.
    */
   readonly keepOnline: boolean;
+  /** How many minutes between attempts when it is on; see `online.ts`. */
+  readonly keepOnlineMinutes: number;
   /**
    * The Cloudflare account allowed to sign in to this manager, if one has
    * claimed it.
@@ -168,6 +171,7 @@ export class StateStore {
         autoStartSillyTavern: true,
         firstInstallStartedAt: null,
         keepOnline: true,
+        keepOnlineMinutes: DEFAULT_INTERVAL_MINUTES,
         ownerAccountId: null,
         ownerAccountName: null,
       };
@@ -267,12 +271,13 @@ export class StateStore {
     await this.adminWriteQueue;
   }
 
-  /** Whether the manager keeps itself online; see `online.ts`. */
-  public async setKeepOnline(enabled: boolean): Promise<void> {
+  /** Whether the manager keeps itself online, and how often; see `online.ts`. */
+  public async setKeepOnline(enabled: boolean, minutes: number): Promise<void> {
+    const wanted = intervalMinutes(minutes);
     const operation = async (): Promise<void> => {
       const state = await this.load();
-      if (state.keepOnline === enabled) return;
-      const updated: PersistedManagerState = { ...state, keepOnline: enabled, updatedAt: this.now().toISOString() };
+      if (state.keepOnline === enabled && state.keepOnlineMinutes === wanted) return;
+      const updated: PersistedManagerState = { ...state, keepOnline: enabled, keepOnlineMinutes: wanted, updatedAt: this.now().toISOString() };
       await this.write(updated);
       this.state = updated;
     };
@@ -559,8 +564,11 @@ export class StateStore {
     const autoStartSillyTavern = input.autoStartSillyTavern !== false;
     const firstInstallStartedAt = isNullableString(input.firstInstallStartedAt) ? input.firstInstallStartedAt : null;
     // Absent in a file written before the manager kept itself online, which is
-    // on by default, so only an explicit `false` turns it off.
+    // on by default, so only an explicit `false` turns it off. The interval is
+    // held inside what the keeper will actually do, so a file carrying a
+    // nonsense number is corrected rather than obeyed or refused.
     const keepOnline = input.keepOnline !== false;
+    const keepOnlineMinutes = intervalMinutes(input.keepOnlineMinutes);
     // Absent in a file written before a Cloudflare account could open this
     // manager, which is a manager nobody has claimed that way.
     const ownerAccountId = isNullableString(input.ownerAccountId) ? input.ownerAccountId : null;
@@ -568,7 +576,7 @@ export class StateStore {
     // Absent in every file written before the terms could be revised under a
     // running installation, which is one that has never been asked.
     const noticeAcknowledgedAt = isNullableString(input.noticeAcknowledgedAt) ? input.noticeAcknowledgedAt : null;
-    return { ...input, accessPasswordHash, accessPasscode, accessLanEnabled, sillyTavernPort, autoStartSillyTavern, firstInstallStartedAt, keepOnline, ownerAccountId, ownerAccountName, noticeAcknowledgedAt } as unknown as PersistedManagerState;
+    return { ...input, accessPasswordHash, accessPasscode, accessLanEnabled, sillyTavernPort, autoStartSillyTavern, firstInstallStartedAt, keepOnline, keepOnlineMinutes, ownerAccountId, ownerAccountName, noticeAcknowledgedAt } as unknown as PersistedManagerState;
   }
 }
 
