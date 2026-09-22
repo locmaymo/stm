@@ -212,6 +212,19 @@ test('what the bucket remembers about the account goes through the Worker too', 
   assert.equal(settings?.label, 'laptop');
   assert.equal(settings?.accessLanEnabled, true);
 
+  /*
+   * And the record changes hands when the machine does, even when the setup
+   * is word for word the same.
+   *
+   * Which is exactly the case after a restore: the machine that restored has
+   * settings identical to the record it restored, so the write was skipped as
+   * "nothing has changed" and the record went on naming the machine it came
+   * from. The console then offered that setup to the machine already running
+   * it, for the life of the bucket.
+   */
+  assert.equal(await first.r2.saveManagerSettings({ ...SETTINGS, installId: 'moved-here' }), true);
+  assert.equal((await first.r2.loadManagerSettings())?.installId, 'moved-here');
+
   // Checking the bucket settles up the count of charged operations, which is
   // the other document; both keys are under the prefix the Worker allows.
   const checked = await first.r2.inspect();

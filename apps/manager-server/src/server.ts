@@ -2247,6 +2247,18 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
  */
 async function withProxyUrl(state: TunnelState, proxy: ProxyWorkerManager | null, cloudflare: CloudflareConnection | null, target: ProxyWorkerTarget): Promise<TunnelState> {
   if (!proxy) return { ...state, proxyUrl: null, proxyPending: false };
+  /*
+   * A fixed address is an address only while something is behind it.
+   *
+   * The Worker outlives the tunnel on purpose - that is what makes the
+   * address permanent - and it says so politely when there is no tunnel
+   * there. But the console went on listing it under "Remote, any device",
+   * with a link and a QR code, on a card whose own heading said Offline. Turn
+   * the tunnel off, hand somebody the code, and what their phone gets is a
+   * page explaining that there is nothing here. It is the tunnel being off
+   * that they need to be told, and this is where that is known.
+   */
+  if (state.mode === 'off') return { ...state, proxyUrl: null, proxyPending: false };
   const record = await proxy.recordFor(target).catch(() => null);
   const expected = cloudflare ? await cloudflare.workersAccount().catch(() => null) !== null : false;
   // A tunnel with no address of its own has nothing for a Worker to follow:

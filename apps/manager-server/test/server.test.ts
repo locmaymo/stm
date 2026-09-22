@@ -1877,6 +1877,41 @@ test('nothing is restored from an account another machine has taken', async (t) 
   }
 });
 
+/*
+ * A permanent address is still only an address while a tunnel is behind it.
+ *
+ * The Worker outlives the tunnel on purpose, and says so politely when there
+ * is nothing there - but the console went on listing it under "Remote, any
+ * device", with a link and a QR code, on a card whose own heading said
+ * Offline. Turn the tunnel off, hand somebody the code, and what their phone
+ * gets is a page explaining that there is nothing here.
+ */
+test('a tunnel that is off has no address, fixed or otherwise', async (t) => {
+  const tunnel = fakeTunnel();
+  const manager = await createServer({
+    bootstrapPassword: 'correct horse battery staple',
+    managerTunnel: tunnel,
+    proxy: fakeProxy({ manager: { url: 'https://stm.acme.workers.dev', origin: 'https://today.trycloudflare.com' } }),
+    cloudflare: { workersAccount: async () => ({ id: 'account-1', name: 'Acme' }) },
+  });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  const read = async (): Promise<TunnelState> =>
+    await (await fetch(`${base}/api/v1/manager-tunnel`, { headers: { cookie: auth.cookie } })).json() as TunnelState;
+
+  await tunnel.start('quick');
+  tunnel.publish('https://today.trycloudflare.com');
+  assert.equal((await read()).proxyUrl, 'https://stm.acme.workers.dev');
+
+  // And off again. The Worker is still deployed - that is what makes the
+  // address permanent - but there is nothing to reach through it.
+  await tunnel.disable();
+  const off = await read();
+  assert.equal(off.proxyUrl, null);
+  assert.equal(off.proxyPending, false);
+});
+
 test('without a Cloudflare account there is no fixed address to wait for', async (t) => {
   const tunnel = fakeTunnel();
   const manager = await createServer({ bootstrapPassword: 'correct horse battery staple', managerTunnel: tunnel, proxy: fakeProxy({}), cloudflare: { workersAccount: async () => null } });

@@ -181,7 +181,10 @@ interface StoredR2Config {
    * The setup another machine left here that the reader has already answered.
    *
    * Held as the `writtenAt` of the record they answered about, so a machine
-   * that later writes a different setup is something new and is offered again.
+   * that later writes a different setup is something new and is offered again
+   * - and so a different bucket, holding a different record, asks again by
+   * itself without this having to be cleared when the backups move.
+   *
    * It was remembered in the browser, which is not where it belongs: until
    * this machine has said what it wants, nothing here may be uploaded over
    * what the bucket is holding, and that is a decision the manager has to know
@@ -1219,9 +1222,6 @@ export class R2Manager {
       lastColdUploadAt: null,
       lastFingerprint: null,
       lastSnapshot: null,
-      // A different bucket is a different question. Whatever was answered
-      // about the last one says nothing about what this one holds.
-      settingsOfferAnswered: null,
       usage: {
         ...config.usage,
         storageBytes: found.totalBytes,
@@ -1385,7 +1385,9 @@ export class R2Manager {
      * over the record, or this one failed a write and does not know it - and
      * in exactly those cases the press has to go and look.
      */
-    if (!options.force && settingsUnchanged(this.settingsSent, full) && now.getTime() - this.settingsSentAt < MANAGER_SETTINGS_MIN_INTERVAL_MS) return false;
+    // Whose setup it is counts here too, and for the same reason it counts
+    // against the stored record below: it is not part of the comparison.
+    if (!options.force && settingsUnchanged(this.settingsSent, full) && this.settingsSent?.installId === full.installId && now.getTime() - this.settingsSentAt < MANAGER_SETTINGS_MIN_INTERVAL_MS) return false;
     try {
       const usable = await this.requireUsable();
       /*
@@ -1408,7 +1410,17 @@ export class R2Manager {
       // paid for. This is what stops a manager which restarts often from
       // writing the same settings on every start.
       const stored = await readManagerSettings(client, MANAGER_SETTINGS_KEY);
-      if (settingsUnchanged(stored, full)) {
+      /*
+       * Unchanged, and this machine's - both, because the record says whose
+       * setup it is and that is not part of the comparison.
+       *
+       * A machine that has just restored another machine's settings has
+       * settings identical to the record it restored, so the write was
+       * skipped and the record went on naming the machine it came from. The
+       * console then offered that machine's setup to the machine already
+       * running it, for the life of the bucket.
+       */
+      if (settingsUnchanged(stored, full) && stored?.installId === full.installId) {
         this.settingsSent = stored;
         this.settingsSentAt = now.getTime();
         await this.recordCharges();
