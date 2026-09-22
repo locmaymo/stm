@@ -33,7 +33,7 @@ import { availableUpdate, readDismissedManagerRelease, readDismissedUpdate, save
 import { readDismissedDisplaced, readDismissedRecovery, readDismissedSettings, saveDismissedDisplaced, saveDismissedRecovery, saveDismissedSettings, shouldOfferSettings, shouldShowDisplaced, shouldShowRecovery } from './settings-offer.js';
 import { apiFetch, onSessionExpired, resetSessionWatch, sessionToken, setSessionToken } from './session.js';
 import { collectCloudflareResult, framed, openReturnWindow, popupsBlocked, whenAbandoned, type CollectedResult } from './oauth.js';
-import type { AccessGatewayState, BackupManifest, CloudflareAccountProblem, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LegalReview, LogEntry, LogSourceFilter, ManagerRelease, ManagerSettingsOffer, ManagerUpdateStatus, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, BackupManifest, CloudflareAccountProblem, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LegalReview, LogEntry, LogSourceFilter, ManagerRelease, ManagerSettingsOffer, ManagerUpdateStatus, OnlineState, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, isCloudJob, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
 import { usePoll } from './use-poll.js';
@@ -41,7 +41,7 @@ import { POLL_BACKGROUND_MS, POLL_CARD_MS, POLL_LIVE_MS, POLL_RELEASE_MS, status
 import { translateLogEntry, translateStep } from './log-format.js';
 import { QrCode } from './qr-code.js';
 import { CLOUDFLARE_ORANGE, CloudflareMark } from './cloudflare-mark.js';
-import { localHost, publicAddress, reachableAddresses, shortenHost } from './addresses.js';
+import { bareHost, localHost, publicAddress, reachableAddresses, shortenHost } from './addresses.js';
 import { EmbedStage } from './embed-stage.js';
 import { LegalCredit, LegalDialog, LEGAL_REVISION } from './legal-dialog.js';
 import { legalBundle, legalRevision, type LegalDocumentId } from '../../../packages/legal/src/index.js';
@@ -813,6 +813,8 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
   const backgroundJobSeen = useRef<string | null>(null);
   /** What the manager does with SillyTavern on its own way up. Null until read. */
   const [startup, setStartup] = useState<StartupSettings | null>(null);
+  /** Whether the manager keeps itself online, and how that is going. */
+  const [online, setOnline] = useState<OnlineState | null>(null);
   const [logSource, setLogSource] = useState<LogSourceFilter>('all');
   const [logQuery, setLogQuery] = useState('');
   const [logsExpanded, setLogsExpanded] = useState(false);
@@ -1119,6 +1121,24 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     }
   }, { intervalMs: POLL_RELEASE_MS });
 
+  /*
+   * How keeping this manager online is going, while the page showing it is up.
+   *
+   * Only there: the switch and what it reports live on the settings page, and
+   * a console sitting on the Overview has no use for the answer. What it does
+   * change without anybody pressing anything is the address - a tunnel coming
+   * up gives the manager one it did not have a moment ago - so on that page it
+   * is worth asking again rather than showing what was true at load.
+   */
+  usePoll(async () => {
+    try {
+      const response = await apiFetch('/api/v1/online', { credentials: 'same-origin' });
+      if (response.ok) setOnline(await response.json() as OnlineState);
+    } catch {
+      // The card keeps what it last knew, and the next one asks again.
+    }
+  }, { intervalMs: POLL_BACKGROUND_MS, enabled: page === 'config' });
+
   useEffect(() => {
     const onHashChange = () => {
       const next = pageFromHash();
@@ -1140,10 +1160,12 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
       apiFetch('/api/v1/backups', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<{ backups: BackupManifest[] }> : null),
       apiFetch('/api/v1/startup', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<{ startup: StartupSettings }> : null),
       apiFetch('/api/v1/legal', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<LegalReview> : null),
-    ]).then(([versionPayload, installationPayload, profilePayload, backupPayload, startupPayload, legalPayload]) => {
+      apiFetch('/api/v1/online', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<OnlineState> : null),
+    ]).then(([versionPayload, installationPayload, profilePayload, backupPayload, startupPayload, legalPayload, onlinePayload]) => {
       if (cancelled) return;
       if (startupPayload) setStartup(startupPayload.startup);
       if (legalPayload) setLegalReview(legalPayload);
+      if (onlinePayload) setOnline(onlinePayload);
       if (versionPayload) setVersions(versionPayload.versions);
       if (installationPayload) {
         setInstallations(installationPayload.installations);
@@ -1277,6 +1299,15 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     const payload = await response.json() as { startup?: StartupSettings; error?: { message?: string } };
     if (!response.ok || !payload.startup) return fail.body(payload, t('console.startupSaveFailed'));
     setStartup(payload.startup);
+    return null;
+  };
+
+  /** Whether the manager keeps itself online. Reported back so the switch can go back. */
+  const setKeepOnline = async (enabled: boolean): Promise<string | null> => {
+    const response = await apiFetch('/api/v1/online', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ enabled }) });
+    const payload: unknown = await response.json();
+    if (!response.ok) return fail.body(payload, t('console.keepOnlineSaveFailed'));
+    setOnline(payload as OnlineState);
     return null;
   };
 
@@ -1664,7 +1695,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
                 }}
               /></div>
               : null}
-            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} locale={preferences.locale} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} startup={startup} onSetAutoStart={setAutoStartSillyTavern} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} onEraseEverything={eraseEverything} /> : <ResourcePanel page={page} t={t} />}
+            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} locale={preferences.locale} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} startup={startup} online={online} onSetAutoStart={setAutoStartSillyTavern} onSetKeepOnline={setKeepOnline} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} onEraseEverything={eraseEverything} /> : <ResourcePanel page={page} t={t} />}
           </PageContainer>
           <MobileNav
             items={navigation.map(({ id, icon }) => ({ id, icon, href: `#${id}`, label: t(`nav.${id}`) }))}
@@ -5783,6 +5814,67 @@ function StartupCard({ t, startup, onSetAutoStart }: { t: Translate; startup: St
   </Card>;
 }
 
+/**
+ * Keeping the manager online where being unused is treated as being finished.
+ *
+ * On somebody's own computer this does nothing and the card says so: the
+ * program runs until it is stopped, and there is no outside address to keep.
+ * It earns its place on a machine somebody else operates, where a manager
+ * nobody has asked anything of for a few minutes can be put to sleep and take
+ * SillyTavern with it, mid-sentence, with nothing the reader can do about it.
+ *
+ * What it reports is the address, because that is the part worth checking: a
+ * switch that is on over a manager with nowhere to be reached is doing
+ * nothing, and saying "on" over that would be a lie of omission.
+ */
+function KeepOnlineCard({ t, locale, online, onSetKeepOnline }: {
+  t: Translate;
+  locale: LocaleCode;
+  online: OnlineState | null;
+  onSetKeepOnline: (enabled: boolean) => Promise<string | null>;
+}) {
+  // What the switch shows while the answer is in flight, so it moves under the
+  // press rather than a second later.
+  const [pending, setPending] = useState<boolean | null>(null);
+  const [busy, setBusy] = useState(false);
+  const { toast } = useToast();
+  const checked = pending ?? online?.enabled ?? null;
+  const save = async (next: boolean) => {
+    setPending(next); setBusy(true);
+    try {
+      const failure = await onSetKeepOnline(next);
+      if (failure) { toast({ title: failure, tone: 'destructive' }); return; }
+      toast({ title: t('console.keepOnlineSaved'), tone: 'success' });
+    } finally { setPending(null); setBusy(false); }
+  };
+  // The address as a reader recognises it: no scheme, and the middle taken out
+  // of a long tunnel hostname. `shortenHost` wants a bare host - handed a
+  // whole URL it cut the scheme in half and left `http....0.1:7876`.
+  const address = shortenHost(bareHost(online?.address ?? ''));
+  const note = !online || !online.enabled ? null
+    : online.status === 'no_address' ? t('console.keepOnlineNoAddress')
+      : online.status === 'unreachable' ? t('console.keepOnlineUnreachable', { address })
+        : t('console.keepOnlineHolding', { address });
+  return <Card>
+    <PanelHeading icon={<Globe2 />}>{t('console.keepOnlineTitle')}</PanelHeading>
+    <CardContent className="grid gap-3">
+      <DetailRow label={t('console.keepOnline')} hint={t('console.keepOnlineHint')}>
+        {checked === null
+          ? <Skeleton className="h-5 w-9" />
+          : <Switch checked={checked} disabled={busy} onCheckedChange={(next) => void save(next)} aria-label={t('console.keepOnline')} />}
+      </DetailRow>
+      {note
+        ? <p className={online?.status === 'unreachable' ? 'install-error' : 'text-xs text-muted-foreground'}>
+          {note}
+          {online?.lastAt && online.status !== 'no_address'
+            ? ` ${t('console.keepOnlineLast', { when: new Date(online.lastAt).toLocaleTimeString(locale === 'vi' ? 'vi-VN' : 'en-GB') })}`
+            : ''}
+        </p>
+        : null}
+    </CardContent>
+  </Card>;
+}
+
 function PortsCard({ t, ports, process, busy, onPortChange }: { t: Translate; ports: PortSettings | null; process: ProcessState; busy: boolean; onPortChange: (port: number) => Promise<string | null> }) {
   const [value, setValue] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -5869,7 +5961,7 @@ interface ActionFailure {
   readonly text: string;
 }
 
-function ConfigPage({ t, locale, config, security, ports, managerTunnel, process, catalog, startup, onSetAutoStart, onSetManagerTunnel, onPortChange, onConfigUpdate, onConfigReset, onChangeManagerPassword, onSetPassword, onSignOut, onSignOutDevices, onEraseEverything }: { t: Translate; locale: LocaleCode; config: ConfigDocument | null; security: AccessGatewayState; ports: PortSettings | null; managerTunnel: TunnelState; process: ProcessState; catalog: Record<string, unknown>; startup: StartupSettings | null; onSetAutoStart: (enabled: boolean) => Promise<string | null>; onSetManagerTunnel: (on: boolean) => Promise<ActionFailure | null>; onPortChange: (port: number) => Promise<string | null>; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onConfigReset: () => Promise<string | null>; onChangeManagerPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSignOut: () => Promise<void>; onSignOutDevices: () => Promise<string | null>; onEraseEverything: (password: string) => Promise<string | null> }) {
+function ConfigPage({ t, locale, config, security, ports, managerTunnel, process, catalog, startup, online, onSetAutoStart, onSetKeepOnline, onSetManagerTunnel, onPortChange, onConfigUpdate, onConfigReset, onChangeManagerPassword, onSetPassword, onSignOut, onSignOutDevices, onEraseEverything }: { t: Translate; locale: LocaleCode; config: ConfigDocument | null; security: AccessGatewayState; ports: PortSettings | null; managerTunnel: TunnelState; process: ProcessState; catalog: Record<string, unknown>; startup: StartupSettings | null; online: OnlineState | null; onSetAutoStart: (enabled: boolean) => Promise<string | null>; onSetKeepOnline: (enabled: boolean) => Promise<string | null>; onSetManagerTunnel: (on: boolean) => Promise<ActionFailure | null>; onPortChange: (port: number) => Promise<string | null>; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onConfigReset: () => Promise<string | null>; onChangeManagerPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSignOut: () => Promise<void>; onSignOutDevices: () => Promise<string | null>; onEraseEverything: (password: string) => Promise<string | null> }) {
   const [form, setForm] = useState<ConfigSettingsInput>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -6090,6 +6182,9 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
       onConfirm={() => applyManagerTunnel(false)}
     />
     <StartupCard t={t} startup={startup} onSetAutoStart={onSetAutoStart} />
+    {/* Under what the manager does when it opens, because this is what it
+        does for the rest of the time it is open. */}
+    <KeepOnlineCard t={t} locale={locale} online={online} onSetKeepOnline={onSetKeepOnline} />
     <PortsCard t={t} ports={ports} process={process} busy={busy} onPortChange={onPortChange} />
     {/* One form, two errands. Opened from the row above it changes a password
         that exists; opened by the link switch it sets the first one there has

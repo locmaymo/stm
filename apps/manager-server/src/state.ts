@@ -75,6 +75,16 @@ interface PersistedManagerState {
    */
   readonly firstInstallStartedAt: string | null;
   /**
+   * Whether the manager keeps itself online; see `online.ts`.
+   *
+   * On, because the cost of it being on where it is not needed is nothing -
+   * a manager with no outside address never makes a request - and the cost of
+   * it being off where it is needed is SillyTavern disappearing mid-sentence
+   * on a machine the reader cannot do anything about. Off is for somebody who
+   * would rather the machine be allowed to go quiet.
+   */
+  readonly keepOnline: boolean;
+  /**
    * The Cloudflare account allowed to sign in to this manager, if one has
    * claimed it.
    *
@@ -157,6 +167,7 @@ export class StateStore {
         noticeAcknowledgedAt: null,
         autoStartSillyTavern: true,
         firstInstallStartedAt: null,
+        keepOnline: true,
         ownerAccountId: null,
         ownerAccountName: null,
       };
@@ -248,6 +259,20 @@ export class StateStore {
         setupAcceptedAt: state.setupAcceptedAt ?? now,
         updatedAt: now,
       };
+      await this.write(updated);
+      this.state = updated;
+    };
+    const previous = this.adminWriteQueue;
+    this.adminWriteQueue = previous.then(operation, operation);
+    await this.adminWriteQueue;
+  }
+
+  /** Whether the manager keeps itself online; see `online.ts`. */
+  public async setKeepOnline(enabled: boolean): Promise<void> {
+    const operation = async (): Promise<void> => {
+      const state = await this.load();
+      if (state.keepOnline === enabled) return;
+      const updated: PersistedManagerState = { ...state, keepOnline: enabled, updatedAt: this.now().toISOString() };
       await this.write(updated);
       this.state = updated;
     };
@@ -533,6 +558,9 @@ export class StateStore {
     // is settled a moment later by there already being one.
     const autoStartSillyTavern = input.autoStartSillyTavern !== false;
     const firstInstallStartedAt = isNullableString(input.firstInstallStartedAt) ? input.firstInstallStartedAt : null;
+    // Absent in a file written before the manager kept itself online, which is
+    // on by default, so only an explicit `false` turns it off.
+    const keepOnline = input.keepOnline !== false;
     // Absent in a file written before a Cloudflare account could open this
     // manager, which is a manager nobody has claimed that way.
     const ownerAccountId = isNullableString(input.ownerAccountId) ? input.ownerAccountId : null;
@@ -540,7 +568,7 @@ export class StateStore {
     // Absent in every file written before the terms could be revised under a
     // running installation, which is one that has never been asked.
     const noticeAcknowledgedAt = isNullableString(input.noticeAcknowledgedAt) ? input.noticeAcknowledgedAt : null;
-    return { ...input, accessPasswordHash, accessPasscode, accessLanEnabled, sillyTavernPort, autoStartSillyTavern, firstInstallStartedAt, ownerAccountId, ownerAccountName, noticeAcknowledgedAt } as unknown as PersistedManagerState;
+    return { ...input, accessPasswordHash, accessPasscode, accessLanEnabled, sillyTavernPort, autoStartSillyTavern, firstInstallStartedAt, keepOnline, ownerAccountId, ownerAccountName, noticeAcknowledgedAt } as unknown as PersistedManagerState;
   }
 }
 

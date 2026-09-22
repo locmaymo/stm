@@ -5,7 +5,7 @@ import { createReadStream } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import { createSocket } from 'node:dgram';
 import { extname, join, relative, resolve, sep } from 'node:path';
-import { applyQuery, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, OPERATION_JOB_KINDS, type ApiErrorBody, type ConfigUpdateInput, type ConsoleStatus, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogSink, type LogSourceFilter, type LegalReview, type ManagerPorts, type ManagerUpdateStatus, type PortSettings, type Profile, type ProfileLayout, type SetupStatus, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
+import { applyQuery, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, OPERATION_JOB_KINDS, type ApiErrorBody, type ConfigUpdateInput, type ConsoleStatus, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogSink, type LogSourceFilter, type LegalReview, type ManagerPorts, type ManagerUpdateStatus, type OnlineState, type PortSettings, type Profile, type ProfileLayout, type SetupStatus, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
 import { getPlatformPaths, storageDurability, storageReport, type PlatformPaths } from '../../../packages/platform/src/index.js';
 import { INSTALL_CANCELED, RuntimeError, RuntimeManager, type InstallationProgress } from '../../../packages/sillytavern-runtime/src/index.js';
 import { hashPassword, MIN_PASSWORD_LENGTH, validatePasscode, validatePassword, verifyPassword } from './password.js';
@@ -32,6 +32,7 @@ import { TransferMeter } from './progress.js';
 import { MetricsStore } from './metrics.js';
 import { ActivityMeter } from './activity.js';
 import { ReleaseWatch } from './manager-release.js';
+import { OnlineKeeper } from './online.js';
 import { applyManagerSettings, foreignManagerSettings, managerSettingsOffer, restoreFromBucketIfBlank, saveManagerSettings, type ManagerSettingsDeps } from './manager-settings.js';
 import type { ManagerSettingsRecord } from '../../../packages/contracts/src/index.js';
 import { instrumentationLoaderPath } from '../../../packages/instrumentation/src/index.js';
@@ -157,6 +158,13 @@ export interface ManagerServerOptions {
    */
   readonly releases?: ReleaseWatch;
   /**
+   * What keeps this manager online; see `online.ts`.
+   *
+   * Overridable so a test can watch it take a turn against a clock it holds,
+   * rather than against four real minutes.
+   */
+  readonly online?: OnlineKeeper;
+  /**
    * Called when a launcher that knows STM_SHUTDOWN_TOKEN asks to shut down.
    *
    * Windows has no SIGTERM, so a launcher closing its window can only kill this
@@ -184,6 +192,7 @@ export interface ManagerServer {
   readonly config: ConfigStore;
   readonly telemetry: TelemetryTransport;
   readonly releases: ReleaseWatch;
+  readonly online: OnlineKeeper;
   readonly port: number;
   close(): Promise<void>;
 }
@@ -680,6 +689,21 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     // depends on it, so there is nothing to report.
   }
 
+  /*
+   * Keeping this manager online where being unused is treated as being over.
+   *
+   * It reaches the first of the addresses above - the one this manager is
+   * actually handed out at - and does nothing at all when there is none, which
+   * is every manager reachable only from the computer it runs on. Nothing
+   * waits on it and nothing depends on it; see `online.ts`.
+   */
+  const online = options.online ?? new OnlineKeeper({
+    addresses: publicOrigins,
+    enabled: persisted.keepOnline,
+    logger: baseLogger,
+  });
+  online.start();
+
   const environmentPassword = env.STM_ADMIN_PASSWORD;
   if (environmentPassword && !persisted.adminPasswordHash) {
     const passwordError = validatePassword(environmentPassword);
@@ -738,6 +762,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       config,
       system,
       releases,
+      online,
       proxy,
       publishProxies,
       shutdownToken,
@@ -866,9 +891,10 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     config,
     telemetry,
     releases,
+    online,
     // The meter closes first, so the part of today that has just been spent is
     // written down before the transport looks for finished days.
-    close: async () => { await activity.close(); await telemetry.close(); await scheduler.close(); await tunnel.close(); await managerTunnel.close(); await gateway.close(); await supervisor.close(); await backups.settle(); await profiles.settle(); await closeServer(server); },
+    close: async () => { online.close(); await activity.close(); await telemetry.close(); await scheduler.close(); await tunnel.close(); await managerTunnel.close(); await gateway.close(); await supervisor.close(); await backups.settle(); await profiles.settle(); await closeServer(server); },
   };
 }
 
@@ -912,6 +938,8 @@ async function handleRequest(options: {
   readonly system: SystemStore;
   /** Whether a newer manager has been published; see `manager-release.ts`. */
   readonly releases: ReleaseWatch;
+  /** What keeps this manager online; see `online.ts`. */
+  readonly online: OnlineKeeper;
   readonly proxy: ProxyWorkerManager | null;
   /** Put the fixed addresses in place, for a Cloudflare account just connected. */
   readonly publishProxies: () => void;
@@ -926,7 +954,7 @@ async function handleRequest(options: {
   readonly autoInstall: boolean;
   readonly onShutdownRequest: (() => void) | undefined;
 }): Promise<void> {
-  const { request, response, store, sessions, rateLimiter, handoffs, startedAt, publicOrigins, proxiedOrigin, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, releases, proxy, publishProxies, shutdownToken, autoInstall, onShutdownRequest } = options;
+  const { request, response, store, sessions, rateLimiter, handoffs, startedAt, publicOrigins, proxiedOrigin, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, releases, online, proxy, publishProxies, shutdownToken, autoInstall, onShutdownRequest } = options;
   // Whether the browser's side of this connection is HTTPS, which is not the
   // same question as whether ours is: a hosted console is reached over HTTPS
   // that a proxy terminates before us, and only the proxy's own header says so.
@@ -1150,7 +1178,7 @@ async function handleRequest(options: {
     const session = requireSession(context, sessions);
     if (!session) return;
     if (!requireCsrf(context, session.csrfToken)) return;
-    await handleReset(context, { store, sessions, jobs, supervisor, tunnel, managerTunnel, gateway, runtime, profiles, backups, logger, secureCookies });
+    await handleReset(context, { store, sessions, jobs, supervisor, tunnel, managerTunnel, gateway, runtime, profiles, backups, online, logger, secureCookies });
     return;
   }
 
@@ -1171,6 +1199,36 @@ async function handleRequest(options: {
     if (releases.status().checkedAt === null) await releases.check();
     else void releases.check().catch(() => undefined);
     sendJson(response, 200, releases.status() satisfies ManagerUpdateStatus);
+    return;
+  }
+
+  /*
+   * Whether this manager keeps itself online, and how that is going.
+   *
+   * Here rather than with the runtime routes for the same reason as the one
+   * above: it is about the manager rather than about anything it runs, and
+   * what it needs is the keeper, which the runtime routes have no business
+   * holding. Writing it is two things at once - the file, so the next start
+   * agrees, and the keeper, so this one does.
+   */
+  if (pathname === '/api/v1/online' && (method === 'GET' || method === 'PUT')) {
+    const session = requireSession(context, sessions);
+    if (!session) return;
+    if (method === 'PUT') {
+      if (!requireCsrf(context, session.csrfToken)) return;
+      const body = await readJson(request);
+      if (!isRecord(body) || typeof body.enabled !== 'boolean') {
+        sendError(response, 400, 'invalid_input', 'enabled must be true or false');
+        return;
+      }
+      await store.setKeepOnline(body.enabled);
+      online.setEnabled(body.enabled);
+      // Not waited for. The answer is the switch having moved; what the first
+      // attempt finds arrives in the next read, and this one must not sit on a
+      // request to somewhere that may be timing out.
+      if (body.enabled) void online.tick().catch(() => undefined);
+    }
+    sendJson(response, 200, online.state() satisfies OnlineState);
     return;
   }
 
@@ -1201,6 +1259,7 @@ interface ResetDeps {
   readonly runtime: RuntimeManager;
   readonly profiles: ProfileStore;
   readonly backups: BackupStore;
+  readonly online: OnlineKeeper;
   readonly logger: LogSink;
   readonly secureCookies: boolean;
 }
@@ -1232,7 +1291,7 @@ interface ResetDeps {
  */
 async function handleReset(context: RequestContext, deps: ResetDeps): Promise<void> {
   const { request, response } = context;
-  const { store, sessions, jobs, supervisor, tunnel, managerTunnel, gateway, runtime, profiles, backups, logger, secureCookies } = deps;
+  const { store, sessions, jobs, supervisor, tunnel, managerTunnel, gateway, runtime, profiles, backups, online, logger, secureCookies } = deps;
   const body = await readJson(request);
   const password = isRecord(body) && typeof body.password === 'string' ? body.password : '';
   const persisted = await store.getPersisted();
@@ -1260,6 +1319,10 @@ async function handleReset(context: RequestContext, deps: ResetDeps): Promise<vo
   gateway.setPassword(null, false);
   gateway.signOutEveryone();
   await gateway.setLan(false);
+  // Back to what a manager nobody has touched does, along with everything
+  // else: the file that said otherwise has just been deleted, and a keeper
+  // still holding the old answer would disagree with the state it is in.
+  online.setEnabled(true);
   sessions.revokeAll();
   response.setHeader('Set-Cookie', clearSessionCookie(secureCookies));
   sendJson(response, 200, {

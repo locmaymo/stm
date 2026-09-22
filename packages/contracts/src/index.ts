@@ -146,6 +146,33 @@ export interface StartupSettings {
 }
 
 /**
+ * Whether the manager keeps itself online where being unused ends a program.
+ *
+ * On somebody's own computer this is nothing: the program runs until it is
+ * stopped. On a machine somebody else operates, a process nobody has asked
+ * anything of for a while can be put to sleep, and SillyTavern goes with it -
+ * so the manager reaches its own outside address on a clock, which says it is
+ * still in use.
+ *
+ * A manager with no outside address does nothing at all, which is every
+ * manager reachable only from the computer it runs on.
+ */
+export interface OnlineState {
+  readonly enabled: boolean;
+  /** The address being kept reachable; null when this manager has none. */
+  readonly address: string | null;
+  /**
+   * `off` when switched off, `no_address` when there is nothing to reach,
+   * `holding` while the address answers, `unreachable` when it stopped.
+   */
+  readonly status: 'off' | 'no_address' | 'holding' | 'unreachable';
+  /** When the last attempt was made, or null before there has been one. */
+  readonly lastAt: string | null;
+  /** Why the last attempt failed, in the words of whatever refused it. */
+  readonly error: string | null;
+}
+
+/**
  * A published version of the manager itself, as its own release describes it.
  *
  * Not to be confused with `VersionOption`, which is a version of SillyTavern

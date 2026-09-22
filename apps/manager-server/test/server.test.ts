@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { getPlatformPaths } from '../../../packages/platform/src/index.js';
 import { StateStore } from '../src/state.js';
 import { preferredNetworkHost, startManagerServer, type ManagerServer } from '../src/server.js';
-import type { AccessGatewayState, ConsoleStatus, Installation, LegalReview, ManagerUpdateStatus, ProcessState, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, ConsoleStatus, Installation, LegalReview, ManagerUpdateStatus, OnlineState, ProcessState, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { LEGAL_META } from '../../../packages/legal/src/index.js';
 import { hashPassword } from '../src/password.js';
 import type { TunnelManager } from '../../../packages/tunnel/src/index.js';
@@ -16,6 +16,7 @@ import type { CloudflareConnection } from '../../../packages/r2/src/index.js';
 import type { RuntimeManager } from '../../../packages/sillytavern-runtime/src/index.js';
 import type { ProcessSupervisor } from '../src/supervisor.js';
 import { ReleaseWatch } from '../src/manager-release.js';
+import { OnlineKeeper } from '../src/online.js';
 import { SILLYTAVERN_PORT } from '../src/ports.js';
 
 async function createServer(options: {
@@ -35,6 +36,8 @@ async function createServer(options: {
   publicOrigin?: string;
   /** Stands in for GitHub, so no test asks it what the newest release is. */
   releases?: ReleaseWatch;
+  /** Stands in for what keeps the manager online, so no test reaches anywhere. */
+  online?: OnlineKeeper;
 } = {}): Promise<ManagerServer> {
   const root = options.root ?? await mkdtemp(join(tmpdir(), 'stm-manager-'));
   const basePaths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
@@ -59,6 +62,7 @@ async function createServer(options: {
     ...(options.cloudflare !== undefined ? { cloudflare: options.cloudflare as CloudflareConnection } : {}),
     ...(options.publicOrigin ? { publicOrigin: options.publicOrigin } : {}),
     ...(options.releases ? { releases: options.releases } : {}),
+    ...(options.online ? { online: options.online } : {}),
   });
 }
 
@@ -2056,4 +2060,52 @@ test('a manager set up under the revision in force is never asked about it', asy
   const review = await (await fetch(`${base}/api/v1/legal`, { headers: { cookie: auth.cookie } })).json() as LegalReview;
   assert.equal(review.required, false);
   assert.equal(review.revision, LEGAL_META.revision);
+});
+test('the switch that keeps this manager online is written down and acted on', async (t) => {
+  const reached: string[] = [];
+  const online = new OnlineKeeper({
+    addresses: () => ['https://console.example.invalid'],
+    enabled: true,
+    fetch: (async (input: unknown) => { reached.push(String(input)); return new Response('{}', { status: 200 }); }) as unknown as typeof globalThis.fetch,
+  });
+  const manager = await createServer({ bootstrapPassword: 'correct horse battery staple', online });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  const headers = { cookie: auth.cookie };
+
+  // On, because a machine that is put to sleep takes SillyTavern with it and
+  // the reader cannot do anything about it from where they are.
+  const first = await (await fetch(`${base}/api/v1/online`, { headers })).json() as OnlineState;
+  assert.equal(first.enabled, true);
+  assert.equal(first.address, 'https://console.example.invalid');
+
+  const put = async (body: unknown): Promise<Response> => await fetch(`${base}/api/v1/online`, {
+    method: 'PUT',
+    headers: { cookie: auth.cookie, 'content-type': 'application/json', 'x-csrf-token': auth.csrfToken },
+    body: JSON.stringify(body),
+  });
+
+  assert.equal((await put({ enabled: 'yes' })).status, 400);
+
+  const off = await (await put({ enabled: false })).json() as OnlineState;
+  assert.equal(off.enabled, false);
+  assert.equal(off.status, 'off');
+  // Written down, so the next start of this manager agrees with this console.
+  const stored = JSON.parse(await readFile(join(manager.store.paths.state, 'manager-state.json'), 'utf8')) as { keepOnline: boolean };
+  assert.equal(stored.keepOnline, false);
+  // And acted on here: a turn of the clock while it is off reaches nothing.
+  reached.length = 0;
+  await manager.online.tick();
+  assert.deepEqual(reached, []);
+
+  // Switching it back on takes a turn straight away rather than waiting out
+  // the clock, so the card says what it found instead of nothing for minutes.
+  const on = await (await put({ enabled: true })).json() as OnlineState;
+  assert.equal(on.enabled, true);
+  await manager.online.tick();
+  assert.ok(reached.length >= 1);
+  assert.deepEqual([...new Set(reached)], ['https://console.example.invalid/api/v1/health']);
+
+  assert.equal((await fetch(`${base}/api/v1/online`)).status, 401);
 });
