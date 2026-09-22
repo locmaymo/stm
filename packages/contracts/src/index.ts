@@ -1148,6 +1148,17 @@ export interface ConsoleStatus {
    * costs this answer nothing.
    */
   readonly r2Owner: R2Config['owner'];
+  /**
+   * Something about the signed-in Cloudflare account that has to be fixed on
+   * Cloudflare before any of this works.
+   *
+   * Here for the same reason the claim is: it is the whole of what a manager
+   * can do about backups, and it was said only inside the form where the
+   * account was chosen - a form nobody opens again once it is closed. A
+   * machine whose account has never turned R2 on is backing nothing up, on
+   * every page, and should say so on every page.
+   */
+  readonly r2Problem: CloudflareAccountProblem | null;
 }
 
 /** The complete allowlist written by the SillyTavern fetch instrumentation. */

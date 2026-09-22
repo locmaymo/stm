@@ -33,7 +33,7 @@ import { availableUpdate, readDismissedUpdate, saveDismissedUpdate } from './upd
 import { readDismissedDisplaced, readDismissedRecovery, readDismissedSettings, saveDismissedDisplaced, saveDismissedRecovery, saveDismissedSettings, shouldOfferSettings, shouldShowDisplaced, shouldShowRecovery } from './settings-offer.js';
 import { apiFetch, onSessionExpired, resetSessionWatch, sessionToken, setSessionToken } from './session.js';
 import { collectCloudflareResult, framed, openReturnWindow, popupsBlocked, whenAbandoned, type CollectedResult } from './oauth.js';
-import type { AccessGatewayState, BackupManifest, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LogEntry, LogSourceFilter, ManagerSettingsOffer, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, BackupManifest, CloudflareAccountProblem, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LogEntry, LogSourceFilter, ManagerSettingsOffer, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, isCloudJob, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
 import { usePoll } from './use-poll.js';
@@ -837,6 +837,15 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
    * console has just lost it and has been told nothing.
    */
   const [r2Owner, setR2Owner] = useState<R2Config['owner'] | null>(null);
+  /*
+   * The account is signed in and has never turned R2 on, so there is nowhere
+   * for a backup to go and nothing this manager can do about it.
+   *
+   * It used to be said only inside the form where the account was chosen,
+   * which is a form somebody closes and does not open again - so a machine
+   * that was backing nothing up looked exactly like one that was.
+   */
+  const [r2Problem, setR2Problem] = useState<CloudflareAccountProblem | null>(null);
   const [reconnectUrl, setReconnectUrl] = useState<string | null>(null);
   const [tunnelOfferOpen, setTunnelOfferOpen] = useState(false);
   const [accessSecurity, setAccessSecurity] = useState<AccessGatewayState>({ status: 'stopped', host: null, port: 8001, lan: false, passwordConfigured: false, passcode: false, sessions: 0, error: null });
@@ -995,6 +1004,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
      * machine had been locked out of.
      */
     setR2Owner(status.r2Owner);
+    setR2Problem(status.r2Problem);
     /*
      * Work this machine started for itself, adopted whenever it appears.
      *
@@ -1474,6 +1484,22 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
                     saveDismissedDisplaced(r2Owner.label, browserStorage());
                     setDismissedDisplaced(r2Owner.label);
                   }}>{t('common.dismiss')}</Button></span>
+                </AlertDescription>
+              </Alert></div>
+              : null}
+            {/* Nowhere for a backup to go, and the way to fix it is not on
+                this machine at all. Above everything for as long as it is
+                true, because for as long as it is true nothing is being
+                kept anywhere but here. */}
+            {r2Problem === 'r2_not_enabled'
+              ? <div className="mb-(--section-gap)"><Alert variant="destructive">
+                <TriangleAlert />
+                <AlertTitle>{t('console.cfR2NotEnabledTitle')}</AlertTitle>
+                <AlertDescription className="grid gap-2">
+                  <span>{t('console.cfR2NotEnabledBody')}</span>
+                  <span><Button size="sm" asChild style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }} className="hover:opacity-90">
+                    <a href={CLOUDFLARE_R2_URL} target="_blank" rel="noopener noreferrer"><CloudflareMark />{t('console.cfR2NotEnabledAction')}</a>
+                  </Button></span>
                 </AlertDescription>
               </Alert></div>
               : null}

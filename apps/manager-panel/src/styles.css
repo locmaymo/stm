@@ -61,6 +61,15 @@
 :root {
   color-scheme: light;
 
+  /*
+   * Cloudflare's orange, for the two places that are theirs: the button that
+   * hands the reader over to them, and the tile standing for the storage that
+   * sits in their account. One value in both themes, because a brand colour
+   * that changed with the theme would stop being recognisable, which is the
+   * only reason it is here.
+   */
+  --cloudflare: #f38020;
+
   /* The artwork's own colours. Used for the icon plate, not for the interface. */
   --brand-plate: #3a1b18;
   --brand-disc: #502020;
@@ -789,12 +798,17 @@
   color: var(--muted-foreground);
 }
 .cloud-offer-tile svg { width: 21px; height: 21px; }
-/* The far end is the point of the screen, so it is the one that is filled in. */
+/*
+ * The far end is the point of the screen, so it is the one that is filled in -
+ * and it is filled in Cloudflare's orange, the one borrowed colour on the
+ * card, because that is whose storage it stands for. Everything around it
+ * stays the console's own blue: the orange is a label, not a theme.
+ */
 .cloud-offer-node-away .cloud-offer-tile {
   border-color: transparent;
-  background: var(--primary);
-  box-shadow: 0 8px 20px -10px color-mix(in srgb, var(--primary) 85%, transparent);
-  color: var(--primary-foreground);
+  background: var(--cloudflare);
+  box-shadow: 0 8px 20px -10px color-mix(in srgb, var(--cloudflare) 90%, transparent);
+  color: #fff;
 }
 .cloud-offer-label { color: var(--muted-foreground); font-size: 11px; line-height: 1.3; text-align: center; }
 /*

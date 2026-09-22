@@ -2180,6 +2180,8 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
      * this one is the console's clock.
      */
     void r2.refreshClaim({ atMostEvery: CLAIM_LOOK_MS }).catch(() => undefined);
+    // Read once for the two things below it, both of which come off it.
+    const r2Now = await r2.getConfig();
     const status: ConsoleStatus = {
       process: supervisor.getState(),
       tunnel: await withProxyUrl(tunnel.getState(), proxy, cloudflare, 'sillyTavern'),
@@ -2189,7 +2191,8 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       install: jobs.activeInstallation(),
       operation: jobs.activeOperation(),
       ports: { port: ports.sillyTavern(), reserved: { manager: ports.manager, access: ports.access } },
-      r2Owner: (await r2.getConfig()).owner,
+      r2Owner: r2Now.owner,
+      r2Problem: r2Now.cloudflare?.problem ?? null,
     };
     sendJson(response, 200, status);
     return;
