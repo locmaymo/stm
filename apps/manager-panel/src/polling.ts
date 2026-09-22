@@ -52,6 +52,18 @@ export const POLL_SETTLED_MS = 15_000;
  */
 export const POLL_LOG_MS = 3_000;
 /**
+ * While the day's Cloudflare Worker allowance is running down.
+ *
+ * The first and cheapest thing given up: a screen that catches up once a
+ * minute instead of every fifteen seconds, which nobody watching a settled
+ * machine will notice, and which is four times fewer requests charged against
+ * an allowance shared with SillyTavern's address and with the backups.
+ *
+ * The manager says when. The console cannot see the figure, and guessing at it
+ * from here would be guessing.
+ */
+export const POLL_EASED_MS = 60_000;
+/**
  * For a question of its own that is still worth asking while a page is open:
  * how keeping the manager online is going, on the settings page.
  */
@@ -99,6 +111,15 @@ export interface WatchedState {
    * the two.
    */
   readonly readingLog?: boolean | undefined;
+  /**
+   * The manager has asked for a slower clock, because the day's Worker
+   * allowance is running down. See ConsoleStatus.easePolling.
+   *
+   * It does not override anything somebody is waiting on: an install still
+   * reports at the fast clock, and a log being read is still followed. Those
+   * are minutes at a time, and the thing this is protecting is a day.
+   */
+  readonly easePolling?: boolean | undefined;
 }
 
 /** Whether anything the console watches is between one state and another. */
@@ -117,5 +138,6 @@ export function inMotion(state: WatchedState): boolean {
 
 export function statusIntervalMs(state: WatchedState): number {
   if (inMotion(state)) return POLL_LIVE_MS;
-  return state.readingLog === true ? POLL_LOG_MS : POLL_SETTLED_MS;
+  if (state.readingLog === true) return POLL_LOG_MS;
+  return state.easePolling === true ? POLL_EASED_MS : POLL_SETTLED_MS;
 }

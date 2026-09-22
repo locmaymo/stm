@@ -121,6 +121,106 @@ export async function readR2Usage(api: CloudflareApi, accountId: string, bucket:
   };
 }
 
+/**
+ * What Cloudflare gives away each day on the Workers free plan, from
+ * https://developers.cloudflare.com/workers/platform/limits/.
+ *
+ * Per account and per day, not per script - which is the whole reason this is
+ * worth reading. A manager with a Cloudflare account has three Workers on it:
+ * the two that put a fixed address in front of the tunnels, and the one that
+ * carries backup data to the bucket. They spend one allowance between them,
+ * and the first to run out takes the other two down with it.
+ *
+ * The day ends at midnight UTC, wherever the machine thinks it is.
+ */
+export const WORKERS_FREE_TIER = { requestsPerDay: 100_000 } as const;
+
+export interface WorkerScriptUsage {
+  readonly scriptName: string;
+  readonly requests: number;
+  readonly errors: number;
+}
+
+export interface WorkersUsageReport {
+  /** The start of the UTC day counted from, which is when the allowance reset. */
+  readonly dayStart: string;
+  readonly measuredAt: string;
+  /** Every Worker on the account together, which is what the allowance is against. */
+  readonly requests: number;
+  readonly errors: number;
+  /** Broken down per script, so it is possible to see which one is spending it. */
+  readonly scripts: readonly WorkerScriptUsage[];
+  readonly freeTier: typeof WORKERS_FREE_TIER;
+}
+
+interface InvocationGroup {
+  readonly sum?: { readonly requests?: number; readonly errors?: number };
+  readonly dimensions?: { readonly scriptName?: string };
+}
+
+const WORKERS_QUERY = `query WorkersUsage($account: string!, $dayStart: Time!, $now: Time!) {
+  viewer {
+    accounts(filter: { accountTag: $account }) {
+      invocations: workersInvocationsAdaptive(limit: 10000, filter: { datetime_geq: $dayStart, datetime_leq: $now }) {
+        sum { requests errors }
+        dimensions { scriptName }
+      }
+    }
+  }
+}`;
+
+/**
+ * How much of today's Worker allowance the account has spent, per script.
+ *
+ * Today means the UTC day, because that is the day Cloudflare resets on - in
+ * Vietnam that boundary falls at seven in the morning, and counting from local
+ * midnight would report a figure against the wrong allowance for seven hours
+ * of every day.
+ *
+ * These are usage figures, not billing: the analytics lag by some minutes and
+ * are adaptively sampled, so the number is a close estimate rather than the
+ * counter Cloudflare enforces against. Anything deciding whether to back off
+ * should leave room for that rather than aiming at the limit.
+ */
+export async function readWorkersUsage(api: CloudflareApi, accountId: string, now: Date = new Date()): Promise<WorkersUsageReport> {
+  const dayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const data = await api.graphql(WORKERS_QUERY, {
+    account: segment(accountId),
+    dayStart: dayStart.toISOString(),
+    now: now.toISOString(),
+  });
+  const account = isRecord(data) && isRecord(data.viewer) && Array.isArray(data.viewer.accounts) && isRecord(data.viewer.accounts[0]) ? data.viewer.accounts[0] : {};
+  const groups = Array.isArray(account.invocations) ? account.invocations as InvocationGroup[] : [];
+
+  // One row per script, because a script can appear more than once: the
+  // dimensions Cloudflare groups by are not only the one asked for here.
+  const perScript = new Map<string, { requests: number; errors: number }>();
+  let requests = 0;
+  let errors = 0;
+  for (const group of groups) {
+    const groupRequests = Math.max(0, Number(group.sum?.requests ?? 0));
+    const groupErrors = Math.max(0, Number(group.sum?.errors ?? 0));
+    if (!Number.isFinite(groupRequests)) continue;
+    requests += groupRequests;
+    errors += Number.isFinite(groupErrors) ? groupErrors : 0;
+    const name = group.dimensions?.scriptName;
+    if (!name) continue;
+    const current = perScript.get(name) ?? { requests: 0, errors: 0 };
+    perScript.set(name, { requests: current.requests + groupRequests, errors: current.errors + (Number.isFinite(groupErrors) ? groupErrors : 0) });
+  }
+
+  return {
+    dayStart: dayStart.toISOString(),
+    measuredAt: now.toISOString(),
+    requests,
+    errors,
+    scripts: [...perScript.entries()]
+      .map(([scriptName, counts]) => ({ scriptName, ...counts }))
+      .sort((left, right) => right.requests - left.requests),
+    freeTier: { ...WORKERS_FREE_TIER },
+  };
+}
+
 function countOperations(groups: readonly OperationGroup[]): OperationCounts {
   const counts = { classA: 0, classB: 0, free: 0, unclassified: 0 };
   for (const group of groups) {

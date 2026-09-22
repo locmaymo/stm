@@ -1341,6 +1341,17 @@ export interface ConsoleStatus {
   readonly backups?: readonly BackupManifest[];
   /** The tag naming the current archive list, whenever backups were asked for. */
   readonly backupsTag?: string;
+  /**
+   * Ask less often than the screen would otherwise call for.
+   *
+   * Set while the account's Cloudflare Worker allowance for the day is running
+   * down. Every request the console makes through its own fixed address is one
+   * of that allowance, shared with SillyTavern's address and with the backup
+   * Worker, and this is the first and cheapest thing given up: a slower screen
+   * costs nobody an address. Absent, which is the ordinary case, means ask at
+   * whatever pace the screen calls for.
+   */
+  readonly easePolling?: boolean;
 }
 
 /** New log lines and the cursor to ask from next time. */

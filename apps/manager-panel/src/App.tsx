@@ -830,6 +830,8 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
   const { snapshot: systemSnapshot, accept: acceptSystem, remeasure } = useSystemSnapshot(csrfToken);
   /** The archive list this console already holds, so an unchanged one is not resent. */
   const backupsTag = useRef<string | null>(null);
+  /** Whether the manager has asked for a slower clock; see `polling.ts`. */
+  const [easePolling, setEasePolling] = useState(false);
   const [processState, setProcessState] = useState<ProcessState>({ status: 'stopped', installationId: null, profileId: null, pid: null, startedAt: null, error: null });
   const [tunnelState, setTunnelState] = useState<TunnelState>({ mode: 'off', status: 'stopped', url: null, startedAt: null, error: null });
   const [managerTunnelState, setManagerTunnelState] = useState<TunnelState>({ mode: 'off', status: 'stopped', url: null, startedAt: null, error: null });
@@ -1088,6 +1090,9 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     // Absent means "the list you have is the list there is", which is the
     // common answer and the reason the tag is sent at all.
     if (status.backups) setBackups([...status.backups]);
+    // Said by the manager, which is the only side that can see how much of the
+    // day's Worker allowance is left.
+    setEasePolling(status.easePolling === true);
     setProcessState(status.process);
     setTunnelState(status.tunnel);
     setManagerTunnelState(status.managerTunnel);
@@ -1136,7 +1141,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
       setPendingInstallationId(status.install.installationId);
       setInstallJobId(status.install.id);
     }
-  }, { intervalMs: statusIntervalMs({ process: processState, tunnel: tunnelState, managerTunnel: managerTunnelState, working: installing || backgroundJob !== null, readingLog: logsExpanded }) });
+  }, { intervalMs: statusIntervalMs({ process: processState, tunnel: tunnelState, managerTunnel: managerTunnelState, working: installing || backgroundJob !== null, readingLog: logsExpanded, easePolling }) });
 
   /*
    * Whether the manager itself has been replaced, asked on a clock of its own.

@@ -336,6 +336,10 @@ Sign in to Cloudflare (the same sign-in that sets up backups) and the manager pu
 
 The manager will not deploy over a Worker of those names that it did not create, so an account that already has one keeps it — the panel says so instead. Disconnecting Cloudflare removes both.
 
+A free Cloudflare account answers 100,000 Worker requests a day, resetting at midnight UTC, and those two addresses share that allowance with the Worker that carries your backups. Running it out would take all three down at once, so the manager watches the figure and gives things up in order before that can happen: first the console quietly asks for updates less often, then the console's own fixed address is held back, and last SillyTavern's. In each case the tunnel's own address is offered in its place, and everything is handed out again when the allowance resets. It is written in the log when it happens, and there is nothing to press.
+
+In ordinary personal use this never comes up — a console left open all day, SillyTavern in use and backups running costs around a tenth of the allowance. What can reach it is sharing your SillyTavern link widely: a page load costs roughly 320 requests, so the ceiling is about 300 of them a day. Note also that an address somebody already bookmarked keeps going through the Worker; holding one back protects the links handed out from that point on, not one already in somebody's browser.
+
 Where your data lives:
 
 | Platform | Data directory |

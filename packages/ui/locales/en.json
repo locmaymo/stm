@@ -1015,7 +1015,11 @@
       "proxyRepublishFailed": "The fixed address could not be pointed back at the tunnel that is up: {reason}",
       "proxyForwarding": "{url} now forwards to {origin}",
       "proxyIdle": "{url} has no tunnel behind it and says so",
-      "proxyRemoved": "The {name} Worker was removed"
+      "proxyRemoved": "The {name} Worker was removed",
+      "budgetEasing": "{used} of today's {limit} Cloudflare Worker requests are used ({percent}%). This console is asking less often to leave room for SillyTavern and for backups.",
+      "budgetConsole": "{used} of today's {limit} Cloudflare Worker requests are used ({percent}%). This console's own fixed address is held back and the tunnel address is offered instead, so SillyTavern's link and the backups keep working.",
+      "budgetShared": "{used} of today's {limit} Cloudflare Worker requests are used ({percent}%). SillyTavern's fixed address is held back and the tunnel address is offered instead. The allowance resets at midnight UTC. An address already shared goes on using the Worker and will stop answering if the day runs out.",
+      "budgetClear": "{used} of {limit} Cloudflare Worker requests used today. The fixed addresses are being handed out again."
     },
     "auth": {
       "cloudflareSignedIn": "Signed in with the Cloudflare account {account}",

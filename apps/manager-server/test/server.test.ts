@@ -8,6 +8,7 @@ import { StateStore } from '../src/state.js';
 import { preferredNetworkHost, startManagerServer, type ManagerServer } from '../src/server.js';
 import type { AccessGatewayState, ApiErrorBody, ConsoleStatus, Installation, LegalReview, ManagerUpdateStatus, OnlineState, ProcessState, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { LEGAL_META } from '../../../packages/legal/src/index.js';
+import type { WorkerBudget, WorkerBudgetLevel } from '../src/worker-budget.js';
 import { hashPassword } from '../src/password.js';
 import type { TunnelManager } from '../../../packages/tunnel/src/index.js';
 import type { ProxyWorkerManager } from '../../../packages/cloudflare/src/index.js';
@@ -39,6 +40,8 @@ async function createServer(options: {
   releases?: ReleaseWatch;
   /** Stands in for what keeps the manager online, so no test reaches anywhere. */
   online?: OnlineKeeper;
+  /** Puts the manager at a point in its day's Worker allowance; see `worker-budget.ts`. */
+  budget?: WorkerBudgetLevel;
 } = {}): Promise<ManagerServer> {
   const root = options.root ?? await mkdtemp(join(tmpdir(), 'stm-manager-'));
   const basePaths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
@@ -64,6 +67,7 @@ async function createServer(options: {
     ...(options.publicOrigin !== undefined ? { publicOrigin: options.publicOrigin } : {}),
     ...(options.releases ? { releases: options.releases } : {}),
     ...(options.online ? { online: options.online } : {}),
+    ...(options.budget ? { budget: { level: () => options.budget, refresh: () => undefined } as unknown as WorkerBudget } : {}),
   });
 }
 
@@ -2299,4 +2303,76 @@ test('arriving through the tunnel teaches nothing, because the tunnel is not kep
   assert.equal(state.source, 'local', 'none of those is an address to hold open');
   await manager.store.settle();
   assert.equal((await manager.store.getPersisted()).keepOnlineOrigin, null);
+});
+test("a day's Worker allowance running down takes the fixed addresses back, in order", async (t) => {
+  const deployed = {
+    manager: { url: 'https://stm.acme.workers.dev', origin: 'https://today.trycloudflare.com' as string | null },
+    sillyTavern: { url: 'https://sillytavern.acme.workers.dev', origin: 'https://today.trycloudflare.com' as string | null },
+  };
+  // Signed in far enough to have deployed the two Workers. `/api/v1/status`
+  // reads the connection as well as the tunnels, so this fake answers both.
+  const cloudflare = {
+    workersAccount: async () => ({ id: 'account-1', name: 'Acme' }),
+    status: async () => ({ state: 'disconnected', account: null, bucket: null, accounts: [], dataPath: null, restReason: null, analyticsGranted: false, connectedAt: null, lastError: null, problem: null, displacedBy: null }),
+  };
+
+  const read = async (level: 'clear' | 'easing' | 'console' | 'shared') => {
+    const tunnel = fakeTunnel();
+    const manager = await createServer({ bootstrapPassword: 'correct horse battery staple', managerTunnel: tunnel, proxy: fakeProxy(deployed), cloudflare, budget: level });
+    t.after(() => manager.close());
+    const base = serverUrl(manager);
+    const auth = await signIn(base);
+    await tunnel.start('quick');
+    tunnel.publish('https://today.trycloudflare.com');
+    const status = await (await fetch(`${base}/api/v1/status`, { headers: { cookie: auth.cookie } })).json() as ConsoleStatus;
+    return { console: status.managerTunnel, shared: status.tunnel, easePolling: status.easePolling };
+  };
+
+  // With room to spare, both fixed addresses are what the console hands out.
+  const clear = await read('clear');
+  assert.equal(clear.console.proxyUrl, 'https://stm.acme.workers.dev');
+  assert.equal(clear.easePolling, undefined);
+
+  // The first step is invisible: a slower screen, and nobody loses an address.
+  const easing = await read('easing');
+  assert.equal(easing.console.proxyUrl, 'https://stm.acme.workers.dev');
+  assert.equal(easing.easePolling, true);
+
+  // Then this console's own address, which costs one person who has a local
+  // address anyway. `publicAddress()` in the panel reads `proxyUrl ?? url`, so
+  // a null here is every card and QR code falling back to the tunnel at once.
+  const own = await read('console');
+  assert.equal(own.console.proxyUrl, null);
+  assert.equal(own.console.proxyPending, false, 'the tunnel address is offered now, not described as still coming');
+  assert.equal(own.console.url, 'https://today.trycloudflare.com');
+
+  // SillyTavern's goes last, because it is the one that was shared.
+  const shared = await read('shared');
+  assert.equal(shared.console.proxyUrl, null);
+});
+
+test("a manager that cannot see its Worker usage keeps handing out fixed addresses", async (t) => {
+  // The default budget on a manager with no Cloudflare sign-in. An unknown
+  // figure is not a large one, and a manager that quietly served tunnel
+  // addresses because a permission was missing would have given up the feature
+  // it exists for.
+  const tunnel = fakeTunnel();
+  const manager = await createServer({
+    bootstrapPassword: 'correct horse battery staple',
+    managerTunnel: tunnel,
+    proxy: fakeProxy({ manager: { url: 'https://stm.acme.workers.dev', origin: 'https://today.trycloudflare.com' } }),
+    cloudflare: {
+      workersAccount: async () => ({ id: 'account-1', name: 'Acme' }),
+      status: async () => ({ state: 'disconnected', account: null, bucket: null, accounts: [], dataPath: null, restReason: null, analyticsGranted: false, connectedAt: null, lastError: null, problem: null, displacedBy: null }),
+    },
+  });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  await tunnel.start('quick');
+  tunnel.publish('https://today.trycloudflare.com');
+
+  const status = await (await fetch(`${base}/api/v1/status`, { headers: { cookie: auth.cookie } })).json() as ConsoleStatus;
+  assert.equal(status.managerTunnel.proxyUrl, 'https://stm.acme.workers.dev');
+  assert.equal(status.easePolling, undefined);
 });
