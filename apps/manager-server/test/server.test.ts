@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { getPlatformPaths } from '../../../packages/platform/src/index.js';
 import { StateStore } from '../src/state.js';
 import { preferredNetworkHost, startManagerServer, type ManagerServer } from '../src/server.js';
-import type { AccessGatewayState, ConsoleStatus, Installation, LegalReview, ManagerUpdateStatus, OnlineState, ProcessState, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, ApiErrorBody, ConsoleStatus, Installation, LegalReview, ManagerUpdateStatus, OnlineState, ProcessState, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { LEGAL_META } from '../../../packages/legal/src/index.js';
 import { hashPassword } from '../src/password.js';
 import type { TunnelManager } from '../../../packages/tunnel/src/index.js';
@@ -1971,6 +1971,98 @@ test('everything the console watches comes back in one answer', async (t) => {
 
   // And it is behind the same door as everything else.
   assert.equal((await fetch(`${base}/api/v1/status`)).status, 401);
+});
+
+test('the expensive halves are sent only to a console that asks for them', async (t) => {
+  const manager = await createServer({ bootstrapPassword: 'correct horse battery staple' });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  const headers = { cookie: auth.cookie };
+
+  // A console that says nothing gets the state and none of the weight: no
+  // reading of the machine, no log, no archive list.
+  const bare = await (await fetch(`${base}/api/v1/status`, { headers })).json() as ConsoleStatus;
+  assert.equal(bare.system, undefined);
+  assert.equal(bare.logs, undefined);
+  assert.equal(bare.backups, undefined);
+  assert.equal(bare.backupsTag, undefined);
+
+  const full = await (await fetch(`${base}/api/v1/status?include=system,logs,backups`, { headers })).json() as ConsoleStatus;
+  assert.ok(full.system, 'the machine reading was asked for');
+  assert.ok(full.logs, 'the log tail was asked for');
+  assert.ok(typeof full.backupsTag === 'string' && full.backupsTag.length > 0);
+  // Never having been given the list, this console is given it.
+  assert.ok(Array.isArray(full.backups));
+
+  // Each section is what its own endpoint says, which is what makes the four
+  // endpoints safe to keep and this one safe to fold them into.
+  const system = await (await fetch(`${base}/api/v1/system`, { headers })).json() as SystemSnapshot;
+  assert.equal(full.system?.storage.root, system.storage.root);
+  assert.equal(full.system?.cpu.cores, system.cpu.cores);
+});
+
+test('an unchanged archive list is named rather than sent again', async (t) => {
+  const manager = await createServer({ bootstrapPassword: 'correct horse battery staple' });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  const headers = { cookie: auth.cookie };
+
+  const first = await (await fetch(`${base}/api/v1/status?include=backups`, { headers })).json() as ConsoleStatus;
+  const tag = first.backupsTag;
+  assert.ok(tag);
+
+  // Handing the tag back says "this is the list I have"; the answer confirms
+  // the tag and leaves the list out, which is the whole saving.
+  const again = await (await fetch(`${base}/api/v1/status?include=backups&backupsTag=${encodeURIComponent(tag)}`, { headers })).json() as ConsoleStatus;
+  assert.equal(again.backupsTag, tag);
+  assert.equal(again.backups, undefined);
+
+  // A tag from some older list is not the current one, so the list comes back.
+  const stale = await (await fetch(`${base}/api/v1/status?include=backups&backupsTag=notthecurrentone`, { headers })).json() as ConsoleStatus;
+  assert.ok(Array.isArray(stale.backups));
+  assert.equal(stale.backupsTag, tag);
+});
+
+test('the log tail rides along from the cursor it is asked from', async (t) => {
+  const manager = await createServer({ bootstrapPassword: 'correct horse battery staple' });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  const headers = { cookie: auth.cookie };
+
+  const opened = await (await fetch(`${base}/api/v1/status?include=logs`, { headers })).json() as ConsoleStatus;
+  assert.ok(opened.logs);
+  const cursor = opened.logs.nextCursor;
+
+  // Asking again from where the last answer ended returns nothing, which is
+  // the common case and the reason a quiet log costs almost nothing.
+  const quiet = await (await fetch(`${base}/api/v1/status?include=logs&logsAfter=${cursor}`, { headers })).json() as ConsoleStatus;
+  assert.deepEqual(quiet.logs?.entries, []);
+  assert.equal(quiet.logs?.nextCursor, cursor);
+
+  // A source nobody has written to is empty rather than everything.
+  const filtered = await (await fetch(`${base}/api/v1/status?include=logs&logsSource=installer`, { headers })).json() as ConsoleStatus;
+  assert.deepEqual(filtered.logs?.entries, []);
+});
+
+test('a console asking for something this answer does not carry is refused', async (t) => {
+  const manager = await createServer({ bootstrapPassword: 'correct horse battery staple' });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  const headers = { cookie: auth.cookie };
+
+  // Refused rather than quietly answered without it. This is the one call the
+  // console lives on, and a console silently missing its log is worse to find
+  // than a refusal that names what went wrong.
+  const unknown = await fetch(`${base}/api/v1/status?include=logs,weather`, { headers });
+  assert.equal(unknown.status, 400);
+  assert.equal(((await unknown.json()) as ApiErrorBody).error.code, 'invalid_section');
+
+  assert.equal((await fetch(`${base}/api/v1/status?include=logs&logsAfter=-1`, { headers })).status, 400);
+  assert.equal((await fetch(`${base}/api/v1/status?include=logs&logsSource=nonsense`, { headers })).status, 400);
 });
 
 test('the console is told when a newer manager has been published', async (t) => {

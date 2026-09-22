@@ -1253,13 +1253,19 @@ export interface ManagerSettingsOffer {
 }
 
 /**
- * The four things the console watches continuously, in one answer.
+ * Everything the console watches continuously, in one answer.
  *
- * They used to be four requests on one timer, which is four times the traffic
- * for one screenful of state - and through a Cloudflare Worker, where the
- * console's own address is a Worker and every request is charged against a
- * daily allowance, four times the bill. Nothing here is computed: each field is
- * what its own endpoint returns, which still exists and still answers.
+ * They used to be separate requests on separate timers, which is several times
+ * the traffic for one screenful of state - and through a Cloudflare Worker,
+ * where the console's own address is a Worker and every request is charged
+ * against a daily allowance, several times the bill. Nothing here is computed:
+ * each field is what its own endpoint returns, which still exists and still
+ * answers.
+ *
+ * The fields below `r2Problem` are the ones a caller asks for by name, because
+ * they are the expensive halves: a machine reading nobody is looking at, a
+ * log nobody has opened, an archive list that has not changed since the last
+ * answer. See `ConsoleStatusSections`.
  */
 export interface ConsoleStatus {
   readonly process: ProcessState;
@@ -1313,6 +1319,48 @@ export interface ConsoleStatus {
    * every page, and should say so on every page.
    */
   readonly r2Problem: CloudflareAccountProblem | null;
+  /**
+   * What this machine is doing, when the caller says it is showing it.
+   *
+   * Left out otherwise. These are three live meters, and a meter nobody is
+   * looking at is worth nothing while still costing a reading of the clock,
+   * a `statfs` and its share of the answer.
+   */
+  readonly system?: SystemSnapshot;
+  /** New log lines since `logsAfter`, when the caller asked to follow the log. */
+  readonly logs?: LogPage;
+  /**
+   * The archive list, sent only when it is not the one the caller already has.
+   *
+   * The list is read from memory and costs the machine nothing, but it is the
+   * one section here that grows: a hundred recovery points is kilobytes on
+   * every answer, forever, to say what the last answer said. So the caller
+   * sends back the tag it was given and is sent the list only when that tag is
+   * stale. An unchanged list costs the twenty-odd bytes of `backupsTag`.
+   */
+  readonly backups?: readonly BackupManifest[];
+  /** The tag naming the current archive list, whenever backups were asked for. */
+  readonly backupsTag?: string;
+}
+
+/** New log lines and the cursor to ask from next time. */
+export interface LogPage {
+  readonly streamId: string;
+  readonly entries: readonly LogEntry[];
+  readonly nextCursor: number;
+}
+
+/**
+ * The parts of `ConsoleStatus` a caller has to ask for, named in `include`.
+ *
+ * Asked for rather than always sent, because what is worth the cost depends on
+ * what is on the reader's screen and only the console knows that.
+ */
+export const CONSOLE_STATUS_SECTIONS = ['system', 'logs', 'backups'] as const;
+export type ConsoleStatusSection = (typeof CONSOLE_STATUS_SECTIONS)[number];
+
+export function isConsoleStatusSection(value: string): value is ConsoleStatusSection {
+  return (CONSOLE_STATUS_SECTIONS as readonly string[]).includes(value);
 }
 
 /** The complete allowlist written by the SillyTavern fetch instrumentation. */

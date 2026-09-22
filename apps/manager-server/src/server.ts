@@ -1,11 +1,11 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
 import { readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import { createSocket } from 'node:dgram';
 import { extname, join, relative, resolve, sep } from 'node:path';
-import { applyQuery, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, KEEP_ONLINE_DEFAULT_MINUTES, OPERATION_JOB_KINDS, type AccessGatewayState, type ApiErrorBody, type ConfigUpdateInput, type ConsoleStatus, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogSink, type LogSourceFilter, type LegalReview, type ManagerPorts, type ManagerUpdateStatus, type OnlineState, type PortSettings, type Profile, type ProfileLayout, type SetupStatus, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
+import { applyQuery, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, isConsoleStatusSection, KEEP_ONLINE_DEFAULT_MINUTES, OPERATION_JOB_KINDS, type AccessGatewayState, type ApiErrorBody, type BackupManifest, type ConfigUpdateInput, type ConsoleStatus, type ConsoleStatusSection, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogPage, type LogSink, type LogSourceFilter, type LegalReview, type ManagerPorts, type ManagerUpdateStatus, type OnlineState, type PortSettings, type Profile, type ProfileLayout, type SetupStatus, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
 import { getPlatformPaths, storageDurability, storageReport, type PlatformPaths } from '../../../packages/platform/src/index.js';
 import { INSTALL_CANCELED, RuntimeError, RuntimeManager, type InstallationProgress } from '../../../packages/sillytavern-runtime/src/index.js';
 import { hashPassword, MIN_PASSWORD_LENGTH, validatePasscode, validatePassword, verifyPassword } from './password.js';
@@ -2317,17 +2317,51 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
   /*
    * Everything the console watches on its clock, in one answer.
    *
-   * The console used to ask for these four separately, several times a minute,
-   * which is four connections for one screenful of state. Reached through a
+   * The console used to ask for these separately, several times a minute,
+   * which is several connections for one screenful of state. Reached through a
    * Cloudflare Worker - which is what the console's own fixed address is -
    * every one of those counts against an allowance of a hundred thousand a
    * day, shared with SillyTavern's address and with the backup Worker; the
    * console on its own was spending it in seven hours.
    *
-   * The four endpoints it replaces are untouched: something already open
-   * against an older panel, or a script somebody wrote, still has them.
+   * Measured on an idle Overview: thirty-two requests a minute over four
+   * endpoints, of which the two largest carried sixty-nine and seventy-nine
+   * bytes - the machine's meters and a log with nothing new in it. Folding
+   * those into this one takes the same screen to four a minute.
+   *
+   * The endpoints it replaces are untouched: something already open against an
+   * older panel, or a script somebody wrote, still has them.
    */
   if (pathname === '/api/v1/status' && method === 'GET') {
+    /*
+     * The expensive halves, sent only to a caller that says it is showing them.
+     *
+     * A malformed request is refused rather than quietly answered without the
+     * section asked for: this is the one call the console lives on, and a
+     * console silently missing its log is worse to find than a 400.
+     */
+    const sections = new Set<ConsoleStatusSection>();
+    for (const name of (searchParams.get('include') ?? '').split(',').filter(Boolean)) {
+      if (!isConsoleStatusSection(name)) { sendError(response, 400, 'invalid_section', `"${name}" is not something this answer carries`); return; }
+      sections.add(name);
+    }
+    let logs: ConsoleStatus['logs'];
+    if (sections.has('logs')) {
+      const afterValue = Number(searchParams.get('logsAfter') ?? 0);
+      const sourceParam = searchParams.get('logsSource') ?? 'all';
+      if (!Number.isSafeInteger(afterValue) || afterValue < 0) { sendError(response, 400, 'invalid_cursor', 'The log cursor is invalid'); return; }
+      if (!isLogSourceFilter(sourceParam)) { sendError(response, 400, 'invalid_source', 'The log source is invalid'); return; }
+      logs = jobs.logs(afterValue, sourceParam === 'all' ? null : sourceParam);
+    }
+    let backupList: readonly BackupManifest[] | undefined;
+    let backupsTag: string | undefined;
+    if (sections.has('backups')) {
+      const activeProfile = await profiles.getActive();
+      const list = activeProfile ? await backups.list(activeProfile.id) : [];
+      backupsTag = listTag(list);
+      // Only when it is not the list the caller already has.
+      if (searchParams.get('backupsTag') !== backupsTag) backupList = list;
+    }
     // The one request the console makes on a clock, and so the one that says
     // somebody is in front of it. It stops while the page is hidden, which is
     // what makes this a measure of being read rather than of being open.
@@ -2357,6 +2391,11 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       ports: { port: ports.sillyTavern(), reserved: { manager: ports.manager, access: ports.access } },
       r2Owner: r2Now.owner,
       r2Problem: r2Now.cloudflare?.problem ?? null,
+      // Asked for by name above; absent when the console is not showing them.
+      ...(sections.has('system') ? { system: await system.snapshot() } : {}),
+      ...(logs ? { logs } : {}),
+      ...(backupsTag === undefined ? {} : { backupsTag }),
+      ...(backupList ? { backups: backupList } : {}),
     };
     /*
      * And the address this console is being read at, which is how the manager
@@ -3516,6 +3555,19 @@ function isVersionSelector(value: string): boolean {
   return value === 'latest' || value === 'release' || value === 'staging' || /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/u.test(value);
 }
 
+/**
+ * A short name for exactly this list, so an unchanged one need not be sent.
+ *
+ * Over the whole encoding rather than a count and a newest timestamp, because
+ * the changes worth noticing include an old archive being thinned away, which
+ * moves neither of those. Not a security claim - nobody is defending the
+ * archive list from collision - so the cheapest digest that is long enough to
+ * never collide by accident is the right one.
+ */
+function listTag(rows: readonly unknown[]): string {
+  return createHash('sha1').update(JSON.stringify(rows)).digest('base64url').slice(0, 16);
+}
+
 function isLogSourceFilter(value: string): value is LogSourceFilter {
   return value === 'all' || value === 'manager' || value === 'sillytavern' || value === 'cloudflared' || value === 'installer' || value === 'backup';
 }
@@ -4269,7 +4321,7 @@ class JobStore {
     this.logBuffer.append(source, line, level);
   }
 
-  public logs(after: number, source: LogEntry['source'] | null): { entries: LogEntry[]; nextCursor: number } {
+  public logs(after: number, source: LogEntry['source'] | null): LogPage {
     return this.logBuffer.read(after, source);
   }
 
