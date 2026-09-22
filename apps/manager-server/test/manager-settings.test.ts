@@ -120,6 +120,8 @@ test('a machine that is gone leaves behind enough to be a machine again', async 
   await laptop.store.setAccessPassword(hashPassword('123456'), true);
   await laptop.store.setAccessLan(true);
   await laptop.store.setAutoStartSillyTavern(false);
+  // It was on a machine that goes quiet quickly, so it was checking often.
+  await laptop.store.setKeepOnline(true, 5);
   await laptop.backups.setSchedule({ intervalMinutes: 180 });
   await laptop.r2.update({ hotIntervalMinutes: 15, keepDaily: 7 });
   assert.equal(await saveManagerSettings(laptop), true);
@@ -128,6 +130,14 @@ test('a machine that is gone leaves behind enough to be a machine again', async 
   // console password and knows nothing about the laptop.
   const desktop = await machine(bucket.fetchImpl, 'desktop');
   await desktop.store.saveAdminPassword(hashPassword('a different password'));
+  // What the running manager is told, as opposed to what the file says. The
+  // keeper takes its answer when the manager starts and holds it, so a restore
+  // that wrote the file alone would leave it on the old schedule.
+  const toldKeeper: Array<{ enabled: boolean; minutes: number }> = [];
+  const restoring: ManagerSettingsDeps = {
+    ...desktop,
+    adoptKeepOnline: (enabled, minutes) => { toldKeeper.push({ enabled, minutes }); },
+  };
 
   const offer = await managerSettingsOffer(desktop);
   assert.equal(offer.available, true);
@@ -137,7 +147,7 @@ test('a machine that is gone leaves behind enough to be a machine again', async 
 
   const record = await desktop.r2.loadManagerSettings();
   assert.ok(record);
-  const result = await applyManagerSettings(desktop, record, { passwords: true, schedules: true, ports: { manager: 7860, access: 8001 } });
+  const result = await applyManagerSettings(restoring, record, { passwords: true, schedules: true, ports: { manager: 7860, access: 8001 } });
   assert.ok(result.applied.includes('managerPassword'));
 
   const state = await desktop.store.getPersisted();
@@ -156,6 +166,11 @@ test('a machine that is gone leaves behind enough to be a machine again', async 
   // passcode had just come back.
   assert.equal(desktop.gateway.getState().passwordConfigured, true);
   assert.equal(state.autoStartSillyTavern, false);
+  // How the machine was kept online came back too - written down, and told to
+  // the keeper that is already running rather than left for the next restart.
+  assert.equal(state.keepOnline, true);
+  assert.equal(state.keepOnlineMinutes, 5);
+  assert.deepEqual(toldKeeper, [{ enabled: true, minutes: 5 }]);
   assert.equal((await desktop.backups.getSchedule()).intervalMinutes, 180);
   assert.equal((await desktop.r2.getConfig()).schedule.hotIntervalMinutes, 15);
   assert.equal((await desktop.r2.getConfig()).retention.keepDaily, 7);

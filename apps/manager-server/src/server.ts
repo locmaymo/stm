@@ -5,7 +5,7 @@ import { createReadStream } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import { createSocket } from 'node:dgram';
 import { extname, join, relative, resolve, sep } from 'node:path';
-import { applyQuery, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, OPERATION_JOB_KINDS, type ApiErrorBody, type ConfigUpdateInput, type ConsoleStatus, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogSink, type LogSourceFilter, type LegalReview, type ManagerPorts, type ManagerUpdateStatus, type OnlineState, type PortSettings, type Profile, type ProfileLayout, type SetupStatus, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
+import { applyQuery, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, KEEP_ONLINE_DEFAULT_MINUTES, OPERATION_JOB_KINDS, type ApiErrorBody, type ConfigUpdateInput, type ConsoleStatus, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogSink, type LogSourceFilter, type LegalReview, type ManagerPorts, type ManagerUpdateStatus, type OnlineState, type PortSettings, type Profile, type ProfileLayout, type SetupStatus, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
 import { getPlatformPaths, storageDurability, storageReport, type PlatformPaths } from '../../../packages/platform/src/index.js';
 import { INSTALL_CANCELED, RuntimeError, RuntimeManager, type InstallationProgress } from '../../../packages/sillytavern-runtime/src/index.js';
 import { hashPassword, MIN_PASSWORD_LENGTH, validatePasscode, validatePassword, verifyPassword } from './password.js';
@@ -32,7 +32,7 @@ import { TransferMeter } from './progress.js';
 import { MetricsStore } from './metrics.js';
 import { ActivityMeter } from './activity.js';
 import { ReleaseWatch } from './manager-release.js';
-import { DEFAULT_INTERVAL_MINUTES, OnlineKeeper } from './online.js';
+import { OnlineKeeper } from './online.js';
 import { applyManagerSettings, foreignManagerSettings, managerSettingsOffer, restoreFromBucketIfBlank, saveManagerSettings, type ManagerSettingsDeps } from './manager-settings.js';
 import type { ManagerSettingsRecord } from '../../../packages/contracts/src/index.js';
 import { instrumentationLoaderPath } from '../../../packages/instrumentation/src/index.js';
@@ -995,6 +995,7 @@ async function handleRequest(options: {
    */
   const adoptSillyTavernPort = (port: number): Promise<void> =>
     adoptRestoredPort({ ports, supervisor, profiles, runtime, config, logger }, port);
+  const adoptKeepOnline = (enabled: boolean, minutes: number): void => { online.setEnabled(enabled, minutes); };
 
   const firstInstall = async (wanted?: string | null): Promise<void> => {
     if (!autoInstall) return;
@@ -1019,7 +1020,7 @@ async function handleRequest(options: {
       store, backups, runtime, secureCookies, rateLimiter,
       restoreEverything: () => restoreAfterSignIn({
         store, backups, r2, runtime, jobs, profiles, gateway, metrics, supervisor,
-        tunnel, managerTunnel, ports, firstInstall, adoptSillyTavernPort, logger: options.logger,
+        tunnel, managerTunnel, ports, firstInstall, adoptSillyTavernPort, adoptKeepOnline, logger: options.logger,
       }),
     });
     return;
@@ -1252,7 +1253,7 @@ async function handleRequest(options: {
     if (method !== 'GET' && !requireCsrf(context, session.csrfToken)) {
       return;
     }
-    await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, proxy, publishProxies, logger, handoffs);
+    await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, online, proxy, publishProxies, logger, handoffs);
     return;
   }
 
@@ -1333,7 +1334,7 @@ async function handleReset(context: RequestContext, deps: ResetDeps): Promise<vo
   // Back to what a manager nobody has touched does, along with everything
   // else: the file that said otherwise has just been deleted, and a keeper
   // still holding the old answer would disagree with the state it is in.
-  online.setEnabled(true, DEFAULT_INTERVAL_MINUTES);
+  online.setEnabled(true, KEEP_ONLINE_DEFAULT_MINUTES);
   sessions.revokeAll();
   response.setHeader('Set-Cookie', clearSessionCookie(secureCookies));
   sendJson(response, 200, {
@@ -1388,11 +1389,12 @@ async function adoptRestoredPort(deps: PortAdoptionDeps, port: number): Promise<
   }
 }
 
-async function handleRuntimeRequest(context: RequestContext, store: StateStore, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, managerTunnel: TunnelManager, gateway: AccessGateway, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, cloudflare: CloudflareConnection | null, metrics: MetricsStore, activity: ActivityMeter, config: ConfigStore, system: SystemStore, proxy: ProxyWorkerManager | null, publishProxies: () => void, logger: LogSink, handoffs: HandoffStore): Promise<void> {
+async function handleRuntimeRequest(context: RequestContext, store: StateStore, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, managerTunnel: TunnelManager, gateway: AccessGateway, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, cloudflare: CloudflareConnection | null, metrics: MetricsStore, activity: ActivityMeter, config: ConfigStore, system: SystemStore, online: OnlineKeeper, proxy: ProxyWorkerManager | null, publishProxies: () => void, logger: LogSink, handoffs: HandoffStore): Promise<void> {
   const { pathname, ports, request, response, searchParams } = context;
   const method = request.method ?? 'GET';
   const adoptSillyTavernPort = (port: number): Promise<void> =>
     adoptRestoredPort({ ports, supervisor, profiles, runtime, config, logger }, port);
+  const adoptKeepOnline = (enabled: boolean, minutes: number): void => { online.setEnabled(enabled, minutes); };
   if (pathname === '/api/v1/auth/password' && method === 'POST') {
     const body = await readJson(request);
     if (!isRecord(body) || typeof body.password !== 'string' || typeof body.confirmPassword !== 'string' || body.password !== body.confirmPassword) {
@@ -1717,7 +1719,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     // follows it as the ordinary background job it is.
     void restoreAfterSignIn({
       store, backups, r2, runtime, jobs, profiles, gateway, metrics, supervisor,
-      tunnel, managerTunnel, ports, firstInstall: installRelease, adoptSillyTavernPort, logger, force: true,
+      tunnel, managerTunnel, ports, firstInstall: installRelease, adoptSillyTavernPort, adoptKeepOnline, logger, force: true,
     }).catch((error: unknown) => {
       logger(logEvent('r2.settingsRestoreFailed', `[r2] this machine could not be brought back from the bucket: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
     });
@@ -1730,7 +1732,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     const body = await readJson(request);
     const record = await foreignManagerSettings({ store, backups, r2, runtime, tunnel, managerTunnel, gateway, logger });
     if (!record) { sendError(response, 404, 'manager_settings_missing', 'This account holds no manager settings'); return; }
-    const result = await applyManagerSettings({ store, backups, r2, runtime, tunnel, managerTunnel, gateway, adoptSillyTavernPort, logger }, record, {
+    const result = await applyManagerSettings({ store, backups, r2, runtime, tunnel, managerTunnel, gateway, adoptSillyTavernPort, adoptKeepOnline, logger }, record, {
       // Both default to on: somebody who asked for this asked for all of it,
       // and the panel is what offers the parts separately.
       passwords: !isRecord(body) || body.passwords !== false,
@@ -2937,6 +2939,8 @@ interface RestoreAfterSignInDeps {
   readonly firstInstall: (wanted?: string | null) => Promise<void>;
   /** Move the running manager onto the port the settings brought back. */
   readonly adoptSillyTavernPort: (port: number) => Promise<void>;
+  /** Tell the running manager what the settings say about keeping it online. */
+  readonly adoptKeepOnline: (enabled: boolean, minutes: number) => void;
   /** Stops SillyTavern around a restore that writes over a profile in use. */
   readonly supervisor: ProcessSupervisor;
   /**
@@ -2959,8 +2963,8 @@ interface RestoreAfterSignInDeps {
 }
 
 async function restoreAfterSignIn(deps: RestoreAfterSignInDeps): Promise<void> {
-  const { store, backups, r2, runtime, jobs, gateway, tunnel, managerTunnel, adoptSillyTavernPort, logger } = deps;
-  const settings = { store, backups, r2, runtime, tunnel, managerTunnel, gateway, adoptSillyTavernPort, logger };
+  const { store, backups, r2, runtime, jobs, gateway, tunnel, managerTunnel, adoptSillyTavernPort, adoptKeepOnline, logger } = deps;
+  const settings = { store, backups, r2, runtime, tunnel, managerTunnel, gateway, adoptSillyTavernPort, adoptKeepOnline, logger };
   /*
    * Opened first, before a single question is asked of the bucket.
    *

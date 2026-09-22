@@ -1,4 +1,4 @@
-import { logEvent, type LogSink, type OnlineState } from '../../../packages/contracts/src/index.js';
+import { KEEP_ONLINE_DEFAULT_MINUTES, KEEP_ONLINE_MAX_MINUTES, KEEP_ONLINE_MIN_MINUTES, logEvent, type LogSink, type OnlineState } from '../../../packages/contracts/src/index.js';
 
 /**
  * Keeping the manager online where being unused is treated as being finished.
@@ -31,19 +31,13 @@ import { logEvent, type LogSink, type OnlineState } from '../../../packages/cont
  * wrong costs more than a request every quarter of an hour.
  */
 
-/**
- * How often the address is reached, unless somebody says otherwise.
- *
- * Fifteen minutes: often enough for the places that give an idle program half
- * an hour, and rare enough to be four requests an hour against a machine that
- * is not paying attention to them anyway. Somebody whose machine goes quiet
- * sooner than that can say so.
+/*
+ * How often the address is reached: `KEEP_ONLINE_DEFAULT_MINUTES`, which is
+ * fifteen - often enough for the places that give an idle program half an
+ * hour, and rare enough to be four requests an hour against a machine that is
+ * not paying attention to them anyway. Somebody whose machine goes quiet
+ * sooner than that can say so, within the range beside it.
  */
-export const DEFAULT_INTERVAL_MINUTES = 15;
-
-/** What the interval may be set to, in minutes, at either end. */
-export const MIN_INTERVAL_MINUTES = 1;
-export const MAX_INTERVAL_MINUTES = 180;
 
 /** Long enough for a slow link, short enough not to overlap the next one. */
 const TIMEOUT_MS = 20_000;
@@ -71,8 +65,8 @@ export interface OnlineKeeperOptions {
 
 /** A stored or requested interval, held inside what this will actually do. */
 export function intervalMinutes(value: unknown): number {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_INTERVAL_MINUTES;
-  return Math.min(MAX_INTERVAL_MINUTES, Math.max(MIN_INTERVAL_MINUTES, Math.round(value)));
+  if (typeof value !== 'number' || !Number.isFinite(value)) return KEEP_ONLINE_DEFAULT_MINUTES;
+  return Math.min(KEEP_ONLINE_MAX_MINUTES, Math.max(KEEP_ONLINE_MIN_MINUTES, Math.round(value)));
 }
 
 export class OnlineKeeper {

@@ -16,7 +16,8 @@ import type { CloudflareConnection } from '../../../packages/r2/src/index.js';
 import type { RuntimeManager } from '../../../packages/sillytavern-runtime/src/index.js';
 import type { ProcessSupervisor } from '../src/supervisor.js';
 import { ReleaseWatch } from '../src/manager-release.js';
-import { DEFAULT_INTERVAL_MINUTES, MAX_INTERVAL_MINUTES, OnlineKeeper } from '../src/online.js';
+import { KEEP_ONLINE_DEFAULT_MINUTES, KEEP_ONLINE_MAX_MINUTES } from '../../../packages/contracts/src/index.js';
+import { OnlineKeeper } from '../src/online.js';
 import { SILLYTAVERN_PORT } from '../src/ports.js';
 
 async function createServer(options: {
@@ -2079,7 +2080,7 @@ test('the switch that keeps this manager online is written down and acted on', a
   const first = await (await fetch(`${base}/api/v1/online`, { headers })).json() as OnlineState;
   assert.equal(first.enabled, true);
   assert.equal(first.address, 'https://console.example.invalid');
-  assert.equal(first.minutes, DEFAULT_INTERVAL_MINUTES);
+  assert.equal(first.minutes, KEEP_ONLINE_DEFAULT_MINUTES);
 
   const put = async (body: unknown): Promise<Response> => await fetch(`${base}/api/v1/online`, {
     method: 'PUT',
@@ -2095,7 +2096,7 @@ test('the switch that keeps this manager online is written down and acted on', a
   const slower = await (await put({ enabled: true, minutes: 45 })).json() as OnlineState;
   assert.equal(slower.minutes, 45);
   const clamped = await (await put({ enabled: true, minutes: 9_999 })).json() as OnlineState;
-  assert.equal(clamped.minutes, MAX_INTERVAL_MINUTES);
+  assert.equal(clamped.minutes, KEEP_ONLINE_MAX_MINUTES);
   await put({ enabled: true, minutes: 45 });
 
   const off = await (await put({ enabled: false })).json() as OnlineState;

@@ -1,11 +1,11 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { ManagerState } from '../../../packages/contracts/src/index.js';
+import { KEEP_ONLINE_DEFAULT_MINUTES, type ManagerState } from '../../../packages/contracts/src/index.js';
 import { getPlatformPaths, type PlatformPaths } from '../../../packages/platform/src/index.js';
 import { LEGAL_META } from '../../../packages/legal/src/index.js';
 import { SILLYTAVERN_PORT } from './ports.js';
-import { DEFAULT_INTERVAL_MINUTES, intervalMinutes } from './online.js';
+import { intervalMinutes } from './online.js';
 import { MANAGER_VERSION } from './version.js';
 
 const STATE_FILE_NAME = 'manager-state.json';
@@ -171,7 +171,7 @@ export class StateStore {
         autoStartSillyTavern: true,
         firstInstallStartedAt: null,
         keepOnline: true,
-        keepOnlineMinutes: DEFAULT_INTERVAL_MINUTES,
+        keepOnlineMinutes: KEEP_ONLINE_DEFAULT_MINUTES,
         ownerAccountId: null,
         ownerAccountName: null,
       };

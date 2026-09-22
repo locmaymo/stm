@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_INTERVAL_MINUTES, MAX_INTERVAL_MINUTES, MIN_INTERVAL_MINUTES, OnlineKeeper, intervalMinutes, reasonFor } from '../src/online.js';
+import { KEEP_ONLINE_DEFAULT_MINUTES, KEEP_ONLINE_MAX_MINUTES, KEEP_ONLINE_MIN_MINUTES } from '../../../packages/contracts/src/index.js';
+import { OnlineKeeper, intervalMinutes, reasonFor } from '../src/online.js';
 
 /** Every address reached, and whatever the test wants each one answered with. */
 function fakeReach(answer: () => Response | Error = () => new Response('{}', { status: 200 })): { fetch: typeof globalThis.fetch; urls: string[] } {
@@ -23,7 +24,7 @@ test('the machine own address is the one reached, and it is reached whole', asyn
   assert.equal(state.enabled, true);
   assert.equal(state.status, 'holding');
   assert.equal(state.address, 'https://console.example.invalid');
-  assert.equal(state.minutes, DEFAULT_INTERVAL_MINUTES);
+  assert.equal(state.minutes, KEEP_ONLINE_DEFAULT_MINUTES);
   assert.equal(state.error, null);
   assert.ok(state.lastAt);
 });
@@ -121,14 +122,14 @@ test('switching off forgets what the last attempt found', async () => {
 });
 
 test('the interval is the reader’s, held inside what this will actually do', () => {
-  assert.equal(intervalMinutes(undefined), DEFAULT_INTERVAL_MINUTES);
-  assert.equal(intervalMinutes('30'), DEFAULT_INTERVAL_MINUTES, 'a file carrying nonsense is corrected');
-  assert.equal(intervalMinutes(Number.NaN), DEFAULT_INTERVAL_MINUTES);
+  assert.equal(intervalMinutes(undefined), KEEP_ONLINE_DEFAULT_MINUTES);
+  assert.equal(intervalMinutes('30'), KEEP_ONLINE_DEFAULT_MINUTES, 'a file carrying nonsense is corrected');
+  assert.equal(intervalMinutes(Number.NaN), KEEP_ONLINE_DEFAULT_MINUTES);
   assert.equal(intervalMinutes(30), 30);
   assert.equal(intervalMinutes(4.6), 5);
-  assert.equal(intervalMinutes(0), MIN_INTERVAL_MINUTES);
-  assert.equal(intervalMinutes(-90), MIN_INTERVAL_MINUTES);
-  assert.equal(intervalMinutes(10_000), MAX_INTERVAL_MINUTES);
+  assert.equal(intervalMinutes(0), KEEP_ONLINE_MIN_MINUTES);
+  assert.equal(intervalMinutes(-90), KEEP_ONLINE_MIN_MINUTES);
+  assert.equal(intervalMinutes(10_000), KEEP_ONLINE_MAX_MINUTES);
 });
 
 test('a changed interval takes effect rather than waiting out the one running', () => {

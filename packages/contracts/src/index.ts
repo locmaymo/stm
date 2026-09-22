@@ -159,6 +159,19 @@ export interface StartupSettings {
  * an allowance on a request no reader made. A manager with no address of its
  * own does nothing at all.
  */
+/**
+ * How often the manager reaches its own address, and the range that allows.
+ *
+ * Here rather than beside the keeper because three places need to agree on
+ * them: the keeper itself, the state file that remembers the choice, and the
+ * record in the bucket that carries it to the next machine. A value from any
+ * of those is held inside this range rather than refused, so a file somebody
+ * edited by hand is corrected instead of stopping the manager.
+ */
+export const KEEP_ONLINE_DEFAULT_MINUTES = 15;
+export const KEEP_ONLINE_MIN_MINUTES = 1;
+export const KEEP_ONLINE_MAX_MINUTES = 180;
+
 export interface OnlineState {
   readonly enabled: boolean;
   /** How many minutes between attempts. */
@@ -1156,6 +1169,20 @@ export interface ManagerSettingsRecord {
   readonly tunnelQuick: boolean;
   readonly managerTunnelQuick: boolean;
   readonly autoStartSillyTavern: boolean;
+  /**
+   * Whether the machine kept itself online, and how often it checked.
+   *
+   * Part of how a machine was set up rather than a fact about it: somebody who
+   * turned this off did so on purpose, and somebody who moved it to five
+   * minutes did so because the machine they run on goes quiet sooner than the
+   * default expects. A machine put back together without them came back
+   * checking every quarter of an hour whatever the reader had chosen.
+   *
+   * Defaulted rather than optional on a record written before these existed,
+   * which is a record from a manager that did this at all.
+   */
+  readonly keepOnline: boolean;
+  readonly keepOnlineMinutes: number;
   readonly sillyTavernPort: number;
   /** How often a ZIP is taken on the machine; 0 is off. */
   readonly localIntervalMinutes: number;
