@@ -127,21 +127,28 @@ export class RuntimeManager {
       });
   }
 
-  public async listVersions(forceRefresh = false): Promise<VersionOption[]> {
-    if (!forceRefresh && this.versionsCache && this.versionsCache.expiresAt > Date.now()) {
-      return this.versionsCache.options;
-    }
+  /**
+   * The published releases, as GitHub's API lists them.
+   *
+   * The better answer where it can be had: it carries the release titles and
+   * the dates, and it leaves out drafts and pre-releases without this having
+   * to guess from a tag name.
+   */
+  private async releasesFromApi(): Promise<{ tag: string; name: string | null; publishedAt: string | null }[]> {
     const response = await this.fetcher(`${this.githubApiBaseUrl}/repos/${REPOSITORY}/releases?per_page=100`, {
       headers: { accept: 'application/vnd.github+json', 'user-agent': 'sillytavern-manager' },
     });
     if (!response.ok) {
-      throw new RuntimeError('github_unavailable', `GitHub returned HTTP ${response.status}`);
+      // 403 and 429 are both how the API says "too many from your address",
+      // and on a hosted machine the address is not this reader's.
+      const refused = response.status === 403 || response.status === 429;
+      throw new RuntimeError(refused ? 'github_rate_limited' : 'github_unavailable', `GitHub returned HTTP ${response.status}`);
     }
     const payload: unknown = await response.json();
     if (!Array.isArray(payload)) {
       throw new RuntimeError('github_invalid_response', 'GitHub returned an invalid release list');
     }
-    const releases = payload
+    return payload
       .filter(isReleasePayload)
       .filter((release) => release.draft !== true && release.prerelease !== true)
       .map((release) => ({
@@ -150,6 +157,56 @@ export class RuntimeManager {
         publishedAt: typeof release.published_at === 'string' ? release.published_at : null,
       }))
       .filter((release) => release.tag.length > 0);
+  }
+
+  /**
+   * The same releases, read off the repository's tags.
+   *
+   * Newest first by version number rather than by date, which is not
+   * something a tag carries. SillyTavern's releases are numbered, so this
+   * orders them the way the list above is ordered; anything unnumbered sorts
+   * after, in the order git gave it.
+   */
+  private async releasesFromGit(): Promise<{ tag: string; name: string | null; publishedAt: string | null }[]> {
+    const output = await runGit(this.gitCommand, ['ls-remote', '--tags', '--refs', this.repositoryUrl], () => undefined);
+    const tags = output.split(/\r?\n/u)
+      .map((line) => /refs\/tags\/(.+)$/u.exec(line.trim())?.[1] ?? '')
+      .filter((tag) => tag.length > 0 && tag.length < 64);
+    if (tags.length === 0) throw new RuntimeError('github_invalid_response', 'the repository listed no release tags');
+    return [...new Set(tags)]
+      .sort((left, right) => compareVersionTags(right, left))
+      .map((tag) => ({ tag, name: null, publishedAt: null }));
+  }
+
+  public async listVersions(forceRefresh = false): Promise<VersionOption[]> {
+    if (!forceRefresh && this.versionsCache && this.versionsCache.expiresAt > Date.now()) {
+      return this.versionsCache.options;
+    }
+    const releases = await this.releasesFromApi().catch(async (error: unknown) => {
+      /*
+       * GitHub's API is refusing this machine, so the releases are read from
+       * the repository itself instead.
+       *
+       * The API counts requests per address and gives an unauthenticated one
+       * a small allowance an hour. On somebody's own computer that is never
+       * reached; on a hosted machine the address belongs to the platform and
+       * is shared with everybody else on it, so the allowance can be gone
+       * before this manager has made a single request. What came back then
+       * was `403`, which the console showed as "GitHub could not be reached"
+       * - over a connection that was working perfectly - and the install
+       * stopped there.
+       *
+       * The tags are in the repository, and cloning it is how a version is
+       * installed anyway, so `git ls-remote` answers the same question over
+       * the same road the install is about to take. It knows only the tag
+       * names: no release titles and no dates, which is a thinner list and an
+       * enormously better one than no list at all.
+       */
+      const tags = await this.releasesFromGit().catch(() => null);
+      if (!tags) throw error;
+      this.logger('[installer] GitHub is not answering its API for this machine, so the version list was read from the repository instead');
+      return tags;
+    });
     const latest = releases[0];
     const options: VersionOption[] = [
       {
@@ -788,6 +845,25 @@ async function runNpmInstall(runtimePath: string, npmCommand: string, onLine: (l
     child.once('error', (error) => reject(signal?.aborted ? canceled() : new RuntimeError('npm_failed', `Could not start npm: ${error.message}`)));
     child.once('close', (code) => code === 0 ? resolvePromise() : reject(signal?.aborted ? canceled() : new RuntimeError('npm_failed', `npm install exited with code ${code ?? 'unknown'}`)));
   });
+}
+
+/**
+ * Order two release tags the way a reader would: 1.19.0 after 1.9.0.
+ *
+ * Numbers compare as numbers, so a plain string sort - which puts 1.9 above
+ * 1.19 - does not decide which release is the newest. A tag with no numbers
+ * in it at all sorts below every tag that has them.
+ */
+function compareVersionTags(left: string, right: string): number {
+  const parts = (tag: string): number[] => (tag.match(/\d+/gu) ?? []).map(Number);
+  const a = parts(left);
+  const b = parts(right);
+  if (a.length === 0 || b.length === 0) return (a.length === 0 ? 0 : 1) - (b.length === 0 ? 0 : 1);
+  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+    const difference = (a[index] ?? 0) - (b[index] ?? 0);
+    if (difference !== 0) return difference;
+  }
+  return 0;
 }
 
 async function runGit(gitCommand: string, args: readonly string[], onLine: (line: string) => void, signal?: AbortSignal): Promise<string> {

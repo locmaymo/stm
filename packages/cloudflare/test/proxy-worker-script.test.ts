@@ -97,12 +97,52 @@ test('the Worker says what it is, so the manager can tell its own from a strange
   assert.deepEqual(await answer.json(), { version: PROXY_WORKER_VERSION, target: 'manager', origin: null });
 });
 
-test('a tunnel that cannot be reached is reported as such, not as a blank failure', async (t) => {
+/*
+ * A tunnel that went away without anybody saying so: a manager stopped, a
+ * machine asleep, a container reset.
+ *
+ * To the reader this is the same fact as the link being switched off, and it
+ * is the fact they need - not a Cloudflare error page naming a random
+ * hostname they have never seen, which is what came through before.
+ */
+test('a tunnel that has gone reads as the link being off, not as an error page', async (t) => {
+  const proxy = await loadProxy();
+  // How it arrives in practice: the hostname is still in DNS behind
+  // Cloudflare after cloudflared exits, so the edge answers rather than
+  // failing, and the answer is 530.
+  t.after(interceptFetch(() => new Response('error code: 1033', { status: 530 })));
+  const answer = await proxy.fetch(
+    new Request('https://stm.acme.workers.dev/'),
+    { ORIGIN: 'https://gone.trycloudflare.com', TARGET: 'manager' },
+  );
+  assert.equal(answer.status, 503);
+  assert.match(await answer.text(), /not open right now/u);
+});
+
+test('a tunnel whose name has gone from DNS reads the same way', async (t) => {
   const proxy = await loadProxy();
   t.after(interceptFetch(() => { throw new Error('connection refused'); }));
   const answer = await proxy.fetch(
     new Request('https://stm.acme.workers.dev/'),
     { ORIGIN: 'https://gone.trycloudflare.com', TARGET: 'manager' },
+  );
+  assert.equal(answer.status, 503);
+  assert.match(await answer.text(), /not open right now/u);
+});
+
+/*
+ * Anywhere else, the detail is kept.
+ *
+ * A Named Tunnel's hostname or an address somebody set themselves is not this
+ * Worker's to explain away: "the link is off" would be a guess, and what the
+ * operator needs is what actually happened.
+ */
+test('an origin that is not a Quick Tunnel still reports what went wrong', async (t) => {
+  const proxy = await loadProxy();
+  t.after(interceptFetch(() => { throw new Error('connection refused'); }));
+  const answer = await proxy.fetch(
+    new Request('https://stm.acme.workers.dev/'),
+    { ORIGIN: 'https://tunnel.example.com', TARGET: 'manager' },
   );
   assert.equal(answer.status, 502);
   assert.deepEqual(await answer.json(), { error: 'origin_unreachable', message: 'connection refused' });

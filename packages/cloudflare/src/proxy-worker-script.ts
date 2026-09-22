@@ -21,6 +21,13 @@
  * opens their own address wants to know the tunnel is off, not to read a
  * Cloudflare error page about a hostname they have never heard of.
  *
+ * The same page answers a tunnel that has gone away without anybody saying so -
+ * a manager stopped, a machine asleep, a container reset. The address it was
+ * pointed at is then a name Cloudflare cannot reach, and forwarding to it put
+ * Cloudflare's own 530 through this Worker: a wall of error codes about a
+ * hostname the reader has never seen, for the ordinary fact that the machine
+ * at the other end is off.
+ *
  * The one thing it adds to a request is `X-Forwarded-Host`. The console checks
  * that a request that carries an `Origin` came from an address it answers on,
  * and through here those two never match on their own: the browser's origin is
@@ -32,7 +39,7 @@
  * Bump `PROXY_WORKER_VERSION` whenever the source changes; a manager that finds
  * an older version deployed replaces it.
  */
-export const PROXY_WORKER_VERSION = 2;
+export const PROXY_WORKER_VERSION = 3;
 
 /**
  * The two names, and what each one is in front of.
@@ -87,6 +94,9 @@ export default {
        * result of a different address.
        */
       const forwarded = new Request(target, request);
+      // Kept so the answer below can be recognised as the tunnel being gone
+      // rather than as the thing behind it having an opinion.
+      const tunnelled = upstream.hostname.endsWith('.trycloudflare.com');
       // What the browser actually typed, which nothing downstream can work out
       // for itself once Host has become the tunnel's. Left alone on an upgrade:
       // a WebSocket handshake is the one request the runtime is particular
@@ -96,8 +106,23 @@ export default {
         forwarded.headers.set('x-forwarded-host', url.host);
         forwarded.headers.set('x-forwarded-proto', url.protocol.replace(':', ''));
       }
-      return await fetch(forwarded, { redirect: 'manual' });
+      const answer = await fetch(forwarded, { redirect: 'manual' });
+      /*
+       * Cloudflare could not reach the tunnel, which by now is not there.
+       *
+       * A Quick Tunnel's hostname stays in DNS behind Cloudflare after
+       * cloudflared exits, so this does not fail as a name that cannot be
+       * resolved: it comes back as an answer, 530, and this Worker passed it
+       * on. Somebody opening the address they were given got a Cloudflare
+       * error page naming a random hostname, rather than being told that the
+       * machine is off.
+       */
+      if (answer.status === 530 && tunnelled) return offline(env);
+      return answer;
     } catch (error) {
+      // The name has gone from DNS too, which is the same fact arriving as a
+      // failure instead of as an answer.
+      if (upstream.hostname.endsWith('.trycloudflare.com')) return offline(env);
       return json({ error: 'origin_unreachable', message: String(error && error.message || error).slice(0, 200) }, 502);
     }
   },
