@@ -30,7 +30,7 @@ import { authErrorKey } from './auth-error.js';
 import { DEFAULT_SILLYTAVERN_PORT, portRefusal } from './ports.js';
 import { isThisMachine, readTunnelOfferDeclined, saveTunnelOfferDeclined, shouldOfferManagerTunnel } from './hosting.js';
 import { availableUpdate, readDismissedUpdate, saveDismissedUpdate } from './updates.js';
-import { readDismissedRecovery, readDismissedSettings, saveDismissedRecovery, saveDismissedSettings, shouldOfferSettings, shouldShowRecovery } from './settings-offer.js';
+import { readDismissedDisplaced, readDismissedRecovery, readDismissedSettings, saveDismissedDisplaced, saveDismissedRecovery, saveDismissedSettings, shouldOfferSettings, shouldShowDisplaced, shouldShowRecovery } from './settings-offer.js';
 import { apiFetch, onSessionExpired, resetSessionWatch, sessionToken, setSessionToken } from './session.js';
 import { collectCloudflareResult, framed, openReturnWindow, popupsBlocked, whenAbandoned, type CollectedResult } from './oauth.js';
 import type { AccessGatewayState, BackupManifest, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LogEntry, LogSourceFilter, ManagerSettingsOffer, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
@@ -748,11 +748,10 @@ function FirstRun({ t, csrfToken, preferences, onPreferencesChange, onDone }: { 
           <ul className="grid gap-2 text-sm text-muted-foreground">
             <li>{t('setup.cloudPointFree')}</li>
             <li>{t('setup.cloudPointRestore')}</li>
-            <li>{t('setup.cloudPointLater')}</li>
           </ul>
           {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
           <div className="grid gap-2">
-            <Button size="lg" className="w-full" disabled={busy} onClick={() => void connect()}>
+            <Button size="lg" className="w-full hover:opacity-90" style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }} disabled={busy} onClick={() => void connect()}>
               <CloudflareMark />{busy ? t('common.loading') : t('setup.cloudConnect')}
             </Button>
             <Button variant="ghost" size="lg" className="w-full" disabled={busy} onClick={onDone}>{t('setup.cloudSkip')}</Button>
@@ -881,6 +880,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
    * account is offered while this is true.
    */
   const displaced = Boolean(r2Owner) && r2Owner?.mine === false;
+  const [dismissedDisplaced, setDismissedDisplaced] = useState<string | null>(() => readDismissedDisplaced(browserStorage()));
   /*
    * Whether this account holds a machine's setup, and whether it is this one.
    *
@@ -1435,17 +1435,24 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
             {/* The account has been taken by another manager, so this one
                 has stopped backing up. First of everything, because nothing
                 else on the page is true while it is. */}
-            {displaced && r2Owner
+            {displaced && r2Owner && shouldShowDisplaced(r2Owner.label, dismissedDisplaced)
               ? <div className="mb-(--section-gap)"><Alert variant="destructive">
                 <ShieldCheck />
                 <AlertTitle>{t('console.r2DisplacedTitle')}</AlertTitle>
                 <AlertDescription className="grid gap-2">
                   <span>{t('console.r2DisplacedBody', { name: r2Owner.label, when: new Date(r2Owner.lastSeenAt).toLocaleString() })}</span>
-                  <span>{reconnectUrl
+                  <span className="flex flex-wrap items-center gap-2">{reconnectUrl
                     ? <Button size="sm" asChild style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }} className="hover:opacity-90">
                       <a href={reconnectUrl} target="_blank" rel="noopener noreferrer"><CloudflareMark />{t('console.r2DisplacedSignIn')}</a>
                     </Button>
-                    : <Button size="sm" style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }} className="hover:opacity-90" onClick={() => void signInToCloudflareAgain()}><CloudflareMark />{t('console.r2DisplacedSignIn')}</Button>}</span>
+                    : <Button size="sm" style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }} className="hover:opacity-90" onClick={() => void signInToCloudflareAgain()}><CloudflareMark />{t('console.r2DisplacedSignIn')}</Button>}
+                  {/* Somebody who has moved to the other machine on purpose is
+                      being told the same thing on every page for good. The
+                      backup card goes on saying it where it matters. */}
+                  <Button size="sm" variant="ghost" onClick={() => {
+                    saveDismissedDisplaced(r2Owner.label, browserStorage());
+                    setDismissedDisplaced(r2Owner.label);
+                  }}>{t('common.dismiss')}</Button></span>
                 </AlertDescription>
               </Alert></div>
               : null}
@@ -1457,7 +1464,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
                 rebuild this machine out of it is offering a button that
                 cannot work. Signing in again is the only step there is, and
                 the notice above is where it is. */}
-            {!displaced && shouldOfferSettings(settingsOffer, dismissedSettings) && settingsOffer
+            {!displaced && backgroundJob === null && shouldOfferSettings(settingsOffer, dismissedSettings) && settingsOffer
               ? <div className="mb-(--section-gap)"><RestoreEverythingCard
                 t={t}
                 offer={settingsOffer}
@@ -1468,6 +1475,14 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
                   if (!when) return;
                   saveDismissedSettings(when, browserStorage());
                   setDismissedSettings(when);
+                  /*
+                   * And the manager is told, because more than this card is
+                   * waiting on it: nothing of this machine's goes up to the
+                   * account until somebody has said what to do with what is
+                   * already there. Not waited for - the card is answered
+                   * either way, and the next tick asks again.
+                   */
+                  void apiFetch('/api/v1/r2/settings/dismiss', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } }).catch(() => undefined);
                 }}
               /></div>
               : null}
@@ -1531,9 +1546,6 @@ function RestoreEverythingCard({ t, offer, busy, onRestore, onDismiss }: {
         <li>{t('console.r2RestoreAllSettings')}</li>
         <li>{t('console.r2RestoreAllMetrics')}</li>
       </ul>
-      {/* The one part that can take something away, said where it cannot be
-          missed: this console's password becomes the other machine's. */}
-      {offer.hasAdminPassword ? <Alert><ShieldCheck /><AlertDescription>{t('console.r2RestoreAllPasswordWarning')}</AlertDescription></Alert> : null}
       <p className="text-xs text-muted-foreground">{t('console.r2RestoreAllSafety')}</p>
       <div className="flex flex-wrap gap-2">
         <Button size="sm" onClick={onRestore} disabled={busy}><History />{busy ? t('common.loading') : t('console.r2RestoreAll')}</Button>
@@ -4029,10 +4041,16 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
             {settingsOffer.hasAdminPassword ? <span className="text-xs">{t('console.r2SettingsPasswordWarning')}</span> : null}
             <span className="flex flex-wrap gap-2">
               <Button size="sm" variant="outline" onClick={() => void restoreManagerSettings()} disabled={r2Busy !== null}>{t('console.r2SettingsRestore')}</Button>
+              <Button size="sm" variant="ghost" disabled={r2Busy !== null} onClick={() => {
+                const when = settingsOffer.writtenAt;
+                if (when) saveDismissedSettings(when, browserStorage());
+                setSettingsOffer({ ...settingsOffer, available: false });
+                void apiFetch('/api/v1/r2/settings/dismiss', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } }).catch(() => undefined);
+              }}>{t('console.r2SettingsDismiss')}</Button>
             </span>
           </AlertDescription>
         </Alert> : null}
-        {lastRecovery && shouldShowRecovery(lastRecovery.createdAt, dismissedRecovery) ? <Alert>
+        {lastRecovery && !displaced && shouldShowRecovery(lastRecovery.createdAt, dismissedRecovery) ? <Alert>
           <History />
           <AlertTitle>{t('console.r2RecoveredTitle')}</AlertTitle>
           {/* How much came back, not how many files: a size is something the

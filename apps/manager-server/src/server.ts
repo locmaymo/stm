@@ -498,6 +498,12 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     logger: (line) => { jobs.append('backup', line); baseLogger(line); },
     saveSettings: () => saveManagerSettings({ store, backups, r2, runtime, tunnel, managerTunnel, gateway, logger: baseLogger }),
     metricsFile: metrics.filePath,
+    // Whether this bucket is still holding out a setup nobody here has
+    // answered; see `waitingOnHandover`.
+    handoverPending: async () => {
+      const offer = await managerSettingsOffer({ store, backups, r2, runtime, tunnel, managerTunnel, gateway, logger: baseLogger });
+      return offer.available ? offer.label : null;
+    },
   });
   scheduler.start();
   // Uploads interrupted by a closed tab leave gigabyte part files whose id no
@@ -1525,10 +1531,35 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
      * backups stopped. One charged read, at most once a minute.
      */
     await r2.refreshClaim({ atMostEvery: 60_000 }).catch(() => undefined);
-    sendJson(response, 200, {
-      settings: await managerSettingsOffer({ store, backups, r2, runtime, tunnel, managerTunnel, gateway, logger }),
-      owner: (await r2.getConfig()).owner ?? null,
-    });
+    /*
+     * And not while this manager is already acting on it.
+     *
+     * Signing in on a blank machine starts the restore by itself, before the
+     * browser has even been redirected back. The console then opened, asked
+     * this, and put the card up - "this account holds the setup of another
+     * machine, restore it?" - over a restore that was seconds into doing
+     * exactly that. It flashed for a few seconds and vanished when the
+     * settings landed, which reads as a button somebody was too slow to press.
+     */
+    const offer = jobs.activeOperation()
+      ? { available: false, label: null, writtenAt: null, mine: false, hasAdminPassword: false, hasAccessPassword: false }
+      : await managerSettingsOffer({ store, backups, r2, runtime, tunnel, managerTunnel, gateway, logger });
+    sendJson(response, 200, { settings: offer, owner: (await r2.getConfig()).owner ?? null });
+    return;
+  }
+  /*
+   * "Not these" - the other answer, and the one that was only ever a note in
+   * one browser.
+   *
+   * It has to reach the manager, because the card is not the only thing
+   * waiting on it: until this machine has said what it wants, nothing of its
+   * own is uploaded over what the bucket is holding. A dismissal the server
+   * never heard about left that wait running for the life of the connection.
+   */
+  if (pathname === '/api/v1/r2/settings/dismiss' && method === 'POST') {
+    const record = await foreignManagerSettings({ store, backups, r2, runtime, tunnel, managerTunnel, gateway, logger });
+    if (record) await r2.answerSettingsOffer(record.writtenAt);
+    sendJson(response, 200, { dismissed: record !== null });
     return;
   }
   if (pathname === '/api/v1/r2/settings' && method === 'POST') {

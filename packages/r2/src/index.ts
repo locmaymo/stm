@@ -177,6 +177,17 @@ interface StoredR2Config {
    * which is enough for a line on a card and never enough to act on.
    */
   readonly claim: { readonly keyId: string; readonly label: string; readonly lastSeenAt: string; readonly mine: boolean; readonly checkedAt: string } | null;
+  /**
+   * The setup another machine left here that the reader has already answered.
+   *
+   * Held as the `writtenAt` of the record they answered about, so a machine
+   * that later writes a different setup is something new and is offered again.
+   * It was remembered in the browser, which is not where it belongs: until
+   * this machine has said what it wants, nothing here may be uploaded over
+   * what the bucket is holding, and that is a decision the manager has to know
+   * about rather than one tab of one browser.
+   */
+  readonly settingsOfferAnswered: string | null;
   readonly usage: StoredUsage;
 }
 
@@ -1115,6 +1126,36 @@ export class R2Manager {
     await this.save({ ...config, claim: next });
   }
 
+  /**
+   * Whether this machine has anything of its own in this bucket yet.
+   *
+   * What makes the question above worth asking at all: a machine that has
+   * uploaded here has already settled with this bucket, and everything after
+   * that is ordinary backing up.
+   */
+  public async neverUploaded(): Promise<boolean> {
+    return (await this.load()).lastUploadAt === null;
+  }
+
+  /** The offer the reader has answered, as the record's `writtenAt`. */
+  public async answeredSettingsOffer(): Promise<string | null> {
+    return (await this.load()).settingsOfferAnswered;
+  }
+
+  /**
+   * Remember that the reader has answered the setup this bucket was offering.
+   *
+   * Either answer counts. Restoring it makes this machine the machine the
+   * record describes; waving it away means they want this machine as it is.
+   * Both of them end the wait, and the wait is what stops a machine that has
+   * just connected from uploading over a library it has not looked at yet.
+   */
+  public async answerSettingsOffer(writtenAt: string): Promise<void> {
+    const config = await this.load();
+    if (config.settingsOfferAnswered === writtenAt) return;
+    await this.save({ ...config, settingsOfferAnswered: writtenAt });
+  }
+
   private async forgetClaim(): Promise<void> {
     const config = await this.load();
     if (config.claim === null) return;
@@ -1178,6 +1219,9 @@ export class R2Manager {
       lastColdUploadAt: null,
       lastFingerprint: null,
       lastSnapshot: null,
+      // A different bucket is a different question. Whatever was answered
+      // about the last one says nothing about what this one holds.
+      settingsOfferAnswered: null,
       usage: {
         ...config.usage,
         storageBytes: found.totalBytes,
@@ -1933,6 +1977,7 @@ function defaultStoredConfig(now: Date): StoredR2Config {
     lastRecovery: null,
     lastMetrics: null,
     claim: null,
+    settingsOfferAnswered: null,
     usage: {
       storageBytes: 0,
       blobCount: 0,

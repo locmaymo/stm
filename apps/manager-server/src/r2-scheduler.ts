@@ -2,6 +2,7 @@ import { logEvent, logLineText, type BackupManifest, type LogSink, type Profile,
 import { BackupStore, type ArchiveSource } from '../../../packages/backup/src/index.js';
 import { ProfileStore } from '../../../packages/profiles/src/index.js';
 import { R2Manager, type SyncSource } from '../../../packages/r2/src/index.js';
+import type { R2Config } from '../../../packages/contracts/src/index.js';
 import { hashFile, looksUnchanged, type HashedFile } from '../../../packages/r2/src/sync.js';
 import { ioConcurrency, runPooled } from '../../../packages/platform/src/index.js';
 import { lstat } from 'node:fs/promises';
@@ -76,7 +77,24 @@ export interface BackupSchedulerOptions {
    * the one other thing on the machine that cannot be made again.
    */
   readonly metricsFile?: string;
+  /**
+   * The machine whose setup this bucket is holding, when nobody here has said
+   * what to do about it yet; null when there is nothing waiting.
+   *
+   * Passed in because answering it means reading the bucket's record and
+   * comparing it with this machine's own install, which is the server's
+   * business rather than the scheduler's. See `waitingOnHandover`.
+   */
+  readonly handoverPending?: () => Promise<string | null>;
 }
+
+/**
+ * How long the answer to that question is trusted before asking again.
+ *
+ * It is a charged read, the clock ticks every minute, and the thing it is
+ * waiting for is a person noticing a card - which does not happen in seconds.
+ */
+const HANDOVER_RECHECK_MS = 2 * 60 * 1000;
 
 /** Small, bounded scheduler. It only runs after the manager is ready and never blocks requests. */
 export class BackupScheduler {
@@ -104,6 +122,9 @@ export class BackupScheduler {
   private lastMetricsUploadAt: number | null = null;
   private readonly saveSettings: () => Promise<unknown>;
   private readonly metricsFile: string | null;
+  private readonly handoverPending: () => Promise<string | null>;
+  /** The last answer about a waiting handover, and when it was given. */
+  private handover: { readonly at: number; readonly label: string | null } | null = null;
 
   public constructor(options: BackupSchedulerOptions) {
     this.backups = options.backups;
@@ -114,6 +135,7 @@ export class BackupScheduler {
     this.tickIntervalMs = options.tickIntervalMs ?? 60_000;
     this.saveSettings = options.saveSettings ?? (async () => undefined);
     this.metricsFile = options.metricsFile ?? null;
+    this.handoverPending = options.handoverPending ?? (async () => null);
   }
 
   public start(): void {
@@ -143,7 +165,28 @@ export class BackupScheduler {
       // that, which is what it used to have when this interval came out of
       // the R2 settings.
       const config = await this.r2.getConfig();
-      const remote = config.enabled && config.configured;
+      /*
+       * Nothing of this machine's goes up while the bucket is still offering
+       * it somebody else's library.
+       *
+       * This is the window between connecting an account and answering the
+       * card, and it used to be minutes of ordinary backing up. A machine set
+       * up by hand - a password, SillyTavern installed, the empty profile that
+       * comes with it - connected to an account holding a year of somebody's
+       * chats, and a minute later the newest recovery point in that bucket was
+       * the empty profile. The card was still on the screen offering to bring
+       * the library back; pressing it brought back the emptiness, because
+       * newest is what it means. Given long enough, retention would have thinned
+       * the real points away underneath it.
+       *
+       * So the automatic tiers wait for the answer. Both answers release it,
+       * and either one takes seconds to give: restore that setup, or say it is
+       * not wanted. The local copy on this machine is not affected - it is not
+       * going anywhere near the bucket - and neither is a press of Back up now,
+       * which is somebody asking for this on purpose.
+       */
+      const waiting = await this.waitingOnHandover(config);
+      const remote = config.enabled && config.configured && !waiting;
       /*
        * What the manager itself is set to: the password, the passcode, the
        * port, the schedules, the release being run.
@@ -189,6 +232,36 @@ export class BackupScheduler {
     } finally {
       this.running = false;
     }
+  }
+
+  /**
+   * Whether this machine is still waiting to be told what to do with a bucket
+   * that describes another machine.
+   *
+   * Only ever asked of a bucket this machine has never uploaded to, which is
+   * the only state the question can be true in and makes it a question that
+   * stops being asked: one upload and it is over for the life of the
+   * connection. The answer is held for a few minutes so a manager sitting in
+   * this state is not making a charged read every time the clock ticks.
+   */
+  private async waitingOnHandover(config: R2Config): Promise<boolean> {
+    if (!config.enabled || !config.configured) return false;
+    // A question that cannot be answered is not a reason to stop backing up.
+    let fresh = false;
+    try { fresh = await this.r2.neverUploaded(); } catch { return false; }
+    if (!fresh) return false;
+    const now = this.now().getTime();
+    if (!this.handover || now - this.handover.at > HANDOVER_RECHECK_MS) {
+      const label = await this.handoverPending().catch(() => null);
+      this.handover = { at: now, label };
+    }
+    const label = this.handover.label;
+    if (label === null) return false;
+    if (this.lastSkip !== label) {
+      this.lastSkip = label;
+      this.logger(logEvent('backup.awaitingHandover', `[backup] nothing is being sent to this account yet: it holds the setup of ${label}, and this machine is waiting to be told whether to bring it back`, { label }));
+    }
+    return true;
   }
 
   /**

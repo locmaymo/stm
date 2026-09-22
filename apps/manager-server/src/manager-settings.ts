@@ -117,10 +117,18 @@ export async function foreignManagerSettings(deps: ManagerSettingsDeps): Promise
   return null;
 }
 
-/** What the panel is told about settings some machine has left in the bucket. */
+/**
+ * What the panel is told about settings some machine has left in the bucket.
+ *
+ * Unavailable once the reader has answered it - restored it, or said they did
+ * not want it. That answer lives with the manager rather than in the browser,
+ * because more than the card depends on it: until it is given, this machine
+ * does not upload anything of its own over what the bucket is holding.
+ */
 export async function managerSettingsOffer(deps: ManagerSettingsDeps): Promise<ManagerSettingsOffer> {
   const record = await foreignManagerSettings(deps);
-  if (!record) return { available: false, label: null, writtenAt: null, mine: false, hasAdminPassword: false, hasAccessPassword: false };
+  const answered = await deps.r2.answeredSettingsOffer().catch(() => null);
+  if (!record || record.writtenAt === answered) return { available: false, label: null, writtenAt: null, mine: false, hasAdminPassword: false, hasAccessPassword: false };
   return {
     available: true,
     label: record.label,
@@ -221,6 +229,9 @@ export async function applyManagerSettings(deps: ManagerSettingsDeps, record: Ma
   }
 
   logger(logEvent('r2.settingsRestored', `[r2] restored the manager’s settings from ${record.label}: ${applied.join(', ') || 'nothing'}`, { from: record.label, applied: applied.join(', ') }));
+  // Answered, so the card stops offering it and the uploads this machine was
+  // holding back may go.
+  await deps.r2.answerSettingsOffer(record.writtenAt).catch(() => undefined);
   /*
    * The record in the bucket now describes this machine, so it should say so.
    *

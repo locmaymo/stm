@@ -41,6 +41,45 @@ export function saveDismissedSettings(writtenAt: string, storage?: OfferStorage)
   }
 }
 
+/** Where the displacement notice's dismissal is remembered, per browser. */
+const DISPLACED_KEY = 'stm-displaced-notice-seen';
+
+/**
+ * Whether to say, at the top of every page, that another machine took the
+ * account.
+ *
+ * It is the most important thing a displaced console has to say, and it is
+ * also the same sentence on every page for as long as the reader leaves it
+ * that way - which may be for good, if what they moved to is the other
+ * machine and this one is only still running. So it can be put down, against
+ * the machine that holds the account: if a different machine takes it later,
+ * that is news again and it comes back.
+ *
+ * Nothing is hidden by putting it down. The backup card goes on saying this
+ * machine is stopped and who has the account, in the place somebody looks
+ * when they wonder about backups.
+ */
+export function shouldShowDisplaced(label: string | null, dismissed: string | null): boolean {
+  return label !== null && label !== dismissed;
+}
+
+export function readDismissedDisplaced(storage?: OfferStorage): string | null {
+  try {
+    return storage?.getItem(DISPLACED_KEY) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveDismissedDisplaced(label: string, storage?: OfferStorage): void {
+  try {
+    storage?.setItem(DISPLACED_KEY, label);
+  } catch {
+    // Without storage it comes back, which is the safe way round for a notice
+    // that says backups have stopped.
+  }
+}
+
 /** Where the recovery notice's dismissal is remembered, per browser. */
 const RECOVERY_KEY = 'stm-recovery-notice-seen';
 
