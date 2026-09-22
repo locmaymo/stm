@@ -323,6 +323,16 @@ export interface CloudflareConnectionStatus {
   readonly lastError: string | null;
   /** Something about the account that has to be dealt with on Cloudflare, not here. */
   readonly problem: CloudflareAccountProblem | null;
+  /**
+   * The machine that took this account, when that is why the sign-in is gone.
+   *
+   * Set when this manager gave its own grant up rather than lost it: another
+   * machine signed in with the same Cloudflare account, so this one stopped
+   * being allowed to touch it and threw its own credentials away. It is the
+   * difference between "sign in again, Cloudflare stopped accepting this" and
+   * "sign in again, and you will be taking the account back from that machine".
+   */
+  readonly displacedBy: string | null;
 }
 
 /**
@@ -1126,6 +1136,18 @@ export interface ConsoleStatus {
    * nothing.
    */
   readonly ports: PortSettings;
+  /**
+   * Which machine is backing up to the Cloudflare account, if one is.
+   *
+   * Here for the same reason the ports are. The console used to ask this once,
+   * as it opened, down the one route that goes and reads the bucket - so a
+   * console that was already open when somebody signed in on another machine
+   * showed nothing at all. It went on showing a backup card that had stopped
+   * being true until the page happened to be reloaded, which is exactly the
+   * moment a reader is least likely to reload it. Read from memory, so it
+   * costs this answer nothing.
+   */
+  readonly r2Owner: R2Config['owner'];
 }
 
 /** The complete allowlist written by the SillyTavern fetch instrumentation. */

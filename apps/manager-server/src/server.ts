@@ -96,6 +96,16 @@ const PROTECTED_PATHS = new Set([
   '/api/v1/r2',
 ]);
 
+/**
+ * How often a console being read goes and asks the bucket who owns it.
+ *
+ * Short enough that somebody who has just signed in on another machine finds
+ * this one already knowing, rather than after a reload; long enough that a
+ * console left open all day is a few hundred reads, not a few hundred
+ * thousand.
+ */
+const CLAIM_LOOK_MS = 5 * 60 * 1000;
+
 export interface ManagerServerOptions {
   readonly host?: string;
   readonly port?: number;
@@ -233,7 +243,25 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   const profiles = options.profileStore ?? new ProfileStore({ paths, logger: (line) => { jobs.append('manager', line); baseLogger(line); } });
   const backups = options.backupStore ?? new BackupStore({ paths, logger: (line) => { jobs.append('backup', line); baseLogger(line); } });
   const cloudflare = options.cloudflare !== undefined ? options.cloudflare : cloudflareConnectionFromEnvironment(paths, env);
-  const r2 = options.r2 ?? new R2Manager({ paths, env, ...(cloudflare ? { cloudflare } : {}), logger: (line) => { jobs.append('backup', line); baseLogger(line); } });
+  const r2 = options.r2 ?? new R2Manager({
+    paths,
+    env,
+    ...(cloudflare ? { cloudflare } : {}),
+    logger: (line) => { jobs.append('backup', line); baseLogger(line); },
+    /*
+     * The account has gone to another machine, so what was deployed into it
+     * is no longer ours to remember.
+     *
+     * The two fixed-address Workers live in that account under names that do
+     * not depend on the machine, so the manager that took the account has
+     * deployed over them and they answer at its tunnel now. Keeping the
+     * record here would leave the console handing out an address that reaches
+     * somebody else's machine, and would let a later sign-in from here decide
+     * there was nothing to redeploy. `proxy` is defined below and this only
+     * ever runs long after that.
+     */
+    onSurrender: () => { void proxy?.forget().catch(() => undefined); },
+  });
   /*
    * The fixed addresses in front of the tunnels, when there is a Cloudflare
    * account to put them in.
@@ -922,7 +950,7 @@ async function handleRequest(options: {
   };
 
   if (pathname === CLOUDFLARE_CALLBACK_PATH && (request.method ?? 'GET') === 'GET') {
-    await handleCloudflareCallback(context, sessions, cloudflare, r2, options.logger, handoffs, {
+    await handleCloudflareCallback(context, sessions, cloudflare, r2, publishProxies, options.logger, handoffs, {
       store, backups, runtime, secureCookies, rateLimiter,
       restoreEverything: () => restoreAfterSignIn({
         store, backups, r2, runtime, jobs, profiles, gateway, metrics, supervisor,
@@ -1521,6 +1549,8 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
    * is put back together, and a press and a sign-in must not drift apart.
    */
   if (pathname === '/api/v1/r2/restore' && method === 'POST') {
+    const lost = await lostTheAccount(r2);
+    if (lost) { sendError(response, 409, 'r2_in_use', displacedMessage(lost)); return; }
     /*
      * The release the bucket remembers, installed whatever is here already.
      *
@@ -1543,6 +1573,8 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     return;
   }
   if (pathname === '/api/v1/r2/settings/restore' && method === 'POST') {
+    const lost = await lostTheAccount(r2);
+    if (lost) { sendError(response, 409, 'r2_in_use', displacedMessage(lost)); return; }
     const body = await readJson(request);
     const record = await foreignManagerSettings({ store, backups, r2, runtime, tunnel, managerTunnel, gateway, logger });
     if (!record) { sendError(response, 404, 'manager_settings_missing', 'This account holds no manager settings'); return; }
@@ -2105,6 +2137,18 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     // somebody is in front of it. It stops while the page is hidden, which is
     // what makes this a measure of being read rather than of being open.
     activity.seen();
+    /*
+     * Which also makes it the place to go and look at who holds the account.
+     *
+     * The claim is otherwise read on the way into a write, and a manager with
+     * nothing to send never writes - so a machine that had the account taken
+     * from it could sit there for hours believing it still had one. Somebody
+     * in front of the console is exactly the case worth spending a read on,
+     * and it is one small object every few minutes against a free allowance
+     * of millions. Not waited for: the answer lands in the next poll, and
+     * this one is the console's clock.
+     */
+    void r2.refreshClaim({ atMostEvery: CLAIM_LOOK_MS }).catch(() => undefined);
     const status: ConsoleStatus = {
       process: supervisor.getState(),
       tunnel: await withProxyUrl(tunnel.getState(), proxy, cloudflare, 'sillyTavern'),
@@ -2114,6 +2158,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       install: jobs.activeInstallation(),
       operation: jobs.activeOperation(),
       ports: { port: ports.sillyTavern(), reserved: { manager: ports.manager, access: ports.access } },
+      r2Owner: (await r2.getConfig()).owner,
     };
     sendJson(response, 200, status);
     return;
@@ -2194,7 +2239,18 @@ async function withProxyUrl(state: TunnelState, proxy: ProxyWorkerManager | null
    * whether it has anything to do.
    */
   if (behind && state.url !== null && expected && !proxy.publishing(target)) void proxy.republish(target, state.url);
-  return { ...state, proxyUrl: record?.url ?? null, proxyPending: expected && state.url !== null && behind };
+  /*
+   * And no address at all when there is no longer an account behind it.
+   *
+   * A Worker deployed while this manager held the account goes on answering
+   * after another machine signs in with it - at that machine's tunnel, since
+   * taking the account is followed by deploying over the same two Workers. So
+   * the address this console remembers is not this console's address any
+   * more, and it was still being handed out, put in QR codes and published by
+   * a manager that had been locked out of the account it names. It is the
+   * tunnel's own address from here until somebody signs in again.
+   */
+  return { ...state, proxyUrl: expected ? record?.url ?? null : null, proxyPending: expected && state.url !== null && behind };
 }
 
 /** What starting an installation needs, whoever asked for it. */
@@ -2551,7 +2607,7 @@ async function handleCloudflareRequest(context: RequestContext, cloudflare: Clou
  * top-level navigation back from Cloudflare still carries, so only a signed-in
  * admin can finish connecting this manager.
  */
-async function handleCloudflareCallback(context: RequestContext, sessions: SessionStore, cloudflare: CloudflareConnection | null, r2: R2Manager, logger: LogSink, handoffs: HandoffStore, signIn: CloudflareSignInDeps): Promise<void> {
+async function handleCloudflareCallback(context: RequestContext, sessions: SessionStore, cloudflare: CloudflareConnection | null, r2: R2Manager, publishProxies: () => void, logger: LogSink, handoffs: HandoffStore, signIn: CloudflareSignInDeps): Promise<void> {
   const { response, searchParams } = context;
   const state = searchParams.get('state') ?? '';
   /*
@@ -2621,7 +2677,25 @@ async function handleCloudflareCallback(context: RequestContext, sessions: Sessi
       error: searchParams.get('error'),
       errorDescription: searchParams.get('error_description'),
     }, await r2.keysBucket());
-    if (status.state === 'connected') await r2.update({ mode: 'cloudflare', enabled: true });
+    if (status.state === 'connected') {
+      await r2.update({ mode: 'cloudflare', enabled: true });
+      /*
+       * And this machine becomes the one that backs up, because signing in is
+       * what decides that.
+       *
+       * The claim used to be taken only where the reader picked an account
+       * from a list. A sign-in that settles the account by itself - the grant
+       * reaches exactly one, or it is a reconnect to the one already chosen -
+       * came back connected and took nothing, so a machine reconnecting to an
+       * account another machine had taken sat there refused by a claim it had
+       * just out-signed-in. The rule is the same in both cases: whoever signed
+       * in last holds it.
+       */
+      await claimForThisMachine(r2, logger);
+      // There is somewhere to put the fixed addresses again. Not waited for:
+      // the reader is waiting on a redirect, not on two Workers.
+      publishProxies();
+    }
     redirect(status.state);
   } catch (error: unknown) {
     const code = isRecord(error) && typeof error.code === 'string' ? error.code : 'cloudflare_connect_failed';
@@ -2918,6 +2992,32 @@ async function metricsFileIsEmpty(path: string): Promise<boolean> {
  * Best effort. A sign-in that worked is not undone by a bucket that could not
  * be written to, and the claim is read before every write anyway.
  */
+/**
+ * The machine that holds this Cloudflare account, when it is not this one.
+ *
+ * Read from what the last look at the bucket found rather than by looking
+ * again: this is asked on the way into work that would write to the account,
+ * and the answer is already on disk. Null is the ordinary case - nobody has
+ * taken it, or there is no account.
+ */
+async function lostTheAccount(r2: R2Manager): Promise<string | null> {
+  const owner = (await r2.getConfig()).owner;
+  return owner && !owner.mine ? owner.label : null;
+}
+
+/**
+ * Why nothing can be put back from an account this machine no longer holds.
+ *
+ * The console has a card offering to rebuild this machine from what the
+ * account remembers, and it was still offering it after another machine had
+ * taken the account - over settings this manager could no longer read, with a
+ * button that failed by saying the account held no settings at all. It holds
+ * plenty; they are simply not this machine's to take any more.
+ */
+function displacedMessage(label: string): string {
+  return `${label} signed in with this Cloudflare account, so nothing can be restored from it here. Sign in to Cloudflare again from this machine first.`;
+}
+
 async function claimForThisMachine(r2: R2Manager, logger: LogSink): Promise<void> {
   await r2.takeOwnership().catch((error: unknown) => {
     logger(logEvent('r2.takeOwnershipFailed', `[r2] this machine could not take the bucket: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));

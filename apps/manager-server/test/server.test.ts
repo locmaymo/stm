@@ -1794,6 +1794,89 @@ test('a fixed address that could not be deployed stops being waited for', async 
   assert.equal(state.url, 'https://today.trycloudflare.com');
 });
 
+/*
+ * A fixed address belongs to the account, not to the machine that made it.
+ *
+ * Both managers deploy the same two Workers under the same names, so the one
+ * that signs in second deploys over them and they answer at its tunnel from
+ * then on. The machine that lost the account went on handing out that address
+ * as its own - in the console, in the QR code, in what the tunnel card calls
+ * the permanent link - and every one of them reached somebody else's machine.
+ */
+test('a fixed address stops being this machine\u2019s when the account does', async (t) => {
+  const tunnel = fakeTunnel();
+  // Signed in, with the Worker deployed and pointing where it should.
+  const account = { held: { id: 'account-1', name: 'Acme' } as { id: string; name: string } | null };
+  const manager = await createServer({
+    bootstrapPassword: 'correct horse battery staple',
+    managerTunnel: tunnel,
+    proxy: fakeProxy({ manager: { url: 'https://stm.acme.workers.dev', origin: 'https://today.trycloudflare.com' } }),
+    cloudflare: { workersAccount: async () => account.held },
+  });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  const read = async (): Promise<TunnelState> =>
+    await (await fetch(`${base}/api/v1/manager-tunnel`, { headers: { cookie: auth.cookie } })).json() as TunnelState;
+
+  await tunnel.start('quick');
+  tunnel.publish('https://today.trycloudflare.com');
+  assert.equal((await read()).proxyUrl, 'https://stm.acme.workers.dev');
+
+  // Somebody signs in with the same Cloudflare account on another machine, so
+  // this one gives its own sign-in up and has no account to deploy into.
+  account.held = null;
+  const after = await read();
+  assert.equal(after.proxyUrl, null);
+  assert.equal(after.proxyPending, false);
+  // The tunnel is this manager's own and has nothing to do with the account,
+  // so it goes on being the address there is.
+  assert.equal(after.url, 'https://today.trycloudflare.com');
+});
+
+/*
+ * And the card that offers to rebuild this machine out of the account stops
+ * being an offer.
+ *
+ * It was still on the page after the account had gone, over settings this
+ * manager could no longer read - so pressing it failed by saying the account
+ * held no manager settings at all. It holds them; they are simply not this
+ * machine's to take until somebody signs in here again.
+ */
+test('nothing is restored from an account another machine has taken', async (t) => {
+  const manager = await createServer({
+    bootstrapPassword: 'correct horse battery staple',
+    // What the last look at the bucket found: the claim names another machine.
+    prepare: async (paths) => {
+      await mkdir(paths.state, { recursive: true });
+      await writeFile(join(paths.state, 'r2-config.json'), JSON.stringify({
+        schemaVersion: 2,
+        mode: 'cloudflare',
+        enabled: true,
+        claim: { keyId: 'a1b2c3d4', label: 'studio', lastSeenAt: '2026-09-22T08:24:55.000Z', mine: false, checkedAt: '2026-09-22T08:30:00.000Z' },
+      }), 'utf8');
+    },
+  });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  const post = async (path: string): Promise<Response> => await fetch(`${base}${path}`, {
+    method: 'POST',
+    headers: { cookie: auth.cookie, 'x-csrf-token': auth.csrfToken, 'content-type': 'application/json' },
+    body: '{}',
+  });
+
+  for (const path of ['/api/v1/r2/settings/restore', '/api/v1/r2/restore']) {
+    const response = await post(path);
+    assert.equal(response.status, 409, path);
+    const body = await response.json() as { error: { code: string; message: string } };
+    assert.equal(body.error.code, 'r2_in_use', path);
+    // Named, because "this cannot be done" with no reason is the thing this
+    // whole path exists to stop happening.
+    assert.match(body.error.message, /studio/u);
+  }
+});
+
 test('without a Cloudflare account there is no fixed address to wait for', async (t) => {
   const tunnel = fakeTunnel();
   const manager = await createServer({ bootstrapPassword: 'correct horse battery staple', managerTunnel: tunnel, proxy: fakeProxy({}), cloudflare: { workersAccount: async () => null } });

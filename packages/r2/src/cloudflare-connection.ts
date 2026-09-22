@@ -78,6 +78,8 @@ interface StoredConnection {
   readonly lastError: string | null;
   /** Set when Cloudflare refused for a reason the account owner has to fix there. */
   readonly problem: CloudflareAccountProblem | null;
+  /** The machine this manager handed the account to; see `surrender`. */
+  readonly displacedBy: string | null;
 }
 
 /**
@@ -165,6 +167,7 @@ export class CloudflareConnection {
       connectedAt: stored.connectedAt,
       lastError: stored.lastError,
       problem: stored.problem,
+      displacedBy: stored.displacedBy,
     };
   }
 
@@ -264,6 +267,9 @@ export class CloudflareConnection {
       reconnectRequired: false,
       lastError: null,
       connectedAt: new Date(this.now()).toISOString(),
+      // Whatever took the account before, this sign-in is the newest one, so
+      // it is this machine's again and the note about losing it is not true.
+      displacedBy: null,
       // A reconnect to the same account keeps its bucket; anything else is chosen again below.
       account: previous.account,
       bucket: previous.bucket,
@@ -376,7 +382,7 @@ export class CloudflareConnection {
     this.accessToken = null;
     this.pending = [];
     this.offeredAccounts = [];
-    await this.save({ ...stored, refreshToken: null, scopes: [], account: null, bucket: null, connectedAt: null, reconnectRequired: false, lastError: null, problem: null });
+    await this.save({ ...stored, refreshToken: null, scopes: [], account: null, bucket: null, connectedAt: null, reconnectRequired: false, lastError: null, problem: null, displacedBy: null });
     return { revoked, workerKeyRemoved, workerRemoved };
   }
 
@@ -399,6 +405,56 @@ export class CloudflareConnection {
     if (!stored.account || !stored.scopes.includes(DEFAULT_SCOPES.workersScriptsWrite)) return false;
     if (keyId === stored.installationKeyId) return false;
     return await this.worker.removeKey(stored.account.id, keyId).then(() => true, () => false);
+  }
+
+  /**
+   * Give the account up, because another machine holds it now.
+   *
+   * The claim in the bucket says who is using this Cloudflare account, and a
+   * manager that reads somebody else's name in it has already lost. Until now
+   * that only stopped the backups: the grant stayed on disk and went on
+   * working, so this manager could still deploy Workers into the account,
+   * read and write objects over the REST API, and ask Cloudflare what the
+   * account had spent - all of it against an account that is not its to touch
+   * any more. The console said as much, in the one sentence it had for a
+   * Worker that would not answer: backups are going the slower way for now.
+   *
+   * So the credentials go, here, on the machine that lost. Nothing is left to
+   * reach the account with: no refresh token, no access token, no Worker
+   * session. What stays is the account and bucket it was using, because they
+   * are how a sign-in from here lands back on the same bucket rather than
+   * making a second one - and the name of the machine that took it, because
+   * that is the whole of what the reader needs to be told.
+   *
+   * This is deliberately local. Cloudflare's own revocation endpoint is not
+   * called: the grant this manager would revoke is one Cloudflare issued to
+   * this client for this user, and the machine that has just taken the account
+   * holds one issued the same way. Revoking from here to be thorough risks
+   * ending theirs too - on a machine nobody is watching, to tidy up a token
+   * that has already been thrown away. Signing out by hand still revokes,
+   * because that is somebody asking for it on the machine in front of them.
+   *
+   * Returns whether anything was given up, so a caller can say so once rather
+   * than on every check.
+   */
+  public async surrender(by: string, reason: string): Promise<boolean> {
+    const stored = await this.load();
+    if (!stored.refreshToken) return false;
+    this.resetSession();
+    this.accessToken = null;
+    this.refreshing = null;
+    this.pending = [];
+    this.offeredAccounts = [];
+    await this.save({
+      ...stored,
+      refreshToken: null,
+      scopes: [],
+      reconnectRequired: true,
+      problem: null,
+      lastError: reason.slice(0, 500),
+      displacedBy: by.slice(0, 120),
+    });
+    return true;
   }
 
   /**
@@ -604,6 +660,7 @@ export class CloudflareConnection {
         reconnectRequired: false,
         lastError: null,
         problem: null,
+        displacedBy: null,
       };
       await this.save(fresh);
     }
@@ -649,6 +706,7 @@ function parseStored(value: unknown): StoredConnection {
     reconnectRequired: value.reconnectRequired === true,
     lastError: typeof value.lastError === 'string' ? value.lastError : null,
     problem: value.problem === 'r2_not_enabled' ? 'r2_not_enabled' : null,
+    displacedBy: typeof value.displacedBy === 'string' && value.displacedBy ? value.displacedBy : null,
   };
 }
 

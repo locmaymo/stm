@@ -875,6 +875,13 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
   }, []);
 
   /*
+   * Another manager signed in with this Cloudflare account, so this one is
+   * out: it has given its own sign-in up and can reach nothing in that
+   * account until somebody signs in here again. Nothing that would need the
+   * account is offered while this is true.
+   */
+  const displaced = Boolean(r2Owner) && r2Owner?.mine === false;
+  /*
    * Whether this account holds a machine's setup, and whether it is this one.
    *
    * Asked as the console opens and again once a background operation ends -
@@ -955,6 +962,18 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     // ask once as it loaded - so the console said 8002 over a SillyTavern on
     // 8004 until somebody reloaded it.
     setPortSettings(status.ports);
+    /*
+     * And who holds the Cloudflare account, which is the other thing this
+     * console used to ask once and then believe for the rest of the session.
+     *
+     * A machine that has the account taken from it stops backing up without
+     * anything happening on its screen: there is no request to fail, because
+     * a manager with nothing to send makes none. So the notice about it only
+     * appeared on the next page load - and what was on the page in the
+     * meantime was the old backup card, still describing an account this
+     * machine had been locked out of.
+     */
+    setR2Owner(status.r2Owner);
     /*
      * Work this machine started for itself, adopted whenever it appears.
      *
@@ -1416,7 +1435,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
             {/* The account has been taken by another manager, so this one
                 has stopped backing up. First of everything, because nothing
                 else on the page is true while it is. */}
-            {r2Owner && !r2Owner.mine
+            {displaced && r2Owner
               ? <div className="mb-(--section-gap)"><Alert variant="destructive">
                 <ShieldCheck />
                 <AlertTitle>{t('console.r2DisplacedTitle')}</AlertTitle>
@@ -1433,7 +1452,12 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
             {/* Above the work, and above the page, because on a machine
                 that has just been put in front of somebody this is the whole
                 of what there is to do. */}
-            {shouldOfferSettings(settingsOffer, dismissedSettings) && settingsOffer
+            {/* Not while this machine has been locked out of the account:
+                what is in there cannot be read from here, and offering to
+                rebuild this machine out of it is offering a button that
+                cannot work. Signing in again is the only step there is, and
+                the notice above is where it is. */}
+            {!displaced && shouldOfferSettings(settingsOffer, dismissedSettings) && settingsOffer
               ? <div className="mb-(--section-gap)"><RestoreEverythingCard
                 t={t}
                 offer={settingsOffer}
@@ -3809,6 +3833,13 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
     },
   ];
   const cloudflare = r2Config?.cloudflare ?? null;
+  /*
+   * Another manager signed in with this Cloudflare account, so this one is
+   * out: it has given its own sign-in up and can reach nothing in that
+   * account until somebody signs in here again. What the account holds is
+   * hidden behind this rather than offered by a console that cannot read it.
+   */
+  const displaced = r2Config?.owner ? !r2Config.owner.mine : false;
   // The recovery this machine carried out on its own, before anybody
   // opened the console. Held here so the notice below can name it and the
   // button beside it can remember which one was waved away.
@@ -3990,7 +4021,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
           * the schedules and the passwords - which is a thing to come looking
           * for on the page about backups, not a thing to be offered.
           */}
-        {settingsOffer?.available && !settingsOffer.mine ? <Alert>
+        {settingsOffer?.available && !settingsOffer.mine && !displaced ? <Alert>
           <Settings2 />
           <AlertTitle>{t('console.r2SettingsTitle')}</AlertTitle>
           <AlertDescription className="grid gap-2">
@@ -4667,7 +4698,14 @@ function CloudflareMethod({ t, status, busy, account, signInUrl, onAccountChange
   }
   if (status.state === 'reconnect_required') {
     return <div className="grid gap-2">
-      <p className="text-xs text-muted-foreground">{t('console.cfReconnectHint')}</p>
+      {/* Two different reasons to sign in again, and only one of them is
+          Cloudflare's. A grant that expired is a thing that happened to this
+          console; an account another machine took is a thing somebody did,
+          and pressing this button takes it back off them - which is worth
+          saying before it is pressed rather than after. */}
+      <p className="text-xs text-muted-foreground">{status.displacedBy
+        ? t('console.cfDisplacedHint', { name: status.displacedBy })
+        : t('console.cfReconnectHint')}</p>
       <div className="flex flex-wrap gap-2">
         {connectButton(t('console.cfReconnect'), <RefreshCw />)}
         <Button variant="outline" size="sm" onClick={onDisconnect} disabled={busy}>{t('console.cfDisconnect')}</Button>

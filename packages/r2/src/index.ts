@@ -190,6 +190,16 @@ export interface R2ManagerOptions {
   readonly cloudflare?: CloudflareConnection;
   /** What this machine is called in the bucket's claim; its hostname by default. */
   readonly installationLabel?: string;
+  /**
+   * Told when this machine gives the Cloudflare account up; see `surrenderAccount`.
+   *
+   * Everything this manager deployed into that account stopped being its own
+   * the moment somebody else signed in with it - including the two Workers
+   * that give the tunnels a fixed address, which the other machine has by now
+   * redeployed at its own tunnel. What is remembered here about them is
+   * therefore about somebody else's Worker.
+   */
+  readonly onSurrender?: () => void;
 }
 
 export interface R2UpdateInput {
@@ -259,6 +269,7 @@ export class R2Manager {
   private readonly ledger: BlobLedger;
   private readonly cloudflare: CloudflareConnection | null;
   private readonly installationLabel: string;
+  private readonly onSurrender: (() => void) | null;
   private configState: StoredR2Config | null = null;
   /** The local backup interval an older version kept in this file, until it is handed over. */
   private legacyLocalInterval: number | null = null;
@@ -297,6 +308,7 @@ export class R2Manager {
     this.ledger = new BlobLedger({ path: join(this.paths.state, R2_LEDGER_FILE) });
     this.cloudflare = options.cloudflare ?? null;
     this.installationLabel = (options.installationLabel ?? hostname() ?? '').slice(0, 120) || 'this machine';
+    this.onSurrender = options.onSurrender ?? null;
   }
 
   public async getConfig(): Promise<R2Config> {
@@ -908,6 +920,7 @@ export class R2Manager {
       await this.rememberClaim(claim, false);
       await this.recordCharges();
       this.logger(logEvent('r2.displaced', `[r2] ${claim.label} signed in with this Cloudflare account, so this machine has stopped backing up; sign in to Cloudflare again here to take it back`, { label: claim.label }));
+      await this.surrenderAccount(claim);
       throw new R2Error('r2_in_use', `${claim.label} signed in with this Cloudflare account, so this machine has stopped backing up. Sign in to Cloudflare again from this machine to take it back.`);
     }
     const mine: BucketClaim = {
@@ -997,13 +1010,47 @@ export class R2Manager {
       if (!await this.cloudflare.usable()) return;
       const keyId = await this.cloudflare.installationId();
       const claim = await readClaim(this.client(config), CLAIM_KEY);
-      if (claim) await this.rememberClaim(claim, claim.keyId === keyId);
-      else await this.forgetClaim();
+      if (!claim) { await this.forgetClaim(); return; }
+      const mine = claim.keyId === keyId;
+      await this.rememberClaim(claim, mine);
+      /*
+       * And this is where a machine that lost the account finds out.
+       *
+       * Opening the console is the only thing that happens on a manager with
+       * nothing to send, so without this the credentials would sit here
+       * working - deploying Workers, reading the account's usage - until the
+       * next backup went looking. Everything the account can be reached with
+       * goes now, at the first look. A claim nobody has refreshed for days is
+       * not somebody else using the account, it is somebody who stopped, and
+       * this machine is allowed to take that one over.
+       */
+      if (!mine && !claimIsStale(claim, now)) await this.surrenderAccount(claim);
     } catch {
       // What was last known stays. The console says when it was known.
     } finally {
       await this.recordCharges().catch(() => undefined);
     }
+  }
+
+  /**
+   * Throw this machine's Cloudflare credentials away, on the word of the claim.
+   *
+   * Stopping the backups was never the whole of it. The grant reaches every
+   * part of the account - the Workers that give the tunnels a fixed address,
+   * the objects in the bucket over the REST API, the usage figures - and a
+   * manager that has just read another machine's name in the claim has no
+   * business with any of it. So it keeps none of it; see
+   * `CloudflareConnection.surrender`.
+   *
+   * Said once. It is called from every check, and after the first one there is
+   * nothing left to give up.
+   */
+  private async surrenderAccount(claim: BucketClaim): Promise<void> {
+    if (!this.cloudflare) return;
+    const reason = `${claim.label} signed in with this Cloudflare account, so this machine gave up its own sign-in. Sign in to Cloudflare again here to take the account back.`;
+    if (!await this.cloudflare.surrender(claim.label, reason)) return;
+    this.logger(logEvent('r2.accountSurrendered', `[r2] this machine has given up its Cloudflare sign-in, because ${claim.label} holds the account now; nothing here can reach that account until somebody signs in again`, { label: claim.label }));
+    this.onSurrender?.();
   }
 
   private async rememberClaim(claim: BucketClaim, mine: boolean): Promise<void> {

@@ -27,11 +27,23 @@ async function twoMachines(clock: { now: number }) {
     const root = await mkdtemp(join(tmpdir(), `stm-claim-${label}-`));
     const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
     const connection = new CloudflareConnection({ paths, client: CLIENT, fetchImpl: cloudflare.fetchImpl, now: () => clock.now, sleep: async () => undefined });
-    const url = new URL(connection.beginConnect('https://tunnel.example.com/panel'));
-    await connection.completeConnect({ state: url.searchParams.get('state') ?? '', code: 'good-code' });
     const r2 = new R2Manager({ paths, env: {}, logger: () => undefined, fetchImpl: cloudflare.fetchImpl, cloudflare: connection, installationLabel: label, now: () => new Date(clock.now) });
-    await r2.update({ mode: 'cloudflare', enabled: true });
-    return { connection, r2, paths };
+    /*
+     * One whole sign-in, and what the server does the moment one finishes.
+     *
+     * Taking the claim is not a separate decision anybody makes: holding the
+     * account is what makes somebody the owner, and their newest manager is
+     * the one they mean. So the two happen together here as they do in
+     * `claimForThisMachine`, and a test that says "and then they signed in on
+     * the other machine" can say exactly that.
+     */
+    const connect = async (): Promise<void> => {
+      const url = new URL(connection.beginConnect('https://tunnel.example.com/panel'));
+      await connection.completeConnect({ state: url.searchParams.get('state') ?? '', code: 'good-code' });
+      await r2.update({ mode: 'cloudflare', enabled: true });
+    };
+    const signIn = async (): Promise<void> => { await connect(); await r2.takeOwnership(); };
+    return { connection, r2, paths, connect, signIn };
   };
   return { cloudflare, first: await machine('laptop'), second: await machine('studio') };
 }
@@ -40,26 +52,17 @@ test('one machine backs up to an account, and the second is told whose it is', a
   const clock = { now: Date.parse('2026-09-19T09:00:00.000Z') };
   const { first, second } = await twoMachines(clock);
 
+  await first.signIn();
   const claimed = await first.r2.inspect();
   assert.equal(claimed.ok, true, claimed.failure?.message ?? '');
   assert.deepEqual((await first.r2.getConfig()).owner, { label: 'laptop', lastSeenAt: new Date(clock.now).toISOString(), mine: true });
 
-  // The second machine reaches the same bucket through the same account and
-  // stops rather than collecting the first one's chunks behind its back.
-  const refused = await second.r2.inspect();
-  assert.equal(refused.ok, false);
-  assert.equal(refused.failure?.code, 'r2_in_use');
-  const seen = (await second.r2.getConfig()).owner;
-  assert.equal(seen?.label, 'laptop');
-  assert.equal(seen?.mine, false);
-  await assert.rejects(second.r2.reconcile(), (error: unknown) => error instanceof R2Error && error.code === 'r2_in_use');
-
-  // Signing in takes it, and takes the other machine's key off the Worker so
-  // it stops at its next request rather than at its next check. Nobody is
-  // asked: whoever just signed in holds the account, and the machine they are
-  // sitting in front of is the one they mean.
-  const config = await second.r2.takeOwnership();
-  assert.deepEqual(config.owner, { label: 'studio', lastSeenAt: new Date(clock.now).toISOString(), mine: true });
+  // Somebody sets the manager up on a second machine and signs in with the
+  // same account. Nobody is asked: holding the account is what makes somebody
+  // the owner, and the machine they are sitting in front of is the one they
+  // mean. The claim moves, and the other machine's Worker key goes with it.
+  await second.signIn();
+  assert.deepEqual((await second.r2.getConfig()).owner, { label: 'studio', lastSeenAt: new Date(clock.now).toISOString(), mine: true });
   assert.equal((await second.r2.inspect()).ok, true);
 
   /*
@@ -79,6 +82,51 @@ test('one machine backs up to an account, and the second is told whose it is', a
 });
 
 /*
+ * Losing the account means losing the account, not only the backups.
+ *
+ * The grant reaches everything the account has: the Workers that give the
+ * tunnels a fixed address, the objects in the bucket over the REST API, the
+ * usage figures. A manager that went on holding it after another machine took
+ * the claim was still deploying into an account that was no longer its to
+ * touch - and still telling the reader its backups were merely going the
+ * slower way, which is the one sentence it had for a Worker that would not
+ * answer. So the credentials go, at the first look, and the only thing left
+ * that works is signing in again.
+ */
+test('the machine that lost the account keeps nothing to reach it with', async () => {
+  const clock = { now: Date.parse('2026-09-19T09:00:00.000Z') };
+  const { first, second } = await twoMachines(clock);
+  await first.signIn();
+  await second.signIn();
+
+  // Opening the console is the whole of what happens on a manager with
+  // nothing to send, and it is enough to find out.
+  await first.r2.refreshClaim();
+  const lost = await first.connection.status();
+  assert.equal(lost.state, 'reconnect_required');
+  assert.equal(lost.displacedBy, 'studio');
+  // Which is also the end of "backups are going the slower way for now": that
+  // notice belongs to a connection that still works.
+  assert.equal(lost.restReason, null);
+
+  // Nothing else in the account either. The fixed-address Workers have no
+  // account to deploy into, and no request reaches the bucket by any road.
+  assert.equal(await first.connection.workersAccount(), null);
+  const reconnect = (error: unknown): boolean => error instanceof R2Error && error.code === 'cloudflare_reconnect_required';
+  await assert.rejects(first.r2.reconcile(), reconnect);
+  await assert.rejects(first.r2.loadManagerSettings(), reconnect);
+  await assert.rejects(first.r2.listObjects(), reconnect);
+  assert.equal((await first.r2.inspect()).ok, false);
+
+  // And signing in here again is the way back, because it is the same rule
+  // read the other way round: this is now the newest sign-in.
+  await first.signIn();
+  assert.equal((await first.r2.inspect()).ok, true);
+  assert.equal((await first.connection.status()).displacedBy, null);
+  assert.equal((await first.r2.getConfig()).owner?.mine, true);
+});
+
+/*
  * The two documents this manager keeps beside the recovery points go through
  * the Worker like everything else, and the Worker refuses any key outside the
  * manager's own prefix. Every other test of them talks to an S3 fake, which
@@ -88,6 +136,7 @@ test('one machine backs up to an account, and the second is told whose it is', a
 test('what the bucket remembers about the account goes through the Worker too', async () => {
   const clock = { now: Date.parse('2026-09-19T09:00:00.000Z') };
   const { cloudflare, first } = await twoMachines(clock);
+  await first.signIn();
 
   await first.r2.saveManagerSettings({
     schemaVersion: 1,
@@ -123,12 +172,14 @@ test('what the bucket remembers about the account goes through the Worker too', 
 test('a claim nobody has refreshed for days is taken without asking', async () => {
   const clock = { now: Date.parse('2026-09-19T09:00:00.000Z') };
   const { first, second } = await twoMachines(clock);
+  await first.signIn();
   assert.equal((await first.r2.inspect()).ok, true);
 
   // The machine that held it is gone: a studio that does not keep its disk, a
   // computer somebody replaced. Nobody is there to press a button, and the
   // point of the bucket is that the data outlives the machine.
   clock.now += CLAIM_STALE_MS + 1000;
+  await second.connect();
   const taken = await second.r2.inspect();
   assert.equal(taken.ok, true, taken.failure?.message ?? '');
   assert.deepEqual((await second.r2.getConfig()).owner, { label: 'studio', lastSeenAt: new Date(clock.now).toISOString(), mine: true });
@@ -137,13 +188,18 @@ test('a claim nobody has refreshed for days is taken without asking', async () =
 test('signing out gives the bucket up, so the next machine does not have to take it', async () => {
   const clock = { now: Date.parse('2026-09-19T09:00:00.000Z') };
   const { first, second } = await twoMachines(clock);
+  await first.signIn();
   assert.equal((await first.r2.inspect()).ok, true);
+  await second.connect();
   assert.equal((await second.r2.inspect()).failure?.code, 'r2_in_use');
 
   await first.r2.releaseOwnership();
   await first.connection.disconnect();
   assert.equal((await first.r2.getConfig()).owner, null);
 
+  // Nobody holds the bucket now, so the machine that was turned away signs in
+  // and simply has it: no claim to argue with, nothing to take over.
+  await second.connect();
   const now = await second.r2.inspect();
   assert.equal(now.ok, true, now.failure?.message ?? '');
   assert.equal((await second.r2.getConfig()).owner?.mine, true);
