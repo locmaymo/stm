@@ -6,7 +6,9 @@ import { join } from 'node:path';
 import { getPlatformPaths } from '../../../packages/platform/src/index.js';
 import { StateStore } from '../src/state.js';
 import { preferredNetworkHost, startManagerServer, type ManagerServer } from '../src/server.js';
-import type { AccessGatewayState, ConsoleStatus, Installation, ManagerUpdateStatus, ProcessState, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, ConsoleStatus, Installation, LegalReview, ManagerUpdateStatus, ProcessState, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import { LEGAL_META } from '../../../packages/legal/src/index.js';
+import { hashPassword } from '../src/password.js';
 import type { TunnelManager } from '../../../packages/tunnel/src/index.js';
 import type { ProxyWorkerManager } from '../../../packages/cloudflare/src/index.js';
 import { decodeState, encodeState } from '../../../packages/cloudflare/src/index.js';
@@ -1987,4 +1989,71 @@ test('the console is told when a newer manager has been published', async (t) =>
   // Behind the same door as everything else, because it says which version of
   // the manager is running and that is a fact about this machine.
   assert.equal((await fetch(`${base}/api/v1/manager-update`)).status, 401);
+});
+test('a revision of the terms nobody here has seen is asked about once', async (t) => {
+  const manager = await createServer({
+    prepare: async (paths) => {
+      await mkdir(paths.state, { recursive: true });
+      // An installation set up under wording that has since been revised.
+      await writeFile(join(paths.state, 'manager-state.json'), JSON.stringify({
+        schemaVersion: 1,
+        managerVersion: '0.1.0',
+        installId: '8f2b6d60-0d0f-4a5a-9a9c-6f4a2f1c0b11',
+        createdAt: '2025-01-05T09:00:00.000Z',
+        updatedAt: '2025-01-05T09:00:00.000Z',
+        adminPasswordHash: hashPassword('correct horse battery staple'),
+        setupAcceptedAt: '2025-01-05T09:00:00.000Z',
+        termsVersion: '2025-01-01',
+        telemetryNoticeVersion: '2025-01-01',
+      }), 'utf8');
+    },
+  });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  const headers = { cookie: auth.cookie };
+
+  const before = await (await fetch(`${base}/api/v1/legal`, { headers })).json() as LegalReview;
+  assert.equal(before.required, true);
+  assert.equal(before.accepted, '2025-01-01');
+  assert.equal(before.effective, LEGAL_META.effective);
+  assert.equal(before.acknowledgedAt, null);
+
+  const acknowledge = async (body: unknown): Promise<Response> => await fetch(`${base}/api/v1/legal/acknowledge`, {
+    method: 'POST',
+    headers: { cookie: auth.cookie, 'content-type': 'application/json', 'x-csrf-token': auth.csrfToken },
+    body: JSON.stringify(body),
+  });
+
+  // An unticked box is not an acknowledgement, and neither is a revision this
+  // program no longer carries - which is what a console left open across an
+  // update would send.
+  assert.equal((await acknowledge({ revision: LEGAL_META.effective })).status, 400);
+  assert.equal((await acknowledge({ accepted: true, revision: '2025-06-01' })).status, 409);
+  assert.equal(((await (await fetch(`${base}/api/v1/legal`, { headers })).json()) as LegalReview).required, true);
+
+  const after = await (await acknowledge({ accepted: true, revision: LEGAL_META.effective })).json() as LegalReview;
+  assert.equal(after.required, false);
+  assert.equal(after.accepted, LEGAL_META.effective);
+  assert.ok(after.acknowledgedAt);
+
+  // Written down rather than remembered, so the next start does not ask again.
+  const stored = JSON.parse(await readFile(join(manager.store.paths.state, 'manager-state.json'), 'utf8')) as { termsVersion: string; telemetryNoticeVersion: string; noticeAcknowledgedAt: string | null; setupAcceptedAt: string };
+  assert.equal(stored.termsVersion, LEGAL_META.effective);
+  assert.equal(stored.telemetryNoticeVersion, LEGAL_META.effective);
+  assert.ok(stored.noticeAcknowledgedAt);
+  // The day this installation was set up is not the day it read a revision.
+  assert.equal(stored.setupAcceptedAt, '2025-01-05T09:00:00.000Z');
+
+  assert.equal((await fetch(`${base}/api/v1/legal`)).status, 401);
+});
+
+test('a manager set up under the revision in force is never asked about it', async (t) => {
+  const manager = await createServer({ bootstrapPassword: 'correct horse battery staple' });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  const review = await (await fetch(`${base}/api/v1/legal`, { headers: { cookie: auth.cookie } })).json() as LegalReview;
+  assert.equal(review.required, false);
+  assert.equal(review.revision, LEGAL_META.revision);
 });

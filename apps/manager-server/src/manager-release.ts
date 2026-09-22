@@ -181,11 +181,25 @@ function toRelease(payload: ReleasePayload): ManagerRelease | null {
     : `https://github.com/${REPOSITORY}/releases/tag/${tag}`;
   return {
     version: versionOf(tag),
-    name: typeof payload.name === 'string' && payload.name.trim().length > 0 ? payload.name.trim() : null,
+    name: releaseName(typeof payload.name === 'string' ? payload.name : '', tag),
     notes: releaseNotes(typeof payload.body === 'string' ? payload.body : ''),
     url,
     publishedAt: typeof payload.published_at === 'string' ? payload.published_at : null,
   };
+}
+
+/**
+ * What the release is called, when it is called anything but its own tag.
+ *
+ * GitHub fills the title in with the tag when nobody types one, so most
+ * releases arrive named `v0.2.0` - and a card already headed "Manager 0.2.0 is
+ * out" does not need a line under it saying `v0.2.0`. A title that repeats the
+ * version is no title.
+ */
+export function releaseName(name: string, tag: string): string | null {
+  const trimmed = name.trim();
+  if (trimmed.length === 0) return null;
+  return trimmed === tag || trimmed === versionOf(tag) ? null : trimmed;
 }
 
 /** A tag written the way the manifest writes a version: `v0.2.0` is `0.2.0`. */
@@ -233,6 +247,21 @@ export function releaseNotes(body: string): string {
     // Images and links keep the words and lose the addresses.
     .replace(/!\[[^\]]*\]\([^)]*\)/gu, '')
     .replace(/\[([^\]]+)\]\([^)]*\)/gu, '$1')
+    /*
+     * The attribution GitHub appends to every generated line, and then any
+     * address left standing on its own.
+     *
+     * A generated changelog line reads "- Something changed by @someone in
+     * https://github.com/owner/repo/pull/7", and on a card that address is
+     * two thirds of the line, is not a link, and cannot be followed. What the
+     * reader came for is the half in front of it; the release page, one
+     * button away, has every one of these as a link that works.
+     *
+     * The "in" goes with the address it introduces. Taking only the address
+     * left every line ending in a dangling preposition.
+     */
+    .replace(/\s+(?:by @[A-Za-z0-9-]+\s+)?in\s+https?:\/\/\S+/gu, '')
+    .replace(/\s*https?:\/\/\S+/gu, '')
     // Headings, list markers, quotes and emphasis are markup around the words.
     // Spaces and tabs only, never `\s`: `\s` matches a line ending too, so a
     // blank line before a bullet was being eaten along with the bullet and the

@@ -83,6 +83,33 @@ export interface SetupStatus {
   };
 }
 
+/**
+ * Whether the terms in force are the ones this manager was accepted under.
+ *
+ * The documents are revised as the software changes, and an installation set
+ * up eighteen months ago agreed to wording that has since moved. Nothing about
+ * that is visible from inside the console: the text ships compiled into the
+ * program, so a manager that has just been updated is showing a revision its
+ * reader has never been asked about.
+ *
+ * So the revision the state file recorded at setup is compared against the one
+ * the program carries, and where they differ the reader is asked once. What is
+ * being asked for is an acknowledgement, not a second installation: nothing is
+ * withheld and nothing is erased if it is left unanswered.
+ */
+export interface LegalReview {
+  /** Whether the revision in force is one nobody here has acknowledged. */
+  readonly required: boolean;
+  /** The revision the program carries, as the legal package labels it. */
+  readonly revision: string;
+  /** The date that revision took effect, which is what is compared. */
+  readonly effective: string;
+  /** The date on record for this installation, written when it was set up. */
+  readonly accepted: string;
+  /** When the reader last acknowledged a revision, if they ever have. */
+  readonly acknowledgedAt: string | null;
+}
+
 export interface HealthResponse {
   readonly status: 'ok';
   readonly manager: {

@@ -69,10 +69,31 @@ export interface LegalLabels {
   readonly readingTime: string;
 }
 
+/**
+ * What this revision says, short enough to read without opening anything.
+ *
+ * The documents themselves are twenty minutes of reading, and somebody who is
+ * being asked to acknowledge a revision is owed the shape of it before they
+ * decide whether to go and read the whole thing. It is not a substitute for
+ * the text: the card that shows this also opens the text beside it.
+ *
+ * Rewritten whenever `meta.effective` moves, and that is the contract - the
+ * date is what every installation compares against to decide whether to ask
+ * its reader again, so a date that moves while this block stands still would
+ * put a stale summary in front of everybody.
+ */
+export interface LegalRevision {
+  /** One sentence about the revision, read before the list under it. */
+  readonly summary: string;
+  /** What the revision established or changed, one line each. */
+  readonly changes: readonly string[];
+}
+
 export interface LegalBundle {
   readonly locale: LegalLocale;
   readonly meta: LegalMeta;
   readonly labels: LegalLabels;
+  readonly revision: LegalRevision;
   readonly documents: readonly LegalDocument[];
 }
 
@@ -91,6 +112,7 @@ interface RawDocument {
 interface RawBundle {
   readonly meta: LegalMeta;
   readonly labels: LegalLabels;
+  readonly revision: LegalRevision;
   readonly documents: Readonly<Record<string, RawDocument>>;
 }
 
@@ -120,12 +142,26 @@ export function legalBundle(locale: LegalLocale): LegalBundle {
     locale,
     meta: bundle.meta,
     labels: bundle.labels,
+    revision: { summary: bundle.revision.summary, changes: [...bundle.revision.changes] },
     documents: LEGAL_DOCUMENT_IDS.map((id) => {
       const document = bundle.documents[id];
       if (!document) throw new Error(`The ${locale} legal bundle is missing the ${id} document`);
       return toDocument(id, document);
     }),
   };
+}
+
+/**
+ * What the revision in force says about itself, in one language.
+ *
+ * For the card that asks somebody already using the manager to acknowledge a
+ * revision they have not seen. It needs the summary and the list and none of
+ * the documents, and reading the whole bundle to get at two fields would pull
+ * every paragraph of legal text into a component that shows four lines.
+ */
+export function legalRevision(locale: LegalLocale): LegalRevision {
+  const bundle = raw[locale].revision;
+  return { summary: bundle.summary, changes: [...bundle.changes] };
 }
 
 /** One document, for a page or a dialog tab that shows a single one. */

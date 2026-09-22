@@ -452,6 +452,11 @@
     "updateAvailable": "SillyTavern {version} is out.",
     "updateNow": "Install it",
     "updateDismiss": "Not now",
+    "legalReviewTitle": "The terms and notices have been revised",
+    "legalReviewBody": "Revision {revision} has been in force since {date}, and this manager has not been asked about it. Nothing is locked while you decide.",
+    "legalReviewAgree": "I have read the revised {terms} and {disclaimer}, and I accept the revision now in force.",
+    "legalReviewAccept": "Agree and carry on",
+    "legalReviewFailed": "The acknowledgement could not be recorded",
     "managerUpdateTitle": "Manager {version} is out",
     "managerUpdateBody": "This manager is {current}, and a newer one has been published.",
     "managerUpdatePublished": "Released {when}.",
@@ -698,6 +703,7 @@
     "job_not_running": "That job is no longer running.",
     "reset_busy": "Something is still running. Stop it, then erase everything.",
     "linked_path": "The profile contains a linked path, which a backup cannot follow safely.",
+    "notice_revision_stale": "That is no longer the revision in force. Reload the console and read the current one.",
     "npm_failed": "Installing the dependencies failed.",
     "operation_canceled": "Stopped.",
     "origin_rejected": "That request did not come from this manager, so it was refused.",
@@ -749,6 +755,9 @@
     },
     "setup": {
       "passwordBootstrapped": "Admin password taken from STM_ADMIN_PASSWORD"
+    },
+    "legal": {
+      "acknowledged": "The terms in force since {revision} were acknowledged"
     },
     "config": {
       "updated": "Updated {path}",

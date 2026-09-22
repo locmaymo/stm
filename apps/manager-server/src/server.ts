@@ -5,7 +5,7 @@ import { createReadStream } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import { createSocket } from 'node:dgram';
 import { extname, join, relative, resolve, sep } from 'node:path';
-import { applyQuery, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, OPERATION_JOB_KINDS, type ApiErrorBody, type ConfigUpdateInput, type ConsoleStatus, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogSink, type LogSourceFilter, type ManagerPorts, type ManagerUpdateStatus, type PortSettings, type Profile, type ProfileLayout, type SetupStatus, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
+import { applyQuery, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, OPERATION_JOB_KINDS, type ApiErrorBody, type ConfigUpdateInput, type ConsoleStatus, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogSink, type LogSourceFilter, type LegalReview, type ManagerPorts, type ManagerUpdateStatus, type PortSettings, type Profile, type ProfileLayout, type SetupStatus, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
 import { getPlatformPaths, storageDurability, storageReport, type PlatformPaths } from '../../../packages/platform/src/index.js';
 import { INSTALL_CANCELED, RuntimeError, RuntimeManager, type InstallationProgress } from '../../../packages/sillytavern-runtime/src/index.js';
 import { hashPassword, MIN_PASSWORD_LENGTH, validatePasscode, validatePassword, verifyPassword } from './password.js';
@@ -92,6 +92,8 @@ const PROTECTED_PATHS = new Set([
   '/api/v1/system/measure',
   '/api/v1/startup',
   '/api/v1/status',
+  '/api/v1/legal',
+  '/api/v1/legal/acknowledge',
   '/api/v1/tunnel',
   '/api/v1/manager-tunnel',
   '/api/v1/r2',
@@ -2164,6 +2166,42 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     return;
   }
   /*
+   * Whether the terms in force are the ones this installation agreed to.
+   *
+   * The documents ship compiled into the program, so the manager that has just
+   * been updated is the one holding a revision its reader has never seen - and
+   * nothing about that is visible from inside the console. The revision on
+   * record is compared with the one the program carries, and the console is
+   * told whether to ask.
+   */
+  if (pathname === '/api/v1/legal' && method === 'GET') {
+    sendJson(response, 200, legalReview(await store.getPersisted()));
+    return;
+  }
+  /*
+   * The answer to that question, which is a signature rather than a setting.
+   *
+   * The revision has to be named, and has to be the one in force. A console
+   * left open across an update is showing a card about the revision it loaded
+   * with; accepting a name this program no longer carries would record an
+   * acknowledgement of wording nobody was shown.
+   */
+  if (pathname === '/api/v1/legal/acknowledge' && method === 'POST') {
+    const body = await readJson(request);
+    if (!isRecord(body) || body.accepted !== true) {
+      sendError(response, 400, 'notice_acceptance_required', 'The revised terms must be accepted');
+      return;
+    }
+    if (body.revision !== TERMS_VERSION) {
+      sendError(response, 409, 'notice_revision_stale', 'That is not the revision in force; reload the console and read it again');
+      return;
+    }
+    await store.acknowledgeNotice(TERMS_VERSION);
+    logger(logEvent('legal.acknowledged', `[manager] the terms in force since ${TERMS_VERSION} were acknowledged`, { revision: TERMS_VERSION }));
+    sendJson(response, 200, legalReview(await store.getPersisted()));
+    return;
+  }
+  /*
    * What the manager does with SillyTavern when it starts.
    *
    * One switch, in its own route rather than folded into SillyTavern's own
@@ -3195,6 +3233,26 @@ async function completeCloudflareSignIn(
   // The session goes with it, for a console that is waiting to collect this
   // rather than reading it in its own address; see cloudflare-handoff.ts.
   redirect(status.state === 'connected' ? 'signed_in' : status.state, undefined, '', created.token);
+}
+
+/**
+ * The revision on record against the revision the program carries.
+ *
+ * Only the date is compared. The label - `2026.09` - is for a reader; the date
+ * is what every installation wrote down when it was set up and what moves when
+ * the documents are revised, so it is the one thing on both sides that means
+ * the same thing. Not "newer than", simply "different from": a manager rolled
+ * back to an older version is showing older wording than the reader agreed to,
+ * and that is worth asking about too.
+ */
+function legalReview(state: { readonly termsVersion: string; readonly noticeAcknowledgedAt: string | null }): LegalReview {
+  return {
+    required: state.termsVersion !== TERMS_VERSION,
+    revision: LEGAL_META.revision,
+    effective: TERMS_VERSION,
+    accepted: state.termsVersion,
+    acknowledgedAt: state.noticeAcknowledgedAt,
+  };
 }
 
 function isProtectedPath(pathname: string): boolean {

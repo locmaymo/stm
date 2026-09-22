@@ -789,6 +789,35 @@
   background: var(--muted);
 }
 .release-notes-title { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
+
+/*
+ * The card that asks somebody already using the manager about a revision.
+ *
+ * Marked in the accent colour rather than in red: nothing has gone wrong and
+ * nothing is being withheld - it is a question, and the answer to it is one
+ * box and one button. The account of what changed sits in the same framed
+ * block the release notes use, because it is doing the same job: the shape of
+ * a change, above the way into the whole of it.
+ */
+.notice-card {
+  border-color: color-mix(in srgb, var(--primary) 34%, var(--border));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--primary) 5%, transparent) 0, transparent 128px),
+    var(--card);
+}
+.notice-card [data-slot="card-header"] svg { color: var(--primary); }
+.notice-changes {
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.notice-changes-summary { margin: 0; color: var(--foreground); }
+.notice-changes ul { margin: 8px 0 0; padding-left: 1.1rem; display: grid; gap: 4px; }
+.notice-changes li { list-style: disc; }
 .release-notes-body {
   margin: 0;
   white-space: pre-wrap;

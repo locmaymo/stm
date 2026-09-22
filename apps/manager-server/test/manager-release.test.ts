@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ReleaseWatch, compareVersions, releaseNotes, versionOf } from '../src/manager-release.js';
+import { ReleaseWatch, compareVersions, releaseName, releaseNotes, versionOf } from '../src/manager-release.js';
 
 interface FakeRelease {
   readonly tag_name: string;
@@ -160,6 +160,37 @@ test('release notes lose their markup and their generated trailer', () => {
     '**Full Changelog**: https://example.invalid/compare/v0.2.0...v0.3.0',
   ].join('\n'));
   assert.equal(notes, 'Highlights\n\n- Backups that survive a wipe, see the docs\n- --flag is gone');
+});
+
+test('a release named after its own tag is not given a title that repeats it', () => {
+  assert.equal(releaseName('v0.2.0', 'v0.2.0'), null);
+  assert.equal(releaseName('0.2.0', 'v0.2.0'), null);
+  assert.equal(releaseName('  ', 'v0.2.0'), null);
+  assert.equal(releaseName('Backups that survive a wipe', 'v0.2.0'), 'Backups that survive a wipe');
+});
+
+test('the addresses in a generated changelog are dropped, and the words kept', () => {
+  const notes = releaseNotes([
+    "## What's Changed",
+    '* Run verify on every pull request by @locmaymo in https://github.com/locmaymo/stm/pull/2',
+    '* Cloudflare R2 sign-in and backups by @locmaymo in https://github.com/locmaymo/stm/pull/6',
+    '',
+    'New Contributors',
+    '* @locmaymo made their first contribution in https://github.com/locmaymo/stm/pull/2',
+    '',
+    'Read more at https://stm.locmaymo.top/docs',
+  ].join('\n'));
+  assert.equal(notes, [
+    "What's Changed",
+    '- Run verify on every pull request',
+    '- Cloudflare R2 sign-in and backups',
+    '',
+    'New Contributors',
+    // The "in" goes with the address, so no line ends on a preposition.
+    '- @locmaymo made their first contribution',
+    '',
+    'Read more at',
+  ].join('\n'));
 });
 
 test('notes longer than a card can hold are cut, and say so', () => {

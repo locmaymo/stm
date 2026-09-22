@@ -14,6 +14,15 @@
     "revisionLabel": "Revision {revision}",
     "readingTime": "About {minutes} minutes to read"
   },
+  "revision": {
+    "summary": "Every revision publishes all four documents in full, so nothing from an earlier one carries over unsaid. This is the revision in force.",
+    "changes": [
+      "The Terms of Use say what the software is, what running it leaves to you, and what the project does not take responsibility for.",
+      "The Disclaimer covers the models, providers and generated content the manager passes through and does not control.",
+      "The Privacy Notice says what the usage report contains, and names what is never sent: your chats, characters, prompts and keys.",
+      "The Third-Party Notices list the software this project is built on and the licences it is used under."
+    ]
+  },
   "documents": {
     "terms": {
       "title": "Terms of Use",

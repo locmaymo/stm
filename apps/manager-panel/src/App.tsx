@@ -33,7 +33,7 @@ import { availableUpdate, readDismissedManagerRelease, readDismissedUpdate, save
 import { readDismissedDisplaced, readDismissedRecovery, readDismissedSettings, saveDismissedDisplaced, saveDismissedRecovery, saveDismissedSettings, shouldOfferSettings, shouldShowDisplaced, shouldShowRecovery } from './settings-offer.js';
 import { apiFetch, onSessionExpired, resetSessionWatch, sessionToken, setSessionToken } from './session.js';
 import { collectCloudflareResult, framed, openReturnWindow, popupsBlocked, whenAbandoned, type CollectedResult } from './oauth.js';
-import type { AccessGatewayState, BackupManifest, CloudflareAccountProblem, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LogEntry, LogSourceFilter, ManagerRelease, ManagerSettingsOffer, ManagerUpdateStatus, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, BackupManifest, CloudflareAccountProblem, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LegalReview, LogEntry, LogSourceFilter, ManagerRelease, ManagerSettingsOffer, ManagerUpdateStatus, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, isCloudJob, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
 import { usePoll } from './use-poll.js';
@@ -44,7 +44,7 @@ import { CLOUDFLARE_ORANGE, CloudflareMark } from './cloudflare-mark.js';
 import { localHost, publicAddress, reachableAddresses, shortenHost } from './addresses.js';
 import { EmbedStage } from './embed-stage.js';
 import { LegalCredit, LegalDialog, LEGAL_REVISION } from './legal-dialog.js';
-import { legalBundle, type LegalDocumentId } from '../../../packages/legal/src/index.js';
+import { legalBundle, legalRevision, type LegalDocumentId } from '../../../packages/legal/src/index.js';
 
 const navigation = [
   { id: 'overview', icon: LayoutDashboard },
@@ -603,23 +603,29 @@ type ConsentDocument = typeof CONSENT_DOCUMENTS[number];
  * The names come from the legal bundle rather than from the sentence, so they
  * read exactly as the dialog titles the reader lands on, in either language.
  */
-function TermsConsent({ t, locale, id, nudges, checked, onCheckedChange, onOpenDocument }: {
+function TermsConsent({ t, locale, id, nudges, checked, sentence = 'setup.terms', onCheckedChange, onOpenDocument }: {
   t: Translate;
   locale: LocaleCode;
   id: string;
   /** Presses made with the box unticked; each one shakes the sentence once. */
   nudges: number;
   checked: boolean;
+  /**
+   * Which sentence is being agreed to. Setting up is one occasion; a revision
+   * met by somebody already using the manager is the other, and it is a
+   * different sentence because they are not being asked the same thing.
+   */
+  sentence?: MessageKey;
   onCheckedChange: (checked: boolean) => void;
   onOpenDocument: (document: LegalDocumentId) => void;
 }) {
   const bundle = legalBundle(locale);
   const titleOf = (document: ConsentDocument): string =>
     bundle.documents.find((entry) => entry.id === document)?.title ?? document;
-  const template = t('setup.terms');
+  const template = t(sentence);
   // The same sentence with the names filled in, for anybody who meets the box
   // through a screen reader rather than through the text beside it.
-  const plain = t('setup.terms', Object.fromEntries(CONSENT_DOCUMENTS.map((document) => [document, titleOf(document)])));
+  const plain = t(sentence, Object.fromEntries(CONSENT_DOCUMENTS.map((document) => [document, titleOf(document)])));
   /*
    * Keyed on the count so the animation runs again on every press.
    *
@@ -857,8 +863,24 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
    * the answer is a release rather than a version number: what was changed is
    * the part anybody decides on.
    */
-  const [managerRelease, setManagerRelease] = useState<ManagerRelease | null>(null);
+  const [managerUpdate, setManagerUpdate] = useState<ManagerUpdateStatus | null>(null);
   const [dismissedManagerRelease, setDismissedManagerRelease] = useState<string | null>(() => readDismissedManagerRelease(browserStorage()));
+  /*
+   * Whether the terms in force are the ones this installation agreed to.
+   *
+   * Read once, as the page loads, and that is not a shortcut: the documents
+   * are compiled into the program on both sides, so the answer can only change
+   * when the manager is replaced - and a replaced manager means a reloaded
+   * page. Polling it would be asking the same question of the same two
+   * constants every few seconds.
+   */
+  const [legalReview, setLegalReview] = useState<LegalReview | null>(null);
+  const [legalAgreed, setLegalAgreed] = useState(false);
+  const [legalNudges, setLegalNudges] = useState(0);
+  const [legalBusy, setLegalBusy] = useState(false);
+  const [legalFailure, setLegalFailure] = useState<string | null>(null);
+  const [reviewLegalOpen, setReviewLegalOpen] = useState(false);
+  const [reviewLegalDocument, setReviewLegalDocument] = useState<LegalDocumentId>('terms');
   const [tunnelOfferOpen, setTunnelOfferOpen] = useState(false);
   const [accessSecurity, setAccessSecurity] = useState<AccessGatewayState>({ status: 'stopped', host: null, port: 8001, lan: false, passwordConfigured: false, passcode: false, sessions: 0, error: null });
   const t = translator(preferences.locale);
@@ -968,6 +990,39 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     }
   };
 
+  /**
+   * Say that the revised terms have been read, for this installation.
+   *
+   * The revision goes up with the answer and the manager checks it against the
+   * one it carries. A console that has been open since before an update is
+   * showing a card about wording this program no longer has, and recording an
+   * acknowledgement of a revision nobody was shown would be worse than asking
+   * again: the refusal that comes back says to reload and read the new one.
+   */
+  const acknowledgeLegal = async (): Promise<void> => {
+    if (!legalReview) return;
+    // Pressing with the box unticked shakes the sentence rather than doing
+    // nothing, because doing nothing reads as the button being broken.
+    if (!legalAgreed) { setLegalNudges((count) => count + 1); return; }
+    setLegalBusy(true);
+    setLegalFailure(null);
+    try {
+      const response = await apiFetch('/api/v1/legal/acknowledge', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken },
+        body: JSON.stringify({ accepted: true, revision: legalReview.effective }),
+      });
+      const payload: unknown = await response.json();
+      if (!response.ok) { setLegalFailure(fail.body(payload, t('console.legalReviewFailed'))); return; }
+      setLegalReview(payload as LegalReview);
+    } catch {
+      setLegalFailure(t('console.legalReviewFailed'));
+    } finally {
+      setLegalBusy(false);
+    }
+  };
+
   const restoreEverything = async (): Promise<void> => {
     setRestoringEverything(true);
     try {
@@ -1058,8 +1113,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     try {
       const response = await apiFetch('/api/v1/manager-update', { credentials: 'same-origin' });
       if (!response.ok) return;
-      const payload = await response.json() as ManagerUpdateStatus;
-      setManagerRelease(payload.update);
+      setManagerUpdate(await response.json() as ManagerUpdateStatus);
     } catch {
       // The next one asks again. Nothing on the page depends on this.
     }
@@ -1085,9 +1139,11 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
       apiFetch('/api/v1/profiles', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<{ profiles: Profile[]; activeProfileId: string | null }> : null),
       apiFetch('/api/v1/backups', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<{ backups: BackupManifest[] }> : null),
       apiFetch('/api/v1/startup', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<{ startup: StartupSettings }> : null),
-    ]).then(([versionPayload, installationPayload, profilePayload, backupPayload, startupPayload]) => {
+      apiFetch('/api/v1/legal', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<LegalReview> : null),
+    ]).then(([versionPayload, installationPayload, profilePayload, backupPayload, startupPayload, legalPayload]) => {
       if (cancelled) return;
       if (startupPayload) setStartup(startupPayload.startup);
+      if (legalPayload) setLegalReview(legalPayload);
       if (versionPayload) setVersions(versionPayload.versions);
       if (installationPayload) {
         setInstallations(installationPayload.installations);
@@ -1410,6 +1466,11 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
    * first-run screen, and it is also the only way to be sure nothing on the
    * page is still showing a profile or a backup that is gone.
    */
+  /** The manager release worth a card, with the version it is newer than. */
+  const newerManager = managerUpdate?.update && shouldShowManagerRelease(managerUpdate.update, dismissedManagerRelease)
+    ? { current: managerUpdate.version, release: managerUpdate.update }
+    : null;
+
   const eraseEverything = async (password: string): Promise<string | null> => {
     const response = await apiFetch('/api/v1/reset', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ password }) });
     const payload = await response.json() as { ok?: boolean; erased?: number; failures?: ReadonlyArray<{ path: string }>; error?: { message?: string } };
@@ -1535,6 +1596,25 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
                 </AlertDescription>
               </Alert></div>
               : null}
+            {/* Below the two above it, which are about data that is not being
+                kept anywhere, and above everything else. It is the only card
+                here that asks the reader a question about their own agreement,
+                and it stays until they answer it - but it blocks nothing while
+                it waits. */}
+            {legalReview?.required
+              ? <div className="mb-(--section-gap)"><LegalReviewCard
+                t={t}
+                locale={preferences.locale}
+                review={legalReview}
+                busy={legalBusy}
+                failure={legalFailure}
+                checked={legalAgreed}
+                nudges={legalNudges}
+                onCheckedChange={setLegalAgreed}
+                onAccept={() => void acknowledgeLegal()}
+                onOpenDocument={(document) => { setReviewLegalDocument(document); setReviewLegalOpen(true); }}
+              /></div>
+              : null}
             {/* Above the work, and above the page, because on a machine
                 that has just been put in front of somebody this is the whole
                 of what there is to do. */}
@@ -1572,14 +1652,15 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
                 that exists will still exist in ten minutes. On every page
                 rather than the Overview alone: whichever page somebody is on
                 is the one they will read it from, and it is dismissed once. */}
-            {shouldShowManagerRelease(managerRelease, dismissedManagerRelease) && managerRelease
+            {newerManager
               ? <div className="mb-(--section-gap)"><ManagerReleaseCard
                 t={t}
                 locale={preferences.locale}
-                release={managerRelease}
+                current={newerManager.current}
+                release={newerManager.release}
                 onDismiss={() => {
-                  saveDismissedManagerRelease(managerRelease.version, browserStorage());
-                  setDismissedManagerRelease(managerRelease.version);
+                  saveDismissedManagerRelease(newerManager.release.version, browserStorage());
+                  setDismissedManagerRelease(newerManager.release.version);
                 }}
               /></div>
               : null}
@@ -1601,6 +1682,18 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
         tunnel={managerTunnelState}
         onDecline={() => { setTunnelOfferOpen(false); saveTunnelOfferDeclined(browserStorage()); }}
         onAccept={setManagerTunnel}
+      />
+      {/* The full text, for the card above that asks about it. Mounted here
+          rather than inside the card so that the documents open over whichever
+          page the reader is on, and separate from the Settings page's own copy
+          because that one belongs to the About panel and its state. */}
+      <LegalDialog
+        t={t}
+        locale={preferences.locale}
+        open={reviewLegalOpen}
+        onOpenChange={setReviewLegalOpen}
+        document={reviewLegalDocument}
+        onDocumentChange={setReviewLegalDocument}
       />
     </>
   );
@@ -1652,6 +1745,63 @@ function RestoreEverythingCard({ t, offer, busy, onRestore, onDismiss }: {
 }
 
 /**
+ * The terms have been revised, and the reader has not been asked about it.
+ *
+ * The documents ship compiled into the program, so a manager that has just
+ * been updated is holding wording its reader has never seen - and nothing
+ * about that is visible from inside the console. This is the one screen that
+ * says so.
+ *
+ * What it asks for is an acknowledgement, and it behaves like one. It carries
+ * the short account of what the revision says, opens the full text beside it,
+ * and stays on every page until it is answered - but it locks nothing and
+ * erases nothing while it waits. Holding somebody's chats hostage over a
+ * checkbox would be a worse thing to do than anything in the documents.
+ */
+function LegalReviewCard({ t, locale, review, busy, failure, checked, nudges, onCheckedChange, onAccept, onOpenDocument }: {
+  t: Translate;
+  locale: LocaleCode;
+  review: LegalReview;
+  busy: boolean;
+  failure: string | null;
+  checked: boolean;
+  nudges: number;
+  onCheckedChange: (checked: boolean) => void;
+  onAccept: () => void;
+  onOpenDocument: (document: LegalDocumentId) => void;
+}) {
+  const notes = legalRevision(locale);
+  return <Card className="notice-card">
+    <PanelHeading icon={<Scale />}>{t('console.legalReviewTitle')}</PanelHeading>
+    <CardContent className="grid gap-3">
+      <p className="text-sm text-muted-foreground">
+        {t('console.legalReviewBody', { revision: review.revision, date: releaseDate(`${review.effective}T00:00:00Z`, locale) })}
+      </p>
+      <div className="notice-changes">
+        <p className="notice-changes-summary">{notes.summary}</p>
+        <ul>
+          {notes.changes.map((change, index) => <li key={index}>{change}</li>)}
+        </ul>
+      </div>
+      <TermsConsent
+        t={t}
+        locale={locale}
+        id="legal-review-consent"
+        sentence="console.legalReviewAgree"
+        nudges={nudges}
+        checked={checked}
+        onCheckedChange={onCheckedChange}
+        onOpenDocument={onOpenDocument}
+      />
+      {failure ? <p className="install-error" role="alert">{failure}</p> : null}
+      <div className="flex flex-wrap gap-2">
+        <Button size="sm" onClick={onAccept} disabled={busy}>{busy ? t('common.loading') : t('console.legalReviewAccept')}</Button>
+      </div>
+    </CardContent>
+  </Card>;
+}
+
+/**
  * A newer manager than the one being looked at, and what it says it changed.
  *
  * There is no button here that installs it, and that is deliberate. The
@@ -1665,9 +1815,19 @@ function RestoreEverythingCard({ t, offer, busy, onRestore, onDismiss }: {
  * release wrote its line breaks on purpose, and a card that reflows them into
  * a paragraph turns a list of changes into a run-on sentence.
  */
-function ManagerReleaseCard({ t, locale, release, onDismiss }: {
+function ManagerReleaseCard({ t, locale, current, release, onDismiss }: {
   t: Translate;
   locale: LocaleCode;
+  /**
+   * The version actually running, as the manager reports it.
+   *
+   * Not `__STM_VERSION__`, which is the version the panel was built at. They
+   * agree in every shipped build and disagree in exactly the case worth being
+   * right about - a panel served by a manager it was not built alongside -
+   * and the running one is what the comparison behind this card was made
+   * against.
+   */
+  current: string;
   release: ManagerRelease;
   onDismiss: () => void;
 }) {
@@ -1675,7 +1835,7 @@ function ManagerReleaseCard({ t, locale, release, onDismiss }: {
     <PanelHeading icon={<CircleArrowUp />}>{t('console.managerUpdateTitle', { version: release.version })}</PanelHeading>
     <CardContent className="grid gap-3">
       <p className="text-sm text-muted-foreground">
-        {t('console.managerUpdateBody', { current: __STM_VERSION__, version: release.version })}
+        {t('console.managerUpdateBody', { current, version: release.version })}
         {release.publishedAt ? ` ${t('console.managerUpdatePublished', { when: releaseDate(release.publishedAt, locale) })}` : ''}
       </p>
       {release.notes

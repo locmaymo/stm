@@ -44,6 +44,17 @@ interface PersistedManagerState {
   readonly termsVersion: string;
   readonly telemetryNoticeVersion: string;
   /**
+   * When the reader last acknowledged a revision of the terms after setup.
+   *
+   * Separate from `setupAcceptedAt`, which is the moment this installation was
+   * created and never moves again. This moves every time the documents are
+   * revised and somebody says they have read the new ones, so between them the
+   * file records both when the manager was set up and under which wording it
+   * has been running since. Null on an installation that has never been asked,
+   * which is every one set up under the revision still in force.
+   */
+  readonly noticeAcknowledgedAt: string | null;
+  /**
    * Whether SillyTavern is started when the manager is.
    *
    * On, because the manager exists to run SillyTavern and a console that has
@@ -143,6 +154,7 @@ export class StateStore {
         setupAcceptedAt: null,
         termsVersion: TERMS_VERSION,
         telemetryNoticeVersion: TELEMETRY_NOTICE_VERSION,
+        noticeAcknowledgedAt: null,
         autoStartSillyTavern: true,
         firstInstallStartedAt: null,
         ownerAccountId: null,
@@ -201,6 +213,41 @@ export class StateStore {
       const state = await this.load();
       if (state.sillyTavernPort === port) return;
       const updated: PersistedManagerState = { ...state, sillyTavernPort: port, updatedAt: this.now().toISOString() };
+      await this.write(updated);
+      this.state = updated;
+    };
+    const previous = this.adminWriteQueue;
+    this.adminWriteQueue = previous.then(operation, operation);
+    await this.adminWriteQueue;
+  }
+
+  /**
+   * Record that the reader has acknowledged the revision now in force.
+   *
+   * The revision is passed in rather than read from the legal package here,
+   * because the caller is the one that checked which revision the reader was
+   * actually shown - a console left open across an update could otherwise
+   * acknowledge wording that arrived after the card it answered.
+   *
+   * Both versions move together. They are one document set, shown on one
+   * screen, agreed to in one gesture, and keeping two dates that can differ
+   * would be recording a distinction nobody was ever offered.
+   */
+  public async acknowledgeNotice(revision: string): Promise<void> {
+    const operation = async (): Promise<void> => {
+      const state = await this.load();
+      const now = this.now().toISOString();
+      const updated: PersistedManagerState = {
+        ...state,
+        termsVersion: revision,
+        telemetryNoticeVersion: revision,
+        noticeAcknowledgedAt: now,
+        // A manager claimed by a Cloudflare account on a machine that lost its
+        // disk can reach this with nothing on record; the acknowledgement is
+        // an acceptance in that case, and there is no earlier one to keep.
+        setupAcceptedAt: state.setupAcceptedAt ?? now,
+        updatedAt: now,
+      };
       await this.write(updated);
       this.state = updated;
     };
@@ -490,7 +537,10 @@ export class StateStore {
     // manager, which is a manager nobody has claimed that way.
     const ownerAccountId = isNullableString(input.ownerAccountId) ? input.ownerAccountId : null;
     const ownerAccountName = isNullableString(input.ownerAccountName) ? input.ownerAccountName : null;
-    return { ...input, accessPasswordHash, accessPasscode, accessLanEnabled, sillyTavernPort, autoStartSillyTavern, firstInstallStartedAt, ownerAccountId, ownerAccountName } as unknown as PersistedManagerState;
+    // Absent in every file written before the terms could be revised under a
+    // running installation, which is one that has never been asked.
+    const noticeAcknowledgedAt = isNullableString(input.noticeAcknowledgedAt) ? input.noticeAcknowledgedAt : null;
+    return { ...input, accessPasswordHash, accessPasscode, accessLanEnabled, sillyTavernPort, autoStartSillyTavern, firstInstallStartedAt, ownerAccountId, ownerAccountName, noticeAcknowledgedAt } as unknown as PersistedManagerState;
   }
 }
 

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import en from '../locales/en.json' with { type: 'json' };
 import vi from '../locales/vi.json' with { type: 'json' };
-import { LEGAL_DOCUMENT_IDS, legalBundle, legalDocument, legalReadingMinutes } from '../src/index.js';
+import { LEGAL_DOCUMENT_IDS, legalBundle, legalDocument, legalReadingMinutes, legalRevision } from '../src/index.js';
 
 const locales = ['en', 'vi'] as const;
 
@@ -60,6 +60,25 @@ test('both languages agree on the revision and the date it took effect', () => {
   assert.equal(en.meta.effective, vi.meta.effective);
   assert.equal(en.meta.revision, vi.meta.revision);
   assert.match(en.meta.effective, /^\d{4}-\d{2}-\d{2}$/u);
+});
+
+test('the revision says what it is, in both languages and at the same length', () => {
+  const english = legalRevision('en');
+  const vietnamese = legalRevision('vi');
+  // The card that asks somebody to acknowledge a revision shows this instead
+  // of twenty minutes of legal text, so an empty one is a card with a heading
+  // and nothing under it.
+  for (const [locale, notes] of [['en', english], ['vi', vietnamese]] as const) {
+    assert.ok(notes.summary.trim().length > 0, `${locale} has no revision summary`);
+    assert.ok(notes.changes.length > 0, `${locale} lists nothing the revision changed`);
+    for (const [index, change] of notes.changes.entries()) {
+      assert.ok(change.trim().length > 0, `${locale} revision change ${index.toString(10)} is empty`);
+    }
+  }
+  // A translation that dropped a line is describing a different revision.
+  assert.equal(vietnamese.changes.length, english.changes.length);
+  // And the bundle carries it, so a reader of one gets the other.
+  assert.deepEqual(legalBundle('vi').revision, vietnamese);
 });
 
 test('a document can be read on its own, and reports how long it takes', () => {
