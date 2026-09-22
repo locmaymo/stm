@@ -13,6 +13,23 @@ import { fakeCloudflare } from './cloudflare-fake.js';
 
 const CLIENT = { clientId: 'client-1', redirectUri: 'https://stm.example.com/oauth/cloudflare/callback', scopes: Object.values(DEFAULT_SCOPES) };
 
+const SETTINGS = {
+  schemaVersion: 1,
+  installId: 'install-under-test',
+  tunnelQuick: false,
+  managerTunnelQuick: false,
+  adminPasswordHash: 'scrypt$16384$8$1$salt$key',
+  accessPasswordHash: null,
+  accessPasscode: false,
+  accessLanEnabled: true,
+  autoStartSillyTavern: true,
+  sillyTavernPort: 8002,
+  localIntervalMinutes: 60,
+  r2: { hotIntervalMinutes: 5, coldIntervalHours: 6, reconcileIntervalHours: 24, keepRecent: 24, keepDaily: 30, keepWeekly: 0, maxStorageBytes: 8_000_000_000, maxWriteOperations: 800_000, maxReadOperations: 8_000_000 },
+  versionSelector: 'latest',
+  versionRef: '1.13.2',
+} as const;
+
 /**
  * Two managers, one Cloudflare account, one bucket.
  *
@@ -117,6 +134,14 @@ test('the machine that lost the account keeps nothing to reach it with', async (
   await assert.rejects(first.r2.loadManagerSettings(), reconnect);
   await assert.rejects(first.r2.listObjects(), reconnect);
   assert.equal((await first.r2.inspect()).ok, false);
+  // Including the record that describes a machine. It is the one write that
+  // used to go through without reading the claim, so the machine that had
+  // been locked out went on replacing the setup of the machine that had
+  // taken over - which is what the other one's console was offering to
+  // restore from.
+  assert.equal(await first.r2.saveManagerSettings({ ...SETTINGS, installId: 'laptop-install' }), false);
+  const kept = await second.r2.loadManagerSettings();
+  assert.notEqual(kept?.installId, 'laptop-install');
 
   // And signing in here again is the way back, because it is the same rule
   // read the other way round: this is now the newest sign-in.
@@ -182,22 +207,7 @@ test('what the bucket remembers about the account goes through the Worker too', 
   const { cloudflare, first } = await twoMachines(clock);
   await first.signIn();
 
-  await first.r2.saveManagerSettings({
-    schemaVersion: 1,
-    installId: 'install-under-test',
-    tunnelQuick: false,
-    managerTunnelQuick: false,
-    adminPasswordHash: 'scrypt$16384$8$1$salt$key',
-    accessPasswordHash: null,
-    accessPasscode: false,
-    accessLanEnabled: true,
-    autoStartSillyTavern: true,
-    sillyTavernPort: 8002,
-    localIntervalMinutes: 60,
-    r2: { hotIntervalMinutes: 5, coldIntervalHours: 6, reconcileIntervalHours: 24, keepRecent: 24, keepDaily: 30, keepWeekly: 0, maxStorageBytes: 8_000_000_000, maxWriteOperations: 800_000, maxReadOperations: 8_000_000 },
-    versionSelector: 'latest',
-    versionRef: '1.13.2',
-  });
+  await first.r2.saveManagerSettings({ ...SETTINGS });
   const settings = await first.r2.loadManagerSettings();
   assert.equal(settings?.label, 'laptop');
   assert.equal(settings?.accessLanEnabled, true);

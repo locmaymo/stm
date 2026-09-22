@@ -1343,7 +1343,22 @@ export class R2Manager {
      */
     if (!options.force && settingsUnchanged(this.settingsSent, full) && now.getTime() - this.settingsSentAt < MANAGER_SETTINGS_MIN_INTERVAL_MS) return false;
     try {
-      await this.requireUsable();
+      const usable = await this.requireUsable();
+      /*
+       * And only if this machine is the one using the bucket.
+       *
+       * This is a write like any other and it was the one that skipped the
+       * claim - so a manager that had lost the account went on replacing the
+       * record describing the machine that now holds it, every time one of
+       * its own settings moved. Seen on a live account: a console offering to
+       * rebuild a machine from an account, over a record that had been
+       * overwritten minutes earlier by the machine that was locked out.
+       *
+       * It is also the check that makes a machine find out it has been
+       * displaced, on a manager that has no profile data to send and would
+       * otherwise never read the claim at all.
+       */
+      await this.requireOwnership(usable);
       const client = this.client(config);
       // Read first: a record that already says this is one nothing has to be
       // paid for. This is what stops a manager which restarts often from
