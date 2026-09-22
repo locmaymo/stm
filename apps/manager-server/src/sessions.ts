@@ -18,6 +18,20 @@ export class SessionStore {
   }
 
   public create(): { token: string; session: AdminSession } {
+    /*
+     * The one place this map grows, and so the place to drop what has expired.
+     *
+     * An expired session was only ever removed when somebody presented that
+     * exact token again - which is the one thing the holder of an expired
+     * session does not do, because their browser has been sent back to the
+     * sign-in screen. So every sign-in left a record behind for the life of
+     * the process: a console signed in from three devices twice a day kept
+     * them all, and a manager left running for months kept every one.
+     *
+     * Here rather than on a timer, because the cost is proportional to the
+     * growth: nothing accumulates without this running first.
+     */
+    this.prune();
     const token = randomBytes(32).toString('base64url');
     const expiresAt = new Date(this.now() + this.ttlMs).toISOString();
     const record: SessionRecord = {

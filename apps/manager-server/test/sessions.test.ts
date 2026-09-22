@@ -17,6 +17,32 @@ test('sessions are opaque, expire, and revoke', () => {
   assert.equal(sessions.get(second.token), null);
 });
 
+test('signing in again drops the sessions that have expired', () => {
+  /*
+   * An expired session used to be removed only when somebody presented that
+   * exact token again - which is the one thing the holder of an expired
+   * session never does, because their browser has been sent back to the
+   * sign-in screen. So every sign-in left a record behind for the life of the
+   * process, and a manager left running for months kept every one of them.
+   */
+  let now = 1_000;
+  const sessions = new SessionStore({ now: () => now, ttlMs: 100 });
+  for (let signIn = 0; signIn < 50; signIn += 1) {
+    sessions.create();
+    now += 10;
+  }
+  // Half a second in, at a hundred-millisecond life: only the most recent
+  // handful can still be valid, and only those are still held.
+  assert.ok(sessions.size() <= 11, `${sessions.size()} sessions are being kept`);
+
+  // The ones still inside their life are untouched by the sweep.
+  const live = sessions.create();
+  assert.equal(sessions.get(live.token)?.csrfToken, live.session.csrfToken);
+  now += 99;
+  sessions.create();
+  assert.equal(sessions.get(live.token)?.csrfToken, live.session.csrfToken);
+});
+
 test('cookies parse and include browser security attributes', () => {
   const cookie = sessionCookie('token-value', false);
   assert.equal(parseSessionCookie(`${cookie}; other=value`), 'token-value');
