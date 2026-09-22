@@ -1,4 +1,4 @@
-import type { ManagerSettingsRecord } from '../../contracts/src/index.js';
+import { KEEP_ONLINE_DEFAULT_MINUTES, KEEP_ONLINE_MAX_MINUTES, KEEP_ONLINE_MIN_MINUTES, type ManagerSettingsRecord } from '../../contracts/src/index.js';
 import { R2HttpError, type ObjectStore } from './store.js';
 
 /**
@@ -86,6 +86,8 @@ export function parseManagerSettings(value: unknown): ManagerSettingsRecord | nu
     tunnelQuick: record.tunnelQuick === true,
     managerTunnelQuick: record.managerTunnelQuick === true,
     autoStartSillyTavern: record.autoStartSillyTavern !== false,
+    keepOnline: record.keepOnline !== false,
+    keepOnlineMinutes: whole(record.keepOnlineMinutes, KEEP_ONLINE_MIN_MINUTES, KEEP_ONLINE_MAX_MINUTES) ?? KEEP_ONLINE_DEFAULT_MINUTES,
     sillyTavernPort: whole(record.sillyTavernPort, 1, 65_535) ?? 8002,
     localIntervalMinutes: whole(record.localIntervalMinutes, 0, 7 * 24 * 60) ?? 0,
     r2: {

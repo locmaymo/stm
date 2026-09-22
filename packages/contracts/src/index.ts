@@ -83,6 +83,33 @@ export interface SetupStatus {
   };
 }
 
+/**
+ * Whether the terms in force are the ones this manager was accepted under.
+ *
+ * The documents are revised as the software changes, and an installation set
+ * up eighteen months ago agreed to wording that has since moved. Nothing about
+ * that is visible from inside the console: the text ships compiled into the
+ * program, so a manager that has just been updated is showing a revision its
+ * reader has never been asked about.
+ *
+ * So the revision the state file recorded at setup is compared against the one
+ * the program carries, and where they differ the reader is asked once. What is
+ * being asked for is an acknowledgement, not a second installation: nothing is
+ * withheld and nothing is erased if it is left unanswered.
+ */
+export interface LegalReview {
+  /** Whether the revision in force is one nobody here has acknowledged. */
+  readonly required: boolean;
+  /** The revision the program carries, as the legal package labels it. */
+  readonly revision: string;
+  /** The date that revision took effect, which is what is compared. */
+  readonly effective: string;
+  /** The date on record for this installation, written when it was set up. */
+  readonly accepted: string;
+  /** When the reader last acknowledged a revision, if they ever have. */
+  readonly acknowledgedAt: string | null;
+}
+
 export interface HealthResponse {
   readonly status: 'ok';
   readonly manager: {
@@ -116,6 +143,91 @@ export interface ApiErrorBody {
 export interface StartupSettings {
   /** Start SillyTavern when the manager starts. On unless it is turned off. */
   readonly autoStartSillyTavern: boolean;
+}
+
+/**
+ * Whether the manager keeps itself online where being unused ends a program.
+ *
+ * On somebody's own computer this is nothing: the program runs until it is
+ * stopped. Elsewhere, a battery saver or the place this is running can put it
+ * to sleep once nothing has used it for a while, and SillyTavern goes with it
+ * - so the manager reaches its own address on a clock, which says it is still
+ * in use.
+ *
+ * The address is the machine's own, never the Worker or the tunnel in front of
+ * it: those leave the machine and come back through Cloudflare, which spends
+ * an allowance on a request no reader made. A manager with no address of its
+ * own does nothing at all.
+ */
+/**
+ * How often the manager reaches its own address, and the range that allows.
+ *
+ * Here rather than beside the keeper because three places need to agree on
+ * them: the keeper itself, the state file that remembers the choice, and the
+ * record in the bucket that carries it to the next machine. A value from any
+ * of those is held inside this range rather than refused, so a file somebody
+ * edited by hand is corrected instead of stopping the manager.
+ */
+export const KEEP_ONLINE_DEFAULT_MINUTES = 15;
+export const KEEP_ONLINE_MIN_MINUTES = 1;
+export const KEEP_ONLINE_MAX_MINUTES = 180;
+
+export interface OnlineState {
+  readonly enabled: boolean;
+  /** How many minutes between attempts. */
+  readonly minutes: number;
+  /** The address being kept reachable; null when this manager has none. */
+  readonly address: string | null;
+  /**
+   * `off` when switched off, `no_address` when there is nothing to reach,
+   * `holding` while the address answers, `unreachable` when it stopped.
+   */
+  readonly status: 'off' | 'no_address' | 'holding' | 'unreachable';
+  /** When the last attempt was made, or null before there has been one. */
+  readonly lastAt: string | null;
+  /** Why the last attempt failed, in the words of whatever refused it. */
+  readonly error: string | null;
+}
+
+/**
+ * A published version of the manager itself, as its own release describes it.
+ *
+ * Not to be confused with `VersionOption`, which is a version of SillyTavern
+ * the manager can install. This is the program the reader is looking at, and
+ * the only thing anybody can do about it is go and get the new one - so what
+ * matters here is not a ref to install but what the release says it changed.
+ */
+export interface ManagerRelease {
+  /** The version the release carries, written the way `package.json` writes it. */
+  readonly version: string;
+  /** What the release is called, when it is called anything but its tag. */
+  readonly name: string | null;
+  /**
+   * What the release says about itself, as its author wrote it.
+   *
+   * Plain text, already shortened to something a card can hold. Empty when the
+   * release was published without notes, which is a release worth mentioning
+   * with nothing to say about it rather than one to hide.
+   */
+  readonly notes: string;
+  /** Where to read the whole of it. */
+  readonly url: string;
+  readonly publishedAt: string | null;
+}
+
+/**
+ * Whether a newer manager has been published, and what this one is.
+ *
+ * `checkedAt` is null before the first answer has come back, which is a
+ * different thing from having asked and been told there is nothing: a console
+ * that has not heard yet says nothing rather than "you are up to date".
+ */
+export interface ManagerUpdateStatus {
+  /** The version running right now. */
+  readonly version: string;
+  /** The newer release, or null when this is the newest one there is. */
+  readonly update: ManagerRelease | null;
+  readonly checkedAt: string | null;
 }
 
 export type VersionSelector = 'latest' | 'release' | 'staging' | (string & {});
@@ -1057,6 +1169,20 @@ export interface ManagerSettingsRecord {
   readonly tunnelQuick: boolean;
   readonly managerTunnelQuick: boolean;
   readonly autoStartSillyTavern: boolean;
+  /**
+   * Whether the machine kept itself online, and how often it checked.
+   *
+   * Part of how a machine was set up rather than a fact about it: somebody who
+   * turned this off did so on purpose, and somebody who moved it to five
+   * minutes did so because the machine they run on goes quiet sooner than the
+   * default expects. A machine put back together without them came back
+   * checking every quarter of an hour whatever the reader had chosen.
+   *
+   * Defaulted rather than optional on a record written before these existed,
+   * which is a record from a manager that did this at all.
+   */
+  readonly keepOnline: boolean;
+  readonly keepOnlineMinutes: number;
   readonly sillyTavernPort: number;
   /** How often a ZIP is taken on the machine; 0 is off. */
   readonly localIntervalMinutes: number;

@@ -764,6 +764,70 @@
 .cloud-pitch svg { flex-shrink: 0; width: 17px; height: 17px; margin-top: 1px; color: var(--primary); }
 
 /*
+ * A newer manager, and what its release said about itself.
+ *
+ * Marked with the success colour rather than the warning one: nothing is
+ * wrong, something is available. The notes are the release's own text, so they
+ * keep the line breaks whoever wrote them put there - reflowed into a
+ * paragraph a list of changes reads as one long sentence - and they are given
+ * a height they cannot grow past, because a release with forty bullet points
+ * would otherwise push every other card off the screen.
+ */
+.release-card {
+  border-color: color-mix(in srgb, var(--success) 34%, var(--border));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--success) 6%, transparent) 0, transparent 128px),
+    var(--card);
+}
+.release-card [data-slot="card-header"] svg { color: var(--success); }
+.release-notes {
+  max-height: 14rem;
+  overflow-y: auto;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--muted);
+}
+.release-notes-title { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
+
+/*
+ * The card that asks somebody already using the manager about a revision.
+ *
+ * Marked in the accent colour rather than in red: nothing has gone wrong and
+ * nothing is being withheld - it is a question, and the answer to it is one
+ * box and one button. The account of what changed sits in the same framed
+ * block the release notes use, because it is doing the same job: the shape of
+ * a change, above the way into the whole of it.
+ */
+.notice-card {
+  border-color: color-mix(in srgb, var(--primary) 34%, var(--border));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--primary) 5%, transparent) 0, transparent 128px),
+    var(--card);
+}
+.notice-card [data-slot="card-header"] svg { color: var(--primary); }
+.notice-changes {
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.notice-changes-summary { margin: 0; color: var(--foreground); }
+.notice-changes ul { margin: 8px 0 0; padding-left: 1.1rem; display: grid; gap: 4px; }
+.notice-changes li { list-style: disc; }
+.release-notes-body {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--muted-foreground);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+/*
  * The offer at the end of setup, drawn rather than described.
  *
  * It was four paragraphs of grey text and two buttons: the one screen whose

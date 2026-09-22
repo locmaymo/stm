@@ -29,22 +29,22 @@ import { browserEnvironment, browserStorage, readPreferences, savePreferences, t
 import { authErrorKey } from './auth-error.js';
 import { DEFAULT_SILLYTAVERN_PORT, portRefusal } from './ports.js';
 import { isThisMachine, readTunnelOfferDeclined, saveTunnelOfferDeclined, shouldOfferManagerTunnel } from './hosting.js';
-import { availableUpdate, readDismissedUpdate, saveDismissedUpdate } from './updates.js';
+import { availableUpdate, readDismissedManagerRelease, readDismissedUpdate, saveDismissedManagerRelease, saveDismissedUpdate, shouldShowManagerRelease } from './updates.js';
 import { readDismissedDisplaced, readDismissedRecovery, readDismissedSettings, saveDismissedDisplaced, saveDismissedRecovery, saveDismissedSettings, shouldOfferSettings, shouldShowDisplaced, shouldShowRecovery } from './settings-offer.js';
 import { apiFetch, onSessionExpired, resetSessionWatch, sessionToken, setSessionToken } from './session.js';
 import { collectCloudflareResult, framed, openReturnWindow, popupsBlocked, whenAbandoned, type CollectedResult } from './oauth.js';
-import type { AccessGatewayState, BackupManifest, CloudflareAccountProblem, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LogEntry, LogSourceFilter, ManagerSettingsOffer, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, BackupManifest, CloudflareAccountProblem, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LegalReview, LogEntry, LogSourceFilter, ManagerRelease, ManagerSettingsOffer, ManagerUpdateStatus, OnlineState, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, isCloudJob, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
 import { usePoll } from './use-poll.js';
-import { POLL_BACKGROUND_MS, POLL_CARD_MS, POLL_LIVE_MS, statusIntervalMs } from './polling.js';
+import { POLL_BACKGROUND_MS, POLL_CARD_MS, POLL_LIVE_MS, POLL_RELEASE_MS, statusIntervalMs } from './polling.js';
 import { translateLogEntry, translateStep } from './log-format.js';
 import { QrCode } from './qr-code.js';
 import { CLOUDFLARE_ORANGE, CloudflareMark } from './cloudflare-mark.js';
-import { localHost, publicAddress, reachableAddresses, shortenHost } from './addresses.js';
+import { bareHost, localHost, publicAddress, reachableAddresses, shortenHost } from './addresses.js';
 import { EmbedStage } from './embed-stage.js';
 import { LegalCredit, LegalDialog, LEGAL_REVISION } from './legal-dialog.js';
-import { legalBundle, type LegalDocumentId } from '../../../packages/legal/src/index.js';
+import { legalBundle, legalRevision, type LegalDocumentId } from '../../../packages/legal/src/index.js';
 
 const navigation = [
   { id: 'overview', icon: LayoutDashboard },
@@ -603,23 +603,29 @@ type ConsentDocument = typeof CONSENT_DOCUMENTS[number];
  * The names come from the legal bundle rather than from the sentence, so they
  * read exactly as the dialog titles the reader lands on, in either language.
  */
-function TermsConsent({ t, locale, id, nudges, checked, onCheckedChange, onOpenDocument }: {
+function TermsConsent({ t, locale, id, nudges, checked, sentence = 'setup.terms', onCheckedChange, onOpenDocument }: {
   t: Translate;
   locale: LocaleCode;
   id: string;
   /** Presses made with the box unticked; each one shakes the sentence once. */
   nudges: number;
   checked: boolean;
+  /**
+   * Which sentence is being agreed to. Setting up is one occasion; a revision
+   * met by somebody already using the manager is the other, and it is a
+   * different sentence because they are not being asked the same thing.
+   */
+  sentence?: MessageKey;
   onCheckedChange: (checked: boolean) => void;
   onOpenDocument: (document: LegalDocumentId) => void;
 }) {
   const bundle = legalBundle(locale);
   const titleOf = (document: ConsentDocument): string =>
     bundle.documents.find((entry) => entry.id === document)?.title ?? document;
-  const template = t('setup.terms');
+  const template = t(sentence);
   // The same sentence with the names filled in, for anybody who meets the box
   // through a screen reader rather than through the text beside it.
-  const plain = t('setup.terms', Object.fromEntries(CONSENT_DOCUMENTS.map((document) => [document, titleOf(document)])));
+  const plain = t(sentence, Object.fromEntries(CONSENT_DOCUMENTS.map((document) => [document, titleOf(document)])));
   /*
    * Keyed on the count so the animation runs again on every press.
    *
@@ -807,6 +813,8 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
   const backgroundJobSeen = useRef<string | null>(null);
   /** What the manager does with SillyTavern on its own way up. Null until read. */
   const [startup, setStartup] = useState<StartupSettings | null>(null);
+  /** Whether the manager keeps itself online, and how that is going. */
+  const [online, setOnline] = useState<OnlineState | null>(null);
   const [logSource, setLogSource] = useState<LogSourceFilter>('all');
   const [logQuery, setLogQuery] = useState('');
   const [logsExpanded, setLogsExpanded] = useState(false);
@@ -847,6 +855,34 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
    */
   const [r2Problem, setR2Problem] = useState<CloudflareAccountProblem | null>(null);
   const [reconnectUrl, setReconnectUrl] = useState<string | null>(null);
+  /*
+   * A newer manager than this one, when the project has published one.
+   *
+   * The console has always said when SillyTavern had a new release, because
+   * installing SillyTavern is what it does; it said nothing about itself, so
+   * somebody could run a version from six months ago and never find out. The
+   * manager answers this from what it last read, so the question is cheap and
+   * the answer is a release rather than a version number: what was changed is
+   * the part anybody decides on.
+   */
+  const [managerUpdate, setManagerUpdate] = useState<ManagerUpdateStatus | null>(null);
+  const [dismissedManagerRelease, setDismissedManagerRelease] = useState<string | null>(() => readDismissedManagerRelease(browserStorage()));
+  /*
+   * Whether the terms in force are the ones this installation agreed to.
+   *
+   * Read once, as the page loads, and that is not a shortcut: the documents
+   * are compiled into the program on both sides, so the answer can only change
+   * when the manager is replaced - and a replaced manager means a reloaded
+   * page. Polling it would be asking the same question of the same two
+   * constants every few seconds.
+   */
+  const [legalReview, setLegalReview] = useState<LegalReview | null>(null);
+  const [legalAgreed, setLegalAgreed] = useState(false);
+  const [legalNudges, setLegalNudges] = useState(0);
+  const [legalBusy, setLegalBusy] = useState(false);
+  const [legalFailure, setLegalFailure] = useState<string | null>(null);
+  const [reviewLegalOpen, setReviewLegalOpen] = useState(false);
+  const [reviewLegalDocument, setReviewLegalDocument] = useState<LegalDocumentId>('terms');
   const [tunnelOfferOpen, setTunnelOfferOpen] = useState(false);
   const [accessSecurity, setAccessSecurity] = useState<AccessGatewayState>({ status: 'stopped', host: null, port: 8001, lan: false, passwordConfigured: false, passcode: false, sessions: 0, error: null });
   const t = translator(preferences.locale);
@@ -956,6 +992,39 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     }
   };
 
+  /**
+   * Say that the revised terms have been read, for this installation.
+   *
+   * The revision goes up with the answer and the manager checks it against the
+   * one it carries. A console that has been open since before an update is
+   * showing a card about wording this program no longer has, and recording an
+   * acknowledgement of a revision nobody was shown would be worse than asking
+   * again: the refusal that comes back says to reload and read the new one.
+   */
+  const acknowledgeLegal = async (): Promise<void> => {
+    if (!legalReview) return;
+    // Pressing with the box unticked shakes the sentence rather than doing
+    // nothing, because doing nothing reads as the button being broken.
+    if (!legalAgreed) { setLegalNudges((count) => count + 1); return; }
+    setLegalBusy(true);
+    setLegalFailure(null);
+    try {
+      const response = await apiFetch('/api/v1/legal/acknowledge', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken },
+        body: JSON.stringify({ accepted: true, revision: legalReview.effective }),
+      });
+      const payload: unknown = await response.json();
+      if (!response.ok) { setLegalFailure(fail.body(payload, t('console.legalReviewFailed'))); return; }
+      setLegalReview(payload as LegalReview);
+    } catch {
+      setLegalFailure(t('console.legalReviewFailed'));
+    } finally {
+      setLegalBusy(false);
+    }
+  };
+
   const restoreEverything = async (): Promise<void> => {
     setRestoringEverything(true);
     try {
@@ -1033,6 +1102,43 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     }
   }, { intervalMs: statusIntervalMs({ process: processState, tunnel: tunnelState, managerTunnel: managerTunnelState, working: installing || backgroundJob !== null }) });
 
+  /*
+   * Whether the manager itself has been replaced, asked on a clock of its own.
+   *
+   * Rarely, because the answer changes when somebody cuts a release rather
+   * than while anybody is watching, and because the manager keeps what it last
+   * heard for hours - so most of these never leave the machine. Once at load
+   * as well, which is what tells a console opened today about a release from
+   * last week.
+   */
+  usePoll(async () => {
+    try {
+      const response = await apiFetch('/api/v1/manager-update', { credentials: 'same-origin' });
+      if (!response.ok) return;
+      setManagerUpdate(await response.json() as ManagerUpdateStatus);
+    } catch {
+      // The next one asks again. Nothing on the page depends on this.
+    }
+  }, { intervalMs: POLL_RELEASE_MS });
+
+  /*
+   * How keeping this manager online is going, while the page showing it is up.
+   *
+   * Only there: the switch and what it reports live on the settings page, and
+   * a console sitting on the Overview has no use for the answer. What it does
+   * change without anybody pressing anything is the address - a tunnel coming
+   * up gives the manager one it did not have a moment ago - so on that page it
+   * is worth asking again rather than showing what was true at load.
+   */
+  usePoll(async () => {
+    try {
+      const response = await apiFetch('/api/v1/online', { credentials: 'same-origin' });
+      if (response.ok) setOnline(await response.json() as OnlineState);
+    } catch {
+      // The card keeps what it last knew, and the next one asks again.
+    }
+  }, { intervalMs: POLL_BACKGROUND_MS, enabled: page === 'config' });
+
   useEffect(() => {
     const onHashChange = () => {
       const next = pageFromHash();
@@ -1053,9 +1159,13 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
       apiFetch('/api/v1/profiles', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<{ profiles: Profile[]; activeProfileId: string | null }> : null),
       apiFetch('/api/v1/backups', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<{ backups: BackupManifest[] }> : null),
       apiFetch('/api/v1/startup', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<{ startup: StartupSettings }> : null),
-    ]).then(([versionPayload, installationPayload, profilePayload, backupPayload, startupPayload]) => {
+      apiFetch('/api/v1/legal', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<LegalReview> : null),
+      apiFetch('/api/v1/online', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<OnlineState> : null),
+    ]).then(([versionPayload, installationPayload, profilePayload, backupPayload, startupPayload, legalPayload, onlinePayload]) => {
       if (cancelled) return;
       if (startupPayload) setStartup(startupPayload.startup);
+      if (legalPayload) setLegalReview(legalPayload);
+      if (onlinePayload) setOnline(onlinePayload);
       if (versionPayload) setVersions(versionPayload.versions);
       if (installationPayload) {
         setInstallations(installationPayload.installations);
@@ -1189,6 +1299,15 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     const payload = await response.json() as { startup?: StartupSettings; error?: { message?: string } };
     if (!response.ok || !payload.startup) return fail.body(payload, t('console.startupSaveFailed'));
     setStartup(payload.startup);
+    return null;
+  };
+
+  /** Whether the manager keeps itself online, and how often. Reported back so the switch can go back. */
+  const setKeepOnline = async (enabled: boolean, minutes: number): Promise<string | null> => {
+    const response = await apiFetch('/api/v1/online', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ enabled, minutes }) });
+    const payload: unknown = await response.json();
+    if (!response.ok) return fail.body(payload, t('console.keepOnlineSaveFailed'));
+    setOnline(payload as OnlineState);
     return null;
   };
 
@@ -1378,6 +1497,11 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
    * first-run screen, and it is also the only way to be sure nothing on the
    * page is still showing a profile or a backup that is gone.
    */
+  /** The manager release worth a card, with the version it is newer than. */
+  const newerManager = managerUpdate?.update && shouldShowManagerRelease(managerUpdate.update, dismissedManagerRelease)
+    ? { current: managerUpdate.version, release: managerUpdate.update }
+    : null;
+
   const eraseEverything = async (password: string): Promise<string | null> => {
     const response = await apiFetch('/api/v1/reset', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ password }) });
     const payload = await response.json() as { ok?: boolean; erased?: number; failures?: ReadonlyArray<{ path: string }>; error?: { message?: string } };
@@ -1503,6 +1627,25 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
                 </AlertDescription>
               </Alert></div>
               : null}
+            {/* Below the two above it, which are about data that is not being
+                kept anywhere, and above everything else. It is the only card
+                here that asks the reader a question about their own agreement,
+                and it stays until they answer it - but it blocks nothing while
+                it waits. */}
+            {legalReview?.required
+              ? <div className="mb-(--section-gap)"><LegalReviewCard
+                t={t}
+                locale={preferences.locale}
+                review={legalReview}
+                busy={legalBusy}
+                failure={legalFailure}
+                checked={legalAgreed}
+                nudges={legalNudges}
+                onCheckedChange={setLegalAgreed}
+                onAccept={() => void acknowledgeLegal()}
+                onOpenDocument={(document) => { setReviewLegalDocument(document); setReviewLegalOpen(true); }}
+              /></div>
+              : null}
             {/* Above the work, and above the page, because on a machine
                 that has just been put in front of somebody this is the whole
                 of what there is to do. */}
@@ -1536,7 +1679,23 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
             {backgroundJob && page !== 'data' && !(page === 'overview' && !activeInstallationId)
               ? <div className="mb-(--section-gap)"><BackgroundTaskCard t={t} catalog={catalog} job={backgroundJob} /></div>
               : null}
-            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} locale={preferences.locale} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} startup={startup} onSetAutoStart={setAutoStartSillyTavern} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} onEraseEverything={eraseEverything} /> : <ResourcePanel page={page} t={t} />}
+            {/* Below the work and below anything broken, because a release
+                that exists will still exist in ten minutes. On every page
+                rather than the Overview alone: whichever page somebody is on
+                is the one they will read it from, and it is dismissed once. */}
+            {newerManager
+              ? <div className="mb-(--section-gap)"><ManagerReleaseCard
+                t={t}
+                locale={preferences.locale}
+                current={newerManager.current}
+                release={newerManager.release}
+                onDismiss={() => {
+                  saveDismissedManagerRelease(newerManager.release.version, browserStorage());
+                  setDismissedManagerRelease(newerManager.release.version);
+                }}
+              /></div>
+              : null}
+            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} locale={preferences.locale} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} startup={startup} online={online} onSetAutoStart={setAutoStartSillyTavern} onSetKeepOnline={setKeepOnline} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} onEraseEverything={eraseEverything} /> : <ResourcePanel page={page} t={t} />}
           </PageContainer>
           <MobileNav
             items={navigation.map(({ id, icon }) => ({ id, icon, href: `#${id}`, label: t(`nav.${id}`) }))}
@@ -1554,6 +1713,18 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
         tunnel={managerTunnelState}
         onDecline={() => { setTunnelOfferOpen(false); saveTunnelOfferDeclined(browserStorage()); }}
         onAccept={setManagerTunnel}
+      />
+      {/* The full text, for the card above that asks about it. Mounted here
+          rather than inside the card so that the documents open over whichever
+          page the reader is on, and separate from the Settings page's own copy
+          because that one belongs to the About panel and its state. */}
+      <LegalDialog
+        t={t}
+        locale={preferences.locale}
+        open={reviewLegalOpen}
+        onOpenChange={setReviewLegalOpen}
+        document={reviewLegalDocument}
+        onDocumentChange={setReviewLegalDocument}
       />
     </>
   );
@@ -1602,6 +1773,131 @@ function RestoreEverythingCard({ t, offer, busy, onRestore, onDismiss }: {
       </div>
     </CardContent>
   </Card>;
+}
+
+/**
+ * The terms have been revised, and the reader has not been asked about it.
+ *
+ * The documents ship compiled into the program, so a manager that has just
+ * been updated is holding wording its reader has never seen - and nothing
+ * about that is visible from inside the console. This is the one screen that
+ * says so.
+ *
+ * What it asks for is an acknowledgement, and it behaves like one. It carries
+ * the short account of what the revision says, opens the full text beside it,
+ * and stays on every page until it is answered - but it locks nothing and
+ * erases nothing while it waits. Holding somebody's chats hostage over a
+ * checkbox would be a worse thing to do than anything in the documents.
+ */
+function LegalReviewCard({ t, locale, review, busy, failure, checked, nudges, onCheckedChange, onAccept, onOpenDocument }: {
+  t: Translate;
+  locale: LocaleCode;
+  review: LegalReview;
+  busy: boolean;
+  failure: string | null;
+  checked: boolean;
+  nudges: number;
+  onCheckedChange: (checked: boolean) => void;
+  onAccept: () => void;
+  onOpenDocument: (document: LegalDocumentId) => void;
+}) {
+  const notes = legalRevision(locale);
+  return <Card className="notice-card">
+    <PanelHeading icon={<Scale />}>{t('console.legalReviewTitle')}</PanelHeading>
+    <CardContent className="grid gap-3">
+      <p className="text-sm text-muted-foreground">
+        {t('console.legalReviewBody', { revision: review.revision, date: releaseDate(`${review.effective}T00:00:00Z`, locale) })}
+      </p>
+      <div className="notice-changes">
+        <p className="notice-changes-summary">{notes.summary}</p>
+        <ul>
+          {notes.changes.map((change, index) => <li key={index}>{change}</li>)}
+        </ul>
+      </div>
+      <TermsConsent
+        t={t}
+        locale={locale}
+        id="legal-review-consent"
+        sentence="console.legalReviewAgree"
+        nudges={nudges}
+        checked={checked}
+        onCheckedChange={onCheckedChange}
+        onOpenDocument={onOpenDocument}
+      />
+      {failure ? <p className="install-error" role="alert">{failure}</p> : null}
+      <div className="flex flex-wrap gap-2">
+        <Button size="sm" onClick={onAccept} disabled={busy}>{busy ? t('common.loading') : t('console.legalReviewAccept')}</Button>
+      </div>
+    </CardContent>
+  </Card>;
+}
+
+/**
+ * A newer manager than the one being looked at, and what it says it changed.
+ *
+ * There is no button here that installs it, and that is deliberate. The
+ * manager is on the machine in one of three shapes - a checkout, a package
+ * from npm, a bundle on Windows - each replaced its own way, and a console
+ * that tried to overwrite the program it is itself running is the one upgrade
+ * that can leave a machine with neither version. So this says a new one
+ * exists, shows what the release said about itself, and links to it.
+ *
+ * The notes are the release's own text, printed as written. Whoever cut the
+ * release wrote its line breaks on purpose, and a card that reflows them into
+ * a paragraph turns a list of changes into a run-on sentence.
+ */
+function ManagerReleaseCard({ t, locale, current, release, onDismiss }: {
+  t: Translate;
+  locale: LocaleCode;
+  /**
+   * The version actually running, as the manager reports it.
+   *
+   * Not `__STM_VERSION__`, which is the version the panel was built at. They
+   * agree in every shipped build and disagree in exactly the case worth being
+   * right about - a panel served by a manager it was not built alongside -
+   * and the running one is what the comparison behind this card was made
+   * against.
+   */
+  current: string;
+  release: ManagerRelease;
+  onDismiss: () => void;
+}) {
+  return <Card className="release-card">
+    <PanelHeading icon={<CircleArrowUp />}>{t('console.managerUpdateTitle', { version: release.version })}</PanelHeading>
+    <CardContent className="grid gap-3">
+      <p className="text-sm text-muted-foreground">
+        {t('console.managerUpdateBody', { current, version: release.version })}
+        {release.publishedAt ? ` ${t('console.managerUpdatePublished', { when: releaseDate(release.publishedAt, locale) })}` : ''}
+      </p>
+      {release.notes
+        ? <div className="release-notes">
+          {release.name ? <p className="release-notes-title">{release.name}</p> : null}
+          <p className="release-notes-body">{release.notes}</p>
+        </div>
+        : null}
+      <div className="flex flex-wrap gap-2">
+        <Button size="sm" asChild>
+          <a href={release.url} target="_blank" rel="noreferrer noopener">
+            <ArrowUpRight />{t('console.managerUpdateOpen')}
+          </a>
+        </Button>
+        {/* Saying no is an answer, and it is remembered against this version:
+            the next release is a different one and says so again. */}
+        <Button size="sm" variant="ghost" onClick={onDismiss}>{t('console.updateDismiss')}</Button>
+      </div>
+    </CardContent>
+  </Card>;
+}
+
+/** The day a release was published, written the way the reader writes dates. */
+function releaseDate(iso: string, locale: LocaleCode): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  try {
+    return new Intl.DateTimeFormat(locale === 'vi' ? 'vi-VN' : 'en-GB', { day: 'numeric', month: 'long', year: 'numeric' }).format(date);
+  } catch {
+    return iso;
+  }
 }
 
 /**
@@ -5518,6 +5814,90 @@ function StartupCard({ t, startup, onSetAutoStart }: { t: Translate; startup: St
   </Card>;
 }
 
+/** The intervals offered; anything else somebody sets is shown as it is. */
+const KEEP_ONLINE_MINUTES = [5, 10, 15, 30, 60] as const;
+
+/**
+ * Keeping the manager online where being unused is treated as being finished.
+ *
+ * On somebody's own computer this does nothing and the card says so: the
+ * program runs until it is stopped, and there is no address of its own to
+ * keep. It earns its place where a battery saver or the machine underneath can
+ * shut the manager down once nothing has used it for a while, and SillyTavern
+ * goes with it, mid-sentence, with nothing the reader can do from where they
+ * are.
+ *
+ * What it reports is the address, because that is the part worth checking: a
+ * switch that is on over a manager with nowhere to be reached is doing
+ * nothing, and saying "on" over that would be a lie of omission.
+ */
+function KeepOnlineCard({ t, locale, online, onSetKeepOnline }: {
+  t: Translate;
+  locale: LocaleCode;
+  online: OnlineState | null;
+  onSetKeepOnline: (enabled: boolean, minutes: number) => Promise<string | null>;
+}) {
+  // What the controls show while the answer is in flight, so they move under
+  // the press rather than a second later.
+  const [pending, setPending] = useState<{ enabled: boolean; minutes: number } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const { toast } = useToast();
+  const checked = pending?.enabled ?? online?.enabled ?? null;
+  const minutes = pending?.minutes ?? online?.minutes ?? null;
+  const save = async (enabled: boolean, next: number) => {
+    setPending({ enabled, minutes: next }); setBusy(true);
+    try {
+      const failure = await onSetKeepOnline(enabled, next);
+      if (failure) { toast({ title: failure, tone: 'destructive' }); return; }
+      toast({ title: t('console.keepOnlineSaved'), tone: 'success' });
+    } finally { setPending(null); setBusy(false); }
+  };
+  // The address as a reader recognises it: no scheme, and the middle taken out
+  // of a long hostname. `shortenHost` wants a bare host - handed a whole URL it
+  // cut the scheme in half and left `http....0.1:7876`.
+  const address = shortenHost(bareHost(online?.address ?? ''));
+  const note = !online || !online.enabled ? null
+    : online.status === 'no_address' ? t('console.keepOnlineNoAddress')
+      : online.status === 'unreachable' ? t('console.keepOnlineUnreachable', { address })
+        : t('console.keepOnlineHolding', { address });
+  // Whatever is stored belongs in the list even when it is not one of the
+  // offered values, so a console cannot quietly change a choice by showing a
+  // different one next to it.
+  const offered = minutes !== null && !KEEP_ONLINE_MINUTES.includes(minutes as typeof KEEP_ONLINE_MINUTES[number])
+    ? [...KEEP_ONLINE_MINUTES, minutes].sort((left, right) => left - right)
+    : [...KEEP_ONLINE_MINUTES];
+  return <Card>
+    <PanelHeading icon={<Globe2 />}>{t('console.keepOnlineTitle')}</PanelHeading>
+    <CardContent className="grid gap-3">
+      <DetailRow label={t('console.keepOnline')} hint={t('console.keepOnlineHint')}>
+        {checked === null
+          ? <Skeleton className="h-5 w-9" />
+          : <Switch checked={checked} disabled={busy} onCheckedChange={(next) => void save(next, minutes ?? 15)} aria-label={t('console.keepOnline')} />}
+      </DetailRow>
+      {checked && minutes !== null
+        ? <DetailRow label={t('console.keepOnlineEvery')} hint={t('console.keepOnlineEveryHint')}>
+          <Select value={minutes.toString(10)} disabled={busy} onValueChange={(next) => void save(true, Number(next))}>
+            <SelectTrigger className="w-36" aria-label={t('console.keepOnlineEvery')}><SelectValue /></SelectTrigger>
+            <SelectContent>
+              {offered.map((value) => (
+                <SelectItem key={value} value={value.toString(10)}>{t('console.keepOnlineMinutes', { count: value.toString(10) })}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </DetailRow>
+        : null}
+      {note
+        ? <p className={online?.status === 'unreachable' ? 'install-error' : 'text-xs text-muted-foreground'}>
+          {note}
+          {online?.lastAt && online.status !== 'no_address'
+            ? ` ${t('console.keepOnlineLast', { when: new Date(online.lastAt).toLocaleTimeString(locale === 'vi' ? 'vi-VN' : 'en-GB') })}`
+            : ''}
+        </p>
+        : null}
+    </CardContent>
+  </Card>;
+}
+
 function PortsCard({ t, ports, process, busy, onPortChange }: { t: Translate; ports: PortSettings | null; process: ProcessState; busy: boolean; onPortChange: (port: number) => Promise<string | null> }) {
   const [value, setValue] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -5604,7 +5984,7 @@ interface ActionFailure {
   readonly text: string;
 }
 
-function ConfigPage({ t, locale, config, security, ports, managerTunnel, process, catalog, startup, onSetAutoStart, onSetManagerTunnel, onPortChange, onConfigUpdate, onConfigReset, onChangeManagerPassword, onSetPassword, onSignOut, onSignOutDevices, onEraseEverything }: { t: Translate; locale: LocaleCode; config: ConfigDocument | null; security: AccessGatewayState; ports: PortSettings | null; managerTunnel: TunnelState; process: ProcessState; catalog: Record<string, unknown>; startup: StartupSettings | null; onSetAutoStart: (enabled: boolean) => Promise<string | null>; onSetManagerTunnel: (on: boolean) => Promise<ActionFailure | null>; onPortChange: (port: number) => Promise<string | null>; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onConfigReset: () => Promise<string | null>; onChangeManagerPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSignOut: () => Promise<void>; onSignOutDevices: () => Promise<string | null>; onEraseEverything: (password: string) => Promise<string | null> }) {
+function ConfigPage({ t, locale, config, security, ports, managerTunnel, process, catalog, startup, online, onSetAutoStart, onSetKeepOnline, onSetManagerTunnel, onPortChange, onConfigUpdate, onConfigReset, onChangeManagerPassword, onSetPassword, onSignOut, onSignOutDevices, onEraseEverything }: { t: Translate; locale: LocaleCode; config: ConfigDocument | null; security: AccessGatewayState; ports: PortSettings | null; managerTunnel: TunnelState; process: ProcessState; catalog: Record<string, unknown>; startup: StartupSettings | null; online: OnlineState | null; onSetAutoStart: (enabled: boolean) => Promise<string | null>; onSetKeepOnline: (enabled: boolean, minutes: number) => Promise<string | null>; onSetManagerTunnel: (on: boolean) => Promise<ActionFailure | null>; onPortChange: (port: number) => Promise<string | null>; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onConfigReset: () => Promise<string | null>; onChangeManagerPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSignOut: () => Promise<void>; onSignOutDevices: () => Promise<string | null>; onEraseEverything: (password: string) => Promise<string | null> }) {
   const [form, setForm] = useState<ConfigSettingsInput>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -5825,6 +6205,9 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
       onConfirm={() => applyManagerTunnel(false)}
     />
     <StartupCard t={t} startup={startup} onSetAutoStart={onSetAutoStart} />
+    {/* Under what the manager does when it opens, because this is what it
+        does for the rest of the time it is open. */}
+    <KeepOnlineCard t={t} locale={locale} online={online} onSetKeepOnline={onSetKeepOnline} />
     <PortsCard t={t} ports={ports} process={process} busy={busy} onPortChange={onPortChange} />
     {/* One form, two errands. Opened from the row above it changes a password
         that exists; opened by the link switch it sets the first one there has

@@ -161,6 +161,18 @@
     "autoStartSillyTavernHint": "Tắt đi nếu bạn muốn tự bật.",
     "startupSaveFailed": "Không lưu được tuỳ chọn này",
     "startupSaved": "Đã lưu. Tuỳ chọn này áp dụng từ lần mở trình quản lý sau.",
+    "keepOnlineTitle": "Trong lúc trình quản lý đang mở",
+    "keepOnline": "Giữ STM online",
+    "keepOnlineHint": "Trình tiết kiệm pin, hoặc chính máy đang chạy, có thể tắt STM khi một lúc không ai dùng tới. SillyTavern tắt theo.",
+    "keepOnlineEvery": "Kiểm tra mỗi",
+    "keepOnlineEveryHint": "Để ngắn hơn nếu máy này nghỉ sớm hơn.",
+    "keepOnlineMinutes": "{count} phút",
+    "keepOnlineHolding": "Đang giữ {address}.",
+    "keepOnlineUnreachable": "{address} không trả lời.",
+    "keepOnlineNoAddress": "Trình quản lý này không có địa chỉ gốc để giữ, nên không cần làm gì.",
+    "keepOnlineLast": "Kiểm tra lần cuối lúc {when}.",
+    "keepOnlineSaveFailed": "Không lưu được tuỳ chọn này",
+    "keepOnlineSaved": "Đã lưu.",
     "installStop": "Dừng",
     "installStopping": "Đang dừng",
     "installStopConfirm": "Dừng cài đặt này?",
@@ -452,6 +464,15 @@
     "updateAvailable": "Đã có SillyTavern {version}.",
     "updateNow": "Cài bản này",
     "updateDismiss": "Để sau",
+    "legalReviewTitle": "Điều khoản và chính sách đã được cập nhật",
+    "legalReviewBody": "Bản {revision} có hiệu lực từ {date}, và trình quản lý này chưa được hỏi về bản đó. Không có gì bị khoá trong lúc bạn cân nhắc.",
+    "legalReviewAgree": "Tôi đã đọc {terms} và {disclaimer} bản sửa đổi, và tôi đồng ý với bản đang có hiệu lực.",
+    "legalReviewAccept": "Đồng ý và dùng tiếp",
+    "legalReviewFailed": "Không ghi nhận được xác nhận",
+    "managerUpdateTitle": "Đã có trình quản lý {version}",
+    "managerUpdateBody": "Trình quản lý này là bản {current}, và dự án đã phát hành bản mới hơn.",
+    "managerUpdatePublished": "Phát hành ngày {when}.",
+    "managerUpdateOpen": "Xem bản mới có gì",
     "stateRunning": "Đang chạy",
     "stateStopped": "Đã dừng",
     "stateStarting": "Đang khởi động",
@@ -694,6 +715,7 @@
     "job_not_running": "Việc đó không còn chạy nữa.",
     "reset_busy": "Vẫn còn việc đang chạy. Dừng nó đã rồi hãy xoá sạch.",
     "linked_path": "Hồ sơ có đường dẫn liên kết, sao lưu không thể đi theo một cách an toàn.",
+    "notice_revision_stale": "Đây không còn là bản đang có hiệu lực. Hãy tải lại bảng điều khiển và đọc bản hiện tại.",
     "npm_failed": "Cài các gói phụ thuộc thất bại.",
     "operation_canceled": "Đã dừng.",
     "origin_rejected": "Yêu cầu đó không đến từ trình quản lý này, nên đã bị từ chối.",
@@ -740,10 +762,18 @@
       "browserOpened": "Đã mở {url}",
       "requestFailed": "Yêu cầu thất bại: {reason}",
       "portMoved": "Cổng {from} đang bị chiếm; bảng điều khiển chạy ở {to} thay thế",
-      "portTaken": "Cổng {port} được yêu cầu nhưng đang bị chiếm; vẫn khởi động ở đó và để nó báo lỗi"
+      "portTaken": "Cổng {port} được yêu cầu nhưng đang bị chiếm; vẫn khởi động ở đó và để nó báo lỗi",
+      "releaseCheckFailed": "Không đọc được danh sách phiên bản đã phát hành: {reason}"
     },
     "setup": {
       "passwordBootstrapped": "Đã lấy mật khẩu quản trị từ STM_ADMIN_PASSWORD"
+    },
+    "legal": {
+      "acknowledged": "Đã xác nhận điều khoản có hiệu lực từ {revision}"
+    },
+    "online": {
+      "unreachable": "Trình quản lý không tới được địa chỉ của chính nó tại {address}: {reason}",
+      "reachable": "Trình quản lý đã tới được địa chỉ của chính nó tại {address}"
     },
     "config": {
       "updated": "Đã cập nhật {path}",

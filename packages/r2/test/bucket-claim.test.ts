@@ -23,6 +23,8 @@ const SETTINGS = {
   accessPasscode: false,
   accessLanEnabled: true,
   autoStartSillyTavern: true,
+  keepOnline: true,
+  keepOnlineMinutes: 15,
   sillyTavernPort: 8002,
   localIntervalMinutes: 60,
   r2: { hotIntervalMinutes: 5, coldIntervalHours: 6, reconcileIntervalHours: 24, keepRecent: 24, keepDaily: 30, keepWeekly: 0, maxStorageBytes: 8_000_000_000, maxWriteOperations: 800_000, maxReadOperations: 8_000_000 },

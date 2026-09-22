@@ -161,6 +161,18 @@
     "autoStartSillyTavernHint": "Off if you would rather start it yourself.",
     "startupSaveFailed": "Could not save that setting",
     "startupSaved": "Saved. This takes effect the next time the manager starts.",
+    "keepOnlineTitle": "While the manager is open",
+    "keepOnline": "Keep STM online",
+    "keepOnlineHint": "A battery saver, or the machine this runs on, can shut STM down when nothing has used it for a while. SillyTavern goes with it.",
+    "keepOnlineEvery": "Check every",
+    "keepOnlineEveryHint": "Shorter if this machine goes quiet sooner.",
+    "keepOnlineMinutes": "{count} minutes",
+    "keepOnlineHolding": "Holding {address} open.",
+    "keepOnlineUnreachable": "{address} is not answering.",
+    "keepOnlineNoAddress": "This manager has no address of its own to keep open, so there is nothing to do.",
+    "keepOnlineLast": "Last checked {when}.",
+    "keepOnlineSaveFailed": "Could not save that setting",
+    "keepOnlineSaved": "Saved.",
     "installStop": "Stop",
     "installStopping": "Stopping",
     "installStopConfirm": "Stop this installation?",
@@ -452,6 +464,15 @@
     "updateAvailable": "SillyTavern {version} is out.",
     "updateNow": "Install it",
     "updateDismiss": "Not now",
+    "legalReviewTitle": "The terms and notices have been revised",
+    "legalReviewBody": "Revision {revision} has been in force since {date}, and this manager has not been asked about it. Nothing is locked while you decide.",
+    "legalReviewAgree": "I have read the revised {terms} and {disclaimer}, and I accept the revision now in force.",
+    "legalReviewAccept": "Agree and carry on",
+    "legalReviewFailed": "The acknowledgement could not be recorded",
+    "managerUpdateTitle": "Manager {version} is out",
+    "managerUpdateBody": "This manager is {current}, and a newer one has been published.",
+    "managerUpdatePublished": "Released {when}.",
+    "managerUpdateOpen": "See what changed",
     "stateRunning": "Running",
     "stateStopped": "Stopped",
     "stateStarting": "Starting",
@@ -694,6 +715,7 @@
     "job_not_running": "That job is no longer running.",
     "reset_busy": "Something is still running. Stop it, then erase everything.",
     "linked_path": "The profile contains a linked path, which a backup cannot follow safely.",
+    "notice_revision_stale": "That is no longer the revision in force. Reload the console and read the current one.",
     "npm_failed": "Installing the dependencies failed.",
     "operation_canceled": "Stopped.",
     "origin_rejected": "That request did not come from this manager, so it was refused.",
@@ -740,10 +762,18 @@
       "browserOpened": "Opened {url}",
       "requestFailed": "Request failed: {reason}",
       "portMoved": "Port {from} is already in use; the console is on {to} instead",
-      "portTaken": "Port {port} was asked for and is already in use; starting there anyway and letting it fail"
+      "portTaken": "Port {port} was asked for and is already in use; starting there anyway and letting it fail",
+      "releaseCheckFailed": "The published manager versions could not be read: {reason}"
     },
     "setup": {
       "passwordBootstrapped": "Admin password taken from STM_ADMIN_PASSWORD"
+    },
+    "legal": {
+      "acknowledged": "The terms in force since {revision} were acknowledged"
+    },
+    "online": {
+      "unreachable": "This manager could not reach its own address at {address}: {reason}",
+      "reachable": "This manager can reach its own address again at {address}"
     },
     "config": {
       "updated": "Updated {path}",

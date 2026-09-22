@@ -6,13 +6,18 @@ import { join } from 'node:path';
 import { getPlatformPaths } from '../../../packages/platform/src/index.js';
 import { StateStore } from '../src/state.js';
 import { preferredNetworkHost, startManagerServer, type ManagerServer } from '../src/server.js';
-import type { AccessGatewayState, ConsoleStatus, Installation, ProcessState, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, ConsoleStatus, Installation, LegalReview, ManagerUpdateStatus, OnlineState, ProcessState, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import { LEGAL_META } from '../../../packages/legal/src/index.js';
+import { hashPassword } from '../src/password.js';
 import type { TunnelManager } from '../../../packages/tunnel/src/index.js';
 import type { ProxyWorkerManager } from '../../../packages/cloudflare/src/index.js';
 import { decodeState, encodeState } from '../../../packages/cloudflare/src/index.js';
 import type { CloudflareConnection } from '../../../packages/r2/src/index.js';
 import type { RuntimeManager } from '../../../packages/sillytavern-runtime/src/index.js';
 import type { ProcessSupervisor } from '../src/supervisor.js';
+import { ReleaseWatch } from '../src/manager-release.js';
+import { KEEP_ONLINE_DEFAULT_MINUTES, KEEP_ONLINE_MAX_MINUTES } from '../../../packages/contracts/src/index.js';
+import { OnlineKeeper } from '../src/online.js';
 import { SILLYTAVERN_PORT } from '../src/ports.js';
 
 async function createServer(options: {
@@ -30,6 +35,10 @@ async function createServer(options: {
   cloudflare?: unknown;
   /** As `STM_PUBLIC_ORIGIN` would name it. */
   publicOrigin?: string;
+  /** Stands in for GitHub, so no test asks it what the newest release is. */
+  releases?: ReleaseWatch;
+  /** Stands in for what keeps the manager online, so no test reaches anywhere. */
+  online?: OnlineKeeper;
 } = {}): Promise<ManagerServer> {
   const root = options.root ?? await mkdtemp(join(tmpdir(), 'stm-manager-'));
   const basePaths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
@@ -53,6 +62,8 @@ async function createServer(options: {
     ...(options.proxy ? { proxy: options.proxy as unknown as ProxyWorkerManager } : {}),
     ...(options.cloudflare !== undefined ? { cloudflare: options.cloudflare as CloudflareConnection } : {}),
     ...(options.publicOrigin ? { publicOrigin: options.publicOrigin } : {}),
+    ...(options.releases ? { releases: options.releases } : {}),
+    ...(options.online ? { online: options.online } : {}),
   });
 }
 
@@ -1960,4 +1971,180 @@ test('everything the console watches comes back in one answer', async (t) => {
 
   // And it is behind the same door as everything else.
   assert.equal((await fetch(`${base}/api/v1/status`)).status, 401);
+});
+
+test('the console is told when a newer manager has been published', async (t) => {
+  const releases = new ReleaseWatch({
+    version: '0.2.0',
+    fetch: (async () => new Response(JSON.stringify([
+      { tag_name: 'v0.3.0', name: 'A card that says what changed', body: 'Notes', html_url: 'https://example.invalid/v0.3.0', published_at: '2026-09-20T10:00:00Z' },
+    ]), { status: 200, headers: { 'content-type': 'application/json' } })) as unknown as typeof globalThis.fetch,
+  });
+  const manager = await createServer({ bootstrapPassword: 'correct horse battery staple', releases });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+
+  const payload = await (await fetch(`${base}/api/v1/manager-update`, { headers: { cookie: auth.cookie } })).json() as ManagerUpdateStatus;
+  assert.equal(payload.version, '0.2.0');
+  assert.equal(payload.update?.version, '0.3.0');
+  assert.equal(payload.update?.notes, 'Notes');
+  assert.ok(payload.checkedAt);
+
+  // Behind the same door as everything else, because it says which version of
+  // the manager is running and that is a fact about this machine.
+  assert.equal((await fetch(`${base}/api/v1/manager-update`)).status, 401);
+});
+test('a revision of the terms nobody here has seen is asked about once', async (t) => {
+  const manager = await createServer({
+    prepare: async (paths) => {
+      await mkdir(paths.state, { recursive: true });
+      // An installation set up under wording that has since been revised.
+      await writeFile(join(paths.state, 'manager-state.json'), JSON.stringify({
+        schemaVersion: 1,
+        managerVersion: '0.1.0',
+        installId: '8f2b6d60-0d0f-4a5a-9a9c-6f4a2f1c0b11',
+        createdAt: '2025-01-05T09:00:00.000Z',
+        updatedAt: '2025-01-05T09:00:00.000Z',
+        adminPasswordHash: hashPassword('correct horse battery staple'),
+        setupAcceptedAt: '2025-01-05T09:00:00.000Z',
+        termsVersion: '2025-01-01',
+        telemetryNoticeVersion: '2025-01-01',
+      }), 'utf8');
+    },
+  });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  const headers = { cookie: auth.cookie };
+
+  const before = await (await fetch(`${base}/api/v1/legal`, { headers })).json() as LegalReview;
+  assert.equal(before.required, true);
+  assert.equal(before.accepted, '2025-01-01');
+  assert.equal(before.effective, LEGAL_META.effective);
+  assert.equal(before.acknowledgedAt, null);
+
+  const acknowledge = async (body: unknown): Promise<Response> => await fetch(`${base}/api/v1/legal/acknowledge`, {
+    method: 'POST',
+    headers: { cookie: auth.cookie, 'content-type': 'application/json', 'x-csrf-token': auth.csrfToken },
+    body: JSON.stringify(body),
+  });
+
+  // An unticked box is not an acknowledgement, and neither is a revision this
+  // program no longer carries - which is what a console left open across an
+  // update would send.
+  assert.equal((await acknowledge({ revision: LEGAL_META.effective })).status, 400);
+  assert.equal((await acknowledge({ accepted: true, revision: '2025-06-01' })).status, 409);
+  assert.equal(((await (await fetch(`${base}/api/v1/legal`, { headers })).json()) as LegalReview).required, true);
+
+  const after = await (await acknowledge({ accepted: true, revision: LEGAL_META.effective })).json() as LegalReview;
+  assert.equal(after.required, false);
+  assert.equal(after.accepted, LEGAL_META.effective);
+  assert.ok(after.acknowledgedAt);
+
+  // Written down rather than remembered, so the next start does not ask again.
+  const stored = JSON.parse(await readFile(join(manager.store.paths.state, 'manager-state.json'), 'utf8')) as { termsVersion: string; telemetryNoticeVersion: string; noticeAcknowledgedAt: string | null; setupAcceptedAt: string };
+  assert.equal(stored.termsVersion, LEGAL_META.effective);
+  assert.equal(stored.telemetryNoticeVersion, LEGAL_META.effective);
+  assert.ok(stored.noticeAcknowledgedAt);
+  // The day this installation was set up is not the day it read a revision.
+  assert.equal(stored.setupAcceptedAt, '2025-01-05T09:00:00.000Z');
+
+  assert.equal((await fetch(`${base}/api/v1/legal`)).status, 401);
+});
+
+test('a manager set up under the revision in force is never asked about it', async (t) => {
+  const manager = await createServer({ bootstrapPassword: 'correct horse battery staple' });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  const review = await (await fetch(`${base}/api/v1/legal`, { headers: { cookie: auth.cookie } })).json() as LegalReview;
+  assert.equal(review.required, false);
+  assert.equal(review.revision, LEGAL_META.revision);
+});
+test('the switch that keeps this manager online is written down and acted on', async (t) => {
+  const reached: string[] = [];
+  const online = new OnlineKeeper({
+    origin: 'https://console.example.invalid',
+    enabled: true,
+    fetch: (async (input: unknown) => { reached.push(String(input)); return new Response('{}', { status: 200 }); }) as unknown as typeof globalThis.fetch,
+  });
+  const manager = await createServer({ bootstrapPassword: 'correct horse battery staple', online });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  const headers = { cookie: auth.cookie };
+
+  // On, because a machine that is put to sleep takes SillyTavern with it and
+  // the reader cannot do anything about it from where they are.
+  const first = await (await fetch(`${base}/api/v1/online`, { headers })).json() as OnlineState;
+  assert.equal(first.enabled, true);
+  assert.equal(first.address, 'https://console.example.invalid');
+  assert.equal(first.minutes, KEEP_ONLINE_DEFAULT_MINUTES);
+
+  const put = async (body: unknown): Promise<Response> => await fetch(`${base}/api/v1/online`, {
+    method: 'PUT',
+    headers: { cookie: auth.cookie, 'content-type': 'application/json', 'x-csrf-token': auth.csrfToken },
+    body: JSON.stringify(body),
+  });
+
+  assert.equal((await put({ enabled: 'yes' })).status, 400);
+  assert.equal((await put({ enabled: true, minutes: 'often' })).status, 400);
+
+  // How often is the reader's to choose, and it is held inside what the
+  // keeper will actually do rather than refused.
+  const slower = await (await put({ enabled: true, minutes: 45 })).json() as OnlineState;
+  assert.equal(slower.minutes, 45);
+  const clamped = await (await put({ enabled: true, minutes: 9_999 })).json() as OnlineState;
+  assert.equal(clamped.minutes, KEEP_ONLINE_MAX_MINUTES);
+  await put({ enabled: true, minutes: 45 });
+
+  const off = await (await put({ enabled: false })).json() as OnlineState;
+  assert.equal(off.enabled, false);
+  assert.equal(off.status, 'off');
+  // Moving the switch alone leaves the schedule somebody chose where it is.
+  assert.equal(off.minutes, 45);
+  // Written down, so the next start of this manager agrees with this console.
+  const stored = JSON.parse(await readFile(join(manager.store.paths.state, 'manager-state.json'), 'utf8')) as { keepOnline: boolean; keepOnlineMinutes: number };
+  assert.equal(stored.keepOnline, false);
+  assert.equal(stored.keepOnlineMinutes, 45);
+  // And acted on here: a turn of the clock while it is off reaches nothing.
+  reached.length = 0;
+  await manager.online.tick();
+  assert.deepEqual(reached, []);
+
+  // Switching it back on takes a turn straight away rather than waiting out
+  // the clock, so the card says what it found instead of nothing for minutes.
+  const on = await (await put({ enabled: true })).json() as OnlineState;
+  assert.equal(on.enabled, true);
+  await manager.online.tick();
+  assert.ok(reached.length >= 1);
+  assert.deepEqual([...new Set(reached)], ['https://console.example.invalid/api/v1/health']);
+
+  assert.equal((await fetch(`${base}/api/v1/online`)).status, 401);
+});
+test('the Worker and the tunnel are not what is kept open - the machine own address is', async (t) => {
+  const managerTunnel = fakeTunnel();
+  const manager = await createServer({
+    bootstrapPassword: 'correct horse battery staple',
+    managerTunnel,
+    proxy: fakeProxy({ manager: { url: 'https://stm.acme.workers.dev', origin: 'https://busy-lake-1234.trycloudflare.com' } }),
+    publicOrigin: 'https://this-machine.example.invalid',
+  });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+
+  // Both of the other ways in are up, and both are addresses this console is
+  // genuinely reachable at.
+  await managerTunnel.start('quick');
+  managerTunnel.publish('https://busy-lake-1234.trycloudflare.com');
+  const reachable = await (await fetch(`${base}/api/v1/manager-tunnel`, { headers: { cookie: auth.cookie } })).json() as TunnelState;
+  assert.match(reachable.url ?? '', /cloudflare|workers\.dev/u, 'the console really is reachable that way too');
+
+  const state = await (await fetch(`${base}/api/v1/online`, { headers: { cookie: auth.cookie } })).json() as OnlineState;
+  // Neither of them is this. Reaching either leaves the machine, crosses
+  // Cloudflare and comes back, spending an allowance that exists for readers
+  // on a request no reader made.
+  assert.equal(state.address, 'https://this-machine.example.invalid');
 });

@@ -47,6 +47,15 @@ export interface ManagerSettingsDeps {
    * Optional, because reading and writing the record needs none of this.
    */
   readonly adoptSillyTavernPort?: (port: number) => Promise<void>;
+  /**
+   * Tell the running manager what it now does about keeping itself online.
+   *
+   * Same reason as the port above: the keeper took its answer when the manager
+   * started and holds it, so writing the state file alone would leave a
+   * restored machine checking on the old schedule - or not at all - while its
+   * settings page said otherwise until somebody restarted it.
+   */
+  readonly adoptKeepOnline?: (enabled: boolean, minutes: number) => void;
   readonly logger?: LogSink;
 }
 
@@ -66,6 +75,8 @@ export async function currentManagerSettings(deps: ManagerSettingsDeps): Promise
     tunnelQuick: deps.tunnel.getState().mode === 'quick',
     managerTunnelQuick: deps.managerTunnel.getState().mode === 'quick',
     autoStartSillyTavern: state.autoStartSillyTavern,
+    keepOnline: state.keepOnline,
+    keepOnlineMinutes: state.keepOnlineMinutes,
     sillyTavernPort: state.sillyTavernPort,
     localIntervalMinutes: schedule.intervalMinutes,
     r2: {
@@ -211,6 +222,10 @@ export async function applyManagerSettings(deps: ManagerSettingsDeps, record: Ma
     await deps.backups.setSchedule({ intervalMinutes: record.localIntervalMinutes });
     await deps.r2.update({ ...record.r2 });
     await deps.store.setAutoStartSillyTavern(record.autoStartSillyTavern);
+    // The file and the running manager, not the file alone; see the note on
+    // `adoptKeepOnline`.
+    await deps.store.setKeepOnline(record.keepOnline, record.keepOnlineMinutes);
+    deps.adoptKeepOnline?.(record.keepOnline, record.keepOnlineMinutes);
     applied.push('schedules');
   }
 

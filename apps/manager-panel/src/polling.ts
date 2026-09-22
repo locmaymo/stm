@@ -41,6 +41,17 @@ export const POLL_CARD_MS = 5_000;
  * that never tells anybody anything.
  */
 export const POLL_BACKGROUND_MS = 20_000;
+/**
+ * For a question whose answer changes on the order of days.
+ *
+ * Whether the manager itself has been superseded is one of those. Asking it
+ * once as the page loads would leave a console that stays open for a week
+ * showing what was true when it was opened; asking it on any of the clocks
+ * above would be spending hundreds of requests a day on a fact that changes
+ * when somebody cuts a release. The manager keeps its own answer for hours
+ * either way, so this is a local request that usually goes nowhere.
+ */
+export const POLL_RELEASE_MS = 60 * 60_000;
 
 interface WatchedProcess {
   readonly status: string;

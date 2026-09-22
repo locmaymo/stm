@@ -4,7 +4,7 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getPlatformPaths } from '../../platform/src/index.js';
-import type { ManagerSettingsRecord } from '../../contracts/src/index.js';
+import { KEEP_ONLINE_DEFAULT_MINUTES, type ManagerSettingsRecord } from '../../contracts/src/index.js';
 import { R2Manager } from '../src/index.js';
 import { parseManagerSettings, settingsUnchanged } from '../src/manager-settings.js';
 
@@ -26,6 +26,8 @@ const SETTINGS: Omit<ManagerSettingsRecord, 'label' | 'writtenAt'> = {
   accessPasscode: true,
   accessLanEnabled: true,
   autoStartSillyTavern: false,
+  keepOnline: true,
+  keepOnlineMinutes: 45,
   sillyTavernPort: 8123,
   localIntervalMinutes: 120,
   r2: {
@@ -79,6 +81,12 @@ test('a record is checked field by field, and one with no timestamp is not a rec
   assert.equal(salvaged?.sillyTavernPort, 8002);
   assert.equal(salvaged?.r2.keepDaily, 30);
   assert.equal(salvaged?.label, 'another machine');
+  // Written by a manager from before this machine kept itself online, which is
+  // the same as one that did it the way this manager would.
+  assert.equal(salvaged?.keepOnline, true);
+  assert.equal(salvaged?.keepOnlineMinutes, KEEP_ONLINE_DEFAULT_MINUTES);
+  // And an interval nobody could have chosen is corrected, not obeyed.
+  assert.equal(parseManagerSettings({ writtenAt: '2026-09-19T09:00:00.000Z', keepOnlineMinutes: 100_000 })?.keepOnlineMinutes, KEEP_ONLINE_DEFAULT_MINUTES);
 });
 
 test('when the settings were written, and by whom, is not a reason to write them again', () => {
@@ -111,6 +119,11 @@ test('one machine leaves its settings, and the next one finds them', async () =>
   assert.equal(found?.r2.keepDaily, 14);
   assert.equal(found?.versionSelector, 'staging');
   assert.equal(found?.versionRef, 'staging');
+  // How this machine was kept online travels with the rest of its setup: a
+  // machine rebuilt without it came back checking every quarter of an hour
+  // whatever the reader had chosen, or checking when they had turned it off.
+  assert.equal(found?.keepOnline, true);
+  assert.equal(found?.keepOnlineMinutes, 45);
 });
 
 test('a bucket nobody has set up yet simply has nothing to offer', async () => {
