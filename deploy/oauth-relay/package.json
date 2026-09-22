@@ -1,0 +1,14 @@
+{
+  "name": "stm-oauth-relay-deploy",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Wrangler, kept here rather than in the repository root so that installing the manager never installs a Cloudflare Workers runtime.",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "wrangler": "4.135.0"
+  }
+}

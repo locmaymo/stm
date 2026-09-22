@@ -47,17 +47,26 @@ before it builds anything to upload. Cloudflare answers a wrong account ID and a
 token without the permission with the same `7003 ... perhaps your object
 identifier is invalid`, which names neither; the check says which.
 
-Wrangler is a dev dependency of this repository, pinned and locked, and the
-workflow runs that one. It is not left to `cloudflare/wrangler-action` to
-choose: the version it picked was 3.90, which cannot deploy a Worker that is
-only static assets and asked for an entry point this site does not have.
+Wrangler is a dev dependency of this directory, pinned and locked in its own
+`package.json`, and the workflow runs that one. It is not left to
+`cloudflare/wrangler-action` to choose: the version it picked was 3.90, which
+cannot deploy a Worker that is only static assets and asked for an entry point
+this site does not have.
+
+It lives here rather than at the repository root because it pulls in
+`workerd`, the Workers runtime, whose install script knows only macOS, Linux
+and Windows and fails outright on Android. The manager itself runs on Termux,
+and a root `npm ci` there would die on a dependency only a deploy ever needs.
+Installing the manager no longer installs Wrangler at all; deploying the site
+installs it in this directory.
 
 By hand, when you want to deploy without a push:
 
 ```bash
 npm run site:build
-npx wrangler login
 cd deploy/oauth-relay
+npm ci
+npx wrangler login
 npx wrangler deploy
 ```
 

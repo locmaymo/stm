@@ -46,6 +46,9 @@ jobs:
         with:
           node-version: 22
           cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            deploy/oauth-relay/package-lock.json
       - run: npm ci
 
       # The gate that guards every other change guards this one too: the legal
@@ -110,14 +113,22 @@ jobs:
           fi
           exit 1
 
-      # The repository's own Wrangler, from `npm ci` above, rather than
+      # Wrangler is installed here rather than at the repository root,
+      # because it pulls in `workerd`, whose install script supports only
+      # macOS, Linux and Windows and fails outright on Android. The manager
+      # runs on Termux, where a root `npm ci` would otherwise die on a
+      # dependency it never needs to run.
+      - name: Install Wrangler
+        working-directory: deploy/oauth-relay
+        run: npm ci
+
+      # This directory's own Wrangler, pinned and locked, rather than
       # `cloudflare/wrangler-action`: that action installs a Wrangler of its
       # own choosing, and the one it chose was 3.90, which cannot deploy a
       # Worker that is only static assets - it demanded an entry point this
-      # site does not have. The version is now pinned in `package.json` and
-      # locked, so CI and a maintainer's own machine run the same one. It also
-      # keeps the step that holds an API token down to code this repository
-      # can see.
+      # site does not have. The pin means CI and a maintainer's own machine
+      # run the same one. It also keeps the step that holds an API token down
+      # to code this repository can see.
       - name: Deploy
         working-directory: deploy/oauth-relay
         env:

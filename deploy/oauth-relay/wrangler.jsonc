@@ -3,9 +3,11 @@
   // documents, and the static page Cloudflare's OAuth client redirects to,
   // which forwards the browser back to whichever manager started the sign-in.
   //
-  // The assets are built, not committed. From this directory:
-  //   npm run site:build && npx wrangler deploy
-  "$schema": "../../node_modules/wrangler/config-schema.json",
+  // The assets are built, not committed. Build them from the repository
+  // root, then deploy from this directory, which carries its own Wrangler:
+  //   npm run site:build
+  //   cd deploy/oauth-relay && npm ci && npx wrangler deploy
+  "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "stm-oauth-relay",
   "compatibility_date": "2026-09-01",
   "assets": {
