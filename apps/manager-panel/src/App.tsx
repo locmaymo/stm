@@ -4,7 +4,7 @@ import {
   Globe2, LayoutDashboard, Maximize2, Minimize2, Moon, Package, Pencil, Plus,
   LogOut, RotateCcw, ScrollText, Search, Sun, Trash2, Upload, Users as UsersIcon, X, Rows3,
   BrainCircuit, CircleStop, Clock3, Cpu, Ellipsis, Play, QrCode as QrCodeIcon, RefreshCw, Scale, Settings2, ShieldCheck, Square,
-  Blocks, BookmarkPlus, Bug, FileCode2, LoaderCircle, Gauge, History, KeyRound, Monitor, CircleArrowUp, Star, TriangleAlert,
+  Blocks, BookmarkPlus, Bug, Feather, FileCode2, LoaderCircle, Gauge, History, KeyRound, Monitor, CircleArrowUp, Star, TriangleAlert,
 } from 'lucide-react';
 import {
   Alert, AlertDescription, AlertTitle, AuthLayout, Badge, BrandMark, Button, buttonVariants, Card, CardAction,
@@ -744,10 +744,31 @@ function FirstRun({ t, csrfToken, preferences, onPreferencesChange, onDone }: { 
     >
       <Card className="rounded-2xl">
         <CardContent className="grid gap-5 p-6">
-          <p className="text-sm text-muted-foreground">{t('setup.cloudBody')}</p>
-          <ul className="grid gap-2 text-sm text-muted-foreground">
-            <li>{t('setup.cloudPointFree')}</li>
-            <li>{t('setup.cloudPointRestore')}</li>
+          {/* Said in a picture first: what is here keeps a copy over there,
+              and the stream between them does not stop while the machine is
+              in use. Hidden from a reader who is being read to, because the
+              sentence below it says the same thing in words. */}
+          <div className="cloud-offer-figure" aria-hidden="true">
+            <div className="cloud-offer-node">
+              <span className="cloud-offer-tile"><Monitor /></span>
+              <span className="cloud-offer-label">{t('setup.cloudHere')}</span>
+            </div>
+            <span className="cloud-offer-stream" />
+            <div className="cloud-offer-node cloud-offer-node-away">
+              <span className="cloud-offer-tile"><Cloud /></span>
+              <span className="cloud-offer-label">{t('setup.cloudAway')}</span>
+            </div>
+          </div>
+          {/* The claim first and the mechanism under it, rather than one grey
+              block holding both. What somebody decides on is the first line;
+              the second is there for whoever wants to know how. */}
+          <div className="grid gap-1.5">
+            <p className="text-[15px] leading-snug font-medium text-foreground">{t('setup.cloudClaim')}</p>
+            <p className="text-sm text-muted-foreground">{t('setup.cloudBody')}</p>
+          </div>
+          <ul className="grid gap-2.5">
+            <li className="cloud-offer-point"><Feather /><span>{t('setup.cloudPointFree')}</span></li>
+            <li className="cloud-offer-point"><History /><span>{t('setup.cloudPointRestore')}</span></li>
           </ul>
           {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
           <div className="grid gap-2">
