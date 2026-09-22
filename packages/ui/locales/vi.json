@@ -452,6 +452,10 @@
     "updateAvailable": "Đã có SillyTavern {version}.",
     "updateNow": "Cài bản này",
     "updateDismiss": "Để sau",
+    "managerUpdateTitle": "Đã có trình quản lý {version}",
+    "managerUpdateBody": "Trình quản lý này là bản {current}, và dự án đã phát hành bản mới hơn.",
+    "managerUpdatePublished": "Phát hành ngày {when}.",
+    "managerUpdateOpen": "Xem bản mới có gì",
     "stateRunning": "Đang chạy",
     "stateStopped": "Đã dừng",
     "stateStarting": "Đang khởi động",
@@ -740,7 +744,8 @@
       "browserOpened": "Đã mở {url}",
       "requestFailed": "Yêu cầu thất bại: {reason}",
       "portMoved": "Cổng {from} đang bị chiếm; bảng điều khiển chạy ở {to} thay thế",
-      "portTaken": "Cổng {port} được yêu cầu nhưng đang bị chiếm; vẫn khởi động ở đó và để nó báo lỗi"
+      "portTaken": "Cổng {port} được yêu cầu nhưng đang bị chiếm; vẫn khởi động ở đó và để nó báo lỗi",
+      "releaseCheckFailed": "Không đọc được danh sách phiên bản đã phát hành: {reason}"
     },
     "setup": {
       "passwordBootstrapped": "Đã lấy mật khẩu quản trị từ STM_ADMIN_PASSWORD"

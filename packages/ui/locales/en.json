@@ -452,6 +452,10 @@
     "updateAvailable": "SillyTavern {version} is out.",
     "updateNow": "Install it",
     "updateDismiss": "Not now",
+    "managerUpdateTitle": "Manager {version} is out",
+    "managerUpdateBody": "This manager is {current}, and a newer one has been published.",
+    "managerUpdatePublished": "Released {when}.",
+    "managerUpdateOpen": "See what changed",
     "stateRunning": "Running",
     "stateStopped": "Stopped",
     "stateStarting": "Starting",
@@ -740,7 +744,8 @@
       "browserOpened": "Opened {url}",
       "requestFailed": "Request failed: {reason}",
       "portMoved": "Port {from} is already in use; the console is on {to} instead",
-      "portTaken": "Port {port} was asked for and is already in use; starting there anyway and letting it fail"
+      "portTaken": "Port {port} was asked for and is already in use; starting there anyway and letting it fail",
+      "releaseCheckFailed": "The published manager versions could not be read: {reason}"
     },
     "setup": {
       "passwordBootstrapped": "Admin password taken from STM_ADMIN_PASSWORD"

@@ -118,6 +118,47 @@ export interface StartupSettings {
   readonly autoStartSillyTavern: boolean;
 }
 
+/**
+ * A published version of the manager itself, as its own release describes it.
+ *
+ * Not to be confused with `VersionOption`, which is a version of SillyTavern
+ * the manager can install. This is the program the reader is looking at, and
+ * the only thing anybody can do about it is go and get the new one - so what
+ * matters here is not a ref to install but what the release says it changed.
+ */
+export interface ManagerRelease {
+  /** The version the release carries, written the way `package.json` writes it. */
+  readonly version: string;
+  /** What the release is called, when it is called anything but its tag. */
+  readonly name: string | null;
+  /**
+   * What the release says about itself, as its author wrote it.
+   *
+   * Plain text, already shortened to something a card can hold. Empty when the
+   * release was published without notes, which is a release worth mentioning
+   * with nothing to say about it rather than one to hide.
+   */
+  readonly notes: string;
+  /** Where to read the whole of it. */
+  readonly url: string;
+  readonly publishedAt: string | null;
+}
+
+/**
+ * Whether a newer manager has been published, and what this one is.
+ *
+ * `checkedAt` is null before the first answer has come back, which is a
+ * different thing from having asked and been told there is nothing: a console
+ * that has not heard yet says nothing rather than "you are up to date".
+ */
+export interface ManagerUpdateStatus {
+  /** The version running right now. */
+  readonly version: string;
+  /** The newer release, or null when this is the newest one there is. */
+  readonly update: ManagerRelease | null;
+  readonly checkedAt: string | null;
+}
+
 export type VersionSelector = 'latest' | 'release' | 'staging' | (string & {});
 
 export type VersionChannel = 'release' | 'staging';

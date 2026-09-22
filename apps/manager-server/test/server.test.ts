@@ -6,13 +6,14 @@ import { join } from 'node:path';
 import { getPlatformPaths } from '../../../packages/platform/src/index.js';
 import { StateStore } from '../src/state.js';
 import { preferredNetworkHost, startManagerServer, type ManagerServer } from '../src/server.js';
-import type { AccessGatewayState, ConsoleStatus, Installation, ProcessState, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, ConsoleStatus, Installation, ManagerUpdateStatus, ProcessState, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import type { TunnelManager } from '../../../packages/tunnel/src/index.js';
 import type { ProxyWorkerManager } from '../../../packages/cloudflare/src/index.js';
 import { decodeState, encodeState } from '../../../packages/cloudflare/src/index.js';
 import type { CloudflareConnection } from '../../../packages/r2/src/index.js';
 import type { RuntimeManager } from '../../../packages/sillytavern-runtime/src/index.js';
 import type { ProcessSupervisor } from '../src/supervisor.js';
+import { ReleaseWatch } from '../src/manager-release.js';
 import { SILLYTAVERN_PORT } from '../src/ports.js';
 
 async function createServer(options: {
@@ -30,6 +31,8 @@ async function createServer(options: {
   cloudflare?: unknown;
   /** As `STM_PUBLIC_ORIGIN` would name it. */
   publicOrigin?: string;
+  /** Stands in for GitHub, so no test asks it what the newest release is. */
+  releases?: ReleaseWatch;
 } = {}): Promise<ManagerServer> {
   const root = options.root ?? await mkdtemp(join(tmpdir(), 'stm-manager-'));
   const basePaths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
@@ -53,6 +56,7 @@ async function createServer(options: {
     ...(options.proxy ? { proxy: options.proxy as unknown as ProxyWorkerManager } : {}),
     ...(options.cloudflare !== undefined ? { cloudflare: options.cloudflare as CloudflareConnection } : {}),
     ...(options.publicOrigin ? { publicOrigin: options.publicOrigin } : {}),
+    ...(options.releases ? { releases: options.releases } : {}),
   });
 }
 
@@ -1960,4 +1964,27 @@ test('everything the console watches comes back in one answer', async (t) => {
 
   // And it is behind the same door as everything else.
   assert.equal((await fetch(`${base}/api/v1/status`)).status, 401);
+});
+
+test('the console is told when a newer manager has been published', async (t) => {
+  const releases = new ReleaseWatch({
+    version: '0.2.0',
+    fetch: (async () => new Response(JSON.stringify([
+      { tag_name: 'v0.3.0', name: 'A card that says what changed', body: 'Notes', html_url: 'https://example.invalid/v0.3.0', published_at: '2026-09-20T10:00:00Z' },
+    ]), { status: 200, headers: { 'content-type': 'application/json' } })) as unknown as typeof globalThis.fetch,
+  });
+  const manager = await createServer({ bootstrapPassword: 'correct horse battery staple', releases });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+
+  const payload = await (await fetch(`${base}/api/v1/manager-update`, { headers: { cookie: auth.cookie } })).json() as ManagerUpdateStatus;
+  assert.equal(payload.version, '0.2.0');
+  assert.equal(payload.update?.version, '0.3.0');
+  assert.equal(payload.update?.notes, 'Notes');
+  assert.ok(payload.checkedAt);
+
+  // Behind the same door as everything else, because it says which version of
+  // the manager is running and that is a fact about this machine.
+  assert.equal((await fetch(`${base}/api/v1/manager-update`)).status, 401);
 });

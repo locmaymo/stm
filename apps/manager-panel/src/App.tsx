@@ -29,15 +29,15 @@ import { browserEnvironment, browserStorage, readPreferences, savePreferences, t
 import { authErrorKey } from './auth-error.js';
 import { DEFAULT_SILLYTAVERN_PORT, portRefusal } from './ports.js';
 import { isThisMachine, readTunnelOfferDeclined, saveTunnelOfferDeclined, shouldOfferManagerTunnel } from './hosting.js';
-import { availableUpdate, readDismissedUpdate, saveDismissedUpdate } from './updates.js';
+import { availableUpdate, readDismissedManagerRelease, readDismissedUpdate, saveDismissedManagerRelease, saveDismissedUpdate, shouldShowManagerRelease } from './updates.js';
 import { readDismissedDisplaced, readDismissedRecovery, readDismissedSettings, saveDismissedDisplaced, saveDismissedRecovery, saveDismissedSettings, shouldOfferSettings, shouldShowDisplaced, shouldShowRecovery } from './settings-offer.js';
 import { apiFetch, onSessionExpired, resetSessionWatch, sessionToken, setSessionToken } from './session.js';
 import { collectCloudflareResult, framed, openReturnWindow, popupsBlocked, whenAbandoned, type CollectedResult } from './oauth.js';
-import type { AccessGatewayState, BackupManifest, CloudflareAccountProblem, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LogEntry, LogSourceFilter, ManagerSettingsOffer, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, BackupManifest, CloudflareAccountProblem, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LogEntry, LogSourceFilter, ManagerRelease, ManagerSettingsOffer, ManagerUpdateStatus, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, isCloudJob, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
 import { usePoll } from './use-poll.js';
-import { POLL_BACKGROUND_MS, POLL_CARD_MS, POLL_LIVE_MS, statusIntervalMs } from './polling.js';
+import { POLL_BACKGROUND_MS, POLL_CARD_MS, POLL_LIVE_MS, POLL_RELEASE_MS, statusIntervalMs } from './polling.js';
 import { translateLogEntry, translateStep } from './log-format.js';
 import { QrCode } from './qr-code.js';
 import { CLOUDFLARE_ORANGE, CloudflareMark } from './cloudflare-mark.js';
@@ -847,6 +847,18 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
    */
   const [r2Problem, setR2Problem] = useState<CloudflareAccountProblem | null>(null);
   const [reconnectUrl, setReconnectUrl] = useState<string | null>(null);
+  /*
+   * A newer manager than this one, when the project has published one.
+   *
+   * The console has always said when SillyTavern had a new release, because
+   * installing SillyTavern is what it does; it said nothing about itself, so
+   * somebody could run a version from six months ago and never find out. The
+   * manager answers this from what it last read, so the question is cheap and
+   * the answer is a release rather than a version number: what was changed is
+   * the part anybody decides on.
+   */
+  const [managerRelease, setManagerRelease] = useState<ManagerRelease | null>(null);
+  const [dismissedManagerRelease, setDismissedManagerRelease] = useState<string | null>(() => readDismissedManagerRelease(browserStorage()));
   const [tunnelOfferOpen, setTunnelOfferOpen] = useState(false);
   const [accessSecurity, setAccessSecurity] = useState<AccessGatewayState>({ status: 'stopped', host: null, port: 8001, lan: false, passwordConfigured: false, passcode: false, sessions: 0, error: null });
   const t = translator(preferences.locale);
@@ -1032,6 +1044,26 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
       setInstallJobId(status.install.id);
     }
   }, { intervalMs: statusIntervalMs({ process: processState, tunnel: tunnelState, managerTunnel: managerTunnelState, working: installing || backgroundJob !== null }) });
+
+  /*
+   * Whether the manager itself has been replaced, asked on a clock of its own.
+   *
+   * Rarely, because the answer changes when somebody cuts a release rather
+   * than while anybody is watching, and because the manager keeps what it last
+   * heard for hours - so most of these never leave the machine. Once at load
+   * as well, which is what tells a console opened today about a release from
+   * last week.
+   */
+  usePoll(async () => {
+    try {
+      const response = await apiFetch('/api/v1/manager-update', { credentials: 'same-origin' });
+      if (!response.ok) return;
+      const payload = await response.json() as ManagerUpdateStatus;
+      setManagerRelease(payload.update);
+    } catch {
+      // The next one asks again. Nothing on the page depends on this.
+    }
+  }, { intervalMs: POLL_RELEASE_MS });
 
   useEffect(() => {
     const onHashChange = () => {
@@ -1536,6 +1568,21 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
             {backgroundJob && page !== 'data' && !(page === 'overview' && !activeInstallationId)
               ? <div className="mb-(--section-gap)"><BackgroundTaskCard t={t} catalog={catalog} job={backgroundJob} /></div>
               : null}
+            {/* Below the work and below anything broken, because a release
+                that exists will still exist in ten minutes. On every page
+                rather than the Overview alone: whichever page somebody is on
+                is the one they will read it from, and it is dismissed once. */}
+            {shouldShowManagerRelease(managerRelease, dismissedManagerRelease) && managerRelease
+              ? <div className="mb-(--section-gap)"><ManagerReleaseCard
+                t={t}
+                locale={preferences.locale}
+                release={managerRelease}
+                onDismiss={() => {
+                  saveDismissedManagerRelease(managerRelease.version, browserStorage());
+                  setDismissedManagerRelease(managerRelease.version);
+                }}
+              /></div>
+              : null}
             {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} locale={preferences.locale} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} startup={startup} onSetAutoStart={setAutoStartSillyTavern} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} onEraseEverything={eraseEverything} /> : <ResourcePanel page={page} t={t} />}
           </PageContainer>
           <MobileNav
@@ -1602,6 +1649,64 @@ function RestoreEverythingCard({ t, offer, busy, onRestore, onDismiss }: {
       </div>
     </CardContent>
   </Card>;
+}
+
+/**
+ * A newer manager than the one being looked at, and what it says it changed.
+ *
+ * There is no button here that installs it, and that is deliberate. The
+ * manager is on the machine in one of three shapes - a checkout, a package
+ * from npm, a bundle on Windows - each replaced its own way, and a console
+ * that tried to overwrite the program it is itself running is the one upgrade
+ * that can leave a machine with neither version. So this says a new one
+ * exists, shows what the release said about itself, and links to it.
+ *
+ * The notes are the release's own text, printed as written. Whoever cut the
+ * release wrote its line breaks on purpose, and a card that reflows them into
+ * a paragraph turns a list of changes into a run-on sentence.
+ */
+function ManagerReleaseCard({ t, locale, release, onDismiss }: {
+  t: Translate;
+  locale: LocaleCode;
+  release: ManagerRelease;
+  onDismiss: () => void;
+}) {
+  return <Card className="release-card">
+    <PanelHeading icon={<CircleArrowUp />}>{t('console.managerUpdateTitle', { version: release.version })}</PanelHeading>
+    <CardContent className="grid gap-3">
+      <p className="text-sm text-muted-foreground">
+        {t('console.managerUpdateBody', { current: __STM_VERSION__, version: release.version })}
+        {release.publishedAt ? ` ${t('console.managerUpdatePublished', { when: releaseDate(release.publishedAt, locale) })}` : ''}
+      </p>
+      {release.notes
+        ? <div className="release-notes">
+          {release.name ? <p className="release-notes-title">{release.name}</p> : null}
+          <p className="release-notes-body">{release.notes}</p>
+        </div>
+        : null}
+      <div className="flex flex-wrap gap-2">
+        <Button size="sm" asChild>
+          <a href={release.url} target="_blank" rel="noreferrer noopener">
+            <ArrowUpRight />{t('console.managerUpdateOpen')}
+          </a>
+        </Button>
+        {/* Saying no is an answer, and it is remembered against this version:
+            the next release is a different one and says so again. */}
+        <Button size="sm" variant="ghost" onClick={onDismiss}>{t('console.updateDismiss')}</Button>
+      </div>
+    </CardContent>
+  </Card>;
+}
+
+/** The day a release was published, written the way the reader writes dates. */
+function releaseDate(iso: string, locale: LocaleCode): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  try {
+    return new Intl.DateTimeFormat(locale === 'vi' ? 'vi-VN' : 'en-GB', { day: 'numeric', month: 'long', year: 'numeric' }).format(date);
+  } catch {
+    return iso;
+  }
 }
 
 /**

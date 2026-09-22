@@ -5,7 +5,7 @@ import { createReadStream } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import { createSocket } from 'node:dgram';
 import { extname, join, relative, resolve, sep } from 'node:path';
-import { applyQuery, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, OPERATION_JOB_KINDS, type ApiErrorBody, type ConfigUpdateInput, type ConsoleStatus, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogSink, type LogSourceFilter, type ManagerPorts, type PortSettings, type Profile, type ProfileLayout, type SetupStatus, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
+import { applyQuery, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, OPERATION_JOB_KINDS, type ApiErrorBody, type ConfigUpdateInput, type ConsoleStatus, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogSink, type LogSourceFilter, type ManagerPorts, type ManagerUpdateStatus, type PortSettings, type Profile, type ProfileLayout, type SetupStatus, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
 import { getPlatformPaths, storageDurability, storageReport, type PlatformPaths } from '../../../packages/platform/src/index.js';
 import { INSTALL_CANCELED, RuntimeError, RuntimeManager, type InstallationProgress } from '../../../packages/sillytavern-runtime/src/index.js';
 import { hashPassword, MIN_PASSWORD_LENGTH, validatePasscode, validatePassword, verifyPassword } from './password.js';
@@ -31,6 +31,7 @@ import { fetchSnapshotToLibrary, isProfileEmpty, recoverProfileFromR2 } from './
 import { TransferMeter } from './progress.js';
 import { MetricsStore } from './metrics.js';
 import { ActivityMeter } from './activity.js';
+import { ReleaseWatch } from './manager-release.js';
 import { applyManagerSettings, foreignManagerSettings, managerSettingsOffer, restoreFromBucketIfBlank, saveManagerSettings, type ManagerSettingsDeps } from './manager-settings.js';
 import type { ManagerSettingsRecord } from '../../../packages/contracts/src/index.js';
 import { instrumentationLoaderPath } from '../../../packages/instrumentation/src/index.js';
@@ -146,6 +147,14 @@ export interface ManagerServerOptions {
   readonly config?: ConfigStore;
   readonly telemetry?: TelemetryTransport;
   /**
+   * Where the published manager versions are read from.
+   *
+   * Overridable so a test can answer that question without a request to
+   * GitHub, and so nothing here goes to the network on a machine that only
+   * asked for a server.
+   */
+  readonly releases?: ReleaseWatch;
+  /**
    * Called when a launcher that knows STM_SHUTDOWN_TOKEN asks to shut down.
    *
    * Windows has no SIGTERM, so a launcher closing its window can only kill this
@@ -172,6 +181,7 @@ export interface ManagerServer {
   readonly metrics: MetricsStore;
   readonly config: ConfigStore;
   readonly telemetry: TelemetryTransport;
+  readonly releases: ReleaseWatch;
   readonly port: number;
   close(): Promise<void>;
 }
@@ -527,6 +537,17 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       return profile ? profile.dataPath : null;
     },
   });
+  /*
+   * Whether the manager itself has been superseded.
+   *
+   * Nothing is asked of GitHub here: the first look happens when a console
+   * first asks, and the answer is kept for hours afterwards. A manager nobody
+   * has a console open against never makes the request at all.
+   */
+  const releases = options.releases ?? new ReleaseWatch({
+    ...(options.managerVersion ? { version: options.managerVersion } : {}),
+    logger: baseLogger,
+  });
   const secureCookies = options.secureCookies ?? env.STM_SECURE_COOKIES === '1';
   const environmentOrigin: EnvironmentOrigin | null = options.publicOrigin !== undefined
     ? (options.publicOrigin === null ? null : { origin: options.publicOrigin, source: 'configured' })
@@ -714,6 +735,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       activity,
       config,
       system,
+      releases,
       proxy,
       publishProxies,
       shutdownToken,
@@ -841,6 +863,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     metrics,
     config,
     telemetry,
+    releases,
     // The meter closes first, so the part of today that has just been spent is
     // written down before the transport looks for finished days.
     close: async () => { await activity.close(); await telemetry.close(); await scheduler.close(); await tunnel.close(); await managerTunnel.close(); await gateway.close(); await supervisor.close(); await backups.settle(); await profiles.settle(); await closeServer(server); },
@@ -885,6 +908,8 @@ async function handleRequest(options: {
   readonly activity: ActivityMeter;
   readonly config: ConfigStore;
   readonly system: SystemStore;
+  /** Whether a newer manager has been published; see `manager-release.ts`. */
+  readonly releases: ReleaseWatch;
   readonly proxy: ProxyWorkerManager | null;
   /** Put the fixed addresses in place, for a Cloudflare account just connected. */
   readonly publishProxies: () => void;
@@ -899,7 +924,7 @@ async function handleRequest(options: {
   readonly autoInstall: boolean;
   readonly onShutdownRequest: (() => void) | undefined;
 }): Promise<void> {
-  const { request, response, store, sessions, rateLimiter, handoffs, startedAt, publicOrigins, proxiedOrigin, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, proxy, publishProxies, shutdownToken, autoInstall, onShutdownRequest } = options;
+  const { request, response, store, sessions, rateLimiter, handoffs, startedAt, publicOrigins, proxiedOrigin, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, releases, proxy, publishProxies, shutdownToken, autoInstall, onShutdownRequest } = options;
   // Whether the browser's side of this connection is HTTPS, which is not the
   // same question as whether ours is: a hosted console is reached over HTTPS
   // that a proxy terminates before us, and only the proxy's own header says so.
@@ -1124,6 +1149,26 @@ async function handleRequest(options: {
     if (!session) return;
     if (!requireCsrf(context, session.csrfToken)) return;
     await handleReset(context, { store, sessions, jobs, supervisor, tunnel, managerTunnel, gateway, runtime, profiles, backups, logger, secureCookies });
+    return;
+  }
+
+  /*
+   * Whether the program being looked at has been superseded.
+   *
+   * Handled here rather than with the runtime routes because it is about the
+   * manager itself rather than about anything the manager runs, and because it
+   * must never make the console wait on GitHub: the answer is whatever the
+   * last look found, and a look that is due is started and left to land in a
+   * later ask. The exception is a console that has never been told anything at
+   * all, which waits once - otherwise the first answer would arrive an hour
+   * after the page that wanted it.
+   */
+  if (pathname === '/api/v1/manager-update' && method === 'GET') {
+    const session = requireSession(context, sessions);
+    if (!session) return;
+    if (releases.status().checkedAt === null) await releases.check();
+    else void releases.check().catch(() => undefined);
+    sendJson(response, 200, releases.status() satisfies ManagerUpdateStatus);
     return;
   }
 

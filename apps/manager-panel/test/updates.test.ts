@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { Installation, VersionOption } from '../../../packages/contracts/src/index.js';
-import { availableUpdate, readDismissedUpdate, saveDismissedUpdate } from '../src/updates.js';
+import type { Installation, ManagerRelease, VersionOption } from '../../../packages/contracts/src/index.js';
+import { availableUpdate, readDismissedManagerRelease, readDismissedUpdate, saveDismissedManagerRelease, saveDismissedUpdate, shouldShowManagerRelease } from '../src/updates.js';
 
 function option(selector: string, ref: string, channel: 'release' | 'staging' = 'release', tag: string | null = null): VersionOption {
   return { selector, label: ref, ref, channel, tag, publishedAt: null };
@@ -47,4 +47,25 @@ test('a dismissal remembers the version it was about, and survives storage being
   assert.equal(readDismissedUpdate(storage), 'v1.13.5');
   assert.equal(readDismissedUpdate(undefined), null);
   saveDismissedUpdate('v1.13.6', undefined);
+});
+
+const release: ManagerRelease = { version: '0.3.0', name: null, notes: '', url: 'https://example.invalid/v0.3.0', publishedAt: null };
+
+test('the manager’s own release is shown until this reader has put it away', () => {
+  assert.equal(shouldShowManagerRelease(release, null), true);
+  assert.equal(shouldShowManagerRelease(release, '0.3.0'), false);
+  // The next release is a different version, so it says so again.
+  assert.equal(shouldShowManagerRelease({ ...release, version: '0.4.0' }, '0.3.0'), true);
+  // Nothing to say is not something to show.
+  assert.equal(shouldShowManagerRelease(null, null), false);
+});
+
+test('putting the manager’s release away does not also silence SillyTavern’s', () => {
+  const values = new Map<string, string>();
+  const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => values.set(key, value) };
+  saveDismissedManagerRelease('0.3.0', storage);
+  assert.equal(readDismissedManagerRelease(storage), '0.3.0');
+  assert.equal(readDismissedUpdate(storage), null, 'the two are remembered apart');
+  assert.equal(readDismissedManagerRelease(undefined), null);
+  saveDismissedManagerRelease('0.4.0', undefined);
 });
