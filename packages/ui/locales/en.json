@@ -530,6 +530,8 @@
     "r2DestinationNone": "Nowhere yet",
     "r2DestinationCloudflare": "{bucket} · Cloudflare account {account}",
     "r2DestinationKeys": "{bucket} · R2/S3 keys",
+    "r2DestinationLost": "{bucket} \u00b7 Cloudflare account {account} \u2014 not this machine\u2019s any more",
+    "r2DisplacedHint": "Stopped: your machine {name} signed in with this Cloudflare account. Sign in again here to take it back.",
     "r2DestinationUnnamed": "no bucket chosen",
     "r2DestinationTitle": "Where backups go",
     "r2DestinationBody": "Where your backups are kept, away from this machine. Sign in to Cloudflare and the manager sets the rest up itself.",

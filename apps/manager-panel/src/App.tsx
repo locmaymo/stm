@@ -4059,7 +4059,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
               is only a question while the answer to this one is yes. */}
           <DetailRow
             label={t('console.r2Enabled')}
-            hint={!r2Config?.configured ? t('console.r2NeedsSetup') : r2Config.enabled ? r2ScheduleSummary(t, r2Config) : t('console.r2EnabledOffHint')}
+            hint={displaced ? t('console.r2DisplacedHint', { name: r2Config?.owner?.label ?? '' }) : !r2Config?.configured ? t('console.r2NeedsSetup') : r2Config.enabled ? r2ScheduleSummary(t, r2Config) : t('console.r2EnabledOffHint')}
           >
             {r2Config?.configured && r2Config.enabled
               ? <Button variant="outline" size="sm" onClick={() => setR2ScheduleOpen(true)}>{t('console.r2Change')}</Button>
@@ -4081,7 +4081,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
               because it is one question; the two ways of answering it are both
               inside the one form behind this button. */}
           <DetailRow label={t('console.r2Destination')} hint={destination}>
-            <Button variant="outline" size="sm" onClick={() => setDestinationOpen(true)}>{r2Config?.configured ? t('console.r2Change') : t('console.r2DestinationSet')}</Button>
+            <Button variant="outline" size="sm" onClick={() => setDestinationOpen(true)}>{r2Config?.configured || displaced ? t('console.r2Change') : t('console.r2DestinationSet')}</Button>
           </DetailRow>
           {/* Then the two things there are to do with a bucket: send to it now,
               and look at it. Everything else that used to be a button here
@@ -4217,6 +4217,22 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
 
 /** Where backups go, in the reader's words, whichever way the bucket is reached. */
 function destinationText(t: Translate, config: R2Config | null): string {
+  /*
+   * A machine that has lost the account still has a destination.
+   *
+   * It is connected to nothing, so `configured` is false and this line said
+   * "nowhere yet" - over a bucket holding a year of this reader's chats,
+   * beside a notice at the top of the page naming the account it had just
+   * been locked out of. What it has lost is permission, not the address.
+   */
+  const lost = config?.mode === 'cloudflare' ? config.cloudflare?.displacedBy ?? null : null;
+  if (lost) {
+    return t('console.r2DestinationLost', {
+      bucket: config?.cloudflare?.bucket ?? t('console.r2DestinationUnnamed'),
+      account: config?.cloudflare?.account?.name ?? '',
+      name: lost,
+    });
+  }
   if (!config?.configured) return t('console.r2DestinationNone');
   const bucket = (config.mode === 'cloudflare' ? config.cloudflare?.bucket : config.bucket) || t('console.r2DestinationUnnamed');
   return config.mode === 'cloudflare'

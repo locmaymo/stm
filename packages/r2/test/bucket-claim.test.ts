@@ -127,6 +127,50 @@ test('the machine that lost the account keeps nothing to reach it with', async (
 });
 
 /*
+ * Who signed in last decides it - not who reached the bucket first.
+ *
+ * Taking the claim is a Worker deploy and a write, and the console that came
+ * back from Cloudflare a second earlier is already asking who holds the
+ * account. So the machine that had just signed in could read the old
+ * machine's claim before its own sign-in had finished writing one, believe
+ * it, and give up the grant it had been opened with - and then carry, on the
+ * console it had just been opened on, the notice saying it had been replaced
+ * by the machine it was itself replacing. Which is what a reader saw: the red
+ * notice on the new machine, and the old one carrying on as though it had
+ * just taken over.
+ *
+ * Two timestamps settle it instead, the same way whoever asks first.
+ */
+test('a sign-in that lost the race to the bucket still holds the account', async () => {
+  const clock = { now: Date.parse('2026-09-19T09:00:00.000Z') };
+  const { first, second } = await twoMachines(clock);
+  await first.signIn();
+
+  // The second machine signs in, and the takeover does not happen: the write
+  // is still in flight, or it failed, or the console got there first.
+  clock.now += 60_000;
+  await second.connect();
+
+  // What the console asks as it opens. It must not read the claim it is about
+  // to replace as somebody else holding the account.
+  await second.r2.refreshClaim();
+  assert.equal((await second.connection.status()).state, 'connected');
+  assert.equal((await second.r2.getConfig()).owner?.mine, true);
+
+  // And the first thing it writes repairs the claim rather than being refused
+  // by it, so the machine does not sit locked out of an account it holds.
+  const checked = await second.r2.inspect();
+  assert.equal(checked.ok, true, checked.failure?.message ?? '');
+  assert.deepEqual((await second.r2.getConfig()).owner, { label: 'studio', lastSeenAt: new Date(clock.now).toISOString(), mine: true });
+
+  // The older sign-in is the one that gives way, which is the whole rule.
+  const turned = await first.r2.inspect();
+  assert.equal(turned.ok, false);
+  assert.equal(turned.failure?.code, 'r2_in_use');
+  assert.equal((await first.connection.status()).displacedBy, 'studio');
+});
+
+/*
  * The two documents this manager keeps beside the recovery points go through
  * the Worker like everything else, and the Worker refuses any key outside the
  * manager's own prefix. Every other test of them talks to an S3 fake, which

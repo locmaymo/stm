@@ -530,6 +530,8 @@
     "r2DestinationNone": "Chưa có nơi nào",
     "r2DestinationCloudflare": "{bucket} · tài khoản Cloudflare {account}",
     "r2DestinationKeys": "{bucket} · key R2/S3",
+    "r2DestinationLost": "{bucket} \u00b7 t\u00e0i kho\u1ea3n Cloudflare {account} \u2014 m\u00e1y n\u00e0y kh\u00f4ng c\u00f2n quy\u1ec1n d\u00f9ng",
+    "r2DisplacedHint": "\u0110\u00e3 d\u1eebng: m\u00e1y {name} c\u1ee7a b\u1ea1n \u0111\u00e3 \u0111\u0103ng nh\u1eadp b\u1eb1ng t\u00e0i kho\u1ea3n Cloudflare n\u00e0y. H\u00e3y \u0111\u0103ng nh\u1eadp l\u1ea1i \u1edf \u0111\u00e2y \u0111\u1ec3 l\u1ea5y v\u1ec1.",
     "r2DestinationUnnamed": "chưa chọn kho lưu trữ",
     "r2DestinationTitle": "Nơi lưu bản sao lưu",
     "r2DestinationBody": "Nơi giữ bản sao lưu của bạn, nằm ngoài máy này. Chỉ cần đăng nhập Cloudflare, phần còn lại trình quản lý tự lo.",

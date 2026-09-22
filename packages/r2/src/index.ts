@@ -906,7 +906,7 @@ export class R2Manager {
     const keyId = await this.cloudflare.installationId();
     const now = this.now().getTime();
     const claim = await readClaim(this.client(config), CLAIM_KEY);
-    if (claim && claim.keyId !== keyId && !claimIsStale(claim, now)) {
+    if (claim && claim.keyId !== keyId && !claimIsStale(claim, now) && !await this.outranks(claim)) {
       /*
        * Another manager signed in with this account and took it.
        *
@@ -936,7 +936,22 @@ export class R2Manager {
     if (!fresh) {
       await writeClaim(this.client(config), CLAIM_KEY, mine);
       if (!claim) this.logger(logEvent('r2.claimed', `[r2] this machine (${mine.label}) is now the one backing up to this bucket`, { label: mine.label }));
-      else if (claim.keyId !== keyId) this.logger(logEvent('r2.claimTaken', `[r2] the previous machine (${claim.label}) had not used this bucket for days, so this one took it over`, { label: claim.label }));
+      else if (claim.keyId !== keyId && claimIsStale(claim, now)) this.logger(logEvent('r2.claimTaken', `[r2] the previous machine (${claim.label}) had not used this bucket for days, so this one took it over`, { label: claim.label }));
+      /*
+       * Or the claim is another machine's and this machine signed in after it
+       * was made, so it is this machine's to take; see `outranks`.
+       *
+       * It happens when the sign-in that should have taken it did not: the
+       * takeover is a Worker deploy and a write, and a console that came back
+       * from Cloudflare and started asking questions could finish reading the
+       * claim before the sign-in behind it finished writing one. The write
+       * that follows repairs it, rather than the machine that just signed in
+       * spending its life refused by the machine it replaced.
+       */
+      else if (claim.keyId !== keyId) {
+        await this.cloudflare.evict(claim.keyId).catch(() => false);
+        this.logger(logEvent('r2.claimTakenOver', `[r2] this machine took the bucket over from ${claim.label}`, { label: claim.label }));
+      }
     }
     await this.rememberClaim(fresh && claim ? claim : mine, true);
     await this.recordCharges();
@@ -1011,7 +1026,15 @@ export class R2Manager {
       const keyId = await this.cloudflare.installationId();
       const claim = await readClaim(this.client(config), CLAIM_KEY);
       if (!claim) { await this.forgetClaim(); return; }
-      const mine = claim.keyId === keyId;
+      /*
+       * A claim this machine has already out-signed-in is not somebody else
+       * holding the account, it is a claim about to be replaced.
+       *
+       * Without this the console reported the machine it had just replaced as
+       * the holder for as long as it took the sign-in behind it to write - and
+       * on the surrender below, that report was final.
+       */
+      const mine = claim.keyId === keyId || await this.outranks(claim);
       await this.rememberClaim(claim, mine);
       /*
        * And this is where a machine that lost the account finds out.
@@ -1025,11 +1048,40 @@ export class R2Manager {
        * this machine is allowed to take that one over.
        */
       if (!mine && !claimIsStale(claim, now)) await this.surrenderAccount(claim);
+      // The claim named is about to become this machine's, so the console
+      // should say this machine's name rather than the one being replaced.
+      else if (mine && claim.keyId !== keyId) await this.rememberClaim({ ...claim, keyId, label: this.installationLabel }, true);
     } catch {
       // What was last known stays. The console says when it was known.
     } finally {
       await this.recordCharges().catch(() => undefined);
     }
+  }
+
+  /**
+   * Whether this machine's sign-in is newer than the claim refusing it.
+   *
+   * The rule is that whoever signed in last holds the account, and this is
+   * where it is actually decided. It used to be decided by which machine
+   * happened to write to the bucket first, which is a race, and one the
+   * machine that had just signed in could lose: taking the claim means
+   * deploying a Worker and making a write, while the console that came back
+   * from Cloudflare a second earlier is already asking who holds the account.
+   * The new machine read the old machine's claim, believed it, gave up its own
+   * sign-in - and the console it had just been opened on carried the notice
+   * saying it had been replaced, by the machine it had itself replaced.
+   *
+   * Two timestamps settle it instead, and they settle it the same way whoever
+   * asks first: when this machine's grant was issued, against when that claim
+   * was made. Both are written by a Cloudflare sign-in, minutes or days apart,
+   * so the comparison does not turn on a second of clock drift.
+   */
+  private async outranks(claim: BucketClaim): Promise<boolean> {
+    const connectedAt = (await this.cloudflare?.status())?.connectedAt ?? null;
+    if (!connectedAt) return false;
+    const signedIn = Date.parse(connectedAt);
+    const claimed = Date.parse(claim.claimedAt);
+    return Number.isFinite(signedIn) && Number.isFinite(claimed) && signedIn > claimed;
   }
 
   /**
