@@ -93,10 +93,21 @@ test('signing in to Cloudflare connects the backup bucket end to end, and discon
   assert.equal(connected.config.configured, true);
   assert.equal(connected.config.cloudflare?.bucket, 'sillytavern-manager-backup');
 
-  // The bucket is reached through the Worker the connection deployed.
+  /*
+   * The bucket is reached through the Worker the connection deployed, and the
+   * one thing in it is this machine saying it is the one using the account.
+   *
+   * Written by the sign-in itself: holding the account is what makes somebody
+   * the owner, and their newest manager is the one they mean. It used to be
+   * written only where the reader picked an account out of a list, so a
+   * sign-in that settled the account by itself claimed nothing - and a machine
+   * reconnecting to an account another machine had taken was refused by a
+   * claim it had just out-signed-in.
+   */
   const objects = await fetch(`${base}/api/v1/r2/objects`, { headers: { cookie: auth.cookie } });
   assert.equal(objects.status, 200);
-  assert.deepEqual(await objects.json(), { objects: [] });
+  const listed = (await objects.json() as { objects: { key: string }[] }).objects.map((object) => object.key);
+  assert.deepEqual(listed, ['sillytavern-manager/owner.json']);
   assert.equal(state?.deployed, 'sillytavern-manager-backup');
   assert.equal((await (await fetch(`${base}/api/v1/r2/cloudflare`, { headers: { cookie: auth.cookie } })).json() as { cloudflare: { dataPath: string } }).cloudflare.dataPath, 'worker');
 

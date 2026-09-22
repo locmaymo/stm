@@ -68,6 +68,42 @@ test('version discovery keeps latest, release, staging, and tags', async () => {
   assert.equal(versions[3]?.selector, '1.2.3');
 });
 
+/*
+ * GitHub's API counts requests per address and gives an unauthenticated one a
+ * small allowance an hour. On somebody's own computer that is never reached;
+ * on a hosted machine the address belongs to the platform and is shared with
+ * everybody else on it, so it can be gone before this manager has asked
+ * anything. What came back was 403, the console said "GitHub could not be
+ * reached" over a connection that was working perfectly, and the install
+ * stopped there - on exactly the machines this project exists for.
+ */
+test('a refused API does not stop the install: the versions come off the repository', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-versions-git-'));
+  const repository = join(root, 'source');
+  await exec('git', ['init', repository]);
+  await exec('git', ['-C', repository, 'config', 'user.email', 'stm@test.local']);
+  await exec('git', ['-C', repository, 'config', 'user.name', 'STM Test']);
+  await writeFile(join(repository, 'package.json'), '{"name":"sillytavern"}', 'utf8');
+  await exec('git', ['-C', repository, 'add', '.']);
+  await exec('git', ['-C', repository, 'commit', '-m', 'one']);
+  // Two releases that a plain string sort would put the wrong way round.
+  await exec('git', ['-C', repository, 'tag', '1.9.0']);
+  await exec('git', ['-C', repository, 'tag', '1.19.0']);
+
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: join(root, 'manager') } });
+  const runtime = new RuntimeManager({
+    paths,
+    repositoryUrl: repository,
+    fetch: async () => new Response('rate limited', { status: 403 }),
+  });
+
+  const versions = await runtime.listVersions();
+  assert.deepEqual(versions.slice(0, 3).map((item) => item.selector), ['latest', 'release', 'staging']);
+  // Newest by version number, not by the order the characters happen to fall in.
+  assert.equal(versions[0]?.ref, '1.19.0');
+  assert.deepEqual(versions.slice(3).map((item) => item.selector), ['1.19.0', '1.9.0']);
+});
+
 test('a first installation can be stopped, and takes back everything it wrote', async () => {
   const root = await mkdtemp(join(tmpdir(), 'stm-install-stop-'));
   const repository = join(root, 'source');

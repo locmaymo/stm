@@ -589,7 +589,7 @@ export class BackupStore {
    *
    * An earlier version extracted into a staging directory and then renamed the
    * result into place, on the assumption that rename is a metadata operation.
-   * On a ModelScope studio it is not: renaming a directory of 9,000 files on
+   * On a hosted network volume it is not: renaming a directory of 9,000 files on
    * /mnt/workspace measured 757 seconds, the same order as copying it. Staging
    * therefore cost a second full pass over the data and bought nothing, so
    * entries now go to their final path on the first and only pass.
@@ -732,7 +732,8 @@ export class BackupStore {
   }
 
   /**
-   * Append one bounded upload chunk. ModelScope's proxy rejects large single
+   * Append one bounded upload chunk. A hosting proxy in front of this console
+   * may reject large single
    * request bodies, so the panel sends a ZIP as a sequence of chunks. State is
    * persisted beside the part file so a manager restart cannot silently join
    * chunks in the wrong order.
@@ -1494,7 +1495,7 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-/** ModelScope's persistent volume can report ENOTEMPTY while a recursive delete is settling. */
+/** A hosted network volume can report ENOTEMPTY while a recursive delete is settling. */
 async function removeTree(path: string): Promise<void> {
   for (let attempt = 0; attempt < 8; attempt += 1) {
     try {

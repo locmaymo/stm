@@ -12,7 +12,7 @@ import { S3ObjectStore, type R2Credentials } from './s3.js';
 import { R2Error, type Billing, type ObjectRecord, type ObjectStore } from './store.js';
 import { claimIsStale, readClaim, writeClaim, CLAIM_OBJECT, CLAIM_REFRESH_MS, type BucketClaim } from './owner.js';
 import { addOperations, monthKey, readUsage, writeUsage, USAGE_FLUSH_MS, USAGE_OBJECT } from './usage-record.js';
-import { readManagerSettings, settingsUnchanged, writeManagerSettings, MANAGER_SETTINGS_MIN_INTERVAL_MS, MANAGER_SETTINGS_OBJECT } from './manager-settings.js';
+import { readManagerSettings, settingsUnchanged, writeManagerSettings, MANAGER_SETTINGS_MIN_INTERVAL_MS, MANAGER_SETTINGS_OBJECT, MANAGER_SETTINGS_PREVIOUS_OBJECT } from './manager-settings.js';
 import { readMetricsArchive, writeMetricsArchive, METRICS_OBJECT } from './metrics-archive.js';
 import {
   blobKey,
@@ -52,6 +52,7 @@ const SNAPSHOT_PREFIX = `${OBJECT_PREFIX}snapshots/`;
 const CLAIM_KEY = `${OBJECT_PREFIX}${CLAIM_OBJECT}`;
 const USAGE_KEY = `${OBJECT_PREFIX}${USAGE_OBJECT}`;
 const MANAGER_SETTINGS_KEY = `${OBJECT_PREFIX}${MANAGER_SETTINGS_OBJECT}`;
+const MANAGER_SETTINGS_PREVIOUS_KEY = `${OBJECT_PREFIX}${MANAGER_SETTINGS_PREVIOUS_OBJECT}`;
 const METRICS_KEY = `${OBJECT_PREFIX}${METRICS_OBJECT}`;
 /** How long Cloudflare's usage figures are reused before asking again. */
 const CLOUD_USAGE_TTL_MS = 15 * 60 * 1000;
@@ -176,6 +177,20 @@ interface StoredR2Config {
    * which is enough for a line on a card and never enough to act on.
    */
   readonly claim: { readonly keyId: string; readonly label: string; readonly lastSeenAt: string; readonly mine: boolean; readonly checkedAt: string } | null;
+  /**
+   * The setup another machine left here that the reader has already answered.
+   *
+   * Held as the `writtenAt` of the record they answered about, so a machine
+   * that later writes a different setup is something new and is offered again
+   * - and so a different bucket, holding a different record, asks again by
+   * itself without this having to be cleared when the backups move.
+   *
+   * It was remembered in the browser, which is not where it belongs: until
+   * this machine has said what it wants, nothing here may be uploaded over
+   * what the bucket is holding, and that is a decision the manager has to know
+   * about rather than one tab of one browser.
+   */
+  readonly settingsOfferAnswered: string | null;
   readonly usage: StoredUsage;
 }
 
@@ -189,6 +204,16 @@ export interface R2ManagerOptions {
   readonly cloudflare?: CloudflareConnection;
   /** What this machine is called in the bucket's claim; its hostname by default. */
   readonly installationLabel?: string;
+  /**
+   * Told when this machine gives the Cloudflare account up; see `surrenderAccount`.
+   *
+   * Everything this manager deployed into that account stopped being its own
+   * the moment somebody else signed in with it - including the two Workers
+   * that give the tunnels a fixed address, which the other machine has by now
+   * redeployed at its own tunnel. What is remembered here about them is
+   * therefore about somebody else's Worker.
+   */
+  readonly onSurrender?: () => void;
 }
 
 export interface R2UpdateInput {
@@ -258,6 +283,7 @@ export class R2Manager {
   private readonly ledger: BlobLedger;
   private readonly cloudflare: CloudflareConnection | null;
   private readonly installationLabel: string;
+  private readonly onSurrender: (() => void) | null;
   private configState: StoredR2Config | null = null;
   /** The local backup interval an older version kept in this file, until it is handed over. */
   private legacyLocalInterval: number | null = null;
@@ -296,6 +322,7 @@ export class R2Manager {
     this.ledger = new BlobLedger({ path: join(this.paths.state, R2_LEDGER_FILE) });
     this.cloudflare = options.cloudflare ?? null;
     this.installationLabel = (options.installationLabel ?? hostname() ?? '').slice(0, 120) || 'this machine';
+    this.onSurrender = options.onSurrender ?? null;
   }
 
   public async getConfig(): Promise<R2Config> {
@@ -737,7 +764,7 @@ export class R2Manager {
       const config = await this.requireUsable();
       const client = this.client(config);
       const objects = await this.listAll(config, OBJECT_PREFIX, client);
-      const legacy = objects.filter((object) => !object.key.startsWith(BLOB_PREFIX) && !object.key.startsWith(SNAPSHOT_PREFIX) && object.key !== CLAIM_KEY && object.key !== USAGE_KEY && object.key !== MANAGER_SETTINGS_KEY && object.key !== METRICS_KEY);
+      const legacy = objects.filter((object) => !object.key.startsWith(BLOB_PREFIX) && !object.key.startsWith(SNAPSHOT_PREFIX) && object.key !== CLAIM_KEY && object.key !== USAGE_KEY && object.key !== MANAGER_SETTINGS_KEY && object.key !== MANAGER_SETTINGS_PREVIOUS_KEY && object.key !== METRICS_KEY);
       let bytes = 0;
       for (const object of legacy) {
         await client.deleteObject(object.key);
@@ -893,10 +920,22 @@ export class R2Manager {
     const keyId = await this.cloudflare.installationId();
     const now = this.now().getTime();
     const claim = await readClaim(this.client(config), CLAIM_KEY);
-    if (claim && claim.keyId !== keyId && !claimIsStale(claim, now)) {
+    if (claim && claim.keyId !== keyId && !claimIsStale(claim, now) && !await this.outranks(claim)) {
+      /*
+       * Another manager signed in with this account and took it.
+       *
+       * Signing in is what takes it now, so this is never a surprise to
+       * whoever did it - and it is always a surprise to this machine, which
+       * was backing up a minute ago and has no way of knowing why it stopped.
+       * The claim is the only place that says who, so it is written down here
+       * for the console to read: the answer is to sign in to Cloudflare again
+       * from this machine, which takes it back the same way.
+       */
       await this.rememberClaim(claim, false);
       await this.recordCharges();
-      throw new R2Error('r2_in_use', `Another installation (${claim.label}) is backing up to this bucket. Take it over from this machine, or disconnect this Cloudflare account.`);
+      this.logger(logEvent('r2.displaced', `[r2] ${claim.label} signed in with this Cloudflare account, so this machine has stopped backing up; sign in to Cloudflare again here to take it back`, { label: claim.label }));
+      await this.surrenderAccount(claim);
+      throw new R2Error('r2_in_use', `${claim.label} signed in with this Cloudflare account, so this machine has stopped backing up. Sign in to Cloudflare again from this machine to take it back.`);
     }
     const mine: BucketClaim = {
       schemaVersion: 1,
@@ -911,7 +950,22 @@ export class R2Manager {
     if (!fresh) {
       await writeClaim(this.client(config), CLAIM_KEY, mine);
       if (!claim) this.logger(logEvent('r2.claimed', `[r2] this machine (${mine.label}) is now the one backing up to this bucket`, { label: mine.label }));
-      else if (claim.keyId !== keyId) this.logger(logEvent('r2.claimTaken', `[r2] the previous machine (${claim.label}) had not used this bucket for days, so this one took it over`, { label: claim.label }));
+      else if (claim.keyId !== keyId && claimIsStale(claim, now)) this.logger(logEvent('r2.claimTaken', `[r2] the previous machine (${claim.label}) had not used this bucket for days, so this one took it over`, { label: claim.label }));
+      /*
+       * Or the claim is another machine's and this machine signed in after it
+       * was made, so it is this machine's to take; see `outranks`.
+       *
+       * It happens when the sign-in that should have taken it did not: the
+       * takeover is a Worker deploy and a write, and a console that came back
+       * from Cloudflare and started asking questions could finish reading the
+       * claim before the sign-in behind it finished writing one. The write
+       * that follows repairs it, rather than the machine that just signed in
+       * spending its life refused by the machine it replaced.
+       */
+      else if (claim.keyId !== keyId) {
+        await this.cloudflare.evict(claim.keyId).catch(() => false);
+        this.logger(logEvent('r2.claimTakenOver', `[r2] this machine took the bucket over from ${claim.label}`, { label: claim.label }));
+      }
     }
     await this.rememberClaim(fresh && claim ? claim : mine, true);
     await this.recordCharges();
@@ -961,12 +1015,148 @@ export class R2Manager {
     await this.recordCharges();
   }
 
+  /**
+   * Go and look at who holds the bucket, for a console somebody just opened.
+   *
+   * The claim is otherwise only read on the way into a write, and a manager
+   * whose profile has not changed does not write - so a machine that had the
+   * account taken from it went on showing "this machine is backing up" for as
+   * long as it had nothing to send. Which is precisely the machine somebody
+   * opens the console on to find out why their backups stopped.
+   *
+   * Rate-limited rather than free: it is one charged read, and the console
+   * asks whenever a page is opened. Never throws; a bucket that cannot be
+   * reached leaves what was last known in place, which is what the console
+   * already says it is showing.
+   */
+  public async refreshClaim(options: { readonly atMostEvery?: number } = {}): Promise<void> {
+    const config = await this.load();
+    if (config.mode !== 'cloudflare' || !this.cloudflare || !config.enabled) return;
+    const now = this.now().getTime();
+    const since = config.claim ? now - Date.parse(config.claim.checkedAt) : Number.POSITIVE_INFINITY;
+    if (options.atMostEvery !== undefined && Number.isFinite(since) && since < options.atMostEvery) return;
+    try {
+      if (!await this.cloudflare.usable()) return;
+      const keyId = await this.cloudflare.installationId();
+      const claim = await readClaim(this.client(config), CLAIM_KEY);
+      if (!claim) { await this.forgetClaim(); return; }
+      /*
+       * A claim this machine has already out-signed-in is not somebody else
+       * holding the account, it is a claim about to be replaced.
+       *
+       * Without this the console reported the machine it had just replaced as
+       * the holder for as long as it took the sign-in behind it to write - and
+       * on the surrender below, that report was final.
+       */
+      const mine = claim.keyId === keyId || await this.outranks(claim);
+      await this.rememberClaim(claim, mine);
+      /*
+       * And this is where a machine that lost the account finds out.
+       *
+       * Opening the console is the only thing that happens on a manager with
+       * nothing to send, so without this the credentials would sit here
+       * working - deploying Workers, reading the account's usage - until the
+       * next backup went looking. Everything the account can be reached with
+       * goes now, at the first look. A claim nobody has refreshed for days is
+       * not somebody else using the account, it is somebody who stopped, and
+       * this machine is allowed to take that one over.
+       */
+      if (!mine && !claimIsStale(claim, now)) await this.surrenderAccount(claim);
+      // The claim named is about to become this machine's, so the console
+      // should say this machine's name rather than the one being replaced.
+      else if (mine && claim.keyId !== keyId) await this.rememberClaim({ ...claim, keyId, label: this.installationLabel }, true);
+    } catch {
+      // What was last known stays. The console says when it was known.
+    } finally {
+      await this.recordCharges().catch(() => undefined);
+    }
+  }
+
+  /**
+   * Whether this machine's sign-in is newer than the claim refusing it.
+   *
+   * The rule is that whoever signed in last holds the account, and this is
+   * where it is actually decided. It used to be decided by which machine
+   * happened to write to the bucket first, which is a race, and one the
+   * machine that had just signed in could lose: taking the claim means
+   * deploying a Worker and making a write, while the console that came back
+   * from Cloudflare a second earlier is already asking who holds the account.
+   * The new machine read the old machine's claim, believed it, gave up its own
+   * sign-in - and the console it had just been opened on carried the notice
+   * saying it had been replaced, by the machine it had itself replaced.
+   *
+   * Two timestamps settle it instead, and they settle it the same way whoever
+   * asks first: when this machine's grant was issued, against when that claim
+   * was made. Both are written by a Cloudflare sign-in, minutes or days apart,
+   * so the comparison does not turn on a second of clock drift.
+   */
+  private async outranks(claim: BucketClaim): Promise<boolean> {
+    const connectedAt = (await this.cloudflare?.status())?.connectedAt ?? null;
+    if (!connectedAt) return false;
+    const signedIn = Date.parse(connectedAt);
+    const claimed = Date.parse(claim.claimedAt);
+    return Number.isFinite(signedIn) && Number.isFinite(claimed) && signedIn > claimed;
+  }
+
+  /**
+   * Throw this machine's Cloudflare credentials away, on the word of the claim.
+   *
+   * Stopping the backups was never the whole of it. The grant reaches every
+   * part of the account - the Workers that give the tunnels a fixed address,
+   * the objects in the bucket over the REST API, the usage figures - and a
+   * manager that has just read another machine's name in the claim has no
+   * business with any of it. So it keeps none of it; see
+   * `CloudflareConnection.surrender`.
+   *
+   * Said once. It is called from every check, and after the first one there is
+   * nothing left to give up.
+   */
+  private async surrenderAccount(claim: BucketClaim): Promise<void> {
+    if (!this.cloudflare) return;
+    const reason = `${claim.label} signed in with this Cloudflare account, so this machine gave up its own sign-in. Sign in to Cloudflare again here to take the account back.`;
+    if (!await this.cloudflare.surrender(claim.label, reason)) return;
+    this.logger(logEvent('r2.accountSurrendered', `[r2] this machine has given up its Cloudflare sign-in, because ${claim.label} holds the account now; nothing here can reach that account until somebody signs in again`, { label: claim.label }));
+    this.onSurrender?.();
+  }
+
   private async rememberClaim(claim: BucketClaim, mine: boolean): Promise<void> {
     const config = await this.load();
     const next = { keyId: claim.keyId, label: claim.label, lastSeenAt: claim.lastSeenAt, mine, checkedAt: new Date(this.now()).toISOString() };
     const current = config.claim;
-    if (current && current.keyId === next.keyId && current.mine === next.mine && current.lastSeenAt === next.lastSeenAt) return;
+    // Written even when only `checkedAt` moved: it is what the rate limit on
+    // `refreshClaim` reads, and a stale one would stop it ever looking again.
+    if (current && current.keyId === next.keyId && current.mine === next.mine && current.lastSeenAt === next.lastSeenAt && this.now().getTime() - Date.parse(current.checkedAt) < CLAIM_REFRESH_MS) return;
     await this.save({ ...config, claim: next });
+  }
+
+  /**
+   * Whether this machine has anything of its own in this bucket yet.
+   *
+   * What makes the question above worth asking at all: a machine that has
+   * uploaded here has already settled with this bucket, and everything after
+   * that is ordinary backing up.
+   */
+  public async neverUploaded(): Promise<boolean> {
+    return (await this.load()).lastUploadAt === null;
+  }
+
+  /** The offer the reader has answered, as the record's `writtenAt`. */
+  public async answeredSettingsOffer(): Promise<string | null> {
+    return (await this.load()).settingsOfferAnswered;
+  }
+
+  /**
+   * Remember that the reader has answered the setup this bucket was offering.
+   *
+   * Either answer counts. Restoring it makes this machine the machine the
+   * record describes; waving it away means they want this machine as it is.
+   * Both of them end the wait, and the wait is what stops a machine that has
+   * just connected from uploading over a library it has not looked at yet.
+   */
+  public async answerSettingsOffer(writtenAt: string): Promise<void> {
+    const config = await this.load();
+    if (config.settingsOfferAnswered === writtenAt) return;
+    await this.save({ ...config, settingsOfferAnswered: writtenAt });
   }
 
   private async forgetClaim(): Promise<void> {
@@ -1180,24 +1370,77 @@ export class R2Manager {
    * Never throws. A bucket that cannot be reached means the settings are not
    * backed up this time, which is not a reason to fail whatever asked.
    */
-  public async saveManagerSettings(record: Omit<ManagerSettingsRecord, 'label' | 'writtenAt'>): Promise<boolean> {
+  public async saveManagerSettings(record: Omit<ManagerSettingsRecord, 'label' | 'writtenAt'>, options: { readonly force?: boolean } = {}): Promise<boolean> {
     const config = await this.load();
     if (!config.enabled) return false;
     const now = this.now();
     const full: ManagerSettingsRecord = { ...record, schemaVersion: 1, label: this.installationLabel, writtenAt: now.toISOString() };
-    if (settingsUnchanged(this.settingsSent, full) && now.getTime() - this.settingsSentAt < MANAGER_SETTINGS_MIN_INTERVAL_MS) return false;
+    /*
+     * The shortcut that makes this free on the scheduler's clock, and that a
+     * person pressing a button must not be given.
+     *
+     * Somebody who presses Back up now is asking about the bucket, not about
+     * what this process happens to remember sending. The memory is wrong
+     * whenever the bucket has moved underneath it - another machine wrote
+     * over the record, or this one failed a write and does not know it - and
+     * in exactly those cases the press has to go and look.
+     */
+    // Whose setup it is counts here too, and for the same reason it counts
+    // against the stored record below: it is not part of the comparison.
+    if (!options.force && settingsUnchanged(this.settingsSent, full) && this.settingsSent?.installId === full.installId && now.getTime() - this.settingsSentAt < MANAGER_SETTINGS_MIN_INTERVAL_MS) return false;
     try {
-      await this.requireUsable();
+      const usable = await this.requireUsable();
+      /*
+       * And only if this machine is the one using the bucket.
+       *
+       * This is a write like any other and it was the one that skipped the
+       * claim - so a manager that had lost the account went on replacing the
+       * record describing the machine that now holds it, every time one of
+       * its own settings moved. Seen on a live account: a console offering to
+       * rebuild a machine from an account, over a record that had been
+       * overwritten minutes earlier by the machine that was locked out.
+       *
+       * It is also the check that makes a machine find out it has been
+       * displaced, on a manager that has no profile data to send and would
+       * otherwise never read the claim at all.
+       */
+      await this.requireOwnership(usable);
       const client = this.client(config);
       // Read first: a record that already says this is one nothing has to be
       // paid for. This is what stops a manager which restarts often from
       // writing the same settings on every start.
       const stored = await readManagerSettings(client, MANAGER_SETTINGS_KEY);
-      if (settingsUnchanged(stored, full)) {
+      /*
+       * Unchanged, and this machine's - both, because the record says whose
+       * setup it is and that is not part of the comparison.
+       *
+       * A machine that has just restored another machine's settings has
+       * settings identical to the record it restored, so the write was
+       * skipped and the record went on naming the machine it came from. The
+       * console then offered that machine's setup to the machine already
+       * running it, for the life of the bucket.
+       */
+      if (settingsUnchanged(stored, full) && stored?.installId === full.installId) {
         this.settingsSent = stored;
         this.settingsSentAt = now.getTime();
         await this.recordCharges();
         return false;
+      }
+      /*
+       * The record being replaced, kept, when it belongs to another machine.
+       *
+       * This is a handover: one bucket describes one machine, and this one is
+       * now that machine. But the console may be in the middle of offering to
+       * put the other machine back, and this write is the only thing standing
+       * between the reader and that offer - a minute after signing in, the
+       * card still named the old machine while the record behind it had
+       * already become this one's.
+       *
+       * Best effort, and before the write rather than after: a copy that fails
+       * must not stop this machine's settings from being kept at all.
+       */
+      if (stored && stored.installId && full.installId && stored.installId !== full.installId) {
+        await writeManagerSettings(client, MANAGER_SETTINGS_PREVIOUS_KEY, stored).catch(() => undefined);
       }
       await writeManagerSettings(client, MANAGER_SETTINGS_KEY, full);
       this.settingsSent = full;
@@ -1223,26 +1466,23 @@ export class R2Manager {
    * Runs on the slow clock. The log is written on every request SillyTavern
    * makes, so on the fast one it would be the only thing ever being sent.
    */
-  /**
-   * Whether this installation has ever put its usage log in the bucket.
-   *
-   * Read off this machine's own record rather than by asking the bucket, so
-   * the question costs nothing and can be asked on every tick. The scheduler
-   * asks it to let the first upload go up straight away instead of waiting for
-   * the slow clock - see the note there.
-   */
-  public async metricsArchived(): Promise<boolean> {
-    return (await this.load()).lastMetrics !== null;
-  }
-
-  public async syncMetricsFile(path: string): Promise<{ readonly uploadedChunks: number; readonly sizeBytes: number } | null> {
+  public async syncMetricsFile(path: string, options: { readonly force?: boolean } = {}): Promise<{ readonly uploadedChunks: number; readonly sizeBytes: number } | null> {
     const config = await this.load();
     if (!config.enabled) return null;
     const file = await hashFile(METRICS_OBJECT, path);
     if (!file || file.chunks.length === 0) return null;
-    // Nothing has been appended since the last run: the whole point of the
-    // stat is to make that case cost nothing at all.
-    if (looksUnchanged(config.lastMetrics ?? undefined, file.sizeBytes, file.mtimeMs)) return null;
+    /*
+     * Nothing has been appended since the last run: the whole point of the
+     * stat is to make that case cost nothing at all.
+     *
+     * Skipped for a press, for the same reason the settings skip theirs. The
+     * record it compares against is this machine's note of what it believes
+     * it sent, and a press is how somebody asks whether that belief is true.
+     * The chunks it then finds are almost always already in the ledger, so
+     * looking costs a hash of a file this machine already has and nothing on
+     * the network.
+     */
+    if (!options.force && looksUnchanged(config.lastMetrics ?? undefined, file.sizeBytes, file.mtimeMs)) return null;
     return await this.exclusive(async () => {
       const usable = await this.onTarget(await this.requireUsable());
       await this.requireOwnership(usable);
@@ -1303,6 +1543,45 @@ export class R2Manager {
     const config = await this.requireUsable();
     try {
       return await readManagerSettings(this.client(config), MANAGER_SETTINGS_KEY);
+    } finally {
+      await this.recordCharges().catch(() => undefined);
+    }
+  }
+
+  /**
+   * Throw the kept copy away, once somebody has done something about it.
+   *
+   * It exists to survive the window between a handover and the reader
+   * answering the card, and a copy nobody threw away would be offered again
+   * for the life of the bucket - including to the machine that has just
+   * finished restoring it.
+   *
+   * Best effort: an offer that comes back once is a card to dismiss, not data
+   * lost.
+   */
+  public async forgetPreviousManagerSettings(): Promise<void> {
+    const config = await this.load();
+    if (!config.enabled) return;
+    try {
+      await this.client(config).deleteObject(MANAGER_SETTINGS_PREVIOUS_KEY);
+    } catch {
+      // Already gone is the outcome that was wanted.
+    } finally {
+      await this.recordCharges().catch(() => undefined);
+    }
+  }
+
+  /**
+   * The record this bucket held before the machine using it changed.
+   *
+   * Written only on a handover; see `MANAGER_SETTINGS_PREVIOUS_OBJECT`. The
+   * console reads it when the current record turns out to be this machine's
+   * own, which is what a machine that has already signed in finds.
+   */
+  public async loadPreviousManagerSettings(): Promise<ManagerSettingsRecord | null> {
+    const config = await this.requireUsable();
+    try {
+      return await readManagerSettings(this.client(config), MANAGER_SETTINGS_PREVIOUS_KEY);
     } finally {
       await this.recordCharges().catch(() => undefined);
     }
@@ -1616,7 +1895,7 @@ function summarizeObjects(objects: readonly ObjectRecord[]): { blobs: Map<string
     // for, and how the manager that wrote it is set up. None of them is data,
     // none is an archive, and none is something the legacy sweep may take
     // away from the manager that wrote it.
-    if (object.key === CLAIM_KEY || object.key === USAGE_KEY || object.key === MANAGER_SETTINGS_KEY || object.key === METRICS_KEY) continue;
+    if (object.key === CLAIM_KEY || object.key === USAGE_KEY || object.key === MANAGER_SETTINGS_KEY || object.key === MANAGER_SETTINGS_PREVIOUS_KEY || object.key === METRICS_KEY) continue;
     // Whole-ZIP archives from the version before this one. They are not
     // read and not deleted behind the operator's back; the panel offers it.
     legacyObjectCount += 1;
@@ -1710,6 +1989,7 @@ function defaultStoredConfig(now: Date): StoredR2Config {
     lastRecovery: null,
     lastMetrics: null,
     claim: null,
+    settingsOfferAnswered: null,
     usage: {
       storageBytes: 0,
       blobCount: 0,

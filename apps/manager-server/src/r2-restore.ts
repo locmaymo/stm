@@ -168,6 +168,19 @@ export interface RecoverProfileOptions {
   readonly onProgress?: (progress: TransferProgress) => void;
   /** Stops the download, so a recovery nobody wants is not a thing to sit out. */
   readonly signal?: AbortSignal;
+  /**
+   * Bring the data back over a profile that already has some.
+   *
+   * Off by default, and the default is what every automatic path uses: this
+   * runs without anybody having asked, and writing over somebody's chats
+   * unasked is the one thing it must never do.
+   *
+   * On when a person pressed Restore everything. They are looking at a card
+   * that says what it will do, and the restore underneath takes a safety copy
+   * before it writes, so what was here is still in the backup library
+   * afterwards.
+   */
+  readonly force?: boolean;
 }
 
 /**
@@ -194,7 +207,7 @@ export interface RecoverProfileOptions {
  */
 export async function recoverProfileFromR2(options: RecoverProfileOptions): Promise<{ manifest: BackupManifest; point: R2SnapshotSummary } | null> {
   const { profile, r2, backups, logger } = options;
-  if (!await isProfileEmpty(profile)) return null;
+  if (!options.force && !await isProfileEmpty(profile)) return null;
   let candidates: readonly R2SnapshotSummary[];
   try {
     // Every profile in the bucket, not this one: the identifier this machine
@@ -262,8 +275,9 @@ export async function recoverProfileFromR2(options: RecoverProfileOptions): Prom
       logger?.(logEvent('r2.recoveryPointFailed', `[r2] the recovery point from ${candidate.createdAt} could not be read back (${reason}); trying the one before it`, { createdAt: candidate.createdAt, reason }));
       // The restore only runs on a point that arrived whole, so nothing has
       // been written into the profile and the next one starts from the same
-      // empty directory this one did.
-      if (!await isProfileEmpty(profile)) break;
+      // empty directory this one did. A forced run was never starting from an
+      // empty directory, so that reasoning does not apply to it.
+      if (!options.force && !await isProfileEmpty(profile)) break;
     }
   }
   logger?.(logEvent('r2.recoveryFailed', `[r2] no recovery point in the bucket could be brought back: ${failures[0] ?? 'unknown error'}`, { reason: failures[0] ?? 'unknown error' }));

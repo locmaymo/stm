@@ -4,7 +4,7 @@ import {
   Globe2, LayoutDashboard, Maximize2, Minimize2, Moon, Package, Pencil, Plus,
   LogOut, RotateCcw, ScrollText, Search, Sun, Trash2, Upload, Users as UsersIcon, X, Rows3,
   BrainCircuit, CircleStop, Clock3, Cpu, Ellipsis, Play, QrCode as QrCodeIcon, RefreshCw, Scale, Settings2, ShieldCheck, Square,
-  Blocks, BookmarkPlus, Bug, FileCode2, LoaderCircle, Gauge, History, KeyRound, Monitor, CircleArrowUp, Star, TriangleAlert,
+  Blocks, BookmarkPlus, Bug, Feather, FileCode2, LoaderCircle, Gauge, History, KeyRound, Monitor, CircleArrowUp, Star, TriangleAlert,
 } from 'lucide-react';
 import {
   Alert, AlertDescription, AlertTitle, AuthLayout, Badge, BrandMark, Button, buttonVariants, Card, CardAction,
@@ -30,10 +30,10 @@ import { authErrorKey } from './auth-error.js';
 import { DEFAULT_SILLYTAVERN_PORT, portRefusal } from './ports.js';
 import { isThisMachine, readTunnelOfferDeclined, saveTunnelOfferDeclined, shouldOfferManagerTunnel } from './hosting.js';
 import { availableUpdate, readDismissedUpdate, saveDismissedUpdate } from './updates.js';
-import { readDismissedRecovery, readDismissedSettings, saveDismissedRecovery, saveDismissedSettings, shouldOfferSettings, shouldShowRecovery } from './settings-offer.js';
+import { readDismissedDisplaced, readDismissedRecovery, readDismissedSettings, saveDismissedDisplaced, saveDismissedRecovery, saveDismissedSettings, shouldOfferSettings, shouldShowDisplaced, shouldShowRecovery } from './settings-offer.js';
 import { apiFetch, onSessionExpired, resetSessionWatch, sessionToken, setSessionToken } from './session.js';
-import { collectCloudflareResult, framed, openReturnWindow, whenAbandoned, type CollectedResult } from './oauth.js';
-import type { AccessGatewayState, BackupManifest, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LogEntry, LogSourceFilter, ManagerSettingsOffer, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import { collectCloudflareResult, framed, openReturnWindow, popupsBlocked, whenAbandoned, type CollectedResult } from './oauth.js';
+import type { AccessGatewayState, BackupManifest, CloudflareAccountProblem, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LogEntry, LogSourceFilter, ManagerSettingsOffer, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, isCloudJob, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
 import { usePoll } from './use-poll.js';
@@ -411,32 +411,48 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, refusal, onPr
   const signInWithCloudflare = async () => {
     setHandOverUrl(null);
     collecting.current?.();
-    // Cloudflare's sign-in will not load in a frame, so a console inside
-    // another site's page sends the reader to a window of its own - opened
-    // now, while the click is still a click, or the browser takes it for a
-    // pop-up. That window cannot answer back, so the answer is collected from
-    // the manager instead; see oauth.ts.
+    /*
+     * Cloudflare's sign-in will not load in a frame, so a console inside
+     * another site's page sends the reader to a window of its own - opened
+     * now, while the click is still a click, or the browser takes it for a
+     * pop-up. That window cannot answer back, so the answer is collected from
+     * the manager instead; see oauth.ts.
+     *
+     * A browser that has already refused this console a window is not asked
+     * again. The refusal is a property of the frame rather than of the press,
+     * so trying costs a second pop-up warning and buys nothing - and the thing
+     * that does work is a press on an ordinary link, which is what the button
+     * turns into below.
+     */
     const inFrame = framed();
-    const opened = inFrame ? openReturnWindow() : null;
+    const opened = inFrame && !popupsBlocked() ? openReturnWindow() : null;
     setCloudflareBusy(true); setError(null);
     try {
-      const response = await fetch(`/api/v1/auth/cloudflare${opened ? '?handoff=1' : ''}`, { method: 'POST', credentials: 'same-origin' });
+      // Inside a frame the answer is always collected from the manager,
+      // whether the window was opened here or by the reader: either way it
+      // cannot carry the answer home by itself.
+      const response = await fetch(`/api/v1/auth/cloudflare${inFrame ? '?handoff=1' : ''}`, { method: 'POST', credentials: 'same-origin' });
       const payload = await response.json() as { url?: string; handoff?: string; error?: { code?: string; message?: string } };
       if (!response.ok || !payload.url) { opened?.close(); setCloudflareBusy(false); setError(fail.body(payload, t('setup.cloudSignInFailed'))); return; }
-      if (opened) {
-        opened.location.href = payload.url;
-        if (payload.handoff) {
-          const stopCollecting = collectCloudflareResult(payload.handoff, collected);
-          const stopWatching = whenAbandoned(opened, () => { stopCollecting(); setCloudflareBusy(false); });
-          collecting.current = () => { stopCollecting(); stopWatching(); };
-          return;
-        }
+      if (!inFrame) { window.location.assign(payload.url); return; }
+      if (payload.handoff) {
+        const stopCollecting = collectCloudflareResult(payload.handoff, collected);
+        const stopWatching = opened ? whenAbandoned(opened, () => { stopCollecting(); setCloudflareBusy(false); }) : null;
+        collecting.current = () => { stopCollecting(); stopWatching?.(); };
       }
-      // A frame that may not open windows has nowhere to send them: following
-      // the address here would only blank the console, since Cloudflare
-      // refuses to be framed. So hand the address over instead.
-      if (inFrame) { opened?.close(); setCloudflareBusy(false); setHandOverUrl(payload.url); return; }
-      window.location.assign(payload.url);
+      if (opened) { opened.location.href = payload.url; return; }
+      /*
+       * No window, so the reader opens it: the same button, one more press,
+       * now an ordinary link that no browser blocks.
+       *
+       * This used to be a banner carrying the whole address, a Copy button and
+       * an Open button - which was a lot of screen for something that ends in
+       * one press on a link, and the link it offered was the very thing the
+       * reader had already pressed a button for. The sign-in is already
+       * started and already being collected; all that is missing is the press.
+       */
+      setCloudflareBusy(false);
+      setHandOverUrl(payload.url);
     } catch { opened?.close(); setCloudflareBusy(false); setError(t('setup.connectionError')); }
   };
   /*
@@ -456,20 +472,32 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, refusal, onPr
    */
   const cloudflareWay = cloudflare?.available ? <>
     <div className="auth-divider"><span>{t('setup.or')}</span></div>
+    {/* One line, because there is one thing left to do and the button under it
+        is the thing. */}
+    {handOverUrl ? <Alert><CloudflareMark /><AlertDescription>{t('console.cfConnectPopupBlocked')}</AlertDescription></Alert> : null}
     <div className="cloud-way">
-      <Button
-        type="button"
-        size="lg"
-        className="w-full hover:opacity-90"
-        style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }}
-        disabled={busy || cloudflareBusy}
-        // Live whether or not the box is ticked. Signing in this way is what
-        // sets the manager up, so the agreement is still required first - it
-        // is asked for by pointing at it, not by refusing to respond.
-        onClick={() => { if (consented()) void signInWithCloudflare(); }}
-      >
-        <CloudflareMark />{cloudflareBusy ? t('common.loading') : t('setup.cloudSignIn')}
-      </Button>
+      {handOverUrl
+        ? <Button
+          asChild
+          size="lg"
+          className="w-full hover:opacity-90"
+          style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }}
+        >
+          <a href={handOverUrl} target="_blank" rel="noopener noreferrer"><CloudflareMark />{t('setup.cloudSignIn')}</a>
+        </Button>
+        : <Button
+          type="button"
+          size="lg"
+          className="w-full hover:opacity-90"
+          style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }}
+          disabled={busy || cloudflareBusy}
+          // Live whether or not the box is ticked. Signing in this way is what
+          // sets the manager up, so the agreement is still required first - it
+          // is asked for by pointing at it, not by refusing to respond.
+          onClick={() => { if (consented()) void signInWithCloudflare(); }}
+        >
+          <CloudflareMark />{cloudflareBusy ? t('common.loading') : t('setup.cloudSignIn')}
+        </Button>}
       <span className="cloud-way-tag" aria-hidden="true">{t('setup.cloudRecommended')}</span>
     </div>
   </> : null;
@@ -535,7 +563,6 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, refusal, onPr
                 Cloudflare redirect - which the reader has no other way of
                 being told about. */}
             {error ?? refusal ? <Alert variant="destructive"><AlertDescription>{error ?? refusal}</AlertDescription></Alert> : null}
-            {handOverUrl ? <CloudflareSignInBanner t={t} url={handOverUrl} onDismiss={() => setHandOverUrl(null)} /> : null}
             <Button type="submit" size="lg" className="w-full" disabled={busy || cloudflareBusy || !ready}>
               {busy ? t('common.loading') : setup ? t('setup.createAdmin') : t('setup.signIn')}
             </Button>
@@ -717,15 +744,35 @@ function FirstRun({ t, csrfToken, preferences, onPreferencesChange, onDone }: { 
     >
       <Card className="rounded-2xl">
         <CardContent className="grid gap-5 p-6">
-          <p className="text-sm text-muted-foreground">{t('setup.cloudBody')}</p>
-          <ul className="grid gap-2 text-sm text-muted-foreground">
-            <li>{t('setup.cloudPointFree')}</li>
-            <li>{t('setup.cloudPointRestore')}</li>
-            <li>{t('setup.cloudPointLater')}</li>
+          {/* Said in a picture first: what is here keeps a copy over there,
+              and the stream between them does not stop while the machine is
+              in use. Hidden from a reader who is being read to, because the
+              sentence below it says the same thing in words. */}
+          <div className="cloud-offer-figure" aria-hidden="true">
+            <div className="cloud-offer-node">
+              <span className="cloud-offer-tile"><Monitor /></span>
+              <span className="cloud-offer-label">{t('setup.cloudHere')}</span>
+            </div>
+            <span className="cloud-offer-stream" />
+            <div className="cloud-offer-node cloud-offer-node-away">
+              <span className="cloud-offer-tile"><Cloud /></span>
+              <span className="cloud-offer-label">{t('setup.cloudAway')}</span>
+            </div>
+          </div>
+          {/* The claim first and the mechanism under it, rather than one grey
+              block holding both. What somebody decides on is the first line;
+              the second is there for whoever wants to know how. */}
+          <div className="grid gap-1.5">
+            <p className="text-[15px] leading-snug font-medium text-foreground">{t('setup.cloudClaim')}</p>
+            <p className="text-sm text-muted-foreground">{t('setup.cloudBody')}</p>
+          </div>
+          <ul className="grid gap-2.5">
+            <li className="cloud-offer-point"><Feather /><span>{t('setup.cloudPointFree')}</span></li>
+            <li className="cloud-offer-point"><History /><span>{t('setup.cloudPointRestore')}</span></li>
           </ul>
           {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
           <div className="grid gap-2">
-            <Button size="lg" className="w-full" disabled={busy} onClick={() => void connect()}>
+            <Button size="lg" className="w-full hover:opacity-90" style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }} disabled={busy} onClick={() => void connect()}>
               <CloudflareMark />{busy ? t('common.loading') : t('setup.cloudConnect')}
             </Button>
             <Button variant="ghost" size="lg" className="w-full" disabled={busy} onClick={onDone}>{t('setup.cloudSkip')}</Button>
@@ -769,6 +816,37 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
   const [managerTunnelState, setManagerTunnelState] = useState<TunnelState>({ mode: 'off', status: 'stopped', url: null, startedAt: null, error: null });
   const [configDocument, setConfigDocument] = useState<ConfigDocument | null>(null);
   const [portSettings, setPortSettings] = useState<PortSettings | null>(null);
+  /*
+   * What this account remembers about a machine, and whether it is this one.
+   *
+   * Kept here rather than on the Data page, because the offer to put a machine
+   * back together is not a fact about backups - it is the first thing somebody
+   * who has just signed in on an empty machine needs, whichever page they land
+   * on, and they land on the Overview. It sat on the Data page, below the
+   * backup table, behind a tab nobody had a reason to open yet.
+   */
+  const [settingsOffer, setSettingsOffer] = useState<ManagerSettingsOffer | null>(null);
+  const [dismissedSettings, setDismissedSettings] = useState<string | null>(() => readDismissedSettings(browserStorage()));
+  const [restoringEverything, setRestoringEverything] = useState(false);
+  /*
+   * Which machine the account says is backing up, when it is not this one.
+   *
+   * Kept beside the offer above and asked for in the same breath, because the
+   * two are the same moment from opposite sides: one console has just taken
+   * the account and is being offered the other machine's setup, and the other
+   * console has just lost it and has been told nothing.
+   */
+  const [r2Owner, setR2Owner] = useState<R2Config['owner'] | null>(null);
+  /*
+   * The account is signed in and has never turned R2 on, so there is nowhere
+   * for a backup to go and nothing this manager can do about it.
+   *
+   * It used to be said only inside the form where the account was chosen,
+   * which is a form somebody closes and does not open again - so a machine
+   * that was backing nothing up looked exactly like one that was.
+   */
+  const [r2Problem, setR2Problem] = useState<CloudflareAccountProblem | null>(null);
+  const [reconnectUrl, setReconnectUrl] = useState<string | null>(null);
   const [tunnelOfferOpen, setTunnelOfferOpen] = useState(false);
   const [accessSecurity, setAccessSecurity] = useState<AccessGatewayState>({ status: 'stopped', host: null, port: 8001, lan: false, passwordConfigured: false, passcode: false, sessions: 0, error: null });
   const t = translator(preferences.locale);
@@ -814,6 +892,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
 
   // Not tied to an installation: which ports this manager holds is true before
   // anything is installed, and the page that shows them says so either way.
+  // Kept current afterwards by the status poll, which a restore moves.
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
@@ -823,6 +902,74 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     void load();
     return () => { cancelled = true; };
   }, []);
+
+  /*
+   * Another manager signed in with this Cloudflare account, so this one is
+   * out: it has given its own sign-in up and can reach nothing in that
+   * account until somebody signs in here again. Nothing that would need the
+   * account is offered while this is true.
+   */
+  const displaced = Boolean(r2Owner) && r2Owner?.mine === false;
+  const [dismissedDisplaced, setDismissedDisplaced] = useState<string | null>(() => readDismissedDisplaced(browserStorage()));
+  /*
+   * Whether this account holds a machine's setup, and whether it is this one.
+   *
+   * Asked as the console opens and again once a background operation ends -
+   * which is when it changes, because that is when a restore has just made
+   * this machine the one the record describes. Not on a clock: reading it is a
+   * charged request to the bucket, and it is one small document.
+   */
+  const askAboutSettings = async (): Promise<void> => {
+    try {
+      const response = await apiFetch('/api/v1/r2/settings', { credentials: 'same-origin' });
+      if (!response.ok) return;
+      const payload = await response.json() as { settings: ManagerSettingsOffer; owner?: R2Config['owner'] | null };
+      setSettingsOffer(payload.settings);
+      setR2Owner(payload.owner ?? null);
+    } catch {
+      // Nothing is offered, which is the same as there being nothing to offer.
+    }
+  };
+  useEffect(() => { void askAboutSettings(); }, []);
+
+  /**
+   * Take the account back, from the console that lost it.
+   *
+   * The same sign-in the other machine used, so this is symmetrical: whoever
+   * signs in last is the one that backs up. The window is opened while the
+   * click is still a click, unless this browser has already refused one - in
+   * which case the button below becomes a plain link; see oauth.ts.
+   */
+  const signInToCloudflareAgain = async (): Promise<void> => {
+    const inFrame = framed();
+    const opened = inFrame && !popupsBlocked() ? openReturnWindow() : null;
+    try {
+      const response = await apiFetch(`/api/v1/r2/cloudflare/connect${inFrame ? '?handoff=1' : ''}`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      const payload = await response.json() as { url?: string };
+      if (!response.ok || !payload.url) { opened?.close(); return; }
+      if (!inFrame) { window.location.assign(payload.url); return; }
+      if (opened) { opened.location.href = payload.url; return; }
+      setReconnectUrl(payload.url);
+    } catch {
+      opened?.close();
+      // The card stays, and pressing again tries again.
+    }
+  };
+
+  const restoreEverything = async (): Promise<void> => {
+    setRestoringEverything(true);
+    try {
+      const response = await apiFetch('/api/v1/r2/restore', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      if (!response.ok) { setRestoringEverything(false); return; }
+      // The work itself is a background job, which the console already shows
+      // with its own bar and its own Stop button. What is left here is to stop
+      // offering a card for work that has started.
+      const when = settingsOffer?.writtenAt;
+      if (when) { saveDismissedSettings(when, browserStorage()); setDismissedSettings(when); }
+    } catch {
+      setRestoringEverything(false);
+    }
+  };
 
   /*
    * The four things the console watches, in one request on one clock.
@@ -841,6 +988,23 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     setManagerTunnelState(status.managerTunnel);
     setTunnelAnswered(true);
     setAccessSecurity(status.security);
+    // A restore moves SillyTavern's port, and the page that shows it used to
+    // ask once as it loaded - so the console said 8002 over a SillyTavern on
+    // 8004 until somebody reloaded it.
+    setPortSettings(status.ports);
+    /*
+     * And who holds the Cloudflare account, which is the other thing this
+     * console used to ask once and then believe for the rest of the session.
+     *
+     * A machine that has the account taken from it stops backing up without
+     * anything happening on its screen: there is no request to fail, because
+     * a manager with nothing to send makes none. So the notice about it only
+     * appeared on the next page load - and what was on the page in the
+     * meantime was the old backup card, still describing an account this
+     * machine had been locked out of.
+     */
+    setR2Owner(status.r2Owner);
+    setR2Problem(status.r2Problem);
     /*
      * Work this machine started for itself, adopted whenever it appears.
      *
@@ -853,7 +1017,13 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
      */
     // A recovery that has just finished has written into the profile, and may
     // have made the first backup this console has ever had.
-    if (backgroundJobSeen.current !== null && status.operation === null) reloadProfiles();
+    if (backgroundJobSeen.current !== null && status.operation === null) {
+      reloadProfiles();
+      // A restore that has just finished has made this machine the one the
+      // record in the bucket describes, so the card that offered it goes.
+      setRestoringEverything(false);
+      void askAboutSettings();
+    }
     backgroundJobSeen.current = status.operation?.id ?? null;
     setBackgroundJob(status.operation);
     if (status.install && installJobId === null) {
@@ -1293,6 +1463,76 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
                 and the Overview of a machine with nothing installed, where the
                 SillyTavern card is already saying it in place of its Install
                 button. */}
+            {/* The account has been taken by another manager, so this one
+                has stopped backing up. First of everything, because nothing
+                else on the page is true while it is. */}
+            {displaced && r2Owner && shouldShowDisplaced(r2Owner.label, dismissedDisplaced)
+              ? <div className="mb-(--section-gap)"><Alert variant="destructive">
+                <ShieldCheck />
+                <AlertTitle>{t('console.r2DisplacedTitle')}</AlertTitle>
+                <AlertDescription className="grid gap-2">
+                  <span>{t('console.r2DisplacedBody', { name: r2Owner.label, when: new Date(r2Owner.lastSeenAt).toLocaleString() })}</span>
+                  <span className="flex flex-wrap items-center gap-2">{reconnectUrl
+                    ? <Button size="sm" asChild style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }} className="hover:opacity-90">
+                      <a href={reconnectUrl} target="_blank" rel="noopener noreferrer"><CloudflareMark />{t('console.r2DisplacedSignIn')}</a>
+                    </Button>
+                    : <Button size="sm" style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }} className="hover:opacity-90" onClick={() => void signInToCloudflareAgain()}><CloudflareMark />{t('console.r2DisplacedSignIn')}</Button>}
+                  {/* Somebody who has moved to the other machine on purpose is
+                      being told the same thing on every page for good. The
+                      backup card goes on saying it where it matters. */}
+                  <Button size="sm" variant="ghost" onClick={() => {
+                    saveDismissedDisplaced(r2Owner.label, browserStorage());
+                    setDismissedDisplaced(r2Owner.label);
+                  }}>{t('common.dismiss')}</Button></span>
+                </AlertDescription>
+              </Alert></div>
+              : null}
+            {/* Nowhere for a backup to go, and the way to fix it is not on
+                this machine at all. Above everything for as long as it is
+                true, because for as long as it is true nothing is being
+                kept anywhere but here. */}
+            {r2Problem === 'r2_not_enabled'
+              ? <div className="mb-(--section-gap)"><Alert variant="destructive">
+                <TriangleAlert />
+                <AlertTitle>{t('console.cfR2NotEnabledTitle')}</AlertTitle>
+                <AlertDescription className="grid gap-2">
+                  <span>{t('console.cfR2NotEnabledBody')}</span>
+                  <span><Button size="sm" asChild style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }} className="hover:opacity-90">
+                    <a href={CLOUDFLARE_R2_URL} target="_blank" rel="noopener noreferrer"><CloudflareMark />{t('console.cfR2NotEnabledAction')}</a>
+                  </Button></span>
+                </AlertDescription>
+              </Alert></div>
+              : null}
+            {/* Above the work, and above the page, because on a machine
+                that has just been put in front of somebody this is the whole
+                of what there is to do. */}
+            {/* Not while this machine has been locked out of the account:
+                what is in there cannot be read from here, and offering to
+                rebuild this machine out of it is offering a button that
+                cannot work. Signing in again is the only step there is, and
+                the notice above is where it is. */}
+            {!displaced && backgroundJob === null && shouldOfferSettings(settingsOffer, dismissedSettings) && settingsOffer
+              ? <div className="mb-(--section-gap)"><RestoreEverythingCard
+                t={t}
+                offer={settingsOffer}
+                busy={restoringEverything || backgroundJob !== null}
+                onRestore={() => void restoreEverything()}
+                onDismiss={() => {
+                  const when = settingsOffer.writtenAt;
+                  if (!when) return;
+                  saveDismissedSettings(when, browserStorage());
+                  setDismissedSettings(when);
+                  /*
+                   * And the manager is told, because more than this card is
+                   * waiting on it: nothing of this machine's goes up to the
+                   * account until somebody has said what to do with what is
+                   * already there. Not waited for - the card is answered
+                   * either way, and the next tick asks again.
+                   */
+                  void apiFetch('/api/v1/r2/settings/dismiss', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } }).catch(() => undefined);
+                }}
+              /></div>
+              : null}
             {backgroundJob && page !== 'data' && !(page === 'overview' && !activeInstallationId)
               ? <div className="mb-(--section-gap)"><BackgroundTaskCard t={t} catalog={catalog} job={backgroundJob} /></div>
               : null}
@@ -1317,6 +1557,51 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
       />
     </>
   );
+}
+
+/**
+ * Everything this account remembers about a machine, offered in one press.
+ *
+ * It used to take three, spread over two pages and a table: restore the
+ * settings from a notice under the backup list, notice that they named a
+ * release and go and install it, then find the newest recovery point among the
+ * rows and restore that. Each was a separate decision, each on a card somebody
+ * had to already know was there, and the one page they were on is the one page
+ * a reader has no reason to open until something has already gone wrong.
+ *
+ * So it is one card, at the top of whatever page they are looking at. What it
+ * does is listed rather than summarised, because the reader is being asked to
+ * let a machine be replaced by the memory of another one, and the console's
+ * password is in that memory.
+ */
+function RestoreEverythingCard({ t, offer, busy, onRestore, onDismiss }: {
+  t: Translate;
+  offer: ManagerSettingsOffer;
+  busy: boolean;
+  onRestore: () => void;
+  onDismiss: () => void;
+}) {
+  return <Card className="cloud-card">
+    <PanelHeading icon={<History />}>{t('console.r2RestoreAllTitle')}</PanelHeading>
+    <CardContent className="grid gap-3">
+      <p className="text-sm text-muted-foreground">
+        {t('console.r2RestoreAllBody', { name: offer.label ?? '', when: offer.writtenAt ? new Date(offer.writtenAt).toLocaleString() : '' })}
+      </p>
+      <ul className="grid gap-1 text-sm text-muted-foreground">
+        <li>{t('console.r2RestoreAllData')}</li>
+        <li>{t('console.r2RestoreAllVersion')}</li>
+        <li>{t('console.r2RestoreAllSettings')}</li>
+        <li>{t('console.r2RestoreAllMetrics')}</li>
+      </ul>
+      <p className="text-xs text-muted-foreground">{t('console.r2RestoreAllSafety')}</p>
+      <div className="flex flex-wrap gap-2">
+        <Button size="sm" onClick={onRestore} disabled={busy}><History />{busy ? t('common.loading') : t('console.r2RestoreAll')}</Button>
+        {/* Saying no is an answer. Without it this is a card about somebody
+            else's machine that stays on every page for good. */}
+        <Button size="sm" variant="ghost" onClick={onDismiss} disabled={busy}>{t('console.r2SettingsDismiss')}</Button>
+      </div>
+    </CardContent>
+  </Card>;
 }
 
 /**
@@ -2873,7 +3158,6 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   const [r2Snapshots, setR2Snapshots] = useState<R2SnapshotSummary[]>([]);
   const [r2Busy, setR2Busy] = useState<string | null>(null);
   const [settingsOffer, setSettingsOffer] = useState<ManagerSettingsOffer | null>(null);
-  const [dismissedSettings, setDismissedSettings] = useState<string | null>(() => readDismissedSettings(browserStorage()));
   const [dismissedRecovery, setDismissedRecovery] = useState<string | null>(() => readDismissedRecovery(browserStorage()));
   const [profileOpen, setProfileOpen] = useState(false);
   const [backupOpen, setBackupOpen] = useState(false);
@@ -3371,36 +3655,36 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   };
   const connectCloudflare = async () => {
     setCloudflareSignInUrl(null);
-    // Cloudflare's sign-in refuses to load in a frame. When the panel is shown
-    // inside another page, the sign-in gets a tab of its own, opened now while
-    // the click still counts as one so it is not taken for a pop-up.
+    /*
+     * Cloudflare's sign-in refuses to load in a frame. When the panel is shown
+     * inside another page, the sign-in gets a tab of its own, opened now while
+     * the click still counts as one so it is not taken for a pop-up.
+     *
+     * Unless this browser has already said no once, in which case it is not
+     * asked again: the answer belongs to the frame rather than to the press.
+     * The button below becomes a plain link instead, and a press on a link is
+     * the one thing that is never blocked.
+     */
     const inFrame = framed();
-    const tab = inFrame ? openReturnWindow() : null;
+    const tab = inFrame && !popupsBlocked() ? openReturnWindow() : null;
     setCloudflareBusy(true);
     try {
-      // A window that was opened needs a name to bring the answer back under,
-      // because it cannot bring it back itself; see oauth.ts.
-      const response = await apiFetch(`/api/v1/r2/cloudflare/connect${tab ? '?handoff=1' : ''}`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      // Inside a frame the answer is collected from the manager however the
+      // sign-in was opened, because the tab cannot bring it back itself; see
+      // oauth.ts.
+      const response = await apiFetch(`/api/v1/r2/cloudflare/connect${inFrame ? '?handoff=1' : ''}`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       const payload = await response.json() as { url?: string; handoff?: string; error?: { message?: string } };
       if (!response.ok || !payload.url) { tab?.close(); failed(fail.body(payload, t('console.cfConnectFailed'))); return; }
-      if (tab) {
-        tab.location.href = payload.url;
-        if (payload.handoff) {
-          const stopCollecting = collectCloudflareResult(payload.handoff, (result) => settleCloudflare(result.outcome, result.code));
-          const stopWatching = whenAbandoned(tab, stopCollecting);
-          collecting.current = () => { stopCollecting(); stopWatching(); };
-        }
-        return;
+      if (!inFrame) { window.location.assign(payload.url); return; }
+      if (payload.handoff) {
+        const stopCollecting = collectCloudflareResult(payload.handoff, (result) => settleCloudflare(result.outcome, result.code));
+        const stopWatching = tab ? whenAbandoned(tab, stopCollecting) : null;
+        collecting.current = () => { stopCollecting(); stopWatching?.(); };
       }
-      // A frame that is not allowed to open tabs leaves nowhere to send the
-      // reader: this one cannot show Cloudflare's sign-in, and sending it
-      // somewhere it will be refused would only blank the console. So hand
-      // over the address instead and let them open it themselves.
-      if (inFrame) {
-        setCloudflareSignInUrl(payload.url);
-        return;
-      }
-      window.location.assign(payload.url);
+      if (tab) { tab.location.href = payload.url; return; }
+      // No tab, so the reader opens one. The sign-in is already started and
+      // already being collected; the address goes on the button they pressed.
+      setCloudflareSignInUrl(payload.url);
     } catch { tab?.close(); failed(t('console.cfConnectFailed')); } finally { setCloudflareBusy(false); }
   };
   const chooseCloudflareAccount = async (accountId: string): Promise<string | null> => {
@@ -3550,22 +3834,8 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   /**
    * Take the bucket from the machine that holds it.
    *
-   * Pressed by somebody who has read whose it is, so it does not ask again.
-   * The check that follows is the proof: it is the first thing this manager
-   * does as the holder, and it either works or says why not.
-   */
-  const takeOverR2 = async () => {
-    setR2Busy(t('console.r2TakeOver'));
-    try {
-      const response = await apiFetch('/api/v1/r2/cloudflare/takeover', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
-      const payload = await response.json() as { config?: R2Config; error?: { message?: string } };
-      if (!response.ok || !payload.config) { failed(fail.body(payload, t('console.r2TakeOverFailed'))); return; }
-      setR2Config(payload.config);
-      done(t('console.r2TakenOver'));
-    } catch { failed(t('console.r2TakeOverFailed')); } finally { setR2Busy(null); }
-  };
   /**
-   * Put back what another machine was set to.
+   * Put back what another machine was set to - the settings alone.
    *
    * The console reloads afterwards rather than trying to reconcile what is on
    * screen with what has just changed underneath it: the password this session
@@ -3622,6 +3892,13 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
     },
   ];
   const cloudflare = r2Config?.cloudflare ?? null;
+  /*
+   * Another manager signed in with this Cloudflare account, so this one is
+   * out: it has given its own sign-in up and can reach nothing in that
+   * account until somebody signs in here again. What the account holds is
+   * hidden behind this rather than offered by a console that cannot read it.
+   */
+  const displaced = r2Config?.owner ? !r2Config.owner.mine : false;
   // The recovery this machine carried out on its own, before anybody
   // opened the console. Held here so the notice below can name it and the
   // button beside it can remember which one was waved away.
@@ -3738,8 +4015,14 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
     {/* Said above the card rather than inside it, because it is the reason to
         read the card at all. It stops being shown once backups are leaving this
         machine: at that point the storage is still temporary and it no longer
-        costs the reader anything, so repeating it would only be noise. */}
-    {storage && !storage.durable && !(r2Config?.enabled && r2Config.configured) ? <Alert variant="destructive">
+        costs the reader anything, so repeating it would only be noise.
+
+        Said about anything that is not plainly the reader's own computer, not
+        only about a filesystem caught being temporary. This console recognises
+        no hosting platform by name and so cannot vouch for any of them; an
+        unverified machine is told about in the same words as one already known
+        to be thrown away, because for the reader they are the same risk. */}
+    {storage && storage.assurance !== 'durable' && !(r2Config?.enabled && r2Config.configured) ? <Alert variant="destructive">
       <TriangleAlert />
       <AlertTitle>{t('console.storageTemporaryTitle')}</AlertTitle>
       <AlertDescription>{t('console.storageTemporaryBody')}</AlertDescription>
@@ -3756,7 +4039,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       <CardContent className="grid gap-4">
         {/* The address the dialog handed over, still here after the dialog has
             been closed on top of it. */}
-        {cloudflareSignInUrl && !destinationOpen ? <CloudflareSignInBanner t={t} url={cloudflareSignInUrl} onDismiss={() => setCloudflareSignInUrl(null)} /> : null}
+        {cloudflareSignInUrl && !destinationOpen ? <CloudflareSignInNotice t={t} url={cloudflareSignInUrl} onDismiss={() => setCloudflareSignInUrl(null)} /> : null}
         {/* Said above the settings, and only while it is off: once it is on,
             this is a sales pitch for something the reader has already bought. */}
         {!(r2Config?.enabled && r2Config.configured) ? <p className="cloud-pitch">
@@ -3783,51 +4066,38 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
           * opened the console. Said here because it is otherwise
           * indistinguishable from a machine that happened to still have it.
           */}
+        {/* Another manager signed in with this Cloudflare account and took
+            it. Said at the top of every page rather than here: a console that
+            has stopped backing up is not news about the backup card, and the
+            reader may never open this page. */}
         {/*
-          * Another machine is using this account.
+          * Settings another machine left here, on their own.
           *
-          * One manager per bucket: two of them never see each other's recovery
-          * points but do collect each other's chunks. The one that is not the
-          * holder stops and says so here, with the one thing there is to do
-          * about it - take it over, which stops the other one.
+          * The card at the top of every page is the answer for somebody
+          * putting a machine back together, and it is the whole of it: the
+          * data, the release, the settings, the usage history. This is the
+          * narrow version, for somebody who is already set up and wants only
+          * the schedules and the passwords - which is a thing to come looking
+          * for on the page about backups, not a thing to be offered.
           */}
-        {r2Config?.owner && !r2Config.owner.mine ? <Alert variant="destructive">
-          <ShieldCheck />
-          <AlertTitle>{t('console.r2InUseTitle')}</AlertTitle>
-          <AlertDescription className="grid gap-2">
-            <span>{t('console.r2InUseBody', { name: r2Config.owner.label, when: new Date(r2Config.owner.lastSeenAt).toLocaleString() })}</span>
-            <span><Button size="sm" variant="outline" onClick={() => void takeOverR2()} disabled={r2Busy !== null}>{t('console.r2TakeOver')}</Button></span>
-          </AlertDescription>
-        </Alert> : null}
-        {/*
-          * Settings another machine left here.
-          *
-          * The data coming back is half of "my computer is gone"; this is the
-          * other half - the console's password, the passcode that opens
-          * SillyTavern from a phone, the schedules, the release being run.
-          * Offered rather than applied, and never offered for settings this
-          * installation wrote itself.
-          */}
-{shouldOfferSettings(settingsOffer, dismissedSettings) && settingsOffer ? <Alert>
+        {settingsOffer?.available && !settingsOffer.mine && !displaced ? <Alert>
           <Settings2 />
           <AlertTitle>{t('console.r2SettingsTitle')}</AlertTitle>
           <AlertDescription className="grid gap-2">
             <span>{t('console.r2SettingsBody', { name: settingsOffer.label ?? '', when: settingsOffer.writtenAt ? new Date(settingsOffer.writtenAt).toLocaleString() : '' })}</span>
             {settingsOffer.hasAdminPassword ? <span className="text-xs">{t('console.r2SettingsPasswordWarning')}</span> : null}
-            {/* Saying no is an answer. Without it this was a card about
-                somebody else's machine that stayed on the page for good. */}
             <span className="flex flex-wrap gap-2">
               <Button size="sm" variant="outline" onClick={() => void restoreManagerSettings()} disabled={r2Busy !== null}>{t('console.r2SettingsRestore')}</Button>
-              <Button size="sm" variant="ghost" onClick={() => {
+              <Button size="sm" variant="ghost" disabled={r2Busy !== null} onClick={() => {
                 const when = settingsOffer.writtenAt;
-                if (!when) return;
-                saveDismissedSettings(when, browserStorage());
-                setDismissedSettings(when);
+                if (when) saveDismissedSettings(when, browserStorage());
+                setSettingsOffer({ ...settingsOffer, available: false });
+                void apiFetch('/api/v1/r2/settings/dismiss', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } }).catch(() => undefined);
               }}>{t('console.r2SettingsDismiss')}</Button>
             </span>
           </AlertDescription>
         </Alert> : null}
-        {lastRecovery && shouldShowRecovery(lastRecovery.createdAt, dismissedRecovery) ? <Alert>
+        {lastRecovery && !displaced && shouldShowRecovery(lastRecovery.createdAt, dismissedRecovery) ? <Alert>
           <History />
           <AlertTitle>{t('console.r2RecoveredTitle')}</AlertTitle>
           {/* How much came back, not how many files: a size is something the
@@ -3854,7 +4124,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
               is only a question while the answer to this one is yes. */}
           <DetailRow
             label={t('console.r2Enabled')}
-            hint={!r2Config?.configured ? t('console.r2NeedsSetup') : r2Config.enabled ? r2ScheduleSummary(t, r2Config) : t('console.r2EnabledOffHint')}
+            hint={displaced ? t('console.r2DisplacedHint', { name: r2Config?.owner?.label ?? '' }) : !r2Config?.configured ? t('console.r2NeedsSetup') : r2Config.enabled ? r2ScheduleSummary(t, r2Config) : t('console.r2EnabledOffHint')}
           >
             {r2Config?.configured && r2Config.enabled
               ? <Button variant="outline" size="sm" onClick={() => setR2ScheduleOpen(true)}>{t('console.r2Change')}</Button>
@@ -3876,7 +4146,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
               because it is one question; the two ways of answering it are both
               inside the one form behind this button. */}
           <DetailRow label={t('console.r2Destination')} hint={destination}>
-            <Button variant="outline" size="sm" onClick={() => setDestinationOpen(true)}>{r2Config?.configured ? t('console.r2Change') : t('console.r2DestinationSet')}</Button>
+            <Button variant="outline" size="sm" onClick={() => setDestinationOpen(true)}>{r2Config?.configured || displaced ? t('console.r2Change') : t('console.r2DestinationSet')}</Button>
           </DetailRow>
           {/* Then the two things there are to do with a bucket: send to it now,
               and look at it. Everything else that used to be a button here
@@ -4012,6 +4282,22 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
 
 /** Where backups go, in the reader's words, whichever way the bucket is reached. */
 function destinationText(t: Translate, config: R2Config | null): string {
+  /*
+   * A machine that has lost the account still has a destination.
+   *
+   * It is connected to nothing, so `configured` is false and this line said
+   * "nowhere yet" - over a bucket holding a year of this reader's chats,
+   * beside a notice at the top of the page naming the account it had just
+   * been locked out of. What it has lost is permission, not the address.
+   */
+  const lost = config?.mode === 'cloudflare' ? config.cloudflare?.displacedBy ?? null : null;
+  if (lost) {
+    return t('console.r2DestinationLost', {
+      bucket: config?.cloudflare?.bucket ?? t('console.r2DestinationUnnamed'),
+      account: config?.cloudflare?.account?.name ?? '',
+      name: lost,
+    });
+  }
   if (!config?.configured) return t('console.r2DestinationNone');
   const bucket = (config.mode === 'cloudflare' ? config.cloudflare?.bucket : config.bucket) || t('console.r2DestinationUnnamed');
   return config.mode === 'cloudflare'
@@ -4237,41 +4523,29 @@ function RestoreDialog({ t, catalog, displayName, backup, preview, mode, onModeC
 }
 
 /**
- * The Cloudflare sign-in address, for a page that cannot open it itself.
+ * One line saying the sign-in window was blocked, and where the press goes now.
  *
  * Cloudflare's sign-in refuses to load in a frame, so a console shown inside
- * another page has to hand the address over instead of following it. That used
- * to be a notification, which is the wrong shape for it twice over: it goes
- * away while the reader is still looking at it, and it left them nothing to
- * press but Copy - so the one path out of a framed console was copy the link,
- * find the address bar, paste. A banner stays, and carries both: open it here,
- * or take the address somewhere else.
+ * another page opens a window for it - and some frames are not allowed to open
+ * windows at all. This used to be a banner carrying a title, the whole
+ * authorization address in monospace, an Open button, a Copy button and a
+ * Close: a paragraph of screen and a wall of query string, for something that
+ * ends in one press.
+ *
+ * And the press always worked. The address was fine; the browser simply would
+ * not let a script open it, while an ordinary link the reader presses
+ * themselves opens every time. So the address goes onto the button that was
+ * pressed in the first place - `url` here, and the Cloudflare button itself
+ * where there is one - and this is left saying the one thing the reader could
+ * not have guessed: press it again.
  */
-function CloudflareSignInBanner({ t, url, onDismiss }: { t: Translate; url: string; onDismiss: () => void }) {
-  const [copied, setCopied] = useState(false);
-  const { toast } = useToast();
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(url);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1600);
-    } catch {
-      // The address is on screen and can be selected, so a clipboard the
-      // browser will not hand over is worth saying and nothing more.
-      toast({ title: t('console.copyFailed'), tone: 'destructive' });
-    }
-  };
+function CloudflareSignInNotice({ t, url, onDismiss }: { t: Translate; url?: string | null; onDismiss: () => void }) {
   return <Alert>
     <CloudflareMark />
-    <AlertTitle>{t('console.cfConnectOpenHere')}</AlertTitle>
-    <AlertDescription className="grid gap-2">
-      <span>{t('console.cfConnectPopupBlocked')}</span>
-      <a className="break-all font-mono text-xs underline underline-offset-4" href={url} target="_blank" rel="noopener noreferrer">{url}</a>
-      <div className="flex flex-wrap gap-2">
-        <Button size="sm" asChild><a href={url} target="_blank" rel="noopener noreferrer"><ArrowUpRight />{t('console.openInTab')}</a></Button>
-        <Button variant="outline" size="sm" onClick={() => void copy()}><Copy />{copied ? t('console.linkCopied') : t('dashboard.copyLink')}</Button>
-        <Button variant="ghost" size="sm" onClick={onDismiss}>{t('common.close')}</Button>
-      </div>
+    <AlertDescription className="flex flex-wrap items-center gap-2">
+      <span className="mr-auto">{t(url ? 'console.cfConnectOpenHere' : 'console.cfConnectPopupBlocked')}</span>
+      {url ? <Button size="sm" asChild><a href={url} target="_blank" rel="noopener noreferrer"><ArrowUpRight />{t('console.openInTab')}</a></Button> : null}
+      <Button variant="ghost" size="sm" onClick={onDismiss}>{t('common.close')}</Button>
     </AlertDescription>
   </Alert>;
 }
@@ -4378,7 +4652,7 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled
       </DialogHeader>
       <DialogBody className="grid gap-4">
         {fromEnvironment.size > 0 ? <Alert><AlertDescription>{t('console.r2FromEnv')}</AlertDescription></Alert> : null}
-        {signInUrl ? <CloudflareSignInBanner t={t} url={signInUrl} onDismiss={onDismissSignIn} /> : null}
+        {signInUrl ? <CloudflareSignInNotice t={t} onDismiss={onDismissSignIn} /> : null}
         <RadioGroup value={choice} onValueChange={(value) => setChoice(value as R2ConnectionMode)} aria-label={t('console.r2DestinationTitle')}>
           {/* Signing in first, and marked as the one to reach for: it makes the
               bucket, keeps its own keys and is the only one that can show what
@@ -4402,6 +4676,7 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled
               account={account}
               onAccountChange={setAccount}
               onConnect={onConnect}
+              signInUrl={signInUrl}
               onChooseAccount={async () => { setError(await onChooseAccount(account)); }}
               onChooseBucket={async (name) => { setError(await onChooseBucket(name)); }}
               onDisconnect={onDisconnect}
@@ -4452,11 +4727,19 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled
  * dialog of its own on top of this one. The buckets are asked for when this
  * first shows connected, which is the only moment the list is wanted.
  */
-function CloudflareMethod({ t, status, busy, account, onAccountChange, onConnect, onChooseAccount, onChooseBucket, onDisconnect }: {
+function CloudflareMethod({ t, status, busy, account, signInUrl, onAccountChange, onConnect, onChooseAccount, onChooseBucket, onDisconnect }: {
   t: Translate;
   status: NonNullable<R2Config['cloudflare']>;
   busy: boolean;
   account: string;
+  /**
+   * The sign-in this page started but could not open a window for.
+   *
+   * Set only where the browser refused the window, and it turns the button
+   * below into a plain link to the same address - a press the browser has
+   * never been known to block.
+   */
+  signInUrl: string | null;
   onAccountChange: (id: string) => void;
   onConnect: () => void;
   onChooseAccount: () => Promise<void>;
@@ -4484,14 +4767,28 @@ function CloudflareMethod({ t, status, busy, account, onAccountChange, onConnect
     return () => { cancelled = true; };
   }, [connected, status.bucket]);
 
+  // The same button either way, so "press it again" means what it says.
+  const connectButton = (label: string, icon: ReactNode) => (signInUrl
+    ? <Button size="sm" style={brand} className="w-fit hover:opacity-90" asChild>
+      <a href={signInUrl} target="_blank" rel="noopener noreferrer">{icon}{label}</a>
+    </Button>
+    : <Button size="sm" style={brand} className="w-fit hover:opacity-90" onClick={onConnect} disabled={busy}>{icon}{label}</Button>);
+
   if (status.state === 'disconnected') {
-    return <Button size="sm" style={brand} className="w-fit hover:opacity-90" onClick={onConnect} disabled={busy}><CloudflareMark />{t('console.cfConnect')}</Button>;
+    return connectButton(t('console.cfConnect'), <CloudflareMark />);
   }
   if (status.state === 'reconnect_required') {
     return <div className="grid gap-2">
-      <p className="text-xs text-muted-foreground">{t('console.cfReconnectHint')}</p>
+      {/* Two different reasons to sign in again, and only one of them is
+          Cloudflare's. A grant that expired is a thing that happened to this
+          console; an account another machine took is a thing somebody did,
+          and pressing this button takes it back off them - which is worth
+          saying before it is pressed rather than after. */}
+      <p className="text-xs text-muted-foreground">{status.displacedBy
+        ? t('console.cfDisplacedHint', { name: status.displacedBy })
+        : t('console.cfReconnectHint')}</p>
       <div className="flex flex-wrap gap-2">
-        <Button size="sm" style={brand} className="hover:opacity-90" onClick={onConnect} disabled={busy}><RefreshCw />{t('console.cfReconnect')}</Button>
+        {connectButton(t('console.cfReconnect'), <RefreshCw />)}
         <Button variant="outline" size="sm" onClick={onDisconnect} disabled={busy}>{t('console.cfDisconnect')}</Button>
       </div>
     </div>;

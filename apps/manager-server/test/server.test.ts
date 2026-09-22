@@ -17,7 +17,7 @@ import { SILLYTAVERN_PORT } from '../src/ports.js';
 
 async function createServer(options: {
   bootstrapPassword?: string;
-  platform?: 'linux' | 'modelscope';
+  platform?: 'linux' | 'hosted';
   /** An existing data directory, for starting the same manager again. */
   root?: string;
   /** Runs before the server starts, for leaving files an older version wrote. */
@@ -33,7 +33,7 @@ async function createServer(options: {
 } = {}): Promise<ManagerServer> {
   const root = options.root ?? await mkdtemp(join(tmpdir(), 'stm-manager-'));
   const basePaths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
-  const paths = options.platform === 'modelscope' ? { ...basePaths, platform: 'modelscope' as const } : basePaths;
+  const paths = options.platform === 'hosted' ? { ...basePaths, platform: 'hosted' as const } : basePaths;
   const staticRoot = join(root, 'panel');
   await mkdir(staticRoot, { recursive: true });
   await writeFile(join(staticRoot, 'index.html'), '<!doctype html><title>Manager panel</title>', 'utf8');
@@ -126,17 +126,24 @@ function fakeTunnel(): FakeTunnel {
   };
 }
 
-test('ModelScope proxy origins are accepted while unrelated origins remain blocked', async (t) => {
-  const manager = await createServer({ platform: 'modelscope', bootstrapPassword: 'correct horse battery staple' });
+test('no hosting platform is trusted by name, whatever the manager is running on', async (t) => {
+  /*
+   * There used to be a list of hosting domains here that were let through on
+   * sight. A provider's domain admits every tenant on it, so trusting one by
+   * name trusted everybody who rents a subdomain of it - and this project has
+   * no relationship with any provider that would let it tell them apart.
+   *
+   * So there is no list. A console reached through a platform names its own
+   * address in `STM_PUBLIC_ORIGIN`, which is somebody deciding on purpose.
+   */
+  const manager = await createServer({ platform: 'hosted', bootstrapPassword: 'correct horse battery staple' });
   t.after(() => manager.close());
   const base = serverUrl(manager);
-  const proxied = await fetch(`${base}/api/v1/health`, { headers: { origin: 'https://www.modelscope.ai' } });
-  assert.equal(proxied.status, 200);
-  const studioFrame = await fetch(`${base}/api/v1/health`, { headers: { origin: 'https://locmay-stm.ms.fun' } });
-  assert.equal(studioFrame.status, 200);
-  const unrelated = await fetch(`${base}/api/v1/health`, { headers: { origin: 'https://evil.example' } });
-  assert.equal(unrelated.status, 403);
-  assert.equal((await unrelated.json() as { error: { code: string } }).error.code, 'origin_rejected');
+  for (const origin of ['https://www.some-platform.example', 'https://tenant-stm.workspaces.example', 'https://evil.example']) {
+    const refused = await fetch(`${base}/api/v1/health`, { headers: { origin } });
+    assert.equal(refused.status, 403, origin);
+    assert.equal((await refused.json() as { error: { code: string } }).error.code, 'origin_rejected');
+  }
 });
 
 test('the console trusts its own fixed address, and signs in through it', async (t) => {
@@ -1785,6 +1792,124 @@ test('a fixed address that could not be deployed stops being waited for', async 
   // which is a deployed address that answers with an error.
   assert.equal(state.proxyUrl, null);
   assert.equal(state.url, 'https://today.trycloudflare.com');
+});
+
+/*
+ * A fixed address belongs to the account, not to the machine that made it.
+ *
+ * Both managers deploy the same two Workers under the same names, so the one
+ * that signs in second deploys over them and they answer at its tunnel from
+ * then on. The machine that lost the account went on handing out that address
+ * as its own - in the console, in the QR code, in what the tunnel card calls
+ * the permanent link - and every one of them reached somebody else's machine.
+ */
+test('a fixed address stops being this machine\u2019s when the account does', async (t) => {
+  const tunnel = fakeTunnel();
+  // Signed in, with the Worker deployed and pointing where it should.
+  const account = { held: { id: 'account-1', name: 'Acme' } as { id: string; name: string } | null };
+  const manager = await createServer({
+    bootstrapPassword: 'correct horse battery staple',
+    managerTunnel: tunnel,
+    proxy: fakeProxy({ manager: { url: 'https://stm.acme.workers.dev', origin: 'https://today.trycloudflare.com' } }),
+    cloudflare: { workersAccount: async () => account.held },
+  });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  const read = async (): Promise<TunnelState> =>
+    await (await fetch(`${base}/api/v1/manager-tunnel`, { headers: { cookie: auth.cookie } })).json() as TunnelState;
+
+  await tunnel.start('quick');
+  tunnel.publish('https://today.trycloudflare.com');
+  assert.equal((await read()).proxyUrl, 'https://stm.acme.workers.dev');
+
+  // Somebody signs in with the same Cloudflare account on another machine, so
+  // this one gives its own sign-in up and has no account to deploy into.
+  account.held = null;
+  const after = await read();
+  assert.equal(after.proxyUrl, null);
+  assert.equal(after.proxyPending, false);
+  // The tunnel is this manager's own and has nothing to do with the account,
+  // so it goes on being the address there is.
+  assert.equal(after.url, 'https://today.trycloudflare.com');
+});
+
+/*
+ * And the card that offers to rebuild this machine out of the account stops
+ * being an offer.
+ *
+ * It was still on the page after the account had gone, over settings this
+ * manager could no longer read - so pressing it failed by saying the account
+ * held no manager settings at all. It holds them; they are simply not this
+ * machine's to take until somebody signs in here again.
+ */
+test('nothing is restored from an account another machine has taken', async (t) => {
+  const manager = await createServer({
+    bootstrapPassword: 'correct horse battery staple',
+    // What the last look at the bucket found: the claim names another machine.
+    prepare: async (paths) => {
+      await mkdir(paths.state, { recursive: true });
+      await writeFile(join(paths.state, 'r2-config.json'), JSON.stringify({
+        schemaVersion: 2,
+        mode: 'cloudflare',
+        enabled: true,
+        claim: { keyId: 'a1b2c3d4', label: 'studio', lastSeenAt: '2026-09-22T08:24:55.000Z', mine: false, checkedAt: '2026-09-22T08:30:00.000Z' },
+      }), 'utf8');
+    },
+  });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  const post = async (path: string): Promise<Response> => await fetch(`${base}${path}`, {
+    method: 'POST',
+    headers: { cookie: auth.cookie, 'x-csrf-token': auth.csrfToken, 'content-type': 'application/json' },
+    body: '{}',
+  });
+
+  for (const path of ['/api/v1/r2/settings/restore', '/api/v1/r2/restore']) {
+    const response = await post(path);
+    assert.equal(response.status, 409, path);
+    const body = await response.json() as { error: { code: string; message: string } };
+    assert.equal(body.error.code, 'r2_in_use', path);
+    // Named, because "this cannot be done" with no reason is the thing this
+    // whole path exists to stop happening.
+    assert.match(body.error.message, /studio/u);
+  }
+});
+
+/*
+ * A permanent address is still only an address while a tunnel is behind it.
+ *
+ * The Worker outlives the tunnel on purpose, and says so politely when there
+ * is nothing there - but the console went on listing it under "Remote, any
+ * device", with a link and a QR code, on a card whose own heading said
+ * Offline. Turn the tunnel off, hand somebody the code, and what their phone
+ * gets is a page explaining that there is nothing here.
+ */
+test('a tunnel that is off has no address, fixed or otherwise', async (t) => {
+  const tunnel = fakeTunnel();
+  const manager = await createServer({
+    bootstrapPassword: 'correct horse battery staple',
+    managerTunnel: tunnel,
+    proxy: fakeProxy({ manager: { url: 'https://stm.acme.workers.dev', origin: 'https://today.trycloudflare.com' } }),
+    cloudflare: { workersAccount: async () => ({ id: 'account-1', name: 'Acme' }) },
+  });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  const read = async (): Promise<TunnelState> =>
+    await (await fetch(`${base}/api/v1/manager-tunnel`, { headers: { cookie: auth.cookie } })).json() as TunnelState;
+
+  await tunnel.start('quick');
+  tunnel.publish('https://today.trycloudflare.com');
+  assert.equal((await read()).proxyUrl, 'https://stm.acme.workers.dev');
+
+  // And off again. The Worker is still deployed - that is what makes the
+  // address permanent - but there is nothing to reach through it.
+  await tunnel.disable();
+  const off = await read();
+  assert.equal(off.proxyUrl, null);
+  assert.equal(off.proxyPending, false);
 });
 
 test('without a Cloudflare account there is no fixed address to wait for', async (t) => {

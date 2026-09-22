@@ -23,7 +23,7 @@ import {
 import type { CloudflareAccountProblem, CloudflareConnectionState, CloudflareConnectionStatus } from '../../contracts/src/index.js';
 import type { PlatformPaths } from '../../platform/src/index.js';
 import { RequestPacer, RestObjectStore } from './rest.js';
-import { R2Error, type Billing, type ObjectRecord, type ObjectStore } from './store.js';
+import { R2Error, R2HttpError, type Billing, type ObjectRecord, type ObjectStore } from './store.js';
 import { WorkerObjectStore } from './worker-store.js';
 
 const CONNECTION_FILE = 'cloudflare-connection.json';
@@ -78,6 +78,8 @@ interface StoredConnection {
   readonly lastError: string | null;
   /** Set when Cloudflare refused for a reason the account owner has to fix there. */
   readonly problem: CloudflareAccountProblem | null;
+  /** The machine this manager handed the account to; see `surrender`. */
+  readonly displacedBy: string | null;
 }
 
 /**
@@ -165,6 +167,7 @@ export class CloudflareConnection {
       connectedAt: stored.connectedAt,
       lastError: stored.lastError,
       problem: stored.problem,
+      displacedBy: stored.displacedBy,
     };
   }
 
@@ -264,6 +267,9 @@ export class CloudflareConnection {
       reconnectRequired: false,
       lastError: null,
       connectedAt: new Date(this.now()).toISOString(),
+      // Whatever took the account before, this sign-in is the newest one, so
+      // it is this machine's again and the note about losing it is not true.
+      displacedBy: null,
       // A reconnect to the same account keeps its bucket; anything else is chosen again below.
       account: previous.account,
       bucket: previous.bucket,
@@ -376,7 +382,7 @@ export class CloudflareConnection {
     this.accessToken = null;
     this.pending = [];
     this.offeredAccounts = [];
-    await this.save({ ...stored, refreshToken: null, scopes: [], account: null, bucket: null, connectedAt: null, reconnectRequired: false, lastError: null, problem: null });
+    await this.save({ ...stored, refreshToken: null, scopes: [], account: null, bucket: null, connectedAt: null, reconnectRequired: false, lastError: null, problem: null, displacedBy: null });
     return { revoked, workerKeyRemoved, workerRemoved };
   }
 
@@ -402,6 +408,56 @@ export class CloudflareConnection {
   }
 
   /**
+   * Give the account up, because another machine holds it now.
+   *
+   * The claim in the bucket says who is using this Cloudflare account, and a
+   * manager that reads somebody else's name in it has already lost. Until now
+   * that only stopped the backups: the grant stayed on disk and went on
+   * working, so this manager could still deploy Workers into the account,
+   * read and write objects over the REST API, and ask Cloudflare what the
+   * account had spent - all of it against an account that is not its to touch
+   * any more. The console said as much, in the one sentence it had for a
+   * Worker that would not answer: backups are going the slower way for now.
+   *
+   * So the credentials go, here, on the machine that lost. Nothing is left to
+   * reach the account with: no refresh token, no access token, no Worker
+   * session. What stays is the account and bucket it was using, because they
+   * are how a sign-in from here lands back on the same bucket rather than
+   * making a second one - and the name of the machine that took it, because
+   * that is the whole of what the reader needs to be told.
+   *
+   * This is deliberately local. Cloudflare's own revocation endpoint is not
+   * called: the grant this manager would revoke is one Cloudflare issued to
+   * this client for this user, and the machine that has just taken the account
+   * holds one issued the same way. Revoking from here to be thorough risks
+   * ending theirs too - on a machine nobody is watching, to tidy up a token
+   * that has already been thrown away. Signing out by hand still revokes,
+   * because that is somebody asking for it on the machine in front of them.
+   *
+   * Returns whether anything was given up, so a caller can say so once rather
+   * than on every check.
+   */
+  public async surrender(by: string, reason: string): Promise<boolean> {
+    const stored = await this.load();
+    if (!stored.refreshToken) return false;
+    this.resetSession();
+    this.accessToken = null;
+    this.refreshing = null;
+    this.pending = [];
+    this.offeredAccounts = [];
+    await this.save({
+      ...stored,
+      refreshToken: null,
+      scopes: [],
+      reconnectRequired: true,
+      problem: null,
+      lastError: reason.slice(0, 500),
+      displacedBy: by.slice(0, 120),
+    });
+    return true;
+  }
+
+  /**
    * The bucket as an object store, for the backup code.
    *
    * Which way each request travels is decided when it is made, so a rotation,
@@ -416,7 +472,33 @@ export class CloudflareConnection {
     const route = async <T>(operation: (store: ObjectStore) => Promise<T>): Promise<T> => {
       const path = await this.choosePath();
       this.lastPath = path;
-      return await operation(path === 'worker' ? workerStore : await restStore());
+      if (path !== 'worker') return await operation(await restStore());
+      try {
+        return await operation(workerStore);
+      } catch (error: unknown) {
+        /*
+         * The Worker does not know this key any more.
+         *
+         * Which happens for one reason in practice: another manager signed in
+         * with this Cloudflare account and took it, and taking it removes the
+         * other machine's key. The refusal itself says none of that - it is a
+         * flat `401 unauthorized`, which is what the console used to show and
+         * what nobody could act on.
+         *
+         * The fact is in the bucket, in the claim, and reading the claim needs
+         * a way in. The OAuth grant still works - eviction only removed a
+         * Worker key - so the data goes the slow way for a while, this request
+         * finishes, and the next check reads the claim and can finally say who
+         * took the account and what to do about it.
+         */
+        if (!(error instanceof R2HttpError) || error.status !== 401) throw error;
+        this.session = null;
+        this.opening = null;
+        this.workerUnavailableUntil = this.now() + WORKER_RETRY_MS;
+        this.lastPath = 'rest';
+        await this.recordError('The backup Worker no longer accepts this machine’s key, so backups go over the slower REST API while this is sorted out.');
+        return await operation(await restStore());
+      }
     };
     return {
       listObjects: async (prefix: string, maxKeys: number, cursor?: string): Promise<{ objects: ObjectRecord[]; cursor: string | undefined }> => await route((store) => store.listObjects(prefix, maxKeys, cursor)),
@@ -578,6 +660,7 @@ export class CloudflareConnection {
         reconnectRequired: false,
         lastError: null,
         problem: null,
+        displacedBy: null,
       };
       await this.save(fresh);
     }
@@ -623,6 +706,7 @@ function parseStored(value: unknown): StoredConnection {
     reconnectRequired: value.reconnectRequired === true,
     lastError: typeof value.lastError === 'string' ? value.lastError : null,
     problem: value.problem === 'r2_not_enabled' ? 'r2_not_enabled' : null,
+    displacedBy: typeof value.displacedBy === 'string' && value.displacedBy ? value.displacedBy : null,
   };
 }
 

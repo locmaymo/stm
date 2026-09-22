@@ -84,21 +84,58 @@ export async function currentManagerSettings(deps: ManagerSettingsDeps): Promise
   };
 }
 
-/** Put them in the bucket if they have moved since the last time. */
-export async function saveManagerSettings(deps: ManagerSettingsDeps): Promise<boolean> {
-  return await deps.r2.saveManagerSettings(await currentManagerSettings(deps));
+/**
+ * Put them in the bucket if they have moved since the last time.
+ *
+ * `force` is for a person who pressed a button: it goes and reads the record
+ * in the bucket instead of trusting what this process remembers sending. See
+ * `R2Manager.saveManagerSettings`.
+ */
+export async function saveManagerSettings(deps: ManagerSettingsDeps, options: { readonly force?: boolean } = {}): Promise<boolean> {
+  return await deps.r2.saveManagerSettings(await currentManagerSettings(deps), options);
 }
 
-/** What the panel is told about settings some machine has left in the bucket. */
+/**
+ * The setup of some other machine, as this bucket still holds it.
+ *
+ * Two places to look, because one bucket describes one machine and this one
+ * writes its own settings over whatever was there. That is right - it is the
+ * machine now - and it was quietly destroying the thing the console was in the
+ * middle of offering: a minute after signing in, the card still named the old
+ * machine while the record behind it had already become this one's, so
+ * pressing Restore everything restored this machine onto itself.
+ *
+ * So the record being replaced is kept beside the current one, and that is
+ * what this falls back to. Null when neither is another machine's, which is
+ * the ordinary state of a machine that has been running for a while.
+ */
+export async function foreignManagerSettings(deps: ManagerSettingsDeps): Promise<ManagerSettingsRecord | null> {
+  const current = await deps.r2.loadManagerSettings().catch(() => null);
+  if (current && !await isMine(deps, current)) return current;
+  const previous = await deps.r2.loadPreviousManagerSettings().catch(() => null);
+  if (previous && !await isMine(deps, previous)) return previous;
+  return null;
+}
+
+/**
+ * What the panel is told about settings some machine has left in the bucket.
+ *
+ * Unavailable once the reader has answered it - restored it, or said they did
+ * not want it. That answer lives with the manager rather than in the browser,
+ * because more than the card depends on it: until it is given, this machine
+ * does not upload anything of its own over what the bucket is holding.
+ */
 export async function managerSettingsOffer(deps: ManagerSettingsDeps): Promise<ManagerSettingsOffer> {
-  const record = await deps.r2.loadManagerSettings().catch(() => null);
-  if (!record) return { available: false, label: null, writtenAt: null, mine: false, hasAdminPassword: false, hasAccessPassword: false };
-  const mine = await isMine(deps, record);
+  const record = await foreignManagerSettings(deps);
+  const answered = await deps.r2.answeredSettingsOffer().catch(() => null);
+  if (!record || record.writtenAt === answered) return { available: false, label: null, writtenAt: null, mine: false, hasAdminPassword: false, hasAccessPassword: false };
   return {
     available: true,
     label: record.label,
     writtenAt: record.writtenAt,
-    mine,
+    // Never this machine's, by construction: that is the whole of what the
+    // lookup above decides. Kept in the shape the panel already reads.
+    mine: false,
     hasAdminPassword: record.adminPasswordHash !== null,
     hasAccessPassword: record.accessPasswordHash !== null,
   };
@@ -192,6 +229,9 @@ export async function applyManagerSettings(deps: ManagerSettingsDeps, record: Ma
   }
 
   logger(logEvent('r2.settingsRestored', `[r2] restored the manager’s settings from ${record.label}: ${applied.join(', ') || 'nothing'}`, { from: record.label, applied: applied.join(', ') }));
+  // Answered, so the card stops offering it and the uploads this machine was
+  // holding back may go.
+  await deps.r2.answerSettingsOffer(record.writtenAt).catch(() => undefined);
   /*
    * The record in the bucket now describes this machine, so it should say so.
    *
@@ -202,6 +242,14 @@ export async function applyManagerSettings(deps: ManagerSettingsDeps, record: Ma
    * restore that happened is not undone by a write that did not.
    */
   await saveManagerSettings(deps).catch(() => false);
+  /*
+   * The kept copy of the record just restored, thrown away.
+   *
+   * It exists only to survive the window between a handover and this moment;
+   * left behind, it would be offered again for the life of the bucket, to the
+   * machine that has this second finished restoring it.
+   */
+  await deps.r2.forgetPreviousManagerSettings().catch(() => undefined);
   return { applied, skipped };
 }
 
@@ -222,7 +270,7 @@ export async function applyManagerSettings(deps: ManagerSettingsDeps, record: Ma
 export async function restoreFromBucketIfBlank(deps: ManagerSettingsDeps, options: { readonly ports: { readonly manager: number; readonly access: number } }): Promise<{ readonly applied: readonly string[]; readonly record: ManagerSettingsRecord } | null> {
   const logger: LogSink = deps.logger ?? ((line) => console.log(logLineText(line)));
   const state = await deps.store.getPersisted();
-  const record = await deps.r2.loadManagerSettings().catch(() => null);
+  const record = await foreignManagerSettings(deps);
   if (!record) return null;
   // Somebody set this machine up by hand and is now adding a Cloudflare
   // account to it. Their password stays theirs.

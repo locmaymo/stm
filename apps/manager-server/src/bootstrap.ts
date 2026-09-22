@@ -91,7 +91,7 @@ export async function openInBrowser(url: string, options: BootstrapOptions = {})
   if (env.STM_OPEN_BROWSER === '0') return false;
   const host = options.platform ?? process.platform;
   const platform = detectPlatform({ env, platform: host });
-  if (platform === 'docker' || platform === 'modelscope') return false;
+  if (platform === 'docker' || platform === 'hosted') return false;
   const runner = options.spawnImpl ?? spawn;
   const launcher = platform === 'termux'
     ? { file: 'termux-open-url', args: [url] }

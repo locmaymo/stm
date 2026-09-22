@@ -6,7 +6,7 @@ import { networkInterfaces } from 'node:os';
 import { createSocket } from 'node:dgram';
 import { extname, join, relative, resolve, sep } from 'node:path';
 import { applyQuery, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, OPERATION_JOB_KINDS, type ApiErrorBody, type ConfigUpdateInput, type ConsoleStatus, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogSink, type LogSourceFilter, type ManagerPorts, type PortSettings, type Profile, type ProfileLayout, type SetupStatus, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
-import { getPlatformPaths, storageDurability, type PlatformPaths } from '../../../packages/platform/src/index.js';
+import { getPlatformPaths, storageDurability, storageReport, type PlatformPaths } from '../../../packages/platform/src/index.js';
 import { INSTALL_CANCELED, RuntimeError, RuntimeManager, type InstallationProgress } from '../../../packages/sillytavern-runtime/src/index.js';
 import { hashPassword, MIN_PASSWORD_LENGTH, validatePasscode, validatePassword, verifyPassword } from './password.js';
 import { RateLimiter } from './rate-limit.js';
@@ -31,7 +31,8 @@ import { fetchSnapshotToLibrary, isProfileEmpty, recoverProfileFromR2 } from './
 import { TransferMeter } from './progress.js';
 import { MetricsStore } from './metrics.js';
 import { ActivityMeter } from './activity.js';
-import { applyManagerSettings, managerSettingsOffer, restoreFromBucketIfBlank, saveManagerSettings, type ManagerSettingsDeps } from './manager-settings.js';
+import { applyManagerSettings, foreignManagerSettings, managerSettingsOffer, restoreFromBucketIfBlank, saveManagerSettings, type ManagerSettingsDeps } from './manager-settings.js';
+import type { ManagerSettingsRecord } from '../../../packages/contracts/src/index.js';
 import { instrumentationLoaderPath } from '../../../packages/instrumentation/src/index.js';
 import { ConfigError, ConfigStore } from '../../../packages/config/src/index.js';
 import { DEFAULT_TELEMETRY_ENDPOINT, DEFAULT_TELEMETRY_ENROLLMENT_ENDPOINT, TelemetryTransport } from '../../../packages/telemetry/src/index.js';
@@ -94,6 +95,16 @@ const PROTECTED_PATHS = new Set([
   '/api/v1/manager-tunnel',
   '/api/v1/r2',
 ]);
+
+/**
+ * How often a console being read goes and asks the bucket who owns it.
+ *
+ * Short enough that somebody who has just signed in on another machine finds
+ * this one already knowing, rather than after a reload; long enough that a
+ * console left open all day is a few hundred reads, not a few hundred
+ * thousand.
+ */
+const CLAIM_LOOK_MS = 5 * 60 * 1000;
 
 export interface ManagerServerOptions {
   readonly host?: string;
@@ -232,7 +243,25 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   const profiles = options.profileStore ?? new ProfileStore({ paths, logger: (line) => { jobs.append('manager', line); baseLogger(line); } });
   const backups = options.backupStore ?? new BackupStore({ paths, logger: (line) => { jobs.append('backup', line); baseLogger(line); } });
   const cloudflare = options.cloudflare !== undefined ? options.cloudflare : cloudflareConnectionFromEnvironment(paths, env);
-  const r2 = options.r2 ?? new R2Manager({ paths, env, ...(cloudflare ? { cloudflare } : {}), logger: (line) => { jobs.append('backup', line); baseLogger(line); } });
+  const r2 = options.r2 ?? new R2Manager({
+    paths,
+    env,
+    ...(cloudflare ? { cloudflare } : {}),
+    logger: (line) => { jobs.append('backup', line); baseLogger(line); },
+    /*
+     * The account has gone to another machine, so what was deployed into it
+     * is no longer ours to remember.
+     *
+     * The two fixed-address Workers live in that account under names that do
+     * not depend on the machine, so the manager that took the account has
+     * deployed over them and they answer at its tunnel now. Keeping the
+     * record here would leave the console handing out an address that reaches
+     * somebody else's machine, and would let a later sign-in from here decide
+     * there was nothing to redeploy. `proxy` is defined below and this only
+     * ever runs long after that.
+     */
+    onSurrender: () => { void proxy?.forget().catch(() => undefined); },
+  });
   /*
    * The fixed addresses in front of the tunnels, when there is a Cloudflare
    * account to put them in.
@@ -257,7 +286,11 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     ? new ProxyWorkerManager({
       api: cloudflare.cloudflareApi(),
       stateDirectory: paths.state,
-      logger: (message, params) => logger(logEvent('cloudflare.proxyPublished', message, params)),
+      // The Worker manager names its own lines, so they can be read in the
+      // reader's language like every other line the manager writes. It used to
+      // hand over one code for all of them, which left the English text as the
+      // only thing there was to show.
+      logger: (code, message, params) => logger(logEvent(code, message, params)),
     })
     : null);
   /**
@@ -320,12 +353,12 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
    * The loopback address on a machine somebody is sitting at, so the console is
    * not on the house network until they say so. Every address in a container,
    * because the only thing that can reach a container's loopback is the
-   * container - Docker and ModelScope have always been that case, and a host
-   * that named the port it publishes in `PORT` is the same case wearing a
+   * container - Docker and every hosted workspace have always been that case,
+   * and a host that named the port it publishes in `PORT` is the same case wearing a
    * different name: something in front of this process is going to connect to
    * it, and it will not be connecting from inside.
    */
-  const defaultHost = paths.platform === 'docker' || paths.platform === 'modelscope' || consolePortChoice.source === 'platform' ? '0.0.0.0' : '127.0.0.1';
+  const defaultHost = paths.platform === 'docker' || paths.platform === 'hosted' || consolePortChoice.source === 'platform' ? '0.0.0.0' : '127.0.0.1';
   const host = options.host ?? env.STM_HOST ?? defaultHost;
   /**
    * The console's own port, settled before anything else asks for one.
@@ -465,6 +498,12 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     logger: (line) => { jobs.append('backup', line); baseLogger(line); },
     saveSettings: () => saveManagerSettings({ store, backups, r2, runtime, tunnel, managerTunnel, gateway, logger: baseLogger }),
     metricsFile: metrics.filePath,
+    // Whether this bucket is still holding out a setup nobody here has
+    // answered; see `waitingOnHandover`.
+    handoverPending: async () => {
+      const offer = await managerSettingsOffer({ store, backups, r2, runtime, tunnel, managerTunnel, gateway, logger: baseLogger });
+      return offer.available ? offer.label : null;
+    },
   });
   scheduler.start();
   // Uploads interrupted by a closed tab leave gigabyte part files whose id no
@@ -527,9 +566,14 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   const staticRoot = options.staticRoot ? resolve(options.staticRoot) : panelStaticRoot(env);
   // Said once, at the top of the log, where somebody setting this up is
   // already looking. The console says it again where it can be acted on.
-  const durability = storageDurability(paths.root);
-  if (!durability.durable) {
+  const durability = storageReport(paths);
+  if (durability.assurance === 'temporary') {
     logger(logEvent('storage.notDurable', `[manager] ${paths.root} is on ${durability.filesystem ?? 'temporary storage'}, which this machine does not keep across a restart; connect Cloudflare R2 so backups are held somewhere else`, { path: paths.root, filesystem: durability.filesystem ?? 'unknown' }));
+  } else if (durability.assurance === 'unverified') {
+    // Not a fault, and not silence either. This manager cannot tell whether
+    // the machine under it is kept, and the one thing that makes the answer
+    // not matter is a copy somewhere else.
+    logger(logEvent('storage.notVerified', `[manager] this manager cannot tell whether ${paths.root} survives a restart here, so treat it as storage that may be temporary; connect Cloudflare R2 so backups are held somewhere else`, { path: paths.root, filesystem: durability.filesystem ?? 'unknown' }));
   }
   let persisted = await store.load();
   // A stored port that would now collide - because `STM_PORT` or
@@ -539,7 +583,11 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   try {
     sillyTavernPort = checkSillyTavernPort(persisted.sillyTavernPort, { manager: consolePort, access: accessPort });
   } catch (error: unknown) {
-    logger(logEvent('config.portReset', `[config] SillyTavern's port ${persisted.sillyTavernPort} is no longer usable (${error instanceof Error ? error.message : 'unknown reason'}); using ${SILLYTAVERN_PORT}`, { port: persisted.sillyTavernPort }));
+    logger(logEvent('config.portReset', `[config] SillyTavern's port ${persisted.sillyTavernPort} is no longer usable (${error instanceof Error ? error.message : 'unknown reason'}); using ${SILLYTAVERN_PORT}`, {
+      port: persisted.sillyTavernPort,
+      fallback: SILLYTAVERN_PORT,
+      reason: error instanceof Error ? error.message : 'unknown reason',
+    }));
     sillyTavernPort = SILLYTAVERN_PORT;
   }
   /*
@@ -863,7 +911,7 @@ async function handleRequest(options: {
     response,
     pathname,
     searchParams: url.searchParams,
-    originTrusted: isTrustedOrigin(request, platform, publicOrigins),
+    originTrusted: isTrustedOrigin(request, publicOrigins),
     publicOrigins,
     proxiedOrigin,
     ports,
@@ -908,10 +956,10 @@ async function handleRequest(options: {
   };
 
   if (pathname === CLOUDFLARE_CALLBACK_PATH && (request.method ?? 'GET') === 'GET') {
-    await handleCloudflareCallback(context, sessions, cloudflare, r2, options.logger, handoffs, {
+    await handleCloudflareCallback(context, sessions, cloudflare, r2, publishProxies, options.logger, handoffs, {
       store, backups, runtime, secureCookies, rateLimiter,
       restoreEverything: () => restoreAfterSignIn({
-        store, backups, r2, runtime, jobs, profiles, gateway, metrics,
+        store, backups, r2, runtime, jobs, profiles, gateway, metrics, supervisor,
         tunnel, managerTunnel, ports, firstInstall, adoptSillyTavernPort, logger: options.logger,
       }),
     });
@@ -1424,7 +1472,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     // The durability of this machine's disk rides along with the backup
     // settings because it is the same question: whether a copy somewhere else
     // is a precaution or the only thing keeping the data.
-    sendJson(response, 200, { config: await r2.getConfig(), storage: storageDurability(store.paths.root) });
+    sendJson(response, 200, { config: await r2.getConfig(), storage: storageReport(store.paths) });
     return;
   }
   if (pathname === '/api/v1/r2' && method === 'PUT') {
@@ -1472,7 +1520,46 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
    * without being asked. See `manager-settings.ts`.
    */
   if (pathname === '/api/v1/r2/settings' && method === 'GET') {
-    sendJson(response, 200, { settings: await managerSettingsOffer({ store, backups, r2, runtime, tunnel, managerTunnel, gateway, logger }) });
+    /*
+     * Who holds the bucket, asked here because this is what a console asks as
+     * it opens.
+     *
+     * The claim is otherwise only read on the way into a write, and a manager
+     * with nothing to send does not write - so a machine that had the account
+     * taken from it went on saying "this machine is backing up", which is
+     * exactly the machine somebody opens the console on to find out why their
+     * backups stopped. One charged read, at most once a minute.
+     */
+    await r2.refreshClaim({ atMostEvery: 60_000 }).catch(() => undefined);
+    /*
+     * And not while this manager is already acting on it.
+     *
+     * Signing in on a blank machine starts the restore by itself, before the
+     * browser has even been redirected back. The console then opened, asked
+     * this, and put the card up - "this account holds the setup of another
+     * machine, restore it?" - over a restore that was seconds into doing
+     * exactly that. It flashed for a few seconds and vanished when the
+     * settings landed, which reads as a button somebody was too slow to press.
+     */
+    const offer = jobs.activeOperation()
+      ? { available: false, label: null, writtenAt: null, mine: false, hasAdminPassword: false, hasAccessPassword: false }
+      : await managerSettingsOffer({ store, backups, r2, runtime, tunnel, managerTunnel, gateway, logger });
+    sendJson(response, 200, { settings: offer, owner: (await r2.getConfig()).owner ?? null });
+    return;
+  }
+  /*
+   * "Not these" - the other answer, and the one that was only ever a note in
+   * one browser.
+   *
+   * It has to reach the manager, because the card is not the only thing
+   * waiting on it: until this machine has said what it wants, nothing of its
+   * own is uploaded over what the bucket is holding. A dismissal the server
+   * never heard about left that wait running for the life of the connection.
+   */
+  if (pathname === '/api/v1/r2/settings/dismiss' && method === 'POST') {
+    const record = await foreignManagerSettings({ store, backups, r2, runtime, tunnel, managerTunnel, gateway, logger });
+    if (record) await r2.answerSettingsOffer(record.writtenAt);
+    sendJson(response, 200, { dismissed: record !== null });
     return;
   }
   if (pathname === '/api/v1/r2/settings' && method === 'POST') {
@@ -1480,9 +1567,47 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     sendJson(response, 200, { saved });
     return;
   }
+  /*
+   * Everything this account remembers about a machine, put back here, now.
+   *
+   * One press rather than the three it used to take - restore the settings,
+   * then notice which release they named and install it, then find the
+   * recovery point and restore that - each on a different card, each needing
+   * the reader to know the other two existed.
+   *
+   * It is the same work a Cloudflare sign-in does by itself on a blank
+   * machine, which is why it is the same function: there is one way a machine
+   * is put back together, and a press and a sign-in must not drift apart.
+   */
+  if (pathname === '/api/v1/r2/restore' && method === 'POST') {
+    const lost = await lostTheAccount(r2);
+    if (lost) { sendError(response, 409, 'r2_in_use', displacedMessage(lost)); return; }
+    /*
+     * The release the bucket remembers, installed whatever is here already.
+     *
+     * Not the first-run install, which stands down the moment it finds an
+     * installation - right for something nobody asked for, and the opposite of
+     * what a press means when the machine is on the wrong release.
+     */
+    const installRelease = async (wanted?: string | null): Promise<void> => {
+      await beginInstallation({ runtime, jobs, supervisor, profiles, backups, r2, system, metrics }, releaseToInstall(wanted));
+    };
+    // Detached: this is minutes of installing and downloading, and the console
+    // follows it as the ordinary background job it is.
+    void restoreAfterSignIn({
+      store, backups, r2, runtime, jobs, profiles, gateway, metrics, supervisor,
+      tunnel, managerTunnel, ports, firstInstall: installRelease, adoptSillyTavernPort, logger, force: true,
+    }).catch((error: unknown) => {
+      logger(logEvent('r2.settingsRestoreFailed', `[r2] this machine could not be brought back from the bucket: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
+    });
+    sendJson(response, 202, { started: true });
+    return;
+  }
   if (pathname === '/api/v1/r2/settings/restore' && method === 'POST') {
+    const lost = await lostTheAccount(r2);
+    if (lost) { sendError(response, 409, 'r2_in_use', displacedMessage(lost)); return; }
     const body = await readJson(request);
-    const record = await r2.loadManagerSettings().catch(() => null);
+    const record = await foreignManagerSettings({ store, backups, r2, runtime, tunnel, managerTunnel, gateway, logger });
     if (!record) { sendError(response, 404, 'manager_settings_missing', 'This account holds no manager settings'); return; }
     const result = await applyManagerSettings({ store, backups, r2, runtime, tunnel, managerTunnel, gateway, adoptSillyTavernPort, logger }, record, {
       // Both default to on: somebody who asked for this asked for all of it,
@@ -1602,10 +1727,28 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
      * worth a progress bar and it keeps one.
      */
     void (async () => {
-      await saveManagerSettings({ store, backups, r2, runtime, tunnel, managerTunnel, gateway, logger });
+      /*
+       * Forced, both of them, because this is a press rather than a tick.
+       *
+       * Each of these has a shortcut that makes it free on the scheduler's
+       * clock: the settings are compared with what this process remembers
+       * sending, and the usage log with a stat this process wrote down. Both
+       * are beliefs about the bucket rather than facts about it, and a press
+       * is exactly how somebody asks whether the belief is true - so the press
+       * goes and looks. That is what "Back up now" was not doing: it reported
+       * success having sent neither, on a machine whose record in the bucket
+       * had been overwritten by another one.
+       */
+      const settingsSent = await saveManagerSettings({ store, backups, r2, runtime, tunnel, managerTunnel, gateway, logger }, { force: true });
+      jobs.append('backup', settingsSent
+        ? logEvent('r2.uploadNowSettings', '[r2] the manager’s own settings are up to date in the bucket')
+        : logEvent('r2.uploadNowSettingsSame', '[r2] the bucket already holds these manager settings'));
       // Its own catch: the usage log is the one part nobody restores by hand,
       // but it is also the one nobody would want to lose a backup over.
-      await r2.syncMetricsFile(metrics.filePath).catch(() => null);
+      const metricsSent = await r2.syncMetricsFile(metrics.filePath, { force: true }).catch(() => null);
+      jobs.append('backup', metricsSent
+        ? logEvent('r2.uploadNowMetrics', `[r2] the usage history is up to date in the bucket (${String(metricsSent.uploadedChunks)} chunk(s) sent)`, { chunks: metricsSent.uploadedChunks })
+        : logEvent('r2.uploadNowMetricsSame', '[r2] the bucket already holds this usage history'));
       await syncProfileToR2({
         profile, backups, r2, tier: 'cold', signal,
         logger: (line) => jobs.append('backup', line),
@@ -2025,14 +2168,31 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     // somebody is in front of it. It stops while the page is hidden, which is
     // what makes this a measure of being read rather than of being open.
     activity.seen();
+    /*
+     * Which also makes it the place to go and look at who holds the account.
+     *
+     * The claim is otherwise read on the way into a write, and a manager with
+     * nothing to send never writes - so a machine that had the account taken
+     * from it could sit there for hours believing it still had one. Somebody
+     * in front of the console is exactly the case worth spending a read on,
+     * and it is one small object every few minutes against a free allowance
+     * of millions. Not waited for: the answer lands in the next poll, and
+     * this one is the console's clock.
+     */
+    void r2.refreshClaim({ atMostEvery: CLAIM_LOOK_MS }).catch(() => undefined);
+    // Read once for the two things below it, both of which come off it.
+    const r2Now = await r2.getConfig();
     const status: ConsoleStatus = {
       process: supervisor.getState(),
       tunnel: await withProxyUrl(tunnel.getState(), proxy, cloudflare, 'sillyTavern'),
       managerTunnel: await withProxyUrl(managerTunnel.getState(), proxy, cloudflare, 'manager'),
       security: gateway.getState(),
-      // Both read from memory, so they cost this answer nothing.
+      // All read from memory, so they cost this answer nothing.
       install: jobs.activeInstallation(),
       operation: jobs.activeOperation(),
+      ports: { port: ports.sillyTavern(), reserved: { manager: ports.manager, access: ports.access } },
+      r2Owner: r2Now.owner,
+      r2Problem: r2Now.cloudflare?.problem ?? null,
     };
     sendJson(response, 200, status);
     return;
@@ -2090,6 +2250,18 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
  */
 async function withProxyUrl(state: TunnelState, proxy: ProxyWorkerManager | null, cloudflare: CloudflareConnection | null, target: ProxyWorkerTarget): Promise<TunnelState> {
   if (!proxy) return { ...state, proxyUrl: null, proxyPending: false };
+  /*
+   * A fixed address is an address only while something is behind it.
+   *
+   * The Worker outlives the tunnel on purpose - that is what makes the
+   * address permanent - and it says so politely when there is no tunnel
+   * there. But the console went on listing it under "Remote, any device",
+   * with a link and a QR code, on a card whose own heading said Offline. Turn
+   * the tunnel off, hand somebody the code, and what their phone gets is a
+   * page explaining that there is nothing here. It is the tunnel being off
+   * that they need to be told, and this is where that is known.
+   */
+  if (state.mode === 'off') return { ...state, proxyUrl: null, proxyPending: false };
   const record = await proxy.recordFor(target).catch(() => null);
   const expected = cloudflare ? await cloudflare.workersAccount().catch(() => null) !== null : false;
   // A tunnel with no address of its own has nothing for a Worker to follow:
@@ -2113,7 +2285,18 @@ async function withProxyUrl(state: TunnelState, proxy: ProxyWorkerManager | null
    * whether it has anything to do.
    */
   if (behind && state.url !== null && expected && !proxy.publishing(target)) void proxy.republish(target, state.url);
-  return { ...state, proxyUrl: record?.url ?? null, proxyPending: expected && state.url !== null && behind };
+  /*
+   * And no address at all when there is no longer an account behind it.
+   *
+   * A Worker deployed while this manager held the account goes on answering
+   * after another machine signs in with it - at that machine's tunnel, since
+   * taking the account is followed by deploying over the same two Workers. So
+   * the address this console remembers is not this console's address any
+   * more, and it was still being handed out, put in QR codes and published by
+   * a manager that had been locked out of the account it names. It is the
+   * tunnel's own address from here until somebody signs in again.
+   */
+  return { ...state, proxyUrl: expected ? record?.url ?? null : null, proxyPending: expected && state.url !== null && behind };
 }
 
 /** What starting an installation needs, whoever asked for it. */
@@ -2288,7 +2471,7 @@ export async function restoreWithProcess(options: {
     // A safety copy has to exist before the restore overwrites anything, but it
     // does not have to be a second copy of every file. Writing one compressed
     // archive is a single large sequential write; copying the tree file by file
-    // measured 639 seconds on a ModelScope volume for the same data. It only
+    // measured 639 seconds on a hosted network volume for the same data. It only
     // An unchanged profile can reuse the backup it already has.
     onProgress?.(15, logEvent('job.creatingSafetySnapshot', 'Creating safety snapshot'));
     const safetySnapshot = safetyCopy = await backups.createSafetyCopy(profile, {
@@ -2407,6 +2590,7 @@ async function handleCloudflareRequest(context: RequestContext, cloudflare: Clou
     const name = isRecord(body) && typeof body.name === 'string' ? body.name.trim() : '';
     if (!name) { sendError(response, 400, 'invalid_bucket', 'A bucket name is required'); return; }
     const status = await cloudflare.chooseBucket(name);
+    if (status.state === 'connected') await claimForThisMachine(r2, logger);
     sendJson(response, 200, { cloudflare: status, config: await r2.getConfig() });
     return;
   }
@@ -2417,24 +2601,13 @@ async function handleCloudflareRequest(context: RequestContext, cloudflare: Clou
     const status = await cloudflare.chooseAccount(accountId, await r2.keysBucket());
     if (status.state === 'connected') {
       await r2.update({ mode: 'cloudflare', enabled: true });
+      await claimForThisMachine(r2, logger);
       // There is somewhere to put the fixed addresses now. Not waited for: a
       // deploy takes seconds and the reader is waiting to see their account
       // connected, not to see two Workers appear.
       publishProxies();
     }
     sendJson(response, 200, { cloudflare: status, config: await r2.getConfig() });
-    return;
-  }
-  if (pathname === '/api/v1/r2/cloudflare/takeover' && method === 'POST') {
-    /*
-     * This machine takes the bucket, and the one that had it stops.
-     *
-     * Asked for by hand because the alternative is a machine deciding for
-     * itself that another one is finished with an account - which, for the
-     * pair of machines somebody is deliberately running side by side, is a
-     * decision nobody asked it to make.
-     */
-    sendJson(response, 200, { config: await r2.takeOwnership(), cloudflare: await cloudflare.status() });
     return;
   }
   if (pathname === '/api/v1/r2/cloudflare/disconnect' && method === 'POST') {
@@ -2480,7 +2653,7 @@ async function handleCloudflareRequest(context: RequestContext, cloudflare: Clou
  * top-level navigation back from Cloudflare still carries, so only a signed-in
  * admin can finish connecting this manager.
  */
-async function handleCloudflareCallback(context: RequestContext, sessions: SessionStore, cloudflare: CloudflareConnection | null, r2: R2Manager, logger: LogSink, handoffs: HandoffStore, signIn: CloudflareSignInDeps): Promise<void> {
+async function handleCloudflareCallback(context: RequestContext, sessions: SessionStore, cloudflare: CloudflareConnection | null, r2: R2Manager, publishProxies: () => void, logger: LogSink, handoffs: HandoffStore, signIn: CloudflareSignInDeps): Promise<void> {
   const { response, searchParams } = context;
   const state = searchParams.get('state') ?? '';
   /*
@@ -2550,7 +2723,25 @@ async function handleCloudflareCallback(context: RequestContext, sessions: Sessi
       error: searchParams.get('error'),
       errorDescription: searchParams.get('error_description'),
     }, await r2.keysBucket());
-    if (status.state === 'connected') await r2.update({ mode: 'cloudflare', enabled: true });
+    if (status.state === 'connected') {
+      await r2.update({ mode: 'cloudflare', enabled: true });
+      /*
+       * And this machine becomes the one that backs up, because signing in is
+       * what decides that.
+       *
+       * The claim used to be taken only where the reader picked an account
+       * from a list. A sign-in that settles the account by itself - the grant
+       * reaches exactly one, or it is a reconnect to the one already chosen -
+       * came back connected and took nothing, so a machine reconnecting to an
+       * account another machine had taken sat there refused by a claim it had
+       * just out-signed-in. The rule is the same in both cases: whoever signed
+       * in last holds it.
+       */
+      await claimForThisMachine(r2, logger);
+      // There is somewhere to put the fixed addresses again. Not waited for:
+      // the reader is waiting on a redirect, not on two Workers.
+      publishProxies();
+    }
     redirect(status.state);
   } catch (error: unknown) {
     const code = isRecord(error) && typeof error.code === 'string' ? error.code : 'cloudflare_connect_failed';
@@ -2589,6 +2780,24 @@ interface RestoreAfterSignInDeps {
   readonly firstInstall: (wanted?: string | null) => Promise<void>;
   /** Move the running manager onto the port the settings brought back. */
   readonly adoptSillyTavernPort: (port: number) => Promise<void>;
+  /** Stops SillyTavern around a restore that writes over a profile in use. */
+  readonly supervisor: ProcessSupervisor;
+  /**
+   * Somebody pressed Restore everything, rather than this being a sign-in.
+   *
+   * The automatic path is deliberately timid: it applies settings only where
+   * this machine has none, and brings data back only into a profile that holds
+   * nothing. That is right when nobody asked - it cannot take away anything
+   * somebody has.
+   *
+   * A press is somebody asking, in front of a card that says what it will do.
+   * Then the settings go back whatever this machine has of its own, the
+   * release the bucket remembers is installed even if another one is here
+   * already, and the newest recovery point is put into the profile - through
+   * the ordinary restore, which stops SillyTavern and takes a safety copy
+   * first, so what was here is still in the backup library afterwards.
+   */
+  readonly force?: boolean;
   readonly logger: LogSink;
 }
 
@@ -2635,32 +2844,21 @@ async function bringThisMachineBack(
   running: { readonly job: Job; readonly signal: AbortSignal },
 ): Promise<void> {
   const { r2, backups, jobs, profiles, metrics, ports, logger } = deps;
-  const restored = await restoreFromBucketIfBlank(settings, { ports: { manager: ports.manager, access: ports.access } }).catch((error: unknown) => {
+  /*
+   * The bucket first, before anything needs to write to it.
+   *
+   * It may be claimed by whatever this machine used to be - the claim lives in
+   * the bucket precisely so that it outlives the disk - or by a different
+   * machine on the same account. Either way the person who just signed in
+   * holds the account and is sitting in front of this one, which is the whole
+   * of the argument.
+   */
+  await claimForThisMachine(r2, logger);
+  const restored = await restoreSettings(deps, settings).catch((error: unknown) => {
     logger(logEvent('r2.settingsRestoreFailed', `[r2] the settings in the bucket could not be applied: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
     return null;
   });
   if (restored) {
-    /*
-     * The bucket, before anything else needs to write to it.
-     *
-     * It may still be claimed by whatever this machine used to be: the claim
-     * lives in the bucket precisely so that it outlives the disk, and a
-     * machine that has just been wiped comes back holding none of the
-     * identifiers it left. Taken here rather than asked about, because
-     * `restored` is only true on a manager that had no settings of its own -
-     * it has nothing to protect, and the claim standing in its way is its own
-     * from yesterday.
-     *
-     * Without this, the first backup after a sign-in was refused with
-     * "another machine is backing up to this bucket", naming this machine,
-     * and the console offered a Take over button for a machine that does not
-     * exist any more. Recovering the profile was refused for the same reason,
-     * so a sign-in meant to bring everything back brought nothing.
-     */
-    await r2.takeOwnership().catch((error: unknown) => {
-      logger(logEvent('r2.takeOwnershipFailed', `[r2] this machine could not take the bucket: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
-      return null;
-    });
     /*
      * The usage history, which is not part of a recovery point and so comes
      * back on its own.
@@ -2672,7 +2870,7 @@ async function bringThisMachineBack(
      * A machine put back together with months of chats and a metrics page
      * reading zero looks like a restore that half worked.
      */
-    if (await metricsFileIsEmpty(metrics.filePath)) {
+    if (deps.force || await metricsFileIsEmpty(metrics.filePath)) {
       await r2.restoreMetricsFile(metrics.filePath).catch((error: unknown) => {
         logger(logEvent('r2.metricsRecoveryFailed', `[r2] the usage history could not be brought back: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
         return null;
@@ -2698,19 +2896,114 @@ async function bringThisMachineBack(
    */
   if (!profile) { await deps.firstInstall(restored?.record.versionRef); return; }
   /*
-   * A profile that exists and is empty is the older shape of the same case: an
-   * installation survived and its data did not. The bucket may be claimed by
-   * what this machine used to be, and a console with data of its own is never
-   * the one being put back together, so it must not take a bucket from a
-   * machine that is still using it.
+   * A press, onto a machine that already has an installation and a profile.
+   *
+   * The automatic path stops here - it writes only into an empty profile - and
+   * stopping here is exactly what somebody pressing Restore everything did not
+   * want.
+   *
+   * Which of the two things they get depends on what is already here. A
+   * machine running a different release than the bucket remembers is
+   * reinstalled onto that release, and installing makes a profile of its own,
+   * which is empty, which the install then fills from the bucket - the whole
+   * of the press in the path that already existed. A machine already on the
+   * right release only needs the data, so the newest recovery point goes in
+   * through the ordinary restore: SillyTavern stopped, a safety copy of what
+   * is here taken, and the point put in its place.
    */
-  if (!restored && await isProfileEmpty(profile)) {
-    await r2.takeOwnership().catch((error: unknown) => {
-      logger(logEvent('r2.takeOwnershipFailed', `[r2] this machine could not take the bucket: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
-      return null;
-    });
+  if (deps.force) {
+    const wanted = restored?.record.versionRef ?? null;
+    const active = await deps.runtime.getActiveInstallation();
+    if (wanted && active?.resolvedRef !== wanted) { await deps.firstInstall(wanted); return; }
+    await refillProfile(deps, profile, running);
+    return;
   }
   await recoverEmptyProfile(() => Promise.resolve(profile), r2, backups, jobs, metrics.filePath, running);
+}
+
+/**
+ * The settings in the bucket, applied as far as this run is allowed to.
+ *
+ * A sign-in applies them only onto a machine that has none of its own; a press
+ * applies them whatever this machine has, because that is what the press said.
+ * Either way what comes back is reported, because it carries more than was
+ * applied: which release this machine was running is not a setting to write
+ * down, it is a thing to go and install.
+ */
+async function restoreSettings(
+  deps: RestoreAfterSignInDeps,
+  settings: ManagerSettingsDeps,
+): Promise<{ readonly applied: readonly string[]; readonly record: ManagerSettingsRecord } | null> {
+  const ports = { manager: deps.ports.manager, access: deps.ports.access };
+  if (!deps.force) return await restoreFromBucketIfBlank(settings, { ports });
+  // The machine the card named, which may be the record kept beside the
+  // current one; see `foreignManagerSettings`.
+  const record = await foreignManagerSettings(settings);
+  if (!record) return null;
+  const result = await applyManagerSettings(settings, record, { passwords: true, schedules: true, ports });
+  // The gateway is holding the credential and the binding this machine had a
+  // moment ago, neither of which is what it has just been told to use.
+  const state = await deps.store.getPersisted();
+  deps.gateway.setPassword(state.accessPasswordHash, state.accessPasscode);
+  await deps.gateway.setLan(state.accessLanEnabled).catch(() => undefined);
+  return { applied: result.applied, record };
+}
+
+/**
+ * Put the newest recovery point over a profile that already has data in it.
+ *
+ * Only ever from a press. The restore underneath is the one the Data page
+ * uses: it stops SillyTavern, takes a safety copy into the backup library, and
+ * replaces the profile - so somebody who pressed this having misread the card
+ * still has what they had, under Backups.
+ */
+async function refillProfile(
+  deps: RestoreAfterSignInDeps,
+  profile: Profile,
+  running: { readonly job: Job; readonly signal: AbortSignal },
+): Promise<void> {
+  const { r2, backups, jobs, supervisor, logger } = deps;
+  /*
+   * The backup slot is held across the whole of this, fetch included.
+   *
+   * The scheduler ticks every minute, and a minute into a restore it would
+   * find a profile holding whatever had arrived so far and write that to the
+   * bucket as a recovery point - which is then the newest one there, and the
+   * one the next machine would be given back. A backup of a profile caught
+   * mid-restore is worse than no backup: it is the shape of the reader's data
+   * with nothing in it.
+   *
+   * Reserved rather than queued, because the restore below takes the slot
+   * itself and waiting for a slot this already holds would wait forever.
+   */
+  const release = backups.reserve();
+  try {
+    const newest = (await r2.listSnapshots())[0];
+    if (!newest) {
+      logger(logEvent('r2.recoveryFailed', '[r2] no recovery point in the bucket could be brought back: the bucket holds none', { reason: 'the bucket holds none' }));
+      return;
+    }
+    const meter = new TransferMeter();
+    const { manifest } = await fetchSnapshotToLibrary({
+      profile, r2, backups, snapshotId: newest.id, sourceProfileId: newest.profileId, signal: running.signal,
+      logger: (line) => jobs.append('backup', line),
+      onProgress: (progress) => {
+        const { percent, params } = meter.update(progress);
+        jobs.updateOperation(running.job.id, percent, logEvent('job.fetchingChunks', `Fetching ${String(params.done)} of ${String(params.total)} - ${String(params.rate)}, ${String(params.eta)} left`, params));
+      },
+    });
+    const archivePath = await backups.getArchivePath(manifest.id);
+    if (!archivePath) throw new Error('the fetched recovery point could not be found in the backup library');
+    await restoreWithProcess({
+      profile, backups, archivePath, backupId: manifest.id, mode: 'replace', force: true, supervisor,
+      signal: running.signal,
+      onProgress: (progress, step) => jobs.updateOperation(running.job.id, progress, step),
+    });
+    await r2.recordRecovery({ createdAt: newest.createdAt, fileCount: manifest.fileCount, sizeBytes: manifest.sizeBytes });
+    logger(logEvent('r2.recovered', `[r2] the recovery point from ${newest.createdAt} is back in this profile`, { createdAt: newest.createdAt }));
+  } finally {
+    release();
+  }
 }
 
 /**
@@ -2726,6 +3019,56 @@ async function metricsFileIsEmpty(path: string): Promise<boolean> {
   } catch {
     return true;
   }
+}
+
+/**
+ * The machine that just signed in becomes the machine that backs up.
+ *
+ * Signing in to Cloudflare is proof of holding the account, and the account
+ * holder's newest manager is the one they mean: somebody who moved to a new
+ * machine has thrown the old one away, and the old one is the one that used to
+ * win. It used to take a button, on a console that first had to work out why
+ * its backups had stopped - and what it was told was `401 unauthorized`.
+ *
+ * So it is not asked about any more. The claim in the bucket moves here, the
+ * other machine's Worker key goes with it, and that machine finds out at its
+ * next check and is told who took it and how to take it back: sign in again,
+ * from there.
+ *
+ * Best effort. A sign-in that worked is not undone by a bucket that could not
+ * be written to, and the claim is read before every write anyway.
+ */
+/**
+ * The machine that holds this Cloudflare account, when it is not this one.
+ *
+ * Read from what the last look at the bucket found rather than by looking
+ * again: this is asked on the way into work that would write to the account,
+ * and the answer is already on disk. Null is the ordinary case - nobody has
+ * taken it, or there is no account.
+ */
+async function lostTheAccount(r2: R2Manager): Promise<string | null> {
+  const owner = (await r2.getConfig()).owner;
+  return owner && !owner.mine ? owner.label : null;
+}
+
+/**
+ * Why nothing can be put back from an account this machine no longer holds.
+ *
+ * The console has a card offering to rebuild this machine from what the
+ * account remembers, and it was still offering it after another machine had
+ * taken the account - over settings this manager could no longer read, with a
+ * button that failed by saying the account held no settings at all. It holds
+ * plenty; they are simply not this machine's to take any more.
+ */
+function displacedMessage(label: string): string {
+  return `${label} signed in with this Cloudflare account, so nothing can be restored from it here. Sign in to Cloudflare again from this machine first.`;
+}
+
+async function claimForThisMachine(r2: R2Manager, logger: LogSink): Promise<void> {
+  await r2.takeOwnership().catch((error: unknown) => {
+    logger(logEvent('r2.takeOwnershipFailed', `[r2] this machine could not take the bucket: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
+    return null;
+  });
 }
 
 /** What finishing a Cloudflare sign-in needs beyond the connection itself. */
@@ -3175,7 +3518,7 @@ function isLoopbackHost(hostname: string): boolean {
   return host === 'localhost' || host === '::1' || host === '0.0.0.0' || /^127\./u.test(host);
 }
 
-function isTrustedOrigin(request: IncomingMessage, platform: PlatformPaths['platform'], publicOrigins: readonly string[]): boolean {
+function isTrustedOrigin(request: IncomingMessage, publicOrigins: readonly string[]): boolean {
   const origin = headerValue(request.headers.origin);
   if (!origin) {
     return true;
@@ -3196,7 +3539,18 @@ function isTrustedOrigin(request: IncomingMessage, platform: PlatformPaths['plat
     // permission first, in a preflight this console never grants.
     const forwardedHost = forwardedValue(request, 'x-forwarded-host');
     if (forwardedHost && parsed.host === forwardedHost) return true;
-    return platform === 'modelscope' && isModelScopeOrigin(parsed.hostname);
+    /*
+     * Anything else is another site asking, and is refused.
+     *
+     * There is deliberately no list of hosting domains here. A provider's
+     * domain admits every tenant on it, so trusting one by name trusts
+     * everybody who rents a subdomain of it - and this project has no
+     * relationship with any provider that would let it tell them apart. A
+     * console reached through a platform names the address it is reached at
+     * in `STM_PUBLIC_ORIGIN`, which is somebody deciding on purpose rather
+     * than this file deciding for them.
+     */
+    return false;
   } catch {
     return false;
   }
@@ -3300,13 +3654,6 @@ export function publicOriginFromEnvironment(env: NodeJS.ProcessEnv, port: number
     return { origin: `https://${codespace}-${port.toString(10)}.${forwardingDomain}`, source: 'platform' };
   }
   return null;
-}
-
-function isModelScopeOrigin(hostname: string): boolean {
-  return hostname === 'modelscope.ai'
-    || hostname.endsWith('.modelscope.ai')
-    || hostname === 'ms.fun'
-    || hostname.endsWith('.ms.fun');
 }
 
 async function readJson(request: IncomingMessage): Promise<unknown> {

@@ -13,6 +13,24 @@ import { R2HttpError, type ObjectStore } from './store.js';
 export const MANAGER_SETTINGS_OBJECT = 'manager.json';
 
 /**
+ * The record this bucket held before the machine using it changed.
+ *
+ * One bucket describes one machine, so a machine that takes the bucket writes
+ * its own settings over whatever was there - which is right, and which was
+ * destroying the only copy of the thing the console was in the middle of
+ * offering to put back. The window was one scheduler tick: sign in, and about
+ * a minute later the card still said "this account holds the setup of
+ * <the old machine>" while the record behind it had already become this
+ * machine's own.
+ *
+ * So the one being replaced is copied here first, and only when the
+ * replacement comes from a different installation. It is written on a handover
+ * and never otherwise, it holds exactly one record, and it is what the console
+ * falls back to when the current record turns out to be this machine's.
+ */
+export const MANAGER_SETTINGS_PREVIOUS_OBJECT = 'manager-previous.json';
+
+/**
  * How often the settings are written when nothing about them has changed.
  *
  * Almost never, in practice: the write happens when the settings differ from

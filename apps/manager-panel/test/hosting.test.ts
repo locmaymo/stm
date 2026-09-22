@@ -18,7 +18,7 @@ test('a hosted address is one the platform gave out, and may not work tomorrow',
     // A workspace preview: one long name a platform issued, on a domain that
     // is the platform's rather than anybody's.
     'a1b2c3d4e5f6g7h8-123456789012.example-region.hosted.example',
-    'locmay-stm.ms.fun', 'www.modelscope.ai', 'busy-lake-1234.trycloudflare.com',
+    'tenant-stm.workspaces.example', 'www.some-platform.example', 'busy-lake-1234.trycloudflare.com',
     'stm.example.com', '203.0.113.9',
     // Neighbours of the private ranges, which are ordinary public addresses.
     '172.15.0.1', '172.32.0.1', '192.169.0.1', '11.0.0.1', '100.63.0.1', '100.128.0.1',
@@ -28,7 +28,7 @@ test('a hosted address is one the platform gave out, and may not work tomorrow',
 });
 
 test('the offer is made once, where it helps, and never on the reader’s own machine', () => {
-  const hosted = 'locmay-stm.ms.fun';
+  const hosted = 'tenant-stm.workspaces.example';
   assert.equal(shouldOfferManagerTunnel({ hostname: hosted, tunnelWanted: false, declined: false }), true);
 
   // A phone running this for itself is the common case on Android, and is
@@ -69,7 +69,7 @@ test('this machine is the loopback addresses, and nothing else', () => {
   }
   // Reached over something. A phone on the same Wi-Fi is not this machine, and
   // the loopback address there is the phone's own.
-  for (const host of ['192.168.1.20', '10.0.0.4', 'studio.modelscope.cn', 'example.trycloudflare.com', 'macbook.local']) {
+  for (const host of ['192.168.1.20', '10.0.0.4', 'studio.some-platform.example', 'example.trycloudflare.com', 'macbook.local']) {
     assert.equal(isThisMachine(host), false, host);
   }
 });

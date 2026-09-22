@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { cloudflareReturn, collectCloudflareResult, isReturnWindow, whenAbandoned, type CollectedResult } from '../src/oauth.js';
+import { cloudflareReturn, collectCloudflareResult, isReturnWindow, popupsBlocked, savePopupsBlocked, whenAbandoned, type CollectedResult } from '../src/oauth.js';
 
 test('the outcome is read from the address the manager sent the browser back to', () => {
   assert.deepEqual(cloudflareReturn('?cloudflare=signed_in'), { outcome: 'signed_in', code: '', collected: false });
@@ -158,4 +158,33 @@ test('a window that closed because it finished is never called abandoned', () =>
   stop();
   clock.run(5);
   assert.equal(abandoned, 0);
+});
+
+test('a browser that refuses a window is only asked once', () => {
+  /*
+   * The refusal belongs to the frame, not to the press. Asking again on every
+   * press costs the reader a second pop-up warning and buys nothing, while the
+   * thing that does work - an ordinary link they press themselves - is what
+   * the console offers instead once it knows.
+   */
+  const store = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => store.get(key) ?? null,
+    setItem: (key: string, value: string) => { store.set(key, value); },
+  };
+  assert.equal(popupsBlocked(storage), false);
+  savePopupsBlocked(true, storage);
+  assert.equal(popupsBlocked(storage), true);
+  // A browser that starts allowing them again is believed just as readily.
+  savePopupsBlocked(false, storage);
+  assert.equal(popupsBlocked(storage), false);
+
+  // A private window, or a frame with site data blocked, throws on both. The
+  // console then tries a window again, which is where it started.
+  const blocked = {
+    getItem: () => { throw new Error('denied'); },
+    setItem: () => { throw new Error('denied'); },
+  };
+  assert.equal(popupsBlocked(blocked), false);
+  assert.doesNotThrow(() => savePopupsBlocked(true, blocked));
 });

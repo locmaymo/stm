@@ -1,7 +1,16 @@
 export * from './table-query.js';
 export * from './table-fields.js';
 
-export type PlatformKind = 'windows' | 'linux' | 'termux' | 'docker' | 'modelscope' | 'unknown';
+/**
+ * What kind of machine this manager is on.
+ *
+ * `hosted` is any workspace a provider runs for somebody: a container built
+ * from a checkout, started on demand and stopped when nobody is looking. It is
+ * deliberately not named after a provider - this project has no relationship
+ * with any of them, trusts none of them by name, and treats every one of them
+ * the same: as a machine whose storage may not be kept.
+ */
+export type PlatformKind = 'windows' | 'linux' | 'termux' | 'docker' | 'hosted' | 'unknown';
 
 /** The ports this project ships with, before anything moves them. */
 export interface ManagerPorts {
@@ -314,6 +323,16 @@ export interface CloudflareConnectionStatus {
   readonly lastError: string | null;
   /** Something about the account that has to be dealt with on Cloudflare, not here. */
   readonly problem: CloudflareAccountProblem | null;
+  /**
+   * The machine that took this account, when that is why the sign-in is gone.
+   *
+   * Set when this manager gave its own grant up rather than lost it: another
+   * machine signed in with the same Cloudflare account, so this one stopped
+   * being allowed to touch it and threw its own credentials away. It is the
+   * difference between "sign in again, Cloudflare stopped accepting this" and
+   * "sign in again, and you will be taking the account back from that machine".
+   */
+  readonly displacedBy: string | null;
 }
 
 /**
@@ -332,7 +351,24 @@ export interface StorageDurabilityReport {
   readonly durable: boolean;
   /** What the data directory is on, when that is what decided it. */
   readonly filesystem: string | null;
+  /**
+   * How much this machine can vouch for that answer.
+   *
+   * `durable` is the only one worth staying quiet about: an installation on
+   * somebody's own computer, writing to a filesystem that is plainly a disk.
+   *
+   * `temporary` is a filesystem that is known to be thrown away with the
+   * machine. `unverified` is everything else - a container, a hosted
+   * workspace, anything this manager cannot place - and it is the answer the
+   * console gives about infrastructure it has never heard of, which is all of
+   * it. Saying "this may not be kept" about a machine that keeps it costs a
+   * sentence; saying nothing about one that does not costs somebody their
+   * chats.
+   */
+  readonly assurance: StorageAssurance;
 }
+
+export type StorageAssurance = 'durable' | 'unverified' | 'temporary';
 
 export interface R2Config {
   readonly mode: R2ConnectionMode;
@@ -1089,6 +1125,40 @@ export interface ConsoleStatus {
    */
   readonly install: Job | null;
   readonly operation: Job | null;
+  /**
+   * Which ports this manager holds, including the one SillyTavern is on.
+   *
+   * Here because the console used to ask once, as it loaded, and the port is
+   * one of the things a restore moves: a machine brought back from the bucket
+   * started SillyTavern on the port the bucket remembered - 8004, say - while
+   * the settings page went on showing the default it had read at load, until
+   * somebody reloaded the page. Read from memory, so it costs this answer
+   * nothing.
+   */
+  readonly ports: PortSettings;
+  /**
+   * Which machine is backing up to the Cloudflare account, if one is.
+   *
+   * Here for the same reason the ports are. The console used to ask this once,
+   * as it opened, down the one route that goes and reads the bucket - so a
+   * console that was already open when somebody signed in on another machine
+   * showed nothing at all. It went on showing a backup card that had stopped
+   * being true until the page happened to be reloaded, which is exactly the
+   * moment a reader is least likely to reload it. Read from memory, so it
+   * costs this answer nothing.
+   */
+  readonly r2Owner: R2Config['owner'];
+  /**
+   * Something about the signed-in Cloudflare account that has to be fixed on
+   * Cloudflare before any of this works.
+   *
+   * Here for the same reason the claim is: it is the whole of what a manager
+   * can do about backups, and it was said only inside the form where the
+   * account was chosen - a form nobody opens again once it is closed. A
+   * machine whose account has never turned R2 on is backing nothing up, on
+   * every page, and should say so on every page.
+   */
+  readonly r2Problem: CloudflareAccountProblem | null;
 }
 
 /** The complete allowlist written by the SillyTavern fetch instrumentation. */
