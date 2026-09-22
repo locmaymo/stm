@@ -692,16 +692,18 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   /*
    * Keeping this manager online where being unused is treated as being over.
    *
-   * The machine's own address, and only that: `publicOrigins` also carries the
-   * Worker in front of the tunnel and the tunnel's own hostname, and reaching
-   * either of those leaves the machine, crosses Cloudflare and comes back -
-   * spending an allowance that exists for readers on a request no reader made,
-   * at an address the platform underneath is not watching anyway.
-   *
-   * Nothing waits on it and nothing depends on it; see `online.ts`.
+   * It is given what the environment says, what a browser last taught it, and
+   * this machine's own loopback address to fall back on - in that order, and
+   * never the Worker or the tunnel. Nothing waits on it and nothing depends on
+   * it; see `online.ts`.
    */
   const online = options.online ?? new OnlineKeeper({
-    origin: environmentOrigin?.origin ?? null,
+    configuredOrigin: environmentOrigin?.origin ?? null,
+    seenOrigin: persisted.keepOnlineOrigin,
+    localOrigin: () => `http://127.0.0.1:${boundPort.toString(10)}`,
+    // Not waited for: the keeper has the address in hand either way, and what
+    // this is for is the start after this one.
+    rememberOrigin: (origin) => { void store.setKeepOnlineOrigin(origin).catch(() => undefined); },
     enabled: persisted.keepOnline,
     minutes: persisted.keepOnlineMinutes,
     logger: baseLogger,
@@ -1334,6 +1336,9 @@ async function handleReset(context: RequestContext, deps: ResetDeps): Promise<vo
   // Back to what a manager nobody has touched does, along with everything
   // else: the file that said otherwise has just been deleted, and a keeper
   // still holding the old answer would disagree with the state it is in.
+  // The switch and the schedule, but not the address it has learned: a reset
+  // erases what is on the machine, and does not move the machine. The console
+  // is about to reload onto the first-run screen from that same address.
   online.setEnabled(true, KEEP_ONLINE_DEFAULT_MINUTES);
   sessions.revokeAll();
   response.setHeader('Set-Cookie', clearSessionCookie(secureCookies));
@@ -2353,6 +2358,26 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       r2Owner: r2Now.owner,
       r2Problem: r2Now.cloudflare?.problem ?? null,
     };
+    /*
+     * And the address this console is being read at, which is how the manager
+     * learns where it is without anybody writing it down.
+     *
+     * On a platform that hands out a URL, that URL is in this request - the
+     * console already knows it well enough to say "you are reading this at
+     * <address>" when it offers a link of its own, and this is the same
+     * knowledge put to the other use. It is learned here rather than from any
+     * request because this one carries a session: what teaches the manager its
+     * address is a reader's browser, not whoever can reach the port with a
+     * `Host` header of their choosing.
+     */
+    online.seen(keepableOrigin(requestOrigin(context), [
+      status.managerTunnel.url,
+      managerTunnel.getState().url,
+      // The Worker's own address, whether or not it is the one being served
+      // right now: a Worker pointing at a tunnel from before this one is still
+      // an address a reader can arrive at, and still one to leave alone.
+      await proxy?.urlFor('manager') ?? null,
+    ]));
     sendJson(response, 200, status);
     return;
   }
@@ -3691,6 +3716,38 @@ function panelOrigin(context: RequestContext): string | null {
 }
 
 /** Whether a hostname is this machine talking to itself. */
+/** The address a browser used to reach this manager, straight from the request. */
+function requestOrigin(context: RequestContext): string | null {
+  const host = forwardedValue(context.request, 'x-forwarded-host') ?? headerValue(context.request.headers.host);
+  if (!host) return null;
+  const scheme = requestIsSecure(context.request) ? 'https' : 'http';
+  try { return new URL(`${scheme}://${host}`).origin; } catch { return null; }
+}
+
+/**
+ * That address, when it is one worth keeping open.
+ *
+ * A loopback address is not learned: it is what the keeper falls back to
+ * anyway, and remembering it would pin the manager to it on the day it moves
+ * somewhere that does have an address of its own.
+ *
+ * Neither is the Worker or the tunnel. Both are addresses a reader genuinely
+ * arrives at, so they turn up here honestly - and reaching either leaves the
+ * machine, crosses Cloudflare and comes back, spending an allowance that
+ * exists for readers on a request no reader made.
+ */
+function keepableOrigin(origin: string | null, excluded: ReadonlyArray<string | null | undefined>): string | null {
+  if (!origin) return null;
+  let host: string;
+  try { host = new URL(origin).hostname.toLowerCase(); } catch { return null; }
+  if (isLoopbackHost(host)) return null;
+  for (const address of excluded) {
+    if (!address) continue;
+    try { if (new URL(address).hostname.toLowerCase() === host) return null; } catch { /* not an address, so not this one */ }
+  }
+  return origin;
+}
+
 function isLoopbackHost(hostname: string): boolean {
   // An IPv4 address reaching an IPv6 socket arrives written `::ffff:127.0.0.1`,
   // which is the ordinary shape of a loopback connection on a dual-stack

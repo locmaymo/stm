@@ -33,8 +33,8 @@ async function createServer(options: {
   proxy?: FakeProxy;
   /** Stands in for a signed-in Cloudflare account, so Workers are expected. */
   cloudflare?: unknown;
-  /** As `STM_PUBLIC_ORIGIN` would name it. */
-  publicOrigin?: string;
+  /** As `STM_PUBLIC_ORIGIN` would name it; null for a manager nobody told. */
+  publicOrigin?: string | null;
   /** Stands in for GitHub, so no test asks it what the newest release is. */
   releases?: ReleaseWatch;
   /** Stands in for what keeps the manager online, so no test reaches anywhere. */
@@ -61,7 +61,7 @@ async function createServer(options: {
     ...(options.managerTunnel ? { managerTunnel: options.managerTunnel as unknown as TunnelManager } : {}),
     ...(options.proxy ? { proxy: options.proxy as unknown as ProxyWorkerManager } : {}),
     ...(options.cloudflare !== undefined ? { cloudflare: options.cloudflare as CloudflareConnection } : {}),
-    ...(options.publicOrigin ? { publicOrigin: options.publicOrigin } : {}),
+    ...(options.publicOrigin !== undefined ? { publicOrigin: options.publicOrigin } : {}),
     ...(options.releases ? { releases: options.releases } : {}),
     ...(options.online ? { online: options.online } : {}),
   });
@@ -2065,7 +2065,8 @@ test('a manager set up under the revision in force is never asked about it', asy
 test('the switch that keeps this manager online is written down and acted on', async (t) => {
   const reached: string[] = [];
   const online = new OnlineKeeper({
-    origin: 'https://console.example.invalid',
+    configuredOrigin: 'https://console.example.invalid',
+    localOrigin: () => 'http://127.0.0.1:7876',
     enabled: true,
     fetch: (async (input: unknown) => { reached.push(String(input)); return new Response('{}', { status: 200 }); }) as unknown as typeof globalThis.fetch,
   });
@@ -2147,4 +2148,63 @@ test('the Worker and the tunnel are not what is kept open - the machine own addr
   // Cloudflare and comes back, spending an allowance that exists for readers
   // on a request no reader made.
   assert.equal(state.address, 'https://this-machine.example.invalid');
+});
+test('the console teaches the manager the address it is being read at', async (t) => {
+  // No STM_PUBLIC_ORIGIN and no platform that names itself: the ordinary case,
+  // and the one that used to leave this with nothing to keep open.
+  const manager = await createServer({ bootstrapPassword: 'correct horse battery staple', publicOrigin: null });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  const read = async (): Promise<OnlineState> =>
+    await (await fetch(`${base}/api/v1/online`, { headers: { cookie: auth.cookie } })).json() as OnlineState;
+
+  // On, at fifteen minutes, holding this machine itself - which is what a
+  // battery saver is watching. Nothing had to be set for any of that.
+  const before = await read();
+  assert.equal(before.enabled, true);
+  assert.equal(before.minutes, KEEP_ONLINE_DEFAULT_MINUTES);
+  assert.equal(before.source, 'local');
+  assert.match(before.address ?? '', /^http:\/\/127\.0\.0\.1:\d+$/u);
+
+  /*
+   * A browser opens the console at the address the platform handed out. The
+   * console polls status from that page, so the address is in the request -
+   * exactly as it is when the console offers a link of its own and says "you
+   * are reading this at <address>".
+   */
+  await fetch(`${base}/api/v1/status`, { headers: { cookie: auth.cookie, host: 'ais-dev-cs6f.example.invalid', 'x-forwarded-host': 'ais-dev-cs6f.example.invalid', 'x-forwarded-proto': 'https' } });
+
+  const learned = await read();
+  assert.equal(learned.source, 'seen');
+  assert.equal(learned.address, 'https://ais-dev-cs6f.example.invalid');
+  // Written down, so the restart this exists to survive still knows where it
+  // is. Nothing waits on that write, so this does.
+  await manager.store.settle();
+  assert.equal((await manager.store.getPersisted()).keepOnlineOrigin, 'https://ais-dev-cs6f.example.invalid');
+});
+
+test('arriving through the tunnel teaches nothing, because the tunnel is not kept open', async (t) => {
+  const managerTunnel = fakeTunnel();
+  const manager = await createServer({
+    bootstrapPassword: 'correct horse battery staple',
+    managerTunnel,
+    proxy: fakeProxy({ manager: { url: 'https://stm.acme.workers.dev', origin: 'https://busy-lake-1234.trycloudflare.com' } }),
+    publicOrigin: null,
+  });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  await managerTunnel.start('quick');
+  managerTunnel.publish('https://busy-lake-1234.trycloudflare.com');
+
+  // A reader on their phone, who genuinely arrived at one of these.
+  for (const host of ['busy-lake-1234.trycloudflare.com', 'stm.acme.workers.dev', '127.0.0.1:7876']) {
+    await fetch(`${base}/api/v1/status`, { headers: { cookie: auth.cookie, 'x-forwarded-host': host, 'x-forwarded-proto': 'https' } });
+  }
+
+  const state = await (await fetch(`${base}/api/v1/online`, { headers: { cookie: auth.cookie } })).json() as OnlineState;
+  assert.equal(state.source, 'local', 'none of those is an address to hold open');
+  await manager.store.settle();
+  assert.equal((await manager.store.getPersisted()).keepOnlineOrigin, null);
 });
