@@ -1187,7 +1187,7 @@ async function handleRequest(options: {
   }
 
   if (pathname === '/api/v1/auth/login' && method === 'POST') {
-    await handleLogin(context, store, sessions, rateLimiter, secureCookies);
+    await handleLogin(context, store, sessions, rateLimiter, secureCookies, firstInstall);
     return;
   }
 
@@ -3980,6 +3980,10 @@ async function handlePasswordSetup(
     sendError(context.response, 409, 'already_configured', 'The manager admin password is already configured');
     return;
   }
+  // Set up to leave for a link of its own: the first run waits for the
+  // sign-in at that link; see `firstRunDeferred`.
+  const deferred = body.deferFirstRun === true;
+  if (deferred) await store.setFirstRunDeferred(true);
   clearRateLimit(context, rateLimiter);
   const created = sessions.create();
   context.response.setHeader('Set-Cookie', sessionCookie(created.token, secureCookies));
@@ -3987,7 +3991,7 @@ async function handlePasswordSetup(
   sendJson(context.response, 201, { ok: true, setupRequired: false, session, token: created.token });
   // After the answer, not before it: what follows takes minutes, and the
   // reader is waiting to be let into the console.
-  if (afterSetup) await afterSetup().catch(() => undefined);
+  if (afterSetup && !deferred) await afterSetup().catch(() => undefined);
 }
 
 async function handleLogin(
@@ -3996,6 +4000,8 @@ async function handleLogin(
   sessions: SessionStore,
   rateLimiter: RateLimiter,
   secureCookies: boolean,
+  /** The first run, for a manager that put it off until now; see `firstRunDeferred`. */
+  firstRun?: () => Promise<void>,
 ): Promise<void> {
   if (!checkRateLimit(context, rateLimiter)) {
     return;
@@ -4012,10 +4018,14 @@ async function handleLogin(
     return;
   }
   clearRateLimit(context, rateLimiter);
+  // Taken by this sign-in and no other, so the panel shows the first-run
+  // screen once and SillyTavern is installed once.
+  const deferred = await store.setFirstRunDeferred(false);
   const created = sessions.create();
   context.response.setHeader('Set-Cookie', sessionCookie(created.token, secureCookies));
   // Also in the body, for a panel whose cookie the browser will not keep.
-  sendJson(context.response, 200, { ok: true, session: created.session, token: created.token });
+  sendJson(context.response, 200, { ok: true, session: created.session, token: created.token, ...(deferred ? { firstRun: true } : {}) });
+  if (deferred && firstRun) await firstRun().catch(() => undefined);
 }
 
 function requireSession(context: RequestContext, sessions: SessionStore): { csrfToken: string } | null {
