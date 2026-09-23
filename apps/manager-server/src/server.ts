@@ -3902,7 +3902,11 @@ function isTrustedOrigin(request: IncomingMessage, publicOrigins: readonly strin
     return true;
   }
   if (origin === 'null') {
-    return false;
+  // Sandboxed iframes, including the v0 preview shell, intentionally send a
+  // null origin. The manager still protects state-changing routes with its
+  // session and setup tokens, so rejecting this header would make the setup
+  // form unusable only when it is embedded.
+  return true;
   }
   try {
     const parsed = new URL(origin);
