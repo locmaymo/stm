@@ -61,7 +61,7 @@ export interface ReachableAddress {
  * null when it has none - a hosted container has no Wi-Fi to be on. It used
  * to fall back to the address in the reader's browser, which is where the
  * *reader* is and says nothing about where this machine can be reached: on a
- * hosted studio that produced `something.run.app:8001`, offered as "on this
+ * hosted studio that produced `some-app.hosted.example:8001`, offered as "on this
  * Wi-Fi" though the platform serves no such port and the reader's phone is on
  * another network entirely. No address is the honest answer.
  *

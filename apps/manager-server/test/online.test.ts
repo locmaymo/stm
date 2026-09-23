@@ -51,21 +51,21 @@ test('with nothing written down, the address a browser arrived at is the one hel
 
   // Somebody opens it at the address the platform handed out. Nobody had to
   // write that down anywhere: it is in the request the console just made.
-  watch.seen('https://ais-dev-cs6f.example.invalid');
+  watch.seen('https://some-app-cs6f.example.invalid');
   await watch.tick();
-  assert.equal(reach.urls.at(-1), 'https://ais-dev-cs6f.example.invalid/api/v1/health');
+  assert.equal(reach.urls.at(-1), 'https://some-app-cs6f.example.invalid/api/v1/health');
   assert.equal(watch.state().source, 'seen');
   // Written down, so a restart while nobody is looking still knows where it is.
-  assert.deepEqual(remembered, ['https://ais-dev-cs6f.example.invalid']);
+  assert.deepEqual(remembered, ['https://some-app-cs6f.example.invalid']);
 
   // The same address again teaches nothing and writes nothing.
-  watch.seen('https://ais-dev-cs6f.example.invalid');
-  assert.deepEqual(remembered, ['https://ais-dev-cs6f.example.invalid']);
+  watch.seen('https://some-app-cs6f.example.invalid');
+  assert.deepEqual(remembered, ['https://some-app-cs6f.example.invalid']);
 
   // A redeploy hands out a different one, and the newest a browser used wins.
-  watch.seen('https://ais-dev-zzzz.example.invalid');
+  watch.seen('https://some-app-zzzz.example.invalid');
   await watch.tick();
-  assert.equal(reach.urls.at(-1), 'https://ais-dev-zzzz.example.invalid/api/v1/health');
+  assert.equal(reach.urls.at(-1), 'https://some-app-zzzz.example.invalid/api/v1/health');
 });
 
 test('an address learned before a restart is used without waiting for a console', async () => {

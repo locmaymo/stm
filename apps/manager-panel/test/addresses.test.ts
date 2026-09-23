@@ -109,7 +109,7 @@ test('a machine with no network of its own offers no address on one', () => {
   // A hosted container has no Wi-Fi to be on, so `networkHost` is null. The
   // address used to fall back to the hostname in the reader's browser, which
   // is where the reader is and says nothing about where this machine answers:
-  // on a hosted studio it produced `something.run.app:8001`, shown under "on
+  // on a hosted studio it produced `some-app.hosted.example:8001`, shown under "on
   // this Wi-Fi" though the platform serves no such port and the phone being
   // invited is on another network entirely.
   const hosted = reachableAddresses({ url: null }, { lan: true, port: 8001 }, null, 8000, false);
