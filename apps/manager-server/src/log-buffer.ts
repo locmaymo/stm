@@ -48,11 +48,35 @@ export class LogBuffer {
     if (this.paths) this.persist(entry);
   }
 
+  /**
+   * What has been said since `after`, and where to ask from next.
+   *
+   * One answer is capped, and the two readers of that cap want opposite ends.
+   * A console that has just opened wants the end of the buffer - replaying
+   * twenty-five thousand retained lines to fill a card is neither useful nor
+   * cheap. A console that is following wants the next page in order from where
+   * it left off.
+   *
+   * The cursor used to be set to the newest line either way, which meant the
+   * lines the cap dropped were never asked for again: an installer saying more
+   * than five hundred things between two polls lost the middle of what it
+   * said, silently, and the log read as though those minutes had been quiet.
+   * A truncated answer now stops the cursor at the last line it carried, so
+   * the rest arrives on the polls that follow.
+   */
   public read(after: number, source: LogEntry['source'] | null): { streamId: string; entries: LogEntry[]; nextCursor: number } {
+    const matching = this.entries.filter((entry) => entry.id > after && (!source || entry.source === source));
+    const entries = after === 0
+      ? matching.slice(-LOG_LIMITS.responseEntries)
+      : matching.slice(0, LOG_LIMITS.responseEntries);
+    const last = entries.at(-1)?.id;
     return {
       streamId: this.streamId,
-      entries: this.entries.filter((entry) => entry.id > after && (!source || entry.source === source)).slice(-LOG_LIMITS.responseEntries),
-      nextCursor: this.nextId - 1,
+      entries,
+      // Only a page that left something behind holds the cursor back. An
+      // answer that carried everything says so, which is what stops a reader
+      // asking again for lines about a source nothing has written to.
+      nextCursor: entries.length < matching.length && last !== undefined ? last : this.nextId - 1,
     };
   }
 

@@ -336,6 +336,10 @@ Cloudflare Quick Tunnel nhận một hostname ngẫu nhiên, và mỗi lần kh�
 
 Manager không deploy đè lên Worker trùng tên mà nó không tạo ra, nên tài khoản đã có sẵn một cái thì vẫn giữ nguyên — bảng điều khiển sẽ báo thay vì ghi đè. Ngắt kết nối Cloudflare sẽ xoá cả hai.
 
+Tài khoản Cloudflare miễn phí trả lời 100.000 lượt Worker mỗi ngày, đặt lại vào nửa đêm UTC (7 giờ sáng giờ Việt Nam), và hai địa chỉ trên dùng chung hạn mức đó với Worker mang bản sao lưu của bạn. Hết hạn mức sẽ làm cả ba cùng ngừng, nên manager theo dõi con số này và buông dần theo thứ tự trước khi điều đó xảy ra: đầu tiên bảng điều khiển lặng lẽ hỏi thưa hơn, sau đó giữ lại địa chỉ cố định của chính bảng điều khiển, cuối cùng mới đến của SillyTavern. Mỗi lần như vậy địa chỉ tunnel được đưa ra thay thế, và mọi thứ trở lại bình thường khi hạn mức được đặt lại. Việc này được ghi vào log, và bạn không phải bấm gì cả.
+
+Dùng cá nhân bình thường thì không bao giờ chạm tới — một tab bảng điều khiển mở cả ngày, cộng SillyTavern đang dùng và sao lưu đang chạy, tốn khoảng một phần mười hạn mức. Cái có thể chạm tới là chia sẻ link SillyTavern cho nhiều người: mỗi lần tải trang tốn khoảng 320 lượt, nên trần rơi vào khoảng 300 lượt tải trang mỗi ngày. Cũng lưu ý: địa chỉ ai đó đã lưu sẵn vẫn đi qua Worker — việc giữ lại một địa chỉ chỉ bảo vệ những link được đưa ra từ lúc đó trở đi, chứ không phải cái đã nằm trong trình duyệt người khác.
+
 Dữ liệu của bạn nằm ở đâu:
 
 | Nền tảng | Thư mục dữ liệu |

@@ -37,7 +37,7 @@ import type { AccessGatewayState, BackupManifest, CloudflareAccountProblem, Conf
 import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, isCloudJob, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
 import { usePoll } from './use-poll.js';
-import { POLL_BACKGROUND_MS, POLL_CARD_MS, POLL_LIVE_MS, POLL_RELEASE_MS, statusIntervalMs } from './polling.js';
+import { POLL_BACKGROUND_MS, POLL_RELEASE_MS, statusIntervalMs } from './polling.js';
 import { translateLogEntry, translateStep } from './log-format.js';
 import { QrCode } from './qr-code.js';
 import { CLOUDFLARE_ORANGE, CloudflareMark } from './cloudflare-mark.js';
@@ -819,6 +819,19 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
   const [logQuery, setLogQuery] = useState('');
   const [logsExpanded, setLogsExpanded] = useState(false);
   const [compactLogs, setCompactLogs] = useState(false);
+  /*
+   * The log buffer and the machine's meters, both filled by the one poll below.
+   *
+   * Declared here, above that poll, because it is what fills them - and a
+   * reader following this file should meet the thing being filled before the
+   * filling. Neither of them asks the manager anything on its own any more.
+   */
+  const liveLogs = useLiveLogs(logSource);
+  const { snapshot: systemSnapshot, accept: acceptSystem, remeasure } = useSystemSnapshot(csrfToken);
+  /** The archive list this console already holds, so an unchanged one is not resent. */
+  const backupsTag = useRef<string | null>(null);
+  /** Whether the manager has asked for a slower clock; see `polling.ts`. */
+  const [easePolling, setEasePolling] = useState(false);
   const [processState, setProcessState] = useState<ProcessState>({ status: 'stopped', installationId: null, profileId: null, pid: null, startedAt: null, error: null });
   const [tunnelState, setTunnelState] = useState<TunnelState>({ mode: 'off', status: 'stopped', url: null, startedAt: null, error: null });
   const [managerTunnelState, setManagerTunnelState] = useState<TunnelState>({ mode: 'off', status: 'stopped', url: null, startedAt: null, error: null });
@@ -1049,9 +1062,37 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
    * does not report in this answer, so it is passed in.
    */
   usePoll(async () => {
-    const response = await apiFetch('/api/v1/status', { credentials: 'same-origin' });
+    /*
+     * What this answer should carry besides the state above.
+     *
+     * The log and the archive list always, because the header's dot and the
+     * newest-archive line are on every page. The machine's meters only on the
+     * page that shows them: they are the largest of the three and the only one
+     * with a reader who would notice them missing.
+     *
+     * The cursor and the tag are what make the other two nearly free. The
+     * cursor asks for lines after the last one held, so a quiet log answers in
+     * seventy-nine bytes; the tag names the archive list already on screen, so
+     * an unchanged one answers in twenty.
+     */
+    const query = new URLSearchParams({
+      include: page === 'overview' ? 'system,logs,backups' : 'logs,backups',
+      logsAfter: String(liveLogs.cursor()),
+      logsSource: logSource,
+    });
+    if (backupsTag.current !== null) query.set('backupsTag', backupsTag.current);
+    const response = await apiFetch(`/api/v1/status?${query.toString()}`, { credentials: 'same-origin' });
     if (!response.ok) return;
     const status = await response.json() as ConsoleStatus;
+    if (status.system) acceptSystem(status.system);
+    if (status.logs) liveLogs.accept(status.logs);
+    if (status.backupsTag !== undefined) backupsTag.current = status.backupsTag;
+    // Absent means "the list you have is the list there is", which is the
+    // common answer and the reason the tag is sent at all.
+    if (status.backups) setBackups([...status.backups]);
+    // Said by the manager, which is the only side that can see how much of the
+    // day's Worker allowance is left.
+    setEasePolling(status.easePolling === true);
     setProcessState(status.process);
     setTunnelState(status.tunnel);
     setManagerTunnelState(status.managerTunnel);
@@ -1100,7 +1141,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
       setPendingInstallationId(status.install.installationId);
       setInstallJobId(status.install.id);
     }
-  }, { intervalMs: statusIntervalMs({ process: processState, tunnel: tunnelState, managerTunnel: managerTunnelState, working: installing || backgroundJob !== null }) });
+  }, { intervalMs: statusIntervalMs({ process: processState, tunnel: tunnelState, managerTunnel: managerTunnelState, working: installing || backgroundJob !== null, readingLog: logsExpanded, easePolling }) });
 
   /*
    * Whether the manager itself has been replaced, asked on a clock of its own.
@@ -1189,32 +1230,6 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     }).catch(() => undefined);
     return () => { cancelled = true; };
   }, []);
-
-  /*
-   * The backup list, kept current without being asked.
-   *
-   * Archives appear without anybody pressing anything - the schedule, the
-   * safety copy a restore or a profile switch takes, a copy that became an
-   * automatic backup - and the list used to show them only after a reload or
-   * a trip to another page and back. The list is the manager's own file, read
-   * from memory, but it still costs a request, so the fast clock is kept for
-   * the page that shows the list and the other pages, which show at most the
-   * newest one, ask rarely. A reply identical to what is on screen changes
-   * nothing.
-   */
-  const backupsSeen = useRef('');
-  usePoll(async () => {
-    try {
-      const response = await apiFetch('/api/v1/backups', { credentials: 'same-origin' });
-      if (!response.ok) return;
-      const text = await response.text();
-      if (text === backupsSeen.current) return;
-      backupsSeen.current = text;
-      setBackups((JSON.parse(text) as { backups: BackupManifest[] }).backups);
-    } catch {
-      // The next poll tries again.
-    }
-  }, { intervalMs: page === 'data' ? 4_000 : POLL_BACKGROUND_MS });
 
   /**
    * The profiles, read again after something that makes or fills one.
@@ -1314,15 +1329,6 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
   const navigate: Navigate = (next) => { window.location.hash = next; setPage(next); window.scrollTo({ top: 0 }); };
   const changePreferences = onPreferencesChange;
   /*
-   * Three speeds, for three ways of looking at a log.
-   *
-   * The sheet is the log opened to be read, and gets the fast clock. The card
-   * among the other cards on the Overview page is worth keeping current but is
-   * not what anybody is reading. Everywhere else the tail is followed only so
-   * that the dot in the header can say something new arrived.
-   */
-  const liveLogs = useLiveLogs(logSource, logsExpanded ? POLL_LIVE_MS : page === 'overview' ? POLL_CARD_MS : POLL_BACKGROUND_MS);
-  /*
    * Whether anything has arrived in the log since it was last looked at.
    *
    * The first batch is whatever was already in the buffer when the page
@@ -1337,7 +1343,6 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     if (seenLogId === null || logsExpanded) setSeenLogId(newestLogId);
   }, [newestLogId, logsExpanded, seenLogId]);
   const hasNewLogs = seenLogId !== null && newestLogId !== null && newestLogId > seenLogId;
-  const { snapshot: systemSnapshot, remeasure } = useSystemSnapshot(csrfToken, page === 'overview');
   const updateRuntime = async (path: string, body?: unknown) => {
     const init: RequestInit = { method: body === undefined ? 'POST' : 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken } };
     if (body !== undefined) init.body = JSON.stringify(body);
@@ -3634,9 +3639,13 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   /*
    * The R2 card follows the scheduler the same way the list does.
    *
-   * Reading the settings is local and free. Listing recovery points is a
-   * charged request to the bucket, so it is made only when the last upload
-   * time says there is a new one to list.
+   * Reading the settings is local and free on the machine, and still a request
+   * against the console's Worker allowance when the console is reached at its
+   * fixed address - so it is asked on the slow clock. What it is watching for
+   * is an upload, and uploads happen every five minutes at their fastest:
+   * asking every ten seconds was oversampling a five-minute event thirty
+   * times over. Listing recovery points is a charged request to the bucket, so
+   * it is made only when the last upload time says there is a new one to list.
    */
   const lastUploadSeen = useRef<string | null | undefined>(undefined);
   usePoll(async () => {
@@ -3654,7 +3663,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
     } catch {
       // The next poll tries again.
     }
-  }, { intervalMs: 10_000 });
+  }, { intervalMs: POLL_BACKGROUND_MS });
 
   /*
    * Whether this account holds settings from another machine.
@@ -5441,12 +5450,18 @@ function formatDuration(seconds: number): string {
  * than each card opening its own.
  */
 /**
- * Three live readings of the machine, taken only while they are on screen.
+ * Three live readings of the machine, filled by the console's own poll.
  *
- * `enabled` is what page is showing: these are meters, and a meter nobody is
- * looking at is worth nothing and still costs a request every five seconds.
+ * They used to be a request of their own every five seconds, made only on the
+ * page that shows them - which was the right shape and still the wrong cost:
+ * twelve requests a minute, four hundred and sixty bytes each, for gauges
+ * nobody reads faster than that. They now ride along with the status answer,
+ * which asks for them only on the page that shows them.
+ *
+ * Remeasuring is still a request of its own. It is somebody pressing a button
+ * after deleting an archive, not a clock.
  */
-function useSystemSnapshot(csrfToken: string, enabled: boolean): { snapshot: SystemSnapshot | null; remeasure: () => Promise<void> } {
+function useSystemSnapshot(csrfToken: string): { snapshot: SystemSnapshot | null; accept: (snapshot: SystemSnapshot) => void; remeasure: () => Promise<void> } {
   const [snapshot, setSnapshot] = useState<SystemSnapshot | null>(null);
   const remeasure = async () => {
     try {
@@ -5456,15 +5471,7 @@ function useSystemSnapshot(csrfToken: string, enabled: boolean): { snapshot: Sys
       // The next poll reports the sizes whether or not this request landed.
     }
   };
-  usePoll(async () => {
-    try {
-      const response = await apiFetch('/api/v1/system', { credentials: 'same-origin' });
-      if (response.ok) setSnapshot(await response.json() as SystemSnapshot);
-    } catch {
-      // A dropped reading is replaced by the next one.
-    }
-  }, { intervalMs: 5_000, enabled });
-  return { snapshot, remeasure };
+  return { snapshot, accept: setSnapshot, remeasure };
 }
 
 /**

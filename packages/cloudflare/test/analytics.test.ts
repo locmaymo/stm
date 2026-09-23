@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { operationClass, readR2Usage } from '../src/analytics.js';
+import { operationClass, readR2Usage, readWorkersUsage } from '../src/analytics.js';
 import { CloudflareApi, CloudflareApiError } from '../src/api.js';
 
 const ACCOUNT = '0123456789abcdef0123456789abcdef';
@@ -73,4 +73,58 @@ test('GraphQL errors inside a 200 are failures, not an empty month', async () =>
   const { api: client } = api(() => Response.json({ data: null, errors: [{ message: 'not authorized for that account' }] }));
   await assert.rejects(readR2Usage(client, ACCOUNT, 'b', new Date()), (error: unknown) => error instanceof CloudflareApiError && error.code === 'cloudflare_graphql_failed' && /not authorized/u.test(error.message));
   await assert.rejects(readR2Usage(client, '../x', 'b', new Date()), (error: unknown) => error instanceof CloudflareApiError && error.code === 'cloudflare_invalid_account');
+});
+
+const invocation = (scriptName: string, requests: number, errors = 0) => ({ sum: { requests, errors }, dimensions: { scriptName } });
+
+test("today's Worker requests are counted per script and for the account together", async () => {
+  const { api: client, requests } = api(() => Response.json({
+    data: { viewer: { accounts: [{ invocations: [
+      invocation('sillytavern', 18_400, 12),
+      invocation('stm', 5_320),
+      invocation('sillytavern-manager-backup', 610),
+      // A script can come back more than once: the dimensions Cloudflare
+      // groups by are not only the one asked for.
+      invocation('stm', 180),
+    ] }] } },
+    errors: null,
+  }));
+
+  const report = await readWorkersUsage(client, ACCOUNT, new Date('2026-09-22T16:40:00Z'));
+
+  // The allowance is per account, so the total is what matters; the split is
+  // what says which Worker is spending it.
+  assert.equal(report.requests, 24_510);
+  assert.equal(report.errors, 12);
+  assert.equal(report.freeTier.requestsPerDay, 100_000);
+  assert.deepEqual(report.scripts, [
+    { scriptName: 'sillytavern', requests: 18_400, errors: 12 },
+    { scriptName: 'stm', requests: 5_500, errors: 0 },
+    { scriptName: 'sillytavern-manager-backup', requests: 610, errors: 0 },
+  ]);
+
+  // Counted from midnight UTC, which is when Cloudflare resets the allowance -
+  // not from midnight wherever the machine is. In Vietnam that boundary falls
+  // at seven in the morning, and counting from local midnight would report
+  // against yesterday's allowance for seven hours of every day.
+  assert.equal(requests[0]?.variables.dayStart, '2026-09-22T00:00:00.000Z');
+  assert.equal(report.dayStart, '2026-09-22T00:00:00.000Z');
+});
+
+test('an account whose Workers have answered nothing today reads as nothing, not as unknown', async () => {
+  const { api: client } = api(() => Response.json({ data: { viewer: { accounts: [{ invocations: [] }] } }, errors: null }));
+  const report = await readWorkersUsage(client, ACCOUNT, new Date('2026-09-22T00:04:00Z'));
+  assert.equal(report.requests, 0);
+  assert.deepEqual(report.scripts, []);
+});
+
+test('a refused Workers analytics query is an error rather than a usage of nothing', async () => {
+  // A failed GraphQL query is still a 200 with `errors` beside `data`. Read as
+  // success it would say the account has used nothing, which is the one wrong
+  // answer here: it reads as room to spare on an account that may have none.
+  const { api: client } = api(() => Response.json({ data: null, errors: [{ message: 'not authorized for that account' }] }));
+  await assert.rejects(
+    readWorkersUsage(client, ACCOUNT, new Date('2026-09-22T10:00:00Z')),
+    (error: unknown) => error instanceof CloudflareApiError && error.code === 'cloudflare_graphql_failed',
+  );
 });

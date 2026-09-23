@@ -6,8 +6,9 @@ import { join } from 'node:path';
 import { getPlatformPaths } from '../../../packages/platform/src/index.js';
 import { StateStore } from '../src/state.js';
 import { preferredNetworkHost, startManagerServer, type ManagerServer } from '../src/server.js';
-import type { AccessGatewayState, ConsoleStatus, Installation, LegalReview, ManagerUpdateStatus, OnlineState, ProcessState, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, ApiErrorBody, ConsoleStatus, Installation, LegalReview, ManagerUpdateStatus, OnlineState, ProcessState, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { LEGAL_META } from '../../../packages/legal/src/index.js';
+import type { WorkerBudget, WorkerBudgetLevel } from '../src/worker-budget.js';
 import { hashPassword } from '../src/password.js';
 import type { TunnelManager } from '../../../packages/tunnel/src/index.js';
 import type { ProxyWorkerManager } from '../../../packages/cloudflare/src/index.js';
@@ -39,6 +40,8 @@ async function createServer(options: {
   releases?: ReleaseWatch;
   /** Stands in for what keeps the manager online, so no test reaches anywhere. */
   online?: OnlineKeeper;
+  /** Puts the manager at a point in its day's Worker allowance; see `worker-budget.ts`. */
+  budget?: WorkerBudgetLevel;
 } = {}): Promise<ManagerServer> {
   const root = options.root ?? await mkdtemp(join(tmpdir(), 'stm-manager-'));
   const basePaths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
@@ -64,6 +67,7 @@ async function createServer(options: {
     ...(options.publicOrigin !== undefined ? { publicOrigin: options.publicOrigin } : {}),
     ...(options.releases ? { releases: options.releases } : {}),
     ...(options.online ? { online: options.online } : {}),
+    ...(options.budget ? { budget: { level: () => options.budget, refresh: () => undefined } as unknown as WorkerBudget } : {}),
   });
 }
 
@@ -1973,6 +1977,98 @@ test('everything the console watches comes back in one answer', async (t) => {
   assert.equal((await fetch(`${base}/api/v1/status`)).status, 401);
 });
 
+test('the expensive halves are sent only to a console that asks for them', async (t) => {
+  const manager = await createServer({ bootstrapPassword: 'correct horse battery staple' });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  const headers = { cookie: auth.cookie };
+
+  // A console that says nothing gets the state and none of the weight: no
+  // reading of the machine, no log, no archive list.
+  const bare = await (await fetch(`${base}/api/v1/status`, { headers })).json() as ConsoleStatus;
+  assert.equal(bare.system, undefined);
+  assert.equal(bare.logs, undefined);
+  assert.equal(bare.backups, undefined);
+  assert.equal(bare.backupsTag, undefined);
+
+  const full = await (await fetch(`${base}/api/v1/status?include=system,logs,backups`, { headers })).json() as ConsoleStatus;
+  assert.ok(full.system, 'the machine reading was asked for');
+  assert.ok(full.logs, 'the log tail was asked for');
+  assert.ok(typeof full.backupsTag === 'string' && full.backupsTag.length > 0);
+  // Never having been given the list, this console is given it.
+  assert.ok(Array.isArray(full.backups));
+
+  // Each section is what its own endpoint says, which is what makes the four
+  // endpoints safe to keep and this one safe to fold them into.
+  const system = await (await fetch(`${base}/api/v1/system`, { headers })).json() as SystemSnapshot;
+  assert.equal(full.system?.storage.root, system.storage.root);
+  assert.equal(full.system?.cpu.cores, system.cpu.cores);
+});
+
+test('an unchanged archive list is named rather than sent again', async (t) => {
+  const manager = await createServer({ bootstrapPassword: 'correct horse battery staple' });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  const headers = { cookie: auth.cookie };
+
+  const first = await (await fetch(`${base}/api/v1/status?include=backups`, { headers })).json() as ConsoleStatus;
+  const tag = first.backupsTag;
+  assert.ok(tag);
+
+  // Handing the tag back says "this is the list I have"; the answer confirms
+  // the tag and leaves the list out, which is the whole saving.
+  const again = await (await fetch(`${base}/api/v1/status?include=backups&backupsTag=${encodeURIComponent(tag)}`, { headers })).json() as ConsoleStatus;
+  assert.equal(again.backupsTag, tag);
+  assert.equal(again.backups, undefined);
+
+  // A tag from some older list is not the current one, so the list comes back.
+  const stale = await (await fetch(`${base}/api/v1/status?include=backups&backupsTag=notthecurrentone`, { headers })).json() as ConsoleStatus;
+  assert.ok(Array.isArray(stale.backups));
+  assert.equal(stale.backupsTag, tag);
+});
+
+test('the log tail rides along from the cursor it is asked from', async (t) => {
+  const manager = await createServer({ bootstrapPassword: 'correct horse battery staple' });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  const headers = { cookie: auth.cookie };
+
+  const opened = await (await fetch(`${base}/api/v1/status?include=logs`, { headers })).json() as ConsoleStatus;
+  assert.ok(opened.logs);
+  const cursor = opened.logs.nextCursor;
+
+  // Asking again from where the last answer ended returns nothing, which is
+  // the common case and the reason a quiet log costs almost nothing.
+  const quiet = await (await fetch(`${base}/api/v1/status?include=logs&logsAfter=${cursor}`, { headers })).json() as ConsoleStatus;
+  assert.deepEqual(quiet.logs?.entries, []);
+  assert.equal(quiet.logs?.nextCursor, cursor);
+
+  // A source nobody has written to is empty rather than everything.
+  const filtered = await (await fetch(`${base}/api/v1/status?include=logs&logsSource=installer`, { headers })).json() as ConsoleStatus;
+  assert.deepEqual(filtered.logs?.entries, []);
+});
+
+test('a console asking for something this answer does not carry is refused', async (t) => {
+  const manager = await createServer({ bootstrapPassword: 'correct horse battery staple' });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  const headers = { cookie: auth.cookie };
+
+  // Refused rather than quietly answered without it. This is the one call the
+  // console lives on, and a console silently missing its log is worse to find
+  // than a refusal that names what went wrong.
+  const unknown = await fetch(`${base}/api/v1/status?include=logs,weather`, { headers });
+  assert.equal(unknown.status, 400);
+  assert.equal(((await unknown.json()) as ApiErrorBody).error.code, 'invalid_section');
+
+  assert.equal((await fetch(`${base}/api/v1/status?include=logs&logsAfter=-1`, { headers })).status, 400);
+  assert.equal((await fetch(`${base}/api/v1/status?include=logs&logsSource=nonsense`, { headers })).status, 400);
+});
+
 test('the console is told when a newer manager has been published', async (t) => {
   const releases = new ReleaseWatch({
     version: '0.2.0',
@@ -2207,4 +2303,76 @@ test('arriving through the tunnel teaches nothing, because the tunnel is not kep
   assert.equal(state.source, 'local', 'none of those is an address to hold open');
   await manager.store.settle();
   assert.equal((await manager.store.getPersisted()).keepOnlineOrigin, null);
+});
+test("a day's Worker allowance running down takes the fixed addresses back, in order", async (t) => {
+  const deployed = {
+    manager: { url: 'https://stm.acme.workers.dev', origin: 'https://today.trycloudflare.com' as string | null },
+    sillyTavern: { url: 'https://sillytavern.acme.workers.dev', origin: 'https://today.trycloudflare.com' as string | null },
+  };
+  // Signed in far enough to have deployed the two Workers. `/api/v1/status`
+  // reads the connection as well as the tunnels, so this fake answers both.
+  const cloudflare = {
+    workersAccount: async () => ({ id: 'account-1', name: 'Acme' }),
+    status: async () => ({ state: 'disconnected', account: null, bucket: null, accounts: [], dataPath: null, restReason: null, analyticsGranted: false, connectedAt: null, lastError: null, problem: null, displacedBy: null }),
+  };
+
+  const read = async (level: 'clear' | 'easing' | 'console' | 'shared') => {
+    const tunnel = fakeTunnel();
+    const manager = await createServer({ bootstrapPassword: 'correct horse battery staple', managerTunnel: tunnel, proxy: fakeProxy(deployed), cloudflare, budget: level });
+    t.after(() => manager.close());
+    const base = serverUrl(manager);
+    const auth = await signIn(base);
+    await tunnel.start('quick');
+    tunnel.publish('https://today.trycloudflare.com');
+    const status = await (await fetch(`${base}/api/v1/status`, { headers: { cookie: auth.cookie } })).json() as ConsoleStatus;
+    return { console: status.managerTunnel, shared: status.tunnel, easePolling: status.easePolling };
+  };
+
+  // With room to spare, both fixed addresses are what the console hands out.
+  const clear = await read('clear');
+  assert.equal(clear.console.proxyUrl, 'https://stm.acme.workers.dev');
+  assert.equal(clear.easePolling, undefined);
+
+  // The first step is invisible: a slower screen, and nobody loses an address.
+  const easing = await read('easing');
+  assert.equal(easing.console.proxyUrl, 'https://stm.acme.workers.dev');
+  assert.equal(easing.easePolling, true);
+
+  // Then this console's own address, which costs one person who has a local
+  // address anyway. `publicAddress()` in the panel reads `proxyUrl ?? url`, so
+  // a null here is every card and QR code falling back to the tunnel at once.
+  const own = await read('console');
+  assert.equal(own.console.proxyUrl, null);
+  assert.equal(own.console.proxyPending, false, 'the tunnel address is offered now, not described as still coming');
+  assert.equal(own.console.url, 'https://today.trycloudflare.com');
+
+  // SillyTavern's goes last, because it is the one that was shared.
+  const shared = await read('shared');
+  assert.equal(shared.console.proxyUrl, null);
+});
+
+test("a manager that cannot see its Worker usage keeps handing out fixed addresses", async (t) => {
+  // The default budget on a manager with no Cloudflare sign-in. An unknown
+  // figure is not a large one, and a manager that quietly served tunnel
+  // addresses because a permission was missing would have given up the feature
+  // it exists for.
+  const tunnel = fakeTunnel();
+  const manager = await createServer({
+    bootstrapPassword: 'correct horse battery staple',
+    managerTunnel: tunnel,
+    proxy: fakeProxy({ manager: { url: 'https://stm.acme.workers.dev', origin: 'https://today.trycloudflare.com' } }),
+    cloudflare: {
+      workersAccount: async () => ({ id: 'account-1', name: 'Acme' }),
+      status: async () => ({ state: 'disconnected', account: null, bucket: null, accounts: [], dataPath: null, restReason: null, analyticsGranted: false, connectedAt: null, lastError: null, problem: null, displacedBy: null }),
+    },
+  });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  await tunnel.start('quick');
+  tunnel.publish('https://today.trycloudflare.com');
+
+  const status = await (await fetch(`${base}/api/v1/status`, { headers: { cookie: auth.cookie } })).json() as ConsoleStatus;
+  assert.equal(status.managerTunnel.proxyUrl, 'https://stm.acme.workers.dev');
+  assert.equal(status.easePolling, undefined);
 });

@@ -1015,7 +1015,11 @@
       "proxyRepublishFailed": "Không trỏ được địa chỉ cố định về tunnel đang chạy: {reason}",
       "proxyForwarding": "{url} bây giờ chuyển tiếp tới {origin}",
       "proxyIdle": "{url} không có tunnel nào phía sau và sẽ báo đúng như vậy",
-      "proxyRemoved": "Đã gỡ Worker {name}"
+      "proxyRemoved": "Đã gỡ Worker {name}",
+      "budgetEasing": "Đã dùng {used} trong {limit} lượt Cloudflare Worker của hôm nay ({percent}%). Bảng điều khiển này hỏi thưa hơn để dành chỗ cho SillyTavern và cho sao lưu.",
+      "budgetConsole": "Đã dùng {used} trong {limit} lượt Cloudflare Worker của hôm nay ({percent}%). Địa chỉ cố định của chính bảng điều khiển này tạm được giữ lại và địa chỉ tunnel được đưa ra thay thế, để link SillyTavern và các bản sao lưu vẫn chạy.",
+      "budgetShared": "Đã dùng {used} trong {limit} lượt Cloudflare Worker của hôm nay ({percent}%). Địa chỉ cố định của SillyTavern tạm được giữ lại và địa chỉ tunnel được đưa ra thay thế. Hạn mức đặt lại vào nửa đêm UTC. Địa chỉ đã chia sẻ trước đó vẫn đi qua Worker và sẽ ngừng trả lời nếu hết hạn mức trong ngày.",
+      "budgetClear": "Hôm nay đã dùng {used} trong {limit} lượt Cloudflare Worker. Các địa chỉ cố định được đưa ra trở lại."
     },
     "auth": {
       "cloudflareSignedIn": "Đã đăng nhập bằng tài khoản Cloudflare {account}",

@@ -1,11 +1,11 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
 import { readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import { createSocket } from 'node:dgram';
 import { extname, join, relative, resolve, sep } from 'node:path';
-import { applyQuery, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, KEEP_ONLINE_DEFAULT_MINUTES, OPERATION_JOB_KINDS, type AccessGatewayState, type ApiErrorBody, type ConfigUpdateInput, type ConsoleStatus, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogSink, type LogSourceFilter, type LegalReview, type ManagerPorts, type ManagerUpdateStatus, type OnlineState, type PortSettings, type Profile, type ProfileLayout, type SetupStatus, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
+import { applyQuery, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, isConsoleStatusSection, KEEP_ONLINE_DEFAULT_MINUTES, OPERATION_JOB_KINDS, type AccessGatewayState, type ApiErrorBody, type BackupManifest, type ConfigUpdateInput, type ConsoleStatus, type ConsoleStatusSection, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogPage, type LogSink, type LogSourceFilter, type LegalReview, type ManagerPorts, type ManagerUpdateStatus, type OnlineState, type PortSettings, type Profile, type ProfileLayout, type SetupStatus, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
 import { getPlatformPaths, storageDurability, storageReport, type PlatformPaths } from '../../../packages/platform/src/index.js';
 import { INSTALL_CANCELED, RuntimeError, RuntimeManager, type InstallationProgress } from '../../../packages/sillytavern-runtime/src/index.js';
 import { hashPassword, MIN_PASSWORD_LENGTH, validatePasscode, validatePassword, verifyPassword } from './password.js';
@@ -16,6 +16,7 @@ import { StateStore } from './state.js';
 import { LOG_LIMITS, LogBuffer } from './log-buffer.js';
 import { eraseManagerData } from './reset.js';
 import { SystemStore } from './system.js';
+import { easesPolling, withholdsAddress, WorkerBudget } from './worker-budget.js';
 import { panelStaticRoot } from './bootstrap.js';
 import { ProcessSupervisor } from './supervisor.js';
 import { AccessGateway } from './gateway.js';
@@ -164,6 +165,13 @@ export interface ManagerServerOptions {
    * rather than against four real minutes.
    */
   readonly online?: OnlineKeeper;
+  /**
+   * How much of the day's Cloudflare Worker allowance is left.
+   *
+   * Overridable so a test can put a manager at ninety per cent of its day
+   * without a Cloudflare account, an analytics grant and a day of traffic.
+   */
+  readonly budget?: WorkerBudget;
   /**
    * Called when a launcher that knows STM_SHUTDOWN_TOKEN asks to shut down.
    *
@@ -720,6 +728,15 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     persisted = await store.getPersisted();
     logger(logEvent('setup.passwordBootstrapped', '[setup] admin password bootstrapped from STM_ADMIN_PASSWORD'));
   }
+  /*
+   * How much of the day's Cloudflare Worker allowance is left.
+   *
+   * Read from the console's own poll rather than on a clock of its own: a
+   * manager nobody is looking at is a manager spending nothing on the console,
+   * and the one thing this decides - which address to hand out - is only
+   * decided when somebody asks for an address.
+   */
+  const budget = options.budget ?? new WorkerBudget({ cloudflare, logger: baseLogger });
   const shutdownToken = env.STM_SHUTDOWN_TOKEN?.trim() || null;
   /*
    * Whether a manager with its password just set installs SillyTavern itself.
@@ -771,6 +788,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       online,
       proxy,
       publishProxies,
+      budget,
       shutdownToken,
       autoInstall,
       onShutdownRequest: options.onShutdownRequest,
@@ -949,6 +967,8 @@ async function handleRequest(options: {
   readonly proxy: ProxyWorkerManager | null;
   /** Put the fixed addresses in place, for a Cloudflare account just connected. */
   readonly publishProxies: () => void;
+  /** How much of the day's Worker allowance is left; see `worker-budget.ts`. */
+  readonly budget: WorkerBudget;
   readonly shutdownToken: string | null;
   /**
    * Whether the manager may install SillyTavern by itself on a first run.
@@ -960,7 +980,7 @@ async function handleRequest(options: {
   readonly autoInstall: boolean;
   readonly onShutdownRequest: (() => void) | undefined;
 }): Promise<void> {
-  const { request, response, store, sessions, rateLimiter, handoffs, startedAt, publicOrigins, proxiedOrigin, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, releases, online, proxy, publishProxies, shutdownToken, autoInstall, onShutdownRequest } = options;
+  const { request, response, store, sessions, rateLimiter, handoffs, startedAt, publicOrigins, proxiedOrigin, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, releases, online, proxy, publishProxies, budget, shutdownToken, autoInstall, onShutdownRequest } = options;
   // Whether the browser's side of this connection is HTTPS, which is not the
   // same question as whether ours is: a hosted console is reached over HTTPS
   // that a proxy terminates before us, and only the proxy's own header says so.
@@ -1255,7 +1275,7 @@ async function handleRequest(options: {
     if (method !== 'GET' && !requireCsrf(context, session.csrfToken)) {
       return;
     }
-    await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, online, proxy, publishProxies, logger, handoffs);
+    await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, online, proxy, publishProxies, budget, logger, handoffs);
     return;
   }
 
@@ -1394,7 +1414,7 @@ async function adoptRestoredPort(deps: PortAdoptionDeps, port: number): Promise<
   }
 }
 
-async function handleRuntimeRequest(context: RequestContext, store: StateStore, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, managerTunnel: TunnelManager, gateway: AccessGateway, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, cloudflare: CloudflareConnection | null, metrics: MetricsStore, activity: ActivityMeter, config: ConfigStore, system: SystemStore, online: OnlineKeeper, proxy: ProxyWorkerManager | null, publishProxies: () => void, logger: LogSink, handoffs: HandoffStore): Promise<void> {
+async function handleRuntimeRequest(context: RequestContext, store: StateStore, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, managerTunnel: TunnelManager, gateway: AccessGateway, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, cloudflare: CloudflareConnection | null, metrics: MetricsStore, activity: ActivityMeter, config: ConfigStore, system: SystemStore, online: OnlineKeeper, proxy: ProxyWorkerManager | null, publishProxies: () => void, budget: WorkerBudget, logger: LogSink, handoffs: HandoffStore): Promise<void> {
   const { pathname, ports, request, response, searchParams } = context;
   const method = request.method ?? 'GET';
   const adoptSillyTavernPort = (port: number): Promise<void> =>
@@ -2194,7 +2214,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
    * shows the fixed one and keeps the tunnel's own beside it, because that is
    * where the traffic really goes and it is worth being able to see.
    */
-  if (pathname === '/api/v1/tunnel' && method === 'GET') { sendJson(response, 200, await withProxyUrl(tunnel.getState(), proxy, cloudflare, 'sillyTavern')); return; }
+  if (pathname === '/api/v1/tunnel' && method === 'GET') { sendJson(response, 200, await withProxyUrl(tunnel.getState(), proxy, cloudflare, 'sillyTavern', budget)); return; }
   if (pathname === '/api/v1/tunnel' && method === 'PUT') {
     const body = await readJson(request);
     const mode = isRecord(body) && (body.mode === 'off' || body.mode === 'quick' || body.mode === 'named') ? body.mode : null;
@@ -2217,7 +2237,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
      */
     if (mode !== 'off' && !gateway.getState().passwordConfigured) { sendError(response, 409, 'public_access_password_required', 'Set the SillyTavern password before opening a public tunnel'); return; }
     const state = mode === 'off' ? await tunnel.disable() : await tunnel.start(mode, isRecord(body) && typeof body.token === 'string' ? body.token : undefined);
-    sendJson(response, 200, await withProxyUrl(state, proxy, cloudflare, 'sillyTavern'));
+    sendJson(response, 200, await withProxyUrl(state, proxy, cloudflare, 'sillyTavern', budget));
     return;
   }
   /**
@@ -2230,7 +2250,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
    * platform's own address does not work, which is a problem the console has
    * whether or not anything is installed yet.
    */
-  if (pathname === '/api/v1/manager-tunnel' && method === 'GET') { sendJson(response, 200, await withProxyUrl(managerTunnel.getState(), proxy, cloudflare, 'manager')); return; }
+  if (pathname === '/api/v1/manager-tunnel' && method === 'GET') { sendJson(response, 200, await withProxyUrl(managerTunnel.getState(), proxy, cloudflare, 'manager', budget)); return; }
   if (pathname === '/api/v1/manager-tunnel' && method === 'PUT') {
     const body = await readJson(request);
     const mode = isRecord(body) && (body.mode === 'off' || body.mode === 'quick' || body.mode === 'named') ? body.mode : null;
@@ -2243,7 +2263,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       return;
     }
     const state = mode === 'off' ? await managerTunnel.disable() : await managerTunnel.start(mode, isRecord(body) && typeof body.token === 'string' ? body.token : undefined);
-    sendJson(response, 200, await withProxyUrl(state, proxy, cloudflare, 'manager'));
+    sendJson(response, 200, await withProxyUrl(state, proxy, cloudflare, 'manager', budget));
     return;
   }
   /*
@@ -2317,17 +2337,51 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
   /*
    * Everything the console watches on its clock, in one answer.
    *
-   * The console used to ask for these four separately, several times a minute,
-   * which is four connections for one screenful of state. Reached through a
+   * The console used to ask for these separately, several times a minute,
+   * which is several connections for one screenful of state. Reached through a
    * Cloudflare Worker - which is what the console's own fixed address is -
    * every one of those counts against an allowance of a hundred thousand a
    * day, shared with SillyTavern's address and with the backup Worker; the
    * console on its own was spending it in seven hours.
    *
-   * The four endpoints it replaces are untouched: something already open
-   * against an older panel, or a script somebody wrote, still has them.
+   * Measured on an idle Overview: thirty-two requests a minute over four
+   * endpoints, of which the two largest carried sixty-nine and seventy-nine
+   * bytes - the machine's meters and a log with nothing new in it. Folding
+   * those into this one takes the same screen to four a minute.
+   *
+   * The endpoints it replaces are untouched: something already open against an
+   * older panel, or a script somebody wrote, still has them.
    */
   if (pathname === '/api/v1/status' && method === 'GET') {
+    /*
+     * The expensive halves, sent only to a caller that says it is showing them.
+     *
+     * A malformed request is refused rather than quietly answered without the
+     * section asked for: this is the one call the console lives on, and a
+     * console silently missing its log is worse to find than a 400.
+     */
+    const sections = new Set<ConsoleStatusSection>();
+    for (const name of (searchParams.get('include') ?? '').split(',').filter(Boolean)) {
+      if (!isConsoleStatusSection(name)) { sendError(response, 400, 'invalid_section', `"${name}" is not something this answer carries`); return; }
+      sections.add(name);
+    }
+    let logs: ConsoleStatus['logs'];
+    if (sections.has('logs')) {
+      const afterValue = Number(searchParams.get('logsAfter') ?? 0);
+      const sourceParam = searchParams.get('logsSource') ?? 'all';
+      if (!Number.isSafeInteger(afterValue) || afterValue < 0) { sendError(response, 400, 'invalid_cursor', 'The log cursor is invalid'); return; }
+      if (!isLogSourceFilter(sourceParam)) { sendError(response, 400, 'invalid_source', 'The log source is invalid'); return; }
+      logs = jobs.logs(afterValue, sourceParam === 'all' ? null : sourceParam);
+    }
+    let backupList: readonly BackupManifest[] | undefined;
+    let backupsTag: string | undefined;
+    if (sections.has('backups')) {
+      const activeProfile = await profiles.getActive();
+      const list = activeProfile ? await backups.list(activeProfile.id) : [];
+      backupsTag = listTag(list);
+      // Only when it is not the list the caller already has.
+      if (searchParams.get('backupsTag') !== backupsTag) backupList = list;
+    }
     // The one request the console makes on a clock, and so the one that says
     // somebody is in front of it. It stops while the page is hidden, which is
     // what makes this a measure of being read rather than of being open.
@@ -2344,12 +2398,19 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
      * this one is the console's clock.
      */
     void r2.refreshClaim({ atMostEvery: CLAIM_LOOK_MS }).catch(() => undefined);
+    /*
+     * And how much of the day's Worker allowance is left, on its own slow
+     * clock inside this one. Not waited for either: the figure it fetches is
+     * minutes old by the time Cloudflare reports it, so one more poll's delay
+     * changes nothing and this request is the console's clock.
+     */
+    budget.refresh();
     // Read once for the two things below it, both of which come off it.
     const r2Now = await r2.getConfig();
     const status: ConsoleStatus = {
       process: supervisor.getState(),
-      tunnel: await withProxyUrl(tunnel.getState(), proxy, cloudflare, 'sillyTavern'),
-      managerTunnel: await withProxyUrl(managerTunnel.getState(), proxy, cloudflare, 'manager'),
+      tunnel: await withProxyUrl(tunnel.getState(), proxy, cloudflare, 'sillyTavern', budget),
+      managerTunnel: await withProxyUrl(managerTunnel.getState(), proxy, cloudflare, 'manager', budget),
       security: await decorateSecurity(gateway.getState()),
       // All read from memory, so they cost this answer nothing.
       install: jobs.activeInstallation(),
@@ -2357,6 +2418,20 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       ports: { port: ports.sillyTavern(), reserved: { manager: ports.manager, access: ports.access } },
       r2Owner: r2Now.owner,
       r2Problem: r2Now.cloudflare?.problem ?? null,
+      /*
+       * Ask less often, because the day's Worker allowance is running down.
+       *
+       * The cheapest thing to give up and the first to go: nobody is told, no
+       * address changes, and a screen that updates every minute instead of
+       * every fifteen seconds is a screen nobody will notice. Sent rather than
+       * decided in the console because the console cannot see the figure.
+       */
+      ...(easesPolling(budget.level()) ? { easePolling: true } : {}),
+      // Asked for by name above; absent when the console is not showing them.
+      ...(sections.has('system') ? { system: await system.snapshot() } : {}),
+      ...(logs ? { logs } : {}),
+      ...(backupsTag === undefined ? {} : { backupsTag }),
+      ...(backupList ? { backups: backupList } : {}),
     };
     /*
      * And the address this console is being read at, which is how the manager
@@ -2432,7 +2507,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
  * address that answers with an error. Everything downstream then falls back to
  * the tunnel's own address, which is the address there is.
  */
-async function withProxyUrl(state: TunnelState, proxy: ProxyWorkerManager | null, cloudflare: CloudflareConnection | null, target: ProxyWorkerTarget): Promise<TunnelState> {
+async function withProxyUrl(state: TunnelState, proxy: ProxyWorkerManager | null, cloudflare: CloudflareConnection | null, target: ProxyWorkerTarget, budget: WorkerBudget): Promise<TunnelState> {
   if (!proxy) return { ...state, proxyUrl: null, proxyPending: false };
   /*
    * A fixed address is an address only while something is behind it.
@@ -2480,6 +2555,20 @@ async function withProxyUrl(state: TunnelState, proxy: ProxyWorkerManager | null
    * a manager that had been locked out of the account it names. It is the
    * tunnel's own address from here until somebody signs in again.
    */
+  /*
+   * And no address at all when there is not enough of the day's Worker
+   * allowance left to keep handing this one out.
+   *
+   * Last, deliberately: the Worker is still deployed and still kept pointed at
+   * the tunnel that is up, because this is about what is given out from here
+   * on rather than about taking anything down. The moment the allowance resets
+   * the address is offered again with nothing to redeploy.
+   *
+   * `publicAddress()` in the panel reads `proxyUrl ?? url`, so a null here is
+   * the whole of it: every card, link and QR code falls back to the tunnel's
+   * own address at once, and none of them can disagree about it.
+   */
+  if (withholdsAddress(budget.level(), target)) return { ...state, proxyUrl: null, proxyPending: false };
   return { ...state, proxyUrl: expected ? record?.url ?? null : null, proxyPending: expected && state.url !== null && behind };
 }
 
@@ -3516,6 +3605,19 @@ function isVersionSelector(value: string): boolean {
   return value === 'latest' || value === 'release' || value === 'staging' || /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/u.test(value);
 }
 
+/**
+ * A short name for exactly this list, so an unchanged one need not be sent.
+ *
+ * Over the whole encoding rather than a count and a newest timestamp, because
+ * the changes worth noticing include an old archive being thinned away, which
+ * moves neither of those. Not a security claim - nobody is defending the
+ * archive list from collision - so the cheapest digest that is long enough to
+ * never collide by accident is the right one.
+ */
+function listTag(rows: readonly unknown[]): string {
+  return createHash('sha1').update(JSON.stringify(rows)).digest('base64url').slice(0, 16);
+}
+
 function isLogSourceFilter(value: string): value is LogSourceFilter {
   return value === 'all' || value === 'manager' || value === 'sillytavern' || value === 'cloudflared' || value === 'installer' || value === 'backup';
 }
@@ -4269,7 +4371,7 @@ class JobStore {
     this.logBuffer.append(source, line, level);
   }
 
-  public logs(after: number, source: LogEntry['source'] | null): { entries: LogEntry[]; nextCursor: number } {
+  public logs(after: number, source: LogEntry['source'] | null): LogPage {
     return this.logBuffer.read(after, source);
   }
 

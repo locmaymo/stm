@@ -22,11 +22,23 @@ export const SAMPLE_INTERVAL_MS = 60_000;
  * being there.
  *
  * The console polls the state it watches every second and a half while
- * something is moving and every eight seconds otherwise, and stops entirely
- * while the page is hidden. A gap longer than this is a page that was closed,
- * hidden, or left on a machine that went to sleep - not a reader.
+ * something is moving, every fifteen seconds otherwise, and once a minute when
+ * the manager has asked it to ease off because the day's Cloudflare Worker
+ * allowance is running down. It stops entirely while the page is hidden. A gap
+ * longer than this is a page that was closed, hidden, or left on a machine that
+ * went to sleep - not a reader.
+ *
+ * Two minutes, which is the slowest of those clocks with room to spare. It was
+ * thirty seconds, from when the slowest clock was eight: a console that had
+ * eased to once a minute went on being read and stopped being counted, and the
+ * hours-used figure quietly went to zero on exactly the busy account where it
+ * was worth having. There is a test in the panel holding these two together.
+ *
+ * The cost of the larger number is over-counting: a tab closed and reopened
+ * within two minutes counts the gap between as attention. That is a handful of
+ * seconds on a figure measured in hours, and the wrong way round is worse.
  */
-export const CONSOLE_GAP_MS = 30_000;
+export const CONSOLE_GAP_MS = 120_000;
 
 interface PersistedUsage {
   readonly schemaVersion: 1;
