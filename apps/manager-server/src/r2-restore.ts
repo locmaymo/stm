@@ -6,6 +6,7 @@ import { BackupStore, type ImportEntry, type RestoreFile } from '../../../packag
 import { R2Manager } from '../../../packages/r2/src/index.js';
 import type { HashedFile, R2Snapshot } from '../../../packages/r2/src/sync.js';
 import { ioConcurrency } from '../../../packages/platform/src/index.js';
+import { decideTrim, megabytes, memoryGuard } from './headroom.js';
 
 /**
  * How large a file may be and still be fetched ahead of when it is needed.
@@ -86,6 +87,10 @@ export interface RestoreSnapshotOptions {
   readonly onProgress?: (progress: TransferProgress) => void;
   readonly onStatus?: (step: LogEvent) => void;
   readonly logger?: LogSink;
+  /** Leave the junk out; see `isJunk`. */
+  readonly trim?: boolean;
+  /** Called between files; saver mode's memory guard. */
+  readonly checkpoint?: () => Promise<void>;
 }
 
 /**
@@ -134,6 +139,8 @@ export async function restoreSnapshotInPlace(options: RestoreSnapshotOptions): P
     files: files.map((file) => ({ name: file.name, sizeBytes: file.sizeBytes })),
     open,
     ...(options.force ? { force: true } : {}),
+    ...(options.trim ? { trim: true } : {}),
+    ...(options.checkpoint ? { checkpoint: options.checkpoint } : {}),
     ...(signal ? { signal } : {}),
     ...(options.onStatus ? { onStatus: options.onStatus } : {}),
     onProgress: ({ completed }) => { completedItems = completed; report(); },
@@ -331,8 +338,17 @@ export async function recoverProfileFromR2(options: RecoverProfileOptions): Prom
       let recovered: Omit<RecoveredProfile, 'point'>;
       if (options.inPlace) {
         const snapshot = await r2.readSnapshot(candidate.profileId, candidate.id);
+        // Nobody is here to be asked, so the fit is decided for them: whole if
+        // it fits, without its junk if only that does, and otherwise not - a
+        // restore larger than the machine takes the machine down with it.
+        const files = snapshot.files.map((file) => ({ name: file.name, sizeBytes: file.sizeBytes }));
+        const fit = await decideTrim(backups, profile, { files }, 'replace');
+        if (!fit) throw new Error('it is larger than this machine has room for, even without the files SillyTavern can do without');
+        if (fit.trim) logger?.(logEvent('r2.recoveryTrimmed', `[r2] leaving out ${megabytes(fit.capacity?.junkBytes ?? 0)} SillyTavern can do without, so the recovery point fits on this machine`, { size: megabytes(fit.capacity?.junkBytes ?? 0) }));
         const preview = await restoreSnapshotInPlace({
           profile, r2, backups, snapshot, mode: 'replace', force: true,
+          ...(fit.trim ? { trim: true } : {}),
+          ...(backups.saving ? { checkpoint: memoryGuard(profile.dataPath) } : {}),
           ...(logger ? { logger } : {}),
           ...(options.onProgress ? { onProgress: options.onProgress } : {}),
           ...(options.signal ? { signal: options.signal } : {}),

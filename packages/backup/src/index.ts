@@ -117,6 +117,57 @@ export interface RestoreOptions {
    * caller that passes this by default has turned it back off for everybody.
    */
   readonly force?: boolean;
+  /**
+   * Leave the junk out; see `isJunk`.
+   *
+   * For a machine without room for all of it. A replace still deletes the
+   * profile's own junk, since the archive no longer names it.
+   */
+  readonly trim?: boolean;
+  /**
+   * Called before each file is written, and before each uploaded chunk is
+   * taken; a throw stops the restore there.
+   *
+   * Saver mode watches memory with it, so a restore that is filling the
+   * machine stops before the machine does.
+   */
+  readonly checkpoint?: () => Promise<void>;
+}
+
+/** What a restore adds, before anything is written; see `BackupStore.estimate`. */
+export interface RestoreEstimate {
+  /** Every file the restore would write. */
+  readonly incomingBytes: number;
+  /** The part of that which is junk; see `isJunk`. */
+  readonly junkBytes: number;
+  readonly junkFiles: number;
+  /** What the restore removes or overwrites of the profile as it stands. */
+  readonly freedBytes: number;
+}
+
+type WriteHooks = Pick<RestoreOptions, 'onProgress' | 'signal' | 'checkpoint'>;
+
+/** Directories SillyTavern keeps directly in the user directory and makes again. */
+const JUNK_ROOT_DIRECTORIES = new Set(['backups', 'thumbnails', 'vectors', '_cache', '_webpack', '_uploads']);
+/** Directories that are junk wherever they are - mostly inside extensions. */
+const JUNK_DIRECTORIES = new Set(['.git', 'node_modules', '__pycache__', '.cache', '.github']);
+
+/**
+ * Whether a file of a profile can be left out of a restore without losing
+ * anything the reader would miss.
+ *
+ * Measured on a real 3.8 GB backup: 486 MB of it was the git history of three
+ * extensions, which SillyTavern needs only to update them and which an
+ * extension runs without. SillyTavern's own `backups/`, its thumbnails and its
+ * vectors are made again as it runs. Chats, characters, lorebooks, presets,
+ * settings and the extensions' own files are never junk.
+ *
+ * `name` is relative to the user directory, with forward slashes.
+ */
+export function isJunk(name: string): boolean {
+  const segments = name.split('/');
+  if (segments.length > 1 && JUNK_ROOT_DIRECTORIES.has(segments[0]!)) return true;
+  return segments.slice(0, -1).some((segment) => JUNK_DIRECTORIES.has(segment));
 }
 
 interface PersistedBackups {
@@ -649,7 +700,7 @@ export class BackupStore {
       if (isFileNotFound(error)) throw new BackupError('backup_archive_missing', 'That backup is no longer in the library');
       throw error;
     });
-    return await this.restorePlanned(profile, entries, options, (plan) => extractPlan(archivePath, plan, options.onProgress, options.signal));
+    return await this.restorePlanned(profile, entries, options, (plan) => extractPlan(archivePath, plan, options));
   }
 
   /**
@@ -687,13 +738,38 @@ export class BackupStore {
     const release = await this.acquireOperation();
     try {
       throwIfStopped(options.signal);
-      return await this.restorePlanned(profile, stream.entries, options, (plan) => stream.receive(plan, options.onProgress, options.signal));
+      return await this.restorePlanned(profile, stream.entries, options, (plan) => stream.receive(plan, options));
     } catch (error: unknown) {
       stream.fail(error instanceof Error ? error : new Error('The restore failed'));
       throw error;
     } finally {
       release();
     }
+  }
+
+  /**
+   * How much a restore would add to this profile, before anything is written.
+   *
+   * Asked in saver mode, of whatever the restore is going to read: an archive
+   * in the library, a streamed upload, or the files of a recovery point.
+   */
+  public async estimate(profile: Profile, source: { readonly archivePath: string } | { readonly stream: ArchiveStream } | { readonly files: readonly RestoreFile[] }, mode: RestoreMode): Promise<RestoreEstimate> {
+    const entries: readonly EntryInfo[] = 'archivePath' in source ? await readZipDirectory(source.archivePath) : 'stream' in source ? source.stream.entries : source.files.map(fileEntry);
+    const dataDestination = await resolveProfileDataRoot(profile);
+    const plan = planEntries(entries, { dataDestination, configPath: resolve(profile.configPath) });
+    let incomingBytes = 0;
+    let junkBytes = 0;
+    let junkFiles = 0;
+    for (const item of plan) {
+      incomingBytes += item.entry.uncompressedSize;
+      if (isJunk(relativeName(dataDestination, item.target))) { junkBytes += item.entry.uncompressedSize; junkFiles += 1; }
+    }
+    // A replace leaves nothing of the profile but what it writes, so all of
+    // it is freed; a merge frees only what it overwrites.
+    const freedBytes = mode === 'replace'
+      ? await treeBytes(dataDestination, dataDestination === resolve(profile.dataPath))
+      : await sizesOf(plan.map((item) => item.target));
+    return { incomingBytes, junkBytes, junkFiles, freedBytes };
   }
 
   /** What restoring these files would do, the way `preview` says it of a zip. */
@@ -717,7 +793,7 @@ export class BackupStore {
     try {
       throwIfStopped(options.signal);
       const byName = new Map(options.files.map((file) => [file.name, file]));
-      return await this.restorePlanned(profile, options.files.map(fileEntry), options, (plan) => writePlan(plan, (entry) => options.open(byName.get(entry.name)!), options.onProgress, options.signal));
+      return await this.restorePlanned(profile, options.files.map(fileEntry), options, (plan) => writePlan(plan, (entry) => options.open(byName.get(entry.name)!), options));
     } finally {
       release();
     }
@@ -732,7 +808,9 @@ export class BackupStore {
       throw new BackupError('unrecognized_archive', 'This archive holds none of the folders a SillyTavern profile usually has');
     }
     const dataDestination = await resolveProfileDataRoot(profile);
-    const plan = planEntries(entries, { dataDestination, configPath: resolve(profile.configPath) });
+    const everything = planEntries(entries, { dataDestination, configPath: resolve(profile.configPath) });
+    const plan = options.trim ? everything.filter((item) => !isJunk(relativeName(dataDestination, item.target))) : everything;
+    if (plan.length < everything.length) this.logger(logEvent('backup.trimmedJunk', `[backup] leaving out ${everything.length - plan.length} file(s) SillyTavern can do without`, { count: everything.length - plan.length }));
     const keep = new Set(plan.map((item) => item.target));
     // Read the profile's current contents before writing, so a replace knows
     // which of its files the archive is not going to overwrite.
@@ -758,7 +836,7 @@ export class BackupStore {
     if (!this.saving) await removeObsolete();
     options.onStatus?.(logEvent('restore.finalizing', 'Finalizing restored data'));
     const targetLabel = profile.layout === 'data' ? relative(resolve(profile.dataPath), dataDestination).replaceAll('\\', '/') || '.' : 'public/';
-    this.logger(logEvent('backup.restored', `[backup] restored ${preview.fileCount} files to ${profile.name}/${targetLabel} (${options.mode})`, { count: preview.fileCount, profile: profile.name, target: targetLabel, mode: options.mode }));
+    this.logger(logEvent('backup.restored', `[backup] restored ${plan.length} files to ${profile.name}/${targetLabel} (${options.mode})`, { count: plan.length, profile: profile.name, target: targetLabel, mode: options.mode }));
     return preview;
   }
 
@@ -1322,7 +1400,8 @@ function planEntries<T extends EntryInfo>(entries: readonly T[], options: PlanOp
   return planned;
 }
 
-async function extractPlan(zipPath: string, planned: readonly PlannedEntry[], onProgress?: (progress: { completed: number; total: number }) => void, signal?: AbortSignal): Promise<void> {
+async function extractPlan(zipPath: string, planned: readonly PlannedEntry[], hooks: WriteHooks): Promise<void> {
+  const { onProgress, signal } = hooks;
   const parents = new Set<string>();
   for (const item of planned) parents.add(resolve(item.target, '..'));
   const total = planned.length;
@@ -1336,6 +1415,7 @@ async function extractPlan(zipPath: string, planned: readonly PlannedEntry[], on
   try {
     await runPooled(planned, concurrency, async (item, slot) => {
       throwIfStopped(signal);
+      await hooks.checkpoint?.();
       await extractEntry(handles[slot]!, item.entry, item.target);
       completed += 1;
       // Updating the in-memory job for every tiny preset makes a remote
@@ -1357,7 +1437,8 @@ async function extractPlan(zipPath: string, planned: readonly PlannedEntry[], on
  * checked against what the source said it would be, so a truncated download
  * fails the restore rather than leaving a short file behind in silence.
  */
-async function writePlan<T extends EntryInfo>(planned: readonly PlannedEntry<T>[], open: (entry: T) => AsyncIterable<Uint8Array>, onProgress?: (progress: { completed: number; total: number }) => void, signal?: AbortSignal): Promise<void> {
+async function writePlan<T extends EntryInfo>(planned: readonly PlannedEntry<T>[], open: (entry: T) => AsyncIterable<Uint8Array>, hooks: WriteHooks): Promise<void> {
+  const { onProgress, signal } = hooks;
   const parents = new Set<string>();
   for (const item of planned) parents.add(resolve(item.target, '..'));
   const total = planned.length;
@@ -1366,6 +1447,7 @@ async function writePlan<T extends EntryInfo>(planned: readonly PlannedEntry<T>[
   let completed = 0;
   await runPooled(planned, concurrency, async (item) => {
     throwIfStopped(signal);
+    await hooks.checkpoint?.();
     await retryReadOnly(item.target, async () => {
       const counter = new ByteCounter();
       await pipeline(Readable.from(open(item.entry)), counter, createWriteStream(item.target, { mode: 0o600 }));
@@ -1374,6 +1456,45 @@ async function writePlan<T extends EntryInfo>(planned: readonly PlannedEntry<T>[
     completed += 1;
     if (completed === total || completed % 25 === 0) onProgress?.({ completed, total });
   });
+}
+
+/** `target` as a name inside the user directory, the shape `isJunk` reads. */
+function relativeName(dataDestination: string, target: string): string {
+  return relative(dataDestination, target).replaceAll('\\', '/');
+}
+
+/** Every byte under `root`, less what a replace leaves alone. */
+async function treeBytes(root: string, isDataRoot: boolean): Promise<number> {
+  let total = 0;
+  const limiter = createIoLimiter(ioConcurrency());
+  const visit = async (current: string, depth: number): Promise<void> => {
+    let children;
+    try { children = await limiter.run(() => readdir(current, { withFileTypes: true })); } catch { return; }
+    await Promise.all(children.map(async (child) => {
+      if (depth === 0 && isPreservedAtRoot(child.name, isDataRoot)) return;
+      const full = join(current, child.name);
+      if (child.isSymbolicLink()) return;
+      if (child.isDirectory()) { await visit(full, depth + 1); return; }
+      // Read before adding: `total += await ...` reads `total` before the
+      // await, so writers running at once would each put back their own sum.
+      let size = 0;
+      try { size = (await limiter.run(() => lstat(full))).size; } catch { /* gone since the listing */ }
+      total += size;
+    }));
+  };
+  await visit(root, 0);
+  return total;
+}
+
+/** The sizes of whichever of these files exist. */
+async function sizesOf(paths: readonly string[]): Promise<number> {
+  let total = 0;
+  await runPooled(paths, ioConcurrency(), async (path) => {
+    let size = 0;
+    try { size = (await lstat(path)).size; } catch { /* not there to overwrite */ }
+    total += size;
+  });
+  return total;
 }
 
 /** A file of a restore, described the way a zip entry is. */
@@ -1603,6 +1724,7 @@ export class ArchiveStream {
   private settle: { resolve: () => void; reject: (error: Error) => void } | null = null;
   private lock: Promise<unknown> = Promise.resolve();
   private idle: NodeJS.Timeout | null = null;
+  private checkpoint: (() => Promise<void>) | undefined;
 
   public constructor(
     public readonly archiveSize: number,
@@ -1651,6 +1773,7 @@ export class ArchiveStream {
       if (index !== this.nextIndex) throw new BackupError('invalid_upload_chunk', `Expected upload chunk ${this.nextIndex}`);
       this.touch();
       try {
+        await this.checkpoint?.();
         await this.consume(chunk);
         this.nextIndex += 1;
         if (this.position > this.archiveSize) throw new BackupError('upload_too_large', 'More was uploaded than the archive holds');
@@ -1678,7 +1801,9 @@ export class ArchiveStream {
   }
 
   /** @internal Called by the restore once it has planned where each entry goes. */
-  public async receive(plan: readonly PlannedEntry[], onProgress?: (progress: { completed: number; total: number }) => void, signal?: AbortSignal): Promise<void> {
+  public async receive(plan: readonly PlannedEntry[], hooks: WriteHooks = {}): Promise<void> {
+    const { onProgress, signal } = hooks;
+    this.checkpoint = hooks.checkpoint;
     if (this.failure) throw this.failure;
     this.plan = [...plan].sort((left, right) => left.entry.localOffset - right.entry.localOffset);
     this.onProgress = onProgress;

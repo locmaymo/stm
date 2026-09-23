@@ -35,6 +35,7 @@ import { ActivityMeter } from './activity.js';
 import { ReleaseWatch } from './manager-release.js';
 import { OnlineKeeper } from './online.js';
 import { formatGibibytes, SaverMode } from './saver.js';
+import { capacityFor, checkFits, decideTrim, memoryGuard } from './headroom.js';
 import { applyManagerSettings, foreignManagerSettings, managerSettingsOffer, restoreFromBucketIfBlank, saveManagerSettings, type ManagerSettingsDeps } from './manager-settings.js';
 import type { ManagerSettingsRecord } from '../../../packages/contracts/src/index.js';
 import { instrumentationLoaderPath } from '../../../packages/instrumentation/src/index.js';
@@ -1841,6 +1842,23 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
    * `restoreSnapshotInPlace`. SillyTavern is stopped from before the first
    * byte arrives until the last one is written.
    */
+  /*
+   * What restoring a recovery point would do, before it is done: what it
+   * holds, and in saver mode whether it fits. Reading the index is one
+   * request; nothing is fetched and nothing is stopped.
+   */
+  const snapshotPreviewMatch = /^\/api\/v1\/r2\/snapshots\/([^/]+)\/preview$/u.exec(pathname);
+  if (snapshotPreviewMatch && method === 'POST') {
+    const profile = await profiles.getActive();
+    if (!profile) { sendError(response, 409, 'profile_required', 'Create or activate a profile before restoring a recovery point'); return; }
+    const body = await readJson(request);
+    const sourceProfileId = isRecord(body) && typeof body.profileId === 'string' && body.profileId ? body.profileId : profile.id;
+    const snapshot = await r2.readSnapshot(sourceProfileId, snapshotPreviewMatch[1] ?? '');
+    const files = snapshot.files.map((file) => ({ name: file.name, sizeBytes: file.sizeBytes }));
+    const preview = backups.previewFiles(files, profile.layout);
+    sendJson(response, 200, backups.saving ? { ...preview, capacity: await capacityFor(backups, profile, { files }) } : preview);
+    return;
+  }
   const snapshotRestoreMatch = /^\/api\/v1\/r2\/snapshots\/([^/]+)\/restore$/u.exec(pathname);
   if (snapshotRestoreMatch && method === 'POST') {
     const profile = await profiles.getActive();
@@ -1859,6 +1877,9 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       sendError(response, 409, 'unrecognized_archive', 'This recovery point holds none of the folders a SillyTavern profile usually has');
       return;
     }
+    const files = snapshot.files.map((file) => ({ name: file.name, sizeBytes: file.sizeBytes }));
+    const trim = isRecord(body) && body.trim === true;
+    await checkFits(backups, profile, { files }, mode, trim);
     const { job, signal } = jobs.createOperation('restore', logEvent('job.preparingRestore', 'Preparing restore'));
     const meter = new TransferMeter();
     void restoreWithProcess({
@@ -1866,8 +1887,9 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       onProgress: (progress, step) => jobs.updateOperation(job.id, progress, step),
       safetyNet: saverSafetyNet(profile, backups, r2, (line) => jobs.append('backup', line)),
       write: (restoreOptions) => restoreSnapshotInPlace({
-        profile, r2, backups, snapshot, mode, ...(force ? { force: true } : {}), signal,
+        profile, r2, backups, snapshot, mode, ...(force ? { force: true } : {}), ...(trim ? { trim: true } : {}), signal,
         logger: (line) => jobs.append('backup', line),
+        ...(restoreOptions.checkpoint ? { checkpoint: restoreOptions.checkpoint } : {}),
         ...(restoreOptions.onStatus ? { onStatus: restoreOptions.onStatus } : {}),
         onProgress: (progress) => {
           const { percent, params } = meter.update(progress);
@@ -2214,7 +2236,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     const archiveSize = Number(headerValue(request.headers['x-archive-size']) ?? '');
     const tail = await readBody(request, MAX_STREAM_DIRECTORY_BYTES);
     const stream = backups.openStream(tail, archiveSize, profile.layout);
-    sendJson(response, 200, { ...stream.preview, uploadId: stream.id });
+    sendJson(response, 200, { ...stream.preview, uploadId: stream.id, ...(backups.saving ? { capacity: await capacityFor(backups, profile, { stream }) } : {}) });
     return;
   }
   if (pathname === '/api/v1/backups/stream' && method === 'DELETE') {
@@ -2232,9 +2254,11 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     if (!mode) { sendError(response, 400, 'invalid_restore_mode', 'Restore mode must be merge or replace'); return; }
     const force = isRecord(body) && body.force === true;
     if (!force && !stream.preview.recognized) { sendError(response, 409, 'unrecognized_archive', 'This archive holds none of the folders a SillyTavern profile usually has'); return; }
+    const trim = isRecord(body) && body.trim === true;
+    await checkFits(backups, profile, { stream }, mode, trim);
     const { job, signal } = jobs.createOperation('restore', logEvent('job.preparingRestore', 'Preparing restore'));
     void restoreWithProcess({
-      profile, backups, mode, ...(force ? { force: true } : {}), supervisor, signal,
+      profile, backups, mode, ...(force ? { force: true } : {}), ...(trim ? { trim: true } : {}), supervisor, signal,
       onProgress: (progress, step) => jobs.updateOperation(job.id, progress, step),
       safetyNet: saverSafetyNet(profile, backups, r2, (line) => jobs.append('backup', line)),
       write: (restoreOptions) => {
@@ -2318,7 +2342,11 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     }
     const profile = await profiles.getActive();
     if (!profile) { sendError(response, 409, 'profile_required', 'Create or activate a profile before restoring a backup'); return; }
-    if (action === 'preview' && method === 'POST') { sendJson(response, 200, await backups.preview(archivePath, profile.layout)); return; }
+    if (action === 'preview' && method === 'POST') {
+      const preview = await backups.preview(archivePath, profile.layout);
+      sendJson(response, 200, backups.saving ? { ...preview, capacity: await capacityFor(backups, profile, { archivePath }) } : preview);
+      return;
+    }
     if (action === 'restore' && method === 'POST') {
       const body = await readJson(request);
       const mode = isRecord(body) && (body.mode === 'merge' || body.mode === 'replace') ? body.mode : null;
@@ -2332,8 +2360,10 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
         sendError(response, 409, 'unrecognized_archive', 'This archive holds none of the folders a SillyTavern profile usually has');
         return;
       }
+      const trim = isRecord(body) && body.trim === true;
+      await checkFits(backups, profile, { archivePath }, mode, trim);
       const { job, signal } = jobs.createOperation('restore', logEvent('job.preparingRestore', 'Preparing restore'));
-      void restoreWithProcess({ profile, backups, archivePath, backupId: id, mode, ...(force ? { force: true } : {}), supervisor, signal, onProgress: (progress, step) => jobs.updateOperation(job.id, progress, step), safetyNet: saverSafetyNet(profile, backups, r2, (line) => jobs.append('backup', line)) })
+      void restoreWithProcess({ profile, backups, archivePath, backupId: id, mode, ...(force ? { force: true } : {}), ...(trim ? { trim: true } : {}), supervisor, signal, onProgress: (progress, step) => jobs.updateOperation(job.id, progress, step), safetyNet: saverSafetyNet(profile, backups, r2, (line) => jobs.append('backup', line)) })
         .then(() => jobs.finishOperation(job.id, 'succeeded', null))
         .catch((error: unknown) => jobs.finishOperation(job.id, 'failed', error instanceof Error ? error.message : 'Restore failed', { evenIfCanceled: error instanceof RestoreRollbackError, stepCode: error instanceof RestoreRollbackError ? 'job.rollbackFailed' : undefined }));
       sendJson(response, 202, { jobId: job.id, job });
@@ -2903,6 +2933,8 @@ export async function restoreWithProcess(options: {
    * copy or its stand-in taken.
    */
   readonly write?: (restoreOptions: RestoreOptions) => Promise<RestorePreview>;
+  /** Leave the junk out; see `isJunk`. The caller has checked it fits. */
+  readonly trim?: boolean;
   /**
    * Which archive in the library this is, when it is one.
    *
@@ -2965,6 +2997,10 @@ export async function restoreWithProcess(options: {
     writing = true;
     const preview = await write({
       mode,
+      ...(options.trim ? { trim: true } : {}),
+      // Saver mode watches the room left while it writes, and stops before
+      // the machine runs out rather than after.
+      ...(backups.saving ? { checkpoint: memoryGuard(profile.dataPath) } : {}),
       ...(options.force ? { force: true } : {}),
       ...(signal ? { signal } : {}),
       onProgress: ({ completed, total }) => onProgress?.(25 + (total > 0 ? (completed / total) * 60 : 60), logEvent('job.restoringFiles', `Restoring files (${completed}/${total})`, { completed, total })),
@@ -3512,13 +3548,22 @@ async function refillProfile(
       // Straight into the profile, with SillyTavern stopped for all of it and
       // what was here pushed to R2 first; see `restoreSnapshotInPlace`.
       const snapshot = await r2.readSnapshot(newest.profileId, newest.id);
+      // A press with no dialog behind it, so the fit is decided the way an
+      // unattended recovery decides it.
+      const fit = await decideTrim(backups, profile, { files: snapshot.files.map((file) => ({ name: file.name, sizeBytes: file.sizeBytes })) }, 'replace');
+      if (!fit) {
+        logger(logEvent('r2.recoveryTooLarge', '[r2] the newest recovery point is larger than this machine has room for, even without the files SillyTavern can do without, so it was not restored'));
+        return;
+      }
       const { preview } = await restoreWithProcess({
-        profile, backups, mode: 'replace', force: true, supervisor,
+        profile, backups, mode: 'replace', force: true, supervisor, ...(fit.trim ? { trim: true } : {}),
         signal: running.signal,
         onProgress: (progress, step) => jobs.updateOperation(running.job.id, progress, step),
         safetyNet: saverSafetyNet(profile, backups, r2, (line) => jobs.append('backup', line)),
         write: (restoreOptions) => restoreSnapshotInPlace({
           profile, r2, backups, snapshot, mode: 'replace', force: true, signal: running.signal,
+          ...(restoreOptions.trim ? { trim: true } : {}),
+          ...(restoreOptions.checkpoint ? { checkpoint: restoreOptions.checkpoint } : {}),
           logger: (line) => jobs.append('backup', line),
           ...(restoreOptions.onStatus ? { onStatus: restoreOptions.onStatus } : {}),
           onProgress: (progress) => {

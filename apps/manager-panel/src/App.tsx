@@ -3514,6 +3514,9 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   const [selectedPreview, setSelectedPreview] = useState<RestorePreview | null>(null);
   /** The reader has been shown that this archive is not a profile and said to go ahead. */
   const [restoreAnyway, setRestoreAnyway] = useState(false);
+  // Leave out what SillyTavern can do without; asked in saver mode, and
+  // required when the restore does not fit otherwise.
+  const [restoreTrim, setRestoreTrim] = useState(false);
   const [operationProgress, setOperationProgress] = useState<{ percent: number; step: string } | null>(null);
   const [uploading, setUploading] = useState(false);
   // What the Stop button acts on: a server job by id, or the upload in flight.
@@ -3889,7 +3892,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       setRestoreMode('replace');
       // Said once, for this archive. An archive that has to be insisted on is
       // asked about again the next time it is opened.
-      setRestoreAnyway(false);
+      setRestoreAnyway(false); setRestoreTrim(false);
       setSelectedBackup(backup); setSelectedPreview(payload);
       return true;
     } catch { failed(t('console.backupPreviewFailed')); return false; }
@@ -3898,7 +3901,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
     // A zip nobody went on to restore is nothing to the server but its
     // directory in memory; say so rather than leave it to time out.
     if (streaming) void apiFetch(`/api/v1/backups/stream?uploadId=${encodeURIComponent(streaming.uploadId)}`, { method: 'DELETE', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } }).catch(() => undefined);
-    setStreaming(null); setSelectedBackup(null); setSelectedPreview(null); setRestoreAnyway(false);
+    setStreaming(null); setRestorePoint(null); setSelectedBackup(null); setSelectedPreview(null); setRestoreAnyway(false); setRestoreTrim(false);
   };
   /**
    * Saver mode's upload: look inside the zip without sending it.
@@ -3937,13 +3940,14 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
     if (!streaming) return;
     const { file, uploadId } = streaming;
     const force = restoreAnyway;
-    setStreaming(null); setSelectedPreview(null); setRestoreAnyway(false);
+    const trim = restoreTrim;
+    setStreaming(null); setSelectedPreview(null); setRestoreAnyway(false); setRestoreTrim(false);
     setBusyAction(t('console.restore')); setOperationProgress(null); setMixedProfile(null); setUploading(true);
     const controller = new AbortController();
     uploadAbort.current = controller;
     let jobId: string | null = null;
     try {
-      const response = await apiFetch('/api/v1/backups/stream/restore', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ uploadId, mode: restoreMode, ...(force ? { force: true } : {}) }) });
+      const response = await apiFetch('/api/v1/backups/stream/restore', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ uploadId, mode: restoreMode, ...(force ? { force: true } : {}), ...(trim ? { trim: true } : {}) }) });
       const payload = await response.json() as { jobId?: string; error?: { message?: string } };
       if (!response.ok || !payload.jobId) { failed(fail.body(payload, t('console.backupRestoreFailed'))); return; }
       jobId = payload.jobId;
@@ -3999,14 +4003,22 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   };
   const restoreSelected = async () => {
     if (streaming) { await restoreStreamed(); return; }
+    if (restorePoint) {
+      const point = restorePoint;
+      const choice = { mode: restoreMode, force: restoreAnyway, trim: restoreTrim };
+      closeRestore();
+      await restorePointInPlace(point, choice);
+      return;
+    }
     if (!selectedBackup || !selectedPreview) return;
     const backupId = selectedBackup.id;
+    const trim = restoreTrim;
     // The question has been answered, so the dialog goes before the work
     // starts: what happens next belongs on the page, where the Stop button is.
     closeRestore();
     setBusyAction(t('console.restore')); setOperationProgress(null); setMixedProfile(null);
     try {
-      const response = await apiFetch(`/api/v1/backups/${backupId}/restore`, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ mode: restoreMode, ...(restoreAnyway ? { force: true } : {}) }) });
+      const response = await apiFetch(`/api/v1/backups/${backupId}/restore`, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ mode: restoreMode, ...(restoreAnyway ? { force: true } : {}), ...(trim ? { trim: true } : {}) }) });
       const payload = await response.json() as { jobId?: string; error?: { message?: string } };
       if (!response.ok || !payload.jobId) { failed(fail.body(payload, t('console.backupRestoreFailed'))); return; }
       setRunningJobId(payload.jobId);
@@ -4296,15 +4308,30 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
    * look at it first.
    */
   /**
+   * Ask what to do with a recovery point, the way an archive is asked about.
+   *
+   * Its index says what it holds and how large each file is, which is all the
+   * dialog needs - and in saver mode, whether it fits on this machine.
+   */
+  const openPointRestore = async (snapshot: R2SnapshotSummary) => {
+    setR2Busy(t('console.restore'));
+    try {
+      const response = await apiFetch(`/api/v1/r2/snapshots/${encodeURIComponent(snapshot.id)}/preview`, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ profileId: snapshot.profileId }) });
+      const payload = await response.json() as RestorePreview | { error?: { message?: string } };
+      if (!response.ok || !('files' in payload)) { failed(fail.body(payload, t('console.backupPreviewFailed'))); return; }
+      setRestoreMode('replace'); setRestoreAnyway(false); setRestoreTrim(false);
+      setRestorePoint(snapshot); setSelectedPreview(payload);
+    } catch { failed(t('console.backupPreviewFailed')); } finally { setR2Busy(null); }
+  };
+  /**
    * Put a recovery point straight into the profile, saver mode's way back.
    *
-   * No archive is made on the way, so there is nothing to look inside first;
-   * the question is asked before instead, and the progress is the download.
+   * No archive is made on the way; the progress is the download.
    */
-  const restorePointInPlace = async (snapshot: R2SnapshotSummary) => {
+  const restorePointInPlace = async (snapshot: R2SnapshotSummary, choice: { mode: RestoreMode; force: boolean; trim: boolean }) => {
     setR2Busy(t('console.restore')); setOperationProgress(null); setMixedProfile(null);
     try {
-      const response = await apiFetch(`/api/v1/r2/snapshots/${encodeURIComponent(snapshot.id)}/restore`, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ profileId: snapshot.profileId, mode: 'replace' }) });
+      const response = await apiFetch(`/api/v1/r2/snapshots/${encodeURIComponent(snapshot.id)}/restore`, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ profileId: snapshot.profileId, mode: choice.mode, ...(choice.force ? { force: true } : {}), ...(choice.trim ? { trim: true } : {}) }) });
       const payload = await response.json() as { jobId?: string; error?: { message?: string } };
       if (!response.ok || !payload.jobId) { failed(fail.body(payload, t('console.backupRestoreFailed'))); return; }
       setRunningJobId(payload.jobId);
@@ -4459,7 +4486,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       // In saver mode there is no library to bring it into, so the row offers
       // what fetching was always the first half of: restoring it.
       cell: (snapshot) => saving
-        ? <Button variant="ghost" size="sm" className="whitespace-nowrap" onClick={() => setRestorePoint(snapshot)} disabled={r2Busy !== null}><RotateCcw />{t('console.restore')}</Button>
+        ? <Button variant="ghost" size="sm" className="whitespace-nowrap" onClick={() => void openPointRestore(snapshot)} disabled={r2Busy !== null}><RotateCcw />{t('console.restore')}</Button>
         : <Button variant="ghost" size="sm" className="whitespace-nowrap" onClick={() => void fetchSnapshot(snapshot)} disabled={r2Busy !== null}><History />{t('console.r2Fetch')}</Button>,
     },
   ];
@@ -4771,18 +4798,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       cancelLabel={t('common.cancel')}
       onConfirm={deleteBackup}
     />
-    {/* Asked before rather than after, because in place there is no archive
-        to look inside first: what is replaced is replaced as it arrives. */}
-    <ConfirmDialog
-      open={restorePoint !== null}
-      onOpenChange={(open) => { if (!open) setRestorePoint(null); }}
-      title={t('console.restorePointTitle', { when: restorePoint ? new Date(restorePoint.createdAt).toLocaleString() : '' })}
-      description={t('console.restorePointBody')}
-      confirmLabel={t('console.restore')}
-      cancelLabel={t('common.cancel')}
-      onConfirm={() => { const point = restorePoint; if (point) void restorePointInPlace(point); }}
-    />
-    <RestoreDialog t={t} catalog={catalog} name={streaming ? streaming.file.name : selectedBackup ? displayName(selectedBackup) : null} safety={t(saving ? 'console.restoreSafetySaver' : 'console.restoreSafety')} preview={selectedPreview} mode={restoreMode} onModeChange={setRestoreMode} anyway={restoreAnyway} onAnywayChange={setRestoreAnyway} onClose={closeRestore} onRestore={restoreSelected} />
+    <RestoreDialog t={t} catalog={catalog} name={streaming ? streaming.file.name : restorePoint ? t('console.restorePointName', { when: new Date(restorePoint.createdAt).toLocaleString() }) : selectedBackup ? displayName(selectedBackup) : null} safety={t(saving ? 'console.restoreSafetySaver' : 'console.restoreSafety')} preview={selectedPreview} mode={restoreMode} onModeChange={setRestoreMode} anyway={restoreAnyway} onAnywayChange={setRestoreAnyway} trim={restoreTrim} onTrimChange={setRestoreTrim} onClose={closeRestore} onRestore={restoreSelected} />
     <R2DestinationDialog
       t={t}
       open={destinationOpen}
@@ -4986,10 +5002,21 @@ function NameDialog({ t, open, onOpenChange, title, label, hint, initial = '', s
  * where the choice is made, and the choice is made in a dialog, because one of
  * them deletes everything that is there.
  */
-function RestoreDialog({ t, catalog, name, safety, preview, mode, onModeChange, anyway, onAnywayChange, onClose, onRestore }: { t: Translate; catalog: Record<string, unknown>; name: string | null; safety: string; preview: RestorePreview | null; mode: RestoreMode; onModeChange: (mode: RestoreMode) => void; anyway: boolean; onAnywayChange: (anyway: boolean) => void; onClose: () => void; onRestore: () => Promise<void> }) {
+function RestoreDialog({ t, catalog, name, safety, preview, mode, onModeChange, anyway, onAnywayChange, trim, onTrimChange, onClose, onRestore }: { t: Translate; catalog: Record<string, unknown>; name: string | null; safety: string; preview: RestorePreview | null; mode: RestoreMode; onModeChange: (mode: RestoreMode) => void; anyway: boolean; onAnywayChange: (anyway: boolean) => void; trim: boolean; onTrimChange: (trim: boolean) => void; onClose: () => void; onRestore: () => Promise<void> }) {
   const group = useId();
   const anywayId = useId();
+  const trimId = useId();
   if (name === null || !preview) return null;
+  /*
+   * Whether it fits, in saver mode; see RestoreCapacity.
+   *
+   * Too large whole but not without its junk, the restore waits for the
+   * reader to agree to leave the junk out - nothing they would miss, but it
+   * is their data and their call. Too large either way, it is refused: the
+   * alternative is a machine that stops halfway through.
+   */
+  const capacity = preview.capacity?.[mode] ?? null;
+  const blockedBySize = capacity !== null && !(trim ? capacity.fitsTrimmed : capacity.fits);
   /*
    * An archive that is not a profile is refused here rather than restored.
    *
@@ -5044,11 +5071,31 @@ function RestoreDialog({ t, catalog, name, safety, preview, mode, onModeChange, 
             </AlertDescription>
           </Alert>
           : null}
+        {capacity && !capacity.fitsTrimmed
+          ? <Alert variant="destructive"><AlertDescription>{t('console.restoreTooLarge', { needed: formatBytes(capacity.trimmedNeededBytes), available: formatBytes(capacity.availableBytes) })}</AlertDescription></Alert>
+          : capacity && capacity.junkBytes > 0
+            ? <Alert variant={capacity.fits ? 'default' : 'destructive'}>
+              <AlertDescription className="grid gap-2">
+                <span>{capacity.fits
+                  ? t('console.restoreJunkOptional', { junk: formatBytes(capacity.junkBytes), files: capacity.junkFiles })
+                  : t('console.restoreJunkNeeded', { needed: formatBytes(capacity.neededBytes), available: formatBytes(capacity.availableBytes), junk: formatBytes(capacity.junkBytes), files: capacity.junkFiles })}</span>
+                <Label htmlFor={trimId} className="flex items-start gap-2 font-normal">
+                  <Checkbox id={trimId} checked={trim} onCheckedChange={(checked) => onTrimChange(checked === true)} className="mt-0.5" />
+                  <span>{t('console.restoreTrim')}</span>
+                </Label>
+              </AlertDescription>
+            </Alert>
+            : null}
+        {/* What it will use, once what is chosen fits; nothing to say when it
+            frees more than it writes. */}
+        {capacity && !blockedBySize && (trim ? capacity.trimmedNeededBytes : capacity.neededBytes) > 0
+          ? <p className="text-xs text-muted-foreground">{t('console.restoreRoom', { needed: formatBytes(trim ? capacity.trimmedNeededBytes : capacity.neededBytes), available: formatBytes(capacity.availableBytes) })}</p>
+          : null}
         <p className="text-xs text-muted-foreground">{safety}</p>
       </DialogBody>
       <DialogFooter>
         <Button variant="ghost" onClick={onClose}>{t('common.cancel')}</Button>
-        <Button variant={mode === 'replace' ? 'destructive' : 'default'} disabled={unrecognized && !anyway} onClick={() => void onRestore()}>{t('console.restoreStart')}</Button>
+        <Button variant={mode === 'replace' ? 'destructive' : 'default'} disabled={(unrecognized && !anyway) || blockedBySize} onClick={() => void onRestore()}>{t('console.restoreStart')}</Button>
       </DialogFooter>
     </DialogContent>
   </Dialog>;
