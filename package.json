@@ -13,6 +13,7 @@
     "encoding:gate": "node scripts/encoding-gate.mjs",
     "lint": "eslint .",
     "start": "node --env-file-if-exists=.env --import tsx apps/manager-server/src/main.ts",
+    "dev": "npm start",
     "manager:start": "npm start",
     "panel:dev": "vite --config apps/manager-panel/vite.config.ts",
     "panel:build": "vite build --config apps/manager-panel/vite.config.ts",
