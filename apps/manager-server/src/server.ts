@@ -2158,6 +2158,12 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     sendJson(response, 200, { schedule: await backups.setSchedule({ intervalMinutes: body.intervalMinutes }) });
     return;
   }
+  // The old upload keeps the whole zip on the disk before restoring it, which
+  // is the copy saver mode exists to avoid; its panel streams instead.
+  if (backups.saving && method === 'POST' && ['/api/v1/backups/import/chunk', '/api/v1/backups/import/finish', '/api/v1/backups/import/preview', '/api/v1/backups/import/restore'].includes(pathname)) {
+    sendError(response, 409, 'saver_mode', 'Local backups are off while saver mode is on');
+    return;
+  }
   if (pathname === '/api/v1/backups/import/chunk' && method === 'POST') {
     const uploadId = searchParams.get('uploadId') ?? '';
     const index = Number(searchParams.get('index') ?? '');
@@ -2189,6 +2195,72 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     } finally {
       if (!retained) await backups.removeTemporary(archivePath);
     }
+    return;
+  }
+  /*
+   * A zip restored while it uploads, with no copy of it kept; see
+   * `ArchiveStream`. Saver mode's upload.
+   *
+   * Four steps. The browser sends the central directory, cut from the end of
+   * the file it holds, and gets back the preview - nothing stopped, nothing
+   * written. Restore starts the job: SillyTavern stopped, the current data to
+   * R2, and then the restore waits for bytes. The chunks follow in order, each
+   * written into the profile as it goes past; a chunk that arrives before the
+   * restore is ready is answered "not yet" and sent again. Delete gives up.
+   */
+  if (pathname === '/api/v1/backups/stream' && method === 'POST') {
+    const profile = await profiles.getActive();
+    if (!profile) { sendError(response, 409, 'profile_required', 'Create or activate a profile before importing a backup'); return; }
+    const archiveSize = Number(headerValue(request.headers['x-archive-size']) ?? '');
+    const tail = await readBody(request, MAX_STREAM_DIRECTORY_BYTES);
+    const stream = backups.openStream(tail, archiveSize, profile.layout);
+    sendJson(response, 200, { ...stream.preview, uploadId: stream.id });
+    return;
+  }
+  if (pathname === '/api/v1/backups/stream' && method === 'DELETE') {
+    backups.getStream(searchParams.get('uploadId') ?? '')?.fail(new BackupError('operation_canceled', 'The upload was stopped'));
+    sendJson(response, 200, { ok: true });
+    return;
+  }
+  if (pathname === '/api/v1/backups/stream/restore' && method === 'POST') {
+    const profile = await profiles.getActive();
+    if (!profile) { sendError(response, 409, 'profile_required', 'Create or activate a profile before restoring a backup'); return; }
+    const body = await readJson(request);
+    const stream = isRecord(body) && typeof body.uploadId === 'string' ? backups.getStream(body.uploadId) : null;
+    if (!stream) { sendError(response, 404, 'upload_missing', 'That upload is no longer open; choose the file again'); return; }
+    const mode = isRecord(body) && (body.mode === 'merge' || body.mode === 'replace') ? body.mode : null;
+    if (!mode) { sendError(response, 400, 'invalid_restore_mode', 'Restore mode must be merge or replace'); return; }
+    const force = isRecord(body) && body.force === true;
+    if (!force && !stream.preview.recognized) { sendError(response, 409, 'unrecognized_archive', 'This archive holds none of the folders a SillyTavern profile usually has'); return; }
+    const { job, signal } = jobs.createOperation('restore', logEvent('job.preparingRestore', 'Preparing restore'));
+    void restoreWithProcess({
+      profile, backups, mode, ...(force ? { force: true } : {}), supervisor, signal,
+      onProgress: (progress, step) => jobs.updateOperation(job.id, progress, step),
+      safetyNet: saverSafetyNet(profile, backups, r2, (line) => jobs.append('backup', line)),
+      write: (restoreOptions) => {
+        jobs.updateOperation(job.id, 25, logEvent('job.receivingUpload', 'Receiving the upload'));
+        return backups.restoreStream(profile, stream, restoreOptions);
+      },
+    })
+      .then(() => jobs.finishOperation(job.id, 'succeeded', null))
+      .catch((error: unknown) => {
+        // Whatever ended the job ends the upload with it, so the browser's
+        // next chunk is told rather than left waiting.
+        stream.fail(error instanceof Error ? error : new Error('Restore failed'));
+        jobs.finishOperation(job.id, 'failed', error instanceof Error ? error.message : 'Restore failed', { evenIfCanceled: error instanceof RestoreRollbackError, stepCode: error instanceof RestoreRollbackError ? 'job.rollbackFailed' : undefined });
+      });
+    sendJson(response, 202, { jobId: job.id, job });
+    return;
+  }
+  if (pathname === '/api/v1/backups/stream/chunk' && method === 'POST') {
+    const stream = backups.getStream(searchParams.get('uploadId') ?? '');
+    if (!stream) { sendError(response, 404, 'upload_missing', 'That upload is no longer open; choose the file again'); return; }
+    const index = Number(searchParams.get('index') ?? '');
+    if (!Number.isSafeInteger(index) || index < 0) { sendError(response, 400, 'invalid_upload_chunk', 'The upload chunk index is invalid'); return; }
+    // Short enough that no proxy in front of this gives up on the request.
+    if (!await stream.whenReady(STREAM_READY_WAIT_MS)) { sendJson(response, 202, { ready: false }); return; }
+    const chunk = await readBody(request, MAX_STREAM_CHUNK_BYTES);
+    sendJson(response, 200, { ready: true, ...await stream.push(index, chunk) });
     return;
   }
   const backupImportPreview = pathname === '/api/v1/backups/import/preview';
@@ -2907,11 +2979,11 @@ export async function restoreWithProcess(options: {
     // is what the safety copy holds, so the copy is no longer a safety copy.
     const settle = async () => { if (safetyCopy) await backups.reclassifyAsScheduled(safetyCopy.id).catch(() => undefined); };
     if (!writing) await settle();
-    // Saver mode kept no copy to put back, so a stop partway is said to be
-    // what it is rather than reported as a clean stop.
-    if (writing && signal?.aborted && !safetyCopy) {
+    // Saver mode kept no copy to put back, so a stop or a failure partway is
+    // said to be what it is: the profile holds some of each.
+    if (writing && !safetyCopy && (signal?.aborted || backups.saving)) {
       await supervisor.start().catch(() => supervisor.getState());
-      throw new RestoreRollbackError('saver mode keeps no local copy to put back');
+      throw new RestoreRollbackError(signal?.aborted ? 'saver mode keeps no local copy to put back' : error instanceof Error ? error.message : 'unknown error');
     }
     if (writing && signal?.aborted && safetyCopy) {
       try {
@@ -4223,6 +4295,26 @@ export function publicOriginFromEnvironment(env: NodeJS.ProcessEnv, port: number
     return { origin: `https://${codespace}-${port.toString(10)}.${forwardingDomain}`, source: 'platform' };
   }
   return null;
+}
+
+/** A streamed restore's central directory, with the end record that follows it. */
+const MAX_STREAM_DIRECTORY_BYTES = 64 * 1024 * 1024 + 65_557;
+/** One chunk of a streamed upload; the panel sends four mebibytes. */
+const MAX_STREAM_CHUNK_BYTES = 64 * 1024 * 1024;
+/** How long a chunk waits for a restore that is still getting ready. */
+const STREAM_READY_WAIT_MS = 20_000;
+
+/** A request's body whole, refused past `limit` bytes. */
+async function readBody(request: IncomingMessage, limit: number): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += buffer.length;
+    if (total > limit) throw new RequestError(413, 'payload_too_large', 'Request body is too large');
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks);
 }
 
 async function readJson(request: IncomingMessage): Promise<unknown> {

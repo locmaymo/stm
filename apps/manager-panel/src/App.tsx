@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react';
+import { centralDirectoryOffset, ZIP_TAIL_SEARCH_BYTES } from './zip-tail.js';
 import {
   Archive, ArrowDown, ArrowUp, ArrowUpRight, BarChart3, Cloud, Copy, Database, Download,
   Globe2, LayoutDashboard, Maximize2, Minimize2, Moon, Package, Pencil, Plus,
@@ -120,7 +121,7 @@ interface UploadMessages {
   readonly proxyPage: string;
 }
 
-async function uploadChunkWithRetry(url: string, body: Blob, headers: HeadersInit, messages: UploadMessages, signal?: AbortSignal): Promise<void> {
+async function uploadChunkWithRetry(url: string, body: Blob, headers: HeadersInit, messages: UploadMessages, signal?: AbortSignal): Promise<unknown> {
   let lastError = messages.failed;
   for (let attempt = 0; attempt <= UPLOAD_RETRIES; attempt += 1) {
     if (signal?.aborted) throw new StoppedError();
@@ -134,7 +135,7 @@ async function uploadChunkWithRetry(url: string, body: Blob, headers: HeadersIni
       await new Promise((resolvePromise) => window.setTimeout(resolvePromise, 500 * (attempt + 1)));
       continue;
     }
-    if (response.ok) return;
+    if (response.ok) return await response.json().catch(() => null) as unknown;
     const text = await response.text();
     lastError = apiErrorFromText(text, response.status, messages.failed, messages.fail, messages.proxyPage);
     const retryable = response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500;
@@ -3535,6 +3536,9 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   const [saving, setSaving] = useState(false);
   // The recovery point whose in-place restore is being asked about.
   const [restorePoint, setRestorePoint] = useState<R2SnapshotSummary | null>(null);
+  // A zip still in the browser whose directory the server has read, waiting on
+  // the restore question; see `streamUpload`.
+  const [streaming, setStreaming] = useState<{ readonly file: File; readonly uploadId: string } | null>(null);
   const [r2Snapshots, setR2Snapshots] = useState<R2SnapshotSummary[]>([]);
   const [r2Busy, setR2Busy] = useState<string | null>(null);
   const [settingsOffer, setSettingsOffer] = useState<ManagerSettingsOffer | null>(null);
@@ -3890,8 +3894,111 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       return true;
     } catch { failed(t('console.backupPreviewFailed')); return false; }
   };
-  const closeRestore = () => { setSelectedBackup(null); setSelectedPreview(null); setRestoreAnyway(false); };
+  const closeRestore = () => {
+    // A zip nobody went on to restore is nothing to the server but its
+    // directory in memory; say so rather than leave it to time out.
+    if (streaming) void apiFetch(`/api/v1/backups/stream?uploadId=${encodeURIComponent(streaming.uploadId)}`, { method: 'DELETE', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } }).catch(() => undefined);
+    setStreaming(null); setSelectedBackup(null); setSelectedPreview(null); setRestoreAnyway(false);
+  };
+  /**
+   * Saver mode's upload: look inside the zip without sending it.
+   *
+   * The directory at the end of the file is all the server needs to check the
+   * archive and say what it holds, so that is all that goes before the
+   * question. The rest goes after, straight into the profile; see
+   * `restoreStreamed`.
+   */
+  const streamUpload = async (file: File) => {
+    setBusyAction(t('console.importZip')); setOperationProgress(null);
+    try {
+      const tail = new Uint8Array(await file.slice(Math.max(0, file.size - ZIP_TAIL_SEARCH_BYTES)).arrayBuffer());
+      const offset = centralDirectoryOffset(tail, file.size);
+      if (offset === null) { failed(t('errors.invalid_archive')); return; }
+      const response = await apiFetch('/api/v1/backups/stream', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/octet-stream', 'x-archive-size': String(file.size), 'x-csrf-token': csrfToken }, body: file.slice(offset) });
+      const payload = await response.json() as (RestorePreview & { uploadId?: string }) | { error?: { message?: string } };
+      if (!response.ok || !('uploadId' in payload) || !payload.uploadId) { failed(fail.body(payload, t('console.backupPreviewFailed'))); return; }
+      setRestoreMode('replace');
+      setStreaming({ file, uploadId: payload.uploadId });
+      setSelectedPreview(payload);
+    } catch (error: unknown) {
+      failed(error instanceof Error ? error.message : t('console.backupPreviewFailed'));
+    } finally { setBusyAction(null); }
+  };
+  /**
+   * Send the zip, and let the server write it into the profile as it arrives.
+   *
+   * The server stops SillyTavern and puts the current data in R2 before it is
+   * ready, which can take minutes; until then a chunk is answered "not yet"
+   * and sent again, and the bar shows what the server is doing instead. Any
+   * way the upload ends early - a failure, Stop, the network - ends the job
+   * too, and the job is what says what became of the profile.
+   */
+  const restoreStreamed = async () => {
+    if (!streaming) return;
+    const { file, uploadId } = streaming;
+    const force = restoreAnyway;
+    setStreaming(null); setSelectedPreview(null); setRestoreAnyway(false);
+    setBusyAction(t('console.restore')); setOperationProgress(null); setMixedProfile(null); setUploading(true);
+    const controller = new AbortController();
+    uploadAbort.current = controller;
+    let jobId: string | null = null;
+    try {
+      const response = await apiFetch('/api/v1/backups/stream/restore', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ uploadId, mode: restoreMode, ...(force ? { force: true } : {}) }) });
+      const payload = await response.json() as { jobId?: string; error?: { message?: string } };
+      if (!response.ok || !payload.jobId) { failed(fail.body(payload, t('console.backupRestoreFailed'))); return; }
+      jobId = payload.jobId;
+      setRunningJobId(jobId);
+      let uploadError: unknown = null;
+      try {
+        const samples: Array<{ at: number; bytes: number }> = [{ at: Date.now(), bytes: 0 }];
+        for (let index = 0, offset = 0; offset < file.size;) {
+          const end = Math.min(file.size, offset + UPLOAD_CHUNK_BYTES);
+          const answer = await uploadChunkWithRetry(
+            `/api/v1/backups/stream/chunk?uploadId=${encodeURIComponent(uploadId)}&index=${index}`,
+            file.slice(offset, end),
+            { 'content-type': 'application/octet-stream', 'x-csrf-token': csrfToken, accept: 'application/json' },
+            { fail, failed: t('console.uploadFailed'), proxyPage: t('console.uploadProxyPage') },
+            controller.signal,
+          ) as { ready?: boolean; done?: boolean } | null;
+          if (!answer?.ready) {
+            // Still getting ready: what it is doing is the job's to say.
+            const jobResponse = await apiFetch(`/api/v1/jobs/${encodeURIComponent(jobId)}`, { credentials: 'same-origin' });
+            const job = jobResponse.ok ? await jobResponse.json() as Job : null;
+            if (job) setOperationProgress({ percent: job.progress, step: jobStep(job) });
+            if (job && job.state !== 'running' && job.state !== 'queued') break;
+            samples.splice(0, samples.length, { at: Date.now(), bytes: offset });
+            continue;
+          }
+          index += 1; offset = end;
+          const at = Date.now();
+          samples.push({ at, bytes: end });
+          while (samples.length > 2 && at - (samples[0]?.at ?? at) > UPLOAD_RATE_WINDOW_MS) samples.shift();
+          const oldest = samples[0] ?? { at, bytes: 0 };
+          const elapsedMs = at - oldest.at;
+          const bytesPerSecond = elapsedMs > 0 ? ((end - oldest.bytes) / elapsedMs) * 1000 : 0;
+          const remaining = bytesPerSecond > 0 ? `${formatDuration((file.size - end) / bytesPerSecond)} ${t('console.uploadRemaining')}` : t('console.uploadEstimating');
+          setOperationProgress({ percent: Math.round((end / Math.max(file.size, 1)) * 100), step: `${t('console.restoringUpload')} ${formatBytes(end)} / ${formatBytes(file.size)} · ${formatBytes(Math.round(bytesPerSecond))}/s · ${remaining}` });
+          if (answer.done) break;
+        }
+      } catch (error: unknown) {
+        uploadError = error;
+        // The upload is over; so is the restore waiting on it.
+        await apiFetch(`/api/v1/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } }).catch(() => undefined);
+      }
+      setUploading(false);
+      await waitForOperation(jobId, (job) => { if (uploadError === null) setOperationProgress({ percent: job.progress, step: jobStep(job) }); });
+      if (uploadError) throw uploadError;
+      await refresh();
+      done(t('console.restoreDone'));
+    } catch (error: unknown) {
+      if (error instanceof StoppedError) { done(t('console.restoreStopped')); await refresh(); }
+      else if (error instanceof RollbackFailedError) { setMixedProfile(t('console.restoreStoppedPartwaySaver')); await refresh(); }
+      else failed(error instanceof Error ? error.message : t('console.backupRestoreFailed'));
+      if (!jobId) void apiFetch(`/api/v1/backups/stream?uploadId=${encodeURIComponent(uploadId)}`, { method: 'DELETE', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } }).catch(() => undefined);
+    } finally { uploadAbort.current = null; setBusyAction(null); setOperationProgress(null); setRunningJobId(null); setUploading(false); }
+  };
   const restoreSelected = async () => {
+    if (streaming) { await restoreStreamed(); return; }
     if (!selectedBackup || !selectedPreview) return;
     const backupId = selectedBackup.id;
     // The question has been answered, so the dialog goes before the work
@@ -3917,6 +4024,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   };
   const inspectUpload = async (file: File | undefined) => {
     if (!file) return;
+    if (saving) { await streamUpload(file); return; }
     setBusyAction(t('console.importZip')); setOperationProgress(null); setUploading(true);
     const controller = new AbortController();
     uploadAbort.current = controller;
@@ -4674,7 +4782,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       cancelLabel={t('common.cancel')}
       onConfirm={() => { const point = restorePoint; if (point) void restorePointInPlace(point); }}
     />
-    <RestoreDialog t={t} catalog={catalog} displayName={displayName} backup={selectedBackup} preview={selectedPreview} mode={restoreMode} onModeChange={setRestoreMode} anyway={restoreAnyway} onAnywayChange={setRestoreAnyway} onClose={closeRestore} onRestore={restoreSelected} />
+    <RestoreDialog t={t} catalog={catalog} name={streaming ? streaming.file.name : selectedBackup ? displayName(selectedBackup) : null} safety={t(saving ? 'console.restoreSafetySaver' : 'console.restoreSafety')} preview={selectedPreview} mode={restoreMode} onModeChange={setRestoreMode} anyway={restoreAnyway} onAnywayChange={setRestoreAnyway} onClose={closeRestore} onRestore={restoreSelected} />
     <R2DestinationDialog
       t={t}
       open={destinationOpen}
@@ -4878,10 +4986,10 @@ function NameDialog({ t, open, onOpenChange, title, label, hint, initial = '', s
  * where the choice is made, and the choice is made in a dialog, because one of
  * them deletes everything that is there.
  */
-function RestoreDialog({ t, catalog, displayName, backup, preview, mode, onModeChange, anyway, onAnywayChange, onClose, onRestore }: { t: Translate; catalog: Record<string, unknown>; displayName: (backup: BackupManifest) => string; backup: BackupManifest | null; preview: RestorePreview | null; mode: RestoreMode; onModeChange: (mode: RestoreMode) => void; anyway: boolean; onAnywayChange: (anyway: boolean) => void; onClose: () => void; onRestore: () => Promise<void> }) {
+function RestoreDialog({ t, catalog, name, safety, preview, mode, onModeChange, anyway, onAnywayChange, onClose, onRestore }: { t: Translate; catalog: Record<string, unknown>; name: string | null; safety: string; preview: RestorePreview | null; mode: RestoreMode; onModeChange: (mode: RestoreMode) => void; anyway: boolean; onAnywayChange: (anyway: boolean) => void; onClose: () => void; onRestore: () => Promise<void> }) {
   const group = useId();
   const anywayId = useId();
-  if (!backup || !preview) return null;
+  if (name === null || !preview) return null;
   /*
    * An archive that is not a profile is refused here rather than restored.
    *
@@ -4909,7 +5017,7 @@ function RestoreDialog({ t, catalog, displayName, backup, preview, mode, onModeC
   return <Dialog open onOpenChange={(next) => { if (!next) onClose(); }}>
     <DialogContent className="sm:max-w-lg">
       <DialogHeader>
-        <DialogTitle>{t('console.restoreTitle', { name: displayName(backup) })}</DialogTitle>
+        <DialogTitle>{t('console.restoreTitle', { name })}</DialogTitle>
         <DialogDescription>{t('console.restoreCounts', { files: preview.fileCount, size: formatBytes(preview.totalBytes) })}</DialogDescription>
       </DialogHeader>
       <DialogBody className="grid gap-4">
@@ -4936,7 +5044,7 @@ function RestoreDialog({ t, catalog, displayName, backup, preview, mode, onModeC
             </AlertDescription>
           </Alert>
           : null}
-        <p className="text-xs text-muted-foreground">{t('console.restoreSafety')}</p>
+        <p className="text-xs text-muted-foreground">{safety}</p>
       </DialogBody>
       <DialogFooter>
         <Button variant="ghost" onClick={onClose}>{t('common.cancel')}</Button>
