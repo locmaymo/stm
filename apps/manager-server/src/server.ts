@@ -71,6 +71,14 @@ const DEFAULT_CLOUDFLARE_CLIENT_ID = '042dda365c8407a62549886823a5fa4c';
  * the project's domain that forwards to the origin the sign-in started from.
  */
 const DEFAULT_CLOUDFLARE_REDIRECT_URI = 'https://stm.locmaymo.top/oauth/cloudflare/callback';
+/**
+ * Origins used by the v0 preview/embed shell. The manager is reached through a
+ * proxy in that shell, so its Host header is not the browser's Origin.
+ */
+const V0_EMBED_ORIGINS = [
+  'https://v0.app',
+  'https://chay-ung-dung-trong-moi-truong.v0.build',
+] as const;
 /** Where the relay, or Cloudflare itself for a loopback client, sends the browser on this manager. */
 export const CLOUDFLARE_CALLBACK_PATH = '/oauth/cloudflare/callback';
 
@@ -581,8 +589,9 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
    */
   const publicOrigins = (): readonly string[] => {
     const tunnelUrl = managerTunnel.getState().url?.replace(/\/$/u, '');
-    const ordered = [
-      ...(environmentOrigin?.source === 'configured' ? [environmentOrigin.origin] : []),
+  const ordered = [
+  ...V0_EMBED_ORIGINS,
+  ...(environmentOrigin?.source === 'configured' ? [environmentOrigin.origin] : []),
       /*
        * The Worker in front of the tunnel, ahead of the tunnel itself.
        *
