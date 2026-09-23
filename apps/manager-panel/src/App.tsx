@@ -3533,6 +3533,8 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   // Saver mode takes no local archives, so the buttons that would write one
   // are put away and the card says why.
   const [saving, setSaving] = useState(false);
+  // The recovery point whose in-place restore is being asked about.
+  const [restorePoint, setRestorePoint] = useState<R2SnapshotSummary | null>(null);
   const [r2Snapshots, setR2Snapshots] = useState<R2SnapshotSummary[]>([]);
   const [r2Busy, setR2Busy] = useState<string | null>(null);
   const [settingsOffer, setSettingsOffer] = useState<ManagerSettingsOffer | null>(null);
@@ -4185,6 +4187,28 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
    * merge-or-replace choice as any other archive - and the operator gets to
    * look at it first.
    */
+  /**
+   * Put a recovery point straight into the profile, saver mode's way back.
+   *
+   * No archive is made on the way, so there is nothing to look inside first;
+   * the question is asked before instead, and the progress is the download.
+   */
+  const restorePointInPlace = async (snapshot: R2SnapshotSummary) => {
+    setR2Busy(t('console.restore')); setOperationProgress(null); setMixedProfile(null);
+    try {
+      const response = await apiFetch(`/api/v1/r2/snapshots/${encodeURIComponent(snapshot.id)}/restore`, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ profileId: snapshot.profileId, mode: 'replace' }) });
+      const payload = await response.json() as { jobId?: string; error?: { message?: string } };
+      if (!response.ok || !payload.jobId) { failed(fail.body(payload, t('console.backupRestoreFailed'))); return; }
+      setRunningJobId(payload.jobId);
+      await waitForOperation(payload.jobId, (job) => setOperationProgress({ percent: job.progress, step: jobStep(job) }));
+      await refresh();
+      done(t('console.restoreDone'));
+    } catch (error: unknown) {
+      if (error instanceof StoppedError) { done(t('console.restoreStopped')); await refresh(); }
+      else if (error instanceof RollbackFailedError) { setMixedProfile(t('console.restoreStoppedPartwaySaver')); await refresh(); }
+      else failed(error instanceof Error ? error.message : t('console.backupRestoreFailed'));
+    } finally { setR2Busy(null); setOperationProgress(null); setRunningJobId(null); }
+  };
   const fetchSnapshot = async (snapshot: R2SnapshotSummary) => {
     setR2Busy(t('console.r2Fetch'));
     setOperationProgress(null);
@@ -4324,7 +4348,11 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       headClassName: 'w-28',
       // Not "Download": nothing leaves for the reader to carry off. The point
       // comes back into this manager's backup library, to be restored from there.
-      cell: (snapshot) => <Button variant="ghost" size="sm" className="whitespace-nowrap" onClick={() => void fetchSnapshot(snapshot)} disabled={r2Busy !== null}><History />{t('console.r2Fetch')}</Button>,
+      // In saver mode there is no library to bring it into, so the row offers
+      // what fetching was always the first half of: restoring it.
+      cell: (snapshot) => saving
+        ? <Button variant="ghost" size="sm" className="whitespace-nowrap" onClick={() => setRestorePoint(snapshot)} disabled={r2Busy !== null}><RotateCcw />{t('console.restore')}</Button>
+        : <Button variant="ghost" size="sm" className="whitespace-nowrap" onClick={() => void fetchSnapshot(snapshot)} disabled={r2Busy !== null}><History />{t('console.r2Fetch')}</Button>,
     },
   ];
 
@@ -4634,6 +4662,17 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       confirmLabel={t('common.delete')}
       cancelLabel={t('common.cancel')}
       onConfirm={deleteBackup}
+    />
+    {/* Asked before rather than after, because in place there is no archive
+        to look inside first: what is replaced is replaced as it arrives. */}
+    <ConfirmDialog
+      open={restorePoint !== null}
+      onOpenChange={(open) => { if (!open) setRestorePoint(null); }}
+      title={t('console.restorePointTitle', { when: restorePoint ? new Date(restorePoint.createdAt).toLocaleString() : '' })}
+      description={t('console.restorePointBody')}
+      confirmLabel={t('console.restore')}
+      cancelLabel={t('common.cancel')}
+      onConfirm={() => { const point = restorePoint; if (point) void restorePointInPlace(point); }}
     />
     <RestoreDialog t={t} catalog={catalog} displayName={displayName} backup={selectedBackup} preview={selectedPreview} mode={restoreMode} onModeChange={setRestoreMode} anyway={restoreAnyway} onAnywayChange={setRestoreAnyway} onClose={closeRestore} onRestore={restoreSelected} />
     <R2DestinationDialog

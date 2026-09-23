@@ -1,9 +1,10 @@
 import { Readable } from 'node:stream';
-import { readdir } from 'node:fs/promises';
-import { logEvent, type BackupManifest, type LogSink, type Profile, type R2SnapshotSummary, type RestorePreview, type TransferProgress } from '../../../packages/contracts/src/index.js';
-import { BackupStore, type ImportEntry } from '../../../packages/backup/src/index.js';
+import { readdir, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { logEvent, type BackupManifest, type LogEvent, type LogSink, type Profile, type R2SnapshotSummary, type RestoreMode, type RestorePreview, type TransferProgress } from '../../../packages/contracts/src/index.js';
+import { BackupStore, type ImportEntry, type RestoreFile } from '../../../packages/backup/src/index.js';
 import { R2Manager } from '../../../packages/r2/src/index.js';
-import type { HashedFile } from '../../../packages/r2/src/sync.js';
+import type { HashedFile, R2Snapshot } from '../../../packages/r2/src/sync.js';
 import { ioConcurrency } from '../../../packages/platform/src/index.js';
 
 /**
@@ -71,6 +72,74 @@ export async function fetchSnapshotToLibrary(options: FetchSnapshotOptions): Pro
   });
   options.logger?.(logEvent('r2.fetched', `[r2] recovery point ${snapshot.createdAt} is in the backup library as ${result.manifest.name}`, { createdAt: snapshot.createdAt, name: result.manifest.name }));
   return result;
+}
+
+export interface RestoreSnapshotOptions {
+  readonly profile: Profile;
+  readonly r2: R2Manager;
+  readonly backups: BackupStore;
+  /** Read before anything else happens; see `restoreSnapshotInPlace`. */
+  readonly snapshot: R2Snapshot;
+  readonly mode: RestoreMode;
+  readonly force?: boolean;
+  readonly signal?: AbortSignal;
+  readonly onProgress?: (progress: TransferProgress) => void;
+  readonly onStatus?: (step: LogEvent) => void;
+  readonly logger?: LogSink;
+}
+
+/**
+ * Put a recovery point straight into the profile, with no archive in between.
+ *
+ * Saver mode's way back from R2. Bringing a point into the library first put
+ * the profile on the disk twice - the rebuilt zip and then the files - and a
+ * machine with a few gigabytes for everything had room for it once. Here each
+ * file goes to its place as its chunks arrive; the restore's own checks are
+ * the ones a zip gets.
+ *
+ * The recovery point is read by the caller before SillyTavern is stopped or
+ * anything is sent to R2: what the restore is going to write is then fixed in
+ * memory, so a copy of the current data pushed to the bucket a moment later
+ * cannot thin away the index being restored. Its chunks stay, because only the
+ * daily sweep collects chunks and the scheduler does not run during a restore.
+ *
+ * The caller owns stopping SillyTavern.
+ */
+export async function restoreSnapshotInPlace(options: RestoreSnapshotOptions): Promise<RestorePreview> {
+  const { profile, r2, backups, snapshot, signal } = options;
+  const files = [...snapshot.files].sort((left, right) => left.name.localeCompare(right.name));
+  const byName = new Map(files.map((file) => [file.name, file]));
+  const totalBytes = files.reduce((sum, file) => sum + file.sizeBytes, 0);
+  options.logger?.(logEvent('r2.restoringInPlace', `[r2] restoring recovery point ${snapshot.createdAt} straight into the profile (${files.length} files)`, { createdAt: snapshot.createdAt, files: files.length }));
+  // Counted per file, so a file whose write is retried is not counted twice.
+  const counted = new Map<string, number>();
+  let completedBytes = 0;
+  let completedItems = 0;
+  const report = (): void => options.onProgress?.({ completedBytes, totalBytes, completedItems, totalItems: files.length });
+  async function* open(file: RestoreFile): AsyncGenerator<Buffer> {
+    const hashed = byName.get(file.name);
+    if (!hashed) return;
+    let position = 0;
+    for (const chunk of hashed.chunks) {
+      throwIfStopped(signal);
+      const bytes = await r2.readBlob(chunk.hash);
+      position += bytes.length;
+      const before = counted.get(file.name) ?? 0;
+      if (position > before) { completedBytes += position - before; counted.set(file.name, position); report(); }
+      yield bytes;
+    }
+  }
+  const preview = await backups.restoreFiles(profile, {
+    mode: options.mode,
+    files: files.map((file) => ({ name: file.name, sizeBytes: file.sizeBytes })),
+    open,
+    ...(options.force ? { force: true } : {}),
+    ...(signal ? { signal } : {}),
+    ...(options.onStatus ? { onStatus: options.onStatus } : {}),
+    onProgress: ({ completed }) => { completedItems = completed; report(); },
+  });
+  options.logger?.(logEvent('r2.restoredInPlace', `[r2] recovery point ${snapshot.createdAt} is back in this profile`, { createdAt: snapshot.createdAt }));
+  return preview;
 }
 
 /**
@@ -181,6 +250,21 @@ export interface RecoverProfileOptions {
    * afterwards.
    */
   readonly force?: boolean;
+  /**
+   * Write the point straight into the profile rather than through the library.
+   *
+   * Saver mode, which has no room for the archive; see
+   * `restoreSnapshotInPlace`. `restore` is not called.
+   */
+  readonly inPlace?: boolean;
+}
+
+export interface RecoveredProfile {
+  /** The archive it came through, or null when it went straight in. */
+  readonly manifest: BackupManifest | null;
+  readonly point: R2SnapshotSummary;
+  readonly fileCount: number;
+  readonly sizeBytes: number;
 }
 
 /**
@@ -205,9 +289,10 @@ export interface RecoverProfileOptions {
  * Returns the recovery point that came back and the archive it arrived as, or
  * null when there was nothing to do.
  */
-export async function recoverProfileFromR2(options: RecoverProfileOptions): Promise<{ manifest: BackupManifest; point: R2SnapshotSummary } | null> {
+export async function recoverProfileFromR2(options: RecoverProfileOptions): Promise<RecoveredProfile | null> {
   const { profile, r2, backups, logger } = options;
-  if (!options.force && !await isProfileEmpty(profile)) return null;
+  const startedEmpty = await isProfileEmpty(profile);
+  if (!options.force && !startedEmpty) return null;
   let candidates: readonly R2SnapshotSummary[];
   try {
     // Every profile in the bucket, not this one: the identifier this machine
@@ -243,17 +328,30 @@ export async function recoverProfileFromR2(options: RecoverProfileOptions): Prom
   for (const candidate of candidates) {
     logger?.(logEvent('r2.recovering', `[r2] this profile is empty and the bucket holds a recovery point from ${candidate.createdAt}; bringing it back`, { createdAt: candidate.createdAt }));
     try {
-      const { manifest } = await fetchSnapshotToLibrary({
-        profile, r2, backups,
-        snapshotId: candidate.id,
-        sourceProfileId: candidate.profileId,
-        ...(logger ? { logger } : {}),
-        ...(options.onProgress ? { onProgress: options.onProgress } : {}),
-        ...(options.signal ? { signal: options.signal } : {}),
-      });
-      const archivePath = await backups.getArchivePath(manifest.id);
-      if (!archivePath) throw new Error('the fetched recovery point could not be found in the backup library');
-      await options.restore(archivePath);
+      let recovered: Omit<RecoveredProfile, 'point'>;
+      if (options.inPlace) {
+        const snapshot = await r2.readSnapshot(candidate.profileId, candidate.id);
+        const preview = await restoreSnapshotInPlace({
+          profile, r2, backups, snapshot, mode: 'replace', force: true,
+          ...(logger ? { logger } : {}),
+          ...(options.onProgress ? { onProgress: options.onProgress } : {}),
+          ...(options.signal ? { signal: options.signal } : {}),
+        });
+        recovered = { manifest: null, fileCount: preview.fileCount, sizeBytes: preview.totalBytes };
+      } else {
+        const { manifest } = await fetchSnapshotToLibrary({
+          profile, r2, backups,
+          snapshotId: candidate.id,
+          sourceProfileId: candidate.profileId,
+          ...(logger ? { logger } : {}),
+          ...(options.onProgress ? { onProgress: options.onProgress } : {}),
+          ...(options.signal ? { signal: options.signal } : {}),
+        });
+        const archivePath = await backups.getArchivePath(manifest.id);
+        if (!archivePath) throw new Error('the fetched recovery point could not be found in the backup library');
+        await options.restore(archivePath);
+        recovered = { manifest, fileCount: manifest.fileCount, sizeBytes: manifest.sizeBytes };
+      }
       /*
        * The usage history comes back with it, where there is one.
        *
@@ -268,7 +366,7 @@ export async function recoverProfileFromR2(options: RecoverProfileOptions): Prom
         });
       }
       logger?.(logEvent('r2.recovered', `[r2] the recovery point from ${candidate.createdAt} is back in this profile`, { createdAt: candidate.createdAt }));
-      return { manifest, point: candidate };
+      return { ...recovered, point: candidate };
     } catch (error: unknown) {
       const reason = error instanceof Error ? error.message : 'unknown error';
       failures.push(reason);
@@ -277,6 +375,13 @@ export async function recoverProfileFromR2(options: RecoverProfileOptions): Prom
       // been written into the profile and the next one starts from the same
       // empty directory this one did. A forced run was never starting from an
       // empty directory, so that reasoning does not apply to it.
+      //
+      // Written in place, a point that fails partway has written some of
+      // itself. The directory was empty when this started, so emptying it
+      // again is putting it back, and the next point starts where this did -
+      // or, stopped, the profile is left as empty as it was found.
+      if (options.inPlace && startedEmpty) await emptyDirectory(profile.dataPath);
+      if (options.signal?.aborted) break;
       if (!options.force && !await isProfileEmpty(profile)) break;
     }
   }
@@ -293,6 +398,11 @@ export async function recoverProfileFromR2(options: RecoverProfileOptions): Prom
  * and walking a profile of eleven thousand files to answer it would be the
  * slowest thing on the way up.
  */
+async function emptyDirectory(path: string): Promise<void> {
+  const names = await readdir(path).catch(() => [] as string[]);
+  await Promise.all(names.map((name) => rm(join(path, name), { recursive: true, force: true, maxRetries: 2 })));
+}
+
 export async function isProfileEmpty(profile: Profile): Promise<boolean> {
   try {
     return (await readdir(profile.dataPath)).length === 0;

@@ -5,7 +5,7 @@ import { createReadStream } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import { createSocket } from 'node:dgram';
 import { extname, join, relative, resolve, sep } from 'node:path';
-import { applyQuery, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, isConsoleStatusSection, KEEP_ONLINE_DEFAULT_MINUTES, OPERATION_JOB_KINDS, type AccessGatewayState, type ApiErrorBody, type BackupManifest, type ConfigUpdateInput, type ConsoleStatus, type ConsoleStatusSection, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogPage, type LogSink, type LogSourceFilter, type LegalReview, type ManagerPorts, type ManagerUpdateStatus, type OnlineState, type PortSettings, type Profile, type ProfileLayout, type SetupStatus, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
+import { applyQuery, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, isConsoleStatusSection, KEEP_ONLINE_DEFAULT_MINUTES, OPERATION_JOB_KINDS, type AccessGatewayState, type ApiErrorBody, type BackupManifest, type ConfigUpdateInput, type ConsoleStatus, type ConsoleStatusSection, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogPage, type LogSink, type LogSourceFilter, type LegalReview, type ManagerPorts, type ManagerUpdateStatus, type OnlineState, type PortSettings, type Profile, type ProfileLayout, type RestorePreview, type SetupStatus, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
 import { getPlatformPaths, storageDurability, storageReport, type PlatformPaths } from '../../../packages/platform/src/index.js';
 import { INSTALL_CANCELED, RuntimeError, RuntimeManager, type InstallationProgress } from '../../../packages/sillytavern-runtime/src/index.js';
 import { hashPassword, MIN_PASSWORD_LENGTH, validatePasscode, validatePassword, verifyPassword } from './password.js';
@@ -24,11 +24,11 @@ import { ACCESS_GATEWAY_PORT, checkSillyTavernPort, findFreePort, isPortFree, MA
 import { previewImage, previewLogo, previewManifest } from './preview.js';
 import { TunnelManager } from '../../../packages/tunnel/src/index.js';
 import { ProfileError, ProfileStore } from '../../../packages/profiles/src/index.js';
-import { BackupError, BackupStore } from '../../../packages/backup/src/index.js';
+import { BackupError, BackupStore, type RestoreOptions } from '../../../packages/backup/src/index.js';
 import { CloudflareConnection, R2Error, R2Manager, type R2UpdateInput } from '../../../packages/r2/src/index.js';
 import { CloudflareApiError, CloudflareOAuthError, CloudflareRateLimitError, DEFAULT_SCOPES, PROXY_WORKER_TARGETS, ProxyWorkerManager, type ProxyWorkerTarget } from '../../../packages/cloudflare/src/index.js';
 import { BackupScheduler, syncProfileToR2 } from './r2-scheduler.js';
-import { fetchSnapshotToLibrary, isProfileEmpty, recoverProfileFromR2 } from './r2-restore.js';
+import { fetchSnapshotToLibrary, isProfileEmpty, recoverProfileFromR2, restoreSnapshotInPlace } from './r2-restore.js';
 import { TransferMeter } from './progress.js';
 import { MetricsStore } from './metrics.js';
 import { ActivityMeter } from './activity.js';
@@ -1832,10 +1832,61 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     sendList(response, 'snapshots', snapshots, searchParams, { searchText: snapshotSearchText, sortValue: snapshotSortValue }, { activeProfileId: profile?.id ?? null });
     return;
   }
+  /*
+   * A recovery point straight into the profile, with no archive in between.
+   *
+   * What saver mode offers where it cannot keep the archive Fetch would make.
+   * The point is read before anything else happens, so the push of the current
+   * data to R2 that stands in for the safety copy cannot thin it away; see
+   * `restoreSnapshotInPlace`. SillyTavern is stopped from before the first
+   * byte arrives until the last one is written.
+   */
+  const snapshotRestoreMatch = /^\/api\/v1\/r2\/snapshots\/([^/]+)\/restore$/u.exec(pathname);
+  if (snapshotRestoreMatch && method === 'POST') {
+    const profile = await profiles.getActive();
+    if (!profile) { sendError(response, 409, 'profile_required', 'Create or activate a profile before restoring a recovery point'); return; }
+    const lost = await lostTheAccount(r2);
+    if (lost) { sendError(response, 409, 'r2_in_use', displacedMessage(lost)); return; }
+    const body = await readJson(request);
+    const mode = isRecord(body) && (body.mode === 'merge' || body.mode === 'replace') ? body.mode : null;
+    if (!mode) { sendError(response, 400, 'invalid_restore_mode', 'Restore mode must be merge or replace'); return; }
+    const force = isRecord(body) && body.force === true;
+    const sourceProfileId = isRecord(body) && typeof body.profileId === 'string' && body.profileId ? body.profileId : profile.id;
+    const snapshot = await r2.readSnapshot(sourceProfileId, snapshotRestoreMatch[1] ?? '');
+    // Asked here, as the library's restore asks it, so the refusal is a code
+    // the panel can translate rather than a job that fails in English.
+    if (!force && !backups.previewFiles(snapshot.files, profile.layout).recognized) {
+      sendError(response, 409, 'unrecognized_archive', 'This recovery point holds none of the folders a SillyTavern profile usually has');
+      return;
+    }
+    const { job, signal } = jobs.createOperation('restore', logEvent('job.preparingRestore', 'Preparing restore'));
+    const meter = new TransferMeter();
+    void restoreWithProcess({
+      profile, backups, mode, ...(force ? { force: true } : {}), supervisor, signal,
+      onProgress: (progress, step) => jobs.updateOperation(job.id, progress, step),
+      safetyNet: saverSafetyNet(profile, backups, r2, (line) => jobs.append('backup', line)),
+      write: (restoreOptions) => restoreSnapshotInPlace({
+        profile, r2, backups, snapshot, mode, ...(force ? { force: true } : {}), signal,
+        logger: (line) => jobs.append('backup', line),
+        ...(restoreOptions.onStatus ? { onStatus: restoreOptions.onStatus } : {}),
+        onProgress: (progress) => {
+          const { percent, params } = meter.update(progress);
+          jobs.updateOperation(job.id, 25 + percent * 0.6, logEvent('job.fetchingChunks', `Fetching ${String(params.done)} of ${String(params.total)} - ${String(params.rate)}, ${String(params.eta)} left`, params));
+        },
+      }),
+    })
+      .then(() => jobs.finishOperation(job.id, 'succeeded', null))
+      .catch((error: unknown) => jobs.finishOperation(job.id, 'failed', error instanceof Error ? error.message : 'Restore failed', { evenIfCanceled: error instanceof RestoreRollbackError, stepCode: error instanceof RestoreRollbackError ? 'job.rollbackFailed' : undefined }));
+    sendJson(response, 202, { jobId: job.id, job });
+    return;
+  }
   const snapshotMatch = /^\/api\/v1\/r2\/snapshots\/([^/]+)\/fetch$/u.exec(pathname);
   if (snapshotMatch && method === 'POST') {
     const profile = await profiles.getActive();
     if (!profile) { sendError(response, 409, 'profile_required', 'Create or activate a profile before fetching a recovery point'); return; }
+    // Fetching makes an archive in the library, which is the copy saver mode
+    // has no room for; it restores in place instead.
+    if (backups.saving) { sendError(response, 409, 'saver_mode', 'Local backups are off while saver mode is on'); return; }
     const snapshotId = snapshotMatch[1] ?? '';
     // Which profile in the bucket it belongs to, when that is not this one.
     // Sent by the panel from the row it was pressed on; a point of this
@@ -2770,7 +2821,16 @@ export class RestoreRollbackError extends Error {
 export async function restoreWithProcess(options: {
   readonly profile: Awaited<ReturnType<ProfileStore['getActive']>> & {};
   readonly backups: BackupStore;
-  readonly archivePath: string;
+  /** The archive to restore; or, for bytes not in an archive, `write`. */
+  readonly archivePath?: string;
+  /**
+   * Write the data some other way than from an archive on this disk.
+   *
+   * Handed the options a restore of `archivePath` would have been given, and
+   * called at the moment it would have run - SillyTavern stopped, the safety
+   * copy or its stand-in taken.
+   */
+  readonly write?: (restoreOptions: RestoreOptions) => Promise<RestorePreview>;
   /**
    * Which archive in the library this is, when it is one.
    *
@@ -2797,6 +2857,10 @@ export async function restoreWithProcess(options: {
   readonly safetyNet?: (signal: AbortSignal | undefined, report: (fraction: number, step: LogEvent) => void) => Promise<void>;
 }): Promise<{ preview: Awaited<ReturnType<BackupStore['restore']>>; safetySnapshot: Awaited<ReturnType<BackupStore['create']>> | null; process: ReturnType<ProcessSupervisor['getState']> }> {
   const { profile, backups, archivePath, mode, supervisor, signal, onProgress } = options;
+  const write = options.write ?? ((restoreOptions: RestoreOptions) => {
+    if (archivePath === undefined) throw new Error('A restore needs an archive or a way to write the data');
+    return backups.restore(profile, archivePath, restoreOptions);
+  });
   const releaseArchive = options.backupId ? backups.hold(options.backupId) : () => undefined;
   // Claim the backup store before stopping anything. Otherwise the scheduler's
   // next tick sees an idle store and starts a full backup that the restore then
@@ -2827,7 +2891,7 @@ export async function restoreWithProcess(options: {
     }
     onProgress?.(25, logEvent('job.restoringData', 'Restoring data'));
     writing = true;
-    const preview = await backups.restore(profile, archivePath, {
+    const preview = await write({
       mode,
       ...(options.force ? { force: true } : {}),
       ...(signal ? { signal } : {}),
@@ -3306,7 +3370,7 @@ async function bringThisMachineBack(
     await refillProfile(deps, profile, running);
     return;
   }
-  await recoverEmptyProfile(() => Promise.resolve(profile), r2, backups, jobs, metrics.filePath, running);
+  await recoverEmptyProfile(() => Promise.resolve(profile), r2, backups, jobs, metrics.filePath, running, deps.supervisor);
 }
 
 /**
@@ -3372,6 +3436,29 @@ async function refillProfile(
       return;
     }
     const meter = new TransferMeter();
+    if (backups.saving) {
+      // Straight into the profile, with SillyTavern stopped for all of it and
+      // what was here pushed to R2 first; see `restoreSnapshotInPlace`.
+      const snapshot = await r2.readSnapshot(newest.profileId, newest.id);
+      const { preview } = await restoreWithProcess({
+        profile, backups, mode: 'replace', force: true, supervisor,
+        signal: running.signal,
+        onProgress: (progress, step) => jobs.updateOperation(running.job.id, progress, step),
+        safetyNet: saverSafetyNet(profile, backups, r2, (line) => jobs.append('backup', line)),
+        write: (restoreOptions) => restoreSnapshotInPlace({
+          profile, r2, backups, snapshot, mode: 'replace', force: true, signal: running.signal,
+          logger: (line) => jobs.append('backup', line),
+          ...(restoreOptions.onStatus ? { onStatus: restoreOptions.onStatus } : {}),
+          onProgress: (progress) => {
+            const { percent, params } = meter.update(progress);
+            jobs.updateOperation(running.job.id, 25 + percent * 0.6, logEvent('job.fetchingChunks', `Fetching ${String(params.done)} of ${String(params.total)} - ${String(params.rate)}, ${String(params.eta)} left`, params));
+          },
+        }),
+      });
+      await r2.recordRecovery({ createdAt: newest.createdAt, fileCount: preview.fileCount, sizeBytes: preview.totalBytes });
+      logger(logEvent('r2.recovered', `[r2] the recovery point from ${newest.createdAt} is back in this profile`, { createdAt: newest.createdAt }));
+      return;
+    }
     const { manifest } = await fetchSnapshotToLibrary({
       profile, r2, backups, snapshotId: newest.id, sourceProfileId: newest.profileId, signal: running.signal,
       logger: (line) => jobs.append('backup', line),
@@ -4289,7 +4376,7 @@ async function announceRecoverable(r2: R2Manager, logger: LogSink): Promise<void
   }
 }
 
-async function recoverEmptyProfile(settle: () => Promise<Profile>, r2: R2Manager, backups: BackupStore, jobs: JobStore, metricsFile: string, running?: { readonly job: Job; readonly signal: AbortSignal }): Promise<void> {
+async function recoverEmptyProfile(settle: () => Promise<Profile>, r2: R2Manager, backups: BackupStore, jobs: JobStore, metricsFile: string, running?: { readonly job: Job; readonly signal: AbortSignal }, supervisor?: ProcessSupervisor): Promise<void> {
   /*
    * The backup slot is held from before the profile exists.
    *
@@ -4344,8 +4431,16 @@ async function recoverEmptyProfile(settle: () => Promise<Profile>, r2: R2Manager
     // rather than an Install button somebody is about to press by mistake.
     const { job, signal } = running ?? jobs.createOperation('r2Fetch', logEvent('job.checkingAccount', 'Checking this account for data to bring back'));
     const meter = new TransferMeter();
+    /*
+     * Saver mode writes the point straight into the profile, and gives
+     * SillyTavern's memory back to the download while it does: an empty
+     * profile has nothing in it to use, and it is started again afterwards.
+     */
+    const inPlace = backups.saving;
+    const pause = inPlace && supervisor && ['running', 'starting'].includes(supervisor.getState().status);
+    if (pause) await supervisor.stop('restore');
     const restored = await recoverProfileFromR2({
-      profile, r2, backups, signal,
+      profile, r2, backups, signal, inPlace,
       logger: (line) => jobs.append('backup', line),
       onProgress: (progress) => {
         const { percent, params } = meter.update(progress);
@@ -4360,11 +4455,11 @@ async function recoverEmptyProfile(settle: () => Promise<Profile>, r2: R2Manager
       // is what keeps a sign-in one job from beginning to end.
       (result) => { if (!running) jobs.finishOperation(job.id, 'succeeded', null); return result; },
       (error: unknown) => { if (!running) jobs.finishOperation(job.id, 'failed', error instanceof Error ? error.message : 'The recovery point could not be brought back'); throw error; },
-    );
+    ).finally(async () => { if (pause) await supervisor.start().catch(() => supervisor.getState()); });
     // Nobody was watching while this ran. The card says it happened, and says it
     // of the recovery point rather than of the archive that carried it here:
     // when the data was taken is what the reader is trying to work out.
-    if (restored) await r2.recordRecovery({ createdAt: restored.point.createdAt, fileCount: restored.manifest.fileCount, sizeBytes: restored.manifest.sizeBytes });
+    if (restored) await r2.recordRecovery({ createdAt: restored.point.createdAt, fileCount: restored.fileCount, sizeBytes: restored.sizeBytes });
   } finally {
     release();
   }

@@ -113,3 +113,21 @@ test('a saver mode restore whose R2 copy fails writes nothing', async () => {
   );
   assert.deepEqual(calls, ['start']);
 });
+
+test('a restore with no archive writes through what it is handed, after the R2 copy', async () => {
+  const calls: string[] = [];
+  const backups = { saving: true, reserve: () => () => undefined, reclassifyAsScheduled: async () => undefined } as unknown as BackupStore;
+  const supervisor = {
+    stop: async () => { calls.push('stop'); return { status: 'stopped' }; },
+    start: async () => { calls.push('start'); return { status: 'running' }; },
+    getState: () => ({ status: 'stopped' }),
+  } as unknown as ProcessSupervisor;
+  const result = await restoreWithProcess({
+    profile: { id: 'p1', name: 'Main' } as never, backups, supervisor, mode: 'replace',
+    safetyNet: async () => { calls.push('R2'); },
+    write: async (options) => { calls.push(`write ${options.mode}`); return { fileCount: 3 } as never; },
+  });
+  // SillyTavern is stopped before anything is fetched and started once it is all written.
+  assert.deepEqual(calls, ['stop', 'R2', 'write replace', 'start']);
+  assert.equal(result.safetySnapshot, null);
+});

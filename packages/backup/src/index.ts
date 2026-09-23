@@ -125,14 +125,41 @@ interface PersistedBackups {
   readonly schedule?: LocalBackupSchedule;
 }
 
-interface ZipEntry {
+/**
+ * What a restore needs to know of an entry to plan it.
+ *
+ * A zip entry says it, and so does a file named in an R2 recovery point, so a
+ * recovery point can be restored without first being made into a zip.
+ */
+interface EntryInfo {
   readonly name: string;
-  readonly compressedSize: number;
   readonly uncompressedSize: number;
-  readonly compression: number;
-  readonly localOffset: number;
   readonly directory: boolean;
   readonly symlink: boolean;
+}
+
+interface ZipEntry extends EntryInfo {
+  readonly compressedSize: number;
+  readonly compression: number;
+  readonly localOffset: number;
+}
+
+/** One file of a restore whose bytes are not in a zip on this disk. */
+export interface RestoreFile {
+  /** The archive-relative name, the same one a backup of the profile would use. */
+  readonly name: string;
+  readonly sizeBytes: number;
+}
+
+export interface RestoreFilesOptions extends RestoreOptions {
+  readonly files: readonly RestoreFile[];
+  /**
+   * The bytes of one file, as they arrive.
+   *
+   * Called again for a file whose first write was refused and is retried, so
+   * it has to start from the beginning each time.
+   */
+  readonly open: (file: RestoreFile) => AsyncIterable<Uint8Array>;
 }
 
 export interface ArchiveSource {
@@ -617,6 +644,37 @@ export class BackupStore {
       if (isFileNotFound(error)) throw new BackupError('backup_archive_missing', 'That backup is no longer in the library');
       throw error;
     });
+    return await this.restorePlanned(profile, entries, options, (plan) => extractPlan(archivePath, plan, options.onProgress, options.signal));
+  }
+
+  /** What restoring these files would do, the way `preview` says it of a zip. */
+  public previewFiles(files: readonly RestoreFile[], fallbackLayout: ProfileLayout = 'data'): RestorePreview {
+    return previewEntries(files.map(fileEntry), fallbackLayout);
+  }
+
+  /**
+   * Restore files that arrive from somewhere other than a zip on this disk.
+   *
+   * A recovery point in R2 used to be rebuilt into a zip in the library and
+   * restored from there, which put the profile on the disk twice - the zip and
+   * the files - on a machine that may have room for it once. Each file here is
+   * written to its place as its bytes arrive, and nothing else is kept.
+   *
+   * The checks are the zip's: the same names refused, the same shape read, the
+   * same refusal of something that is not a profile unless forced.
+   */
+  public async restoreFiles(profile: Profile, options: RestoreFilesOptions): Promise<RestorePreview> {
+    const release = await this.acquireOperation();
+    try {
+      throwIfStopped(options.signal);
+      const byName = new Map(options.files.map((file) => [file.name, file]));
+      return await this.restorePlanned(profile, options.files.map(fileEntry), options, (plan) => writePlan(plan, (entry) => options.open(byName.get(entry.name)!), options.onProgress, options.signal));
+    } finally {
+      release();
+    }
+  }
+
+  private async restorePlanned<T extends EntryInfo>(profile: Profile, entries: readonly T[], options: RestoreOptions, write: (plan: readonly PlannedEntry<T>[]) => Promise<void>): Promise<RestorePreview> {
     const preview = previewEntries(entries, profile.layout);
     // The one moment that cannot be undone, and the last place to ask. A
     // replace deletes what the archive does not mention, so an archive that is
@@ -636,13 +694,19 @@ export class BackupStore {
     // Staging directories from older versions are pure waste now; sweep any the
     // upgrade left behind rather than leaving them to confuse SillyTavern.
     await this.sweepAbandonedStaging(resolve(dataDestination, '..'));
-    options.onStatus?.(logEvent('restore.restoringFiles', 'Restoring files'));
-    this.logger(logEvent('backup.restoring', `[backup] restoring ${plan.length} files into ${dataDestination}`, { count: plan.length, path: dataDestination }));
-    await this.timed(logEvent('backup.phaseWroteFiles', `wrote ${plan.length} files`, { count: plan.length }), () => extractPlan(archivePath, plan, options.onProgress, options.signal));
-    if (obsolete.length > 0) {
+    const removeObsolete = async (): Promise<void> => {
+      if (obsolete.length === 0) return;
       options.onStatus?.(logEvent('restore.removingObsolete', 'Removing files the backup does not contain'));
       await this.timed(logEvent('backup.phaseRemovedObsolete', `removed ${obsolete.length} files the backup does not contain`, { count: obsolete.length }), () => removeAll(obsolete));
-    }
+    };
+    // In saver mode the files a replace is going to delete go first, so the
+    // room they take is free before the new files need it. Either order ends
+    // with the same profile; this one never holds both at once.
+    if (this.saving) await removeObsolete();
+    options.onStatus?.(logEvent('restore.restoringFiles', 'Restoring files'));
+    this.logger(logEvent('backup.restoring', `[backup] restoring ${plan.length} files into ${dataDestination}`, { count: plan.length, path: dataDestination }));
+    await this.timed(logEvent('backup.phaseWroteFiles', `wrote ${plan.length} files`, { count: plan.length }), () => write(plan));
+    if (!this.saving) await removeObsolete();
     options.onStatus?.(logEvent('restore.finalizing', 'Finalizing restored data'));
     const targetLabel = profile.layout === 'data' ? relative(resolve(profile.dataPath), dataDestination).replaceAll('\\', '/') || '.' : 'public/';
     this.logger(logEvent('backup.restored', `[backup] restored ${preview.fileCount} files to ${profile.name}/${targetLabel} (${options.mode})`, { count: preview.fileCount, profile: profile.name, target: targetLabel, mode: options.mode }));
@@ -1145,7 +1209,7 @@ async function collectTree(root: string, current: string): Promise<ArchiveSource
   return result;
 }
 
-function previewEntries(entries: ZipEntry[], fallbackLayout: ProfileLayout): RestorePreview {
+function previewEntries(entries: readonly EntryInfo[], fallbackLayout: ProfileLayout): RestorePreview {
   const files: BackupFilePreview[] = [];
   let totalBytes = 0;
   for (const entry of entries) {
@@ -1163,8 +1227,8 @@ function previewEntries(entries: ZipEntry[], fallbackLayout: ProfileLayout): Res
   return { layout: fallbackLayout, fileCount: files.length, totalBytes, files, warnings, recognized, root: shape.prefix };
 }
 
-interface PlannedEntry {
-  readonly entry: ZipEntry;
+interface PlannedEntry<T extends EntryInfo = ZipEntry> {
+  readonly entry: T;
   readonly target: string;
 }
 
@@ -1185,9 +1249,9 @@ interface PlanOptions {
  * wrapper requires every entry to sit under it, such an archive never carries a
  * config at the root.
  */
-function planEntries(entries: ZipEntry[], options: PlanOptions): PlannedEntry[] {
+function planEntries<T extends EntryInfo>(entries: readonly T[], options: PlanOptions): PlannedEntry<T>[] {
   const { prefix } = readArchiveShape(entries);
-  const planned: PlannedEntry[] = [];
+  const planned: PlannedEntry<T>[] = [];
   const taken = new Set<string>();
   for (const entry of entries) {
     if (entry.directory) continue;
@@ -1237,6 +1301,38 @@ async function extractPlan(zipPath: string, planned: readonly PlannedEntry[], on
 }
 
 /**
+ * Write files whose bytes come from `open`, a few at a time.
+ *
+ * The same pool, the same progress batching and the same read-only retry as a
+ * zip's entries; only where the bytes come from differs. Each file's size is
+ * checked against what the source said it would be, so a truncated download
+ * fails the restore rather than leaving a short file behind in silence.
+ */
+async function writePlan<T extends EntryInfo>(planned: readonly PlannedEntry<T>[], open: (entry: T) => AsyncIterable<Uint8Array>, onProgress?: (progress: { completed: number; total: number }) => void, signal?: AbortSignal): Promise<void> {
+  const parents = new Set<string>();
+  for (const item of planned) parents.add(resolve(item.target, '..'));
+  const total = planned.length;
+  const concurrency = Math.max(1, Math.min(ioConcurrency(), total));
+  await runPooled([...parents], concurrency, async (parent) => { await mkdir(parent, { recursive: true }); });
+  let completed = 0;
+  await runPooled(planned, concurrency, async (item) => {
+    throwIfStopped(signal);
+    await retryReadOnly(item.target, async () => {
+      const counter = new ByteCounter();
+      await pipeline(Readable.from(open(item.entry)), counter, createWriteStream(item.target, { mode: 0o600 }));
+      if (counter.bytes !== item.entry.uncompressedSize) throw new BackupError('invalid_archive', `Restored file size mismatch: ${item.entry.name}`);
+    });
+    completed += 1;
+    if (completed === total || completed % 25 === 0) onProgress?.({ completed, total });
+  });
+}
+
+/** A file of a restore, described the way a zip entry is. */
+function fileEntry(file: RestoreFile): EntryInfo {
+  return { name: file.name, uncompressedSize: file.sizeBytes, directory: false, symlink: false };
+}
+
+/**
  * Write one archive entry, taking the target from a read-only file if it must.
  *
  * Git stores its loose objects read-only, and Windows refuses to open a
@@ -1247,9 +1343,13 @@ async function extractPlan(zipPath: string, planned: readonly PlannedEntry[], on
  * attribute is followed by a short wait rather than an immediate give-up.
  */
 async function extractEntry(archive: FileHandle, entry: ZipEntry, target: string): Promise<void> {
+  await retryReadOnly(target, () => writeEntry(archive, entry, target));
+}
+
+async function retryReadOnly(target: string, write: () => Promise<void>): Promise<void> {
   for (let attempt = 0; ; attempt += 1) {
     try {
-      await writeEntry(archive, entry, target);
+      await write();
       return;
     } catch (error: unknown) {
       if (!isPermissionError(error) || attempt === OVERWRITE_ATTEMPTS - 1) throw error;
@@ -1472,7 +1572,7 @@ function isConfigName(name: string): boolean {
  * restore. What is left has to look like a user directory, or this is not an
  * archive of one.
  */
-function readArchiveShape(entries: ZipEntry[]): { prefix: string; recognized: boolean } {
+function readArchiveShape(entries: readonly EntryInfo[]): { prefix: string; recognized: boolean } {
   // The manager's config sits beside the profile rather than inside it, so it
   // says nothing about where the profile starts.
   const names = entries.filter((entry) => !entry.directory).map((entry) => normalizeSeparators(entry.name)).filter((name) => !isConfigName(name));
