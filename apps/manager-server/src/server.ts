@@ -3896,6 +3896,12 @@ function isLoopbackHost(hostname: string): boolean {
   return host === 'localhost' || host === '::1' || host === '0.0.0.0' || /^127\./u.test(host);
 }
 
+function isV0PreviewOrigin(origin: URL): boolean {
+  if (origin.protocol !== 'https:') return false;
+  if (origin.hostname === 'v0.app') return true;
+  return origin.hostname.endsWith('.v0.build');
+}
+
 function isTrustedOrigin(request: IncomingMessage, publicOrigins: readonly string[]): boolean {
   const origin = headerValue(request.headers.origin);
   if (!origin) {
@@ -3915,6 +3921,11 @@ function isTrustedOrigin(request: IncomingMessage, publicOrigins: readonly strin
     // A port-forwarding proxy rewrites `Host` to the loopback address it
     // connects to, so the panel's own origin no longer matches it.
     if (publicOrigins.includes(parsed.origin)) return true;
+    // v0 can serve the same manager through either the chat shell or the
+    // generated preview hostname. In both cases the backend Host header is
+    // rewritten to the local manager, so the browser Origin is the only stable
+    // address available to this check.
+    if (isV0PreviewOrigin(parsed)) return true;
     // A proxy that rewrites `Host` is meant to leave the address the browser
     // actually used here. Believing it costs nothing a browser can spend: a
     // page on another site cannot put this header on a request without asking
