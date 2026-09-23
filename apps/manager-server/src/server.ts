@@ -5,7 +5,7 @@ import { createReadStream } from 'node:fs';
 import { networkInterfaces } from 'node:os';
 import { createSocket } from 'node:dgram';
 import { extname, join, relative, resolve, sep } from 'node:path';
-import { applyQuery, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, isConsoleStatusSection, KEEP_ONLINE_DEFAULT_MINUTES, OPERATION_JOB_KINDS, type AccessGatewayState, type ApiErrorBody, type BackupManifest, type ConfigUpdateInput, type ConsoleStatus, type ConsoleStatusSection, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogPage, type LogSink, type LogSourceFilter, type LegalReview, type ManagerPorts, type ManagerUpdateStatus, type OnlineState, type PortSettings, type Profile, type ProfileLayout, type SetupStatus, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
+import { applyQuery, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, isConsoleStatusSection, KEEP_ONLINE_DEFAULT_MINUTES, OPERATION_JOB_KINDS, type AccessGatewayState, type ApiErrorBody, type BackupManifest, type ConfigUpdateInput, type ConsoleStatus, type ConsoleStatusSection, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogPage, type LogSink, type LogSourceFilter, type LegalReview, type ManagerPorts, type ManagerUpdateStatus, type OnlineState, type PortSettings, type Profile, type ProfileLayout, type RestorePreview, type SetupStatus, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
 import { getPlatformPaths, storageDurability, storageReport, type PlatformPaths } from '../../../packages/platform/src/index.js';
 import { INSTALL_CANCELED, RuntimeError, RuntimeManager, type InstallationProgress } from '../../../packages/sillytavern-runtime/src/index.js';
 import { hashPassword, MIN_PASSWORD_LENGTH, validatePasscode, validatePassword, verifyPassword } from './password.js';
@@ -24,16 +24,17 @@ import { ACCESS_GATEWAY_PORT, checkSillyTavernPort, findFreePort, isPortFree, MA
 import { previewImage, previewLogo, previewManifest } from './preview.js';
 import { TunnelManager } from '../../../packages/tunnel/src/index.js';
 import { ProfileError, ProfileStore } from '../../../packages/profiles/src/index.js';
-import { BackupError, BackupStore } from '../../../packages/backup/src/index.js';
+import { BackupError, BackupStore, type RestoreOptions } from '../../../packages/backup/src/index.js';
 import { CloudflareConnection, R2Error, R2Manager, type R2UpdateInput } from '../../../packages/r2/src/index.js';
 import { CloudflareApiError, CloudflareOAuthError, CloudflareRateLimitError, DEFAULT_SCOPES, PROXY_WORKER_TARGETS, ProxyWorkerManager, type ProxyWorkerTarget } from '../../../packages/cloudflare/src/index.js';
 import { BackupScheduler, syncProfileToR2 } from './r2-scheduler.js';
-import { fetchSnapshotToLibrary, isProfileEmpty, recoverProfileFromR2 } from './r2-restore.js';
+import { fetchSnapshotToLibrary, isProfileEmpty, recoverProfileFromR2, restoreSnapshotInPlace } from './r2-restore.js';
 import { TransferMeter } from './progress.js';
 import { MetricsStore } from './metrics.js';
 import { ActivityMeter } from './activity.js';
 import { ReleaseWatch } from './manager-release.js';
 import { OnlineKeeper } from './online.js';
+import { formatGibibytes, SaverMode } from './saver.js';
 import { applyManagerSettings, foreignManagerSettings, managerSettingsOffer, restoreFromBucketIfBlank, saveManagerSettings, type ManagerSettingsDeps } from './manager-settings.js';
 import type { ManagerSettingsRecord } from '../../../packages/contracts/src/index.js';
 import { instrumentationLoaderPath } from '../../../packages/instrumentation/src/index.js';
@@ -93,6 +94,7 @@ const PROTECTED_PATHS = new Set([
   '/api/v1/system',
   '/api/v1/system/measure',
   '/api/v1/startup',
+  '/api/v1/saver',
   '/api/v1/status',
   '/api/v1/legal',
   '/api/v1/legal/acknowledge',
@@ -172,6 +174,8 @@ export interface ManagerServerOptions {
    * without a Cloudflare account, an analytics grant and a day of traffic.
    */
   readonly budget?: WorkerBudget;
+  /** Overridable so tests can decide saver mode instead of measuring memory. */
+  readonly saver?: SaverMode;
   /**
    * Called when a launcher that knows STM_SHUTDOWN_TOKEN asks to shut down.
    *
@@ -268,7 +272,9 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
    * stands.
    */
   let sillyTavernPort: number = SILLYTAVERN_PORT;
-  const runtime = options.runtime ?? new RuntimeManager({ paths, healthCheckPort: () => sillyTavernPort, logger: (line) => { jobs.append('installer', line); baseLogger(line); } });
+  // npm's cache is dropped after an install in saver mode; `backups` holds the
+  // switch, and is only asked once an install has finished.
+  const runtime = options.runtime ?? new RuntimeManager({ paths, healthCheckPort: () => sillyTavernPort, dropNpmCache: () => backups.saving, logger: (line) => { jobs.append('installer', line); baseLogger(line); } });
   const profiles = options.profileStore ?? new ProfileStore({ paths, logger: (line) => { jobs.append('manager', line); baseLogger(line); } });
   const backups = options.backupStore ?? new BackupStore({ paths, logger: (line) => { jobs.append('backup', line); baseLogger(line); } });
   const cloudflare = options.cloudflare !== undefined ? options.cloudflare : cloudflareConnectionFromEnvironment(paths, env);
@@ -616,6 +622,24 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     logger(logEvent('storage.notVerified', `[manager] this manager cannot tell whether ${paths.root} survives a restart here, so treat it as storage that may be temporary; connect Cloudflare R2 so backups are held somewhere else`, { path: paths.root, filesystem: durability.filesystem ?? 'unknown' }));
   }
   let persisted = await store.load();
+  /*
+   * Saver mode, settled before anything could write an archive.
+   *
+   * The scheduler, a restore and an install all ask the backup store, so the
+   * store is where the answer is kept.
+   */
+  // Not measured under the test runner, where the machine running the tests
+  // would otherwise decide what every test that takes a backup gets.
+  const saver = options.saver ?? new SaverMode({ env, choice: persisted.saverMode, ...(process.env.NODE_TEST_CONTEXT !== undefined ? { memoryBytes: Number.MAX_SAFE_INTEGER } : {}) });
+  backups.saving = saver.enabled;
+  if (saver.enabled) {
+    const memory = formatGibibytes(saver.state().memoryBytes);
+    logger(saver.source === 'environment'
+      ? logEvent('saver.onFromEnvironment', '[manager] saver mode is on, set by STM_SAVER: no local backups are taken on this machine')
+      : saver.source === 'choice'
+        ? logEvent('saver.onByChoice', '[manager] saver mode is on, as chosen in the console: no local backups are taken on this machine')
+        : logEvent('saver.onForMemory', `[manager] saver mode is on because this machine has ${memory} of memory: no local backups are taken on this machine`, { memory }));
+  }
   // A stored port that would now collide - because `STM_PORT` or
   // `STM_ACCESS_PORT` moved since it was chosen - is dropped rather than
   // obeyed: two services fighting for one port is worse than SillyTavern
@@ -789,6 +813,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       proxy,
       publishProxies,
       budget,
+      saver,
       shutdownToken,
       autoInstall,
       onShutdownRequest: options.onShutdownRequest,
@@ -969,6 +994,8 @@ async function handleRequest(options: {
   readonly publishProxies: () => void;
   /** How much of the day's Worker allowance is left; see `worker-budget.ts`. */
   readonly budget: WorkerBudget;
+  /** Whether the manager keeps disk and memory to the minimum; see `saver.ts`. */
+  readonly saver: SaverMode;
   readonly shutdownToken: string | null;
   /**
    * Whether the manager may install SillyTavern by itself on a first run.
@@ -980,7 +1007,7 @@ async function handleRequest(options: {
   readonly autoInstall: boolean;
   readonly onShutdownRequest: (() => void) | undefined;
 }): Promise<void> {
-  const { request, response, store, sessions, rateLimiter, handoffs, startedAt, publicOrigins, proxiedOrigin, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, releases, online, proxy, publishProxies, budget, shutdownToken, autoInstall, onShutdownRequest } = options;
+  const { request, response, store, sessions, rateLimiter, handoffs, startedAt, publicOrigins, proxiedOrigin, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, releases, online, proxy, publishProxies, budget, saver, shutdownToken, autoInstall, onShutdownRequest } = options;
   // Whether the browser's side of this connection is HTTPS, which is not the
   // same question as whether ours is: a hosted console is reached over HTTPS
   // that a proxy terminates before us, and only the proxy's own header says so.
@@ -1275,7 +1302,7 @@ async function handleRequest(options: {
     if (method !== 'GET' && !requireCsrf(context, session.csrfToken)) {
       return;
     }
-    await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, online, proxy, publishProxies, budget, logger, handoffs);
+    await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, online, proxy, publishProxies, budget, logger, handoffs, saver);
     return;
   }
 
@@ -1414,7 +1441,7 @@ async function adoptRestoredPort(deps: PortAdoptionDeps, port: number): Promise<
   }
 }
 
-async function handleRuntimeRequest(context: RequestContext, store: StateStore, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, managerTunnel: TunnelManager, gateway: AccessGateway, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, cloudflare: CloudflareConnection | null, metrics: MetricsStore, activity: ActivityMeter, config: ConfigStore, system: SystemStore, online: OnlineKeeper, proxy: ProxyWorkerManager | null, publishProxies: () => void, budget: WorkerBudget, logger: LogSink, handoffs: HandoffStore): Promise<void> {
+async function handleRuntimeRequest(context: RequestContext, store: StateStore, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, managerTunnel: TunnelManager, gateway: AccessGateway, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, cloudflare: CloudflareConnection | null, metrics: MetricsStore, activity: ActivityMeter, config: ConfigStore, system: SystemStore, online: OnlineKeeper, proxy: ProxyWorkerManager | null, publishProxies: () => void, budget: WorkerBudget, logger: LogSink, handoffs: HandoffStore, saver: SaverMode): Promise<void> {
   const { pathname, ports, request, response, searchParams } = context;
   const method = request.method ?? 'GET';
   const adoptSillyTavernPort = (port: number): Promise<void> =>
@@ -1805,10 +1832,61 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     sendList(response, 'snapshots', snapshots, searchParams, { searchText: snapshotSearchText, sortValue: snapshotSortValue }, { activeProfileId: profile?.id ?? null });
     return;
   }
+  /*
+   * A recovery point straight into the profile, with no archive in between.
+   *
+   * What saver mode offers where it cannot keep the archive Fetch would make.
+   * The point is read before anything else happens, so the push of the current
+   * data to R2 that stands in for the safety copy cannot thin it away; see
+   * `restoreSnapshotInPlace`. SillyTavern is stopped from before the first
+   * byte arrives until the last one is written.
+   */
+  const snapshotRestoreMatch = /^\/api\/v1\/r2\/snapshots\/([^/]+)\/restore$/u.exec(pathname);
+  if (snapshotRestoreMatch && method === 'POST') {
+    const profile = await profiles.getActive();
+    if (!profile) { sendError(response, 409, 'profile_required', 'Create or activate a profile before restoring a recovery point'); return; }
+    const lost = await lostTheAccount(r2);
+    if (lost) { sendError(response, 409, 'r2_in_use', displacedMessage(lost)); return; }
+    const body = await readJson(request);
+    const mode = isRecord(body) && (body.mode === 'merge' || body.mode === 'replace') ? body.mode : null;
+    if (!mode) { sendError(response, 400, 'invalid_restore_mode', 'Restore mode must be merge or replace'); return; }
+    const force = isRecord(body) && body.force === true;
+    const sourceProfileId = isRecord(body) && typeof body.profileId === 'string' && body.profileId ? body.profileId : profile.id;
+    const snapshot = await r2.readSnapshot(sourceProfileId, snapshotRestoreMatch[1] ?? '');
+    // Asked here, as the library's restore asks it, so the refusal is a code
+    // the panel can translate rather than a job that fails in English.
+    if (!force && !backups.previewFiles(snapshot.files, profile.layout).recognized) {
+      sendError(response, 409, 'unrecognized_archive', 'This recovery point holds none of the folders a SillyTavern profile usually has');
+      return;
+    }
+    const { job, signal } = jobs.createOperation('restore', logEvent('job.preparingRestore', 'Preparing restore'));
+    const meter = new TransferMeter();
+    void restoreWithProcess({
+      profile, backups, mode, ...(force ? { force: true } : {}), supervisor, signal,
+      onProgress: (progress, step) => jobs.updateOperation(job.id, progress, step),
+      safetyNet: saverSafetyNet(profile, backups, r2, (line) => jobs.append('backup', line)),
+      write: (restoreOptions) => restoreSnapshotInPlace({
+        profile, r2, backups, snapshot, mode, ...(force ? { force: true } : {}), signal,
+        logger: (line) => jobs.append('backup', line),
+        ...(restoreOptions.onStatus ? { onStatus: restoreOptions.onStatus } : {}),
+        onProgress: (progress) => {
+          const { percent, params } = meter.update(progress);
+          jobs.updateOperation(job.id, 25 + percent * 0.6, logEvent('job.fetchingChunks', `Fetching ${String(params.done)} of ${String(params.total)} - ${String(params.rate)}, ${String(params.eta)} left`, params));
+        },
+      }),
+    })
+      .then(() => jobs.finishOperation(job.id, 'succeeded', null))
+      .catch((error: unknown) => jobs.finishOperation(job.id, 'failed', error instanceof Error ? error.message : 'Restore failed', { evenIfCanceled: error instanceof RestoreRollbackError, stepCode: error instanceof RestoreRollbackError ? 'job.rollbackFailed' : undefined }));
+    sendJson(response, 202, { jobId: job.id, job });
+    return;
+  }
   const snapshotMatch = /^\/api\/v1\/r2\/snapshots\/([^/]+)\/fetch$/u.exec(pathname);
   if (snapshotMatch && method === 'POST') {
     const profile = await profiles.getActive();
     if (!profile) { sendError(response, 409, 'profile_required', 'Create or activate a profile before fetching a recovery point'); return; }
+    // Fetching makes an archive in the library, which is the copy saver mode
+    // has no room for; it restores in place instead.
+    if (backups.saving) { sendError(response, 409, 'saver_mode', 'Local backups are off while saver mode is on'); return; }
     const snapshotId = snapshotMatch[1] ?? '';
     // Which profile in the bucket it belongs to, when that is not this one.
     // Sent by the panel from the row it was pressed on; a point of this
@@ -2015,7 +2093,9 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     await supervisor.stop('profileSwitch');
     let snapshot: Awaited<ReturnType<BackupStore['create']>> | null = null;
     try {
-      if (current && current.id !== profile.id) snapshot = await backups.createSafetyCopy(current, { kind: 'before-switch' });
+      // A switch leaves both profiles' files where they are; saver mode does
+      // without the extra copy of the one being left.
+      if (current && current.id !== profile.id && !backups.saving) snapshot = await backups.createSafetyCopy(current, { kind: 'before-switch' });
       await runtime.activateInstallation(installation.id);
       const activated = await profiles.activate(profile.id);
       const process = await supervisor.start();
@@ -2047,6 +2127,9 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
      * would be an identical archive, so it is not written; the reply says so.
      */
     const kind = isRecord(body) && body.kind === 'scheduled' ? 'scheduled' : 'manual';
+    // Refused here rather than in the job, so the panel gets a code it can
+    // translate instead of a job that fails a moment after it started.
+    if (backups.saving) { sendError(response, 409, 'saver_mode', 'Local backups are off while saver mode is on'); return; }
     if (kind === 'scheduled') {
       const fingerprint = await backups.fingerprint(profile);
       const newest = (await backups.list(profile.id))
@@ -2073,6 +2156,12 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     const body = await readJson(request);
     if (!isRecord(body) || typeof body.intervalMinutes !== 'number') { sendError(response, 400, 'invalid_backup_schedule', 'intervalMinutes must be a number'); return; }
     sendJson(response, 200, { schedule: await backups.setSchedule({ intervalMinutes: body.intervalMinutes }) });
+    return;
+  }
+  // The old upload keeps the whole zip on the disk before restoring it, which
+  // is the copy saver mode exists to avoid; its panel streams instead.
+  if (backups.saving && method === 'POST' && ['/api/v1/backups/import/chunk', '/api/v1/backups/import/finish', '/api/v1/backups/import/preview', '/api/v1/backups/import/restore'].includes(pathname)) {
+    sendError(response, 409, 'saver_mode', 'Local backups are off while saver mode is on');
     return;
   }
   if (pathname === '/api/v1/backups/import/chunk' && method === 'POST') {
@@ -2108,6 +2197,72 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     }
     return;
   }
+  /*
+   * A zip restored while it uploads, with no copy of it kept; see
+   * `ArchiveStream`. Saver mode's upload.
+   *
+   * Four steps. The browser sends the central directory, cut from the end of
+   * the file it holds, and gets back the preview - nothing stopped, nothing
+   * written. Restore starts the job: SillyTavern stopped, the current data to
+   * R2, and then the restore waits for bytes. The chunks follow in order, each
+   * written into the profile as it goes past; a chunk that arrives before the
+   * restore is ready is answered "not yet" and sent again. Delete gives up.
+   */
+  if (pathname === '/api/v1/backups/stream' && method === 'POST') {
+    const profile = await profiles.getActive();
+    if (!profile) { sendError(response, 409, 'profile_required', 'Create or activate a profile before importing a backup'); return; }
+    const archiveSize = Number(headerValue(request.headers['x-archive-size']) ?? '');
+    const tail = await readBody(request, MAX_STREAM_DIRECTORY_BYTES);
+    const stream = backups.openStream(tail, archiveSize, profile.layout);
+    sendJson(response, 200, { ...stream.preview, uploadId: stream.id });
+    return;
+  }
+  if (pathname === '/api/v1/backups/stream' && method === 'DELETE') {
+    backups.getStream(searchParams.get('uploadId') ?? '')?.fail(new BackupError('operation_canceled', 'The upload was stopped'));
+    sendJson(response, 200, { ok: true });
+    return;
+  }
+  if (pathname === '/api/v1/backups/stream/restore' && method === 'POST') {
+    const profile = await profiles.getActive();
+    if (!profile) { sendError(response, 409, 'profile_required', 'Create or activate a profile before restoring a backup'); return; }
+    const body = await readJson(request);
+    const stream = isRecord(body) && typeof body.uploadId === 'string' ? backups.getStream(body.uploadId) : null;
+    if (!stream) { sendError(response, 404, 'upload_missing', 'That upload is no longer open; choose the file again'); return; }
+    const mode = isRecord(body) && (body.mode === 'merge' || body.mode === 'replace') ? body.mode : null;
+    if (!mode) { sendError(response, 400, 'invalid_restore_mode', 'Restore mode must be merge or replace'); return; }
+    const force = isRecord(body) && body.force === true;
+    if (!force && !stream.preview.recognized) { sendError(response, 409, 'unrecognized_archive', 'This archive holds none of the folders a SillyTavern profile usually has'); return; }
+    const { job, signal } = jobs.createOperation('restore', logEvent('job.preparingRestore', 'Preparing restore'));
+    void restoreWithProcess({
+      profile, backups, mode, ...(force ? { force: true } : {}), supervisor, signal,
+      onProgress: (progress, step) => jobs.updateOperation(job.id, progress, step),
+      safetyNet: saverSafetyNet(profile, backups, r2, (line) => jobs.append('backup', line)),
+      write: (restoreOptions) => {
+        jobs.updateOperation(job.id, 25, logEvent('job.receivingUpload', 'Receiving the upload'));
+        return backups.restoreStream(profile, stream, restoreOptions);
+      },
+    })
+      .then(() => jobs.finishOperation(job.id, 'succeeded', null))
+      .catch((error: unknown) => {
+        // Whatever ended the job ends the upload with it, so the browser's
+        // next chunk is told rather than left waiting.
+        stream.fail(error instanceof Error ? error : new Error('Restore failed'));
+        jobs.finishOperation(job.id, 'failed', error instanceof Error ? error.message : 'Restore failed', { evenIfCanceled: error instanceof RestoreRollbackError, stepCode: error instanceof RestoreRollbackError ? 'job.rollbackFailed' : undefined });
+      });
+    sendJson(response, 202, { jobId: job.id, job });
+    return;
+  }
+  if (pathname === '/api/v1/backups/stream/chunk' && method === 'POST') {
+    const stream = backups.getStream(searchParams.get('uploadId') ?? '');
+    if (!stream) { sendError(response, 404, 'upload_missing', 'That upload is no longer open; choose the file again'); return; }
+    const index = Number(searchParams.get('index') ?? '');
+    if (!Number.isSafeInteger(index) || index < 0) { sendError(response, 400, 'invalid_upload_chunk', 'The upload chunk index is invalid'); return; }
+    // Short enough that no proxy in front of this gives up on the request.
+    if (!await stream.whenReady(STREAM_READY_WAIT_MS)) { sendJson(response, 202, { ready: false }); return; }
+    const chunk = await readBody(request, MAX_STREAM_CHUNK_BYTES);
+    sendJson(response, 200, { ready: true, ...await stream.push(index, chunk) });
+    return;
+  }
   const backupImportPreview = pathname === '/api/v1/backups/import/preview';
   const backupImportRestore = pathname === '/api/v1/backups/import/restore';
   if ((backupImportPreview || backupImportRestore) && method === 'POST') {
@@ -2124,7 +2279,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       const libraryPath = await backups.getArchivePath(imported.manifest.id);
       if (!libraryPath) { sendError(response, 500, 'backup_archive_missing', 'The uploaded archive could not be stored'); return; }
       const force = headerValue(request.headers['x-restore-force']) === 'yes';
-      const result = await restoreWithProcess({ profile, backups, archivePath: libraryPath, backupId: imported.manifest.id, mode, ...(force ? { force: true } : {}), supervisor });
+      const result = await restoreWithProcess({ profile, backups, archivePath: libraryPath, backupId: imported.manifest.id, mode, ...(force ? { force: true } : {}), supervisor, safetyNet: saverSafetyNet(profile, backups, r2, (line) => jobs.append('backup', line)) });
       sendJson(response, 200, result);
     } finally {
       if (!retained) await backups.removeTemporary(archivePath);
@@ -2178,7 +2333,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
         return;
       }
       const { job, signal } = jobs.createOperation('restore', logEvent('job.preparingRestore', 'Preparing restore'));
-      void restoreWithProcess({ profile, backups, archivePath, backupId: id, mode, ...(force ? { force: true } : {}), supervisor, signal, onProgress: (progress, step) => jobs.updateOperation(job.id, progress, step) })
+      void restoreWithProcess({ profile, backups, archivePath, backupId: id, mode, ...(force ? { force: true } : {}), supervisor, signal, onProgress: (progress, step) => jobs.updateOperation(job.id, progress, step), safetyNet: saverSafetyNet(profile, backups, r2, (line) => jobs.append('backup', line)) })
         .then(() => jobs.finishOperation(job.id, 'succeeded', null))
         .catch((error: unknown) => jobs.finishOperation(job.id, 'failed', error instanceof Error ? error.message : 'Restore failed', { evenIfCanceled: error instanceof RestoreRollbackError, stepCode: error instanceof RestoreRollbackError ? 'job.rollbackFailed' : undefined }));
       sendJson(response, 202, { jobId: job.id, job });
@@ -2323,6 +2478,30 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     }
     await store.setAutoStartSillyTavern(body.autoStartSillyTavern);
     sendJson(response, 200, { startup: { autoStartSillyTavern: body.autoStartSillyTavern } satisfies StartupSettings });
+    return;
+  }
+  /*
+   * Saver mode; see `saver.ts`.
+   *
+   * Takes effect at once: the next scheduled backup is skipped, and the next
+   * restore writes without a local safety copy.
+   */
+  if (pathname === '/api/v1/saver' && method === 'GET') {
+    sendJson(response, 200, { saver: saver.state() });
+    return;
+  }
+  if (pathname === '/api/v1/saver' && method === 'PUT') {
+    const body = await readJson(request);
+    if (!isRecord(body) || typeof body.enabled !== 'boolean') {
+      sendError(response, 400, 'invalid_input', 'enabled must be true or false');
+      return;
+    }
+    if (saver.locked) { sendError(response, 409, 'saver_locked', 'Saver mode is set by STM_SAVER and can only be changed there'); return; }
+    await store.setSaverMode(body.enabled);
+    saver.choose(body.enabled);
+    backups.saving = saver.enabled;
+    logger(logEvent(body.enabled ? 'saver.turnedOn' : 'saver.turnedOff', body.enabled ? '[manager] saver mode turned on' : '[manager] saver mode turned off'));
+    sendJson(response, 200, { saver: saver.state() });
     return;
   }
   if (pathname === '/api/v1/system' && method === 'GET') {
@@ -2625,7 +2804,9 @@ async function beginInstallation(deps: InstallationDeps, selector: VersionSelect
       (progress) => jobs.updateFromProgress(queuedId, progress),
       async (report) => {
         await supervisor.stop('install');
-        if (!previousProfile) return;
+        // Saver mode cannot spare a second copy of the profile; a version
+        // change does not write into it anyway.
+        if (!previousProfile || backups.saving) return;
         await report(4, logEvent('install.safetyCopy', 'Copying your data before switching version'));
         await backups.createSafetyCopy(previousProfile, { kind: 'before-switch' });
       },
@@ -2712,7 +2893,16 @@ export class RestoreRollbackError extends Error {
 export async function restoreWithProcess(options: {
   readonly profile: Awaited<ReturnType<ProfileStore['getActive']>> & {};
   readonly backups: BackupStore;
-  readonly archivePath: string;
+  /** The archive to restore; or, for bytes not in an archive, `write`. */
+  readonly archivePath?: string;
+  /**
+   * Write the data some other way than from an archive on this disk.
+   *
+   * Handed the options a restore of `archivePath` would have been given, and
+   * called at the moment it would have run - SillyTavern stopped, the safety
+   * copy or its stand-in taken.
+   */
+  readonly write?: (restoreOptions: RestoreOptions) => Promise<RestorePreview>;
   /**
    * Which archive in the library this is, when it is one.
    *
@@ -2729,8 +2919,20 @@ export async function restoreWithProcess(options: {
   readonly supervisor: ProcessSupervisor;
   readonly signal?: AbortSignal;
   readonly onProgress?: (progress: number, step: LogEvent) => void;
-}): Promise<{ preview: Awaited<ReturnType<BackupStore['restore']>>; safetySnapshot: Awaited<ReturnType<BackupStore['create']>>; process: ReturnType<ProcessSupervisor['getState']> }> {
+  /**
+   * What stands in for the safety copy in saver mode, which writes none.
+   *
+   * Given the job's signal and a way to report progress; see
+   * `saverSafetyNet`. Absent, a saver mode restore has nothing to fall back
+   * on, and a stop partway leaves the profile mixed.
+   */
+  readonly safetyNet?: (signal: AbortSignal | undefined, report: (fraction: number, step: LogEvent) => void) => Promise<void>;
+}): Promise<{ preview: Awaited<ReturnType<BackupStore['restore']>>; safetySnapshot: Awaited<ReturnType<BackupStore['create']>> | null; process: ReturnType<ProcessSupervisor['getState']> }> {
   const { profile, backups, archivePath, mode, supervisor, signal, onProgress } = options;
+  const write = options.write ?? ((restoreOptions: RestoreOptions) => {
+    if (archivePath === undefined) throw new Error('A restore needs an archive or a way to write the data');
+    return backups.restore(profile, archivePath, restoreOptions);
+  });
   const releaseArchive = options.backupId ? backups.hold(options.backupId) : () => undefined;
   // Claim the backup store before stopping anything. Otherwise the scheduler's
   // next tick sees an idle store and starts a full backup that the restore then
@@ -2746,15 +2948,22 @@ export async function restoreWithProcess(options: {
     // archive is a single large sequential write; copying the tree file by file
     // measured 639 seconds on a hosted network volume for the same data. It only
     // An unchanged profile can reuse the backup it already has.
-    onProgress?.(15, logEvent('job.creatingSafetySnapshot', 'Creating safety snapshot'));
-    const safetySnapshot = safetyCopy = await backups.createSafetyCopy(profile, {
-      kind: 'before-restore',
-      ...(signal ? { signal } : {}),
-      onProgress: ({ completed, total }) => onProgress?.(15 + (total > 0 ? (completed / total) * 10 : 0), logEvent('job.backingUpCurrentData', `Backing up current data (${completed}/${total})`, { completed, total })),
-    });
+    let safetySnapshot: Awaited<ReturnType<BackupStore['create']>> | null = null;
+    if (backups.saving) {
+      // No second copy of the profile on this disk: that copy is what ran a
+      // small machine out of room. R2, where there is one, holds it instead.
+      await options.safetyNet?.(signal, (fraction, step) => onProgress?.(15 + fraction * 10, step));
+    } else {
+      onProgress?.(15, logEvent('job.creatingSafetySnapshot', 'Creating safety snapshot'));
+      safetySnapshot = safetyCopy = await backups.createSafetyCopy(profile, {
+        kind: 'before-restore',
+        ...(signal ? { signal } : {}),
+        onProgress: ({ completed, total }) => onProgress?.(15 + (total > 0 ? (completed / total) * 10 : 0), logEvent('job.backingUpCurrentData', `Backing up current data (${completed}/${total})`, { completed, total })),
+      });
+    }
     onProgress?.(25, logEvent('job.restoringData', 'Restoring data'));
     writing = true;
-    const preview = await backups.restore(profile, archivePath, {
+    const preview = await write({
       mode,
       ...(options.force ? { force: true } : {}),
       ...(signal ? { signal } : {}),
@@ -2770,6 +2979,12 @@ export async function restoreWithProcess(options: {
     // is what the safety copy holds, so the copy is no longer a safety copy.
     const settle = async () => { if (safetyCopy) await backups.reclassifyAsScheduled(safetyCopy.id).catch(() => undefined); };
     if (!writing) await settle();
+    // Saver mode kept no copy to put back, so a stop or a failure partway is
+    // said to be what it is: the profile holds some of each.
+    if (writing && !safetyCopy && (signal?.aborted || backups.saving)) {
+      await supervisor.start().catch(() => supervisor.getState());
+      throw new RestoreRollbackError(signal?.aborted ? 'saver mode keeps no local copy to put back' : error instanceof Error ? error.message : 'unknown error');
+    }
     if (writing && signal?.aborted && safetyCopy) {
       try {
         onProgress?.(88, logEvent('job.rollingBack', 'Putting the data back as it was before the restore'));
@@ -2790,6 +3005,40 @@ export async function restoreWithProcess(options: {
     releaseArchive();
     releaseOperationSlot();
   }
+}
+
+/**
+ * The copy of the current data a saver mode restore keeps instead of a local one.
+ *
+ * One full R2 upload of the profile as it stands, before anything is written
+ * over it: it costs time rather than disk, and only what changed since the
+ * last upload is sent. Nothing to send for an empty profile, and nothing to
+ * send to when R2 is not set up, which the log says. An upload that fails
+ * stops the restore before it writes anything - replacing data nobody could
+ * get back is not a thing to do on a guess.
+ */
+function saverSafetyNet(profile: Profile, backups: BackupStore, r2: R2Manager, log: LogSink): (signal: AbortSignal | undefined, report: (fraction: number, step: LogEvent) => void) => Promise<void> {
+  return async (signal, report) => {
+    if (await isProfileEmpty(profile)) return;
+    const config = await r2.getConfig();
+    if (!config.enabled || !config.configured) {
+      log(logEvent('backup.saverNoSafetyCopy', '[backup] saver mode keeps no local safety copy and R2 is not set up, so nothing holds the current data once it is replaced'));
+      return;
+    }
+    report(0, logEvent('job.savingToR2First', 'Saving the current data to R2 first'));
+    try {
+      await syncProfileToR2({
+        profile, backups, r2, tier: 'cold',
+        ...(signal ? { signal } : {}),
+        logger: log,
+        onProgress: (progress) => report(progress.totalBytes > 0 ? progress.completedBytes / progress.totalBytes : 0, logEvent('job.savingToR2First', 'Saving the current data to R2 first')),
+      });
+    } catch (error: unknown) {
+      if (signal?.aborted) throw error;
+      throw new Error(`The current data could not be saved to R2 first, so nothing was restored: ${error instanceof Error ? error.message : 'unknown error'}`);
+    }
+    log(logEvent('backup.saverSafetyCopyInR2', '[backup] the current data is in R2; restoring over it'));
+  };
 }
 
 /**
@@ -3193,7 +3442,7 @@ async function bringThisMachineBack(
     await refillProfile(deps, profile, running);
     return;
   }
-  await recoverEmptyProfile(() => Promise.resolve(profile), r2, backups, jobs, metrics.filePath, running);
+  await recoverEmptyProfile(() => Promise.resolve(profile), r2, backups, jobs, metrics.filePath, running, deps.supervisor);
 }
 
 /**
@@ -3259,6 +3508,29 @@ async function refillProfile(
       return;
     }
     const meter = new TransferMeter();
+    if (backups.saving) {
+      // Straight into the profile, with SillyTavern stopped for all of it and
+      // what was here pushed to R2 first; see `restoreSnapshotInPlace`.
+      const snapshot = await r2.readSnapshot(newest.profileId, newest.id);
+      const { preview } = await restoreWithProcess({
+        profile, backups, mode: 'replace', force: true, supervisor,
+        signal: running.signal,
+        onProgress: (progress, step) => jobs.updateOperation(running.job.id, progress, step),
+        safetyNet: saverSafetyNet(profile, backups, r2, (line) => jobs.append('backup', line)),
+        write: (restoreOptions) => restoreSnapshotInPlace({
+          profile, r2, backups, snapshot, mode: 'replace', force: true, signal: running.signal,
+          logger: (line) => jobs.append('backup', line),
+          ...(restoreOptions.onStatus ? { onStatus: restoreOptions.onStatus } : {}),
+          onProgress: (progress) => {
+            const { percent, params } = meter.update(progress);
+            jobs.updateOperation(running.job.id, 25 + percent * 0.6, logEvent('job.fetchingChunks', `Fetching ${String(params.done)} of ${String(params.total)} - ${String(params.rate)}, ${String(params.eta)} left`, params));
+          },
+        }),
+      });
+      await r2.recordRecovery({ createdAt: newest.createdAt, fileCount: preview.fileCount, sizeBytes: preview.totalBytes });
+      logger(logEvent('r2.recovered', `[r2] the recovery point from ${newest.createdAt} is back in this profile`, { createdAt: newest.createdAt }));
+      return;
+    }
     const { manifest } = await fetchSnapshotToLibrary({
       profile, r2, backups, snapshotId: newest.id, sourceProfileId: newest.profileId, signal: running.signal,
       logger: (line) => jobs.append('backup', line),
@@ -4025,6 +4297,26 @@ export function publicOriginFromEnvironment(env: NodeJS.ProcessEnv, port: number
   return null;
 }
 
+/** A streamed restore's central directory, with the end record that follows it. */
+const MAX_STREAM_DIRECTORY_BYTES = 64 * 1024 * 1024 + 65_557;
+/** One chunk of a streamed upload; the panel sends four mebibytes. */
+const MAX_STREAM_CHUNK_BYTES = 64 * 1024 * 1024;
+/** How long a chunk waits for a restore that is still getting ready. */
+const STREAM_READY_WAIT_MS = 20_000;
+
+/** A request's body whole, refused past `limit` bytes. */
+async function readBody(request: IncomingMessage, limit: number): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += buffer.length;
+    if (total > limit) throw new RequestError(413, 'payload_too_large', 'Request body is too large');
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks);
+}
+
 async function readJson(request: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
   let total = 0;
@@ -4176,7 +4468,7 @@ async function announceRecoverable(r2: R2Manager, logger: LogSink): Promise<void
   }
 }
 
-async function recoverEmptyProfile(settle: () => Promise<Profile>, r2: R2Manager, backups: BackupStore, jobs: JobStore, metricsFile: string, running?: { readonly job: Job; readonly signal: AbortSignal }): Promise<void> {
+async function recoverEmptyProfile(settle: () => Promise<Profile>, r2: R2Manager, backups: BackupStore, jobs: JobStore, metricsFile: string, running?: { readonly job: Job; readonly signal: AbortSignal }, supervisor?: ProcessSupervisor): Promise<void> {
   /*
    * The backup slot is held from before the profile exists.
    *
@@ -4231,8 +4523,16 @@ async function recoverEmptyProfile(settle: () => Promise<Profile>, r2: R2Manager
     // rather than an Install button somebody is about to press by mistake.
     const { job, signal } = running ?? jobs.createOperation('r2Fetch', logEvent('job.checkingAccount', 'Checking this account for data to bring back'));
     const meter = new TransferMeter();
+    /*
+     * Saver mode writes the point straight into the profile, and gives
+     * SillyTavern's memory back to the download while it does: an empty
+     * profile has nothing in it to use, and it is started again afterwards.
+     */
+    const inPlace = backups.saving;
+    const pause = inPlace && supervisor && ['running', 'starting'].includes(supervisor.getState().status);
+    if (pause) await supervisor.stop('restore');
     const restored = await recoverProfileFromR2({
-      profile, r2, backups, signal,
+      profile, r2, backups, signal, inPlace,
       logger: (line) => jobs.append('backup', line),
       onProgress: (progress) => {
         const { percent, params } = meter.update(progress);
@@ -4247,11 +4547,11 @@ async function recoverEmptyProfile(settle: () => Promise<Profile>, r2: R2Manager
       // is what keeps a sign-in one job from beginning to end.
       (result) => { if (!running) jobs.finishOperation(job.id, 'succeeded', null); return result; },
       (error: unknown) => { if (!running) jobs.finishOperation(job.id, 'failed', error instanceof Error ? error.message : 'The recovery point could not be brought back'); throw error; },
-    );
+    ).finally(async () => { if (pause) await supervisor.start().catch(() => supervisor.getState()); });
     // Nobody was watching while this ran. The card says it happened, and says it
     // of the recovery point rather than of the archive that carried it here:
     // when the data was taken is what the reader is trying to work out.
-    if (restored) await r2.recordRecovery({ createdAt: restored.point.createdAt, fileCount: restored.manifest.fileCount, sizeBytes: restored.manifest.sizeBytes });
+    if (restored) await r2.recordRecovery({ createdAt: restored.point.createdAt, fileCount: restored.fileCount, sizeBytes: restored.sizeBytes });
   } finally {
     release();
   }

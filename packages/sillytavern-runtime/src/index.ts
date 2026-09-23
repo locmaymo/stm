@@ -66,6 +66,14 @@ export interface RuntimeManagerOptions {
   readonly useGit?: boolean;
   readonly gitCommand?: string;
   readonly repositoryUrl?: string;
+  /**
+   * Whether npm's download cache is thrown away once an install is done.
+   *
+   * It is hundreds of megabytes that only make the next install faster, which
+   * a machine in saver mode would rather have as disk. Asked when each install
+   * finishes, because the switch can move while the manager runs.
+   */
+  readonly dropNpmCache?: () => boolean;
 }
 
 interface ReleasePayload {
@@ -111,7 +119,8 @@ export class RuntimeManager {
     this.logger = options.logger ?? ((line) => console.log(logLineText(line)));
     this.githubApiBaseUrl = (options.githubApiBaseUrl ?? GITHUB_API).replace(/\/$/u, '');
     this.npmCommand = options.npmCommand ?? 'npm';
-    this.installDependencies = options.installDependencies ?? ((path, log, signal) => runNpmInstall(path, this.npmCommand, log, signal));
+    const dropNpmCache = options.dropNpmCache ?? (() => false);
+    this.installDependencies = options.installDependencies ?? ((path, log, signal) => runNpmInstall(path, this.npmCommand, log, signal, dropNpmCache));
     // SillyTavern performs content seeding and frontend compilation on its first
     // launch. Two minutes is too short for a free low-CPU hosted workspace.
     this.healthCheckTimeoutMs = options.healthCheckTimeoutMs ?? 300_000;
@@ -813,10 +822,18 @@ async function removeTemporaryGitPacks(runtimePath: string): Promise<void> {
   await Promise.all(names.filter((name) => name.includes('tmp_pack') || name.endsWith('.tmp')).map((name) => rm(join(packDirectory, name), { force: true })));
 }
 
-async function runNpmInstall(runtimePath: string, npmCommand: string, onLine: (line: string) => void, signal?: AbortSignal): Promise<void> {
+async function runNpmInstall(runtimePath: string, npmCommand: string, onLine: (line: string) => void, signal?: AbortSignal, dropCache: () => boolean = () => false): Promise<void> {
   throwIfCanceled(signal);
   const cacheDirectory = join(tmpdir(), 'sillytavern-manager-npm-cache');
   await mkdir(cacheDirectory, { recursive: true });
+  try {
+    await spawnNpmInstall(runtimePath, npmCommand, cacheDirectory, onLine, signal);
+  } finally {
+    if (dropCache()) await rm(cacheDirectory, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+async function spawnNpmInstall(runtimePath: string, npmCommand: string, cacheDirectory: string, onLine: (line: string) => void, signal?: AbortSignal): Promise<void> {
   await new Promise<void>((resolvePromise, reject) => {
     const child = spawn(npmCommand, ['install', '--omit=dev', '--no-audit', '--no-fund', '--prefer-offline', '--progress=false'], {
       cwd: runtimePath,

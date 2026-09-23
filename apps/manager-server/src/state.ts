@@ -119,6 +119,12 @@ interface PersistedManagerState {
   readonly ownerAccountId: string | null;
   /** What to call that account on screen, so a refusal can name it. */
   readonly ownerAccountName: string | null;
+  /**
+   * Saver mode as the panel's switch last set it, or null for never.
+   *
+   * Null is not off: it leaves the answer to how much memory the machine has.
+   */
+  readonly saverMode: boolean | null;
 }
 
 export interface StateStoreOptions {
@@ -189,6 +195,7 @@ export class StateStore {
         keepOnlineOrigin: null,
         ownerAccountId: null,
         ownerAccountName: null,
+        saverMode: null,
       };
       await this.write(state);
       this.state = state;
@@ -313,6 +320,20 @@ export class StateStore {
       const state = await this.load();
       if (state.keepOnlineOrigin === origin) return;
       const updated: PersistedManagerState = { ...state, keepOnlineOrigin: origin, updatedAt: this.now().toISOString() };
+      await this.write(updated);
+      this.state = updated;
+    };
+    const previous = this.adminWriteQueue;
+    this.adminWriteQueue = previous.then(operation, operation);
+    await this.adminWriteQueue;
+  }
+
+  /** The panel's saver mode switch; see `saver.ts`. */
+  public async setSaverMode(enabled: boolean): Promise<void> {
+    const operation = async (): Promise<void> => {
+      const state = await this.load();
+      if (state.saverMode === enabled) return;
+      const updated: PersistedManagerState = { ...state, saverMode: enabled, updatedAt: this.now().toISOString() };
       await this.write(updated);
       this.state = updated;
     };
@@ -627,7 +648,9 @@ export class StateStore {
     // Absent in every file written before the terms could be revised under a
     // running installation, which is one that has never been asked.
     const noticeAcknowledgedAt = isNullableString(input.noticeAcknowledgedAt) ? input.noticeAcknowledgedAt : null;
-    return { ...input, accessPasswordHash, accessPasscode, accessLanEnabled, sillyTavernPort, autoStartSillyTavern, firstInstallStartedAt, keepOnline, keepOnlineMinutes, keepOnlineOrigin, ownerAccountId, ownerAccountName, noticeAcknowledgedAt } as unknown as PersistedManagerState;
+    // Absent in a file written before saver mode existed: nobody has chosen.
+    const saverMode = typeof input.saverMode === 'boolean' ? input.saverMode : null;
+    return { ...input, accessPasswordHash, accessPasscode, accessLanEnabled, sillyTavernPort, autoStartSillyTavern, firstInstallStartedAt, keepOnline, keepOnlineMinutes, keepOnlineOrigin, ownerAccountId, ownerAccountName, noticeAcknowledgedAt, saverMode } as unknown as PersistedManagerState;
   }
 }
 

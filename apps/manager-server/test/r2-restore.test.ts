@@ -9,7 +9,7 @@ import { BackupStore } from '../../../packages/backup/src/index.js';
 import { R2Manager } from '../../../packages/r2/src/index.js';
 import { CHUNK_BYTES } from '../../../packages/r2/src/sync.js';
 import type { Profile } from '../../../packages/contracts/src/index.js';
-import { fetchSnapshotToLibrary, recoverProfileFromR2 } from '../src/r2-restore.js';
+import { fetchSnapshotToLibrary, recoverProfileFromR2, restoreSnapshotInPlace } from '../src/r2-restore.js';
 import { syncProfileToR2 } from '../src/r2-scheduler.js';
 
 /** An in-memory bucket that answers the parts of S3 this manager speaks. */
@@ -166,7 +166,7 @@ test('a machine that came back empty puts its profile back from the bucket by it
   // Which recovery point came back, so the console can say when the data it is
   // showing was taken rather than when the archive carrying it was written.
   assert.equal(manifest.point.profileId, 'profile-1');
-  assert.equal(manifest.manifest.kind, 'r2');
+  assert.equal(manifest.manifest?.kind, 'r2');
   assert.equal(await readFile(join(second.dataRoot, 'settings.json'), 'utf8'), '{"theme":"dark"}');
   assert.deepEqual(await readFile(join(second.dataRoot, 'chats', 'long.jsonl')), chat);
 });
@@ -237,3 +237,62 @@ test('an empty profile and an empty bucket is a first run, not a failure', async
 async function r2Snapshots(r2: R2Manager, profileId: string): Promise<string[]> {
   return (await r2.listSnapshots(profileId)).map((snapshot) => snapshot.id);
 }
+
+test('in saver mode a recovery point goes straight into the profile, with no archive made', async () => {
+  const { profile, backups, r2, dataRoot } = await createWorld();
+  const chat = Buffer.concat([Buffer.alloc(CHUNK_BYTES, 'a'), Buffer.from('the last line\n')]);
+  const card = randomBytes(4096);
+  await writeFile(join(dataRoot, 'settings.json'), '{"theme":"dark"}', 'utf8');
+  await writeFile(join(dataRoot, 'chats', 'long.jsonl'), chat);
+  await writeFile(join(dataRoot, 'characters', 'Trợ lý.png'), card);
+  await writeFile(join(dataRoot, 'chats', 'empty.jsonl'), '');
+  await syncProfileToR2({ profile, backups, r2, tier: 'cold' });
+  const [point] = await r2.listSnapshots(profile.id);
+  assert.ok(point);
+
+  // The profile moves on after the point was taken; a replace takes it back.
+  await writeFile(join(dataRoot, 'settings.json'), '{"theme":"light"}', 'utf8');
+  await writeFile(join(dataRoot, 'chats', 'later.jsonl'), 'written after the point');
+  backups.saving = true;
+  const snapshot = await r2.readSnapshot(profile.id, point.id);
+  const progress: number[] = [];
+  const preview = await restoreSnapshotInPlace({ profile, r2, backups, snapshot, mode: 'replace', onProgress: (step) => progress.push(step.completedBytes) });
+
+  assert.equal(preview.fileCount, 4);
+  assert.equal(await readFile(join(dataRoot, 'settings.json'), 'utf8'), '{"theme":"dark"}');
+  assert.deepEqual(await readFile(join(dataRoot, 'chats', 'long.jsonl')), chat);
+  assert.deepEqual(await readFile(join(dataRoot, 'characters', 'Trợ lý.png')), card);
+  assert.equal(await readFile(join(dataRoot, 'chats', 'empty.jsonl'), 'utf8'), '');
+  await assert.rejects(() => readFile(join(dataRoot, 'chats', 'later.jsonl')), { code: 'ENOENT' });
+  assert.equal(progress.at(-1), chat.length + card.length + '{"theme":"dark"}'.length);
+  // Nothing went through the library, which is the whole point.
+  assert.deepEqual(await backups.list(), []);
+});
+
+test('in saver mode an unattended recovery writes in place and falls back past a broken point', async () => {
+  const first = await createWorld();
+  await writeFile(join(first.dataRoot, 'settings.json'), '{"day":"monday"}', 'utf8');
+  await syncProfileToR2({ profile: first.profile, backups: first.backups, r2: first.r2, tier: 'cold' });
+  const good = new Set(first.objects.keys());
+  // A newer point whose chat chunk never arrived, so it fails partway through
+  // writing - after settings.json may already be in place.
+  await writeFile(join(first.dataRoot, 'settings.json'), '{"day":"tuesday"}', 'utf8');
+  await writeFile(join(first.dataRoot, 'chats', 'new.jsonl'), 'lost');
+  await syncProfileToR2({ profile: first.profile, backups: first.backups, r2: first.r2, tier: 'cold' });
+  for (const key of first.objects.keys()) if (key.includes('/blobs/') && !good.has(key)) first.objects.delete(key);
+
+  const second = await createWorld({ objects: first.objects, profileId: 'profile-after-reset' });
+  await rm(second.dataRoot, { recursive: true, force: true });
+  second.backups.saving = true;
+  const recovered = await recoverProfileFromR2({
+    profile: second.profile, r2: second.r2, backups: second.backups, inPlace: true,
+    restore: () => { throw new Error('in place never goes through an archive'); },
+  });
+  assert.ok(recovered);
+  assert.equal(recovered.manifest, null);
+  assert.equal(recovered.fileCount, 1);
+  assert.equal(await readFile(join(second.dataRoot, 'settings.json'), 'utf8'), '{"day":"monday"}');
+  // What the broken point had written before it failed is gone with it.
+  await assert.rejects(() => readFile(join(second.dataRoot, 'chats', 'new.jsonl')), { code: 'ENOENT' });
+  assert.deepEqual(await second.backups.list(), []);
+});

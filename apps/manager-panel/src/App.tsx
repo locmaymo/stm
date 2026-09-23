@@ -1,10 +1,11 @@
 import { useEffect, useId, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react';
+import { centralDirectoryOffset, ZIP_TAIL_SEARCH_BYTES } from './zip-tail.js';
 import {
   Archive, ArrowDown, ArrowUp, ArrowUpRight, BarChart3, Cloud, Copy, Database, Download,
   Globe2, LayoutDashboard, Maximize2, Minimize2, Moon, Package, Pencil, Plus,
   LogOut, RotateCcw, ScrollText, Search, Sun, Trash2, Upload, Users as UsersIcon, X, Rows3,
   BrainCircuit, CircleStop, Clock3, Cpu, Ellipsis, Play, QrCode as QrCodeIcon, RefreshCw, Scale, Settings2, ShieldCheck, Square,
-  Blocks, BookmarkPlus, Bug, Feather, FileCode2, LoaderCircle, Gauge, History, KeyRound, Monitor, CircleArrowUp, Star, TriangleAlert,
+  Blocks, BookmarkPlus, Bug, Feather, FileCode2, LoaderCircle, Gauge, History, KeyRound, Leaf, Monitor, CircleArrowUp, Star, TriangleAlert,
 } from 'lucide-react';
 import {
   Alert, AlertDescription, AlertTitle, AuthLayout, Badge, BrandMark, Button, buttonVariants, Card, CardAction,
@@ -33,7 +34,7 @@ import { availableUpdate, readDismissedManagerRelease, readDismissedUpdate, save
 import { readDismissedDisplaced, readDismissedRecovery, readDismissedSettings, saveDismissedDisplaced, saveDismissedRecovery, saveDismissedSettings, shouldOfferSettings, shouldShowDisplaced, shouldShowRecovery } from './settings-offer.js';
 import { apiFetch, onSessionExpired, resetSessionWatch, sessionToken, setSessionToken } from './session.js';
 import { collectCloudflareResult, framed, openReturnWindow, popupsBlocked, whenAbandoned, type CollectedResult } from './oauth.js';
-import type { AccessGatewayState, BackupManifest, CloudflareAccountProblem, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LegalReview, LogEntry, LogSourceFilter, ManagerRelease, ManagerSettingsOffer, ManagerUpdateStatus, OnlineState, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, BackupManifest, CloudflareAccountProblem, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LegalReview, LogEntry, LogSourceFilter, ManagerRelease, ManagerSettingsOffer, ManagerUpdateStatus, OnlineState, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, SaverState, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, isCloudJob, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
 import { usePoll } from './use-poll.js';
@@ -120,7 +121,7 @@ interface UploadMessages {
   readonly proxyPage: string;
 }
 
-async function uploadChunkWithRetry(url: string, body: Blob, headers: HeadersInit, messages: UploadMessages, signal?: AbortSignal): Promise<void> {
+async function uploadChunkWithRetry(url: string, body: Blob, headers: HeadersInit, messages: UploadMessages, signal?: AbortSignal): Promise<unknown> {
   let lastError = messages.failed;
   for (let attempt = 0; attempt <= UPLOAD_RETRIES; attempt += 1) {
     if (signal?.aborted) throw new StoppedError();
@@ -134,7 +135,7 @@ async function uploadChunkWithRetry(url: string, body: Blob, headers: HeadersIni
       await new Promise((resolvePromise) => window.setTimeout(resolvePromise, 500 * (attempt + 1)));
       continue;
     }
-    if (response.ok) return;
+    if (response.ok) return await response.json().catch(() => null) as unknown;
     const text = await response.text();
     lastError = apiErrorFromText(text, response.status, messages.failed, messages.fail, messages.proxyPage);
     const retryable = response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500;
@@ -813,6 +814,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
   const backgroundJobSeen = useRef<string | null>(null);
   /** What the manager does with SillyTavern on its own way up. Null until read. */
   const [startup, setStartup] = useState<StartupSettings | null>(null);
+  const [saver, setSaver] = useState<SaverState | null>(null);
   /** Whether the manager keeps itself online, and how that is going. */
   const [online, setOnline] = useState<OnlineState | null>(null);
   const [logSource, setLogSource] = useState<LogSourceFilter>('all');
@@ -1202,9 +1204,11 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
       apiFetch('/api/v1/startup', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<{ startup: StartupSettings }> : null),
       apiFetch('/api/v1/legal', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<LegalReview> : null),
       apiFetch('/api/v1/online', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<OnlineState> : null),
-    ]).then(([versionPayload, installationPayload, profilePayload, backupPayload, startupPayload, legalPayload, onlinePayload]) => {
+      apiFetch('/api/v1/saver', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<{ saver: SaverState }> : null).catch(() => null),
+    ]).then(([versionPayload, installationPayload, profilePayload, backupPayload, startupPayload, legalPayload, onlinePayload, saverPayload]) => {
       if (cancelled) return;
       if (startupPayload) setStartup(startupPayload.startup);
+      if (saverPayload) setSaver(saverPayload.saver);
       if (legalPayload) setLegalReview(legalPayload);
       if (onlinePayload) setOnline(onlinePayload);
       if (versionPayload) setVersions(versionPayload.versions);
@@ -1314,6 +1318,15 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     const payload = await response.json() as { startup?: StartupSettings; error?: { message?: string } };
     if (!response.ok || !payload.startup) return fail.body(payload, t('console.startupSaveFailed'));
     setStartup(payload.startup);
+    return null;
+  };
+
+  /** Saver mode's switch. Reported back so the switch can go back. */
+  const setSaverMode = async (enabled: boolean): Promise<string | null> => {
+    const response = await apiFetch('/api/v1/saver', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ enabled }) });
+    const payload = await response.json() as { saver?: SaverState; error?: { message?: string } };
+    if (!response.ok || !payload.saver) return fail.body(payload, t('console.startupSaveFailed'));
+    setSaver(payload.saver);
     return null;
   };
 
@@ -1700,7 +1713,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
                 }}
               /></div>
               : null}
-            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} locale={preferences.locale} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} startup={startup} online={online} onSetAutoStart={setAutoStartSillyTavern} onSetKeepOnline={setKeepOnline} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} onEraseEverything={eraseEverything} /> : <ResourcePanel page={page} t={t} />}
+            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} locale={preferences.locale} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} startup={startup} saver={saver} online={online} onSetAutoStart={setAutoStartSillyTavern} onSetSaver={setSaverMode} onSetKeepOnline={setKeepOnline} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} onEraseEverything={eraseEverything} /> : <ResourcePanel page={page} t={t} />}
           </PageContainer>
           <MobileNav
             items={navigation.map(({ id, icon }) => ({ id, icon, href: `#${id}`, label: t(`nav.${id}`) }))}
@@ -3518,6 +3531,14 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   const [storage, setStorage] = useState<StorageDurabilityReport | null>(null);
   const [backupSchedule, setBackupSchedule] = useState<LocalBackupSchedule | null>(null);
   const [scheduleSaving, setScheduleSaving] = useState(false);
+  // Saver mode takes no local archives, so the buttons that would write one
+  // are put away and the card says why.
+  const [saving, setSaving] = useState(false);
+  // The recovery point whose in-place restore is being asked about.
+  const [restorePoint, setRestorePoint] = useState<R2SnapshotSummary | null>(null);
+  // A zip still in the browser whose directory the server has read, waiting on
+  // the restore question; see `streamUpload`.
+  const [streaming, setStreaming] = useState<{ readonly file: File; readonly uploadId: string } | null>(null);
   const [r2Snapshots, setR2Snapshots] = useState<R2SnapshotSummary[]>([]);
   const [r2Busy, setR2Busy] = useState<string | null>(null);
   const [settingsOffer, setSettingsOffer] = useState<ManagerSettingsOffer | null>(null);
@@ -3570,7 +3591,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   const failed = (title: string) => toast({ title, tone: 'destructive' });
   const jobStep = (job: Job) => translateStep(job.step, catalog, job.stepCode, job.stepParams);
   const refresh = async () => {
-    const [profileResponse, backupResponse, r2Response, snapshotResponse, scheduleResponse] = await Promise.all([apiFetch('/api/v1/profiles', { credentials: 'same-origin' }), apiFetch('/api/v1/backups', { credentials: 'same-origin' }), apiFetch('/api/v1/r2', { credentials: 'same-origin' }), apiFetch('/api/v1/r2/snapshots', { credentials: 'same-origin' }).catch(() => null), apiFetch('/api/v1/backups/schedule', { credentials: 'same-origin' }).catch(() => null)]);
+    const [profileResponse, backupResponse, r2Response, snapshotResponse, scheduleResponse, saverResponse] = await Promise.all([apiFetch('/api/v1/profiles', { credentials: 'same-origin' }), apiFetch('/api/v1/backups', { credentials: 'same-origin' }), apiFetch('/api/v1/r2', { credentials: 'same-origin' }), apiFetch('/api/v1/r2/snapshots', { credentials: 'same-origin' }).catch(() => null), apiFetch('/api/v1/backups/schedule', { credentials: 'same-origin' }).catch(() => null), apiFetch('/api/v1/saver', { credentials: 'same-origin' }).catch(() => null)]);
     // Listing recovery points needs the bucket, so it is the one call here that
     // fails when R2 is off or unreachable. That must not blank the page.
     if (snapshotResponse?.ok) {
@@ -3585,6 +3606,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       if (payload.storage) setStorage(payload.storage);
     }
     if (scheduleResponse?.ok) setBackupSchedule((await scheduleResponse.json() as { schedule: LocalBackupSchedule }).schedule);
+    if (saverResponse?.ok) setSaving((await saverResponse.json() as { saver: SaverState }).saver.enabled);
   };
   useEffect(() => { void refresh(); }, []);
 
@@ -3728,7 +3750,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       } catch (error: unknown) {
         if (cancelled) return;
         if (error instanceof StoppedError) done(t(kind === 'restore' ? 'console.restoreStopped' : 'console.backupStopped'));
-        else if (error instanceof RollbackFailedError) setMixedProfile(t('console.restoreStoppedPartway'));
+        else if (error instanceof RollbackFailedError) setMixedProfile(t(saving ? 'console.restoreStoppedPartwaySaver' : 'console.restoreStoppedPartway'));
         else failed(error instanceof Error ? error.message : t(kind === 'r2Fetch' ? 'console.r2FetchFailed' : kind === 'r2Upload' ? 'console.r2UploadFailed' : 'console.backupRestoreFailed'));
       } finally {
         if (!cancelled) { setBusy(null); setOperationProgress(null); setRunningJobId(null); }
@@ -3872,8 +3894,111 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       return true;
     } catch { failed(t('console.backupPreviewFailed')); return false; }
   };
-  const closeRestore = () => { setSelectedBackup(null); setSelectedPreview(null); setRestoreAnyway(false); };
+  const closeRestore = () => {
+    // A zip nobody went on to restore is nothing to the server but its
+    // directory in memory; say so rather than leave it to time out.
+    if (streaming) void apiFetch(`/api/v1/backups/stream?uploadId=${encodeURIComponent(streaming.uploadId)}`, { method: 'DELETE', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } }).catch(() => undefined);
+    setStreaming(null); setSelectedBackup(null); setSelectedPreview(null); setRestoreAnyway(false);
+  };
+  /**
+   * Saver mode's upload: look inside the zip without sending it.
+   *
+   * The directory at the end of the file is all the server needs to check the
+   * archive and say what it holds, so that is all that goes before the
+   * question. The rest goes after, straight into the profile; see
+   * `restoreStreamed`.
+   */
+  const streamUpload = async (file: File) => {
+    setBusyAction(t('console.importZip')); setOperationProgress(null);
+    try {
+      const tail = new Uint8Array(await file.slice(Math.max(0, file.size - ZIP_TAIL_SEARCH_BYTES)).arrayBuffer());
+      const offset = centralDirectoryOffset(tail, file.size);
+      if (offset === null) { failed(t('errors.invalid_archive')); return; }
+      const response = await apiFetch('/api/v1/backups/stream', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/octet-stream', 'x-archive-size': String(file.size), 'x-csrf-token': csrfToken }, body: file.slice(offset) });
+      const payload = await response.json() as (RestorePreview & { uploadId?: string }) | { error?: { message?: string } };
+      if (!response.ok || !('uploadId' in payload) || !payload.uploadId) { failed(fail.body(payload, t('console.backupPreviewFailed'))); return; }
+      setRestoreMode('replace');
+      setStreaming({ file, uploadId: payload.uploadId });
+      setSelectedPreview(payload);
+    } catch (error: unknown) {
+      failed(error instanceof Error ? error.message : t('console.backupPreviewFailed'));
+    } finally { setBusyAction(null); }
+  };
+  /**
+   * Send the zip, and let the server write it into the profile as it arrives.
+   *
+   * The server stops SillyTavern and puts the current data in R2 before it is
+   * ready, which can take minutes; until then a chunk is answered "not yet"
+   * and sent again, and the bar shows what the server is doing instead. Any
+   * way the upload ends early - a failure, Stop, the network - ends the job
+   * too, and the job is what says what became of the profile.
+   */
+  const restoreStreamed = async () => {
+    if (!streaming) return;
+    const { file, uploadId } = streaming;
+    const force = restoreAnyway;
+    setStreaming(null); setSelectedPreview(null); setRestoreAnyway(false);
+    setBusyAction(t('console.restore')); setOperationProgress(null); setMixedProfile(null); setUploading(true);
+    const controller = new AbortController();
+    uploadAbort.current = controller;
+    let jobId: string | null = null;
+    try {
+      const response = await apiFetch('/api/v1/backups/stream/restore', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ uploadId, mode: restoreMode, ...(force ? { force: true } : {}) }) });
+      const payload = await response.json() as { jobId?: string; error?: { message?: string } };
+      if (!response.ok || !payload.jobId) { failed(fail.body(payload, t('console.backupRestoreFailed'))); return; }
+      jobId = payload.jobId;
+      setRunningJobId(jobId);
+      let uploadError: unknown = null;
+      try {
+        const samples: Array<{ at: number; bytes: number }> = [{ at: Date.now(), bytes: 0 }];
+        for (let index = 0, offset = 0; offset < file.size;) {
+          const end = Math.min(file.size, offset + UPLOAD_CHUNK_BYTES);
+          const answer = await uploadChunkWithRetry(
+            `/api/v1/backups/stream/chunk?uploadId=${encodeURIComponent(uploadId)}&index=${index}`,
+            file.slice(offset, end),
+            { 'content-type': 'application/octet-stream', 'x-csrf-token': csrfToken, accept: 'application/json' },
+            { fail, failed: t('console.uploadFailed'), proxyPage: t('console.uploadProxyPage') },
+            controller.signal,
+          ) as { ready?: boolean; done?: boolean } | null;
+          if (!answer?.ready) {
+            // Still getting ready: what it is doing is the job's to say.
+            const jobResponse = await apiFetch(`/api/v1/jobs/${encodeURIComponent(jobId)}`, { credentials: 'same-origin' });
+            const job = jobResponse.ok ? await jobResponse.json() as Job : null;
+            if (job) setOperationProgress({ percent: job.progress, step: jobStep(job) });
+            if (job && job.state !== 'running' && job.state !== 'queued') break;
+            samples.splice(0, samples.length, { at: Date.now(), bytes: offset });
+            continue;
+          }
+          index += 1; offset = end;
+          const at = Date.now();
+          samples.push({ at, bytes: end });
+          while (samples.length > 2 && at - (samples[0]?.at ?? at) > UPLOAD_RATE_WINDOW_MS) samples.shift();
+          const oldest = samples[0] ?? { at, bytes: 0 };
+          const elapsedMs = at - oldest.at;
+          const bytesPerSecond = elapsedMs > 0 ? ((end - oldest.bytes) / elapsedMs) * 1000 : 0;
+          const remaining = bytesPerSecond > 0 ? `${formatDuration((file.size - end) / bytesPerSecond)} ${t('console.uploadRemaining')}` : t('console.uploadEstimating');
+          setOperationProgress({ percent: Math.round((end / Math.max(file.size, 1)) * 100), step: `${t('console.restoringUpload')} ${formatBytes(end)} / ${formatBytes(file.size)} · ${formatBytes(Math.round(bytesPerSecond))}/s · ${remaining}` });
+          if (answer.done) break;
+        }
+      } catch (error: unknown) {
+        uploadError = error;
+        // The upload is over; so is the restore waiting on it.
+        await apiFetch(`/api/v1/jobs/${encodeURIComponent(jobId)}/cancel`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } }).catch(() => undefined);
+      }
+      setUploading(false);
+      await waitForOperation(jobId, (job) => { if (uploadError === null) setOperationProgress({ percent: job.progress, step: jobStep(job) }); });
+      if (uploadError) throw uploadError;
+      await refresh();
+      done(t('console.restoreDone'));
+    } catch (error: unknown) {
+      if (error instanceof StoppedError) { done(t('console.restoreStopped')); await refresh(); }
+      else if (error instanceof RollbackFailedError) { setMixedProfile(t('console.restoreStoppedPartwaySaver')); await refresh(); }
+      else failed(error instanceof Error ? error.message : t('console.backupRestoreFailed'));
+      if (!jobId) void apiFetch(`/api/v1/backups/stream?uploadId=${encodeURIComponent(uploadId)}`, { method: 'DELETE', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } }).catch(() => undefined);
+    } finally { uploadAbort.current = null; setBusyAction(null); setOperationProgress(null); setRunningJobId(null); setUploading(false); }
+  };
   const restoreSelected = async () => {
+    if (streaming) { await restoreStreamed(); return; }
     if (!selectedBackup || !selectedPreview) return;
     const backupId = selectedBackup.id;
     // The question has been answered, so the dialog goes before the work
@@ -3893,12 +4018,13 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       // stop is a result to glance at. Only a stop that could not be put back
       // leaves the profile mixed, and that stays on the page.
       if (error instanceof StoppedError) { done(t('console.restoreStopped')); await refresh(); }
-      else if (error instanceof RollbackFailedError) { setMixedProfile(t('console.restoreStoppedPartway')); await refresh(); }
+      else if (error instanceof RollbackFailedError) { setMixedProfile(t(saving ? 'console.restoreStoppedPartwaySaver' : 'console.restoreStoppedPartway')); await refresh(); }
       else failed(error instanceof Error ? error.message : t('console.backupRestoreFailed'));
     } finally { setBusyAction(null); setOperationProgress(null); setRunningJobId(null); }
   };
   const inspectUpload = async (file: File | undefined) => {
     if (!file) return;
+    if (saving) { await streamUpload(file); return; }
     setBusyAction(t('console.importZip')); setOperationProgress(null); setUploading(true);
     const controller = new AbortController();
     uploadAbort.current = controller;
@@ -4169,6 +4295,28 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
    * merge-or-replace choice as any other archive - and the operator gets to
    * look at it first.
    */
+  /**
+   * Put a recovery point straight into the profile, saver mode's way back.
+   *
+   * No archive is made on the way, so there is nothing to look inside first;
+   * the question is asked before instead, and the progress is the download.
+   */
+  const restorePointInPlace = async (snapshot: R2SnapshotSummary) => {
+    setR2Busy(t('console.restore')); setOperationProgress(null); setMixedProfile(null);
+    try {
+      const response = await apiFetch(`/api/v1/r2/snapshots/${encodeURIComponent(snapshot.id)}/restore`, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ profileId: snapshot.profileId, mode: 'replace' }) });
+      const payload = await response.json() as { jobId?: string; error?: { message?: string } };
+      if (!response.ok || !payload.jobId) { failed(fail.body(payload, t('console.backupRestoreFailed'))); return; }
+      setRunningJobId(payload.jobId);
+      await waitForOperation(payload.jobId, (job) => setOperationProgress({ percent: job.progress, step: jobStep(job) }));
+      await refresh();
+      done(t('console.restoreDone'));
+    } catch (error: unknown) {
+      if (error instanceof StoppedError) { done(t('console.restoreStopped')); await refresh(); }
+      else if (error instanceof RollbackFailedError) { setMixedProfile(t('console.restoreStoppedPartwaySaver')); await refresh(); }
+      else failed(error instanceof Error ? error.message : t('console.backupRestoreFailed'));
+    } finally { setR2Busy(null); setOperationProgress(null); setRunningJobId(null); }
+  };
   const fetchSnapshot = async (snapshot: R2SnapshotSummary) => {
     setR2Busy(t('console.r2Fetch'));
     setOperationProgress(null);
@@ -4308,7 +4456,11 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       headClassName: 'w-28',
       // Not "Download": nothing leaves for the reader to carry off. The point
       // comes back into this manager's backup library, to be restored from there.
-      cell: (snapshot) => <Button variant="ghost" size="sm" className="whitespace-nowrap" onClick={() => void fetchSnapshot(snapshot)} disabled={r2Busy !== null}><History />{t('console.r2Fetch')}</Button>,
+      // In saver mode there is no library to bring it into, so the row offers
+      // what fetching was always the first half of: restoring it.
+      cell: (snapshot) => saving
+        ? <Button variant="ghost" size="sm" className="whitespace-nowrap" onClick={() => setRestorePoint(snapshot)} disabled={r2Busy !== null}><RotateCcw />{t('console.restore')}</Button>
+        : <Button variant="ghost" size="sm" className="whitespace-nowrap" onClick={() => void fetchSnapshot(snapshot)} disabled={r2Busy !== null}><History />{t('console.r2Fetch')}</Button>,
     },
   ];
 
@@ -4332,7 +4484,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       <CardContent className="grid gap-4">
         {/* Here rather than in the R2 settings: it runs whether or not there is
             a bucket, so it has to be reachable without one. */}
-        {backupSchedule ? <div>
+        {saving ? <Alert><Leaf /><AlertDescription>{t('console.saverLocalOff')}</AlertDescription></Alert> : backupSchedule ? <div>
           {/* On or off is a switch, the way every other on-or-off in the console
               is; how often is a separate question, asked only while it is on. */}
           <DetailRow label={t('console.localScheduleLabel')} {...(backupSchedule.intervalMinutes === 0 ? { hint: t('console.localScheduleOffHint') } : {})}>
@@ -4368,8 +4520,10 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
                 {BACKUP_KINDS.map((kind) => <SelectItem key={kind} value={kind}>{t(BACKUP_KIND_LABEL[kind])}</SelectItem>)}
               </SelectContent>
             </Select>
-            <Button size="sm" onClick={() => void startBackup('scheduled').then((failure) => { if (failure) failed(failure); })} disabled={busy || activeProfileId === null}><Archive />{t('dashboard.backupNow')}</Button>
-            <Button variant="outline" size="sm" onClick={() => setBackupOpen(true)} disabled={busy || activeProfileId === null}><BookmarkPlus />{t('console.manualBackup')}</Button>
+            {saving ? null : <>
+              <Button size="sm" onClick={() => void startBackup('scheduled').then((failure) => { if (failure) failed(failure); })} disabled={busy || activeProfileId === null}><Archive />{t('dashboard.backupNow')}</Button>
+              <Button variant="outline" size="sm" onClick={() => setBackupOpen(true)} disabled={busy || activeProfileId === null}><BookmarkPlus />{t('console.manualBackup')}</Button>
+            </>}
             <label className={cn(buttonVariants({ variant: 'outline', size: 'sm' }), 'cursor-pointer')}>
               <Upload aria-hidden="true" />{t('console.importZip')}
               <input type="file" accept=".zip,application/zip" className="sr-only" disabled={busy} onChange={(event) => void inspectUpload(event.target.files?.[0])} />
@@ -4617,7 +4771,18 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       cancelLabel={t('common.cancel')}
       onConfirm={deleteBackup}
     />
-    <RestoreDialog t={t} catalog={catalog} displayName={displayName} backup={selectedBackup} preview={selectedPreview} mode={restoreMode} onModeChange={setRestoreMode} anyway={restoreAnyway} onAnywayChange={setRestoreAnyway} onClose={closeRestore} onRestore={restoreSelected} />
+    {/* Asked before rather than after, because in place there is no archive
+        to look inside first: what is replaced is replaced as it arrives. */}
+    <ConfirmDialog
+      open={restorePoint !== null}
+      onOpenChange={(open) => { if (!open) setRestorePoint(null); }}
+      title={t('console.restorePointTitle', { when: restorePoint ? new Date(restorePoint.createdAt).toLocaleString() : '' })}
+      description={t('console.restorePointBody')}
+      confirmLabel={t('console.restore')}
+      cancelLabel={t('common.cancel')}
+      onConfirm={() => { const point = restorePoint; if (point) void restorePointInPlace(point); }}
+    />
+    <RestoreDialog t={t} catalog={catalog} name={streaming ? streaming.file.name : selectedBackup ? displayName(selectedBackup) : null} safety={t(saving ? 'console.restoreSafetySaver' : 'console.restoreSafety')} preview={selectedPreview} mode={restoreMode} onModeChange={setRestoreMode} anyway={restoreAnyway} onAnywayChange={setRestoreAnyway} onClose={closeRestore} onRestore={restoreSelected} />
     <R2DestinationDialog
       t={t}
       open={destinationOpen}
@@ -4821,10 +4986,10 @@ function NameDialog({ t, open, onOpenChange, title, label, hint, initial = '', s
  * where the choice is made, and the choice is made in a dialog, because one of
  * them deletes everything that is there.
  */
-function RestoreDialog({ t, catalog, displayName, backup, preview, mode, onModeChange, anyway, onAnywayChange, onClose, onRestore }: { t: Translate; catalog: Record<string, unknown>; displayName: (backup: BackupManifest) => string; backup: BackupManifest | null; preview: RestorePreview | null; mode: RestoreMode; onModeChange: (mode: RestoreMode) => void; anyway: boolean; onAnywayChange: (anyway: boolean) => void; onClose: () => void; onRestore: () => Promise<void> }) {
+function RestoreDialog({ t, catalog, name, safety, preview, mode, onModeChange, anyway, onAnywayChange, onClose, onRestore }: { t: Translate; catalog: Record<string, unknown>; name: string | null; safety: string; preview: RestorePreview | null; mode: RestoreMode; onModeChange: (mode: RestoreMode) => void; anyway: boolean; onAnywayChange: (anyway: boolean) => void; onClose: () => void; onRestore: () => Promise<void> }) {
   const group = useId();
   const anywayId = useId();
-  if (!backup || !preview) return null;
+  if (name === null || !preview) return null;
   /*
    * An archive that is not a profile is refused here rather than restored.
    *
@@ -4852,7 +5017,7 @@ function RestoreDialog({ t, catalog, displayName, backup, preview, mode, onModeC
   return <Dialog open onOpenChange={(next) => { if (!next) onClose(); }}>
     <DialogContent className="sm:max-w-lg">
       <DialogHeader>
-        <DialogTitle>{t('console.restoreTitle', { name: displayName(backup) })}</DialogTitle>
+        <DialogTitle>{t('console.restoreTitle', { name })}</DialogTitle>
         <DialogDescription>{t('console.restoreCounts', { files: preview.fileCount, size: formatBytes(preview.totalBytes) })}</DialogDescription>
       </DialogHeader>
       <DialogBody className="grid gap-4">
@@ -4879,7 +5044,7 @@ function RestoreDialog({ t, catalog, displayName, backup, preview, mode, onModeC
             </AlertDescription>
           </Alert>
           : null}
-        <p className="text-xs text-muted-foreground">{t('console.restoreSafety')}</p>
+        <p className="text-xs text-muted-foreground">{safety}</p>
       </DialogBody>
       <DialogFooter>
         <Button variant="ghost" onClick={onClose}>{t('common.cancel')}</Button>
@@ -5854,7 +6019,7 @@ function configFileName(path: string): string {
  * version installed. This belongs to the manager and outlives every version it
  * installs - which is also why it is not in the file the Edit button opens.
  */
-function StartupCard({ t, startup, onSetAutoStart }: { t: Translate; startup: StartupSettings | null; onSetAutoStart: (enabled: boolean) => Promise<string | null> }) {
+function StartupCard({ t, startup, saver, onSetAutoStart, onSetSaver }: { t: Translate; startup: StartupSettings | null; saver: SaverState | null; onSetAutoStart: (enabled: boolean) => Promise<string | null>; onSetSaver: (enabled: boolean) => Promise<string | null> }) {
   // What the switch shows while the answer is in flight, so it moves under the
   // press rather than a second later.
   const [pending, setPending] = useState<boolean | null>(null);
@@ -5879,8 +6044,42 @@ function StartupCard({ t, startup, onSetAutoStart }: { t: Translate; startup: St
           ? <Skeleton className="h-5 w-9" />
           : <Switch checked={checked} disabled={busy} onCheckedChange={(next) => void save(next)} aria-label={t('console.autoStartSillyTavern')} />}
       </DetailRow>
+      <SaverRow t={t} saver={saver} onSetSaver={onSetSaver} />
     </CardContent>
   </Card>;
+}
+
+/**
+ * Saver mode, beside the other thing the manager decides on its way up.
+ *
+ * The hint says where the answer came from, because two of the three are not
+ * this switch: STM_SAVER, which the switch cannot move, and the machine's
+ * memory, which decided it before anybody was asked.
+ */
+function SaverRow({ t, saver, onSetSaver }: { t: Translate; saver: SaverState | null; onSetSaver: (enabled: boolean) => Promise<string | null> }) {
+  const [pending, setPending] = useState<boolean | null>(null);
+  const [busy, setBusy] = useState(false);
+  const { toast } = useToast();
+  const checked = pending ?? saver?.enabled ?? null;
+  const save = async (next: boolean) => {
+    setPending(next); setBusy(true);
+    try {
+      const failure = await onSetSaver(next);
+      if (failure) { toast({ title: failure, tone: 'destructive' }); return; }
+      toast({ title: t(next ? 'console.saverTurnedOn' : 'console.saverTurnedOff'), tone: 'success' });
+    } finally { setPending(null); setBusy(false); }
+  };
+  const memory = saver ? `${(saver.memoryBytes / 1024 ** 3).toFixed(1)} GiB` : '';
+  const source = saver?.source === 'environment'
+    ? t('console.saverFromEnvironment')
+    : saver?.source === 'memory' && saver.enabled
+      ? t('console.saverFromMemory', { memory })
+      : null;
+  return <DetailRow label={t('console.saverMode')} hint={source ? `${t('console.saverHint')} ${source}` : t('console.saverHint')}>
+    {checked === null
+      ? <Skeleton className="h-5 w-9" />
+      : <Switch checked={checked} disabled={busy || saver?.source === 'environment'} onCheckedChange={(next) => void save(next)} aria-label={t('console.saverMode')} />}
+  </DetailRow>;
 }
 
 /** The intervals offered; anything else somebody sets is shown as it is. */
@@ -6056,7 +6255,7 @@ interface ActionFailure {
   readonly text: string;
 }
 
-function ConfigPage({ t, locale, config, security, ports, managerTunnel, process, catalog, startup, online, onSetAutoStart, onSetKeepOnline, onSetManagerTunnel, onPortChange, onConfigUpdate, onConfigReset, onChangeManagerPassword, onSetPassword, onSignOut, onSignOutDevices, onEraseEverything }: { t: Translate; locale: LocaleCode; config: ConfigDocument | null; security: AccessGatewayState; ports: PortSettings | null; managerTunnel: TunnelState; process: ProcessState; catalog: Record<string, unknown>; startup: StartupSettings | null; online: OnlineState | null; onSetAutoStart: (enabled: boolean) => Promise<string | null>; onSetKeepOnline: (enabled: boolean, minutes: number) => Promise<string | null>; onSetManagerTunnel: (on: boolean) => Promise<ActionFailure | null>; onPortChange: (port: number) => Promise<string | null>; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onConfigReset: () => Promise<string | null>; onChangeManagerPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSignOut: () => Promise<void>; onSignOutDevices: () => Promise<string | null>; onEraseEverything: (password: string) => Promise<string | null> }) {
+function ConfigPage({ t, locale, config, security, ports, managerTunnel, process, catalog, startup, saver, online, onSetAutoStart, onSetSaver, onSetKeepOnline, onSetManagerTunnel, onPortChange, onConfigUpdate, onConfigReset, onChangeManagerPassword, onSetPassword, onSignOut, onSignOutDevices, onEraseEverything }: { t: Translate; locale: LocaleCode; config: ConfigDocument | null; security: AccessGatewayState; ports: PortSettings | null; managerTunnel: TunnelState; process: ProcessState; catalog: Record<string, unknown>; startup: StartupSettings | null; saver: SaverState | null; online: OnlineState | null; onSetAutoStart: (enabled: boolean) => Promise<string | null>; onSetSaver: (enabled: boolean) => Promise<string | null>; onSetKeepOnline: (enabled: boolean, minutes: number) => Promise<string | null>; onSetManagerTunnel: (on: boolean) => Promise<ActionFailure | null>; onPortChange: (port: number) => Promise<string | null>; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onConfigReset: () => Promise<string | null>; onChangeManagerPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSignOut: () => Promise<void>; onSignOutDevices: () => Promise<string | null>; onEraseEverything: (password: string) => Promise<string | null> }) {
   const [form, setForm] = useState<ConfigSettingsInput>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -6276,7 +6475,7 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
       cancelLabel={t('common.cancel')}
       onConfirm={() => applyManagerTunnel(false)}
     />
-    <StartupCard t={t} startup={startup} onSetAutoStart={onSetAutoStart} />
+    <StartupCard t={t} startup={startup} saver={saver} onSetAutoStart={onSetAutoStart} onSetSaver={onSetSaver} />
     {/* Under what the manager does when it opens, because this is what it
         does for the rest of the time it is open. */}
     <KeepOnlineCard t={t} locale={locale} online={online} onSetKeepOnline={onSetKeepOnline} />

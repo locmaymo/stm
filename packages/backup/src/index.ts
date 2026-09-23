@@ -1,7 +1,8 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { createDeflateRaw, createInflateRaw, crc32 } from 'node:zlib';
+import { createDeflateRaw, createInflateRaw, crc32, inflateRaw } from 'node:zlib';
 import { createReadStream, createWriteStream } from 'node:fs';
-import { Transform, Readable } from 'node:stream';
+import { once } from 'node:events';
+import { PassThrough, Transform, Readable } from 'node:stream';
 import { finished } from 'node:stream/promises';
 import { pipeline } from 'node:stream/promises';
 import { chmod, lstat, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
@@ -125,14 +126,43 @@ interface PersistedBackups {
   readonly schedule?: LocalBackupSchedule;
 }
 
-interface ZipEntry {
+/**
+ * What a restore needs to know of an entry to plan it.
+ *
+ * A zip entry says it, and so does a file named in an R2 recovery point, so a
+ * recovery point can be restored without first being made into a zip.
+ */
+interface EntryInfo {
   readonly name: string;
-  readonly compressedSize: number;
   readonly uncompressedSize: number;
-  readonly compression: number;
-  readonly localOffset: number;
   readonly directory: boolean;
   readonly symlink: boolean;
+}
+
+interface ZipEntry extends EntryInfo {
+  /** The CRC-32 the directory records, which a streamed restore checks. */
+  readonly crc: number;
+  readonly compressedSize: number;
+  readonly compression: number;
+  readonly localOffset: number;
+}
+
+/** One file of a restore whose bytes are not in a zip on this disk. */
+export interface RestoreFile {
+  /** The archive-relative name, the same one a backup of the profile would use. */
+  readonly name: string;
+  readonly sizeBytes: number;
+}
+
+export interface RestoreFilesOptions extends RestoreOptions {
+  readonly files: readonly RestoreFile[];
+  /**
+   * The bytes of one file, as they arrive.
+   *
+   * Called again for a file whose first write was refused and is retried, so
+   * it has to start from the beginning each time.
+   */
+  readonly open: (file: RestoreFile) => AsyncIterable<Uint8Array>;
 }
 
 export interface ArchiveSource {
@@ -164,6 +194,17 @@ export class BackupStore {
    * for both.
    */
   private readonly inUse = new Map<string, number>();
+  /**
+   * Saver mode: no archive of the profile is written on this machine.
+   *
+   * A full archive is the profile a second time on the disk, which is what a
+   * host with a few gigabytes for everything cannot afford. The library is
+   * still read, restored from and cleared; only writing to it stops. Set by
+   * the manager, which owns the switch; see `saver.ts`.
+   */
+  public saving = false;
+  /** Zips being restored as they upload, by id; see `ArchiveStream`. */
+  private readonly streams = new Map<string, ArchiveStream>();
 
   public constructor(options: BackupStoreOptions) {
     this.paths = options.paths;
@@ -299,6 +340,7 @@ export class BackupStore {
   }
 
   public async create(profile: Profile, options: CreateBackupOptions = {}): Promise<BackupManifest> {
+    if (this.saving) throw new BackupError('saver_mode', 'Local backups are off while saver mode is on');
     const release = await this.acquireOperation();
     try {
       return await this.createUnlocked(profile, options);
@@ -607,6 +649,81 @@ export class BackupStore {
       if (isFileNotFound(error)) throw new BackupError('backup_archive_missing', 'That backup is no longer in the library');
       throw error;
     });
+    return await this.restorePlanned(profile, entries, options, (plan) => extractPlan(archivePath, plan, options.onProgress, options.signal));
+  }
+
+  /**
+   * Open a restore of a zip that is still in the browser; see `ArchiveStream`.
+   *
+   * `tail` is the archive from its central directory to its end. Everything a
+   * preview checks is checked here, before anything is stopped or written.
+   */
+  public openStream(tail: Buffer, archiveSize: number, fallbackLayout: ProfileLayout = 'data'): ArchiveStream {
+    if (!Number.isSafeInteger(archiveSize) || archiveSize <= 0 || archiveSize > MAX_UPLOAD_BYTES) throw new BackupError('upload_too_large', 'The uploaded ZIP is too large');
+    const entries = parseStreamDirectory(tail, archiveSize);
+    const preview = previewEntries(entries, fallbackLayout);
+    for (const entry of entries) {
+      if (!entry.directory && entry.compression !== 0 && entry.compression !== 8) throw new BackupError('unsupported_archive', `ZIP compression ${entry.compression} is not supported`);
+    }
+    if (this.streams.size >= MAX_OPEN_STREAMS) throw new BackupError('upload_busy', 'Too many uploads are open at once; finish or cancel one first');
+    let id = '';
+    const stream = new ArchiveStream(archiveSize, entries, preview, () => { this.streams.delete(id); });
+    id = stream.id;
+    this.streams.set(id, stream);
+    return stream;
+  }
+
+  public getStream(id: string): ArchiveStream | null {
+    return this.streams.get(id) ?? null;
+  }
+
+  /**
+   * Restore the zip a stream is carrying, as its bytes arrive.
+   *
+   * The same checks, plan and order as any other restore; the difference is
+   * only that each file is written when the upload reaches it.
+   */
+  public async restoreStream(profile: Profile, stream: ArchiveStream, options: RestoreOptions): Promise<RestorePreview> {
+    const release = await this.acquireOperation();
+    try {
+      throwIfStopped(options.signal);
+      return await this.restorePlanned(profile, stream.entries, options, (plan) => stream.receive(plan, options.onProgress, options.signal));
+    } catch (error: unknown) {
+      stream.fail(error instanceof Error ? error : new Error('The restore failed'));
+      throw error;
+    } finally {
+      release();
+    }
+  }
+
+  /** What restoring these files would do, the way `preview` says it of a zip. */
+  public previewFiles(files: readonly RestoreFile[], fallbackLayout: ProfileLayout = 'data'): RestorePreview {
+    return previewEntries(files.map(fileEntry), fallbackLayout);
+  }
+
+  /**
+   * Restore files that arrive from somewhere other than a zip on this disk.
+   *
+   * A recovery point in R2 used to be rebuilt into a zip in the library and
+   * restored from there, which put the profile on the disk twice - the zip and
+   * the files - on a machine that may have room for it once. Each file here is
+   * written to its place as its bytes arrive, and nothing else is kept.
+   *
+   * The checks are the zip's: the same names refused, the same shape read, the
+   * same refusal of something that is not a profile unless forced.
+   */
+  public async restoreFiles(profile: Profile, options: RestoreFilesOptions): Promise<RestorePreview> {
+    const release = await this.acquireOperation();
+    try {
+      throwIfStopped(options.signal);
+      const byName = new Map(options.files.map((file) => [file.name, file]));
+      return await this.restorePlanned(profile, options.files.map(fileEntry), options, (plan) => writePlan(plan, (entry) => options.open(byName.get(entry.name)!), options.onProgress, options.signal));
+    } finally {
+      release();
+    }
+  }
+
+  private async restorePlanned<T extends EntryInfo>(profile: Profile, entries: readonly T[], options: RestoreOptions, write: (plan: readonly PlannedEntry<T>[]) => Promise<void>): Promise<RestorePreview> {
     const preview = previewEntries(entries, profile.layout);
     // The one moment that cannot be undone, and the last place to ask. A
     // replace deletes what the archive does not mention, so an archive that is
@@ -626,13 +743,19 @@ export class BackupStore {
     // Staging directories from older versions are pure waste now; sweep any the
     // upgrade left behind rather than leaving them to confuse SillyTavern.
     await this.sweepAbandonedStaging(resolve(dataDestination, '..'));
-    options.onStatus?.(logEvent('restore.restoringFiles', 'Restoring files'));
-    this.logger(logEvent('backup.restoring', `[backup] restoring ${plan.length} files into ${dataDestination}`, { count: plan.length, path: dataDestination }));
-    await this.timed(logEvent('backup.phaseWroteFiles', `wrote ${plan.length} files`, { count: plan.length }), () => extractPlan(archivePath, plan, options.onProgress, options.signal));
-    if (obsolete.length > 0) {
+    const removeObsolete = async (): Promise<void> => {
+      if (obsolete.length === 0) return;
       options.onStatus?.(logEvent('restore.removingObsolete', 'Removing files the backup does not contain'));
       await this.timed(logEvent('backup.phaseRemovedObsolete', `removed ${obsolete.length} files the backup does not contain`, { count: obsolete.length }), () => removeAll(obsolete));
-    }
+    };
+    // In saver mode the files a replace is going to delete go first, so the
+    // room they take is free before the new files need it. Either order ends
+    // with the same profile; this one never holds both at once.
+    if (this.saving) await removeObsolete();
+    options.onStatus?.(logEvent('restore.restoringFiles', 'Restoring files'));
+    this.logger(logEvent('backup.restoring', `[backup] restoring ${plan.length} files into ${dataDestination}`, { count: plan.length, path: dataDestination }));
+    await this.timed(logEvent('backup.phaseWroteFiles', `wrote ${plan.length} files`, { count: plan.length }), () => write(plan));
+    if (!this.saving) await removeObsolete();
     options.onStatus?.(logEvent('restore.finalizing', 'Finalizing restored data'));
     const targetLabel = profile.layout === 'data' ? relative(resolve(profile.dataPath), dataDestination).replaceAll('\\', '/') || '.' : 'public/';
     this.logger(logEvent('backup.restored', `[backup] restored ${preview.fileCount} files to ${profile.name}/${targetLabel} (${options.mode})`, { count: preview.fileCount, profile: profile.name, target: targetLabel, mode: options.mode }));
@@ -1135,7 +1258,7 @@ async function collectTree(root: string, current: string): Promise<ArchiveSource
   return result;
 }
 
-function previewEntries(entries: ZipEntry[], fallbackLayout: ProfileLayout): RestorePreview {
+function previewEntries(entries: readonly EntryInfo[], fallbackLayout: ProfileLayout): RestorePreview {
   const files: BackupFilePreview[] = [];
   let totalBytes = 0;
   for (const entry of entries) {
@@ -1153,8 +1276,8 @@ function previewEntries(entries: ZipEntry[], fallbackLayout: ProfileLayout): Res
   return { layout: fallbackLayout, fileCount: files.length, totalBytes, files, warnings, recognized, root: shape.prefix };
 }
 
-interface PlannedEntry {
-  readonly entry: ZipEntry;
+interface PlannedEntry<T extends EntryInfo = ZipEntry> {
+  readonly entry: T;
   readonly target: string;
 }
 
@@ -1175,9 +1298,9 @@ interface PlanOptions {
  * wrapper requires every entry to sit under it, such an archive never carries a
  * config at the root.
  */
-function planEntries(entries: ZipEntry[], options: PlanOptions): PlannedEntry[] {
+function planEntries<T extends EntryInfo>(entries: readonly T[], options: PlanOptions): PlannedEntry<T>[] {
   const { prefix } = readArchiveShape(entries);
-  const planned: PlannedEntry[] = [];
+  const planned: PlannedEntry<T>[] = [];
   const taken = new Set<string>();
   for (const entry of entries) {
     if (entry.directory) continue;
@@ -1227,6 +1350,38 @@ async function extractPlan(zipPath: string, planned: readonly PlannedEntry[], on
 }
 
 /**
+ * Write files whose bytes come from `open`, a few at a time.
+ *
+ * The same pool, the same progress batching and the same read-only retry as a
+ * zip's entries; only where the bytes come from differs. Each file's size is
+ * checked against what the source said it would be, so a truncated download
+ * fails the restore rather than leaving a short file behind in silence.
+ */
+async function writePlan<T extends EntryInfo>(planned: readonly PlannedEntry<T>[], open: (entry: T) => AsyncIterable<Uint8Array>, onProgress?: (progress: { completed: number; total: number }) => void, signal?: AbortSignal): Promise<void> {
+  const parents = new Set<string>();
+  for (const item of planned) parents.add(resolve(item.target, '..'));
+  const total = planned.length;
+  const concurrency = Math.max(1, Math.min(ioConcurrency(), total));
+  await runPooled([...parents], concurrency, async (parent) => { await mkdir(parent, { recursive: true }); });
+  let completed = 0;
+  await runPooled(planned, concurrency, async (item) => {
+    throwIfStopped(signal);
+    await retryReadOnly(item.target, async () => {
+      const counter = new ByteCounter();
+      await pipeline(Readable.from(open(item.entry)), counter, createWriteStream(item.target, { mode: 0o600 }));
+      if (counter.bytes !== item.entry.uncompressedSize) throw new BackupError('invalid_archive', `Restored file size mismatch: ${item.entry.name}`);
+    });
+    completed += 1;
+    if (completed === total || completed % 25 === 0) onProgress?.({ completed, total });
+  });
+}
+
+/** A file of a restore, described the way a zip entry is. */
+function fileEntry(file: RestoreFile): EntryInfo {
+  return { name: file.name, uncompressedSize: file.sizeBytes, directory: false, symlink: false };
+}
+
+/**
  * Write one archive entry, taking the target from a read-only file if it must.
  *
  * Git stores its loose objects read-only, and Windows refuses to open a
@@ -1237,9 +1392,13 @@ async function extractPlan(zipPath: string, planned: readonly PlannedEntry[], on
  * attribute is followed by a short wait rather than an immediate give-up.
  */
 async function extractEntry(archive: FileHandle, entry: ZipEntry, target: string): Promise<void> {
+  await retryReadOnly(target, () => writeEntry(archive, entry, target));
+}
+
+async function retryReadOnly(target: string, write: () => Promise<void>): Promise<void> {
   for (let attempt = 0; ; attempt += 1) {
     try {
-      await writeEntry(archive, entry, target);
+      await write();
       return;
     } catch (error: unknown) {
       if (!isPermissionError(error) || attempt === OVERWRITE_ATTEMPTS - 1) throw error;
@@ -1337,27 +1496,365 @@ async function readZipDirectory(zipPath: string): Promise<ZipEntry[]> {
     if (entryCount === 0xffff || directoryOffset === 0xffffffff || directorySize > MAX_ZIP_DIRECTORY_BYTES) throw new BackupError('archive_too_large', 'ZIP64 archives are not supported for this backup');
     const directory = Buffer.alloc(directorySize);
     await handle.read(directory, 0, directory.length, directoryOffset);
-    const entries: ZipEntry[] = [];
-    let offset = 0;
-    for (let index = 0; index < entryCount; index += 1) {
-      if (offset + 46 > directory.length || directory.readUInt32LE(offset) !== 0x02014b50) throw new BackupError('invalid_archive', 'The ZIP central directory is corrupt');
-      const flags = directory.readUInt16LE(offset + 8);
-      const compression = directory.readUInt16LE(offset + 10);
-      const compressedSize = directory.readUInt32LE(offset + 20);
-      const uncompressedSize = directory.readUInt32LE(offset + 24);
-      const nameLength = directory.readUInt16LE(offset + 28);
-      const extraLength = directory.readUInt16LE(offset + 30);
-      const commentLength = directory.readUInt16LE(offset + 32);
-      const localOffset = directory.readUInt32LE(offset + 42);
-      if (offset + 46 + nameLength + extraLength + commentLength > directory.length) throw new BackupError('invalid_archive', 'The ZIP central directory is corrupt');
-      const name = directory.subarray(offset + 46, offset + 46 + nameLength).toString(flags & 0x800 ? 'utf8' : 'utf8').replaceAll('\\', '/');
-      const externalAttributes = directory.readUInt32LE(offset + 38);
-      entries.push({ name, compressedSize, uncompressedSize, compression, localOffset, directory: name.endsWith('/') || (externalAttributes & 0x10) !== 0, symlink: ((externalAttributes >>> 16) & 0xf000) === 0xa000 });
-      offset += 46 + nameLength + extraLength + commentLength;
-    }
-    return entries;
+    return parseDirectoryEntries(directory, entryCount);
   } finally {
     await handle.close();
+  }
+}
+
+function parseDirectoryEntries(directory: Buffer, entryCount: number): ZipEntry[] {
+  const entries: ZipEntry[] = [];
+  let offset = 0;
+  for (let index = 0; index < entryCount; index += 1) {
+    if (offset + 46 > directory.length || directory.readUInt32LE(offset) !== 0x02014b50) throw new BackupError('invalid_archive', 'The ZIP central directory is corrupt');
+    const flags = directory.readUInt16LE(offset + 8);
+    const compression = directory.readUInt16LE(offset + 10);
+    const crc = directory.readUInt32LE(offset + 16);
+    const compressedSize = directory.readUInt32LE(offset + 20);
+    const uncompressedSize = directory.readUInt32LE(offset + 24);
+    const nameLength = directory.readUInt16LE(offset + 28);
+    const extraLength = directory.readUInt16LE(offset + 30);
+    const commentLength = directory.readUInt16LE(offset + 32);
+    const localOffset = directory.readUInt32LE(offset + 42);
+    if (offset + 46 + nameLength + extraLength + commentLength > directory.length) throw new BackupError('invalid_archive', 'The ZIP central directory is corrupt');
+    const name = directory.subarray(offset + 46, offset + 46 + nameLength).toString(flags & 0x800 ? 'utf8' : 'utf8').replaceAll('\\', '/');
+    const externalAttributes = directory.readUInt32LE(offset + 38);
+    entries.push({ name, crc, compressedSize, uncompressedSize, compression, localOffset, directory: name.endsWith('/') || (externalAttributes & 0x10) !== 0, symlink: ((externalAttributes >>> 16) & 0xf000) === 0xa000 });
+    offset += 46 + nameLength + extraLength + commentLength;
+  }
+  return entries;
+}
+
+/**
+ * The entries of an archive that has not arrived, from the end of it that has.
+ *
+ * `tail` is the archive from the start of its central directory to its last
+ * byte, which a browser can cut out of the file it is holding without sending
+ * the rest. The directory's own record of where it starts has to agree with
+ * the size of the archive, or the tail is not the one it claims to be.
+ */
+function parseStreamDirectory(tail: Buffer, archiveSize: number): ZipEntry[] {
+  const searchFrom = Math.max(0, tail.length - 65_557);
+  const found = findSignature(tail.subarray(searchFrom), 0x06054b50);
+  if (found < 0) throw new BackupError('invalid_archive', 'The uploaded file is not a ZIP archive');
+  const eocd = searchFrom + found;
+  const entryCount = tail.readUInt16LE(eocd + 10);
+  const directorySize = tail.readUInt32LE(eocd + 12);
+  const directoryOffset = tail.readUInt32LE(eocd + 16);
+  if (entryCount === 0xffff || directoryOffset === 0xffffffff || directorySize > MAX_ZIP_DIRECTORY_BYTES) throw new BackupError('archive_too_large', 'ZIP64 archives are not supported for this backup');
+  if (directoryOffset + tail.length !== archiveSize || directorySize > eocd) throw new BackupError('invalid_archive', 'The ZIP central directory did not arrive whole');
+  return parseDirectoryEntries(tail.subarray(0, directorySize), entryCount);
+}
+
+/** How long a streamed restore waits for the browser before giving up on it. */
+const STREAM_IDLE_MS = 10 * 60 * 1000;
+/**
+ * An entry this small is gathered whole and written beside the others.
+ *
+ * A profile is thousands of small files, and writing them one after another
+ * in the order they arrive would wait on the disk once per file. Gathered, a
+ * handful are written at once while the next ones come in; large files are
+ * streamed through on their own, so their size is never their cost in memory.
+ */
+const STREAM_BUFFERED_ENTRY_BYTES = 1024 * 1024;
+/** How many streamed restores may be open at once, each holding its directory. */
+const MAX_OPEN_STREAMS = 4;
+
+interface EntrySink {
+  write: (piece: Buffer) => Promise<void>;
+  close: () => Promise<void>;
+  abort: () => void;
+}
+
+type StreamState =
+  | { readonly kind: 'seek' }
+  | { readonly kind: 'header'; readonly parts: Buffer[]; length: number; need: number }
+  | { readonly kind: 'data'; remaining: number; readonly sink: EntrySink };
+
+/**
+ * A zip restored as it is uploaded, with no copy of it kept anywhere.
+ *
+ * Saver mode's upload. A zip written to the disk before it is restored is the
+ * profile twice over, which a machine with a few gigabytes for everything does
+ * not have room for. Here the browser sends the central directory first, which
+ * is enough to check the archive and show what it holds; then the archive
+ * itself in order, a chunk at a time, and each entry is written to its place
+ * as its bytes go past. Bytes no planned entry needs are passed over.
+ *
+ * The central directory is the authority on where each entry starts and how
+ * long it is, so entries written with a data descriptor - sizes unknown in the
+ * local header - stream as well as any other.
+ */
+export class ArchiveStream {
+  public readonly id = randomUUID();
+  /** The next chunk expected; an earlier one is a retry of one already taken. */
+  public nextIndex = 0;
+  private position = 0;
+  private plan: readonly PlannedEntry[] = [];
+  private next = 0;
+  private state: StreamState = { kind: 'seek' };
+  private receiving = false;
+  private finished = false;
+  private failure: Error | null = null;
+  private readonly readyWaiters = new Set<() => void>();
+  private readonly pending = new Set<Promise<void>>();
+  private completed = 0;
+  private onProgress: ((progress: { completed: number; total: number }) => void) | undefined;
+  private settle: { resolve: () => void; reject: (error: Error) => void } | null = null;
+  private lock: Promise<unknown> = Promise.resolve();
+  private idle: NodeJS.Timeout | null = null;
+
+  public constructor(
+    public readonly archiveSize: number,
+    /** @internal */ public readonly entries: readonly ZipEntry[],
+    public readonly preview: RestorePreview,
+    private readonly onEnd: () => void,
+  ) {
+    this.touch();
+  }
+
+  /** Bytes of the archive taken so far. */
+  public get received(): number { return this.position; }
+
+  /** Whether every file the restore needs has been written. */
+  public get done(): boolean { return this.finished; }
+
+  /**
+   * Wait until the restore is ready for bytes, for up to `ms`.
+   *
+   * It is not ready until SillyTavern has stopped and the current data has
+   * gone to R2, which can be minutes; the browser asks again rather than
+   * holding one request open that long.
+   */
+  public async whenReady(ms: number): Promise<boolean> {
+    if (this.receiving || this.failure) return this.receiving;
+    await new Promise<void>((resolvePromise) => {
+      const timer = setTimeout(() => { this.readyWaiters.delete(wake); resolvePromise(); }, ms);
+      const wake = (): void => { clearTimeout(timer); resolvePromise(); };
+      this.readyWaiters.add(wake);
+    });
+    if (this.failure) throw this.failure;
+    return this.receiving;
+  }
+
+  /**
+   * Take chunk `index`, and write whatever it completes.
+   *
+   * Chunks are taken strictly in order and one at a time. A chunk sent again
+   * because its answer was lost is recognised by its index and taken once.
+   */
+  public async push(index: number, chunk: Buffer): Promise<{ done: boolean; received: number }> {
+    const run = this.lock.then(async () => {
+      if (this.failure) throw this.failure;
+      if (!this.receiving) throw new BackupError('upload_not_ready', 'The restore is not ready for the upload yet');
+      if (index < this.nextIndex || this.finished) return { done: this.finished, received: this.position };
+      if (index !== this.nextIndex) throw new BackupError('invalid_upload_chunk', `Expected upload chunk ${this.nextIndex}`);
+      this.touch();
+      try {
+        await this.consume(chunk);
+        this.nextIndex += 1;
+        if (this.position > this.archiveSize) throw new BackupError('upload_too_large', 'More was uploaded than the archive holds');
+        if (this.next >= this.plan.length) await this.complete();
+        else if (this.position === this.archiveSize) throw new BackupError('invalid_archive', 'The archive ended before every file in it had arrived');
+      } catch (error: unknown) {
+        this.fail(error instanceof Error ? error : new Error('The upload failed'));
+        throw this.failure;
+      }
+      return { done: this.finished, received: this.position };
+    });
+    this.lock = run.catch(() => undefined);
+    return await run;
+  }
+
+  /** Give up: the restore waiting on this fails with `error`. */
+  public fail(error: Error): void {
+    if (this.failure || this.finished) return;
+    this.failure = error;
+    if (this.state.kind === 'data') this.state.sink.abort();
+    this.stopClock();
+    for (const wake of this.readyWaiters) wake();
+    this.settle?.reject(error);
+    this.onEnd();
+  }
+
+  /** @internal Called by the restore once it has planned where each entry goes. */
+  public async receive(plan: readonly PlannedEntry[], onProgress?: (progress: { completed: number; total: number }) => void, signal?: AbortSignal): Promise<void> {
+    if (this.failure) throw this.failure;
+    this.plan = [...plan].sort((left, right) => left.entry.localOffset - right.entry.localOffset);
+    this.onProgress = onProgress;
+    const parents = new Set(this.plan.map((item) => resolve(item.target, '..')));
+    await runPooled([...parents], ioConcurrency(), async (parent) => { await mkdir(parent, { recursive: true }); });
+    const settled = new Promise<void>((resolvePromise, reject) => { this.settle = { resolve: resolvePromise, reject }; });
+    signal?.addEventListener('abort', () => this.fail(new BackupError('operation_canceled', 'The operation was stopped')), { once: true });
+    if (signal?.aborted) this.fail(new BackupError('operation_canceled', 'The operation was stopped'));
+    if (this.failure) throw this.failure;
+    this.receiving = true;
+    this.touch();
+    for (const wake of this.readyWaiters) wake();
+    if (this.plan.length === 0) await this.complete();
+    return await settled;
+  }
+
+  private async consume(chunk: Buffer): Promise<void> {
+    let at = 0;
+    while (at < chunk.length && !this.finished) {
+      const absolute = this.position + at;
+      const state = this.state;
+      if (state.kind === 'seek') {
+        const item = this.plan[this.next];
+        if (!item) break;
+        if (item.entry.localOffset < absolute) throw new BackupError('unsafe_archive', `Archive entries overlap: ${item.entry.name}`);
+        const skip = Math.min(chunk.length - at, item.entry.localOffset - absolute);
+        at += skip;
+        if (absolute + skip === item.entry.localOffset) this.state = { kind: 'header', parts: [], length: 0, need: 30 };
+        continue;
+      }
+      if (state.kind === 'header') {
+        const take = Math.min(state.need - state.length, chunk.length - at);
+        state.parts.push(chunk.subarray(at, at + take));
+        state.length += take;
+        at += take;
+        if (state.length < state.need) continue;
+        const header = Buffer.concat(state.parts);
+        if (header.readUInt32LE(0) !== 0x04034b50) throw new BackupError('invalid_archive', 'The ZIP local header is corrupt');
+        const need = 30 + header.readUInt16LE(26) + header.readUInt16LE(28);
+        if (state.need < need) { state.need = need; continue; }
+        await this.startEntry();
+        continue;
+      }
+      const take = Math.min(state.remaining, chunk.length - at);
+      await state.sink.write(chunk.subarray(at, at + take));
+      state.remaining -= take;
+      at += take;
+      if (state.remaining === 0) await this.endEntry(state.sink);
+    }
+    this.position += chunk.length;
+  }
+
+  private async startEntry(): Promise<void> {
+    const item = this.plan[this.next]!;
+    const sink = item.entry.compressedSize <= STREAM_BUFFERED_ENTRY_BYTES && item.entry.uncompressedSize <= STREAM_BUFFERED_ENTRY_BYTES * 8
+      ? this.bufferedSink(item)
+      : await streamedSink(item);
+    this.state = { kind: 'data', remaining: item.entry.compressedSize, sink };
+    if (item.entry.compressedSize === 0) await this.endEntry(sink);
+  }
+
+  private async endEntry(sink: EntrySink): Promise<void> {
+    this.state = { kind: 'seek' };
+    this.next += 1;
+    await sink.close();
+  }
+
+  /** Gather the entry, then write it beside the others while the next arrive. */
+  private bufferedSink(item: PlannedEntry): EntrySink {
+    const parts: Buffer[] = [];
+    return {
+      write: async (piece) => { parts.push(Buffer.from(piece)); },
+      abort: () => undefined,
+      close: async () => {
+        const task = writeBuffered(item, Buffer.concat(parts)).then(
+          () => this.fileWritten(),
+          (error: unknown) => this.fail(error instanceof Error ? error : new Error('A file could not be written')),
+        );
+        this.pending.add(task);
+        void task.finally(() => this.pending.delete(task));
+        while (this.pending.size >= ioConcurrency() && !this.failure) await Promise.race(this.pending);
+        if (this.failure) throw this.failure;
+      },
+    };
+  }
+
+  private fileWritten(): void {
+    this.completed += 1;
+    const total = this.plan.length;
+    if (this.completed === total || this.completed % 25 === 0) this.onProgress?.({ completed: this.completed, total });
+  }
+
+  private async complete(): Promise<void> {
+    while (this.pending.size > 0) await Promise.race(this.pending);
+    if (this.failure) throw this.failure;
+    // A large entry is written in line and counted here; a buffered one is
+    // counted when its write lands.
+    this.completed = this.plan.length;
+    this.onProgress?.({ completed: this.completed, total: this.plan.length });
+    this.finished = true;
+    this.stopClock();
+    this.settle?.resolve();
+    this.onEnd();
+  }
+
+  /** A browser that stops sending is a browser that has gone. */
+  private touch(): void {
+    this.stopClock();
+    this.idle = setTimeout(() => this.fail(new BackupError('upload_abandoned', 'Nothing arrived from the browser for ten minutes, so the upload was given up')), STREAM_IDLE_MS);
+    this.idle.unref();
+  }
+
+  private stopClock(): void {
+    if (this.idle) clearTimeout(this.idle);
+    this.idle = null;
+  }
+}
+
+async function writeBuffered(item: PlannedEntry, data: Buffer): Promise<void> {
+  const { entry, target } = item;
+  let bytes: Buffer;
+  if (entry.compressedSize === 0) bytes = Buffer.alloc(0);
+  else if (entry.compression === 0) bytes = data;
+  // Bounded by what the directory says, so a small entry that inflates to
+  // gigabytes fails here instead of in the process's memory.
+  else bytes = await new Promise<Buffer>((resolvePromise, reject) => {
+    inflateRaw(data, { maxOutputLength: Math.max(1, entry.uncompressedSize) }, (error, result) => { if (error) reject(new BackupError('invalid_archive', `Archive entry size mismatch: ${entry.name}`)); else resolvePromise(result); });
+  });
+  if (bytes.length !== entry.uncompressedSize) throw new BackupError('invalid_archive', `Archive entry size mismatch: ${entry.name}`);
+  // Nothing else stands between a damaged upload and the profile: there is no
+  // copy of the archive to read again.
+  if ((crc32(bytes) >>> 0) !== entry.crc) throw new BackupError('invalid_archive', `Archive entry is damaged: ${entry.name}`);
+  await retryReadOnly(target, () => writeFile(target, bytes, { mode: 0o600 }));
+}
+
+/** Stream a large entry straight through to its file, never holding it whole. */
+async function streamedSink(item: PlannedEntry): Promise<EntrySink> {
+  const { entry, target } = item;
+  // Git's read-only objects refuse to be opened for writing; a stream cannot
+  // be retried, so the attribute is cleared first rather than after a failure.
+  await chmod(target, 0o600).catch(() => undefined);
+  const input = new PassThrough();
+  const guard = new SizeGuard(entry.uncompressedSize, entry.name);
+  const output = createWriteStream(target, { mode: 0o600 });
+  const done = entry.compression === 8 ? pipeline(input, createInflateRaw(), guard, output) : pipeline(input, guard, output);
+  done.catch(() => undefined);
+  return {
+    write: async (piece) => {
+      if (!input.write(piece)) await Promise.race([once(input, 'drain'), done]);
+    },
+    abort: () => { input.destroy(); },
+    close: async () => {
+      input.end();
+      await done;
+      if (guard.bytes !== entry.uncompressedSize) throw new BackupError('invalid_archive', `Archive entry size mismatch: ${entry.name}`);
+      if (guard.crc !== entry.crc) throw new BackupError('invalid_archive', `Archive entry is damaged: ${entry.name}`);
+    },
+  };
+}
+
+/** Count and checksum what passes, and refuse more than the directory said there would be. */
+class SizeGuard extends Transform {
+  public bytes = 0;
+  private running = 0;
+
+  public get crc(): number { return this.running >>> 0; }
+
+  public constructor(limit: number, name: string) {
+    super({
+      transform: (chunk: Buffer, _encoding, callback) => {
+        this.bytes += chunk.length;
+        this.running = crc32(chunk, this.running);
+        if (this.bytes > limit) { callback(new BackupError('invalid_archive', `Archive entry size mismatch: ${name}`)); return; }
+        callback(null, chunk);
+      },
+    });
   }
 }
 
@@ -1462,7 +1959,7 @@ function isConfigName(name: string): boolean {
  * restore. What is left has to look like a user directory, or this is not an
  * archive of one.
  */
-function readArchiveShape(entries: ZipEntry[]): { prefix: string; recognized: boolean } {
+function readArchiveShape(entries: readonly EntryInfo[]): { prefix: string; recognized: boolean } {
   // The manager's config sits beside the profile rather than inside it, so it
   // says nothing about where the profile starts.
   const names = entries.filter((entry) => !entry.directory).map((entry) => normalizeSeparators(entry.name)).filter((name) => !isConfigName(name));
