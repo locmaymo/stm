@@ -146,6 +146,32 @@ export interface StartupSettings {
 }
 
 /**
+ * Where saver mode's answer came from.
+ *
+ * `environment` is STM_SAVER, which the panel shows and cannot change;
+ * `choice` is the panel's own switch; `memory` is the default a machine with
+ * little memory gets when nobody has said anything.
+ */
+export type SaverSource = 'environment' | 'choice' | 'memory';
+
+/**
+ * Whether the manager keeps its disk and memory use to the minimum.
+ *
+ * Some hosts give a container a few gigabytes for memory and disk together,
+ * and a restore that held a profile three times over - the upload, the
+ * safety copy, the files - ran them out. Saver mode takes no local archives,
+ * and a copy in R2 stands in for the safety copy.
+ */
+export interface SaverState {
+  readonly enabled: boolean;
+  readonly source: SaverSource;
+  /** The memory this manager may use, as it measured it at startup. */
+  readonly memoryBytes: number;
+  /** Below this, saver mode is on unless somebody says otherwise. */
+  readonly thresholdBytes: number;
+}
+
+/**
  * Whether the manager keeps itself online where being unused ends a program.
  *
  * A battery saver, or the place this is running, can put the manager to sleep

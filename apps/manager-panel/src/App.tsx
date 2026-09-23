@@ -4,7 +4,7 @@ import {
   Globe2, LayoutDashboard, Maximize2, Minimize2, Moon, Package, Pencil, Plus,
   LogOut, RotateCcw, ScrollText, Search, Sun, Trash2, Upload, Users as UsersIcon, X, Rows3,
   BrainCircuit, CircleStop, Clock3, Cpu, Ellipsis, Play, QrCode as QrCodeIcon, RefreshCw, Scale, Settings2, ShieldCheck, Square,
-  Blocks, BookmarkPlus, Bug, Feather, FileCode2, LoaderCircle, Gauge, History, KeyRound, Monitor, CircleArrowUp, Star, TriangleAlert,
+  Blocks, BookmarkPlus, Bug, Feather, FileCode2, LoaderCircle, Gauge, History, KeyRound, Leaf, Monitor, CircleArrowUp, Star, TriangleAlert,
 } from 'lucide-react';
 import {
   Alert, AlertDescription, AlertTitle, AuthLayout, Badge, BrandMark, Button, buttonVariants, Card, CardAction,
@@ -33,7 +33,7 @@ import { availableUpdate, readDismissedManagerRelease, readDismissedUpdate, save
 import { readDismissedDisplaced, readDismissedRecovery, readDismissedSettings, saveDismissedDisplaced, saveDismissedRecovery, saveDismissedSettings, shouldOfferSettings, shouldShowDisplaced, shouldShowRecovery } from './settings-offer.js';
 import { apiFetch, onSessionExpired, resetSessionWatch, sessionToken, setSessionToken } from './session.js';
 import { collectCloudflareResult, framed, openReturnWindow, popupsBlocked, whenAbandoned, type CollectedResult } from './oauth.js';
-import type { AccessGatewayState, BackupManifest, CloudflareAccountProblem, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LegalReview, LogEntry, LogSourceFilter, ManagerRelease, ManagerSettingsOffer, ManagerUpdateStatus, OnlineState, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, BackupManifest, CloudflareAccountProblem, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LegalReview, LogEntry, LogSourceFilter, ManagerRelease, ManagerSettingsOffer, ManagerUpdateStatus, OnlineState, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, SaverState, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, isCloudJob, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
 import { usePoll } from './use-poll.js';
@@ -813,6 +813,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
   const backgroundJobSeen = useRef<string | null>(null);
   /** What the manager does with SillyTavern on its own way up. Null until read. */
   const [startup, setStartup] = useState<StartupSettings | null>(null);
+  const [saver, setSaver] = useState<SaverState | null>(null);
   /** Whether the manager keeps itself online, and how that is going. */
   const [online, setOnline] = useState<OnlineState | null>(null);
   const [logSource, setLogSource] = useState<LogSourceFilter>('all');
@@ -1202,9 +1203,11 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
       apiFetch('/api/v1/startup', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<{ startup: StartupSettings }> : null),
       apiFetch('/api/v1/legal', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<LegalReview> : null),
       apiFetch('/api/v1/online', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<OnlineState> : null),
-    ]).then(([versionPayload, installationPayload, profilePayload, backupPayload, startupPayload, legalPayload, onlinePayload]) => {
+      apiFetch('/api/v1/saver', { credentials: 'same-origin' }).then(async (response) => response.ok ? response.json() as Promise<{ saver: SaverState }> : null).catch(() => null),
+    ]).then(([versionPayload, installationPayload, profilePayload, backupPayload, startupPayload, legalPayload, onlinePayload, saverPayload]) => {
       if (cancelled) return;
       if (startupPayload) setStartup(startupPayload.startup);
+      if (saverPayload) setSaver(saverPayload.saver);
       if (legalPayload) setLegalReview(legalPayload);
       if (onlinePayload) setOnline(onlinePayload);
       if (versionPayload) setVersions(versionPayload.versions);
@@ -1314,6 +1317,15 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     const payload = await response.json() as { startup?: StartupSettings; error?: { message?: string } };
     if (!response.ok || !payload.startup) return fail.body(payload, t('console.startupSaveFailed'));
     setStartup(payload.startup);
+    return null;
+  };
+
+  /** Saver mode's switch. Reported back so the switch can go back. */
+  const setSaverMode = async (enabled: boolean): Promise<string | null> => {
+    const response = await apiFetch('/api/v1/saver', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ enabled }) });
+    const payload = await response.json() as { saver?: SaverState; error?: { message?: string } };
+    if (!response.ok || !payload.saver) return fail.body(payload, t('console.startupSaveFailed'));
+    setSaver(payload.saver);
     return null;
   };
 
@@ -1700,7 +1712,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
                 }}
               /></div>
               : null}
-            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} locale={preferences.locale} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} startup={startup} online={online} onSetAutoStart={setAutoStartSillyTavern} onSetKeepOnline={setKeepOnline} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} onEraseEverything={eraseEverything} /> : <ResourcePanel page={page} t={t} />}
+            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} locale={preferences.locale} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} startup={startup} saver={saver} online={online} onSetAutoStart={setAutoStartSillyTavern} onSetSaver={setSaverMode} onSetKeepOnline={setKeepOnline} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} onEraseEverything={eraseEverything} /> : <ResourcePanel page={page} t={t} />}
           </PageContainer>
           <MobileNav
             items={navigation.map(({ id, icon }) => ({ id, icon, href: `#${id}`, label: t(`nav.${id}`) }))}
@@ -3518,6 +3530,9 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   const [storage, setStorage] = useState<StorageDurabilityReport | null>(null);
   const [backupSchedule, setBackupSchedule] = useState<LocalBackupSchedule | null>(null);
   const [scheduleSaving, setScheduleSaving] = useState(false);
+  // Saver mode takes no local archives, so the buttons that would write one
+  // are put away and the card says why.
+  const [saving, setSaving] = useState(false);
   const [r2Snapshots, setR2Snapshots] = useState<R2SnapshotSummary[]>([]);
   const [r2Busy, setR2Busy] = useState<string | null>(null);
   const [settingsOffer, setSettingsOffer] = useState<ManagerSettingsOffer | null>(null);
@@ -3570,7 +3585,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   const failed = (title: string) => toast({ title, tone: 'destructive' });
   const jobStep = (job: Job) => translateStep(job.step, catalog, job.stepCode, job.stepParams);
   const refresh = async () => {
-    const [profileResponse, backupResponse, r2Response, snapshotResponse, scheduleResponse] = await Promise.all([apiFetch('/api/v1/profiles', { credentials: 'same-origin' }), apiFetch('/api/v1/backups', { credentials: 'same-origin' }), apiFetch('/api/v1/r2', { credentials: 'same-origin' }), apiFetch('/api/v1/r2/snapshots', { credentials: 'same-origin' }).catch(() => null), apiFetch('/api/v1/backups/schedule', { credentials: 'same-origin' }).catch(() => null)]);
+    const [profileResponse, backupResponse, r2Response, snapshotResponse, scheduleResponse, saverResponse] = await Promise.all([apiFetch('/api/v1/profiles', { credentials: 'same-origin' }), apiFetch('/api/v1/backups', { credentials: 'same-origin' }), apiFetch('/api/v1/r2', { credentials: 'same-origin' }), apiFetch('/api/v1/r2/snapshots', { credentials: 'same-origin' }).catch(() => null), apiFetch('/api/v1/backups/schedule', { credentials: 'same-origin' }).catch(() => null), apiFetch('/api/v1/saver', { credentials: 'same-origin' }).catch(() => null)]);
     // Listing recovery points needs the bucket, so it is the one call here that
     // fails when R2 is off or unreachable. That must not blank the page.
     if (snapshotResponse?.ok) {
@@ -3585,6 +3600,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       if (payload.storage) setStorage(payload.storage);
     }
     if (scheduleResponse?.ok) setBackupSchedule((await scheduleResponse.json() as { schedule: LocalBackupSchedule }).schedule);
+    if (saverResponse?.ok) setSaving((await saverResponse.json() as { saver: SaverState }).saver.enabled);
   };
   useEffect(() => { void refresh(); }, []);
 
@@ -3728,7 +3744,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       } catch (error: unknown) {
         if (cancelled) return;
         if (error instanceof StoppedError) done(t(kind === 'restore' ? 'console.restoreStopped' : 'console.backupStopped'));
-        else if (error instanceof RollbackFailedError) setMixedProfile(t('console.restoreStoppedPartway'));
+        else if (error instanceof RollbackFailedError) setMixedProfile(t(saving ? 'console.restoreStoppedPartwaySaver' : 'console.restoreStoppedPartway'));
         else failed(error instanceof Error ? error.message : t(kind === 'r2Fetch' ? 'console.r2FetchFailed' : kind === 'r2Upload' ? 'console.r2UploadFailed' : 'console.backupRestoreFailed'));
       } finally {
         if (!cancelled) { setBusy(null); setOperationProgress(null); setRunningJobId(null); }
@@ -3893,7 +3909,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       // stop is a result to glance at. Only a stop that could not be put back
       // leaves the profile mixed, and that stays on the page.
       if (error instanceof StoppedError) { done(t('console.restoreStopped')); await refresh(); }
-      else if (error instanceof RollbackFailedError) { setMixedProfile(t('console.restoreStoppedPartway')); await refresh(); }
+      else if (error instanceof RollbackFailedError) { setMixedProfile(t(saving ? 'console.restoreStoppedPartwaySaver' : 'console.restoreStoppedPartway')); await refresh(); }
       else failed(error instanceof Error ? error.message : t('console.backupRestoreFailed'));
     } finally { setBusyAction(null); setOperationProgress(null); setRunningJobId(null); }
   };
@@ -4332,7 +4348,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       <CardContent className="grid gap-4">
         {/* Here rather than in the R2 settings: it runs whether or not there is
             a bucket, so it has to be reachable without one. */}
-        {backupSchedule ? <div>
+        {saving ? <Alert><Leaf /><AlertDescription>{t('console.saverLocalOff')}</AlertDescription></Alert> : backupSchedule ? <div>
           {/* On or off is a switch, the way every other on-or-off in the console
               is; how often is a separate question, asked only while it is on. */}
           <DetailRow label={t('console.localScheduleLabel')} {...(backupSchedule.intervalMinutes === 0 ? { hint: t('console.localScheduleOffHint') } : {})}>
@@ -4368,8 +4384,10 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
                 {BACKUP_KINDS.map((kind) => <SelectItem key={kind} value={kind}>{t(BACKUP_KIND_LABEL[kind])}</SelectItem>)}
               </SelectContent>
             </Select>
-            <Button size="sm" onClick={() => void startBackup('scheduled').then((failure) => { if (failure) failed(failure); })} disabled={busy || activeProfileId === null}><Archive />{t('dashboard.backupNow')}</Button>
-            <Button variant="outline" size="sm" onClick={() => setBackupOpen(true)} disabled={busy || activeProfileId === null}><BookmarkPlus />{t('console.manualBackup')}</Button>
+            {saving ? null : <>
+              <Button size="sm" onClick={() => void startBackup('scheduled').then((failure) => { if (failure) failed(failure); })} disabled={busy || activeProfileId === null}><Archive />{t('dashboard.backupNow')}</Button>
+              <Button variant="outline" size="sm" onClick={() => setBackupOpen(true)} disabled={busy || activeProfileId === null}><BookmarkPlus />{t('console.manualBackup')}</Button>
+            </>}
             <label className={cn(buttonVariants({ variant: 'outline', size: 'sm' }), 'cursor-pointer')}>
               <Upload aria-hidden="true" />{t('console.importZip')}
               <input type="file" accept=".zip,application/zip" className="sr-only" disabled={busy} onChange={(event) => void inspectUpload(event.target.files?.[0])} />
@@ -5854,7 +5872,7 @@ function configFileName(path: string): string {
  * version installed. This belongs to the manager and outlives every version it
  * installs - which is also why it is not in the file the Edit button opens.
  */
-function StartupCard({ t, startup, onSetAutoStart }: { t: Translate; startup: StartupSettings | null; onSetAutoStart: (enabled: boolean) => Promise<string | null> }) {
+function StartupCard({ t, startup, saver, onSetAutoStart, onSetSaver }: { t: Translate; startup: StartupSettings | null; saver: SaverState | null; onSetAutoStart: (enabled: boolean) => Promise<string | null>; onSetSaver: (enabled: boolean) => Promise<string | null> }) {
   // What the switch shows while the answer is in flight, so it moves under the
   // press rather than a second later.
   const [pending, setPending] = useState<boolean | null>(null);
@@ -5879,8 +5897,42 @@ function StartupCard({ t, startup, onSetAutoStart }: { t: Translate; startup: St
           ? <Skeleton className="h-5 w-9" />
           : <Switch checked={checked} disabled={busy} onCheckedChange={(next) => void save(next)} aria-label={t('console.autoStartSillyTavern')} />}
       </DetailRow>
+      <SaverRow t={t} saver={saver} onSetSaver={onSetSaver} />
     </CardContent>
   </Card>;
+}
+
+/**
+ * Saver mode, beside the other thing the manager decides on its way up.
+ *
+ * The hint says where the answer came from, because two of the three are not
+ * this switch: STM_SAVER, which the switch cannot move, and the machine's
+ * memory, which decided it before anybody was asked.
+ */
+function SaverRow({ t, saver, onSetSaver }: { t: Translate; saver: SaverState | null; onSetSaver: (enabled: boolean) => Promise<string | null> }) {
+  const [pending, setPending] = useState<boolean | null>(null);
+  const [busy, setBusy] = useState(false);
+  const { toast } = useToast();
+  const checked = pending ?? saver?.enabled ?? null;
+  const save = async (next: boolean) => {
+    setPending(next); setBusy(true);
+    try {
+      const failure = await onSetSaver(next);
+      if (failure) { toast({ title: failure, tone: 'destructive' }); return; }
+      toast({ title: t(next ? 'console.saverTurnedOn' : 'console.saverTurnedOff'), tone: 'success' });
+    } finally { setPending(null); setBusy(false); }
+  };
+  const memory = saver ? `${(saver.memoryBytes / 1024 ** 3).toFixed(1)} GiB` : '';
+  const source = saver?.source === 'environment'
+    ? t('console.saverFromEnvironment')
+    : saver?.source === 'memory' && saver.enabled
+      ? t('console.saverFromMemory', { memory })
+      : null;
+  return <DetailRow label={t('console.saverMode')} hint={source ? `${t('console.saverHint')} ${source}` : t('console.saverHint')}>
+    {checked === null
+      ? <Skeleton className="h-5 w-9" />
+      : <Switch checked={checked} disabled={busy || saver?.source === 'environment'} onCheckedChange={(next) => void save(next)} aria-label={t('console.saverMode')} />}
+  </DetailRow>;
 }
 
 /** The intervals offered; anything else somebody sets is shown as it is. */
@@ -6056,7 +6108,7 @@ interface ActionFailure {
   readonly text: string;
 }
 
-function ConfigPage({ t, locale, config, security, ports, managerTunnel, process, catalog, startup, online, onSetAutoStart, onSetKeepOnline, onSetManagerTunnel, onPortChange, onConfigUpdate, onConfigReset, onChangeManagerPassword, onSetPassword, onSignOut, onSignOutDevices, onEraseEverything }: { t: Translate; locale: LocaleCode; config: ConfigDocument | null; security: AccessGatewayState; ports: PortSettings | null; managerTunnel: TunnelState; process: ProcessState; catalog: Record<string, unknown>; startup: StartupSettings | null; online: OnlineState | null; onSetAutoStart: (enabled: boolean) => Promise<string | null>; onSetKeepOnline: (enabled: boolean, minutes: number) => Promise<string | null>; onSetManagerTunnel: (on: boolean) => Promise<ActionFailure | null>; onPortChange: (port: number) => Promise<string | null>; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onConfigReset: () => Promise<string | null>; onChangeManagerPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSignOut: () => Promise<void>; onSignOutDevices: () => Promise<string | null>; onEraseEverything: (password: string) => Promise<string | null> }) {
+function ConfigPage({ t, locale, config, security, ports, managerTunnel, process, catalog, startup, saver, online, onSetAutoStart, onSetSaver, onSetKeepOnline, onSetManagerTunnel, onPortChange, onConfigUpdate, onConfigReset, onChangeManagerPassword, onSetPassword, onSignOut, onSignOutDevices, onEraseEverything }: { t: Translate; locale: LocaleCode; config: ConfigDocument | null; security: AccessGatewayState; ports: PortSettings | null; managerTunnel: TunnelState; process: ProcessState; catalog: Record<string, unknown>; startup: StartupSettings | null; saver: SaverState | null; online: OnlineState | null; onSetAutoStart: (enabled: boolean) => Promise<string | null>; onSetSaver: (enabled: boolean) => Promise<string | null>; onSetKeepOnline: (enabled: boolean, minutes: number) => Promise<string | null>; onSetManagerTunnel: (on: boolean) => Promise<ActionFailure | null>; onPortChange: (port: number) => Promise<string | null>; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onConfigReset: () => Promise<string | null>; onChangeManagerPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSignOut: () => Promise<void>; onSignOutDevices: () => Promise<string | null>; onEraseEverything: (password: string) => Promise<string | null> }) {
   const [form, setForm] = useState<ConfigSettingsInput>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -6276,7 +6328,7 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
       cancelLabel={t('common.cancel')}
       onConfirm={() => applyManagerTunnel(false)}
     />
-    <StartupCard t={t} startup={startup} onSetAutoStart={onSetAutoStart} />
+    <StartupCard t={t} startup={startup} saver={saver} onSetAutoStart={onSetAutoStart} onSetSaver={onSetSaver} />
     {/* Under what the manager does when it opens, because this is what it
         does for the rest of the time it is open. */}
     <KeepOnlineCard t={t} locale={locale} online={online} onSetKeepOnline={onSetKeepOnline} />

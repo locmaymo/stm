@@ -164,6 +164,15 @@ export class BackupStore {
    * for both.
    */
   private readonly inUse = new Map<string, number>();
+  /**
+   * Saver mode: no archive of the profile is written on this machine.
+   *
+   * A full archive is the profile a second time on the disk, which is what a
+   * host with a few gigabytes for everything cannot afford. The library is
+   * still read, restored from and cleared; only writing to it stops. Set by
+   * the manager, which owns the switch; see `saver.ts`.
+   */
+  public saving = false;
 
   public constructor(options: BackupStoreOptions) {
     this.paths = options.paths;
@@ -299,6 +308,7 @@ export class BackupStore {
   }
 
   public async create(profile: Profile, options: CreateBackupOptions = {}): Promise<BackupManifest> {
+    if (this.saving) throw new BackupError('saver_mode', 'Local backups are off while saver mode is on');
     const release = await this.acquireOperation();
     try {
       return await this.createUnlocked(profile, options);
