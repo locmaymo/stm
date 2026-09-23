@@ -207,3 +207,26 @@ test('in saver mode an uploaded zip goes straight into the profile and is never 
   assert.deepEqual(await readdir(paths.archives).catch(() => []), []);
   assert.deepEqual((await readdir(paths.tmp).catch(() => [] as string[])).filter((name) => name.endsWith('.zip') || name.endsWith('.part')), []);
 });
+
+test('a first run put off at setup waits for the next sign-in, and only that one', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-deferred-first-run-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const manager = await startManagerServer({ host: '127.0.0.1', port: 0, paths, env: {}, secureCookies: false, accessPort: 0, logger: () => undefined });
+  t.after(() => manager.close());
+  const address = manager.server.address();
+  assert.ok(address && typeof address !== 'string');
+  const base = `http://127.0.0.1:${address.port}`;
+  const setup = await fetch(`${base}/api/v1/setup/password`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'correct horse battery staple', termsAccepted: true, telemetryAccepted: true, deferFirstRun: true }) });
+  assert.equal(setup.status, 201);
+  assert.equal((await new StateStore({ paths }).load()).firstRunDeferred, true);
+  const signIn = async (): Promise<{ firstRun?: boolean }> => {
+    const response = await fetch(`${base}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'correct horse battery staple' }) });
+    assert.equal(response.status, 200);
+    return await response.json() as { firstRun?: boolean };
+  };
+  // The sign-in at the link is the first run.
+  assert.equal((await signIn()).firstRun, true);
+  assert.equal((await new StateStore({ paths }).load()).firstRunDeferred, false);
+  // And the one after it is an ordinary sign-in.
+  assert.equal((await signIn()).firstRun, undefined);
+});

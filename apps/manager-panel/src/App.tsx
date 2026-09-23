@@ -29,7 +29,7 @@ import { failures, logCatalog, translator, type Fail, type MessageKey, type Tran
 import { browserEnvironment, browserStorage, readPreferences, savePreferences, type LocaleCode, type Preferences } from './preferences.js';
 import { authErrorKey } from './auth-error.js';
 import { DEFAULT_SILLYTAVERN_PORT, portRefusal } from './ports.js';
-import { isThisMachine, readTunnelOfferDeclined, saveTunnelOfferDeclined, shouldOfferManagerTunnel } from './hosting.js';
+import { isThisMachine, readAddressOfferAnswered, readOwnLinkWanted, saveAddressOfferAnswered, saveOwnLinkWanted, shouldOfferPlatformAddress } from './hosting.js';
 import { availableUpdate, readDismissedManagerRelease, readDismissedUpdate, saveDismissedManagerRelease, saveDismissedUpdate, shouldShowManagerRelease } from './updates.js';
 import { readDismissedDisplaced, readDismissedRecovery, readDismissedSettings, saveDismissedDisplaced, saveDismissedRecovery, saveDismissedSettings, shouldOfferSettings, shouldShowDisplaced, shouldShowRecovery } from './settings-offer.js';
 import { apiFetch, onSessionExpired, resetSessionWatch, sessionToken, setSessionToken } from './session.js';
@@ -328,6 +328,24 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, refusal, onPr
   const [nudges, setNudges] = useState(0);
   const termsId = useId();
   const setup = mode === 'setup';
+  /*
+   * Whether to offer the platform's own address first; see
+   * PlatformAddressOffer. Decided once, as the screen opens.
+   */
+  const [addressOffer, setAddressOffer] = useState(() => setup && shouldOfferPlatformAddress({ hostname: window.location.hostname, framed: framed(), answered: readAddressOfferAnswered(browserStorage()) }));
+  /*
+   * Set up, and waiting on the console's own link rather than going in.
+   *
+   * Holds the session the setup opened, which is what turns the link on. The
+   * reader leaves for the link from here; nothing is installed until they sign
+   * in there - see `firstRunDeferred` on the server.
+   */
+  const [linkStage, setLinkStage] = useState<string | null>(null);
+  const answerAddressOffer = (ownLink: boolean) => {
+    saveAddressOfferAnswered(browserStorage());
+    if (ownLink) saveOwnLinkWanted(browserStorage(), true);
+    setAddressOffer(false);
+  };
   const fail = failures(preferences.locale);
   // Shown once the second field stops being a prefix of the first, rather than
   // the moment the two differ - a mismatch warning under a half-typed password
@@ -360,20 +378,26 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, refusal, onPr
   const submit = async () => {
     if (!consented()) return;
     setBusy(true); setError(null);
+    // Asked for a link of its own before the password: the first run waits
+    // for the sign-in at that link.
+    const ownLink = setup && readOwnLinkWanted(browserStorage());
     try {
       // Not `apiFetch`: see the note on the session probe above.
       const response = await fetch(setup ? '/api/v1/setup/password' : '/api/v1/auth/login', {
         method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(setup ? { password, termsAccepted: accepted, telemetryAccepted: accepted } : { password }),
+        body: JSON.stringify(setup ? { password, termsAccepted: accepted, telemetryAccepted: accepted, ...(ownLink ? { deferFirstRun: true } : {}) } : { password }),
       });
-      const payload = await response.json() as { session?: { csrfToken: string }; token?: string; error?: { code?: string; message?: string } };
+      const payload = await response.json() as { session?: { csrfToken: string }; token?: string; firstRun?: boolean; error?: { code?: string; message?: string } };
       if (!response.ok || !payload.session) {
         const key = authErrorKey(payload.error?.code);
         setError(key ? t(key) : fail.body(payload, t('setup.authError')));
         return;
       }
       if (payload.token) setSessionToken(payload.token);
-      onSignedIn(payload.session.csrfToken, setup);
+      if (ownLink) { saveOwnLinkWanted(browserStorage(), false); setLinkStage(payload.session.csrfToken); return; }
+      // A sign-in that takes a first run put off at setup is, to this screen,
+      // the end of a setup: the first-run card follows it.
+      onSignedIn(payload.session.csrfToken, setup || payload.firstRun === true);
     } catch { setError(t('setup.connectionError')); } finally { setBusy(false); }
   };
 
@@ -505,8 +529,10 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, refusal, onPr
 
   return (
     <AuthLayout
-      title={setup ? t('setup.title') : t('setup.loginTitle')}
-      subtitle={setup ? t('setup.subtitle') : t('setup.loginSubtitle')}
+      title={linkStage ? t('setup.ownLinkTitle') : setup ? t('setup.title') : t('setup.loginTitle')}
+      // Nothing under the title while the address is offered: the card is the
+      // one thing to read.
+      subtitle={linkStage ? t('setup.ownLinkBody') : addressOffer ? null : setup ? t('setup.subtitle') : t('setup.loginSubtitle')}
       // The credit is on both screens. On the first run it answers "what is
       // this and who wrote it?" before anything is typed into it; afterwards
       // it is the fastest way to read off the version a fault report needs.
@@ -521,7 +547,7 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, refusal, onPr
         </Button>
       </>}
     >
-      <Card className="rounded-2xl">
+      {linkStage ? <OwnLinkStage t={t} csrfToken={linkStage} fail={fail} /> : addressOffer ? <PlatformAddressOffer t={t} address={`${window.location.origin}/`} onOpen={() => answerAddressOffer(false)} onOwnLink={() => answerAddressOffer(true)} onSkip={() => answerAddressOffer(false)} /> : <Card className="rounded-2xl">
         <CardContent className="p-6">
           <form className="grid gap-5" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
             {signedOut ? <Alert><Clock3 /><AlertDescription>{t('setup.signedOut')}</AlertDescription></Alert> : null}
@@ -570,7 +596,7 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, refusal, onPr
             {!setup ? cloudflareWay : null}
           </form>
         </CardContent>
-      </Card>
+      </Card>}
       <LegalDialog
         t={t}
         locale={preferences.locale}
@@ -581,6 +607,117 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, refusal, onPr
       />
     </AuthLayout>
   );
+}
+
+/**
+ * Before the password: open this console at the address it is already at.
+ *
+ * A studio shows a new app inside its own page, and the address in that frame
+ * - a `run.app` address, say - already reaches this console. Opened in a tab
+ * of its own it is the console without the studio around it, with nothing to
+ * set up and nothing to keep running, which is why it is the button the eye
+ * lands on. A link of the console's own is the second choice: one fixed
+ * address through Cloudflare, opened once there is a password to guard it.
+ *
+ * The address opens through an ordinary link, which no browser treats as a
+ * pop-up. Whatever is chosen, this screen carries on to the password, so the
+ * frame left behind is still a working console.
+ */
+function PlatformAddressOffer({ t, address, onOpen, onOwnLink, onSkip }: { t: Translate; address: string; onOpen: () => void; onOwnLink: () => void; onSkip: () => void }) {
+  return <Card className="rounded-2xl">
+    <CardContent className="grid gap-4 p-6">
+      <div className="grid gap-1">
+        <h2 className="text-base font-semibold">{t('setup.addressFound')}</h2>
+        <p className="text-sm text-muted-foreground">{t('setup.addressHint')}</p>
+      </div>
+      <div className="flex items-start gap-2 rounded-lg border px-3 py-2.5">
+        <Globe2 className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+        <span className="min-w-0 font-mono text-xs leading-relaxed [overflow-wrap:anywhere]">{bareHost(address)}</span>
+      </div>
+      <Button asChild size="lg" className="w-full">
+        <a href={address} target="_blank" rel="noopener noreferrer" onClick={onOpen}><ArrowUpRight />{t('setup.addressOpen')}</a>
+      </Button>
+      {/* Quieter than the button above on purpose: no border, no brand. */}
+      <div className="grid gap-1">
+        <Button type="button" variant="ghost" className="w-full text-muted-foreground" onClick={onOwnLink}><Globe2 />{t('setup.addressOwnLink')}</Button>
+        <Button type="button" variant="ghost" className="w-full text-muted-foreground" onClick={onSkip}>{t('setup.addressSkip')}</Button>
+      </div>
+    </CardContent>
+  </Card>;
+}
+
+/**
+ * After the password, for a reader who asked for a link of the console's own:
+ * the link, and nothing else.
+ *
+ * The console is not opened here. The reader is about to leave for the link,
+ * and everything a first run starts - SillyTavern's installation, the offer
+ * to connect a Cloudflare account - belongs where they are going, so it waits
+ * for them to sign in there. This screen turns the link on, says so while
+ * cloudflared comes up, and hands the address over.
+ */
+function OwnLinkStage({ t, csrfToken, fail }: { t: Translate; csrfToken: string; fail: Fail }) {
+  const [tunnel, setTunnel] = useState<TunnelState | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    let timer = 0;
+    // Until the address is announced, or something says it will not be.
+    const watch = async (): Promise<void> => {
+      try {
+        const response = await apiFetch('/api/v1/manager-tunnel', { credentials: 'same-origin' });
+        if (response.ok) {
+          const state = await response.json() as TunnelState;
+          if (cancelled) return;
+          setTunnel(state);
+          if (publicAddress(state)) return;
+          if (state.status === 'error') { setError(state.error ?? t('setup.ownLinkFailed')); return; }
+        }
+      } catch {
+        // Asked again below; a moment without an answer is not a failure.
+      }
+      if (!cancelled) timer = window.setTimeout(() => void watch(), 1500);
+    };
+    setError(null);
+    void (async () => {
+      try {
+        const response = await apiFetch('/api/v1/manager-tunnel', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ mode: 'quick' }) });
+        const payload: unknown = await response.json();
+        if (cancelled) return;
+        if (!response.ok) { setError(fail.body(payload, t('setup.ownLinkFailed'))); return; }
+        setTunnel(payload as TunnelState);
+        void watch();
+      } catch { if (!cancelled) setError(t('setup.ownLinkFailed')); }
+    })();
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [attempt]);
+  const address = tunnel ? publicAddress(tunnel) : null;
+  // The page's own title and subtitle say what this is; the card holds the link.
+  return <Card className="rounded-2xl">
+    <CardContent className="grid gap-5 p-6">
+      {error
+        ? <>
+          <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>
+          <Button type="button" variant="outline" className="w-full" onClick={() => setAttempt((count) => count + 1)}><RefreshCw />{t('setup.ownLinkRetry')}</Button>
+        </>
+        : address
+          ? <>
+            <div className="flex items-start gap-2 rounded-lg border px-3 py-2.5">
+              <span className="mt-0.5 shrink-0" style={{ color: CLOUDFLARE_ORANGE }} aria-hidden="true"><CloudflareMark size={14} /></span>
+              <span className="min-w-0 font-mono text-xs leading-relaxed [overflow-wrap:anywhere]">{bareHost(address)}</span>
+            </div>
+            <Button asChild size="lg" className="w-full">
+              <a href={address} target="_blank" rel="noopener noreferrer"><ArrowUpRight />{t('setup.ownLinkGo')}</a>
+            </Button>
+            <p className="text-xs text-muted-foreground">{t('setup.ownLinkNext')}</p>
+          </>
+          : <div className="grid gap-2" role="status">
+            <span className="thinking text-sm">{t('setup.ownLinkOpening')}</span>
+            <TaskBar />
+          </div>}
+    </CardContent>
+  </Card>;
 }
 
 /** The documents the consent sentence names, in the order it names them. */
@@ -898,7 +1035,6 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
   const [legalFailure, setLegalFailure] = useState<string | null>(null);
   const [reviewLegalOpen, setReviewLegalOpen] = useState(false);
   const [reviewLegalDocument, setReviewLegalDocument] = useState<LegalDocumentId>('terms');
-  const [tunnelOfferOpen, setTunnelOfferOpen] = useState(false);
   const [accessSecurity, setAccessSecurity] = useState<AccessGatewayState>({ status: 'stopped', host: null, port: 8001, lan: false, passwordConfigured: false, passcode: false, sessions: 0, error: null });
   const t = translator(preferences.locale);
   const catalog = logCatalog(preferences.locale);
@@ -924,22 +1060,6 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     return () => { cancelled = true; };
   }, [activeInstallationId]);
 
-  /*
-   * Offer the console's own link once, on a platform where its address may not
-   * be one that works.
-   *
-   * Waits for the first answer about the tunnel rather than asking on the
-   * strength of the state's initial value, which says "off" before anything has
-   * been read and would put the dialog in front of somebody who already has it
-   * open. Once asked, it is not asked again: closing it remembers that.
-   */
-  const managerTunnelMode = managerTunnelState.mode;
-  const [tunnelAnswered, setTunnelAnswered] = useState(false);
-  useEffect(() => {
-    if (!tunnelAnswered) return;
-    if (!shouldOfferManagerTunnel({ hostname: window.location.hostname, tunnelWanted: managerTunnelMode !== 'off', declined: readTunnelOfferDeclined(browserStorage()) })) return;
-    setTunnelOfferOpen(true);
-  }, [tunnelAnswered, managerTunnelMode]);
 
   // Not tied to an installation: which ports this manager holds is true before
   // anything is installed, and the page that shows them says so either way.
@@ -1098,7 +1218,6 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     setProcessState(status.process);
     setTunnelState(status.tunnel);
     setManagerTunnelState(status.managerTunnel);
-    setTunnelAnswered(true);
     setAccessSecurity(status.security);
     // A restore moves SillyTavern's port, and the page that shows it used to
     // ask once as it loaded - so the console said 8002 over a SillyTavern on
@@ -1724,14 +1843,6 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
         </SidebarInset>
         <LogsSheet {...logProps} open={logsExpanded} onClose={() => setLogsExpanded(false)} />
       </SidebarProvider>
-      <ManagerTunnelOffer
-        t={t}
-        open={tunnelOfferOpen}
-        hostname={window.location.hostname}
-        tunnel={managerTunnelState}
-        onDecline={() => { setTunnelOfferOpen(false); saveTunnelOfferDeclined(browserStorage()); }}
-        onAccept={setManagerTunnel}
-      />
       {/* The full text, for the card above that asks about it. Mounted here
           rather than inside the card so that the documents open over whichever
           page the reader is on, and separate from the Settings page's own copy
@@ -1916,93 +2027,6 @@ function releaseDate(iso: string, locale: LocaleCode): string {
   } catch {
     return iso;
   }
-}
-
-/**
- * The offer to open the console's own link, on a platform where its address
- * may not be one that works.
- *
- * It stays open after the switch is thrown, because the address does not exist
- * yet at that moment - cloudflared takes a few seconds to announce it - and
- * the whole point of the offer is to hand the reader that address. So the
- * dialog becomes the place it arrives, with a button that moves there.
- */
-function ManagerTunnelOffer({ t, open, hostname, tunnel, onDecline, onAccept }: { t: Translate; open: boolean; hostname: string; tunnel: TunnelState; onDecline: () => void; onAccept: (on: boolean) => Promise<ActionFailure | null> }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const accept = async () => {
-    setBusy(true); setError(null);
-    try { setError((await onAccept(true))?.text ?? null); } finally { setBusy(false); }
-  };
-  // The address worth handing over, which is not the tunnel's own while the
-  // fixed one in front of it is still being put there.
-  const offered = publicAddress(tunnel);
-  // The link is on its way: cloudflared has been asked but has not announced
-  // an address yet, or the fixed one in front of it is still being deployed.
-  const opening = !offered && tunnel.mode !== 'off';
-  return <Dialog open={open} onOpenChange={(next) => { if (!next) onDecline(); }}>
-    <DialogContent className="sm:max-w-md">
-      <DialogHeader className="flex-row items-start gap-3">
-        <span className="mt-0.5 grid size-9 shrink-0 place-items-center rounded-lg" style={{ color: CLOUDFLARE_ORANGE, backgroundColor: `color-mix(in srgb, ${CLOUDFLARE_ORANGE} 14%, transparent)` }} aria-hidden="true">
-          <CloudflareMark size={18} />
-        </span>
-        <div className="grid gap-1.5">
-          <DialogTitle>{t('console.tunnelOfferTitle')}</DialogTitle>
-          <DialogDescription>{t('console.tunnelOfferBody')}</DialogDescription>
-        </div>
-      </DialogHeader>
-      <DialogBody className="grid gap-4">
-        {/* The two addresses, one under the other, because the whole offer is
-            the difference between them. Written as prose this was a hostname
-            sixty characters long wrapped across three lines in the middle of a
-            sentence, where it could not be read as an address at all. */}
-        <div className="grid overflow-hidden rounded-lg border">
-          <div className="grid gap-1.5 px-3 py-2.5">
-            <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">{t('console.tunnelOfferNow')}</span>
-            <span className="flex items-start gap-2">
-              <Globe2 className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-              <span className="min-w-0 font-mono text-xs leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">{hostname}</span>
-            </span>
-          </div>
-          <div className="relative grid gap-1.5 border-t bg-muted/40 px-3 py-2.5">
-            {/* Sat on the divider, so the card reads as one address becoming
-                another rather than as two unrelated rows. */}
-            <span className="absolute -top-3 left-1/2 grid size-6 -translate-x-1/2 place-items-center rounded-full border bg-popover text-muted-foreground" aria-hidden="true">
-              <ArrowDown className="size-3" />
-            </span>
-            <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">{t('console.tunnelOfferOwn')}</span>
-            {opening
-              ? <span className="grid gap-2" role="status"><span className="thinking text-sm">{t('console.tunnelOfferOpening')}</span><TaskBar /></span>
-              : <span className="flex items-start gap-2">
-                <span className="mt-0.5 shrink-0" style={{ color: CLOUDFLARE_ORANGE }} aria-hidden="true"><CloudflareMark size={14} /></span>
-                {offered
-                  ? <a href={offered} target="_blank" rel="noopener noreferrer" className="min-w-0 font-mono text-xs leading-relaxed font-medium underline-offset-4 [overflow-wrap:anywhere] hover:underline">{bareHost(offered)}</a>
-                  : <span className="text-sm font-medium">{t('console.tunnelOfferOwnPending')}</span>}
-              </span>}
-          </div>
-        </div>
-        {/* Two reasons, one line each with a mark to sort them by. They were
-            one grey paragraph carrying both, which is where a reader skims. */}
-        <ul className="grid gap-2.5">
-          <li className="flex items-start gap-2.5 text-sm text-muted-foreground">
-            <KeyRound className="mt-0.5 size-4 shrink-0 opacity-70" aria-hidden="true" />
-            <span>{t('console.tunnelOfferReasonSignIn')}</span>
-          </li>
-          <li className="flex items-start gap-2.5 text-sm text-muted-foreground">
-            <ShieldCheck className="mt-0.5 size-4 shrink-0 opacity-70" aria-hidden="true" />
-            <span>{t('console.tunnelOfferReasonPassword')}</span>
-          </li>
-        </ul>
-        {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
-      </DialogBody>
-      <DialogFooter>
-        <Button variant="outline" onClick={onDecline}>{tunnel.url ? t('common.close') : t('console.tunnelOfferDecline')}</Button>
-        {offered
-          ? <Button asChild><a href={offered} target="_blank" rel="noopener noreferrer"><ArrowUpRight />{t('console.tunnelOfferOpen')}</a></Button>
-          : <Button disabled={busy || tunnel.mode !== 'off'} onClick={() => void accept()}>{busy ? <LoaderCircle className="animate-spin" /> : null}{t('console.tunnelOfferAccept')}</Button>}
-      </DialogFooter>
-    </DialogContent>
-  </Dialog>;
 }
 
 function AppSidebar({ page, navigate, t }: { page: PageId; navigate: Navigate; t: Translate }) {
@@ -3514,6 +3538,9 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   const [selectedPreview, setSelectedPreview] = useState<RestorePreview | null>(null);
   /** The reader has been shown that this archive is not a profile and said to go ahead. */
   const [restoreAnyway, setRestoreAnyway] = useState(false);
+  // Leave out what SillyTavern can do without; asked in saver mode, and
+  // required when the restore does not fit otherwise.
+  const [restoreTrim, setRestoreTrim] = useState(false);
   const [operationProgress, setOperationProgress] = useState<{ percent: number; step: string } | null>(null);
   const [uploading, setUploading] = useState(false);
   // What the Stop button acts on: a server job by id, or the upload in flight.
@@ -3889,7 +3916,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       setRestoreMode('replace');
       // Said once, for this archive. An archive that has to be insisted on is
       // asked about again the next time it is opened.
-      setRestoreAnyway(false);
+      setRestoreAnyway(false); setRestoreTrim(false);
       setSelectedBackup(backup); setSelectedPreview(payload);
       return true;
     } catch { failed(t('console.backupPreviewFailed')); return false; }
@@ -3898,7 +3925,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
     // A zip nobody went on to restore is nothing to the server but its
     // directory in memory; say so rather than leave it to time out.
     if (streaming) void apiFetch(`/api/v1/backups/stream?uploadId=${encodeURIComponent(streaming.uploadId)}`, { method: 'DELETE', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } }).catch(() => undefined);
-    setStreaming(null); setSelectedBackup(null); setSelectedPreview(null); setRestoreAnyway(false);
+    setStreaming(null); setRestorePoint(null); setSelectedBackup(null); setSelectedPreview(null); setRestoreAnyway(false); setRestoreTrim(false);
   };
   /**
    * Saver mode's upload: look inside the zip without sending it.
@@ -3937,13 +3964,14 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
     if (!streaming) return;
     const { file, uploadId } = streaming;
     const force = restoreAnyway;
-    setStreaming(null); setSelectedPreview(null); setRestoreAnyway(false);
+    const trim = restoreTrim;
+    setStreaming(null); setSelectedPreview(null); setRestoreAnyway(false); setRestoreTrim(false);
     setBusyAction(t('console.restore')); setOperationProgress(null); setMixedProfile(null); setUploading(true);
     const controller = new AbortController();
     uploadAbort.current = controller;
     let jobId: string | null = null;
     try {
-      const response = await apiFetch('/api/v1/backups/stream/restore', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ uploadId, mode: restoreMode, ...(force ? { force: true } : {}) }) });
+      const response = await apiFetch('/api/v1/backups/stream/restore', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ uploadId, mode: restoreMode, ...(force ? { force: true } : {}), ...(trim ? { trim: true } : {}) }) });
       const payload = await response.json() as { jobId?: string; error?: { message?: string } };
       if (!response.ok || !payload.jobId) { failed(fail.body(payload, t('console.backupRestoreFailed'))); return; }
       jobId = payload.jobId;
@@ -3999,14 +4027,22 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   };
   const restoreSelected = async () => {
     if (streaming) { await restoreStreamed(); return; }
+    if (restorePoint) {
+      const point = restorePoint;
+      const choice = { mode: restoreMode, force: restoreAnyway, trim: restoreTrim };
+      closeRestore();
+      await restorePointInPlace(point, choice);
+      return;
+    }
     if (!selectedBackup || !selectedPreview) return;
     const backupId = selectedBackup.id;
+    const trim = restoreTrim;
     // The question has been answered, so the dialog goes before the work
     // starts: what happens next belongs on the page, where the Stop button is.
     closeRestore();
     setBusyAction(t('console.restore')); setOperationProgress(null); setMixedProfile(null);
     try {
-      const response = await apiFetch(`/api/v1/backups/${backupId}/restore`, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ mode: restoreMode, ...(restoreAnyway ? { force: true } : {}) }) });
+      const response = await apiFetch(`/api/v1/backups/${backupId}/restore`, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ mode: restoreMode, ...(restoreAnyway ? { force: true } : {}), ...(trim ? { trim: true } : {}) }) });
       const payload = await response.json() as { jobId?: string; error?: { message?: string } };
       if (!response.ok || !payload.jobId) { failed(fail.body(payload, t('console.backupRestoreFailed'))); return; }
       setRunningJobId(payload.jobId);
@@ -4296,15 +4332,30 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
    * look at it first.
    */
   /**
+   * Ask what to do with a recovery point, the way an archive is asked about.
+   *
+   * Its index says what it holds and how large each file is, which is all the
+   * dialog needs - and in saver mode, whether it fits on this machine.
+   */
+  const openPointRestore = async (snapshot: R2SnapshotSummary) => {
+    setR2Busy(t('console.restore'));
+    try {
+      const response = await apiFetch(`/api/v1/r2/snapshots/${encodeURIComponent(snapshot.id)}/preview`, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ profileId: snapshot.profileId }) });
+      const payload = await response.json() as RestorePreview | { error?: { message?: string } };
+      if (!response.ok || !('files' in payload)) { failed(fail.body(payload, t('console.backupPreviewFailed'))); return; }
+      setRestoreMode('replace'); setRestoreAnyway(false); setRestoreTrim(false);
+      setRestorePoint(snapshot); setSelectedPreview(payload);
+    } catch { failed(t('console.backupPreviewFailed')); } finally { setR2Busy(null); }
+  };
+  /**
    * Put a recovery point straight into the profile, saver mode's way back.
    *
-   * No archive is made on the way, so there is nothing to look inside first;
-   * the question is asked before instead, and the progress is the download.
+   * No archive is made on the way; the progress is the download.
    */
-  const restorePointInPlace = async (snapshot: R2SnapshotSummary) => {
+  const restorePointInPlace = async (snapshot: R2SnapshotSummary, choice: { mode: RestoreMode; force: boolean; trim: boolean }) => {
     setR2Busy(t('console.restore')); setOperationProgress(null); setMixedProfile(null);
     try {
-      const response = await apiFetch(`/api/v1/r2/snapshots/${encodeURIComponent(snapshot.id)}/restore`, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ profileId: snapshot.profileId, mode: 'replace' }) });
+      const response = await apiFetch(`/api/v1/r2/snapshots/${encodeURIComponent(snapshot.id)}/restore`, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ profileId: snapshot.profileId, mode: choice.mode, ...(choice.force ? { force: true } : {}), ...(choice.trim ? { trim: true } : {}) }) });
       const payload = await response.json() as { jobId?: string; error?: { message?: string } };
       if (!response.ok || !payload.jobId) { failed(fail.body(payload, t('console.backupRestoreFailed'))); return; }
       setRunningJobId(payload.jobId);
@@ -4459,7 +4510,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       // In saver mode there is no library to bring it into, so the row offers
       // what fetching was always the first half of: restoring it.
       cell: (snapshot) => saving
-        ? <Button variant="ghost" size="sm" className="whitespace-nowrap" onClick={() => setRestorePoint(snapshot)} disabled={r2Busy !== null}><RotateCcw />{t('console.restore')}</Button>
+        ? <Button variant="ghost" size="sm" className="whitespace-nowrap" onClick={() => void openPointRestore(snapshot)} disabled={r2Busy !== null}><RotateCcw />{t('console.restore')}</Button>
         : <Button variant="ghost" size="sm" className="whitespace-nowrap" onClick={() => void fetchSnapshot(snapshot)} disabled={r2Busy !== null}><History />{t('console.r2Fetch')}</Button>,
     },
   ];
@@ -4771,18 +4822,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       cancelLabel={t('common.cancel')}
       onConfirm={deleteBackup}
     />
-    {/* Asked before rather than after, because in place there is no archive
-        to look inside first: what is replaced is replaced as it arrives. */}
-    <ConfirmDialog
-      open={restorePoint !== null}
-      onOpenChange={(open) => { if (!open) setRestorePoint(null); }}
-      title={t('console.restorePointTitle', { when: restorePoint ? new Date(restorePoint.createdAt).toLocaleString() : '' })}
-      description={t('console.restorePointBody')}
-      confirmLabel={t('console.restore')}
-      cancelLabel={t('common.cancel')}
-      onConfirm={() => { const point = restorePoint; if (point) void restorePointInPlace(point); }}
-    />
-    <RestoreDialog t={t} catalog={catalog} name={streaming ? streaming.file.name : selectedBackup ? displayName(selectedBackup) : null} safety={t(saving ? 'console.restoreSafetySaver' : 'console.restoreSafety')} preview={selectedPreview} mode={restoreMode} onModeChange={setRestoreMode} anyway={restoreAnyway} onAnywayChange={setRestoreAnyway} onClose={closeRestore} onRestore={restoreSelected} />
+    <RestoreDialog t={t} catalog={catalog} name={streaming ? streaming.file.name : restorePoint ? t('console.restorePointName', { when: new Date(restorePoint.createdAt).toLocaleString() }) : selectedBackup ? displayName(selectedBackup) : null} safety={t(saving ? 'console.restoreSafetySaver' : 'console.restoreSafety')} preview={selectedPreview} mode={restoreMode} onModeChange={setRestoreMode} anyway={restoreAnyway} onAnywayChange={setRestoreAnyway} trim={restoreTrim} onTrimChange={setRestoreTrim} onClose={closeRestore} onRestore={restoreSelected} />
     <R2DestinationDialog
       t={t}
       open={destinationOpen}
@@ -4986,10 +5026,21 @@ function NameDialog({ t, open, onOpenChange, title, label, hint, initial = '', s
  * where the choice is made, and the choice is made in a dialog, because one of
  * them deletes everything that is there.
  */
-function RestoreDialog({ t, catalog, name, safety, preview, mode, onModeChange, anyway, onAnywayChange, onClose, onRestore }: { t: Translate; catalog: Record<string, unknown>; name: string | null; safety: string; preview: RestorePreview | null; mode: RestoreMode; onModeChange: (mode: RestoreMode) => void; anyway: boolean; onAnywayChange: (anyway: boolean) => void; onClose: () => void; onRestore: () => Promise<void> }) {
+function RestoreDialog({ t, catalog, name, safety, preview, mode, onModeChange, anyway, onAnywayChange, trim, onTrimChange, onClose, onRestore }: { t: Translate; catalog: Record<string, unknown>; name: string | null; safety: string; preview: RestorePreview | null; mode: RestoreMode; onModeChange: (mode: RestoreMode) => void; anyway: boolean; onAnywayChange: (anyway: boolean) => void; trim: boolean; onTrimChange: (trim: boolean) => void; onClose: () => void; onRestore: () => Promise<void> }) {
   const group = useId();
   const anywayId = useId();
+  const trimId = useId();
   if (name === null || !preview) return null;
+  /*
+   * Whether it fits, in saver mode; see RestoreCapacity.
+   *
+   * Too large whole but not without its junk, the restore waits for the
+   * reader to agree to leave the junk out - nothing they would miss, but it
+   * is their data and their call. Too large either way, it is refused: the
+   * alternative is a machine that stops halfway through.
+   */
+  const capacity = preview.capacity?.[mode] ?? null;
+  const blockedBySize = capacity !== null && !(trim ? capacity.fitsTrimmed : capacity.fits);
   /*
    * An archive that is not a profile is refused here rather than restored.
    *
@@ -5044,11 +5095,31 @@ function RestoreDialog({ t, catalog, name, safety, preview, mode, onModeChange, 
             </AlertDescription>
           </Alert>
           : null}
+        {capacity && !capacity.fitsTrimmed
+          ? <Alert variant="destructive"><AlertDescription>{t('console.restoreTooLarge', { needed: formatBytes(capacity.trimmedNeededBytes), available: formatBytes(capacity.availableBytes) })}</AlertDescription></Alert>
+          : capacity && capacity.junkBytes > 0
+            ? <Alert variant={capacity.fits ? 'default' : 'destructive'}>
+              <AlertDescription className="grid gap-2">
+                <span>{capacity.fits
+                  ? t('console.restoreJunkOptional', { junk: formatBytes(capacity.junkBytes), files: capacity.junkFiles })
+                  : t('console.restoreJunkNeeded', { needed: formatBytes(capacity.neededBytes), available: formatBytes(capacity.availableBytes), junk: formatBytes(capacity.junkBytes), files: capacity.junkFiles })}</span>
+                <Label htmlFor={trimId} className="flex items-start gap-2 font-normal">
+                  <Checkbox id={trimId} checked={trim} onCheckedChange={(checked) => onTrimChange(checked === true)} className="mt-0.5" />
+                  <span>{t('console.restoreTrim')}</span>
+                </Label>
+              </AlertDescription>
+            </Alert>
+            : null}
+        {/* What it will use, once what is chosen fits; nothing to say when it
+            frees more than it writes. */}
+        {capacity && !blockedBySize && (trim ? capacity.trimmedNeededBytes : capacity.neededBytes) > 0
+          ? <p className="text-xs text-muted-foreground">{t('console.restoreRoom', { needed: formatBytes(trim ? capacity.trimmedNeededBytes : capacity.neededBytes), available: formatBytes(capacity.availableBytes) })}</p>
+          : null}
         <p className="text-xs text-muted-foreground">{safety}</p>
       </DialogBody>
       <DialogFooter>
         <Button variant="ghost" onClick={onClose}>{t('common.cancel')}</Button>
-        <Button variant={mode === 'replace' ? 'destructive' : 'default'} disabled={unrecognized && !anyway} onClick={() => void onRestore()}>{t('console.restoreStart')}</Button>
+        <Button variant={mode === 'replace' ? 'destructive' : 'default'} disabled={(unrecognized && !anyway) || blockedBySize} onClick={() => void onRestore()}>{t('console.restoreStart')}</Button>
       </DialogFooter>
     </DialogContent>
   </Dialog>;

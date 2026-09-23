@@ -13,8 +13,10 @@
  * is worth suggesting.
  */
 
-/** Where the offer is remembered, per browser. */
-const DECLINED_KEY = 'stm-manager-tunnel-declined';
+/** Where the answer to the address offer is remembered, per browser. */
+const ANSWERED_KEY = 'stm-address-offer-answered';
+/** Where a link of the console's own, asked for before setup, waits for it. */
+const OWN_LINK_KEY = 'stm-own-link-after-setup';
 
 type HostingStorage = Pick<Storage, 'getItem' | 'setItem'>;
 
@@ -60,42 +62,72 @@ export function isThisMachine(hostname: string): boolean {
   return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/u.test(host);
 }
 
-export interface TunnelOfferInput {
+export interface AddressOfferInput {
   /** The address the console is being read at, from the browser. */
   readonly hostname: string;
-  /** Whether the console's own tunnel is already meant to be open. */
-  readonly tunnelWanted: boolean;
-  /** Whether the reader has turned this offer down before. */
-  readonly declined: boolean;
+  /** Whether the console is inside another page's frame. */
+  readonly framed: boolean;
+  /** Whether the reader has answered this offer before. */
+  readonly answered: boolean;
 }
 
 /**
- * Whether to offer the console's own link, unprompted.
+ * Whether to offer, before the password is set, to open the console at the
+ * address it is being read at - in a tab of its own.
  *
- * Asked once, and only where it would help. A reader on their own machine is
- * never asked, which is most readers - on Android the console is the phone's
- * own, and opening it to the internet is something to go looking for rather
- * than something to be offered.
+ * A studio shows a new app inside its own page, in a frame. The address in
+ * that frame is the platform's - a `run.app` address, say - and it is already
+ * a working link to this console: opened in a tab of its own, it is the
+ * console without the studio around it, reached the way the platform meant.
+ * That is the first thing to offer, ahead of a link of the console's own,
+ * which is a tunnel that has to be opened and kept up.
+ *
+ * Not asked of a console already in its own tab - it is already at that
+ * address - nor on the reader's own machine or network, and asked once.
  */
-export function shouldOfferManagerTunnel(input: TunnelOfferInput): boolean {
-  if (input.declined || input.tunnelWanted) return false;
+export function shouldOfferPlatformAddress(input: AddressOfferInput): boolean {
+  if (input.answered || !input.framed) return false;
   return !isLocalHostname(input.hostname);
 }
 
-export function readTunnelOfferDeclined(storage?: HostingStorage): boolean {
+export function readAddressOfferAnswered(storage?: HostingStorage): boolean {
+  return readFlag(storage, ANSWERED_KEY);
+}
+
+export function saveAddressOfferAnswered(storage?: HostingStorage): void {
+  writeFlag(storage, ANSWERED_KEY, true);
+}
+
+/**
+ * Whether the reader asked for the console's own link before there was a
+ * password to guard it with.
+ *
+ * The link refuses to open on a manager with no password, and the offer is
+ * made before one is set - so the choice is remembered here and carried out
+ * by the console once it is open.
+ */
+export function readOwnLinkWanted(storage?: HostingStorage): boolean {
+  return readFlag(storage, OWN_LINK_KEY);
+}
+
+export function saveOwnLinkWanted(storage: HostingStorage | undefined, wanted: boolean): void {
+  writeFlag(storage, OWN_LINK_KEY, wanted);
+}
+
+function readFlag(storage: HostingStorage | undefined, key: string): boolean {
   try {
-    return storage?.getItem(DECLINED_KEY) === 'yes';
+    return storage?.getItem(key) === 'yes';
   } catch {
     return false;
   }
 }
 
-export function saveTunnelOfferDeclined(storage?: HostingStorage): void {
+function writeFlag(storage: HostingStorage | undefined, key: string, value: boolean): void {
   try {
-    storage?.setItem(DECLINED_KEY, 'yes');
+    storage?.setItem(key, value ? 'yes' : 'no');
   } catch {
-    // Without storage the offer comes back next time. That is a dialog nobody
+    // Without storage the offer comes back next time. That is a card nobody
     // wanted rather than a console nobody can reach, so it is the safe way
-    // round - and it is one click to dismiss again.
+    // round - and it is one press to answer again.
   }
 }

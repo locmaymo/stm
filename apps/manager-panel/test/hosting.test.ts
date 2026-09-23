@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isLocalHostname, isThisMachine, readTunnelOfferDeclined, saveTunnelOfferDeclined, shouldOfferManagerTunnel } from '../src/hosting.js';
+import { isLocalHostname, isThisMachine, readAddressOfferAnswered, readOwnLinkWanted, saveAddressOfferAnswered, saveOwnLinkWanted, shouldOfferPlatformAddress } from '../src/hosting.js';
 
 test('an address the reader already has is not one they need a tunnel for', () => {
   for (const hostname of [
@@ -27,39 +27,40 @@ test('a hosted address is one the platform gave out, and may not work tomorrow',
   }
 });
 
-test('the offer is made once, where it helps, and never on the reader’s own machine', () => {
-  const hosted = 'tenant-stm.workspaces.example';
-  assert.equal(shouldOfferManagerTunnel({ hostname: hosted, tunnelWanted: false, declined: false }), true);
-
-  // A phone running this for itself is the common case on Android, and is
-  // never asked to put its console on the internet.
-  assert.equal(shouldOfferManagerTunnel({ hostname: '127.0.0.1', tunnelWanted: false, declined: false }), false);
-  assert.equal(shouldOfferManagerTunnel({ hostname: '192.168.1.20', tunnelWanted: false, declined: false }), false);
-
-  // Already open, or already turned down: either way, do not ask again.
-  assert.equal(shouldOfferManagerTunnel({ hostname: hosted, tunnelWanted: true, declined: false }), false);
-  assert.equal(shouldOfferManagerTunnel({ hostname: hosted, tunnelWanted: false, declined: true }), false);
+test('the platform address is offered once, in a frame, and never on the reader’s own machine', () => {
+  const hosted = 'atais-dev-example-736532018900.asia-southeast1.run.app';
+  assert.equal(shouldOfferPlatformAddress({ hostname: hosted, framed: true, answered: false }), true);
+  // Already in a tab of its own, it is already at that address.
+  assert.equal(shouldOfferPlatformAddress({ hostname: hosted, framed: false, answered: false }), false);
+  // A phone running this for itself, or a device in the house, is never asked.
+  assert.equal(shouldOfferPlatformAddress({ hostname: '127.0.0.1', framed: true, answered: false }), false);
+  assert.equal(shouldOfferPlatformAddress({ hostname: '192.168.1.20', framed: true, answered: false }), false);
+  assert.equal(shouldOfferPlatformAddress({ hostname: hosted, framed: true, answered: true }), false);
 });
 
-test('turning the offer down is remembered, and storage that refuses is not fatal', () => {
+test('the answer and a link asked for before setup are remembered, and storage that refuses is not fatal', () => {
   const store = new Map<string, string>();
   const storage = {
     getItem: (key: string) => store.get(key) ?? null,
     setItem: (key: string, value: string) => { store.set(key, value); },
   };
-  assert.equal(readTunnelOfferDeclined(storage), false);
-  saveTunnelOfferDeclined(storage);
-  assert.equal(readTunnelOfferDeclined(storage), true);
+  assert.equal(readAddressOfferAnswered(storage), false);
+  saveAddressOfferAnswered(storage);
+  assert.equal(readAddressOfferAnswered(storage), true);
+  assert.equal(readOwnLinkWanted(storage), false);
+  saveOwnLinkWanted(storage, true);
+  assert.equal(readOwnLinkWanted(storage), true);
+  saveOwnLinkWanted(storage, false);
+  assert.equal(readOwnLinkWanted(storage), false);
 
   // A private window, or a browser with site data blocked, throws on both.
   const blocked = {
     getItem: () => { throw new Error('denied'); },
     setItem: () => { throw new Error('denied'); },
   };
-  assert.equal(readTunnelOfferDeclined(blocked), false);
-  assert.doesNotThrow(() => saveTunnelOfferDeclined(blocked));
-  assert.equal(readTunnelOfferDeclined(undefined), false);
-  assert.doesNotThrow(() => saveTunnelOfferDeclined(undefined));
+  assert.equal(readAddressOfferAnswered(blocked), false);
+  assert.doesNotThrow(() => saveAddressOfferAnswered(blocked));
+  assert.doesNotThrow(() => saveOwnLinkWanted(blocked, true));
 });
 
 test('this machine is the loopback addresses, and nothing else', () => {

@@ -822,6 +822,37 @@ export interface RestorePreview {
    * which part of the archive is going to be read.
    */
   readonly root?: string;
+  /**
+   * Whether the restore fits on this machine; saver mode only.
+   *
+   * A host with a few gigabytes for memory and disk together keeps written
+   * files in the same memory the programs run in, so a restore larger than
+   * what is left takes the machine down part way through. One answer per
+   * mode, because a replace frees what it deletes and a merge only what it
+   * overwrites.
+   */
+  readonly capacity?: Readonly<Record<RestoreMode, RestoreCapacity>>;
+}
+
+/**
+ * How much a restore adds to this machine, against how much room it has.
+ *
+ * "Junk" is what SillyTavern or an extension can do without or make again:
+ * extensions' git history and `node_modules`, SillyTavern's own `backups/`,
+ * `thumbnails/`, `vectors/` and caches. Leaving it out restores every chat,
+ * character, lorebook, preset and setting.
+ */
+export interface RestoreCapacity {
+  /** Room left for the restore, with what SillyTavern needs to run held back. */
+  readonly availableBytes: number;
+  /** What the restore adds, net of the files a replace deletes. */
+  readonly neededBytes: number;
+  /** The same, leaving the junk out. */
+  readonly trimmedNeededBytes: number;
+  readonly junkBytes: number;
+  readonly junkFiles: number;
+  readonly fits: boolean;
+  readonly fitsTrimmed: boolean;
 }
 
 export type JobState = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled';

@@ -120,6 +120,23 @@ test('a stored entry and a folder around the profile stream like any other', asy
   assert.equal(await readFile(join(target.dataRoot, 'chats', 'a.jsonl'), 'utf8'), 'hello');
 });
 
+test('a streamed restore without its junk passes over the junk bytes', async () => {
+  const target = await createProfile('trimmed');
+  const archive = storedZip([
+    ['extensions/ext/.git/objects/pack/p.pack', Buffer.alloc(5000, 'g')],
+    ['chats/a.jsonl', Buffer.from('kept')],
+    ['extensions/ext/index.js', Buffer.from('code')],
+  ]);
+  const stream = target.store.openStream(tailOf(archive), archive.length);
+  const restoring = target.store.restoreStream(target.profile, stream, { mode: 'replace', trim: true });
+  await stream.whenReady(5000);
+  await upload(stream, archive, 999);
+  await restoring;
+  assert.equal(await readFile(join(target.dataRoot, 'chats', 'a.jsonl'), 'utf8'), 'kept');
+  assert.equal(await readFile(join(target.dataRoot, 'extensions', 'ext', 'index.js'), 'utf8'), 'code');
+  await assert.rejects(() => readFile(join(target.dataRoot, 'extensions', 'ext', '.git', 'objects', 'pack', 'p.pack')), { code: 'ENOENT' });
+});
+
 test('a directory that does not match the archive size, or an unsafe name, is refused before anything starts', async () => {
   const target = await createProfile('refused');
   const archive = storedZip([['settings.json', Buffer.from('{}')]]);
