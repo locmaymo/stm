@@ -2269,15 +2269,15 @@ test('the console teaches the manager the address it is being read at', async (t
    * exactly as it is when the console offers a link of its own and says "you
    * are reading this at <address>".
    */
-  await fetch(`${base}/api/v1/status`, { headers: { cookie: auth.cookie, host: 'ais-dev-cs6f.example.invalid', 'x-forwarded-host': 'ais-dev-cs6f.example.invalid', 'x-forwarded-proto': 'https' } });
+  await fetch(`${base}/api/v1/status`, { headers: { cookie: auth.cookie, host: 'some-app-cs6f.example.invalid', 'x-forwarded-host': 'some-app-cs6f.example.invalid', 'x-forwarded-proto': 'https' } });
 
   const learned = await read();
   assert.equal(learned.source, 'seen');
-  assert.equal(learned.address, 'https://ais-dev-cs6f.example.invalid');
+  assert.equal(learned.address, 'https://some-app-cs6f.example.invalid');
   // Written down, so the restart this exists to survive still knows where it
   // is. Nothing waits on that write, so this does.
   await manager.store.settle();
-  assert.equal((await manager.store.getPersisted()).keepOnlineOrigin, 'https://ais-dev-cs6f.example.invalid');
+  assert.equal((await manager.store.getPersisted()).keepOnlineOrigin, 'https://some-app-cs6f.example.invalid');
 });
 
 test('arriving through the tunnel teaches nothing, because the tunnel is not kept open', async (t) => {

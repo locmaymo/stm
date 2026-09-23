@@ -149,10 +149,33 @@ export interface StartupSettings {
  * Where saver mode's answer came from.
  *
  * `environment` is STM_SAVER, which the panel shows and cannot change;
- * `choice` is the panel's own switch; `memory` is the default a machine with
- * little memory gets when nobody has said anything.
+ * `choice` is the panel's own switch; `machine` is the default the machine
+ * gets when nobody has said anything - see `SaverState.reason`.
  */
-export type SaverSource = 'environment' | 'choice' | 'memory';
+export type SaverSource = 'environment' | 'choice' | 'machine';
+
+/**
+ * What told the manager that files here are kept in memory.
+ *
+ * `environment` is STM_STORAGE_IN_MEMORY, which settles it either way;
+ * `serverless` is a container host that follows the Knative contract and sets
+ * K_SERVICE; `memoryFilesystem` is a data directory on tmpfs or ramfs.
+ */
+export type StorageSignal = 'environment' | 'serverless' | 'memoryFilesystem';
+
+/**
+ * Whether a file written here takes disk or the memory the programs run in.
+ *
+ * Two different machines can both have four gigabytes of memory: an old
+ * laptop or a phone with a disk many times that, and a container with no disk
+ * at all, where every file written is held in the same four gigabytes. Only
+ * the second is short of room for a profile.
+ */
+export interface StorageMedium {
+  readonly inMemory: boolean;
+  /** What decided it, or null when nothing said memory and the disk is assumed. */
+  readonly signal: StorageSignal | null;
+}
 
 /**
  * Whether the manager keeps its disk and memory use to the minimum.
@@ -165,10 +188,18 @@ export type SaverSource = 'environment' | 'choice' | 'memory';
 export interface SaverState {
   readonly enabled: boolean;
   readonly source: SaverSource;
+  /**
+   * Why the machine would have it on by itself: its files are kept in memory,
+   * or its disk was nearly full at startup. Null when neither is so.
+   */
+  readonly reason: 'inMemory' | 'lowDisk' | null;
+  readonly storage: StorageMedium;
   /** The memory this manager may use, as it measured it at startup. */
   readonly memoryBytes: number;
-  /** Below this, saver mode is on unless somebody says otherwise. */
-  readonly thresholdBytes: number;
+  /** Free disk at startup; null when files are kept in memory or the disk could not be asked. */
+  readonly diskBytes: number | null;
+  /** Below this much free disk, saver mode is on unless somebody says otherwise. */
+  readonly diskThresholdBytes: number;
 }
 
 /**
@@ -1494,6 +1525,14 @@ export interface SystemSnapshot {
   };
   readonly storage: {
     readonly root: string;
+    /**
+     * Files here are held in the memory above, so there is no disk to report.
+     *
+     * A container like that is still asked about a disk by `statfs`, and
+     * answers with the host's: hundreds of gigabytes it cannot use. The two
+     * sizes below are null then rather than that.
+     */
+    readonly inMemory: boolean;
     readonly totalBytes: number | null;
     readonly freeBytes: number | null;
     /** Everything the manager keeps, archives and profiles included. */

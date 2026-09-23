@@ -6,7 +6,7 @@ import { BackupStore, type ImportEntry, type RestoreFile } from '../../../packag
 import { R2Manager } from '../../../packages/r2/src/index.js';
 import type { HashedFile, R2Snapshot } from '../../../packages/r2/src/sync.js';
 import { ioConcurrency } from '../../../packages/platform/src/index.js';
-import { decideTrim, megabytes, memoryGuard } from './headroom.js';
+import { decideTrim, megabytes, memoryGuard, roomCheck } from './headroom.js';
 
 /**
  * How large a file may be and still be fetched ahead of when it is needed.
@@ -91,6 +91,8 @@ export interface RestoreSnapshotOptions {
   readonly trim?: boolean;
   /** Called between files; saver mode's memory guard. */
   readonly checkpoint?: () => Promise<void>;
+  /** Called once old files are gone and before writing; see `roomCheck`. */
+  readonly recheck?: (neededBytes: number) => Promise<void>;
 }
 
 /**
@@ -141,6 +143,7 @@ export async function restoreSnapshotInPlace(options: RestoreSnapshotOptions): P
     ...(options.force ? { force: true } : {}),
     ...(options.trim ? { trim: true } : {}),
     ...(options.checkpoint ? { checkpoint: options.checkpoint } : {}),
+    ...(options.recheck ? { recheck: options.recheck } : {}),
     ...(signal ? { signal } : {}),
     ...(options.onStatus ? { onStatus: options.onStatus } : {}),
     onProgress: ({ completed }) => { completedItems = completed; report(); },
@@ -348,7 +351,7 @@ export async function recoverProfileFromR2(options: RecoverProfileOptions): Prom
         const preview = await restoreSnapshotInPlace({
           profile, r2, backups, snapshot, mode: 'replace', force: true,
           ...(fit.trim ? { trim: true } : {}),
-          ...(backups.saving ? { checkpoint: memoryGuard(profile.dataPath) } : {}),
+          ...(backups.saving ? { checkpoint: memoryGuard(profile.dataPath), recheck: roomCheck(profile.dataPath) } : {}),
           ...(logger ? { logger } : {}),
           ...(options.onProgress ? { onProgress: options.onProgress } : {}),
           ...(options.signal ? { signal: options.signal } : {}),

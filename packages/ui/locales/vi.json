@@ -174,9 +174,10 @@
     "startupSaveFailed": "Không lưu được tuỳ chọn này",
     "startupSaved": "Đã lưu. Tuỳ chọn này áp dụng từ lần mở trình quản lý sau.",
     "saverMode": "Chế độ tiết kiệm",
-    "saverHint": "Dành cho máy ít RAM và ổ đĩa: không sao lưu cục bộ, và khi khôi phục thì bản sao an toàn được giữ trên R2 thay vì trên máy này.",
+    "saverHint": "Dành cho máy ít chỗ chứa file: không sao lưu cục bộ, và khi khôi phục thì bản sao an toàn được giữ trên R2 thay vì trên máy này.",
     "saverFromEnvironment": "Được đặt bằng STM_SAVER nên chỉ đổi được ở đó.",
-    "saverFromMemory": "Tự bật vì máy này chỉ có {memory} bộ nhớ.",
+    "saverInMemory": "Tự bật vì máy này lưu file trong RAM: file và chương trình dùng chung {memory}.",
+    "saverLowDisk": "Tự bật vì ổ đĩa chỉ còn trống {disk} lúc trình quản lý khởi động.",
     "saverTurnedOn": "Đã bật chế độ tiết kiệm.",
     "saverTurnedOff": "Đã tắt chế độ tiết kiệm.",
     "saverLocalOff": "Đang bật chế độ tiết kiệm nên không giữ bản sao lưu nào trên máy này. Cloudflare R2 sẽ giữ các điểm khôi phục thay.",
@@ -882,7 +883,8 @@
     "saver": {
       "onFromEnvironment": "Đã bật chế độ tiết kiệm theo STM_SAVER: không sao lưu cục bộ trên máy này",
       "onByChoice": "Đã bật chế độ tiết kiệm theo lựa chọn trong bảng điều khiển: không sao lưu cục bộ trên máy này",
-      "onForMemory": "Đã bật chế độ tiết kiệm vì máy này chỉ có {memory} bộ nhớ: không sao lưu cục bộ trên máy này",
+      "onForInMemory": "Đã bật chế độ tiết kiệm vì máy này lưu file trong RAM: không sao lưu cục bộ trên máy này",
+      "onForLowDisk": "Đã bật chế độ tiết kiệm vì ổ đĩa chỉ còn trống {disk}: không sao lưu cục bộ trên máy này",
       "turnedOn": "Đã bật chế độ tiết kiệm",
       "turnedOff": "Đã tắt chế độ tiết kiệm"
     },
@@ -1047,6 +1049,8 @@
       "targetPort": "Đang phục vụ SillyTavern ở cổng {port}"
     },
     "storage": {
+      "inMemory": "Máy này lưu file trong RAM ({signal}): file dùng chung {memory} với các chương trình",
+      "onDisk": "Máy này lưu file trên ổ đĩa, còn trống {disk}; RAM {memory}",
       "notDurable": "{path} nằm trên {filesystem}, máy này không giữ lại sau khi khởi động lại; hãy kết nối Cloudflare R2 để bản sao lưu nằm ở nơi khác",
       "notVerified": "Trình quản lý không thể biết chắc {path} có còn sau khi khởi động lại hay không, nên hãy coi đây là bộ nhớ có thể chỉ là tạm thời; hãy kết nối Cloudflare R2 để bản sao lưu nằm ở nơi khác"
     },
@@ -1076,6 +1080,7 @@
     "memory": "RAM",
     "disk": "Dung lượng bộ nhớ",
     "free": "trống",
+    "inMemory": "Nằm trong RAM, dùng chung với các chương trình",
     "managerFootprint": "Toàn bộ app đang dùng",
     "activeData": "Dữ liệu SillyTavern",
     "measuring": "Đang đo…",

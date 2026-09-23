@@ -28,7 +28,7 @@ test('a hosted address is one the platform gave out, and may not work tomorrow',
 });
 
 test('the platform address is offered once, in a frame, and never on the reader’s own machine', () => {
-  const hosted = 'atais-dev-example-736532018900.asia-southeast1.run.app';
+  const hosted = 'some-app-123456789012.example-region.hosted.example';
   assert.equal(shouldOfferPlatformAddress({ hostname: hosted, framed: true, answered: false }), true);
   // Already in a tab of its own, it is already at that address.
   assert.equal(shouldOfferPlatformAddress({ hostname: hosted, framed: false, answered: false }), false);

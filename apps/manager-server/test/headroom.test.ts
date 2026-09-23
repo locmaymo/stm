@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { BackupError, BackupStore, isJunk } from '../../../packages/backup/src/index.js';
 import type { Profile } from '../../../packages/contracts/src/index.js';
 import { getPlatformPaths } from '../../../packages/platform/src/index.js';
-import { capacityOf, checkFits, decideTrim, memoryGuard, RESTORE_FLOOR_BYTES, RESTORE_RESERVE_BYTES, type Headroom } from '../src/headroom.js';
+import { capacityOf, checkFits, decideTrim, memoryGuard, RESTORE_FLOOR_BYTES, RESTORE_RESERVE_BYTES, roomCheck, type Headroom } from '../src/headroom.js';
 
 const MB = 1_000_000;
 
@@ -110,4 +110,36 @@ test('a replace counts every file it frees, however many are read at once', asyn
   assert.equal((await target.store.estimate(target.profile, { archivePath }, 'replace')).freedBytes, expected);
   // A merge frees only what it overwrites.
   assert.equal((await target.store.estimate(target.profile, { archivePath }, 'merge')).freedBytes, 500);
+});
+
+test('with the old files gone the room is measured again, and a restore it does not fit writes nothing', async () => {
+  const source = await world('recheck-source');
+  await put(source.dataRoot, 'settings.json', 1000);
+  await put(source.dataRoot, 'chats/new.jsonl', 3 * MB);
+  const archivePath = (await source.store.getArchivePath((await source.store.create(source.profile)).id))!;
+
+  const target = await world('recheck-target');
+  target.store.saving = true;
+  await put(target.dataRoot, 'chats/old.jsonl', 5 * MB);
+  await put(target.dataRoot, 'settings.json', 400);
+  // Asked with what is left to write: the archive less the file it writes over.
+  const asked: number[] = [];
+  await target.store.restore(target.profile, archivePath, { mode: 'replace', recheck: async (needed) => { asked.push(needed); } });
+  assert.deepEqual(asked, [3 * MB + 1000 - 400]);
+
+  // A host whose deleted files have not given their memory back yet.
+  await rm(join(target.dataRoot, 'chats', 'new.jsonl'));
+  await put(target.dataRoot, 'chats/old.jsonl', 5 * MB);
+  let looks = 0;
+  const stuck = roomCheck(target.profile.dataPath, async () => { looks += 1; return { memoryBytes: RESTORE_RESERVE_BYTES + MB, diskBytes: null, bytes: RESTORE_RESERVE_BYTES + MB }; }, { attempts: 3, intervalMs: 1 });
+  await assert.rejects(() => target.store.restore(target.profile, archivePath, { mode: 'replace', recheck: stuck }), (error: unknown) => error instanceof BackupError && error.code === 'restore_too_large');
+  assert.equal(looks, 3, 'it waited for the room to come back before giving up');
+  await assert.rejects(() => readFile(join(target.dataRoot, 'chats', 'new.jsonl')), { code: 'ENOENT' });
+
+  // And one whose memory comes back a moment later goes ahead.
+  let later = 0;
+  const settling = roomCheck(target.profile.dataPath, async () => { later += 1; const bytes = RESTORE_RESERVE_BYTES + (later < 3 ? MB : 10 * MB); return { memoryBytes: bytes, diskBytes: null, bytes }; }, { attempts: 5, intervalMs: 1 });
+  await target.store.restore(target.profile, archivePath, { mode: 'replace', recheck: settling });
+  assert.equal((await readFile(join(target.dataRoot, 'chats', 'new.jsonl'))).length, 3 * MB);
+  assert.equal(later, 3);
 });

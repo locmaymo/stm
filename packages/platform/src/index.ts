@@ -2,7 +2,7 @@ import { homedir } from 'node:os';
 import { existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, posix, resolve } from 'node:path';
-import type { PlatformKind, StorageAssurance } from '../../contracts/src/index.js';
+import type { PlatformKind, StorageAssurance, StorageMedium } from '../../contracts/src/index.js';
 
 const DEFAULT_IO_CONCURRENCY = 8;
 const MAX_IO_CONCURRENCY = 64;
@@ -189,7 +189,56 @@ export interface StorageDurability {
  */
 export function storageDurability(dataRoot: string, mountTable?: string): StorageDurability {
   const table = mountTable ?? readMountTable();
-  if (table === null) return { durable: true, filesystem: null };
+  const mount = table === null ? null : mountOf(dataRoot, table);
+  if (!mount) return { durable: true, filesystem: null };
+  return { durable: !EPHEMERAL_FILESYSTEMS.has(mount.filesystem), filesystem: mount.filesystem };
+}
+
+/** Filesystems whose files are pages of memory with a directory tree drawn on them. */
+const MEMORY_FILESYSTEMS = new Set(['tmpfs', 'ramfs']);
+
+/**
+ * Whether a file written to the data directory is held in memory.
+ *
+ * A different question from `storageDurability`, which asks whether the file
+ * is still there tomorrow. A container's overlay is thrown away with it, but
+ * on most hosts it is still disk while it lasts. What matters here is whether
+ * writing a two-gigabyte profile takes two gigabytes of the memory SillyTavern
+ * and this manager run in - which a machine with four gigabytes of memory and
+ * a large disk does not, and a container with no disk at all does.
+ *
+ * Asked in this order:
+ *
+ * - STM_STORAGE_IN_MEMORY, for a host this cannot place, either way.
+ * - K_SERVICE, which a serverless container host following the Knative
+ *   contract sets on every service. The hosts that set it give a container no
+ *   disk of its own: its filesystem is held in the instance's memory.
+ * - A data directory on tmpfs or ramfs, which is memory on any host.
+ *
+ * Nothing else is taken as memory. How much memory the machine has is not a
+ * signal at all: an old computer or a phone with four gigabytes of it writes
+ * its files to disk like any other.
+ */
+export function storageMedium(dataRoot: string, env: NodeJS.ProcessEnv = process.env, mountTable?: string | null): StorageMedium {
+  const forced = parseSwitch(env.STM_STORAGE_IN_MEMORY);
+  if (forced !== null) return { inMemory: forced, signal: 'environment' };
+  if (env.K_SERVICE?.trim()) return { inMemory: true, signal: 'serverless' };
+  const table = mountTable === undefined ? readMountTable() : mountTable;
+  const mount = table === null ? null : mountOf(dataRoot, table);
+  if (mount && MEMORY_FILESYSTEMS.has(mount.filesystem)) return { inMemory: true, signal: 'memoryFilesystem' };
+  return { inMemory: false, signal: null };
+}
+
+/** `1`, `true` or `on`; `0`, `false` or `off`; anything else is no answer. */
+function parseSwitch(value: string | undefined): boolean | null {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === '1' || normalized === 'true' || normalized === 'on') return true;
+  if (normalized === '0' || normalized === 'false' || normalized === 'off') return false;
+  return null;
+}
+
+/** The mount the directory is on, from a table in the shape of /proc/mounts. */
+function mountOf(dataRoot: string, table: string): { point: string; filesystem: string } | null {
   const target = posixPath(dataRoot);
   let best: { point: string; filesystem: string } | null = null;
   for (const line of table.split('\n')) {
@@ -204,8 +253,7 @@ export function storageDurability(dataRoot: string, mountTable?: string): Storag
     // root covers everything and is almost never the answer.
     if (!best || point.length > best.point.length) best = { point, filesystem };
   }
-  if (!best) return { durable: true, filesystem: null };
-  return { durable: !EPHEMERAL_FILESYSTEMS.has(best.filesystem), filesystem: best.filesystem };
+  return best;
 }
 
 /**

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import { posix } from 'node:path';
 import assert from 'node:assert/strict';
-import { createIoLimiter, detectPlatform, getPlatformPaths, ioConcurrency, runPooled, storageAssurance, storageDurability } from '../../../packages/platform/src/index.js';
+import { createIoLimiter, detectPlatform, getPlatformPaths, ioConcurrency, runPooled, storageAssurance, storageDurability, storageMedium } from '../../../packages/platform/src/index.js';
 
 test('platform paths follow the documented durable roots', () => {
   assert.equal(detectPlatform({ platform: 'win32', env: {} }), 'windows');
@@ -103,6 +103,36 @@ test('whether the data survives a restart is asked of the filesystem, not the pl
   for (const root of ['/data/sillytavern-manager', '/data/./sillytavern-manager', '/data/nested/../sillytavern-manager']) {
     assert.deepEqual(storageDurability(root, container), { durable: false, filesystem: 'overlay' }, root);
   }
+});
+
+test('whether files take memory is asked of the host, never of how much memory there is', () => {
+  // A container with no disk of its own: the root is an overlay, which on
+  // most hosts is disk while it lasts, so the mount table alone says nothing.
+  const container = [
+    'none / overlay rw,mode=755 0 0',
+    'none /dev/shm tmpfs rw,mode=1777 0 0',
+    'none /proc proc rw 0 0',
+  ].join('\n');
+  assert.deepEqual(storageMedium('/root/.local/share/sillytavern-manager', {}, container), { inMemory: false, signal: null });
+  // A serverless host following the Knative contract names the service,
+  // and gives the container no disk.
+  assert.deepEqual(storageMedium('/root/.local/share/sillytavern-manager', { K_SERVICE: 'my-app' }, container), { inMemory: true, signal: 'serverless' });
+  assert.deepEqual(storageMedium('/root/data', { K_SERVICE: '  ' }, container).inMemory, false, 'an empty name is not a service');
+
+  // tmpfs and ramfs are memory on any host; a volume over them is not.
+  assert.deepEqual(storageMedium('/tmp/manager', {}, 'tmpfs /tmp tmpfs rw 0 0'), { inMemory: true, signal: 'memoryFilesystem' });
+  assert.equal(storageMedium('/data/manager', {}, 'ramfs /data ramfs rw 0 0').inMemory, true);
+  assert.equal(storageMedium('/data/manager', {}, 'ramfs /data ramfs rw 0 0\n/dev/sdb /data/manager ext4 rw 0 0').inMemory, false);
+
+  // An ordinary machine, a phone, and a machine with no mount table at all.
+  assert.equal(storageMedium('/home/someone/.local/share/sillytavern-manager', {}, '/dev/sda1 / ext4 rw 0 0').inMemory, false);
+  assert.equal(storageMedium('/data/data/com.termux/files/usr/var/sillytavern-manager', {}, '/dev/block/dm-5 /data f2fs rw 0 0').inMemory, false);
+  assert.equal(storageMedium('C:/Users/someone/AppData/Local/SillyTavernManager', {}, null).inMemory, false);
+
+  // STM_STORAGE_IN_MEMORY settles it either way, over everything else.
+  assert.deepEqual(storageMedium('/home/someone/manager', { STM_STORAGE_IN_MEMORY: 'on' }, null), { inMemory: true, signal: 'environment' });
+  assert.deepEqual(storageMedium('/tmp/manager', { STM_STORAGE_IN_MEMORY: '0', K_SERVICE: 'my-app' }, 'tmpfs /tmp tmpfs rw 0 0'), { inMemory: false, signal: 'environment' });
+  assert.equal(storageMedium('/tmp/manager', { STM_STORAGE_IN_MEMORY: 'maybe' }, 'tmpfs /tmp tmpfs rw 0 0').signal, 'memoryFilesystem');
 });
 
 test('a machine is only vouched for when it is the reader’s own', () => {

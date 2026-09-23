@@ -76,8 +76,8 @@ export interface AddressOfferInput {
  * address it is being read at - in a tab of its own.
  *
  * A studio shows a new app inside its own page, in a frame. The address in
- * that frame is the platform's - a `run.app` address, say - and it is already
- * a working link to this console: opened in a tab of its own, it is the
+ * that frame is one the platform gave out for this app, and it is already a
+ * working link to this console: opened in a tab of its own, it is the
  * console without the studio around it, reached the way the platform meant.
  * That is the first thing to offer, ahead of a link of the console's own,
  * which is a tunnel that has to be opened and kept up.
