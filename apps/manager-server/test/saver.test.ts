@@ -10,36 +10,54 @@ import type { R2Manager } from '../../../packages/r2/src/index.js';
 import { getPlatformPaths } from '../../../packages/platform/src/index.js';
 import type { ProcessSupervisor } from '../src/supervisor.js';
 import { BackupScheduler } from '../src/r2-scheduler.js';
-import { SAVER_MEMORY_THRESHOLD_BYTES, SaverMode } from '../src/saver.js';
+import { SAVER_DISK_THRESHOLD_BYTES, SaverMode } from '../src/saver.js';
 import { restoreWithProcess, RestoreRollbackError, startManagerServer } from '../src/server.js';
-import type { Installation } from '../../../packages/contracts/src/index.js';
+import type { Installation, StorageMedium } from '../../../packages/contracts/src/index.js';
 import type { RuntimeManager } from '../../../packages/sillytavern-runtime/src/index.js';
 import { StateStore } from '../src/state.js';
 
-const small = SAVER_MEMORY_THRESHOLD_BYTES - 1;
-const large = SAVER_MEMORY_THRESHOLD_BYTES * 4;
+const inMemory: StorageMedium = { inMemory: true, signal: 'serverless' };
+const onDisk: StorageMedium = { inMemory: false, signal: null };
+const GiB = 1024 ** 3;
+const plentyOfDisk = SAVER_DISK_THRESHOLD_BYTES * 20;
 
-test('a machine with little memory is in saver mode until somebody says otherwise', () => {
-  const saver = new SaverMode({ env: {}, choice: null, memoryBytes: small });
+test('a machine that keeps its files in memory is in saver mode until somebody says otherwise', () => {
+  const saver = new SaverMode({ env: {}, choice: null, storage: inMemory, memoryBytes: 4 * GiB });
   assert.equal(saver.enabled, true);
-  assert.equal(saver.source, 'memory');
-  assert.equal(new SaverMode({ env: {}, choice: null, memoryBytes: large }).enabled, false);
+  assert.equal(saver.source, 'machine');
+  assert.equal(saver.reason, 'inMemory');
+  // The disk such a host reports is not its own, so it is not kept.
+  assert.equal(new SaverMode({ env: {}, choice: null, storage: inMemory, diskBytes: 500 * GiB }).state().diskBytes, null);
 });
 
-test('the panel’s switch overrides the memory, and STM_SAVER overrides both', () => {
-  const chosen = new SaverMode({ env: {}, choice: false, memoryBytes: small });
+test('four gigabytes of memory over a roomy disk is an ordinary machine, and a nearly full disk is not', () => {
+  // An old laptop or a phone: little memory, and files on a disk with room.
+  const phone = new SaverMode({ env: {}, choice: null, storage: onDisk, diskBytes: plentyOfDisk, memoryBytes: 4 * GiB });
+  assert.equal(phone.enabled, false);
+  assert.equal(phone.reason, null);
+  const full = new SaverMode({ env: {}, choice: null, storage: onDisk, diskBytes: SAVER_DISK_THRESHOLD_BYTES - 1, memoryBytes: 64 * GiB });
+  assert.equal(full.enabled, true);
+  assert.equal(full.reason, 'lowDisk');
+  // A disk that could not be asked is not taken to be full.
+  assert.equal(new SaverMode({ env: {}, choice: null, storage: onDisk, diskBytes: null }).enabled, false);
+});
+
+test('the panel’s switch overrides the machine, and STM_SAVER overrides both', () => {
+  const chosen = new SaverMode({ env: {}, choice: false, storage: inMemory });
   assert.equal(chosen.enabled, false);
   assert.equal(chosen.source, 'choice');
+  // Still said, so the panel can tell why the machine would have had it on.
+  assert.equal(chosen.state().reason, 'inMemory');
   chosen.choose(true);
   assert.equal(chosen.enabled, true);
 
-  const forced = new SaverMode({ env: { STM_SAVER: '0' }, choice: true, memoryBytes: small });
+  const forced = new SaverMode({ env: { STM_SAVER: '0' }, choice: true, storage: inMemory });
   assert.equal(forced.enabled, false);
   assert.equal(forced.locked, true);
   assert.equal(forced.source, 'environment');
-  assert.equal(new SaverMode({ env: { STM_SAVER: 'true' }, choice: false, memoryBytes: large }).enabled, true);
+  assert.equal(new SaverMode({ env: { STM_SAVER: 'true' }, choice: false, storage: onDisk, diskBytes: plentyOfDisk }).enabled, true);
   // Anything else is not an answer, and leaves the decision where it was.
-  assert.equal(new SaverMode({ env: { STM_SAVER: 'maybe' }, choice: null, memoryBytes: large }).locked, false);
+  assert.equal(new SaverMode({ env: { STM_SAVER: 'maybe' }, choice: null, storage: onDisk, diskBytes: plentyOfDisk }).locked, false);
 });
 
 test('the panel’s choice survives a restart, and a file without one has none', async () => {

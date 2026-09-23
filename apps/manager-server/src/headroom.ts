@@ -1,8 +1,10 @@
 import { statfs } from 'node:fs/promises';
 import { freemem } from 'node:os';
 import { dirname } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { BackupError, type BackupStore, type RestoreEstimate } from '../../../packages/backup/src/index.js';
-import type { Profile, RestoreCapacity, RestoreMode } from '../../../packages/contracts/src/index.js';
+import type { Profile, RestoreCapacity, RestoreMode, StorageMedium } from '../../../packages/contracts/src/index.js';
+import { storageMedium } from '../../../packages/platform/src/index.js';
 
 /**
  * Kept free after a restore, for SillyTavern and the manager to run in.
@@ -16,28 +18,48 @@ export const RESTORE_FLOOR_BYTES = 192 * 1024 ** 2;
 /** How often a running restore looks again; the look is a statfs and a counter. */
 const GUARD_INTERVAL_MS = 200;
 
+/** How many times, and how far apart, the room is looked at again after old files go. */
+const SETTLE_ATTEMPTS = 10;
+const SETTLE_INTERVAL_MS = 500;
+
 export interface Headroom {
   /** Memory this process may still take, within any container limit. */
   readonly memoryBytes: number;
-  /** Space left on the filesystem the profile is on, or null when it cannot be asked. */
+  /** Space left on the filesystem the profile is on; null when files are kept in memory or it cannot be asked. */
   readonly diskBytes: number | null;
-  /** The smaller of the two: whichever runs out first ends the restore. */
+  /** The room for what a restore writes: the memory where files are kept in it, the disk otherwise. */
   readonly bytes: number;
+}
+
+/** What the data directories are on, asked once each; the answer is the host's and does not change. */
+const media = new Map<string, StorageMedium>();
+
+function mediumOf(path: string): StorageMedium {
+  let medium = media.get(path);
+  if (!medium) { medium = storageMedium(path); media.set(path, medium); }
+  return medium;
 }
 
 /**
  * How much room is left for what a restore writes.
  *
- * Both limits, because either can be the one: on an ordinary machine a file
- * written takes disk, and on a host that keeps its files in memory - Cloud
- * Run, which is what a studio's `run.app` address is - it takes the memory
- * the programs run in. `availableMemory` reads the container's own limit
- * where there is one; the machine's free memory is what there is otherwise.
+ * One limit, and which one depends on the machine. Where files are kept in
+ * memory, a file written takes the memory the programs run in, and the disk
+ * `statfs` reports is the host's - hundreds of gigabytes the container cannot
+ * use. Everywhere else a file takes disk, and memory is not the limit: a
+ * phone with four gigabytes of it restores a profile of any size its storage
+ * has room for. Taking the smaller of the two, as this once did, refused
+ * exactly that phone.
+ *
+ * `availableMemory` reads the container's own limit where there is one; the
+ * machine's free memory is what there is otherwise. A disk that cannot be
+ * asked falls back to memory, the cautious answer rather than none.
  */
 export async function measureHeadroom(path: string): Promise<Headroom> {
   const memoryBytes = typeof process.availableMemory === 'function' ? process.availableMemory() : freemem();
+  if (mediumOf(path).inMemory) return { memoryBytes, diskBytes: null, bytes: memoryBytes };
   const diskBytes = await diskSpace(path);
-  return { memoryBytes, diskBytes, bytes: Math.min(memoryBytes, diskBytes ?? Number.POSITIVE_INFINITY) };
+  return { memoryBytes, diskBytes, bytes: diskBytes ?? memoryBytes };
 }
 
 /** Whether a restore of this size fits in this much room, whole and without its junk. */
@@ -118,12 +140,37 @@ export function memoryGuard(path: string, measure: Measure = measureHeadroom): (
   };
 }
 
+/**
+ * Asked once a saver mode restore has removed the files it replaces, before
+ * it writes: whether what is left to write still fits.
+ *
+ * The estimate before the restore counted the old files as room already. On a
+ * host that keeps files in memory, the memory a deleted file held can come
+ * back some time after the delete rather than with it, and a restore that
+ * started writing on the estimate's word would find the room missing halfway
+ * through. So the room is measured again, and given a few seconds to come
+ * back if it is short, and the restore stops here - before writing anything -
+ * if it never does.
+ */
+export function roomCheck(path: string, measure: Measure = measureHeadroom, timing: { readonly attempts: number; readonly intervalMs: number } = { attempts: SETTLE_ATTEMPTS, intervalMs: SETTLE_INTERVAL_MS }): (neededBytes: number) => Promise<void> {
+  return async (neededBytes) => {
+    for (let attempt = 1; ; attempt += 1) {
+      const availableBytes = Math.max(0, (await measure(path)).bytes - RESTORE_RESERVE_BYTES);
+      if (neededBytes <= availableBytes) return;
+      if (attempt >= timing.attempts) {
+        throw new BackupError('restore_too_large', `With the old files removed, this machine has room for ${megabytes(availableBytes)} and the rest of this restore needs ${megabytes(neededBytes)}`);
+      }
+      await delay(timing.intervalMs);
+    }
+  };
+}
+
 export function megabytes(bytes: number): string {
   return `${Math.round(bytes / 1_000_000)} MB`;
 }
 
 /** Free space where `path` is, looking at the nearest directory that exists. */
-async function diskSpace(path: string): Promise<number | null> {
+export async function diskSpace(path: string): Promise<number | null> {
   let current = path;
   for (let depth = 0; depth < 32; depth += 1) {
     try {

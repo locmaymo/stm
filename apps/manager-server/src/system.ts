@@ -32,12 +32,15 @@ export interface SystemStoreOptions {
   readonly now?: () => Date;
   /** The active profile's user-data directory, when a profile is active. */
   readonly dataRoot?: () => Promise<string | null>;
+  /** Files here are kept in memory, so there is no disk to report; see `storageMedium`. */
+  readonly inMemory?: boolean;
 }
 
 export class SystemStore {
   private readonly paths: PlatformPaths;
   private readonly now: () => Date;
   private readonly dataRoot: () => Promise<string | null>;
+  private readonly inMemory: boolean;
   private lastCpu: CpuSample | null = null;
   private managerSize: MeasuredSize | null = null;
   private dataSize: MeasuredSize | null = null;
@@ -62,6 +65,7 @@ export class SystemStore {
     this.paths = options.paths;
     this.now = options.now ?? (() => new Date());
     this.dataRoot = options.dataRoot ?? (async () => null);
+    this.inMemory = options.inMemory ?? false;
   }
 
   public async snapshot(): Promise<SystemSnapshot> {
@@ -82,6 +86,7 @@ export class SystemStore {
       },
       storage: {
         root: this.paths.root,
+        inMemory: this.inMemory,
         ...storage,
         managerBytes: this.managerSize?.bytes ?? null,
         dataBytes: this.dataSize?.bytes ?? null,
@@ -115,6 +120,9 @@ export class SystemStore {
   }
 
   private async readStorage(): Promise<{ totalBytes: number | null; freeBytes: number | null }> {
+    // What statfs says there is the host's disk, which this container cannot
+    // write a byte of that is not also a byte of its memory.
+    if (this.inMemory) return { totalBytes: null, freeBytes: null };
     try {
       const details = await statfs(this.paths.root);
       return { totalBytes: details.blocks * details.bsize, freeBytes: details.bavail * details.bsize };

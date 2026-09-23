@@ -613,7 +613,7 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, refusal, onPr
  * Before the password: open this console at the address it is already at.
  *
  * A studio shows a new app inside its own page, and the address in that frame
- * - a `run.app` address, say - already reaches this console. Opened in a tab
+ * - one the platform gave out - already reaches this console. Opened in a tab
  * of its own it is the console without the studio around it, with nothing to
  * set up and nothing to keep running, which is why it is the button the eye
  * lands on. A link of the console's own is the second choice: one fixed
@@ -5736,7 +5736,11 @@ function SystemPanel({ t, snapshot }: { t: Translate; snapshot: SystemSnapshot |
       value: `${formatBytes(memory.usedBytes)} / ${formatBytes(memory.totalBytes)}`,
       ratio: memory.totalBytes > 0 ? memory.usedBytes / memory.totalBytes : 0,
     });
-    if (storage.totalBytes !== null && storage.freeBytes !== null) {
+    if (storage.inMemory) {
+      // Files are pages of the memory above, and the disk `statfs` would
+      // name is the host's: room this machine does not have.
+      rows.push({ key: 'disk', label: t('system.disk'), value: t('system.inMemory') });
+    } else if (storage.totalBytes !== null && storage.freeBytes !== null) {
       const used = storage.totalBytes - storage.freeBytes;
       rows.push({
         key: 'disk',
@@ -6124,8 +6128,9 @@ function StartupCard({ t, startup, saver, onSetAutoStart, onSetSaver }: { t: Tra
  * Saver mode, beside the other thing the manager decides on its way up.
  *
  * The hint says where the answer came from, because two of the three are not
- * this switch: STM_SAVER, which the switch cannot move, and the machine's
- * memory, which decided it before anybody was asked.
+ * this switch: STM_SAVER, which the switch cannot move, and the machine -
+ * files kept in memory, or a disk nearly full - which decided it before
+ * anybody was asked.
  */
 function SaverRow({ t, saver, onSetSaver }: { t: Translate; saver: SaverState | null; onSetSaver: (enabled: boolean) => Promise<string | null> }) {
   const [pending, setPending] = useState<boolean | null>(null);
@@ -6140,12 +6145,15 @@ function SaverRow({ t, saver, onSetSaver }: { t: Translate; saver: SaverState | 
       toast({ title: t(next ? 'console.saverTurnedOn' : 'console.saverTurnedOff'), tone: 'success' });
     } finally { setPending(null); setBusy(false); }
   };
-  const memory = saver ? `${(saver.memoryBytes / 1024 ** 3).toFixed(1)} GiB` : '';
+  const gibibytes = (bytes: number) => `${(bytes / 1024 ** 3).toFixed(1)} GiB`;
+  const reason = saver?.source === 'machine' && saver.enabled ? saver.reason : null;
   const source = saver?.source === 'environment'
     ? t('console.saverFromEnvironment')
-    : saver?.source === 'memory' && saver.enabled
-      ? t('console.saverFromMemory', { memory })
-      : null;
+    : reason === 'inMemory'
+      ? t('console.saverInMemory', { memory: gibibytes(saver?.memoryBytes ?? 0) })
+      : reason === 'lowDisk'
+        ? t('console.saverLowDisk', { disk: gibibytes(saver?.diskBytes ?? 0) })
+        : null;
   return <DetailRow label={t('console.saverMode')} hint={source ? `${t('console.saverHint')} ${source}` : t('console.saverHint')}>
     {checked === null
       ? <Skeleton className="h-5 w-9" />

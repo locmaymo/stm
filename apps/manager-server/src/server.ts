@@ -6,7 +6,7 @@ import { networkInterfaces } from 'node:os';
 import { createSocket } from 'node:dgram';
 import { extname, join, relative, resolve, sep } from 'node:path';
 import { applyQuery, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, isConsoleStatusSection, KEEP_ONLINE_DEFAULT_MINUTES, OPERATION_JOB_KINDS, type AccessGatewayState, type ApiErrorBody, type BackupManifest, type ConfigUpdateInput, type ConsoleStatus, type ConsoleStatusSection, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogPage, type LogSink, type LogSourceFilter, type LegalReview, type ManagerPorts, type ManagerUpdateStatus, type OnlineState, type PortSettings, type Profile, type ProfileLayout, type RestorePreview, type SetupStatus, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
-import { getPlatformPaths, storageDurability, storageReport, type PlatformPaths } from '../../../packages/platform/src/index.js';
+import { getPlatformPaths, storageDurability, storageMedium, storageReport, type PlatformPaths } from '../../../packages/platform/src/index.js';
 import { INSTALL_CANCELED, RuntimeError, RuntimeManager, type InstallationProgress } from '../../../packages/sillytavern-runtime/src/index.js';
 import { hashPassword, MIN_PASSWORD_LENGTH, validatePasscode, validatePassword, verifyPassword } from './password.js';
 import { RateLimiter } from './rate-limit.js';
@@ -35,7 +35,7 @@ import { ActivityMeter } from './activity.js';
 import { ReleaseWatch } from './manager-release.js';
 import { OnlineKeeper } from './online.js';
 import { formatGibibytes, SaverMode } from './saver.js';
-import { capacityFor, checkFits, decideTrim, memoryGuard } from './headroom.js';
+import { capacityFor, checkFits, decideTrim, diskSpace, memoryGuard, roomCheck } from './headroom.js';
 import { applyManagerSettings, foreignManagerSettings, managerSettingsOffer, restoreFromBucketIfBlank, saveManagerSettings, type ManagerSettingsDeps } from './manager-settings.js';
 import type { ManagerSettingsRecord } from '../../../packages/contracts/src/index.js';
 import { instrumentationLoaderPath } from '../../../packages/instrumentation/src/index.js';
@@ -556,8 +556,16 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   // backup library holds compressed. Nothing writes them now; take back the
   // space the old ones are still using.
   void profiles.removeLegacySnapshots().catch(() => undefined);
+  /*
+   * Whether a file written here takes disk or memory; see `storageMedium`.
+   *
+   * Not asked under the test runner, where a developer's /tmp on tmpfs would
+   * otherwise put every test into saver mode.
+   */
+  const medium = process.env.NODE_TEST_CONTEXT !== undefined ? { inMemory: false, signal: null } : storageMedium(paths.root, env);
   const system = new SystemStore({
     paths,
+    inMemory: medium.inMemory,
     dataRoot: async () => {
       const profile = await profiles.getActive();
       return profile ? profile.dataPath : null;
@@ -629,17 +637,30 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
    * The scheduler, a restore and an install all ask the backup store, so the
    * store is where the answer is kept.
    */
-  // Not measured under the test runner, where the machine running the tests
-  // would otherwise decide what every test that takes a backup gets.
-  const saver = options.saver ?? new SaverMode({ env, choice: persisted.saverMode, ...(process.env.NODE_TEST_CONTEXT !== undefined ? { memoryBytes: Number.MAX_SAFE_INTEGER } : {}) });
+  // The disk is not measured under the test runner either, where the machine
+  // running the tests would otherwise decide what every test that takes a
+  // backup gets.
+  const diskBytes = medium.inMemory || process.env.NODE_TEST_CONTEXT !== undefined ? null : await diskSpace(paths.root);
+  const saver = options.saver ?? new SaverMode({ env, choice: persisted.saverMode, storage: medium, diskBytes });
   backups.saving = saver.enabled;
+  {
+    // Said at every start, on or off, so a host this has never run on can be
+    // checked from its first log: what was found, and what it was taken to mean.
+    const { memoryBytes } = saver.state();
+    const memory = formatGibibytes(memoryBytes);
+    const signal = medium.signal ?? 'none';
+    logger(medium.inMemory
+      ? logEvent('storage.inMemory', `[manager] files here are kept in memory (${signal}): they share the ${memory} this manager may use with the programs`, { signal, memory })
+      : logEvent('storage.onDisk', `[manager] files here are on disk, with ${diskBytes === null ? 'an unknown amount' : formatGibibytes(diskBytes)} free; ${memory} of memory`, { disk: diskBytes === null ? 'unknown' : formatGibibytes(diskBytes), memory }));
+  }
   if (saver.enabled) {
-    const memory = formatGibibytes(saver.state().memoryBytes);
     logger(saver.source === 'environment'
       ? logEvent('saver.onFromEnvironment', '[manager] saver mode is on, set by STM_SAVER: no local backups are taken on this machine')
       : saver.source === 'choice'
         ? logEvent('saver.onByChoice', '[manager] saver mode is on, as chosen in the console: no local backups are taken on this machine')
-        : logEvent('saver.onForMemory', `[manager] saver mode is on because this machine has ${memory} of memory: no local backups are taken on this machine`, { memory }));
+        : saver.reason === 'inMemory'
+          ? logEvent('saver.onForInMemory', '[manager] saver mode is on because files here are kept in memory: no local backups are taken on this machine')
+          : logEvent('saver.onForLowDisk', `[manager] saver mode is on because the disk has ${formatGibibytes(diskBytes ?? 0)} free: no local backups are taken on this machine`, { disk: formatGibibytes(diskBytes ?? 0) }));
   }
   // A stored port that would now collide - because `STM_PORT` or
   // `STM_ACCESS_PORT` moved since it was chosen - is dropped rather than
@@ -1890,6 +1911,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
         profile, r2, backups, snapshot, mode, ...(force ? { force: true } : {}), ...(trim ? { trim: true } : {}), signal,
         logger: (line) => jobs.append('backup', line),
         ...(restoreOptions.checkpoint ? { checkpoint: restoreOptions.checkpoint } : {}),
+        ...(restoreOptions.recheck ? { recheck: restoreOptions.recheck } : {}),
         ...(restoreOptions.onStatus ? { onStatus: restoreOptions.onStatus } : {}),
         onProgress: (progress) => {
           const { percent, params } = meter.update(progress);
@@ -2999,8 +3021,9 @@ export async function restoreWithProcess(options: {
       mode,
       ...(options.trim ? { trim: true } : {}),
       // Saver mode watches the room left while it writes, and stops before
-      // the machine runs out rather than after.
-      ...(backups.saving ? { checkpoint: memoryGuard(profile.dataPath) } : {}),
+      // the machine runs out rather than after - and asks again once the old
+      // files are gone, before it writes anything.
+      ...(backups.saving ? { checkpoint: memoryGuard(profile.dataPath), recheck: roomCheck(profile.dataPath) } : {}),
       ...(options.force ? { force: true } : {}),
       ...(signal ? { signal } : {}),
       onProgress: ({ completed, total }) => onProgress?.(25 + (total > 0 ? (completed / total) * 60 : 60), logEvent('job.restoringFiles', `Restoring files (${completed}/${total})`, { completed, total })),
@@ -3564,6 +3587,7 @@ async function refillProfile(
           profile, r2, backups, snapshot, mode: 'replace', force: true, signal: running.signal,
           ...(restoreOptions.trim ? { trim: true } : {}),
           ...(restoreOptions.checkpoint ? { checkpoint: restoreOptions.checkpoint } : {}),
+          ...(restoreOptions.recheck ? { recheck: restoreOptions.recheck } : {}),
           logger: (line) => jobs.append('backup', line),
           ...(restoreOptions.onStatus ? { onStatus: restoreOptions.onStatus } : {}),
           onProgress: (progress) => {

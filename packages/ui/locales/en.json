@@ -174,9 +174,10 @@
     "startupSaveFailed": "Could not save that setting",
     "startupSaved": "Saved. This takes effect the next time the manager starts.",
     "saverMode": "Saver mode",
-    "saverHint": "For machines with little memory and disk: no local backups, and a restore keeps its safety copy in R2 instead of on this machine.",
+    "saverHint": "For machines with little room for files: no local backups, and a restore keeps its safety copy in R2 instead of on this machine.",
     "saverFromEnvironment": "Set by STM_SAVER, so it can only be changed there.",
-    "saverFromMemory": "On by itself because this machine has {memory} of memory.",
+    "saverInMemory": "On by itself because this machine keeps its files in memory: files and programs share {memory}.",
+    "saverLowDisk": "On by itself because the disk had only {disk} free when the manager started.",
     "saverTurnedOn": "Saver mode is on.",
     "saverTurnedOff": "Saver mode is off.",
     "saverLocalOff": "Saver mode is on, so no backups are kept on this machine. Cloudflare R2 holds your recovery points instead.",
@@ -882,7 +883,8 @@
     "saver": {
       "onFromEnvironment": "Saver mode is on, set by STM_SAVER: no local backups are taken on this machine",
       "onByChoice": "Saver mode is on, as chosen in the console: no local backups are taken on this machine",
-      "onForMemory": "Saver mode is on because this machine has {memory} of memory: no local backups are taken on this machine",
+      "onForInMemory": "Saver mode is on because files here are kept in memory: no local backups are taken on this machine",
+      "onForLowDisk": "Saver mode is on because the disk has {disk} free: no local backups are taken on this machine",
       "turnedOn": "Saver mode turned on",
       "turnedOff": "Saver mode turned off"
     },
@@ -1047,6 +1049,8 @@
       "targetPort": "Now serving SillyTavern on port {port}"
     },
     "storage": {
+      "inMemory": "Files here are kept in memory ({signal}): they share the {memory} this manager may use with the programs",
+      "onDisk": "Files here are on disk, with {disk} free; {memory} of memory",
       "notDurable": "{path} is on {filesystem}, which this machine does not keep across a restart; connect Cloudflare R2 so backups are held somewhere else",
       "notVerified": "This manager cannot tell whether {path} survives a restart here, so treat it as storage that may be temporary; connect Cloudflare R2 so backups are held somewhere else"
     },
@@ -1076,6 +1080,7 @@
     "memory": "RAM",
     "disk": "Storage",
     "free": "free",
+    "inMemory": "Kept in RAM, shared with the programs",
     "managerFootprint": "Everything this app keeps",
     "activeData": "SillyTavern data",
     "measuring": "Measuring…",

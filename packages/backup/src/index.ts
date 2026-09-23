@@ -132,6 +132,12 @@ export interface RestoreOptions {
    * machine stops before the machine does.
    */
   readonly checkpoint?: () => Promise<void>;
+  /**
+   * Called once in saver mode, after the files a replace removes are gone and
+   * before anything is written, with how much the restore still adds: what it
+   * writes less the files it writes over. A throw stops the restore there.
+   */
+  readonly recheck?: (neededBytes: number) => Promise<void>;
 }
 
 /** What a restore adds, before anything is written; see `BackupStore.estimate`. */
@@ -830,6 +836,12 @@ export class BackupStore {
     // room they take is free before the new files need it. Either order ends
     // with the same profile; this one never holds both at once.
     if (this.saving) await removeObsolete();
+    // And the room is asked about again with them gone, rather than taken on
+    // the estimate's word; see `roomCheck` in the manager.
+    if (this.saving && options.recheck) {
+      const incomingBytes = plan.reduce((total, item) => total + item.entry.uncompressedSize, 0);
+      await options.recheck(Math.max(0, incomingBytes - await sizesOf(plan.map((item) => item.target))));
+    }
     options.onStatus?.(logEvent('restore.restoringFiles', 'Restoring files'));
     this.logger(logEvent('backup.restoring', `[backup] restoring ${plan.length} files into ${dataDestination}`, { count: plan.length, path: dataDestination }));
     await this.timed(logEvent('backup.phaseWroteFiles', `wrote ${plan.length} files`, { count: plan.length }), () => write(plan));
