@@ -7,7 +7,7 @@ const WRITTEN_AT = '2026-09-20T09:02:19.000Z';
 
 const OFFER: ManagerSettingsOffer = {
   available: true,
-  label: 'DESKTOP-LOC',
+  label: 'laptop',
   writtenAt: WRITTEN_AT,
   mine: false,
   hasAdminPassword: true,

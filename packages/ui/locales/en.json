@@ -234,7 +234,7 @@
     "r2LastUpload": "Last sent",
     "r2LegacyRemove": "Remove older backups",
     "r2DisplacedTitle": "Another manager signed in with this Cloudflare account",
-    "r2DisplacedBody": "Your machine {name} signed in with this Cloudflare account, last seen {when}, so this machine has stopped backing up and has given up its own sign-in - two machines on one bucket collect each other’s data. Whichever manager signed in last is the one that backs up. Nothing here can reach the account until you sign in to Cloudflare again; do that and the other machine will stop and will be told the same thing.",
+    "r2DisplacedBody": "{name} signed in with this Cloudflare account at {when}, so this machine has stopped backing up to the cloud and signed out of Cloudflare. To back this machine up to the cloud again, sign in here; {name} will then stop and be told the same.",
     "r2DisplacedSignIn": "Sign in to Cloudflare again",
     "r2LegacyRemoved": "The older backups were removed",
     "r2LegacyRemoveFailed": "The older backups could not be removed",

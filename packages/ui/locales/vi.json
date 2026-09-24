@@ -234,7 +234,7 @@
     "r2LastUpload": "Lần gửi gần nhất",
     "r2LegacyRemove": "Xoá các bản sao lưu cũ",
     "r2DisplacedTitle": "Một STM khác đã đăng nhập bằng tài khoản Cloudflare này",
-    "r2DisplacedBody": "Máy {name} của bạn đã đăng nhập bằng tài khoản Cloudflare này, thấy lần cuối {when}, nên máy này đã ngừng sao lưu và đã tự bỏ đăng nhập Cloudflare của nó - hai máy dùng chung một kho lưu trữ sẽ dọn mất dữ liệu của nhau. Máy nào đăng nhập sau cùng thì máy đó sao lưu. Từ giờ máy này không đụng được gì trong tài khoản đó nữa; muốn dùng lại thì hãy đăng nhập Cloudflare lại ở đây, khi đó máy kia sẽ dừng và cũng nhận được thông báo như vậy.",
+    "r2DisplacedBody": "Máy {name} đã đăng nhập bằng tài khoản Cloudflare này lúc {when}, nên máy này đã ngừng sao lưu cloud và đăng xuất Cloudflare. Nếu muốn sao lưu cloud máy này thì hãy đăng nhập lại tại đây, khi đó máy {name} sẽ dừng và cũng nhận được thông báo như vậy.",
     "r2DisplacedSignIn": "Đăng nhập Cloudflare lại",
     "r2LegacyRemoved": "Đã xoá các bản sao lưu cũ",
     "r2LegacyRemoveFailed": "Không xoá được các bản sao lưu cũ",

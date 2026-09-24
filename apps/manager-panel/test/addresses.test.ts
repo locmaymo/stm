@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { publicAddress, reachableAddresses, shortenHost } from '../src/addresses.js';
+import { machineName, publicAddress, reachableAddresses, shortenHost } from '../src/addresses.js';
 
 test('the tunnel comes first, then the network, then this machine', () => {
   const all = reachableAddresses({ url: 'https://example.trycloudflare.com' }, { lan: true, port: 8001 }, '192.168.1.20', 8000, true);
@@ -121,4 +121,10 @@ test('a machine with no network of its own offers no address on one', () => {
   // A machine that does have one still gets it.
   const athome = reachableAddresses({ url: null }, { lan: true, port: 8001 }, '192.168.1.20', 8000, true);
   assert.deepEqual(athome.map((address) => address.host), ['192.168.1.20:8001', '127.0.0.1:8000']);
+});
+
+test('another machine is named by its hostname, or by both ends of its address', () => {
+  assert.equal(machineName('laptop'), 'laptop');
+  assert.equal(machineName('studio-123456789012.hosted.example'), 'studio-12345...sted.example');
+  assert.equal(machineName('studio.hosted.example'), 'studio.hosted.example');
 });

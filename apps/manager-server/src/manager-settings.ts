@@ -1,4 +1,4 @@
-import type { ManagerSettingsOffer, ManagerSettingsRecord } from '../../../packages/contracts/src/index.js';
+import type { ManagerSettingsOffer, ManagerSettingsRecord, R2Config } from '../../../packages/contracts/src/index.js';
 import { logEvent, logLineText, type LogSink } from '../../../packages/contracts/src/index.js';
 import type { BackupStore } from '../../../packages/backup/src/index.js';
 import type { R2Manager } from '../../../packages/r2/src/index.js';
@@ -150,6 +150,53 @@ export async function managerSettingsOffer(deps: ManagerSettingsDeps): Promise<M
     hasAdminPassword: record.adminPasswordHash !== null,
     hasAccessPassword: record.accessPasswordHash !== null,
   };
+}
+
+/**
+ * The offer above, as last read, for a console that asks on a clock.
+ *
+ * The console asked for it once, as it opened, and again when a background
+ * job ended. Connecting a bucket from the Data page is neither, so a machine
+ * that had just connected to an account holding another machine's setup said
+ * nothing about it until somebody reloaded the page. The status poll carries
+ * it now; reading it is a charged request, so this keeps the answer and reads
+ * again only when the connection changes or a minute has passed.
+ */
+export class SettingsOfferWatch {
+  private seen: { readonly key: string; readonly at: number; readonly offer: ManagerSettingsOffer } | null = null;
+  private looking = false;
+
+  public constructor(private readonly now: () => number = Date.now) {}
+
+  /** What was last read for this connection, or null before anything was. */
+  public current(key: string): ManagerSettingsOffer | null {
+    return this.seen?.key === key ? this.seen.offer : null;
+  }
+
+  /** Read again when the connection has changed or `atMostEvery` has passed. Not waited for. */
+  public refresh(key: string, read: () => Promise<ManagerSettingsOffer>, atMostEvery: number): void {
+    if (this.looking) return;
+    if (this.seen?.key === key && this.now() - this.seen.at < atMostEvery) return;
+    this.looking = true;
+    void read()
+      .then((offer) => { this.remember(key, offer); }, () => undefined)
+      .finally(() => { this.looking = false; });
+  }
+
+  /** An answer read somewhere else, kept so the two cannot disagree. */
+  public remember(key: string, offer: ManagerSettingsOffer): void {
+    this.seen = { key, at: this.now(), offer };
+  }
+
+  /** Read again next time: the offer has just been answered or acted on. */
+  public forget(): void {
+    this.seen = null;
+  }
+}
+
+/** Which connection an offer was read through; a new one is a new question. */
+export function settingsOfferKey(config: R2Config): string {
+  return [config.mode, config.enabled, config.configured, config.bucket ?? '', config.owner?.label ?? '', config.owner?.mine ?? ''].join('|');
 }
 
 export interface ApplyManagerSettingsResult {

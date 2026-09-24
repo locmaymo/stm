@@ -36,8 +36,8 @@ import { ReleaseWatch } from './manager-release.js';
 import { OnlineKeeper } from './online.js';
 import { formatGibibytes, SaverMode } from './saver.js';
 import { capacityFor, checkFits, decideTrim, diskSpace, memoryGuard, roomCheck } from './headroom.js';
-import { applyManagerSettings, foreignManagerSettings, managerSettingsOffer, restoreFromBucketIfBlank, saveManagerSettings, type ManagerSettingsDeps } from './manager-settings.js';
-import type { ManagerSettingsRecord } from '../../../packages/contracts/src/index.js';
+import { applyManagerSettings, foreignManagerSettings, managerSettingsOffer, restoreFromBucketIfBlank, saveManagerSettings, SettingsOfferWatch, settingsOfferKey, type ManagerSettingsDeps } from './manager-settings.js';
+import type { ManagerSettingsOffer, ManagerSettingsRecord } from '../../../packages/contracts/src/index.js';
 import { instrumentationLoaderPath } from '../../../packages/instrumentation/src/index.js';
 import { ConfigError, ConfigStore } from '../../../packages/config/src/index.js';
 import { DEFAULT_TELEMETRY_ENDPOINT, DEFAULT_TELEMETRY_ENROLLMENT_ENDPOINT, TelemetryTransport } from '../../../packages/telemetry/src/index.js';
@@ -106,14 +106,27 @@ const PROTECTED_PATHS = new Set([
 ]);
 
 /**
- * How often a console being read goes and asks the bucket who owns it.
+ * How often a console being read goes and asks the bucket who owns it, and
+ * whether it holds another machine's setup.
  *
- * Short enough that somebody who has just signed in on another machine finds
- * this one already knowing, rather than after a reload; long enough that a
- * console left open all day is a few hundred reads, not a few hundred
- * thousand.
+ * Five minutes was too long: somebody who had just signed in on another
+ * machine turned to this one, saw nothing, and reloaded - and the reload
+ * found it, because opening a console asks at once. A minute keeps a console
+ * left open all day to about a thousand small reads, and a hidden tab asks
+ * nothing at all.
  */
-const CLAIM_LOOK_MS = 5 * 60 * 1000;
+const CLAIM_LOOK_MS = 60 * 1000;
+
+/** Nothing to offer; also what is said while this manager is acting on one. */
+const NO_SETTINGS_OFFER: ManagerSettingsOffer = { available: false, label: null, writtenAt: null, mine: false, hasAdminPassword: false, hasAccessPassword: false };
+
+/** One per bucket connection a manager holds; see `SettingsOfferWatch`. */
+const offerWatches = new WeakMap<R2Manager, SettingsOfferWatch>();
+function offerWatch(r2: R2Manager): SettingsOfferWatch {
+  let watch = offerWatches.get(r2);
+  if (!watch) { watch = new SettingsOfferWatch(); offerWatches.set(r2, watch); }
+  return watch;
+}
 
 export interface ManagerServerOptions {
   readonly host?: string;
@@ -647,6 +660,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     logger(logEvent('storage.notVerified', `[manager] this manager cannot tell whether ${paths.root} survives a restart here, so treat it as storage that may be temporary; connect Cloudflare R2 so backups are held somewhere else`, { path: paths.root, filesystem: durability.filesystem ?? 'unknown' }));
   }
   let persisted = await store.load();
+  r2.noteInstallation(persisted.installId);
   /*
    * Saver mode, settled before anything could write an archive.
    *
@@ -1881,9 +1895,11 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
      * settings landed, which reads as a button somebody was too slow to press.
      */
     const offer = jobs.activeOperation()
-      ? { available: false, label: null, writtenAt: null, mine: false, hasAdminPassword: false, hasAccessPassword: false }
+      ? NO_SETTINGS_OFFER
       : await managerSettingsOffer({ store, backups, r2, runtime, tunnel, managerTunnel, gateway, logger });
-    sendJson(response, 200, { settings: offer, owner: (await r2.getConfig()).owner ?? null });
+    const config = await r2.getConfig();
+    if (!jobs.activeOperation()) offerWatch(r2).remember(settingsOfferKey(config), offer);
+    sendJson(response, 200, { settings: offer, owner: config.owner ?? null });
     return;
   }
   /*
@@ -1898,6 +1914,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
   if (pathname === '/api/v1/r2/settings/dismiss' && method === 'POST') {
     const record = await foreignManagerSettings({ store, backups, r2, runtime, tunnel, managerTunnel, gateway, logger });
     if (record) await r2.answerSettingsOffer(record.writtenAt);
+    offerWatch(r2).forget();
     sendJson(response, 200, { dismissed: record !== null });
     return;
   }
@@ -1960,6 +1977,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     const restored = await store.getPersisted();
     gateway.setPassword(restored.accessPasswordHash, restored.accessPasscode);
     const security = await gateway.setLan(restored.accessLanEnabled);
+    offerWatch(r2).forget();
     sendJson(response, 200, { ...result, security });
     return;
   }
@@ -2706,6 +2724,9 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     // somebody is in front of it. It stops while the page is hidden, which is
     // what makes this a measure of being read rather than of being open.
     activity.seen();
+    // What this machine is known by from outside, for the name the other
+    // machines on the account see where its hostname says nothing.
+    r2.noteAddress(forwardedValue(context.request, 'x-forwarded-host') ?? headerValue(context.request.headers.host));
     /*
      * Which also makes it the place to go and look at who holds the account.
      *
@@ -2725,8 +2746,21 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
      * changes nothing and this request is the console's clock.
      */
     budget.refresh();
-    // Read once for the two things below it, both of which come off it.
+    // Read once for the things below it, all of which come off it.
     const r2Now = await r2.getConfig();
+    /*
+     * The setup another machine left in the bucket, on the same clock as the
+     * claim. Forgotten while this manager is acting on one, so the answer
+     * read before a restore is not offered again after it; see
+     * `SettingsOfferWatch`.
+     */
+    const offers = offerWatch(r2);
+    const offerKey = settingsOfferKey(r2Now);
+    const acting = jobs.activeOperation() !== null;
+    const connected = r2Now.enabled && r2Now.configured;
+    if (acting || !connected) offers.forget();
+    else offers.refresh(offerKey, () => managerSettingsOffer({ store, backups, r2, runtime, tunnel, managerTunnel, gateway, logger }), CLAIM_LOOK_MS);
+    const settingsOffer = acting || !connected ? NO_SETTINGS_OFFER : offers.current(offerKey);
     const status: ConsoleStatus = {
       process: supervisor.getState(),
       tunnel: await withProxyUrl(tunnel.getState(), proxy, cloudflare, 'sillyTavern', budget),
@@ -2737,6 +2771,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       operation: jobs.activeOperation(),
       ports: { port: ports.sillyTavern(), reserved: { manager: ports.manager, access: ports.access } },
       r2Owner: r2Now.owner,
+      ...(settingsOffer ? { settingsOffer } : {}),
       r2Problem: r2Now.cloudflare?.problem ?? null,
       /*
        * Ask less often, because the day's Worker allowance is running down.
@@ -3327,6 +3362,9 @@ async function handleCloudflareRequest(context: RequestContext, cloudflare: Clou
  */
 async function handleCloudflareCallback(context: RequestContext, sessions: SessionStore, cloudflare: CloudflareConnection | null, r2: R2Manager, publishProxies: () => void, logger: LogSink, handoffs: HandoffStore, signIn: CloudflareSignInDeps): Promise<void> {
   const { response, searchParams } = context;
+  // The sign-in is often the first thing a blank machine is opened for, and
+  // the claim it writes carries this machine's name; see `status`.
+  r2.noteAddress(forwardedValue(context.request, 'x-forwarded-host') ?? headerValue(context.request.headers.host));
   const state = searchParams.get('state') ?? '';
   /*
    * Whether a console is waiting to collect this, rather than reading it here.

@@ -42,7 +42,7 @@ import { POLL_BACKGROUND_MS, POLL_RELEASE_MS, statusIntervalMs } from './polling
 import { foldForSearch, translateLogEntry, translateStep } from '../../../packages/contracts/src/index.js';
 import { QrCode } from './qr-code.js';
 import { CLOUDFLARE_ORANGE, CloudflareMark } from './cloudflare-mark.js';
-import { bareHost, localHost, publicAddress, reachableAddresses, shortenHost } from './addresses.js';
+import { bareHost, localHost, machineName, publicAddress, reachableAddresses, shortenHost } from './addresses.js';
 import { EmbedStage } from './embed-stage.js';
 import { SetupChecklist, type ChecklistItem } from './setup-checklist.js';
 import { LegalCredit, LegalDialog, LEGAL_REVISION } from './legal-dialog.js';
@@ -1254,6 +1254,10 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
      */
     setR2Owner(status.r2Owner);
     setR2Problem(status.r2Problem);
+    // Carried on the same clock, so connecting a bucket that holds another
+    // machine's setup offers it without a reload. Absent until the manager
+    // has read it, which leaves what is here alone.
+    if (status.settingsOffer) setSettingsOffer(status.settingsOffer);
     /*
      * Work this machine started for itself, adopted whenever it appears.
      *
@@ -1862,7 +1866,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
                 <ShieldCheck />
                 <AlertTitle>{t('console.r2DisplacedTitle')}</AlertTitle>
                 <AlertDescription className="grid gap-2">
-                  <span>{t('console.r2DisplacedBody', { name: r2Owner.label, when: new Date(r2Owner.lastSeenAt).toLocaleString() })}</span>
+                  <span>{t('console.r2DisplacedBody', { name: machineName(r2Owner.label), when: new Date(r2Owner.claimedAt ?? r2Owner.lastSeenAt).toLocaleString() })}</span>
                   <span className="flex flex-wrap items-center gap-2">{reconnectUrl
                     ? <Button size="sm" asChild style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }} className="hover:opacity-90">
                       <a href={reconnectUrl} target="_blank" rel="noopener noreferrer"><CloudflareMark />{t('console.r2DisplacedSignIn')}</a>
@@ -2013,7 +2017,7 @@ function RestoreEverythingCard({ t, offer, busy, onRestore, onDismiss }: {
     <PanelHeading icon={<History />}>{t('console.r2RestoreAllTitle')}</PanelHeading>
     <CardContent className="grid gap-3">
       <p className="text-sm text-muted-foreground">
-        {t('console.r2RestoreAllBody', { name: offer.label ?? '', when: offer.writtenAt ? new Date(offer.writtenAt).toLocaleString() : '' })}
+        {t('console.r2RestoreAllBody', { name: machineName(offer.label ?? ''), when: offer.writtenAt ? new Date(offer.writtenAt).toLocaleString() : '' })}
       </p>
       <ul className="grid gap-1 text-sm text-muted-foreground">
         <li>{t('console.r2RestoreAllData')}</li>
@@ -4970,7 +4974,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
           <Settings2 />
           <AlertTitle>{t('console.r2SettingsTitle')}</AlertTitle>
           <AlertDescription className="grid gap-2">
-            <span>{t('console.r2SettingsBody', { name: settingsOffer.label ?? '', when: settingsOffer.writtenAt ? new Date(settingsOffer.writtenAt).toLocaleString() : '' })}</span>
+            <span>{t('console.r2SettingsBody', { name: machineName(settingsOffer.label ?? ''), when: settingsOffer.writtenAt ? new Date(settingsOffer.writtenAt).toLocaleString() : '' })}</span>
             {settingsOffer.hasAdminPassword ? <span className="text-xs">{t('console.r2SettingsPasswordWarning')}</span> : null}
             <span className="flex flex-wrap gap-2">
               <Button size="sm" variant="outline" onClick={() => restoreManagerSettings()} disabled={r2Busy !== null}>{t('console.r2SettingsRestore')}</Button>
@@ -5010,7 +5014,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
               is only a question while the answer to this one is yes. */}
           <DetailRow
             label={t('console.r2Enabled')}
-            hint={displaced ? t('console.r2DisplacedHint', { name: r2Config?.owner?.label ?? '' }) : !r2Config?.configured ? t('console.r2NeedsSetup') : r2Config.enabled ? r2ScheduleSummary(t, r2Config) : t('console.r2EnabledOffHint')}
+            hint={displaced ? t('console.r2DisplacedHint', { name: machineName(r2Config?.owner?.label ?? '') }) : !r2Config?.configured ? t('console.r2NeedsSetup') : r2Config.enabled ? r2ScheduleSummary(t, r2Config) : t('console.r2EnabledOffHint')}
           >
             {r2Config?.configured && r2Config.enabled
               ? <Button variant="outline" size="sm" onClick={() => setR2ScheduleOpen(true)}>{t('console.r2Change')}</Button>

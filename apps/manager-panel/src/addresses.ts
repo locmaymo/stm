@@ -129,3 +129,16 @@ export function shortenHost(host: string): string {
   if (/^[0-9.:]+$/u.test(host)) return host;
   return host.length > head + tail + 5 ? `${host.slice(0, head)}...${host.slice(-tail)}` : host;
 }
+
+/**
+ * What another machine on the account is called, fit for a sentence.
+ *
+ * Usually its hostname, which is short. Where that said nothing the manager
+ * names the machine by the address it was opened at instead, which is long -
+ * and only its two ends are worth reading. More of each end than
+ * `shortenHost` keeps: this is read in a sentence, not squeezed onto a button.
+ */
+export function machineName(label: string): string {
+  const keep = 12;
+  return label.includes('.') && label.length > keep * 2 + 3 ? `${label.slice(0, keep)}...${label.slice(-keep)}` : label;
+}

@@ -665,6 +665,11 @@ export interface R2Config {
   readonly owner?: {
     /** What the holding machine calls itself, usually its hostname. */
     readonly label: string;
+    /**
+     * When the holder signed in and took the account; absent on an older
+     * manager's answer. `lastSeenAt` moves on with every backup it sends.
+     */
+    readonly claimedAt?: string;
     readonly lastSeenAt: string;
     /** Whether the holder is this manager. */
     readonly mine: boolean;
@@ -1449,6 +1454,13 @@ export interface ConsoleStatus {
    * costs this answer nothing.
    */
   readonly r2Owner: R2Config['owner'];
+  /**
+   * The setup another machine left in the bucket, offered to this one.
+   *
+   * Absent until the manager has read it, and on an older manager's answer;
+   * either way the console keeps what it had.
+   */
+  readonly settingsOffer?: ManagerSettingsOffer;
   /**
    * Something about the signed-in Cloudflare account that has to be fixed on
    * Cloudflare before any of this works.
