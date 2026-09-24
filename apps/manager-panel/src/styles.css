@@ -636,6 +636,52 @@
 .embed-menu > *:hover, .embed-menu > *:focus-visible { background: var(--accent); }
 .embed-menu svg { width: 16px; height: 16px; color: var(--muted-foreground); }
 .embed-menu .embed-menu-danger, .embed-menu .embed-menu-danger svg { color: var(--destructive); }
+.embed-menu > .embed-menu-rule { min-height: 0; height: 1px; margin: 4px 6px; padding: 0; background: var(--border); }
+.embed-menu > button:disabled { opacity: 0.5; cursor: default; }
+/* Working on a backup: the ring breathes, so the tool that started it says so
+   without a notification of its own. */
+.embed-handle[data-busy] span { animation: embed-handle-busy 1.2s ease-in-out infinite; }
+@keyframes embed-handle-busy { 50% { transform: scale(0.7); } }
+@media (prefers-reduced-motion: reduce) { .embed-handle[data-busy] span { animation: none; } }
+/* The manager's log over SillyTavern, the same panel the tools window has. */
+.embed-logs { position: absolute; right: 12px; bottom: 12px; z-index: 1; display: flex; flex-direction: column; width: min(var(--logs-width, 40rem), calc(100vw - 16px)); height: min(var(--logs-height, 26rem), calc(100dvh - 16px)); overflow: hidden; border: 1px solid var(--border); border-radius: 14px; background: var(--card); box-shadow: var(--elevation-3); }
+.embed-logs[data-maximized] { inset: 0; width: auto; height: auto; border-radius: 0; }
+.embed-logs header { display: flex; align-items: center; gap: 4px; padding: 10px 8px 8px 14px; border-bottom: 1px solid var(--border); }
+.embed-logs header strong { flex: 1; font-size: 14px; }
+.embed-logs header button { display: inline-flex; white-space: nowrap; align-items: center; gap: 6px; min-height: 0; padding: 6px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--muted-foreground); font-size: 12.5px; }
+.embed-logs header button:hover { background: var(--accent); color: var(--foreground); }
+.embed-logs header button[aria-pressed="true"] { color: var(--foreground); }
+.embed-logs header svg { width: 15px; height: 15px; }
+.embed-logs-filter { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+.embed-logs-filter button { min-height: 0; padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px; background: transparent; color: var(--muted-foreground); font-size: 12.5px; }
+.embed-logs-filter button:hover { color: var(--foreground); }
+.embed-logs-filter button[aria-checked="true"] { border-color: var(--primary); background: color-mix(in srgb, var(--primary) 10%, transparent); color: var(--primary); }
+.embed-logs header button[aria-pressed="true"] svg { color: var(--primary); }
+.embed-logs-search { position: relative; display: flex; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+.embed-logs-search svg { position: absolute; left: 22px; width: 15px; height: 15px; color: var(--muted-foreground); }
+.embed-logs-search input { width: 100%; height: 34px; padding: 0 10px 0 32px; border: 1px solid var(--input); border-radius: 8px; background: transparent; color: inherit; font: inherit; font-size: 16px; outline: none; }
+@media (min-width: 641px) { .embed-logs-search input { font-size: 13px; } }
+.embed-logs-lines { flex: 1; overflow: auto; padding: 8px 12px; font: 12px/1.55 var(--font-mono, ui-monospace, monospace); }
+.embed-logs-lines p { margin: 0; padding: 2px 0; border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent); white-space: pre-wrap; word-break: break-word; }
+.embed-logs-lines time { margin-right: 8px; color: var(--muted-foreground); }
+.embed-logs-source { margin-right: 6px; color: var(--primary); }
+.embed-logs-lines p[data-level="warn"] { color: var(--warning, #b45309); }
+.embed-logs-lines p[data-level="error"] { color: var(--destructive); }
+.embed-logs-lines .embed-logs-empty { border: 0; color: var(--muted-foreground); font-family: inherit; }
+/* The edges that resize it: the top everywhere, with a grip in the middle a
+   thumb can find; the left edge and the corner between them for a mouse. */
+.embed-logs-grip { position: absolute; top: 0; left: 0; right: 0; z-index: 1; display: grid; height: 10px; place-items: center; cursor: ns-resize; touch-action: none; }
+.embed-logs-grip i { width: 36px; height: 4px; margin-top: 3px; border-radius: 999px; background: color-mix(in srgb, var(--muted-foreground) 45%, transparent); }
+.embed-logs-edge-left { position: absolute; top: 0; bottom: 0; left: 0; z-index: 1; width: 6px; cursor: ew-resize; touch-action: none; }
+.embed-logs-corner { position: absolute; top: 0; left: 0; z-index: 2; width: 14px; height: 14px; cursor: nwse-resize; touch-action: none; }
+:root[data-resizing] { user-select: none; }
+:root[data-resizing] iframe { pointer-events: none; }
+@media (max-width: 640px) {
+  .embed-logs:not([data-maximized]) { right: 8px; left: 8px; bottom: 8px; width: auto; height: min(var(--logs-height, 70dvh), calc(100dvh - 16px)); }
+  .embed-logs-edge-left, .embed-logs-corner { display: none; }
+  .embed-logs-grip { height: 18px; }
+  .embed-logs header button span { display: none; }
+}
 
 @media (max-width: 640px) {
   /* The name, the state and the two run controls do not fit on one line on a
@@ -904,16 +950,18 @@
 .access-row span { color: var(--muted-foreground); font-size: 12px; }
 [data-tour="logs"] { grid-column: 1 / -1; height: 28rem; min-height: 0; overflow: hidden; padding-bottom: 0; }
 [data-tour="logs"] [data-slot="card-header"] { flex-shrink: 0; }
-.log-toolbar { display: flex; flex-shrink: 0; flex-wrap: wrap; align-items: center; gap: 10px; }
-.log-density-toggle { margin-left: auto; }
+/* The log's controls, small and in its header; on a phone, icons only. */
+.log-controls { display: flex; align-items: center; gap: 2px; }
+@media (max-width: 640px) { .log-control-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; } }
 .logs-content { display: flex; min-width: 0; min-height: 0; flex: 1 1 0%; flex-direction: column; gap: 12px; overflow: hidden; padding: 0 24px 24px; }
 .log-card-placeholder { height: 10rem; margin: 0 24px 24px; border: 1px solid transparent; }
 .log-sheet { inset: 1rem; width: auto; height: calc(100dvh - 2rem); max-width: 76rem; margin: auto; overflow: hidden; border: 1px solid var(--border); border-radius: 12px; outline: none; }
 .log-sheet-header { flex-shrink: 0; flex-direction: row; align-items: center; justify-content: space-between; padding: 18px 24px 14px; border-bottom: 1px solid var(--border); }
 .logs-content-expanded { flex: 1; }
-.log-search { position: relative; display: flex; min-width: 12rem; max-width: 24rem; flex: 1; align-items: center; }
+.log-search { position: relative; display: flex; flex-shrink: 0; align-items: center; }
 .log-search svg { position: absolute; left: 10px; z-index: 1; width: 15px; color: var(--muted-foreground); }
-.log-search input { padding-left: 32px; }
+.log-search input { padding-left: 32px; padding-right: 36px; }
+.log-search .log-search-clear { position: absolute; right: 2px; }
 .log-viewport { position: relative; display: flex; min-width: 0; min-height: 0; flex: 1 1 0%; }
 .log-jump { position: absolute; right: 18px; bottom: 14px; display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border: 1px solid var(--border); border-radius: 999px; background: var(--popover); color: var(--popover-foreground); box-shadow: 0 2px 10px rgb(0 0 0 / 0.18); font-size: 12px; cursor: pointer; }
 .log-jump:hover { background: var(--accent); }
@@ -1212,10 +1260,6 @@
   .log-sheet { inset: 0; width: 100%; height: 100dvh; max-width: none; border-radius: 0; border-left: 0; border-right: 0; }
   .log-sheet-header { padding-left: 18px; padding-right: 18px; }
   .logs-content-expanded { padding-bottom: max(18px, env(safe-area-inset-bottom)); }
-  .log-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
-  .log-toolbar [data-slot="select-trigger"] { width: 100%; min-width: 0; }
-  .log-search { grid-column: 1 / -1; grid-row: 2; min-width: 0; max-width: none; }
-  .log-density-toggle { margin-left: 0; }
   .config-editor { min-height: 24rem; }
 }
 
@@ -1239,3 +1283,56 @@
 .passcode-badge { display: grid; width: 44px; height: 44px; margin-bottom: 4px; place-items: center; border-radius: 14px; background: color-mix(in srgb, var(--primary) 12%, transparent); color: var(--primary); transition: background-color 0.2s, color 0.2s; }
 .passcode-badge svg { width: 22px; height: 22px; }
 .passcode-badge[data-stage="confirm"] { background: color-mix(in srgb, var(--success) 14%, transparent); color: var(--success); }
+
+/*
+ * The setup checklist on the overview.
+ *
+ * A row per step, crossed off in green once it is done - the colour the
+ * console already uses for things that are in order - and a way to the step
+ * while it is not.
+ */
+@media (max-width: 640px) {
+  .checklist-list { max-height: 192px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: none; --fade-top: 0px; --fade-bottom: 0px; mask-image: linear-gradient(to bottom, transparent 0, #000 var(--fade-top), #000 calc(100% - var(--fade-bottom)), transparent 100%); }
+  .checklist-list::-webkit-scrollbar { display: none; }
+  .checklist-list[data-fade-top] { --fade-top: 20px; }
+  .checklist-list[data-fade-bottom] { --fade-bottom: 24px; }
+}
+.checklist-item { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 12px; border: 1px solid transparent; border-radius: 10px; background: var(--muted); color: var(--foreground); font-size: 14px; text-align: left; transition: background-color 0.15s, border-color 0.15s; }
+.checklist-item:hover, .checklist-item:focus-visible { border-color: color-mix(in srgb, var(--primary) 35%, transparent); background: color-mix(in srgb, var(--primary) 7%, var(--muted)); outline: none; }
+.checklist-icon { display: grid; flex-shrink: 0; place-items: center; color: var(--muted-foreground); }
+.checklist-icon svg { width: 17px; height: 17px; }
+.checklist-label { flex: 1; min-width: 0; }
+.checklist-label s { text-decoration-thickness: 1.5px; }
+.checklist-go { flex-shrink: 0; width: 16px; height: 16px; color: var(--muted-foreground); }
+.checklist-check { flex-shrink: 0; width: 18px; height: 18px; color: var(--success); stroke-width: 2.5; }
+.checklist-item[data-done] { background: var(--success-background); color: var(--success); }
+.checklist-item[data-done] .checklist-icon { color: var(--success); }
+.checklist-item[data-done]:hover, .checklist-item[data-done]:focus-visible { border-color: color-mix(in srgb, var(--success) 35%, transparent); background: var(--success-background); }
+
+/* The open button and its menu, one control. On a phone the actions share the
+   row, so the button takes the room and the arrow keeps its square. */
+@media (max-width: 640px) { .runtime-actions > .open-group { display: flex; } .open-group-main { flex: 1; } }
+/* A button that is also a menu trigger is renamed by the menu (its data-slot
+   becomes the trigger's), so the phone-sized minimum height that sized-down
+   buttons are spared caught it and made the arrow taller than the button it
+   is joined to. Inside a group every part keeps the height it was drawn at. */
+[data-slot="button-group"] > button { min-height: 0; }
+
+/* The control a checklist step points at, lit for a moment when it does. */
+.flash-target { animation: flash-target 1.6s ease-out; }
+@keyframes flash-target {
+  0%, 35% { box-shadow: 0 0 0 3px var(--background), 0 0 0 6px color-mix(in srgb, var(--primary) 70%, transparent); }
+  100% { box-shadow: 0 0 0 3px transparent, 0 0 0 6px transparent; }
+}
+@media (prefers-reduced-motion: reduce) { .flash-target { animation-duration: 0.01s; outline: 2px solid var(--primary); } }
+
+/* The profile control in the backup card's corner: as wide as the name in it. */
+.profile-select { width: auto; max-width: 12rem; }
+.profile-select [data-slot="select-value"] { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* SillyTavern's actions: in the card's corner, and under the picture on a phone. */
+.runtime-actions-below { display: none; }
+@media (max-width: 640px) {
+  .runtime-actions-head { display: none; }
+  .runtime-actions-below { display: flex; }
+}

@@ -30,6 +30,14 @@ export interface ProfileStoreOptions {
   readonly logger?: LogSink;
 }
 
+/** The installation id of a profile made before there was any installation to give it; see `ensureWaiting`. */
+export const WAITING_INSTALLATION = '';
+
+/** Whether a profile is still waiting for SillyTavern to be installed. */
+export function isWaitingProfile(profile: Pick<Profile, 'installationId'>): boolean {
+  return profile.installationId === WAITING_INSTALLATION;
+}
+
 export interface ProfileCreateInput {
   readonly name: string;
   readonly installationId: string;
@@ -75,6 +83,22 @@ export class ProfileStore {
 
   public async getActiveForInstallation(installationId: string): Promise<Profile | null> {
     return (await this.load()).find((profile) => profile.active && profile.installationId === installationId) ?? null;
+  }
+
+/**
+   * The Default profile, from the first start rather than the first install.
+   *
+   * A machine with no profile had an empty dropdown and a Data page whose
+   * buttons were all dead until SillyTavern finished installing. The profile
+   * exists from the start now, waiting: it belongs to no installation yet -
+   * its installation id is empty - and the first one that becomes ready takes
+   * it over through `ensureDefault`, the same way a profile moves to a new
+   * installation. Nothing is written into it before that, because there is
+   * nothing to write it with.
+   */
+  public async ensureWaiting(): Promise<Profile | null> {
+    if ((await this.load()).length > 0) return null;
+    return this.create({ name: 'Default', installationId: WAITING_INSTALLATION, runtimePath: this.paths.profiles, layout: 'data' }, true);
   }
 
   /** Ensure a ready installation always has one usable profile. */

@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { KEEP_ONLINE_DEFAULT_MINUTES, type ManagerState } from '../../../packages/contracts/src/index.js';
+import { KEEP_ONLINE_DEFAULT_MINUTES, SETUP_STEPS, type ManagerState, type SetupStep } from '../../../packages/contracts/src/index.js';
 import { getPlatformPaths, type PlatformPaths } from '../../../packages/platform/src/index.js';
 import { LEGAL_META } from '../../../packages/legal/src/index.js';
 import { SILLYTAVERN_PORT } from './ports.js';
@@ -125,6 +125,8 @@ interface PersistedManagerState {
    * Null is not off: it leaves the answer to how much memory the machine has.
    */
   readonly saverMode: boolean | null;
+  /** Whether SillyTavern's access link has ever been turned on; see `AccessGatewayState.opened`. */
+  readonly accessLinkOpened: boolean;
   /**
    * Whether the first run was put off until the next sign-in.
    *
@@ -134,6 +136,8 @@ interface PersistedManagerState {
    * them to sign in at the link.
    */
   readonly firstRunDeferred: boolean;
+  /** The checklist steps seen done, which stay done; see `SetupChecklistState`. */
+  readonly setupStepsDone: readonly SetupStep[];
 }
 
 export interface StateStoreOptions {
@@ -205,7 +209,9 @@ export class StateStore {
         ownerAccountId: null,
         ownerAccountName: null,
         saverMode: null,
+        accessLinkOpened: false,
         firstRunDeferred: false,
+        setupStepsDone: [],
       };
       await this.write(state);
       this.state = state;
@@ -371,6 +377,38 @@ export class StateStore {
     const previous = this.adminWriteQueue;
     this.adminWriteQueue = previous.then(operation, operation);
     await this.adminWriteQueue;
+  }
+
+  /** The access link has been turned on; that stays done. */
+  public async setAccessLinkOpened(): Promise<void> {
+    const operation = async (): Promise<void> => {
+      const state = await this.load();
+      if (state.accessLinkOpened) return;
+      const updated: PersistedManagerState = { ...state, accessLinkOpened: true, updatedAt: this.now().toISOString() };
+      await this.write(updated);
+      this.state = updated;
+    };
+    const previous = this.adminWriteQueue;
+    this.adminWriteQueue = previous.then(operation, operation);
+    await this.adminWriteQueue;
+  }
+
+  /** Write down checklist steps as done; returns every step done so far. */
+  public async markSetupStepsDone(steps: readonly SetupStep[]): Promise<readonly SetupStep[]> {
+    let done: readonly SetupStep[] = [];
+    const operation = async (): Promise<void> => {
+      const state = await this.load();
+      done = state.setupStepsDone;
+      if (steps.every((step) => done.includes(step))) return;
+      done = SETUP_STEPS.filter((step) => done.includes(step) || steps.includes(step));
+      const updated: PersistedManagerState = { ...state, setupStepsDone: done, updatedAt: this.now().toISOString() };
+      await this.write(updated);
+      this.state = updated;
+    };
+    const previous = this.adminWriteQueue;
+    this.adminWriteQueue = previous.then(operation, operation);
+    await this.adminWriteQueue;
+    return done;
   }
 
   /** Whether SillyTavern comes up with the manager. */
@@ -682,7 +720,14 @@ export class StateStore {
     // Absent in a file written before saver mode existed: nobody has chosen.
     const saverMode = typeof input.saverMode === 'boolean' ? input.saverMode : null;
     const firstRunDeferred = input.firstRunDeferred === true;
-    return { ...input, accessPasswordHash, accessPasscode, accessLanEnabled, sillyTavernPort, autoStartSillyTavern, firstInstallStartedAt, keepOnline, keepOnlineMinutes, keepOnlineOrigin, ownerAccountId, ownerAccountName, noticeAcknowledgedAt, saverMode, firstRunDeferred } as unknown as PersistedManagerState;
+    // Absent in a file written before the checklist asked: not yet, as far as
+    // anybody can tell.
+    const accessLinkOpened = input.accessLinkOpened === true;
+    // Absent in a file written before steps were remembered: none yet, and
+    // the panel writes down again whatever it finds already done.
+    const recorded: readonly unknown[] = Array.isArray(input.setupStepsDone) ? input.setupStepsDone : [];
+    const setupStepsDone = SETUP_STEPS.filter((step) => recorded.includes(step));
+    return { ...input, accessPasswordHash, accessPasscode, accessLanEnabled, sillyTavernPort, autoStartSillyTavern, firstInstallStartedAt, keepOnline, keepOnlineMinutes, keepOnlineOrigin, ownerAccountId, ownerAccountName, noticeAcknowledgedAt, saverMode, accessLinkOpened, firstRunDeferred, setupStepsDone } as unknown as PersistedManagerState;
   }
 }
 

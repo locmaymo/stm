@@ -93,6 +93,45 @@ const localeDirectories = [
   path.join('packages', 'legal', 'locales'),
 ];
 
+/**
+ * Keys written twice in the same object.
+ *
+ * `JSON.parse` keeps the last one and says nothing, so a key added a second
+ * time silently replaces the first translation everywhere it was used - and
+ * both locales can repeat it in step, which the parity check cannot see.
+ */
+function duplicateKeys(text) {
+  const stack = [];
+  const found = [];
+  let lastKey = null;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (character === '"') {
+      let end = index + 1;
+      while (end < text.length && text[end] !== '"') end += text[end] === '\\' ? 2 : 1;
+      const top = stack.at(-1);
+      if (top?.object && top.expectKey) {
+        const name = JSON.parse(text.slice(index, end + 1));
+        if (top.keys.has(name)) found.push([...top.path, name].join('.'));
+        top.keys.add(name);
+        top.expectKey = false;
+        lastKey = name;
+      }
+      index = end;
+    } else if (character === '{' || character === '[') {
+      const parent = stack.at(-1);
+      const path = parent ? (parent.object ? [...parent.path, lastKey] : parent.path) : [];
+      stack.push({ object: character === '{', keys: new Set(), expectKey: character === '{', path });
+    } else if (character === '}' || character === ']') {
+      stack.pop();
+    } else if (character === ',') {
+      const top = stack.at(-1);
+      if (top?.object) top.expectKey = true;
+    }
+  }
+  return found;
+}
+
 function checkLocales(directory) {
   const englishPath = path.join(root, directory, 'en.json');
   const vietnamesePath = path.join(root, directory, 'vi.json');
@@ -100,6 +139,10 @@ function checkLocales(directory) {
   if (!fs.existsSync(englishPath) || !fs.existsSync(vietnamesePath)) {
     failures.push(`locale gate: both ${label}/en.json and vi.json are required`);
     return;
+  }
+  for (const [name, file] of [['en.json', englishPath], ['vi.json', vietnamesePath]]) {
+    const repeated = duplicateKeys(fs.readFileSync(file, 'utf8'));
+    if (repeated.length) failures.push(`locale gate: ${label}/${name} repeats keys: ${repeated.join(', ')}`);
   }
   const english = JSON.parse(fs.readFileSync(englishPath, 'utf8'));
   const vietnamese = JSON.parse(fs.readFileSync(vietnamesePath, 'utf8'));

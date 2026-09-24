@@ -1,7 +1,7 @@
 import en from '../../../packages/ui/locales/en.json' with { type: 'json' };
 import vi from '../../../packages/ui/locales/vi.json' with { type: 'json' };
 import type { MessageParams } from '../../../packages/contracts/src/index.js';
-import { interpolate } from './log-format.js';
+import { interpolate } from '../../../packages/contracts/src/index.js';
 import { errorText, failureText, readFailure } from './api-error.js';
 import type { LocaleCode } from './preferences.js';
 

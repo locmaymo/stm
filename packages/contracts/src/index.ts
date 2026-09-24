@@ -1,5 +1,6 @@
 export * from './table-query.js';
 export * from './table-fields.js';
+export * from './log-format.js';
 
 /**
  * What kind of machine this manager is on.
@@ -143,6 +144,23 @@ export interface ApiErrorBody {
 export interface StartupSettings {
   /** Start SillyTavern when the manager starts. On unless it is turned off. */
   readonly autoStartSillyTavern: boolean;
+}
+
+/** The steps on the overview's setup checklist, in the order they are shown. */
+export const SETUP_STEPS = ['install', 'cloudflare', 'password', 'pin', 'r2', 'open'] as const;
+export type SetupStep = typeof SETUP_STEPS[number];
+
+/**
+ * The checklist steps this manager has seen done.
+ *
+ * A step is done once. Whether it is done right now is worked out from
+ * several reads that arrive at different times after a start, and a list that
+ * followed them would show finished steps as unfinished for the moment
+ * before they arrive. So the first time a step is seen done it is written
+ * down here, and stays done.
+ */
+export interface SetupChecklistState {
+  readonly done: readonly SetupStep[];
 }
 
 /**
@@ -1228,6 +1246,15 @@ export interface AccessGatewayState {
    * every device" and "sign out the three devices that are signed in".
    */
   readonly sessions: number;
+  /**
+   * Whether SillyTavern's access link has ever been turned on.
+   *
+   * A step on the setup checklist, and a step is done once: turning the link
+   * off again later does not undo having set it up. Kept by the manager, not
+   * by the browser that happened to be looking, and forgotten only with
+   * everything else.
+   */
+  readonly opened?: boolean;
   readonly error: string | null;
 }
 

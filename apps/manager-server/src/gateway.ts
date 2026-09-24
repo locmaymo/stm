@@ -2,7 +2,8 @@ import { Agent, createServer, request as httpRequest, type IncomingMessage, type
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import type { Duplex } from 'node:stream';
-import { logEvent, logLineText, type AccessGatewayState, type LogSink } from '../../../packages/contracts/src/index.js';
+import { logEvent, logLineText, type AccessGatewayState, type Job, type LogPage, type LogSink } from '../../../packages/contracts/src/index.js';
+import { windowJob, windowLogs, windowPage, type WindowLocale } from './gateway-window.js';
 import { verifyPassword } from './password.js';
 import { ACCESS_GATEWAY_PORT, SILLYTAVERN_PORT } from './ports.js';
 import { RateLimiter } from './rate-limit.js';
@@ -13,6 +14,17 @@ const LOGIN_COOKIE_NAME = 'stm_login';
 export { ACCESS_GATEWAY_PORT } from './ports.js';
 const LOGIN_PATH = '/__stm/login';
 const LOGOUT_PATH = '/__stm/logout';
+/** SillyTavern with the manager's tools over it; see gateway-window.ts. */
+export const WINDOW_PATH = '/__stm/window';
+const TOOLS_PREFIX = '/__stm/tools/';
+/**
+ * What a tools request has to carry.
+ *
+ * A header a form cannot set and a cross-site script cannot send without a
+ * preflight this door never answers, so only the window's own script - on
+ * this origin - can start a backup with somebody's session cookie.
+ */
+const TOOLS_HEADER = 'x-stm-tools';
 /**
  * SillyTavern's own mark, served from the installation rather than kept here.
  *
@@ -98,6 +110,19 @@ const TEXT: Readonly<Record<'en' | 'vi', GatewayText>> = {
   },
 };
 
+/**
+ * What the tools window may ask the manager for.
+ *
+ * Whoever holds the PIN can already read every chat SillyTavern keeps, so
+ * starting a backup of that same data, or reading the manager's log, asks
+ * nothing of them that the door had not already given.
+ */
+export interface GatewayTools {
+  backup(target: 'local' | 'cloud'): Promise<{ readonly jobId: string } | { readonly unchanged: true } | { readonly error: { readonly status: number; readonly code: string; readonly message: string } }>;
+  job(id: string): Job | null;
+  logs(after: number): LogPage;
+}
+
 export interface AccessGatewayOptions {
   readonly logger?: LogSink;
   /** Where SillyTavern's own logo is on disk, if there is an installation. */
@@ -119,6 +144,8 @@ export interface AccessGatewayOptions {
    * `SAMEORIGIN` also permits any other page this gateway itself serves.
    */
   readonly frameAncestors?: readonly string[];
+  /** Backups and the log, for the tools window. Without them it has none of those. */
+  readonly tools?: GatewayTools;
 }
 
 /**
@@ -148,6 +175,9 @@ export class AccessGateway {
   private readonly sessionTtlMs: number;
   private readonly brandLogo: (() => Promise<string | null>) | null;
   private readonly framePolicy: string;
+  private readonly tools: GatewayTools | null;
+  /** Whether the access link has ever been turned on; see `AccessGatewayState.opened`. */
+  private opened = false;
   private readonly attempts: RateLimiter;
   private readonly sessions = new Map<string, number>();
   /**
@@ -194,7 +224,7 @@ export class AccessGateway {
    */
   private logo: Buffer | null = null;
   private logoCheckedAt = 0;
-  private state: Omit<AccessGatewayState, 'sessions'>;
+  private state: Omit<AccessGatewayState, 'sessions' | 'opened'>;
 
   public constructor(options: AccessGatewayOptions = {}) {
     this.logger = options.logger ?? ((line) => console.log(logLineText(line)));
@@ -204,18 +234,24 @@ export class AccessGateway {
     this.now = options.now ?? Date.now;
     this.sessionTtlMs = options.sessionTtlMs ?? SESSION_TTL_MS;
     this.brandLogo = options.brandLogo ?? null;
+    this.tools = options.tools ?? null;
     // `'self'` so the sign-in page can still be reached inside whatever frame
     // the console put the gateway in; without it, signing in from the embedded
     // view would blank the frame at the one moment it has something to say.
     const ancestors = (options.frameAncestors ?? []).filter((origin) => origin.length > 0);
-    this.framePolicy = ancestors.length > 0 ? `frame-ancestors 'self' ${ancestors.join(' ')}` : "frame-ancestors 'none'";
+    // Always `'self'` now: the tools window frames SillyTavern from this very
+    // origin, which is what SillyTavern's own `SAMEORIGIN` always allowed.
+    this.framePolicy = `frame-ancestors 'self'${ancestors.length > 0 ? ` ${ancestors.join(' ')}` : ''}`;
     // Ten tries per quarter hour per address. The surface behind this is a
     // public tunnel, so the limit guards a password rather than a form.
     this.attempts = options.rateLimiter ?? new RateLimiter({ limit: 10, windowMs: 15 * 60 * 1000 });
     this.state = { status: 'stopped', host: null, port: this.port, lan: false, passwordConfigured: false, passcode: false, error: null };
   }
 
-  public getState(): AccessGatewayState { return { ...this.state, sessions: this.sessionCount() }; }
+  public getState(): AccessGatewayState { return { ...this.state, sessions: this.sessionCount(), opened: this.opened }; }
+
+  /** What the manager remembers about the access link having been turned on. */
+  public setOpened(opened: boolean): void { this.opened = opened; }
 
   /**
    * Follow SillyTavern to another port.
@@ -340,6 +376,8 @@ export class AccessGateway {
     if (pathname === LOGIN_PATH && (request.method ?? 'GET') === 'POST') { void this.handleLogin(request, response, text); return; }
     if (this.authenticated(request)) {
       if (pathname === LOGIN_PATH) { redirect(response, '/'); return; }
+      if (pathname === WINDOW_PATH) { this.sendWindow(request, response); return; }
+      if (pathname.startsWith(TOOLS_PREFIX)) { void this.handleTools(request, response, pathname); return; }
       this.proxy(request, response, text);
       return;
     }
@@ -593,6 +631,56 @@ export class AccessGateway {
     response.end(bytes);
   }
 
+  private sendWindow(request: IncomingMessage, response: ServerResponse): void {
+    const nonce = randomBytes(16).toString('base64');
+    response.writeHead(200, {
+      'content-type': 'text/html; charset=utf-8',
+      'cache-control': 'no-store',
+      'referrer-policy': 'no-referrer',
+      'x-content-type-options': 'nosniff',
+      'content-security-policy': `default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; script-src 'nonce-${nonce}'; connect-src 'self'; frame-src 'self'; form-action 'self'; ${this.framePolicy}`,
+    });
+    response.end(windowPage(localeOf(request), nonce));
+  }
+
+  /** The window's three requests: start a backup, follow it, read the log. */
+  private async handleTools(request: IncomingMessage, response: ServerResponse, pathname: string): Promise<void> {
+    const tools = this.tools;
+    if (!tools) { sendJson(response, 404, { error: { code: 'not_found', message: 'No tools here' } }); return; }
+    if (request.headers[TOOLS_HEADER] !== '1') { sendJson(response, 403, { error: { code: 'forbidden', message: 'Tools are only for the tools window' } }); return; }
+    const locale: WindowLocale = localeOf(request);
+    const method = (request.method ?? 'GET').toUpperCase();
+    const url = new URL(request.url ?? '/', 'http://gateway.invalid');
+    try {
+      if (pathname === `${TOOLS_PREFIX}backup` && method === 'POST') {
+        let target: 'local' | 'cloud' = 'local';
+        try {
+          const parsed: unknown = JSON.parse(await readBody(request, MAX_LOGIN_BODY_BYTES) || '{}');
+          if (typeof parsed === 'object' && parsed !== null && (parsed as Record<string, unknown>).target === 'cloud') target = 'cloud';
+        } catch { sendJson(response, 400, { error: { code: 'invalid_input', message: 'A JSON body is required' } }); return; }
+        const started = await tools.backup(target);
+        if ('error' in started) { sendJson(response, started.error.status, { error: { code: started.error.code, message: started.error.message } }); return; }
+        this.logger(logEvent('gateway.toolBackup', `[gateway] a backup (${target}) was started from SillyTavern's tools window`, { target }));
+        sendJson(response, 202, started);
+        return;
+      }
+      if (pathname === `${TOOLS_PREFIX}job` && method === 'GET') {
+        const job = tools.job(url.searchParams.get('id') ?? '');
+        if (!job) { sendJson(response, 404, { error: { code: 'job_not_found', message: 'No such job' } }); return; }
+        sendJson(response, 200, windowJob(job, locale));
+        return;
+      }
+      if (pathname === `${TOOLS_PREFIX}logs` && method === 'GET') {
+        const after = Number(url.searchParams.get('after') ?? 0);
+        sendJson(response, 200, windowLogs(tools.logs(Number.isSafeInteger(after) && after >= 0 ? after : 0), locale));
+        return;
+      }
+      sendJson(response, 404, { error: { code: 'not_found', message: 'No such tool' } });
+    } catch (error: unknown) {
+      sendJson(response, 500, { error: { code: 'tool_failed', message: error instanceof Error ? error.message : 'The tool failed' } });
+    }
+  }
+
   private cookie(request: IncomingMessage, token: string, maxAgeSeconds: number): string {
     return `${ACCESS_COOKIE_NAME}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAgeSeconds}${secureConnection(request) ? '; Secure' : ''}`;
   }
@@ -650,6 +738,7 @@ function matchingToken(submitted: string | null, expected: string | undefined): 
 
 /** A redirect target that can only be a path on this same gateway. */
 function safeNext(value: string | null | undefined): string {
+  if (value === WINDOW_PATH) return value;
   if (!value || !value.startsWith('/') || value.startsWith('//') || value.startsWith('/__stm')) return '/';
   return value;
 }

@@ -2,6 +2,7 @@ export * from './shadcn/alert.js';
 export * from './shadcn/alert-dialog.js';
 export * from './shadcn/badge.js';
 export * from './shadcn/button.js';
+export * from './shadcn/button-group.js';
 export * from './shadcn/card.js';
 export * from './shadcn/checkbox.js';
 export * from './shadcn/dialog.js';

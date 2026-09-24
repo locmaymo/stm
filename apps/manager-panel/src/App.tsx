@@ -1,24 +1,24 @@
 import { useEffect, useId, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react';
 import { centralDirectoryOffset, ZIP_TAIL_SEARCH_BYTES } from './zip-tail.js';
 import {
-  Archive, ArrowDown, ArrowUp, ArrowUpRight, BarChart3, Check, Cloud, Copy, Database, Download,
+  AppWindow, Archive, ArrowDown, CloudUpload, DatabaseBackup, Funnel, UserRound, ArrowUp, ArrowUpRight, BarChart3, Check, ChevronDown, Cloud, Copy, Database, Download,
   Globe2, LayoutDashboard, Maximize2, Minimize2, Moon, Package, Pencil, Plus,
-  LogOut, RotateCcw, ScrollText, Search, Sun, Trash2, Upload, Users as UsersIcon, X, Rows3,
+  LogOut, RotateCcw, ScrollText, Search, Sun, Trash2, Upload, X, Rows3,
   BrainCircuit, CircleStop, Clock3, Cpu, Ellipsis, Play, QrCode as QrCodeIcon, RefreshCw, Scale, Settings2, ShieldCheck, Square,
   Blocks, BookmarkPlus, Bug, FileCode2, LoaderCircle, Gauge, History, KeyRound, Leaf, Monitor, CircleArrowUp, Star, TriangleAlert,
 } from 'lucide-react';
 import {
-  Alert, AlertDescription, AlertTitle, AuthLayout, Badge, BrandMark, Button, buttonVariants, Card, CardAction,
+  Alert, AlertDescription, AlertTitle, AuthLayout, Badge, BrandMark, Button, ButtonGroup, ButtonGroupSeparator, buttonVariants, Card, CardAction,
   ConfirmDialog, DetailRow, EmptyState, StatTile, type StatusTone,
   CardContent, CardFooter, CardHeader,
   CardGrid, Checkbox, cn, DataTable, type DataTableColumn, type DataTableLabels,
   Dialog, DialogBody, DialogContent, DialogDescription,
   DialogFooter, DialogHeader, DialogTitle,
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger,
   Field, GithubMark, initialQuery, Input, Label, MobileNav, PageContainer, PasscodeInput, PasswordInput, Textarea,
   Skeleton,
   RadioGroup, RadioGroupItem,
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+  Select, SelectContent, SelectItem, SelectSeparator, SelectTrigger, SelectValue,
   Sidebar, SidebarContent, SidebarGroup, SidebarGroupContent, SidebarHeader,
   SidebarInset, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarProvider,
   SidebarTrigger, Sheet, SheetContent, SheetHeader, SheetTitle, Switch,
@@ -34,16 +34,17 @@ import { availableUpdate, readDismissedManagerRelease, readDismissedUpdate, save
 import { readDismissedDisplaced, readDismissedRecovery, readDismissedSettings, saveDismissedDisplaced, saveDismissedRecovery, saveDismissedSettings, shouldOfferSettings, shouldShowDisplaced, shouldShowRecovery } from './settings-offer.js';
 import { apiFetch, onSessionExpired, resetSessionWatch, sessionToken, setSessionToken } from './session.js';
 import { collectCloudflareResult, framed, openReturnWindow, popupsBlocked, whenAbandoned, type CollectedResult } from './oauth.js';
-import type { AccessGatewayState, BackupManifest, CloudflareAccountProblem, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LegalReview, LogEntry, LogSourceFilter, ManagerRelease, ManagerSettingsOffer, ManagerUpdateStatus, OnlineState, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, SaverState, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, BackupManifest, CloudflareAccountProblem, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LegalReview, LogEntry, LogSourceFilter, ManagerRelease, ManagerSettingsOffer, ManagerUpdateStatus, OnlineState, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, SaverState, SetupChecklistState, SetupStep, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, isCloudJob, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
 import { usePoll } from './use-poll.js';
 import { POLL_BACKGROUND_MS, POLL_RELEASE_MS, statusIntervalMs } from './polling.js';
-import { translateLogEntry, translateStep } from './log-format.js';
+import { foldForSearch, translateLogEntry, translateStep } from '../../../packages/contracts/src/index.js';
 import { QrCode } from './qr-code.js';
 import { CLOUDFLARE_ORANGE, CloudflareMark } from './cloudflare-mark.js';
 import { bareHost, localHost, publicAddress, reachableAddresses, shortenHost } from './addresses.js';
 import { EmbedStage } from './embed-stage.js';
+import { SetupChecklist, type ChecklistItem } from './setup-checklist.js';
 import { LegalCredit, LegalDialog, LEGAL_REVISION } from './legal-dialog.js';
 import { legalBundle, legalRevision, type LegalDocumentId } from '../../../packages/legal/src/index.js';
 
@@ -933,6 +934,9 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
   const [version, setVersion] = useState('latest');
   const [versions, setVersions] = useState<VersionOption[]>([]);
   const [installations, setInstallations] = useState<Installation[]>([]);
+  // Whether the list above is the manager's answer yet, rather than the
+  // empty one this page starts with.
+  const [installationsLoaded, setInstallationsLoaded] = useState(false);
   const [activeInstallationId, setActiveInstallationId] = useState<string | null>(null);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [activeProfileId, setActiveProfileId] = useState<string | null>(null);
@@ -1036,6 +1040,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
   const [legalFailure, setLegalFailure] = useState<string | null>(null);
   const [reviewLegalOpen, setReviewLegalOpen] = useState(false);
   const [reviewLegalDocument, setReviewLegalDocument] = useState<LegalDocumentId>('terms');
+  const [securityLoaded, setSecurityLoaded] = useState(false);
   const [accessSecurity, setAccessSecurity] = useState<AccessGatewayState>({ status: 'stopped', host: null, port: 8001, lan: false, passwordConfigured: false, passcode: false, sessions: 0, error: null });
   const t = translator(preferences.locale);
   const catalog = logCatalog(preferences.locale);
@@ -1208,6 +1213,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
      * seventy-nine bytes; the tag names the archive list already on screen, so
      * an unchanged one answers in twenty.
      */
+    const askedSource = logSource;
     const query = new URLSearchParams({
       include: page === 'overview' ? 'system,logs,backups' : 'logs,backups',
       logsAfter: String(liveLogs.cursor()),
@@ -1218,7 +1224,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     if (!response.ok) return;
     const status = await response.json() as ConsoleStatus;
     if (status.system) acceptSystem(status.system);
-    if (status.logs) liveLogs.accept(status.logs);
+    if (status.logs) liveLogs.accept(status.logs, askedSource);
     if (status.backupsTag !== undefined) backupsTag.current = status.backupsTag;
     // Absent means "the list you have is the list there is", which is the
     // common answer and the reason the tag is sent at all.
@@ -1230,6 +1236,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     setTunnelState(status.tunnel);
     setManagerTunnelState(status.managerTunnel);
     setAccessSecurity(status.security);
+    setSecurityLoaded(true);
     // A restore moves SillyTavern's port, and the page that shows it used to
     // ask once as it loaded - so the console said 8002 over a SillyTavern on
     // 8004 until somebody reloaded it.
@@ -1342,6 +1349,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
       if (legalPayload) setLegalReview(legalPayload);
       if (onlinePayload) setOnline(onlinePayload);
       if (versionPayload) setVersions(versionPayload.versions);
+      setInstallationsLoaded(true);
       if (installationPayload) {
         setInstallations(installationPayload.installations);
         setActiveInstallationId(installationPayload.activeInstallationId);
@@ -1666,6 +1674,117 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     const payload = await response.json() as { error?: { message?: string } };
     return response.ok ? null : fail.body(payload, t('console.managerPasswordSaveFailed'));
   };
+  /*
+   * What the checklist on the overview needs that the status does not carry:
+   * whether the console has a password of its own, and how far the cloud
+   * connection has got. Both are local reads, asked when the overview is
+   * opened and again when the account's R2 problem comes or goes.
+   */
+  const [managerPasswordSet, setManagerPasswordSet] = useState<boolean | null>(null);
+  const [checklistR2, setChecklistR2] = useState<R2Config | null>(null);
+  const [checklistPinOpen, setChecklistPinOpen] = useState(false);
+  // The steps the manager has written down as done, and whether the reads
+  // below have answered at least once.
+  const [rememberedSteps, setRememberedSteps] = useState<readonly SetupStep[] | null>(null);
+  const [checklistRead, setChecklistRead] = useState(false);
+  useEffect(() => {
+    if (page !== 'overview') return undefined;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const [session, r2, remembered] = await Promise.all([apiFetch('/api/v1/auth/session', { credentials: 'same-origin' }), apiFetch('/api/v1/r2', { credentials: 'same-origin' }), apiFetch('/api/v1/checklist', { credentials: 'same-origin' })]);
+        if (cancelled) return;
+        if (session.ok) setManagerPasswordSet((await session.json() as { managerPassword?: boolean }).managerPassword ?? true);
+        if (r2.ok) setChecklistR2((await r2.json() as { config: R2Config }).config);
+        if (remembered.ok) setRememberedSteps((await remembered.json() as SetupChecklistState).done);
+      } catch {
+        // The list shows what it knows; the next visit asks again.
+      }
+      if (!cancelled) setChecklistRead(true);
+    })();
+    return () => { cancelled = true; };
+  }, [page, r2Problem]);
+  /*
+   * Take the reader to the control that does the step, and point at it.
+   *
+   * Scrolled to the middle of the screen rather than the top of its card, and
+   * lit for a moment, so the eye lands on the button and not on the card
+   * around it. Steps that have a form of their own open it here instead.
+   */
+  const pointAt = (target: string) => {
+    // The one on screen: some controls are drawn twice, one for each width.
+    const element = [...document.querySelectorAll<HTMLElement>(`[data-target="${target}"]`)].find((candidate) => candidate.offsetParent !== null) ?? document.querySelector<HTMLElement>('[data-tour="installation"]');
+    if (!element) return;
+    element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    element.classList.remove('flash-target');
+    void element.offsetWidth;
+    element.classList.add('flash-target');
+    window.setTimeout(() => element.classList.remove('flash-target'), 1800);
+  };
+  const [checklistPasswordOpen, setChecklistPasswordOpen] = useState(false);
+  // The data page opens its connection form once it has read the settings.
+  const [dataIntent, setDataIntent] = useState<'connect' | null>(null);
+  const openConnect = () => { setDataIntent('connect'); navigate('data'); };
+  const cloudflareSignedIn = checklistR2?.cloudflare ? checklistR2.cloudflare.state === 'connected' || checklistR2.cloudflare.state === 'choose_account' : false;
+  /*
+   * Whether each step is done now, as far as the reads above can tell.
+   *
+   * Only half of the answer. They arrive one by one after a start, and a
+   * step read before its answer is in looks unfinished - a SillyTavern that
+   * was installed a week ago blinked back onto the list as something to do
+   * every time the manager came up. So the list waits until every read has
+   * answered, and a step seen done once is written down on the manager and
+   * stays done from then on: finishing a step is something done once.
+   */
+  const checklistReady = checklistRead && installationsLoaded && securityLoaded;
+  const stepsSeen: Record<SetupStep, boolean> = {
+    install: activeInstallation?.status === 'ready',
+    cloudflare: cloudflareSignedIn || (checklistR2?.mode === 'keys' && checklistR2.configured),
+    password: managerPasswordSet === true,
+    pin: accessSecurity.passwordConfigured,
+    r2: Boolean(checklistR2?.configured) && r2Problem === null,
+    open: accessSecurity.opened === true,
+  };
+  const stepDone = (step: SetupStep): boolean => stepsSeen[step] || (rememberedSteps?.includes(step) ?? false);
+  const newlyDone = checklistReady ? (Object.keys(stepsSeen) as SetupStep[]).filter((step) => stepsSeen[step] && !(rememberedSteps?.includes(step) ?? false)) : [];
+  const newlyDoneKey = newlyDone.join(',');
+  useEffect(() => {
+    if (newlyDone.length === 0) return;
+    void apiFetch('/api/v1/checklist', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ done: newlyDone }) })
+      .then(async (response) => { if (response.ok) setRememberedSteps((await response.json() as SetupChecklistState).done); })
+      // Still shown as done here; the next visit writes it down.
+      .catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [newlyDoneKey]);
+  const checklistItems: ChecklistItem[] = [
+    { id: 'install', label: t('console.checkInstall'), icon: <Download />, done: stepDone('install'), onSelect: () => pointAt('install') },
+    { id: 'cloudflare', label: t('console.checkCloudflare'), icon: <CloudflareMark />, done: stepDone('cloudflare'), onSelect: openConnect },
+    { id: 'password', label: t('console.checkManagerPassword'), icon: <ShieldCheck />, done: stepDone('password'), onSelect: () => setChecklistPasswordOpen(true) },
+    { id: 'pin', label: t('console.checkPin'), icon: <KeyRound />, done: stepDone('pin'), onSelect: () => setChecklistPinOpen(true) },
+    { id: 'r2', label: t('console.checkR2'), icon: <Cloud />, done: stepDone('r2'), onSelect: openConnect },
+    { id: 'open', label: t('console.checkOpen'), icon: <ArrowUpRight />, done: stepDone('open'), onSelect: () => pointAt('tunnel') },
+  ];
+  const checklist = <>
+    {checklistReady ? <SetupChecklist t={t} items={checklistItems} /> : null}
+    <PasscodeDialog t={t} open={checklistPinOpen} onOpenChange={setChecklistPinOpen} note={null} onSubmit={setAccessPassword} />
+    <PasswordDialog
+      t={t}
+      open={checklistPasswordOpen}
+      onOpenChange={setChecklistPasswordOpen}
+      title={managerPasswordSet === false ? t('console.managerPasswordSetTitle') : t('console.managerPasswordTitle')}
+      description={t('console.managerPasswordHint')}
+      minLength={MIN_MANAGER_PASSWORD}
+      hint={t('console.managerPasswordMin')}
+      submitLabel={managerPasswordSet === false ? t('console.managerPasswordSet') : t('console.changePassword')}
+      onSubmit={async (password, confirmPassword) => {
+        const failure = await changeManagerPassword(password, confirmPassword);
+        if (failure) return failure;
+        toast({ title: t('console.managerPasswordSaved'), tone: 'success' });
+        setManagerPasswordSet(true);
+        return null;
+      }}
+    />
+  </>;
   const hero = <RuntimeCard
     t={t}
     fail={fail}
@@ -1841,7 +1960,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
                 }}
               /></div>
               : null}
-            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} locale={preferences.locale} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} startup={startup} saver={saver} online={online} onSetAutoStart={setAutoStartSillyTavern} onSetSaver={setSaverMode} onSetKeepOnline={setKeepOnline} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} onEraseEverything={eraseEverything} /> : <ResourcePanel page={page} t={t} />}
+            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}{checklist}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} locale={preferences.locale} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} intent={dataIntent} onIntentHandled={() => setDataIntent(null)} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} startup={startup} saver={saver} online={online} onSetAutoStart={setAutoStartSillyTavern} onSetSaver={setSaverMode} onSetKeepOnline={setKeepOnline} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} onEraseEverything={eraseEverything} /> : <ResourcePanel page={page} t={t} />}
           </PageContainer>
           <MobileNav
             items={navigation.map(({ id, icon }) => ({ id, icon, href: `#${id}`, label: t(`nav.${id}`) }))}
@@ -2076,7 +2195,9 @@ function LanguageControl({ t, preferences, onChange }: { t: Translate; preferenc
 }
 
 function PanelHeading({ icon, children, action }: { icon: ReactNode; children: ReactNode; action?: ReactNode }) {
-  return <CardHeader><h2 className="panel-title">{icon}{children}</h2>{action ? <CardAction>{action}</CardAction> : null}</CardHeader>;
+  // Centred on each other: the title is a line of text and the actions are
+  // buttons taller than it, and lined up by their tops the buttons sat low.
+  return <CardHeader className="grid-rows-[auto] items-center"><h2 className="panel-title">{icon}{children}</h2>{action ? <CardAction className="row-span-1 self-center">{action}</CardAction> : null}</CardHeader>;
 }
 
 /**
@@ -2327,6 +2448,8 @@ function RuntimeCard({
   onOpenSettings: () => void;
 }) {
   const [stopAsked, setStopAsked] = useState(false);
+  // What setting the PIN was the condition for: a link, or the tools window.
+  const [afterPasscode, setAfterPasscode] = useState<'publish' | 'tools'>('publish');
   // Asked for on the way to a link, not before: the PIN is what the tunnel
   // needs, and it means something at the moment the door is about to open.
   const [passcodeAsked, setPasscodeAsked] = useState(false);
@@ -2496,6 +2619,36 @@ function RuntimeCard({
   const otherCount = Math.max(0, addresses.length - 1);
   const openPrimary = () => { if (primary) window.open(primary.url, '_blank', 'noopener,noreferrer'); };
   /*
+   * SillyTavern in a tab of its own, with the tools window around it.
+   *
+   * The window is served by the door, on the same address as SillyTavern, so
+   * it goes wherever the best address goes - except on this machine, where
+   * that address is SillyTavern's own port and the window is on the door's.
+   * There the console signs the tab in first, the way the embedded view is
+   * signed in: the cookie is host-scoped, and cookies ignore ports.
+   *
+   * The tab is opened before anything is awaited, while the press still
+   * counts as one, and pointed at the window once it is ready.
+   */
+  const openTools = async () => {
+    if (!primary) return;
+    if (!security.passwordConfigured) { setAfterPasscode('tools'); setPasscodeAsked(true); return; }
+    const local = primary.kind === 'local';
+    const target = local
+      ? `http://${window.location.hostname}:${security.port}/__stm/window`
+      : `${primary.url.replace(/\/$/u, '')}/__stm/window`;
+    const tab = window.open('about:blank', '_blank');
+    if (!tab) { window.location.assign(target); return; }
+    tab.opener = null;
+    if (local && csrfToken) {
+      try { await apiFetch('/api/v1/access/embed-session', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } }); } catch { /* the door asks for the PIN instead */ }
+    }
+    tab.location.href = target;
+  };
+  // A phone cannot open this machine's loopback address, so the code is only
+  // offered for an address it can reach.
+  const phoneAddress = primary && primary.kind !== 'local' ? primary : null;
+  /*
    * Give the reader a link to SillyTavern, doing whatever that takes.
    *
    * The tunnel publishes the gateway, and the gateway will not open without a
@@ -2505,11 +2658,47 @@ function RuntimeCard({
    * ends up looking broken.
    */
   const publish = async () => {
-    if (!security.passwordConfigured) { setPasscodeAsked(true); return; }
+    if (!security.passwordConfigured) { setAfterPasscode('publish'); setPasscodeAsked(true); return; }
     setPublishing(true);
     try { await onPublish(); } finally { setPublishing(false); }
   };
   const waitingForLink = running && primary === null;
+
+  const runtimeActions = installed ? <>
+            {waitingForLink
+              ? <Button variant="outline" size="sm" onClick={() => publish()} loading={publishing || tunnel.mode !== 'off'}><Globe2 />{t('console.getLink')}</Button>
+              : <ButtonGroup className="open-group" data-target="open">
+                <Button size="sm" className="open-group-main" disabled={!running || primary === null} onClick={openPrimary}>{t('console.openSillyTavern')}</Button>
+                <ButtonGroupSeparator />
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button size="icon-sm" disabled={!running || primary === null} aria-label={t('console.openMore')}><ChevronDown /></Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" collisionPadding={12} className="w-72 max-w-[calc(100vw-24px)]">
+                    <DropdownMenuItem onSelect={() => void openTools()} className="items-start gap-3 py-2">
+                      <AppWindow className="mt-0.5" />
+                      <span className="grid gap-0.5">
+                        <span className="font-medium">{t('console.openWithTools')}</span>
+                        <span className="text-xs text-muted-foreground">{t('console.openWithToolsHint')}</span>
+                      </span>
+                    </DropdownMenuItem>
+                    {/* A way onto a phone, the same address the button opens -
+                        and nothing at all where that address is this
+                        machine's own, which no phone can reach. */}
+                    {phoneAddress ? <>
+                      <DropdownMenuSeparator />
+                      <div className="grid justify-items-center gap-2 px-2 pt-2 pb-3 text-center">
+                        <div className="rounded-lg bg-white p-2"><QrCode value={phoneAddress.url} label={t('console.scanToOpenSillyTavern')} size={152} /></div>
+                        <p className="text-xs text-muted-foreground">{t('console.scanToOpenSillyTavern')}</p>
+                      </div>
+                    </> : null}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </ButtonGroup>}
+            {running
+              ? <Button variant="destructive" size="sm" onClick={() => setStopAsked(true)} disabled={pending}><Square />{t('dashboard.stop')}</Button>
+              : <Button size="sm" data-target="open" onClick={() => run(onStart)} disabled={installingNow} loading={pending}><Play />{t('dashboard.start')}</Button>}
+          </> : null;
 
   return <>
     <Card className="runtime-card" data-tour="installation">
@@ -2518,16 +2707,11 @@ function RuntimeCard({
           SillyTavern
           <StatePill tone={tone}>{stateWord}</StatePill>
         </h2>
-        <CardAction className="runtime-actions">
-          {installed ? <>
-            {waitingForLink
-              ? <Button variant="outline" size="sm" onClick={() => publish()} loading={publishing || tunnel.mode !== 'off'}><Globe2 />{t('console.getLink')}</Button>
-              : <Button variant="outline" size="sm" disabled={!running || primary === null} onClick={openPrimary}><ArrowUpRight />{t('console.openInTab')}</Button>}
-            {running
-              ? <Button variant="destructive" size="sm" onClick={() => setStopAsked(true)} disabled={pending}><Square />{t('dashboard.stop')}</Button>
-              : <Button size="sm" onClick={() => run(onStart)} disabled={installingNow} loading={pending}><Play />{t('dashboard.start')}</Button>}
-          </> : null}
-        </CardAction>
+        {/* The actions sit in the card's corner with room to spare, and under
+            the picture on a phone, where the corner is the title's line and
+            the picture is what the thumb reaches for next. Drawn in both
+            places and shown in one; see `.runtime-actions-*`. */}
+        <CardAction className="runtime-actions runtime-actions-head">{runtimeActions}</CardAction>
       </CardHeader>
 
       <CardContent className="runtime-body">
@@ -2562,6 +2746,7 @@ function RuntimeCard({
                 <span>{t('console.stateOffline')}</span>
               </div>}
         </div>
+        {runtimeActions ? <div className="runtime-actions runtime-actions-below">{runtimeActions}</div> : null}
 
         <dl className="runtime-meta">
           {/* Nothing is answering at any of these while SillyTavern is down,
@@ -2592,7 +2777,7 @@ function RuntimeCard({
               </Select>
               {alreadyInstalled
                 ? <Tooltip><TooltipTrigger asChild><span className="inline-flex"><Button variant="outline" size="sm" disabled><Download />{t('console.versionInstalled')}</Button></span></TooltipTrigger><TooltipContent>{t('console.versionInstalledHint')}</TooltipContent></Tooltip>
-                : <Button variant="success" size="sm" onClick={requestInstall} disabled={!csrfToken} loading={installing || recovering !== null}><Download />{t('dashboard.install')}</Button>}
+                : <Button variant="success" size="sm" data-target="install" onClick={requestInstall} disabled={!csrfToken} loading={installing || recovering !== null}><Download />{t('dashboard.install')}</Button>}
             </dd>
           </div>
 
@@ -2680,7 +2865,7 @@ function RuntimeCard({
         The frame loads the door on this machine, which those seconds do not
         touch; only the "open in a tab" link needs an address, and the door's
         own is the right thing to fall back to. */}
-    {embedMounted ? <EmbedStage t={t} open={embedOpen} url={embedUrl} openUrl={primary?.url ?? embedUrl} onMinimize={() => setEmbedOpen(false)} onClose={() => { setEmbedOpen(false); setEmbedMounted(false); }} /> : null}
+    {embedMounted ? <EmbedStage t={t} fail={fail} catalog={catalog} csrfToken={csrfToken} open={embedOpen} url={embedUrl} openUrl={primary?.url ?? embedUrl} onMinimize={() => setEmbedOpen(false)} onClose={() => { setEmbedOpen(false); setEmbedMounted(false); }} /> : null}
 
     <ConfirmDialog
       open={stopAsked}
@@ -2709,8 +2894,11 @@ function RuntimeCard({
       onSubmit={async (passcode, confirmPasscode) => {
         const failure = await onSetPassword(passcode, confirmPasscode);
         if (failure) return failure;
-        // The PIN was only ever the condition. Publishing is what was asked
-        // for, and it goes on with the dialog already gone.
+        // The PIN was only ever the condition. What was asked for goes on
+        // with the dialog already gone.
+        // A tab cannot be opened from here - the press that asked for it is
+        // long gone - so the tools window waits for the next one.
+        if (afterPasscode === 'tools') return null;
         setPublishing(true);
         void onPublish().finally(() => setPublishing(false));
         return null;
@@ -2878,7 +3066,7 @@ function AccessPanel({ t, process, tunnel, config, security, sillyTavernPort, on
               serves SillyTavern the moment SillyTavern answers - so somebody
               setting a machine up gets to do these steps in whichever order
               suits them, and the address is ready before it is needed. */}
-          <Switch id="tunnel-switch" checked={tunnelWanted} onCheckedChange={toggleTunnel} disabled={busy} aria-label={t('console.enableTunnel')} />
+          <Switch id="tunnel-switch" data-target="tunnel" checked={tunnelWanted} onCheckedChange={toggleTunnel} disabled={busy} aria-label={t('console.enableTunnel')} />
         </div>
         {/* Offered only where it can work. With no address of its own on a
             network, this switch opens a door onto nothing: it cannot be
@@ -3165,13 +3353,13 @@ function AddressRow({ t, label, url, display, disabledHint, pending, alternates 
  * works and a reader is entitled to see the second rather than be told about
  * it. The first is the one the code carries and the one worth sharing.
  */
-function ShareDialog({ t, open, onOpenChange, label, links }: { t: Translate; open: boolean; onOpenChange: (open: boolean) => void; label: string; links: readonly string[] }) {
+function ShareDialog({ t, open, onOpenChange, label, links, description }: { t: Translate; open: boolean; onOpenChange: (open: boolean) => void; label: string; links: readonly string[]; /** What scanning it opens, when it is not SillyTavern. */ description?: string }) {
   const primary = links[0] ?? '';
   return <Dialog open={open} onOpenChange={onOpenChange}>
     <DialogContent className="share-dialog">
       <DialogHeader>
         <DialogTitle>{label}</DialogTitle>
-        <DialogDescription>{t('console.scanToOpen')}</DialogDescription>
+        <DialogDescription>{description ?? t('console.scanToOpen')}</DialogDescription>
       </DialogHeader>
       <DialogBody className="share-body">
         <QrCode value={primary} label={`${label}: ${primary}`} />
@@ -3232,7 +3420,7 @@ function DataPanel({ t, navigate, latestBackup, snapshot, onRemeasure }: { t: Tr
         {latestBackup
           ? <DetailRow label={t('status.lastBackup')}>{new Date(latestBackup.createdAt).toLocaleString()}</DetailRow>
           : <DetailRow label={t('status.lastBackup')}>
-            <Button variant="outline" size="sm" onClick={() => navigate('data')}><Archive />{t('dashboard.backupNow')}</Button>
+            <Button variant="outline" size="sm" onClick={() => navigate('data')}><DatabaseBackup />{t('dashboard.backupNow')}</Button>
           </DetailRow>}
       </div>
       {storage ? <p className="system-note">
@@ -3261,10 +3449,13 @@ interface LogViewProps {
 
 function LogsPanel({ expanded, onToggleExpanded, ...contentProps }: LogViewProps & { expanded: boolean; onToggleExpanded: () => void }) {
   const { t } = contentProps;
+  const [searchOpen, setSearchOpen] = useState(contentProps.query.length > 0);
   // While the sheet is open the card keeps its footprint but not its content,
   // so the page behind does not reflow and the log is not rendered twice.
-  const cardContents = expanded ? <div className="log-card-placeholder" aria-hidden="true" /> : <LogsContent {...contentProps} />;
-  return <Card data-tour="logs" data-expanded={expanded}><PanelHeading icon={<ScrollText />} action={<Button variant="ghost" size="sm" onClick={onToggleExpanded} aria-label={t('console.expandLogs')}><Maximize2 />{t('console.expandLogs')}</Button>}>{t('console.liveLogs')}</PanelHeading>{cardContents}</Card>;
+  const cardContents = expanded ? <div className="log-card-placeholder" aria-hidden="true" /> : <LogsContent {...contentProps} searchOpen={searchOpen} onCloseSearch={() => setSearchOpen(false)} />;
+  return <Card data-tour="logs" data-expanded={expanded}><PanelHeading icon={<ScrollText />} action={<LogControls {...contentProps} searchOpen={searchOpen} onToggleSearch={() => setSearchOpen((value) => !value)}>
+    <Button variant="ghost" size="sm" onClick={onToggleExpanded} aria-label={t('console.expandLogs')} title={t('console.expandLogs')}><Maximize2 /><span className="log-control-label">{t('console.expandLogs')}</span></Button>
+  </LogControls>}>{t('console.liveLogs')}</PanelHeading>{cardContents}</Card>;
 }
 
 /**
@@ -3273,10 +3464,13 @@ function LogsPanel({ expanded, onToggleExpanded, ...contentProps }: LogViewProps
  */
 function LogsSheet({ open, onClose, ...contentProps }: LogViewProps & { open: boolean; onClose: () => void }) {
   const { t } = contentProps;
+  const [searchOpen, setSearchOpen] = useState(contentProps.query.length > 0);
   return <Sheet open={open} onOpenChange={(nextOpen) => { if (!nextOpen) onClose(); }}>
     <SheetContent side="bottom" className="log-sheet" showCloseButton={false}>
-      <SheetHeader className="log-sheet-header"><SheetTitle>{t('console.liveLogs')}</SheetTitle><Button variant="ghost" size="sm" onClick={onClose}><Minimize2 />{t('console.collapseLogs')}</Button></SheetHeader>
-      <LogsContent {...contentProps} expanded />
+      <SheetHeader className="log-sheet-header"><SheetTitle>{t('console.liveLogs')}</SheetTitle><LogControls {...contentProps} searchOpen={searchOpen} onToggleSearch={() => setSearchOpen((value) => !value)}>
+        <Button variant="ghost" size="sm" onClick={onClose} aria-label={t('console.collapseLogs')} title={t('console.collapseLogs')}><Minimize2 /><span className="log-control-label">{t('console.collapseLogs')}</span></Button>
+      </LogControls></SheetHeader>
+      <LogsContent {...contentProps} expanded searchOpen={searchOpen} onCloseSearch={() => setSearchOpen(false)} />
     </SheetContent>
   </Sheet>;
 }
@@ -3286,15 +3480,60 @@ const LOG_FOLLOW_SLACK = 48;
 /** Distance from the top that asks for the previous page of retained lines. */
 const LOG_BACKFILL_SLACK = 120;
 
-function LogsContent({ t, catalog, source, onSourceChange, entries, query, onQueryChange, compact, onToggleCompact, onLoadOlder, hasOlder, loadingOlder, expanded = false }: { t: Translate; catalog: Record<string, unknown>; source: LogSourceFilter; onSourceChange: (value: LogSourceFilter) => void; entries: LogEntry[]; query: string; onQueryChange: (value: string) => void; compact: boolean; onToggleCompact: () => void; onLoadOlder: () => void; hasOlder: boolean; loadingOlder: boolean; expanded?: boolean }) {
+/** Where log lines come from, in the order the filter offers them. */
+function logSources(t: Translate): ReadonlyArray<{ readonly id: LogSourceFilter; readonly label: string }> {
+  return [
+    { id: 'all', label: t('console.allLogs') },
+    { id: 'sillytavern', label: 'SillyTavern' },
+    { id: 'manager', label: 'Manager' },
+    { id: 'cloudflared', label: 'Cloudflare Tunnel' },
+    { id: 'installer', label: t('console.installer') },
+    { id: 'backup', label: t('nav.backups') },
+  ];
+}
+
+/**
+ * The log's controls, as a row of small buttons in its header.
+ *
+ * They used to be a full-width source dropdown, an always-open search field
+ * and a labelled density button - three rows on a phone before the first
+ * line of log. Now search is a magnifier that opens its field when wanted,
+ * the source is a funnel with a menu, and on a phone the words go and the
+ * icons stay.
+ */
+function LogControls({ t, source, onSourceChange, compact, onToggleCompact, query, searchOpen, onToggleSearch, children }: Pick<LogViewProps, 't' | 'source' | 'onSourceChange' | 'compact' | 'onToggleCompact' | 'query'> & { searchOpen: boolean; onToggleSearch: () => void; children?: ReactNode }) {
+  const sources = logSources(t);
+  const current = sources.find((entry) => entry.id === source) ?? sources[0];
+  return <div className="log-controls">
+    <Button variant={searchOpen || query ? 'secondary' : 'ghost'} size="sm" onClick={onToggleSearch} aria-pressed={searchOpen} aria-label={t('console.searchLogs')} title={t('console.searchLogs')}><Search /><span className="log-control-label">{t('console.searchLogsShort')}</span></Button>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant={source === 'all' ? 'ghost' : 'secondary'} size="sm" aria-label={`${t('console.logSource')}: ${current?.label ?? ''}`} title={t('console.logSource')}><Funnel /><span className="log-control-label">{current?.label}</span></Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuLabel>{t('console.logSource')}</DropdownMenuLabel>
+        <DropdownMenuRadioGroup value={source} onValueChange={(value) => onSourceChange(value as LogSourceFilter)}>
+          {sources.map((entry) => <DropdownMenuRadioItem key={entry.id} value={entry.id}>{entry.label}</DropdownMenuRadioItem>)}
+        </DropdownMenuRadioGroup>
+      </DropdownMenuContent>
+    </DropdownMenu>
+    <Button variant="ghost" size="sm" onClick={onToggleCompact} aria-pressed={compact} aria-label={compact ? t('console.showDetailedLogs') : t('console.showCompactLogs')} title={compact ? t('console.showDetailedLogs') : t('console.showCompactLogs')}><Rows3 /><span className="log-control-label">{compact ? t('console.showDetailedLogs') : t('console.showCompactLogs')}</span></Button>
+    {children}
+  </div>;
+}
+
+function LogsContent({ t, catalog, source, entries, query, onQueryChange, compact, onLoadOlder, hasOlder, loadingOlder, expanded = false, searchOpen, onCloseSearch }: LogViewProps & { expanded?: boolean; searchOpen: boolean; onCloseSearch: () => void }) {
   const logViewportRef = useRef<HTMLDivElement | null>(null);
   const [following, setFollowing] = useState(true);
   const [unread, setUnread] = useState(0);
   // Prepending history moves everything down; remember where the top was so the
   // reader keeps looking at the same line instead of being thrown forward.
   const anchor = useRef<{ height: number; top: number } | null>(null);
-  const normalizedQuery = query.trim().toLocaleLowerCase();
-  const visibleEntries = normalizedQuery.length === 0 ? entries : entries.filter((entry) => `${entry.source} ${entry.message}`.toLocaleLowerCase().includes(normalizedQuery));
+  const normalizedQuery = foldForSearch(query.trim());
+  // Searched in the words on screen as well as the English the server wrote,
+  // so a line reads the same to the search as it does to the reader, in
+  // either language.
+  const visibleEntries = normalizedQuery.length === 0 ? entries : entries.filter((entry) => foldForSearch(`${entry.source} ${entry.message} ${translateLogEntry(entry, catalog)}`).includes(normalizedQuery));
   const showSource = source === 'all';
   const latestVisibleId = visibleEntries.at(-1)?.id;
   const oldestVisibleId = visibleEntries[0]?.id;
@@ -3342,21 +3581,11 @@ function LogsContent({ t, catalog, source, onSourceChange, entries, query, onQue
     element.scrollTop = previous.top + (element.scrollHeight - previous.height);
   }, [oldestVisibleId]);
   return <div className={`logs-content ${expanded ? 'logs-content-expanded' : ''}`}>
-    <div className="log-toolbar">
-      <Select value={source} onValueChange={(value) => onSourceChange(value as LogSourceFilter)}>
-        <SelectTrigger className="w-44" aria-label={t('console.logSource')}><SelectValue /></SelectTrigger>
-        <SelectContent>
-          <SelectItem value="all">{t('console.allLogs')}</SelectItem>
-          <SelectItem value="sillytavern">SillyTavern</SelectItem>
-          <SelectItem value="manager">Manager</SelectItem>
-          <SelectItem value="cloudflared">Cloudflare Tunnel</SelectItem>
-          <SelectItem value="installer">{t('console.installer')}</SelectItem>
-          <SelectItem value="backup">{t('nav.backups')}</SelectItem>
-        </SelectContent>
-      </Select>
-      <div className="log-search"><Search aria-hidden="true" /><Input value={query} onChange={(event) => onQueryChange(event.target.value)} placeholder={t('console.searchLogs')} aria-label={t('console.searchLogs')} /></div>
-      <Button type="button" variant="outline" size="sm" className="log-density-toggle" onClick={onToggleCompact} aria-pressed={compact} aria-label={compact ? t('console.showDetailedLogs') : t('console.showCompactLogs')}><Rows3 />{compact ? t('console.showDetailedLogs') : t('console.showCompactLogs')}</Button>
-    </div>
+    {searchOpen || query ? <div className="log-search">
+      <Search aria-hidden="true" />
+      <Input autoFocus className="focus-visible:border-input focus-visible:ring-0" value={query} onChange={(event) => onQueryChange(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape') { onQueryChange(''); onCloseSearch(); } }} placeholder={t('console.searchLogs')} aria-label={t('console.searchLogs')} />
+      <Button variant="ghost" size="icon-sm" className="log-search-clear" onClick={() => { onQueryChange(''); onCloseSearch(); }} aria-label={t('common.close')}><X /></Button>
+    </div> : null}
     <div className="log-viewport">
       <div className="log-view" ref={logViewportRef} onScroll={onScroll} role="log" tabIndex={0} aria-label={t('console.liveLogs')}>
         {visibleEntries.length === 0 ? <span className="log-empty">{normalizedQuery ? t('console.noLogMatches') : t('console.noLogs')}</span> : <div className="log-lines">
@@ -3565,7 +3794,10 @@ function jobLabel(t: Translate, kind: Job['kind']): string {
  * Each card now asks one thing and keeps the rest behind a dialog, and the
  * archives are a table that can be searched, sorted and paged.
  */
-function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfileId, backups, onProfilesChange, onBackupsChange }: { t: Translate; locale: string; fail: Fail; catalog: Record<string, unknown>; csrfToken: string; profiles: Profile[]; activeProfileId: string | null; backups: BackupManifest[]; onProfilesChange: (profiles: Profile[], activeProfileId: string | null) => void; onBackupsChange: (backups: BackupManifest[]) => void }) {
+/** The dropdown's last line, which opens the form instead of switching. */
+const NEW_PROFILE = '__new_profile__';
+
+function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfileId, backups, onProfilesChange, onBackupsChange, intent, onIntentHandled }: { t: Translate; locale: string; fail: Fail; catalog: Record<string, unknown>; csrfToken: string; profiles: Profile[]; activeProfileId: string | null; backups: BackupManifest[]; onProfilesChange: (profiles: Profile[], activeProfileId: string | null) => void; onBackupsChange: (backups: BackupManifest[]) => void; /** Something the overview's checklist sent the reader here to do. */ intent: 'connect' | null; onIntentHandled: () => void }) {
   const [busyAction, setBusyAction] = useState<string | null>(null);
   /*
    * The one thing on this page that is state rather than a result.
@@ -3678,6 +3910,12 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
     if (saverResponse?.ok) setSaving((await saverResponse.json() as { saver: SaverState }).saver.enabled);
   };
   useEffect(() => { void refresh(); }, []);
+  // Opened once the settings are in, so the form opens on the right answer.
+  useEffect(() => {
+    if (intent !== 'connect' || r2Config === null) return;
+    setDestinationOpen(true);
+    onIntentHandled();
+  }, [intent, r2Config === null]);
 
   /*
    * Coming back from Cloudflare, by either of the two ways back.
@@ -4598,23 +4836,25 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       </AlertDescription>
     </Alert> : null}
 
-    {/* Which profile is in use, as the one control it takes. It had a card
-        heading and a field label of its own, which between them said "profile"
-        three times around a single dropdown. */}
-    <Card className="py-4">
-      <CardContent className="flex flex-wrap items-center gap-2">
-        {activeProfile === null
-          ? <span className="flex min-w-0 flex-1 items-center gap-2 text-sm text-muted-foreground"><UsersIcon className="size-4" />{t('console.noProfiles')}</span>
-          : <Select value={activeProfile.id} onValueChange={(id) => void activate(id)} disabled={busy}>
-            <SelectTrigger className="min-w-0 flex-1 sm:max-w-xs" aria-label={t('console.switchProfile')}><UsersIcon className="text-muted-foreground" /><SelectValue /></SelectTrigger>
-            <SelectContent>{profiles.map((profile) => <SelectItem key={profile.id} value={profile.id}>{profile.name}</SelectItem>)}</SelectContent>
-          </Select>}
-        <Button variant="outline" onClick={() => setProfileOpen(true)} disabled={busy}><Plus />{t('console.newProfile')}</Button>
-      </CardContent>
-    </Card>
-
     <Card>
-      <PanelHeading icon={<Archive />}>{t('console.backupLibrary')}</PanelHeading>
+      {/*
+        * Whose backups these are, as a small control in the card's corner.
+        *
+        * It had a card of its own, with a "New profile" button beside it that
+        * invited a press nearly nobody needs: somebody who made a second
+        * profile out of curiosity found an empty library and asked where their
+        * backups had gone, not knowing to switch back. Profiles are for the
+        * few who keep separate libraries, so making one is the last line of
+        * the dropdown rather than a button on the page.
+        */}
+      <PanelHeading icon={<Archive />} action={activeProfile === null ? null : <Select value={activeProfile.id} onValueChange={(id) => { if (id === NEW_PROFILE) setProfileOpen(true); else void activate(id); }} disabled={busy}>
+        <SelectTrigger size="sm" className="profile-select" aria-label={t('console.switchProfile')}><UserRound className="text-muted-foreground" /><SelectValue /></SelectTrigger>
+        <SelectContent position="popper" align="end">
+          {profiles.map((profile) => <SelectItem key={profile.id} value={profile.id}>{profile.name}</SelectItem>)}
+          <SelectSeparator />
+          <SelectItem value={NEW_PROFILE} className="text-muted-foreground"><Plus />{t('console.newProfile')}</SelectItem>
+        </SelectContent>
+      </Select>}>{t('console.backupLibrary')}</PanelHeading>
       <CardContent className="grid gap-4">
         {/* Here rather than in the R2 settings: it runs whether or not there is
             a bucket, so it has to be reachable without one. */}
@@ -4624,7 +4864,9 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
           <DetailRow label={t('console.localScheduleLabel')} {...(backupSchedule.intervalMinutes === 0 ? { hint: t('console.localScheduleOffHint') } : {})}>
             <Switch aria-label={t('console.localScheduleLabel')} checked={backupSchedule.intervalMinutes > 0} disabled={scheduleSaving} onCheckedChange={(on) => void saveBackupSchedule(on ? lastInterval.current : 0)} />
           </DetailRow>
-          {backupSchedule.intervalMinutes > 0 ? <DetailRow label={t('console.localScheduleEvery')}>
+          {/* A one-word label keeps its menu beside it on a phone: the row's usual
+              room for a label is what pushed the menu to a line of its own. */}
+          {backupSchedule.intervalMinutes > 0 ? <DetailRow label={t('console.localScheduleEvery')} className="[&>div:first-child]:basis-24">
             <Select value={localChoice?.id ?? CUSTOM_CHOICE} onValueChange={(id) => { const choice = LOCAL_BACKUP_CHOICES.find((item) => item.id === id); if (choice) void saveBackupSchedule(choice.intervalMinutes); }} disabled={scheduleSaving}>
               <SelectTrigger size="sm" className="w-40" aria-label={t('console.localScheduleEvery')}><SelectValue /></SelectTrigger>
               <SelectContent>
@@ -4646,8 +4888,8 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
             <input type="file" accept=".zip,application/zip" className="sr-only" disabled={busy} onChange={(event) => void inspectUpload(event.target.files?.[0])} />
           </label>
           {saving ? null : <>
+            <Button variant="outline" size="sm" onClick={() => startBackup('scheduled').then((failure) => { if (failure) failed(failure); })} disabled={busy || activeProfileId === null}><DatabaseBackup />{t('dashboard.backupNow')}</Button>
             <Button variant="outline" size="sm" onClick={() => setBackupOpen(true)} disabled={busy || activeProfileId === null}><BookmarkPlus />{t('console.manualBackup')}</Button>
-            <Button variant="outline" size="sm" onClick={() => startBackup('scheduled').then((failure) => { if (failure) failed(failure); })} disabled={busy || activeProfileId === null}><Archive />{t('dashboard.backupNow')}</Button>
           </>}
         </div>
         {busyAction ? <OperationProgress t={t} label={busyAction} progress={operationProgress} canStop={uploading || runningJobId !== null} stopping={stopping} onStop={() => void stopOperation()} warning={uploading ? t('console.uploadKeepTabOpen') : null} /> : null}
@@ -4758,7 +5000,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
             <span><Button size="sm" variant="ghost" onClick={() => {
               saveDismissedRecovery(lastRecovery.createdAt, browserStorage());
               setDismissedRecovery(lastRecovery.createdAt);
-            }}>{t('common.dismiss')}</Button></span>
+            }}>{t('common.gotIt')}</Button></span>
           </AlertDescription>
         </Alert> : null}
         <div>
@@ -4804,7 +5046,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
                 a desktop card has the width, and stacking them there left a
                 column of two short buttons against a row with a name on it. */}
             <div className="flex flex-col gap-2 sm:flex-row">
-              <Button size="sm" onClick={() => uploadR2()} disabled={r2Busy !== null || !r2Config.enabled}><Upload />{t('console.r2UploadLatest')}</Button>
+              <Button size="sm" onClick={() => uploadR2()} disabled={r2Busy !== null || !r2Config.enabled}><CloudUpload />{t('console.r2UploadLatest')}</Button>
               <Tooltip><TooltipTrigger asChild><span className="inline-flex">
                 <Button variant="outline" size="sm" className="w-full sm:w-auto" onClick={() => checkR2()} disabled={r2Busy !== null}><ShieldCheck />{t('console.r2CheckNow')}</Button>
               </span></TooltipTrigger><TooltipContent>{t('console.r2CheckHint')}</TooltipContent></Tooltip>
@@ -4861,8 +5103,9 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       open={profileOpen}
       onOpenChange={setProfileOpen}
       title={t('console.newProfile')}
+      description={t('console.newProfileBody')}
       label={t('console.profileName')}
-      hint={t('console.profileNameHint')}
+      placeholder={t('console.profileNamePlaceholder')}
       submitLabel={t('common.create')}
       onSubmit={createProfile}
     />
@@ -5121,7 +5364,7 @@ function FieldLabel({ label, optional }: { label: string; optional: string }) {
  * be translated, could not be styled, and asked in the browser's voice rather
  * than this program's.
  */
-function NameDialog({ t, open, onOpenChange, title, label, hint, note, initial = '', submitLabel, optional = false, onSubmit }: { t: Translate; open: boolean; onOpenChange: (open: boolean) => void; title: string; label: string; hint?: string; /** A second, free-text field under the name, for a line about why. */ note?: { label: string; hint: string }; initial?: string; submitLabel: string; optional?: boolean; onSubmit: (name: string, note: string) => Promise<string | null> }) {
+function NameDialog({ t, open, onOpenChange, title, description, label, hint, placeholder, note, initial = '', submitLabel, optional = false, onSubmit }: { t: Translate; open: boolean; onOpenChange: (open: boolean) => void; title: string; /** What the thing being named is, when that is not obvious. */ description?: string; label: string; hint?: string; placeholder?: string; /** A second, free-text field under the name, for a line about why. */ note?: { label: string; hint: string }; initial?: string; submitLabel: string; optional?: boolean; onSubmit: (name: string, note: string) => Promise<string | null> }) {
   const [name, setName] = useState(initial);
   const [noteText, setNoteText] = useState('');
   const [busy, setBusy] = useState(false);
@@ -5144,10 +5387,10 @@ function NameDialog({ t, open, onOpenChange, title, label, hint, note, initial =
 
   return <Dialog open={open} onOpenChange={onOpenChange}>
     <DialogContent className="sm:max-w-md">
-      <DialogHeader><DialogTitle>{title}</DialogTitle></DialogHeader>
+      <DialogHeader><DialogTitle>{title}</DialogTitle>{description ? <DialogDescription>{description}</DialogDescription> : null}</DialogHeader>
       <DialogBody className="grid gap-4">
         <Field label={optional ? <FieldLabel label={label} optional={t('common.optional')} /> : label} hint={hint}>
-          <Input value={name} onChange={(event) => setName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void submit(); } }} autoComplete="off" />
+          <Input value={name} onChange={(event) => setName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void submit(); } }} autoComplete="off" {...(placeholder ? { placeholder } : {})} />
         </Field>
         {note ? <Field label={<FieldLabel label={note.label} optional={t('common.optional')} />} hint={note.hint}>
           <Textarea value={noteText} onChange={(event) => setNoteText(event.target.value)} rows={3} maxLength={500} className="max-h-40 resize-none" />
@@ -6517,6 +6760,7 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
    * would have shown in those few seconds is one that is about to change.
    */
   const managerTunnelLink = publicAddress(managerTunnel);
+  const [managerQrOpen, setManagerQrOpen] = useState(false);
   const applyManagerTunnel = async (on: boolean) => {
     setManagerTunnelBusy(true); setManagerTunnelError(null);
     try {
@@ -6662,9 +6906,15 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
           >
             <div className="flex items-center gap-1">
               {managerTunnelLink
-                ? <Button variant="outline" size="sm" aria-label={t('console.openInTab')} title={t('console.openInTab')} asChild>
-                  <a href={managerTunnelLink} target="_blank" rel="noopener noreferrer"><ArrowUpRight /><span className="hidden sm:inline">{t('console.openInTab')}</span></a>
-                </Button>
+                ? <>
+                  {/* The console's own link onto a phone, the same way
+                      SillyTavern's addresses are offered. */}
+                  <Button variant="outline" size="sm" aria-label={t('console.shareAddress') + ' · ' + t('console.managerTunnel')} title={t('console.shareAddress')} onClick={() => setManagerQrOpen(true)}><QrCodeIcon /></Button>
+                  <Button variant="outline" size="sm" aria-label={t('console.openInTab')} title={t('console.openInTab')} asChild>
+                    <a href={managerTunnelLink} target="_blank" rel="noopener noreferrer"><ArrowUpRight /><span className="hidden sm:inline">{t('console.openInTab')}</span></a>
+                  </Button>
+                  <ShareDialog t={t} open={managerQrOpen} onOpenChange={setManagerQrOpen} label={t('console.managerTunnel')} links={[managerTunnelLink]} description={t('console.scanToOpenManager')} />
+                </>
                 : null}
               <Switch
                 checked={managerTunnelWanted}

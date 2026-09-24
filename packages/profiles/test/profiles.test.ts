@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getPlatformPaths } from '../../platform/src/index.js';
-import { ProfileStore, ProfileError } from '../src/index.js';
+import { isWaitingProfile, ProfileStore, ProfileError } from '../src/index.js';
 
 test('creates a data profile without moving runtime data and persists active selection', async () => {
   const root = await mkdtemp(join(tmpdir(), 'stm-profile-data-'));
@@ -211,4 +211,27 @@ test('a migration copy is reclaimed once the migration it protected has finished
   await store.prepareForRuntime(profile, runtimePath);
   await store.settle();
   await assert.rejects(() => readdir(migration));
+});
+
+test('a Default profile waits for SillyTavern and the first installation takes it over', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-profile-waiting-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const store = new ProfileStore({ paths });
+  const waiting = await store.ensureWaiting();
+  assert.ok(waiting);
+  assert.equal(waiting.name, 'Default');
+  assert.equal(isWaitingProfile(waiting), true);
+  assert.equal(waiting.active, true);
+  // Made once: a machine that has a profile is not given another.
+  assert.equal(await store.ensureWaiting(), null);
+
+  const runtimePath = join(root, 'runtime');
+  await mkdir(runtimePath, { recursive: true });
+  const bound = await store.ensureDefault({ installationId: 'install-1', runtimePath });
+  // The same profile, where its data already is, now belonging to the install.
+  assert.equal(bound.id, waiting.id);
+  assert.equal(bound.dataPath, waiting.dataPath);
+  assert.equal(bound.installationId, 'install-1');
+  assert.equal(isWaitingProfile(bound), false);
+  assert.equal((await store.list()).length, 1);
 });

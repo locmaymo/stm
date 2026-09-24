@@ -120,14 +120,80 @@ test('the console may hold SillyTavern in a frame, and nothing else may', async 
   assert.match(door.headers.get('content-security-policy') ?? '', /frame-ancestors 'self' http:\/\/127\.0\.0\.1:7860/u);
 });
 
-test('a gateway told of no console refuses every frame', async (t) => {
+test('a gateway told of no console lets only its own pages frame SillyTavern', async (t) => {
   const upstream = await startUpstream();
   const { gateway, base } = await startGateway(upstream);
   t.after(async () => { await gateway.close(); await upstream.close(); });
 
   const cookie = await signIn(base);
   const page = await fetch(`${base}/`, { headers: { cookie, accept: 'text/html' } });
-  assert.match(page.headers.get('content-security-policy') ?? '', /frame-ancestors 'none'/u);
+  // The tools window is one of those pages; nothing from anywhere else is.
+  assert.match(page.headers.get('content-security-policy') ?? '', /frame-ancestors 'self'(;|$)/u);
+});
+
+test('the tools window is behind the door and comes back to it after signing in', async (t) => {
+  const upstream = await startUpstream();
+  const { gateway, base } = await startGateway(upstream);
+  t.after(async () => { await gateway.close(); await upstream.close(); });
+
+  const door = await fetch(`${base}/__stm/window`, { headers: { accept: 'text/html' } });
+  assert.equal(door.status, 401);
+  assert.match(await door.text(), /name="next" value="\/__stm\/window"/u, 'the sign-in goes back to the window, not to SillyTavern');
+  assert.equal(upstream.seen.length, 0);
+
+  const cookie = await signIn(base);
+  const page = await fetch(`${base}/__stm/window`, { headers: { cookie, accept: 'text/html', 'accept-language': 'vi' } });
+  assert.equal(page.status, 200);
+  const html = await page.text();
+  assert.match(html, /<iframe[^>]+src="\/"/u, 'SillyTavern is framed from this same origin');
+  assert.ok(html.includes('Sao lưu cục bộ ngay'), 'in the reader\u2019s language');
+  const policy = page.headers.get('content-security-policy') ?? '';
+  const nonce = /script-src 'nonce-([^']+)'/u.exec(policy)?.[1];
+  assert.ok(nonce && html.includes(`nonce="${nonce}"`), 'its one script runs on a nonce');
+  assert.match(policy, /frame-src 'self'/u);
+  assert.equal(upstream.seen.length, 0, 'the window itself is not SillyTavern\u2019s to answer');
+});
+
+test('the tools answer only the window, and only a signed-in one', async (t) => {
+  const upstream = await startUpstream();
+  const asked: string[] = [];
+  const gateway = new AccessGateway({
+    port: 0,
+    targetPort: upstream.port,
+    logger: () => undefined,
+    tools: {
+      backup: async (target) => { asked.push(target); return target === 'local' ? { unchanged: true } : { jobId: 'job-1' }; },
+      job: (id) => (id === 'job-1' ? { id, kind: 'r2Upload', state: 'running', progress: 40, step: 'Sending to R2', stepCode: 'job.sendingToR2', installationId: null, createdAt: '', updatedAt: '', error: null } : null),
+      logs: () => ({ streamId: 's', nextCursor: 7, entries: [{ id: 7, timestamp: new Date(0).toISOString(), source: 'backup', level: 'info', message: '[r2] the bucket already holds this usage history', code: 'r2.uploadNowMetricsSame' }] }),
+    },
+  });
+  gateway.setPassword(hashPassword(PASSWORD));
+  const state = await gateway.start(false);
+  const base = `http://127.0.0.1:${state.port}`;
+  t.after(async () => { await gateway.close(); await upstream.close(); });
+
+  const anonymous = await fetch(`${base}/__stm/tools/backup`, { method: 'POST', headers: { 'x-stm-tools': '1' }, body: '{}' });
+  assert.equal(anonymous.status, 401);
+  const cookie = await signIn(base);
+  const forged = await fetch(`${base}/__stm/tools/backup`, { method: 'POST', headers: { cookie, 'content-type': 'text/plain' }, body: '{"target":"cloud"}' });
+  assert.equal(forged.status, 403, 'a plain cross-site form cannot start one');
+  assert.deepEqual(asked, []);
+
+  const cloud = await fetch(`${base}/__stm/tools/backup`, { method: 'POST', headers: { cookie, 'x-stm-tools': '1' }, body: '{"target":"cloud"}' });
+  assert.equal(cloud.status, 202);
+  assert.deepEqual(await cloud.json(), { jobId: 'job-1' });
+  const local = await fetch(`${base}/__stm/tools/backup`, { method: 'POST', headers: { cookie, 'x-stm-tools': '1' }, body: '{}' });
+  assert.deepEqual(await local.json(), { unchanged: true });
+  assert.deepEqual(asked, ['cloud', 'local']);
+
+  const job = await (await fetch(`${base}/__stm/tools/job?id=job-1`, { headers: { cookie, 'x-stm-tools': '1', 'accept-language': 'vi' } })).json() as { progress: number; step: string };
+  assert.equal(job.progress, 40);
+  assert.notEqual(job.step, 'Sending to R2', 'the step is said in the reader\u2019s language');
+  const logs = await (await fetch(`${base}/__stm/tools/logs?after=0`, { headers: { cookie, 'x-stm-tools': '1', 'accept-language': 'vi' } })).json() as { next: number; lines: Array<{ text: string }> };
+  assert.equal(logs.next, 7);
+  assert.equal(logs.lines.length, 1);
+  assert.ok(!logs.lines[0]?.text.startsWith('[r2]'));
+  assert.equal(upstream.seen.length, 0, 'none of it reaches SillyTavern');
 });
 
 test('nothing reaches SillyTavern until the gateway password is given', async (t) => {
@@ -545,4 +611,17 @@ test('five wrong tries shut the door on everyone, not on one address', async (t)
   gateway.setPassword(hashPassword('417203'), true);
   const after = await submitLogin(base, '417203');
   assert.equal(after.status, 303);
+});
+
+test('the door carries what the manager remembers about the access link', async (t) => {
+  const upstream = await startUpstream();
+  const { gateway, base } = await startGateway(upstream);
+  t.after(async () => { await gateway.close(); await upstream.close(); });
+
+  assert.equal(gateway.getState().opened, false);
+  // Signing in is not turning the link on; the manager says when that happens.
+  await signIn(base);
+  assert.equal(gateway.getState().opened, false);
+  gateway.setOpened(true);
+  assert.equal(gateway.getState().opened, true);
 });

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { formatLogMessage, interpolate, translateLogEntry } from '../src/log-format.js';
+import { foldForSearch, formatLogMessage, interpolate, translateLogEntry } from '../../../packages/contracts/src/index.js';
 
 test('removes internal source and job id prefixes from visible log messages', () => {
   assert.equal(
@@ -43,4 +43,12 @@ test('falls back to the English line when the catalog has no entry', () => {
 
 test('leaves a placeholder in place when no value was sent for it', () => {
   assert.equal(interpolate('Restored {count} files to {profile}', { count: 4 }), 'Restored 4 files to {profile}');
+});
+
+test('a log search folds case, accents and how the letters were typed', () => {
+  // Precomposed, as the catalogue is written, and decomposed, as some
+  // Vietnamese keyboards type it, are the same word to a search.
+  assert.equal(foldForSearch('Cổng ĐANG lắng nghe'), 'cong dang lang nghe');
+  assert.equal(foldForSearch('co\u0302\u0309ng'), foldForSearch('c\u1ed5ng'));
+  assert.ok(foldForSearch('Cổng truy cập SillyTavern').includes(foldForSearch('cong truy')));
 });
