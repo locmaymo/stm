@@ -1,7 +1,7 @@
 import { createHmac, randomUUID } from 'node:crypto';
 import { appendFile, mkdir, open, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import type { AppUsageDay, PlatformKind, TelemetryBatch, TelemetryEnvelope, UsageEvent } from '../../contracts/src/index.js';
+import { isR2UsageMode, type AppUsageDay, type PlatformKind, type TelemetryBatch, type TelemetryEnvelope, type UsageEvent } from '../../contracts/src/index.js';
 import { isUsageEvent } from '../../instrumentation/src/index.js';
 import type { PlatformPaths } from '../../platform/src/index.js';
 
@@ -389,6 +389,7 @@ function parseUsageDay(value: unknown): AppUsageDay | null {
     sillyTavernSeconds: whole(value.sillyTavernSeconds),
     consoleSeconds: whole(value.consoleSeconds),
     starts: whole(value.starts),
+    ...(isR2UsageMode(value.r2) ? { r2: value.r2 } : {}),
   };
 }
 

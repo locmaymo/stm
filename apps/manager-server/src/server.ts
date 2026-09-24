@@ -750,7 +750,16 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
    * say: a manager installed once and never opened looks exactly like one that
    * was never installed. See `activity.ts`.
    */
-  const activity = new ActivityMeter({ paths, sillyTavernRunning: () => supervisor.getState().status === 'running' });
+  const activity = new ActivityMeter({
+    paths,
+    sillyTavernRunning: () => supervisor.getState().status === 'running',
+    // Read from the settings file, so it costs no request to the bucket.
+    r2Mode: async () => {
+      const config = await r2.getConfig();
+      if (!config.enabled || !config.configured) return 'off';
+      return config.mode === 'cloudflare' ? 'cloudflare' : 'keys';
+    },
+  });
   await activity.start();
   const telemetry = options.telemetry ?? new TelemetryTransport({
     paths,

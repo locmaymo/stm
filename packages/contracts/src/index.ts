@@ -1652,6 +1652,20 @@ export interface AppUsageDay {
   readonly consoleSeconds: number;
   /** How many times the manager was started that day. */
   readonly starts: number;
+  /**
+   * How backups to R2 were set up when the day was last looked at.
+   *
+   * Absent on a day recorded before this was, which is read as not known
+   * rather than as off.
+   */
+  readonly r2?: R2UsageMode;
+}
+
+/** Whether backups go to R2, and through which kind of connection. */
+export type R2UsageMode = 'off' | 'keys' | 'cloudflare';
+
+export function isR2UsageMode(value: unknown): value is R2UsageMode {
+  return value === 'off' || value === 'keys' || value === 'cloudflare';
 }
 
 /** What the panel shows about how much the manager itself is used. */

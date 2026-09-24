@@ -1,7 +1,7 @@
 {
   "meta": {
-    "effective": "2026-09-17",
-    "revision": "2026.09",
+    "effective": "2026-09-24",
+    "revision": "2026.09.2",
     "author": "locmaymo",
     "project": "SillyTavern Manager",
     "repository": "https://github.com/locmaymo/stm",
@@ -17,10 +17,8 @@
   "revision": {
     "summary": "Mỗi bản sửa đổi đều công bố trọn vẹn cả bốn văn bản, nên không có điều nào của bản cũ được giữ lại mà không nói ra. Đây là bản đang có hiệu lực.",
     "changes": [
-      "Điều khoản sử dụng nói phần mềm này là gì, việc chạy nó để lại những gì cho bạn, và dự án không chịu trách nhiệm về điều gì.",
-      "Tuyên bố miễn trừ nói về các mô hình, nhà cung cấp và nội dung sinh ra mà trình quản lý chỉ chuyển tiếp chứ không kiểm soát.",
-      "Thông báo quyền riêng tư nói báo cáo sử dụng chứa những gì, và nêu rõ những gì không bao giờ được gửi đi: đoạn chat, nhân vật, prompt và khoá API của bạn.",
-      "Thông báo bên thứ ba liệt kê các phần mềm dự án này dựng trên và giấy phép đi kèm."
+      "Thông báo quyền riêng tư nay liệt kê các số liệu sử dụng theo ngày mà báo cáo mang theo: trình quản lý, SillyTavern và bảng điều khiển được dùng bao lâu, và trình quản lý khởi động bao nhiêu lần.",
+      "Thông báo cũng thêm một mục mới: sao lưu lên R2 đang tắt, được thiết lập bằng khoá, hay qua đăng nhập Cloudflare. Không có gì về bucket hay nội dung bên trong được gửi đi."
     ]
   },
   "documents": {
@@ -229,8 +227,9 @@
           "heading": "Những gì được gửi về dự án",
           "body": [
             "Một lần cho mỗi bản cài đặt: một mã định danh cài đặt ngẫu nhiên, sinh ra trên máy bạn và không gắn với bất cứ thứ gì khác.",
-            "Kèm mỗi lô dữ liệu: nền tảng (Windows, Linux, macOS, Termux, Docker hoặc không xác định) và phiên bản ứng dụng.",
+            "Kèm mỗi lô dữ liệu: nền tảng (Windows, Linux, Termux, Docker, máy chủ lưu trữ hoặc không xác định) và phiên bản ứng dụng.",
             "Với mỗi lượt gọi mô hình mà SillyTavern thực hiện: thời điểm, tên nhà cung cấp, định dạng API hoàn thành, tên mô hình, tên máy chủ điểm cuối, có dùng truyền theo luồng hay không, thiết lập token tối đa, số token đầu vào, đầu ra và tổng cộng, số token đọc và ghi bộ nhớ đệm, số token suy luận, mã trạng thái HTTP, và thời lượng tính bằng mili giây.",
+            "Một lần cho mỗi ngày đã qua: trình quản lý chạy bao lâu, SillyTavern chạy bao lâu trong đó, bảng điều khiển được mở và xem bao lâu, trình quản lý khởi động bao nhiêu lần, và sao lưu lên R2 đang tắt, được thiết lập bằng khoá, hay qua đăng nhập Cloudflare. Không kèm tên bucket, tài khoản hay tệp nào.",
             "Đó là toàn bộ danh sách. Danh sách cho phép nằm trong mã nguồn, tại packages/instrumentation và packages/telemetry, và bạn có thể đọc nó."
           ]
         },
