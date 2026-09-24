@@ -987,7 +987,9 @@
       "resuming": "Đang mở lại đường dẫn công khai đã chạy trước đó",
       "resumeFailed": "Không mở lại được đường dẫn công khai: {reason}",
       "stateNotSaved": "Không lưu được thiết lập đường dẫn công khai: {reason}",
-      "transportSwitched": "{reason}; đang thử lại qua HTTP/2"
+      "transportSwitched": "{reason}; đang thử lại qua HTTP/2",
+      "linkAnswered": "{url} đã mở được; đưa link ra",
+      "linkUnchecked": "Chưa xác nhận được {url} mở được; vẫn đưa link ra"
     },
     "r2": {
       "uploaded": "Đã tải {name} lên ({bytes} byte)",

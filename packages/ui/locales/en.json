@@ -987,7 +987,9 @@
       "resuming": "Restoring the tunnel that was running before",
       "resumeFailed": "The tunnel could not be restored: {reason}",
       "stateNotSaved": "The tunnel setting could not be saved: {reason}",
-      "transportSwitched": "{reason}; trying again over HTTP/2"
+      "transportSwitched": "{reason}; trying again over HTTP/2",
+      "linkAnswered": "{url} answers; handing it out",
+      "linkUnchecked": "Could not confirm that {url} answers; handing it out anyway"
     },
     "r2": {
       "uploaded": "Uploaded {name} ({bytes} bytes)",
