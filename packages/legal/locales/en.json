@@ -1,7 +1,7 @@
 {
   "meta": {
-    "effective": "2026-09-17",
-    "revision": "2026.09",
+    "effective": "2026-09-24",
+    "revision": "2026.09.2",
     "author": "locmaymo",
     "project": "SillyTavern Manager",
     "repository": "https://github.com/locmaymo/stm",
@@ -17,10 +17,8 @@
   "revision": {
     "summary": "Every revision publishes all four documents in full, so nothing from an earlier one carries over unsaid. This is the revision in force.",
     "changes": [
-      "The Terms of Use say what the software is, what running it leaves to you, and what the project does not take responsibility for.",
-      "The Disclaimer covers the models, providers and generated content the manager passes through and does not control.",
-      "The Privacy Notice says what the usage report contains, and names what is never sent: your chats, characters, prompts and keys.",
-      "The Third-Party Notices list the software this project is built on and the licences it is used under."
+      "The Privacy Notice now lists the daily usage counts the report carries: how long the manager, SillyTavern and the console were in use, and how many times the manager started.",
+      "It also lists one new item: whether backups to R2 are off, set up with keys, or set up through a Cloudflare sign-in. Nothing about the bucket or what is in it is sent."
     ]
   },
   "documents": {
@@ -229,8 +227,9 @@
           "heading": "What is sent to the project",
           "body": [
             "Once per installation: a random installation identifier, generated on your machine and connected to nothing else.",
-            "With each batch: the platform (Windows, Linux, macOS, Termux, Docker or unknown) and the application version.",
+            "With each batch: the platform (Windows, Linux, Termux, Docker, a hosted workspace or unknown) and the application version.",
             "For each model request SillyTavern makes: the timestamp, provider name, completion API format, model name, endpoint hostname, whether streaming was used, the maximum token setting, input, output and total token counts, cache read and write tokens, reasoning tokens, the HTTP status, and the duration in milliseconds.",
+            "Once for each finished day: how long the manager ran, how long SillyTavern ran under it, how long the console was open and in view, how many times the manager started, and whether backups to R2 were off, set up with keys, or set up through a Cloudflare sign-in. No bucket name, account or file is included.",
             "That is the complete list. The allowlist is in the source code, under packages/instrumentation and packages/telemetry, and you can read it."
           ]
         },

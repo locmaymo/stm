@@ -21,6 +21,7 @@ export * from './shadcn/switch.js';
 export * from './shadcn/table.js';
 export * from './shadcn/tabs.js';
 export * from './shadcn/toast.js';
+export * from './shadcn/popover.js';
 export * from './shadcn/tooltip.js';
 export * from './shadcn/utils.js';
 

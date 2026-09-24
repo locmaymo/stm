@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
-import { Funnel, Maximize2, Minimize2, RefreshCw, Rows3, Search, X } from 'lucide-react';
+import { Funnel, Maximize2, Minimize2, Rows3, Search, X } from 'lucide-react';
 import { useToast } from '../../../packages/ui/src/index.js';
 import { foldForSearch, translateLogEntry, type Job, type LogEntry, type LogPage, type LogSourceFilter } from '../../../packages/contracts/src/index.js';
 import type { Fail, Translate } from './i18n.js';
@@ -75,9 +75,12 @@ function writeJson(key: string, value: unknown): void {
  * forward would mean leaving SillyTavern to read three lines. This is the same
  * panel the door's tools window has, and it behaves the same way:
  *
- * - Compact or detailed, in one button. Compact drops the time and the source,
- *   which is what a phone has room for, so a phone starts compact and a
- *   desktop starts detailed; a choice made either way is remembered.
+ * - One line per entry, scrolled sideways rather than wrapped, like the
+ *   console's own log: a wrapped line broke a phone-width panel into a wall.
+ * - Compact or detailed, in one button. Compact drops the time, so a phone
+ *   starts compact and a desktop starts detailed; a choice made either way is
+ *   remembered. The source goes only when one source is chosen, where it
+ *   would say the same word on every line.
  * - Resized by its edges: the grip in the middle of the top edge on a phone,
  *   and the top edge, the left edge or the corner between them with a mouse.
  *   Or the whole screen, from the header.
@@ -87,7 +90,6 @@ export function ToolsLogs({ t, catalog, onClose }: { t: Translate; catalog: Reco
   const cursor = useRef(0);
   const list = useRef<HTMLDivElement | null>(null);
   const panel = useRef<HTMLElement | null>(null);
-  const [generation, setGeneration] = useState(0);
   const [compact, setCompact] = useState<boolean>(() => readJson<boolean>(LOGS_COMPACT_KEY) ?? window.matchMedia('(max-width: 640px)').matches);
   // Only the sides that were dragged: a height set on a phone, where the
   // panel is as wide as the screen, must not make it that narrow on a desktop.
@@ -129,7 +131,7 @@ export function ToolsLogs({ t, catalog, onClose }: { t: Translate; catalog: Reco
     };
     void tick();
     return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [generation]);
+  }, []);
 
   const toggleCompact = () => { setCompact((value) => { writeJson(LOGS_COMPACT_KEY, !value); return !value; }); };
   /*
@@ -200,7 +202,6 @@ export function ToolsLogs({ t, catalog, onClose }: { t: Translate; catalog: Reco
       <button type="button" onClick={() => (searchOpen ? closeSearch() : setSearchOpen(true))} aria-pressed={searchOpen} aria-label={t('console.searchLogs')} title={t('console.searchLogs')}><Search aria-hidden="true" /></button>
       <button type="button" onClick={() => setFilterOpen((value) => !value)} aria-pressed={filterOpen || source !== 'all'} aria-label={t('console.logSource')} title={t('console.logSource')}><Funnel aria-hidden="true" /></button>
       <button type="button" onClick={toggleCompact} aria-pressed={compact} title={compact ? t('console.showDetailedLogs') : t('console.showCompactLogs')}><Rows3 aria-hidden="true" /><span>{compact ? t('console.showDetailedLogs') : t('console.showCompactLogs')}</span></button>
-      <button type="button" onClick={() => setGeneration((value) => value + 1)} aria-label={t('console.toolsRefresh')} title={t('console.toolsRefresh')}><RefreshCw aria-hidden="true" /></button>
       <button type="button" onClick={() => setMaximized((value) => !value)} aria-label={maximized ? t('console.logsRestore') : t('console.logsMaximize')} title={maximized ? t('console.logsRestore') : t('console.logsMaximize')}>{maximized ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}</button>
       <button type="button" onClick={onClose} aria-label={t('common.close')} title={t('common.close')}><X aria-hidden="true" /></button>
     </header>
@@ -216,8 +217,8 @@ export function ToolsLogs({ t, catalog, onClose }: { t: Translate; catalog: Reco
         ? <p className="embed-logs-empty">{needle || source !== 'all' ? t('console.noLogMatches') : t('console.toolsLogsEmpty')}</p>
         : shown.map((entry) => <p key={entry.id} data-level={entry.level}>
           {compact ? null : <time>{time(entry.timestamp)}</time>}
-          {compact ? null : <span className="embed-logs-source">{entry.source}</span>}
-          {translateLogEntry(entry, catalog)}
+          {source === 'all' ? <span className="embed-logs-source">{entry.source}</span> : null}
+          <span>{translateLogEntry(entry, catalog)}</span>
         </p>)}
     </div>
   </section>;

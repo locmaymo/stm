@@ -665,6 +665,11 @@ export interface R2Config {
   readonly owner?: {
     /** What the holding machine calls itself, usually its hostname. */
     readonly label: string;
+    /**
+     * When the holder signed in and took the account; absent on an older
+     * manager's answer. `lastSeenAt` moves on with every backup it sends.
+     */
+    readonly claimedAt?: string;
     readonly lastSeenAt: string;
     /** Whether the holder is this manager. */
     readonly mine: boolean;
@@ -885,6 +890,28 @@ export interface RestorePreview {
    * overwrites.
    */
   readonly capacity?: Readonly<Record<RestoreMode, RestoreCapacity>>;
+  /**
+   * What a replace would delete of the profile as it stands.
+   *
+   * Absent on an older manager's answer, which is read as nothing to say.
+   */
+  readonly losses?: RestoreLosses;
+}
+
+/**
+ * The files and extensions a replace would take away.
+ *
+ * A replace leaves the profile holding exactly what the backup held, so
+ * restoring an older backup takes away everything added since. On one machine
+ * that was 525 files and seven extensions, from a zip two weeks older than the
+ * profile, and nothing on the screen said so before it ran. Junk is not
+ * counted; see `RestoreCapacity`.
+ */
+export interface RestoreLosses {
+  readonly files: number;
+  readonly bytes: number;
+  /** Extensions in the profile now that the backup holds none of, by folder name. */
+  readonly extensions: readonly string[];
 }
 
 /**
@@ -1113,6 +1140,59 @@ export interface TunnelState {
    * Absent where nothing decorates the state, like `proxyUrl` above.
    */
   readonly proxyPending?: boolean;
+  /**
+   * Which of the two addresses the reader wants in front, and whether the
+   * fixed one is shown at all; see `AccessLinkPreference`.
+   *
+   * Absent where nothing decorates the state, which reads as the default.
+   */
+  readonly linkPreference?: AccessLinkPreference;
+}
+
+/** The two doors a tunnel's address can be for. */
+export type AccessLinkTarget = 'sillyTavern' | 'manager';
+export const ACCESS_LINK_TARGETS: readonly AccessLinkTarget[] = ['sillyTavern', 'manager'];
+
+/** The fixed address in front of a tunnel, or the tunnel's own. */
+export type AccessLinkKind = 'fixed' | 'tunnel';
+
+/**
+ * How the reader wants a door's addresses offered.
+ *
+ * With a Cloudflare sign-in each door has two: the fixed address, which never
+ * changes and goes through a Worker, and the tunnel's own, which changes at
+ * every start and goes straight to cloudflared. The fixed one was always put
+ * first. Somebody who finds the Worker slower, or who only ever opens the link
+ * on the machine in front of them, had no way to say so.
+ *
+ * `preferred` is the one put first - on the card, behind the Open button and in
+ * the QR code. `showFixed` false hides the fixed address from the console
+ * altogether; the Worker goes on following the tunnel, so a fixed address
+ * already shared with somebody keeps working.
+ *
+ * A setting of the reader's, so it travels with the rest of the manager's
+ * settings to the bucket and back.
+ */
+export interface AccessLinkPreference {
+  readonly preferred: AccessLinkKind;
+  readonly showFixed: boolean;
+}
+
+export type AccessLinkPreferences = Readonly<Record<AccessLinkTarget, AccessLinkPreference>>;
+
+export const DEFAULT_ACCESS_LINK: AccessLinkPreference = { preferred: 'fixed', showFixed: true };
+
+/** Read preferences back, correcting anything missing or malformed to the default. */
+export function parseAccessLinks(value: unknown): AccessLinkPreferences {
+  const record = typeof value === 'object' && value !== null ? value as Record<string, unknown> : {};
+  const one = (entry: unknown): AccessLinkPreference => {
+    const fields = typeof entry === 'object' && entry !== null ? entry as Record<string, unknown> : {};
+    return {
+      preferred: fields.preferred === 'tunnel' ? 'tunnel' : 'fixed',
+      showFixed: fields.showFixed !== false,
+    };
+  };
+  return { sillyTavern: one(record.sillyTavern), manager: one(record.manager) };
 }
 
 /**
@@ -1357,6 +1437,13 @@ export interface ManagerSettingsRecord {
    * recovered machine comes back running the same build it lost.
    */
   readonly versionRef: string | null;
+  /**
+   * How each door's addresses are offered; see `AccessLinkPreference`.
+   *
+   * Absent on a record written before these existed, which leaves the machine
+   * restoring it with whatever it has.
+   */
+  readonly accessLinks?: AccessLinkPreferences;
 }
 
 /** What the panel is told about settings waiting in the bucket. */
@@ -1427,6 +1514,13 @@ export interface ConsoleStatus {
    * costs this answer nothing.
    */
   readonly r2Owner: R2Config['owner'];
+  /**
+   * The setup another machine left in the bucket, offered to this one.
+   *
+   * Absent until the manager has read it, and on an older manager's answer;
+   * either way the console keeps what it had.
+   */
+  readonly settingsOffer?: ManagerSettingsOffer;
   /**
    * Something about the signed-in Cloudflare account that has to be fixed on
    * Cloudflare before any of this works.
@@ -1618,6 +1712,20 @@ export interface AppUsageDay {
   readonly consoleSeconds: number;
   /** How many times the manager was started that day. */
   readonly starts: number;
+  /**
+   * How backups to R2 were set up when the day was last looked at.
+   *
+   * Absent on a day recorded before this was, which is read as not known
+   * rather than as off.
+   */
+  readonly r2?: R2UsageMode;
+}
+
+/** Whether backups go to R2, and through which kind of connection. */
+export type R2UsageMode = 'off' | 'keys' | 'cloudflare';
+
+export function isR2UsageMode(value: unknown): value is R2UsageMode {
+  return value === 'off' || value === 'keys' || value === 'cloudflare';
 }
 
 /** What the panel shows about how much the manager itself is used. */

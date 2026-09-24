@@ -78,14 +78,33 @@ test('with no tunnel behind it, the address says so instead of forwarding', asyn
     const answer = await proxy.fetch(new Request('https://stm.acme.workers.dev/'), env);
     assert.equal(answer.status, 503);
     const page = await answer.text();
-    assert.ok(page.includes('not open'), JSON.stringify(env));
+    assert.ok(page.includes('ready yet'), JSON.stringify(env));
     // Named, so a reader who has two of these addresses knows which one this is.
-    assert.ok(page.includes('the manager console'), JSON.stringify(env));
+    assert.ok(page.includes('STM isn’t ready yet'), JSON.stringify(env));
   }
   assert.equal(reached, false, 'nothing is forwarded into nowhere');
 
   const sillyTavern = await proxy.fetch(new Request('https://sillytavern.acme.workers.dev/'), { ORIGIN: '', TARGET: 'sillyTavern' });
   assert.ok((await sillyTavern.text()).includes('SillyTavern'));
+});
+
+test('the page waits with the reader, in their language, and says it is the waiting page', async (t) => {
+  const proxy = await loadProxy();
+  t.after(interceptFetch(() => new Response('nope')));
+  const english = await proxy.fetch(new Request('https://sillytavern.acme.workers.dev/'), { ORIGIN: '', TARGET: 'sillyTavern' });
+  // Marked, so the page asking again can tell this page from the real one.
+  assert.equal(english.headers.get('x-stm-offline'), '1');
+  const page = await english.text();
+  assert.ok(page.includes('location.reload()'), 'it opens the real page by itself once the link answers');
+  assert.ok(page.includes('lang="en"'));
+
+  const vietnamese = await proxy.fetch(new Request('https://sillytavern.acme.workers.dev/', { headers: { 'accept-language': 'vi-VN,vi;q=0.9,en;q=0.8' } }), { ORIGIN: '', TARGET: 'sillyTavern' });
+  const viPage = await vietnamese.text();
+  assert.ok(viPage.includes('lang="vi"'));
+  assert.ok(viPage.includes('SillyTavern chưa sẵn sàng'));
+  // It says what to check on the machine, and offers the other language.
+  assert.ok(viPage.includes('SillyTavern đang chạy'));
+  assert.ok(viPage.includes('data-lang="en"'));
 });
 
 test('the Worker says what it is, so the manager can tell its own from a stranger', async (t) => {
@@ -116,7 +135,7 @@ test('a tunnel that has gone reads as the link being off, not as an error page',
     { ORIGIN: 'https://gone.trycloudflare.com', TARGET: 'manager' },
   );
   assert.equal(answer.status, 503);
-  assert.match(await answer.text(), /not open right now/u);
+  assert.match(await answer.text(), /isn’t ready yet/u);
 });
 
 test('a tunnel whose name has gone from DNS reads the same way', async (t) => {
@@ -127,7 +146,7 @@ test('a tunnel whose name has gone from DNS reads the same way', async (t) => {
     { ORIGIN: 'https://gone.trycloudflare.com', TARGET: 'manager' },
   );
   assert.equal(answer.status, 503);
-  assert.match(await answer.text(), /not open right now/u);
+  assert.match(await answer.text(), /isn’t ready yet/u);
 });
 
 /*

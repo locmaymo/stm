@@ -529,8 +529,17 @@
 /* Where the other addresses are, rather than a second copy of them. The
    sharing addresses belong to the card that turns them on; saying them twice
    is how one of the two ends up out of date. */
-.runtime-shared { color: var(--link); font-size: 12.5px; font-weight: 600; text-decoration: none; cursor: pointer; }
-.runtime-shared:hover { color: var(--link-hover); text-decoration: underline; text-underline-offset: 3px; }
+/* "+2": the other places an address answers, behind a count. A pill beside
+   the address rather than a sentence under it; the list opens on hover with a
+   mouse and on a tap without one. */
+.link-more { display: inline-flex; align-items: center; height: 20px; min-height: 0; padding: 0 7px; margin-left: 6px; border: 1px solid var(--border); border-radius: 999px; background: var(--muted); color: var(--muted-foreground); font-size: 11.5px; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1; vertical-align: middle; cursor: pointer; }
+.link-more:hover, .link-more:focus-visible, .link-more[data-state="open"] { border-color: color-mix(in srgb, var(--primary) 45%, var(--border)); color: var(--foreground); }
+.link-more-list { display: grid; gap: 2px; width: auto; min-width: 15rem; max-width: min(24rem, calc(100vw - 24px)); padding: 6px; }
+.link-more-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 0 10px; padding: 7px 8px; border-radius: 8px; color: inherit; text-decoration: none; }
+.link-more-row:hover, .link-more-row:focus-visible { background: var(--accent); }
+.link-more-label { grid-column: 1; color: var(--muted-foreground); font-size: 11.5px; font-weight: 500; }
+.link-more-host { grid-column: 1; overflow: hidden; color: var(--link); font-family: var(--font-mono, ui-monospace, monospace); font-size: 12.5px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.link-more-row svg { grid-column: 2; grid-row: 1 / span 2; width: 14px; height: 14px; color: var(--muted-foreground); }
 /* Said once per release, then not again until the next one. */
 .runtime-update {
   display: flex;
@@ -662,16 +671,16 @@
 .embed-logs-search input { width: 100%; height: 34px; padding: 0 10px 0 32px; border: 1px solid var(--input); border-radius: 8px; background: transparent; color: inherit; font: inherit; font-size: 16px; outline: none; }
 @media (min-width: 641px) { .embed-logs-search input { font-size: 13px; } }
 .embed-logs-lines { flex: 1; overflow: auto; padding: 8px 12px; font: 12px/1.55 var(--font-mono, ui-monospace, monospace); }
-.embed-logs-lines p { margin: 0; padding: 2px 0; border-bottom: 1px solid color-mix(in srgb, var(--border) 60%, transparent); white-space: pre-wrap; word-break: break-word; }
-.embed-logs-lines time { margin-right: 8px; color: var(--muted-foreground); }
-.embed-logs-source { margin-right: 6px; color: var(--primary); }
+.embed-logs-lines p { display: flex; gap: 12px; width: max-content; min-width: 100%; margin: 0; padding: 1px 0; white-space: pre; }
+.embed-logs-lines time { flex: none; color: var(--muted-foreground); }
+.embed-logs-source { flex: none; color: var(--primary); }
 .embed-logs-lines p[data-level="warn"] { color: var(--warning, #b45309); }
 .embed-logs-lines p[data-level="error"] { color: var(--destructive); }
 .embed-logs-lines .embed-logs-empty { border: 0; color: var(--muted-foreground); font-family: inherit; }
 /* The edges that resize it: the top everywhere, with a grip in the middle a
    thumb can find; the left edge and the corner between them for a mouse. */
-.embed-logs-grip { position: absolute; top: 0; left: 0; right: 0; z-index: 1; display: grid; height: 10px; place-items: center; cursor: ns-resize; touch-action: none; }
-.embed-logs-grip i { width: 36px; height: 4px; margin-top: 3px; border-radius: 999px; background: color-mix(in srgb, var(--muted-foreground) 45%, transparent); }
+.embed-logs-grip { position: absolute; top: 0; left: 0; right: 0; z-index: 1; display: grid; height: 12px; place-items: center; cursor: ns-resize; touch-action: none; }
+.embed-logs-grip i { width: 40px; height: 4px; margin-top: 4px; border-radius: 999px; background: color-mix(in srgb, var(--muted-foreground) 55%, transparent); }
 .embed-logs-edge-left { position: absolute; top: 0; bottom: 0; left: 0; z-index: 1; width: 6px; cursor: ew-resize; touch-action: none; }
 .embed-logs-corner { position: absolute; top: 0; left: 0; z-index: 2; width: 14px; height: 14px; cursor: nwse-resize; touch-action: none; }
 :root[data-resizing] { user-select: none; }
@@ -679,7 +688,11 @@
 @media (max-width: 640px) {
   .embed-logs:not([data-maximized]) { right: 8px; left: 8px; bottom: 8px; width: auto; height: min(var(--logs-height, 70dvh), calc(100dvh - 16px)); }
   .embed-logs-edge-left, .embed-logs-corner { display: none; }
-  .embed-logs-grip { height: 18px; }
+  /* Big enough to take hold of with a thumb, with the header moved down
+     out of its way. */
+  .embed-logs-grip { height: 26px; }
+  .embed-logs-grip i { width: 52px; height: 6px; margin-top: 0; }
+  .embed-logs:not([data-maximized]) header { padding-top: 22px; }
   .embed-logs header button span { display: none; }
 }
 
@@ -735,15 +748,32 @@
 .address-name { flex: 0 0 auto; width: 10.5rem; color: var(--muted-foreground); font-size: 13px; font-weight: 500; }
 .address-value { min-width: 0; flex: 1; font-size: 13px; overflow-wrap: anywhere; }
 .address-absent { color: var(--muted-foreground); }
-.share-dialog { max-width: 22rem; }
+.share-dialog { max-width: 24rem; }
 .share-body { display: grid; justify-items: center; gap: 12px; }
 /* A link now, not a label: the sheet has no buttons under it any more, so
    opening the address is done by pressing the address. */
 .share-url { color: var(--muted-foreground); font-size: 12.5px; text-align: center; overflow-wrap: anywhere; font-family: var(--font-mono, ui-monospace, monospace); text-decoration: underline; text-underline-offset: 3px; }
 .share-url:hover, .share-url:focus-visible { color: var(--foreground); }
 /* One line per address, each of them a link. A place can answer on two - a
-   Worker with a fixed name and the tunnel behind it - and both belong here. */
-.share-links { display: grid; gap: 6px; justify-items: center; }
+   Worker with a fixed name and the tunnel behind it - and both belong here,
+   with "or" between them. */
+.share-links { display: grid; gap: 6px; justify-items: center; width: 100%; }
+.share-link-group { display: grid; gap: 6px; width: 100%; }
+.share-or { display: flex; align-items: center; gap: 10px; color: var(--muted-foreground); font-size: 11.5px; text-transform: lowercase; }
+.share-or::before, .share-or::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+.share-link { display: flex; align-items: flex-start; gap: 8px; width: 100%; }
+.share-link[data-hidden] .share-link-text { opacity: .55; }
+.share-link .share-url { text-align: left; }
+.share-link-text { display: grid; flex: 1; gap: 2px; min-width: 0; }
+.share-link-kind { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; }
+.share-link-hint { color: var(--muted-foreground); font-size: 11.5px; line-height: 1.4; }
+.share-star { display: grid; flex: none; place-items: center; width: 28px; height: 28px; min-height: 0; margin-top: 1px; border: 0; border-radius: 8px; background: transparent; color: var(--muted-foreground); cursor: pointer; }
+.share-star:hover:not(:disabled) { background: var(--accent); color: var(--foreground); }
+.share-star:disabled { cursor: default; }
+.share-star svg { width: 16px; height: 16px; }
+.share-star[aria-pressed="true"] { color: #f5a524; }
+.share-star[aria-pressed="true"] svg { fill: currentColor; }
+.share-switch { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; cursor: pointer; }
 .share-actions > * { width: 100%; }
 .qr-code { border-radius: 8px; }
 .qr-quiet-zone { fill: #fff; }

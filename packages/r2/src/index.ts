@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { hostname } from 'node:os';
+import { hostname, type as systemType } from 'node:os';
 import { mkdir, open, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { formatBytes, logEvent, logLineText, type LogSink, type ManagerSettingsRecord, type Profile, type R2CheckResult, type R2CloudflareUsage, type R2Config, type R2ConnectionMode, type R2UsageResponse, type R2UsageWarning, type R2EnvironmentField, type R2Object, type R2SnapshotSummary, type R2Usage, type TransferProgress } from '../../contracts/src/index.js';
@@ -176,7 +176,7 @@ interface StoredR2Config {
    * R2 behind every poll of the settings. It is what was true at `checkedAt`,
    * which is enough for a line on a card and never enough to act on.
    */
-  readonly claim: { readonly keyId: string; readonly label: string; readonly lastSeenAt: string; readonly mine: boolean; readonly checkedAt: string } | null;
+  readonly claim: { readonly keyId: string; readonly label: string; readonly claimedAt?: string; readonly lastSeenAt: string; readonly mine: boolean; readonly checkedAt: string } | null;
   /**
    * The setup another machine left here that the reader has already answered.
    *
@@ -202,7 +202,10 @@ export interface R2ManagerOptions {
   readonly fetchImpl?: typeof fetch;
   /** The signed-in connection, when this manager has a Cloudflare OAuth client. */
   readonly cloudflare?: CloudflareConnection;
-  /** What this machine is called in the bucket's claim; its hostname by default. */
+  /**
+   * What this machine is called in the bucket's claim; see `machineLabel`
+   * for what is used when this is not given.
+   */
   readonly installationLabel?: string;
   /**
    * Told when this machine gives the Cloudflare account up; see `surrenderAccount`.
@@ -282,7 +285,11 @@ export class R2Manager {
   private readonly fetchImpl: typeof fetch;
   private readonly ledger: BlobLedger;
   private readonly cloudflare: CloudflareConnection | null;
-  private readonly installationLabel: string;
+  private readonly fixedLabel: string | null;
+  /** Where a browser last reached this manager from outside; see `noteAddress`. */
+  private address: string | null = null;
+  /** This installation's id, the last resort for a name; see `machineLabel`. */
+  private installId: string | null = null;
   private readonly onSurrender: (() => void) | null;
   private configState: StoredR2Config | null = null;
   /** The local backup interval an older version kept in this file, until it is handed over. */
@@ -321,8 +328,29 @@ export class R2Manager {
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.ledger = new BlobLedger({ path: join(this.paths.state, R2_LEDGER_FILE) });
     this.cloudflare = options.cloudflare ?? null;
-    this.installationLabel = (options.installationLabel ?? hostname() ?? '').slice(0, 120) || 'this machine';
+    this.fixedLabel = options.installationLabel ? options.installationLabel.slice(0, 120) : null;
     this.onSurrender = options.onSurrender ?? null;
+  }
+
+  /**
+   * Remember the address a browser reached this manager at, for its label.
+   *
+   * Only used where the hostname says nothing; see `machineLabel`. Addresses
+   * on this machine or its network are ignored: they name nothing the other
+   * machine's owner would recognise.
+   */
+  public noteAddress(host: string | null | undefined): void {
+    if (!host || isPrivateHost(host)) return;
+    this.address = host.slice(0, 120);
+  }
+
+  /** Say which installation this is, for a machine with nothing better to be called. */
+  public noteInstallation(id: string): void {
+    this.installId = id;
+  }
+
+  private installationLabel(): string {
+    return this.fixedLabel ?? machineLabel(hostname(), this.address, this.installId);
   }
 
   public async getConfig(): Promise<R2Config> {
@@ -940,7 +968,7 @@ export class R2Manager {
     const mine: BucketClaim = {
       schemaVersion: 1,
       keyId,
-      label: this.installationLabel,
+      label: this.installationLabel(),
       claimedAt: claim?.keyId === keyId ? claim.claimedAt : new Date(now).toISOString(),
       lastSeenAt: new Date(now).toISOString(),
     };
@@ -989,8 +1017,8 @@ export class R2Manager {
       this.logger(logEvent('r2.claimTakenOver', `[r2] this machine took the bucket over from ${previous.label}`, { label: previous.label }));
     }
     const at = new Date(this.now()).toISOString();
-    await writeClaim(client, CLAIM_KEY, { schemaVersion: 1, keyId, label: this.installationLabel, claimedAt: at, lastSeenAt: at });
-    await this.rememberClaim({ schemaVersion: 1, keyId, label: this.installationLabel, claimedAt: at, lastSeenAt: at }, true);
+    await writeClaim(client, CLAIM_KEY, { schemaVersion: 1, keyId, label: this.installationLabel(), claimedAt: at, lastSeenAt: at });
+    await this.rememberClaim({ schemaVersion: 1, keyId, label: this.installationLabel(), claimedAt: at, lastSeenAt: at }, true);
     await this.recordCharges();
     return await this.getConfig();
   }
@@ -1064,7 +1092,7 @@ export class R2Manager {
       if (!mine && !claimIsStale(claim, now)) await this.surrenderAccount(claim);
       // The claim named is about to become this machine's, so the console
       // should say this machine's name rather than the one being replaced.
-      else if (mine && claim.keyId !== keyId) await this.rememberClaim({ ...claim, keyId, label: this.installationLabel }, true);
+      else if (mine && claim.keyId !== keyId) await this.rememberClaim({ ...claim, keyId, label: this.installationLabel() }, true);
     } catch {
       // What was last known stays. The console says when it was known.
     } finally {
@@ -1121,11 +1149,11 @@ export class R2Manager {
 
   private async rememberClaim(claim: BucketClaim, mine: boolean): Promise<void> {
     const config = await this.load();
-    const next = { keyId: claim.keyId, label: claim.label, lastSeenAt: claim.lastSeenAt, mine, checkedAt: new Date(this.now()).toISOString() };
+    const next = { keyId: claim.keyId, label: claim.label, claimedAt: claim.claimedAt, lastSeenAt: claim.lastSeenAt, mine, checkedAt: new Date(this.now()).toISOString() };
     const current = config.claim;
     // Written even when only `checkedAt` moved: it is what the rate limit on
     // `refreshClaim` reads, and a stale one would stop it ever looking again.
-    if (current && current.keyId === next.keyId && current.mine === next.mine && current.lastSeenAt === next.lastSeenAt && this.now().getTime() - Date.parse(current.checkedAt) < CLAIM_REFRESH_MS) return;
+    if (current && current.keyId === next.keyId && current.mine === next.mine && current.claimedAt === next.claimedAt && current.lastSeenAt === next.lastSeenAt && this.now().getTime() - Date.parse(current.checkedAt) < CLAIM_REFRESH_MS) return;
     await this.save({ ...config, claim: next });
   }
 
@@ -1374,7 +1402,7 @@ export class R2Manager {
     const config = await this.load();
     if (!config.enabled) return false;
     const now = this.now();
-    const full: ManagerSettingsRecord = { ...record, schemaVersion: 1, label: this.installationLabel, writtenAt: now.toISOString() };
+    const full: ManagerSettingsRecord = { ...record, schemaVersion: 1, label: this.installationLabel(), writtenAt: now.toISOString() };
     /*
      * The shortcut that makes this free on the scheduler's clock, and that a
      * person pressing a button must not be given.
@@ -1623,7 +1651,7 @@ export class R2Manager {
       usage: toPublicUsage(usage),
       lastFingerprint: config.lastFingerprint,
       lastRecovery: config.lastRecovery,
-      owner: config.claim ? { label: config.claim.label, lastSeenAt: config.claim.lastSeenAt, mine: config.claim.mine } : null,
+      owner: config.claim ? { label: config.claim.label, claimedAt: config.claim.claimedAt ?? config.claim.lastSeenAt, lastSeenAt: config.claim.lastSeenAt, mine: config.claim.mine } : null,
     };
   }
 
@@ -2072,4 +2100,45 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isFileNotFound(error: unknown): boolean {
   return isRecord(error) && (error.code === 'ENOENT' || error.code === 'EISDIR');
+}
+
+/**
+ * What this machine is called to the other machines on the account.
+ *
+ * Its hostname, which is what the owner named it - except where the hostname
+ * names nothing: a container host that calls every machine `localhost`, or
+ * one that uses the container's id. There the card on the other machine said
+ * "localhost signed in with this account", which is no help to anybody. The
+ * address the console was opened at is what the owner knows that machine by,
+ * so that is used instead, and the console shortens it for display. Before
+ * anybody has opened it from outside, it is the operating system and the
+ * start of the installation id - `Linux-12345678` - which at least tells two
+ * such machines apart.
+ */
+export function machineLabel(host: string, address: string | null, installId: string | null, system: string = systemType()): string {
+  const name = host.trim();
+  const meaningless = !name || /^localhost(\.localdomain)?$/iu.test(name) || /^[0-9a-f]{12}([0-9a-f]{52})?$/iu.test(name);
+  if (!meaningless) return name.slice(0, 120);
+  if (address) return address;
+  if (installId) return `${systemName(system)}-${installId.slice(0, 8)}`;
+  return name.slice(0, 120) || 'this machine';
+}
+
+/** What `os.type()` says, as people say it. */
+function systemName(system: string): string {
+  if (system === 'Windows_NT') return 'Windows';
+  if (system === 'Darwin') return 'macOS';
+  return system || 'Machine';
+}
+
+/** Whether a host is this machine or somewhere on its network. */
+function isPrivateHost(host: string): boolean {
+  const name = host.toLowerCase().replace(/:\d+$/u, '').replace(/^\[|\]$/gu, '');
+  if (name === 'localhost' || name.endsWith('.localhost') || name.endsWith('.local') || name === '::1' || name === '0.0.0.0') return true;
+  if (/^f[cd][0-9a-f]{2}:/u.test(name) || name.startsWith('fe80:')) return true;
+  const ipv4 = /^(\d{1,3})\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/u.exec(name);
+  if (!ipv4) return false;
+  const first = Number(ipv4[1]);
+  const second = Number(ipv4[2]);
+  return first === 127 || first === 10 || (first === 172 && second >= 16 && second <= 31) || (first === 192 && second === 168) || (first === 100 && second >= 64 && second <= 127);
 }

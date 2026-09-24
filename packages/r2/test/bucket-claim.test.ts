@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { DEFAULT_SCOPES } from '../../cloudflare/src/index.js';
 import { getPlatformPaths } from '../../platform/src/index.js';
 import { CloudflareConnection } from '../src/cloudflare-connection.js';
-import { R2Manager } from '../src/index.js';
+import { machineLabel, R2Manager } from '../src/index.js';
 import { R2Error } from '../src/store.js';
 import { CLAIM_STALE_MS } from '../src/owner.js';
 import { fakeCloudflare } from './cloudflare-fake.js';
@@ -74,14 +74,14 @@ test('one machine backs up to an account, and the second is told whose it is', a
   await first.signIn();
   const claimed = await first.r2.inspect();
   assert.equal(claimed.ok, true, claimed.failure?.message ?? '');
-  assert.deepEqual((await first.r2.getConfig()).owner, { label: 'laptop', lastSeenAt: new Date(clock.now).toISOString(), mine: true });
+  assert.deepEqual((await first.r2.getConfig()).owner, { label: 'laptop', claimedAt: new Date(clock.now).toISOString(), lastSeenAt: new Date(clock.now).toISOString(), mine: true });
 
   // Somebody sets the manager up on a second machine and signs in with the
   // same account. Nobody is asked: holding the account is what makes somebody
   // the owner, and the machine they are sitting in front of is the one they
   // mean. The claim moves, and the other machine's Worker key goes with it.
   await second.signIn();
-  assert.deepEqual((await second.r2.getConfig()).owner, { label: 'studio', lastSeenAt: new Date(clock.now).toISOString(), mine: true });
+  assert.deepEqual((await second.r2.getConfig()).owner, { label: 'studio', claimedAt: new Date(clock.now).toISOString(), lastSeenAt: new Date(clock.now).toISOString(), mine: true });
   assert.equal((await second.r2.inspect()).ok, true);
 
   /*
@@ -188,7 +188,7 @@ test('a sign-in that lost the race to the bucket still holds the account', async
   // by it, so the machine does not sit locked out of an account it holds.
   const checked = await second.r2.inspect();
   assert.equal(checked.ok, true, checked.failure?.message ?? '');
-  assert.deepEqual((await second.r2.getConfig()).owner, { label: 'studio', lastSeenAt: new Date(clock.now).toISOString(), mine: true });
+  assert.deepEqual((await second.r2.getConfig()).owner, { label: 'studio', claimedAt: new Date(clock.now).toISOString(), lastSeenAt: new Date(clock.now).toISOString(), mine: true });
 
   // The older sign-in is the one that gives way, which is the whole rule.
   const turned = await first.r2.inspect();
@@ -251,7 +251,7 @@ test('a claim nobody has refreshed for days is taken without asking', async () =
   await second.connect();
   const taken = await second.r2.inspect();
   assert.equal(taken.ok, true, taken.failure?.message ?? '');
-  assert.deepEqual((await second.r2.getConfig()).owner, { label: 'studio', lastSeenAt: new Date(clock.now).toISOString(), mine: true });
+  assert.deepEqual((await second.r2.getConfig()).owner, { label: 'studio', claimedAt: new Date(clock.now).toISOString(), lastSeenAt: new Date(clock.now).toISOString(), mine: true });
 });
 
 test('signing out gives the bucket up, so the next machine does not have to take it', async () => {
@@ -272,4 +272,16 @@ test('signing out gives the bucket up, so the next machine does not have to take
   const now = await second.r2.inspect();
   assert.equal(now.ok, true, now.failure?.message ?? '');
   assert.equal((await second.r2.getConfig()).owner?.mine, true);
+});
+
+test('a machine whose hostname says nothing is named by the address it was opened at', () => {
+  const id = '12345678-0000-4000-8000-000000000000';
+  assert.equal(machineLabel('laptop', 'studio.hosted.example', id, 'Linux'), 'laptop');
+  // A container host that calls every machine the same thing.
+  assert.equal(machineLabel('localhost', 'studio.hosted.example', id, 'Linux'), 'studio.hosted.example');
+  assert.equal(machineLabel('3f9db6361a13', 'studio.hosted.example', id, 'Linux'), 'studio.hosted.example');
+  // Not opened from outside yet: the system and the start of the install id.
+  assert.equal(machineLabel('localhost', null, id, 'Linux'), 'Linux-12345678');
+  assert.equal(machineLabel('', null, id, 'Windows_NT'), 'Windows-12345678');
+  assert.equal(machineLabel('', null, null, 'Linux'), 'this machine');
 });

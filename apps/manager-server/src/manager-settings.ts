@@ -1,4 +1,4 @@
-import type { ManagerSettingsOffer, ManagerSettingsRecord } from '../../../packages/contracts/src/index.js';
+import type { ManagerSettingsOffer, ManagerSettingsRecord, R2Config } from '../../../packages/contracts/src/index.js';
 import { logEvent, logLineText, type LogSink } from '../../../packages/contracts/src/index.js';
 import type { BackupStore } from '../../../packages/backup/src/index.js';
 import type { R2Manager } from '../../../packages/r2/src/index.js';
@@ -92,6 +92,7 @@ export async function currentManagerSettings(deps: ManagerSettingsDeps): Promise
     },
     versionSelector: installation?.selector ?? null,
     versionRef: installation?.resolvedRef ?? null,
+    accessLinks: state.accessLinks,
   };
 }
 
@@ -150,6 +151,53 @@ export async function managerSettingsOffer(deps: ManagerSettingsDeps): Promise<M
     hasAdminPassword: record.adminPasswordHash !== null,
     hasAccessPassword: record.accessPasswordHash !== null,
   };
+}
+
+/**
+ * The offer above, as last read, for a console that asks on a clock.
+ *
+ * The console asked for it once, as it opened, and again when a background
+ * job ended. Connecting a bucket from the Data page is neither, so a machine
+ * that had just connected to an account holding another machine's setup said
+ * nothing about it until somebody reloaded the page. The status poll carries
+ * it now; reading it is a charged request, so this keeps the answer and reads
+ * again only when the connection changes or a minute has passed.
+ */
+export class SettingsOfferWatch {
+  private seen: { readonly key: string; readonly at: number; readonly offer: ManagerSettingsOffer } | null = null;
+  private looking = false;
+
+  public constructor(private readonly now: () => number = Date.now) {}
+
+  /** What was last read for this connection, or null before anything was. */
+  public current(key: string): ManagerSettingsOffer | null {
+    return this.seen?.key === key ? this.seen.offer : null;
+  }
+
+  /** Read again when the connection has changed or `atMostEvery` has passed. Not waited for. */
+  public refresh(key: string, read: () => Promise<ManagerSettingsOffer>, atMostEvery: number): void {
+    if (this.looking) return;
+    if (this.seen?.key === key && this.now() - this.seen.at < atMostEvery) return;
+    this.looking = true;
+    void read()
+      .then((offer) => { this.remember(key, offer); }, () => undefined)
+      .finally(() => { this.looking = false; });
+  }
+
+  /** An answer read somewhere else, kept so the two cannot disagree. */
+  public remember(key: string, offer: ManagerSettingsOffer): void {
+    this.seen = { key, at: this.now(), offer };
+  }
+
+  /** Read again next time: the offer has just been answered or acted on. */
+  public forget(): void {
+    this.seen = null;
+  }
+}
+
+/** Which connection an offer was read through; a new one is a new question. */
+export function settingsOfferKey(config: R2Config): string {
+  return [config.mode, config.enabled, config.configured, config.bucket ?? '', config.owner?.label ?? '', config.owner?.mine ?? ''].join('|');
 }
 
 export interface ApplyManagerSettingsResult {
@@ -216,6 +264,16 @@ export async function applyManagerSettings(deps: ManagerSettingsDeps, record: Ma
      */
     if (await restoreQuickTunnel(deps.tunnel, record.tunnelQuick)) applied.push('accessTunnel');
     if (await restoreQuickTunnel(deps.managerTunnel, record.managerTunnelQuick)) applied.push('managerTunnel');
+    /*
+     * A link that came back on is a link that has been turned on, the same as
+     * pressing its switch - which is the only other place that wrote it down.
+     * The setup list kept offering "Open SillyTavern's access link" on a
+     * machine whose switch was already on, until the next restart noticed.
+     */
+    if (deps.tunnel.getState().mode !== 'off') {
+      deps.gateway.setOpened(true);
+      await deps.store.setAccessLinkOpened().catch(() => undefined);
+    }
   }
 
   if (wanted.schedules) {
@@ -227,6 +285,12 @@ export async function applyManagerSettings(deps: ManagerSettingsDeps, record: Ma
     await deps.store.setKeepOnline(record.keepOnline, record.keepOnlineMinutes);
     deps.adoptKeepOnline?.(record.keepOnline, record.keepOnlineMinutes);
     applied.push('schedules');
+    // Which address goes first is the reader's taste, not a fact about the
+    // machine, so it comes back with the rest of how they set things up.
+    if (record.accessLinks) {
+      await deps.store.setAccessLinks(record.accessLinks);
+      applied.push('accessLinks');
+    }
   }
 
   try {

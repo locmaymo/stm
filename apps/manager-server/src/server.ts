@@ -36,8 +36,8 @@ import { ReleaseWatch } from './manager-release.js';
 import { OnlineKeeper } from './online.js';
 import { formatGibibytes, SaverMode } from './saver.js';
 import { capacityFor, checkFits, decideTrim, diskSpace, memoryGuard, roomCheck } from './headroom.js';
-import { applyManagerSettings, foreignManagerSettings, managerSettingsOffer, restoreFromBucketIfBlank, saveManagerSettings, type ManagerSettingsDeps } from './manager-settings.js';
-import type { ManagerSettingsRecord } from '../../../packages/contracts/src/index.js';
+import { applyManagerSettings, foreignManagerSettings, managerSettingsOffer, restoreFromBucketIfBlank, saveManagerSettings, SettingsOfferWatch, settingsOfferKey, type ManagerSettingsDeps } from './manager-settings.js';
+import type { AccessLinkKind, AccessLinkPreference, AccessLinkTarget, ManagerSettingsOffer, ManagerSettingsRecord } from '../../../packages/contracts/src/index.js';
 import { instrumentationLoaderPath } from '../../../packages/instrumentation/src/index.js';
 import { ConfigError, ConfigStore } from '../../../packages/config/src/index.js';
 import { DEFAULT_TELEMETRY_ENDPOINT, DEFAULT_TELEMETRY_ENROLLMENT_ENDPOINT, TelemetryTransport } from '../../../packages/telemetry/src/index.js';
@@ -88,6 +88,7 @@ const PROTECTED_PATHS = new Set([
   '/api/v1/access/network',
   '/api/v1/access/sessions',
   '/api/v1/access/embed-session',
+  '/api/v1/access/links',
   '/api/v1/preview',
   '/api/v1/preview/image',
   '/api/v1/auth/password',
@@ -106,14 +107,27 @@ const PROTECTED_PATHS = new Set([
 ]);
 
 /**
- * How often a console being read goes and asks the bucket who owns it.
+ * How often a console being read goes and asks the bucket who owns it, and
+ * whether it holds another machine's setup.
  *
- * Short enough that somebody who has just signed in on another machine finds
- * this one already knowing, rather than after a reload; long enough that a
- * console left open all day is a few hundred reads, not a few hundred
- * thousand.
+ * Five minutes was too long: somebody who had just signed in on another
+ * machine turned to this one, saw nothing, and reloaded - and the reload
+ * found it, because opening a console asks at once. A minute keeps a console
+ * left open all day to about a thousand small reads, and a hidden tab asks
+ * nothing at all.
  */
-const CLAIM_LOOK_MS = 5 * 60 * 1000;
+const CLAIM_LOOK_MS = 60 * 1000;
+
+/** Nothing to offer; also what is said while this manager is acting on one. */
+const NO_SETTINGS_OFFER: ManagerSettingsOffer = { available: false, label: null, writtenAt: null, mine: false, hasAdminPassword: false, hasAccessPassword: false };
+
+/** One per bucket connection a manager holds; see `SettingsOfferWatch`. */
+const offerWatches = new WeakMap<R2Manager, SettingsOfferWatch>();
+function offerWatch(r2: R2Manager): SettingsOfferWatch {
+  let watch = offerWatches.get(r2);
+  if (!watch) { watch = new SettingsOfferWatch(); offerWatches.set(r2, watch); }
+  return watch;
+}
 
 export interface ManagerServerOptions {
   readonly host?: string;
@@ -647,6 +661,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     logger(logEvent('storage.notVerified', `[manager] this manager cannot tell whether ${paths.root} survives a restart here, so treat it as storage that may be temporary; connect Cloudflare R2 so backups are held somewhere else`, { path: paths.root, filesystem: durability.filesystem ?? 'unknown' }));
   }
   let persisted = await store.load();
+  r2.noteInstallation(persisted.installId);
   /*
    * Saver mode, settled before anything could write an archive.
    *
@@ -736,7 +751,16 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
    * say: a manager installed once and never opened looks exactly like one that
    * was never installed. See `activity.ts`.
    */
-  const activity = new ActivityMeter({ paths, sillyTavernRunning: () => supervisor.getState().status === 'running' });
+  const activity = new ActivityMeter({
+    paths,
+    sillyTavernRunning: () => supervisor.getState().status === 'running',
+    // Read from the settings file, so it costs no request to the bucket.
+    r2Mode: async () => {
+      const config = await r2.getConfig();
+      if (!config.enabled || !config.configured) return 'off';
+      return config.mode === 'cloudflare' ? 'cloudflare' : 'keys';
+    },
+  });
   await activity.start();
   const telemetry = options.telemetry ?? new TelemetryTransport({
     paths,
@@ -1881,9 +1905,11 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
      * settings landed, which reads as a button somebody was too slow to press.
      */
     const offer = jobs.activeOperation()
-      ? { available: false, label: null, writtenAt: null, mine: false, hasAdminPassword: false, hasAccessPassword: false }
+      ? NO_SETTINGS_OFFER
       : await managerSettingsOffer({ store, backups, r2, runtime, tunnel, managerTunnel, gateway, logger });
-    sendJson(response, 200, { settings: offer, owner: (await r2.getConfig()).owner ?? null });
+    const config = await r2.getConfig();
+    if (!jobs.activeOperation()) offerWatch(r2).remember(settingsOfferKey(config), offer);
+    sendJson(response, 200, { settings: offer, owner: config.owner ?? null });
     return;
   }
   /*
@@ -1898,6 +1924,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
   if (pathname === '/api/v1/r2/settings/dismiss' && method === 'POST') {
     const record = await foreignManagerSettings({ store, backups, r2, runtime, tunnel, managerTunnel, gateway, logger });
     if (record) await r2.answerSettingsOffer(record.writtenAt);
+    offerWatch(r2).forget();
     sendJson(response, 200, { dismissed: record !== null });
     return;
   }
@@ -1960,6 +1987,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     const restored = await store.getPersisted();
     gateway.setPassword(restored.accessPasswordHash, restored.accessPasscode);
     const security = await gateway.setLan(restored.accessLanEnabled);
+    offerWatch(r2).forget();
     sendJson(response, 200, { ...result, security });
     return;
   }
@@ -2019,7 +2047,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     const snapshot = await r2.readSnapshot(sourceProfileId, snapshotPreviewMatch[1] ?? '');
     const files = snapshot.files.map((file) => ({ name: file.name, sizeBytes: file.sizeBytes }));
     const preview = backups.previewFiles(files, profile.layout);
-    sendJson(response, 200, backups.saving ? { ...preview, capacity: await capacityFor(backups, profile, { files }) } : preview);
+    sendJson(response, 200, { ...preview, losses: await backups.losses(profile, { files }), ...(backups.saving ? { capacity: await capacityFor(backups, profile, { files }) } : {}) });
     return;
   }
   const snapshotRestoreMatch = /^\/api\/v1\/r2\/snapshots\/([^/]+)\/restore$/u.exec(pathname);
@@ -2322,7 +2350,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     const archiveSize = Number(headerValue(request.headers['x-archive-size']) ?? '');
     const tail = await readBody(request, MAX_STREAM_DIRECTORY_BYTES);
     const stream = backups.openStream(tail, archiveSize, profile.layout);
-    sendJson(response, 200, { ...stream.preview, uploadId: stream.id, ...(backups.saving ? { capacity: await capacityFor(backups, profile, { stream }) } : {}) });
+    sendJson(response, 200, { ...stream.preview, uploadId: stream.id, losses: await backups.losses(profile, { stream }), ...(backups.saving ? { capacity: await capacityFor(backups, profile, { stream }) } : {}) });
     return;
   }
   if (pathname === '/api/v1/backups/stream' && method === 'DELETE') {
@@ -2431,7 +2459,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     if (!profile) { sendError(response, 409, 'profile_required', 'Create or activate a profile before restoring a backup'); return; }
     if (action === 'preview' && method === 'POST') {
       const preview = await backups.preview(archivePath, profile.layout);
-      sendJson(response, 200, backups.saving ? { ...preview, capacity: await capacityFor(backups, profile, { archivePath }) } : preview);
+      sendJson(response, 200, { ...preview, losses: await backups.losses(profile, { archivePath }), ...(backups.saving ? { capacity: await capacityFor(backups, profile, { archivePath }) } : {}) });
       return;
     }
     if (action === 'restore' && method === 'POST') {
@@ -2487,7 +2515,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
    * shows the fixed one and keeps the tunnel's own beside it, because that is
    * where the traffic really goes and it is worth being able to see.
    */
-  if (pathname === '/api/v1/tunnel' && method === 'GET') { sendJson(response, 200, await withProxyUrl(tunnel.getState(), proxy, cloudflare, 'sillyTavern', budget)); return; }
+  if (pathname === '/api/v1/tunnel' && method === 'GET') { sendJson(response, 200, await withProxyUrl(tunnel.getState(), proxy, cloudflare, 'sillyTavern', budget, await linkPreference(store, 'sillyTavern'))); return; }
   if (pathname === '/api/v1/tunnel' && method === 'PUT') {
     const body = await readJson(request);
     const mode = isRecord(body) && (body.mode === 'off' || body.mode === 'quick' || body.mode === 'named') ? body.mode : null;
@@ -2512,7 +2540,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     const state = mode === 'off' ? await tunnel.disable() : await tunnel.start(mode, isRecord(body) && typeof body.token === 'string' ? body.token : undefined);
     // Turned on once is the checklist's step done, whatever happens after.
     if (mode !== 'off') { gateway.setOpened(true); await store.setAccessLinkOpened().catch(() => undefined); }
-    sendJson(response, 200, await withProxyUrl(state, proxy, cloudflare, 'sillyTavern', budget));
+    sendJson(response, 200, await withProxyUrl(state, proxy, cloudflare, 'sillyTavern', budget, await linkPreference(store, 'sillyTavern')));
     return;
   }
   /**
@@ -2525,7 +2553,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
    * platform's own address does not work, which is a problem the console has
    * whether or not anything is installed yet.
    */
-  if (pathname === '/api/v1/manager-tunnel' && method === 'GET') { sendJson(response, 200, await withProxyUrl(managerTunnel.getState(), proxy, cloudflare, 'manager', budget)); return; }
+  if (pathname === '/api/v1/manager-tunnel' && method === 'GET') { sendJson(response, 200, await withProxyUrl(managerTunnel.getState(), proxy, cloudflare, 'manager', budget, await linkPreference(store, 'manager'))); return; }
   if (pathname === '/api/v1/manager-tunnel' && method === 'PUT') {
     const body = await readJson(request);
     const mode = isRecord(body) && (body.mode === 'off' || body.mode === 'quick' || body.mode === 'named') ? body.mode : null;
@@ -2538,7 +2566,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       return;
     }
     const state = mode === 'off' ? await managerTunnel.disable() : await managerTunnel.start(mode, isRecord(body) && typeof body.token === 'string' ? body.token : undefined);
-    sendJson(response, 200, await withProxyUrl(state, proxy, cloudflare, 'manager', budget));
+    sendJson(response, 200, await withProxyUrl(state, proxy, cloudflare, 'manager', budget, await linkPreference(store, 'manager')));
     return;
   }
   /*
@@ -2585,6 +2613,24 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
    * the version installed, and this one belongs to the manager and outlives
    * every version it installs.
    */
+  /*
+   * How each door's addresses are offered; see `AccessLinkPreference`.
+   *
+   * A setting of the reader's, so it is also put in the bucket at once, where
+   * there is one, rather than waiting for the next backup to notice it.
+   */
+  if (pathname === '/api/v1/access/links' && method === 'PUT') {
+    const body = await readJson(request);
+    const target = isRecord(body) ? body.target : null;
+    if (target !== 'sillyTavern' && target !== 'manager') { sendError(response, 400, 'invalid_input', 'target must be sillyTavern or manager'); return; }
+    const change: { preferred?: AccessLinkKind; showFixed?: boolean } = {};
+    if (isRecord(body) && (body.preferred === 'fixed' || body.preferred === 'tunnel')) change.preferred = body.preferred;
+    if (isRecord(body) && typeof body.showFixed === 'boolean') change.showFixed = body.showFixed;
+    const accessLinks = await store.setAccessLink(target, change);
+    void saveManagerSettings({ store, backups, r2, runtime, tunnel, managerTunnel, gateway, logger }).catch(() => false);
+    sendJson(response, 200, { accessLinks });
+    return;
+  }
   if (pathname === '/api/v1/startup' && method === 'GET') {
     const state = await store.getPersisted();
     sendJson(response, 200, { startup: { autoStartSillyTavern: state.autoStartSillyTavern } satisfies StartupSettings });
@@ -2706,6 +2752,9 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     // somebody is in front of it. It stops while the page is hidden, which is
     // what makes this a measure of being read rather than of being open.
     activity.seen();
+    // What this machine is known by from outside, for the name the other
+    // machines on the account see where its hostname says nothing.
+    r2.noteAddress(forwardedValue(context.request, 'x-forwarded-host') ?? headerValue(context.request.headers.host));
     /*
      * Which also makes it the place to go and look at who holds the account.
      *
@@ -2725,18 +2774,32 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
      * changes nothing and this request is the console's clock.
      */
     budget.refresh();
-    // Read once for the two things below it, both of which come off it.
+    // Read once for the things below it, all of which come off it.
     const r2Now = await r2.getConfig();
+    /*
+     * The setup another machine left in the bucket, on the same clock as the
+     * claim. Forgotten while this manager is acting on one, so the answer
+     * read before a restore is not offered again after it; see
+     * `SettingsOfferWatch`.
+     */
+    const offers = offerWatch(r2);
+    const offerKey = settingsOfferKey(r2Now);
+    const acting = jobs.activeOperation() !== null;
+    const connected = r2Now.enabled && r2Now.configured;
+    if (acting || !connected) offers.forget();
+    else offers.refresh(offerKey, () => managerSettingsOffer({ store, backups, r2, runtime, tunnel, managerTunnel, gateway, logger }), CLAIM_LOOK_MS);
+    const settingsOffer = acting || !connected ? NO_SETTINGS_OFFER : offers.current(offerKey);
     const status: ConsoleStatus = {
       process: supervisor.getState(),
-      tunnel: await withProxyUrl(tunnel.getState(), proxy, cloudflare, 'sillyTavern', budget),
-      managerTunnel: await withProxyUrl(managerTunnel.getState(), proxy, cloudflare, 'manager', budget),
+      tunnel: await withProxyUrl(tunnel.getState(), proxy, cloudflare, 'sillyTavern', budget, await linkPreference(store, 'sillyTavern')),
+      managerTunnel: await withProxyUrl(managerTunnel.getState(), proxy, cloudflare, 'manager', budget, await linkPreference(store, 'manager')),
       security: await decorateSecurity(gateway.getState()),
       // All read from memory, so they cost this answer nothing.
       install: jobs.activeInstallation(),
       operation: jobs.activeOperation(),
       ports: { port: ports.sillyTavern(), reserved: { manager: ports.manager, access: ports.access } },
       r2Owner: r2Now.owner,
+      ...(settingsOffer ? { settingsOffer } : {}),
       r2Problem: r2Now.cloudflare?.problem ?? null,
       /*
        * Ask less often, because the day's Worker allowance is running down.
@@ -2827,7 +2890,24 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
  * address that answers with an error. Everything downstream then falls back to
  * the tunnel's own address, which is the address there is.
  */
-async function withProxyUrl(state: TunnelState, proxy: ProxyWorkerManager | null, cloudflare: CloudflareConnection | null, target: ProxyWorkerTarget, budget: WorkerBudget): Promise<TunnelState> {
+/**
+ * A tunnel's state as the console shows it: the fixed address in front of it,
+ * and which of the two the reader wants first.
+ *
+ * Somebody who prefers the tunnel's own address, or has hidden the fixed one,
+ * is not kept waiting for a Worker deploy they are not going to use.
+ */
+async function withProxyUrl(state: TunnelState, proxy: ProxyWorkerManager | null, cloudflare: CloudflareConnection | null, target: ProxyWorkerTarget, budget: WorkerBudget, preference: AccessLinkPreference): Promise<TunnelState> {
+  const decorated = await withFixedAddress(state, proxy, cloudflare, target, budget);
+  const waitsForFixed = preference.showFixed && preference.preferred === 'fixed';
+  return { ...decorated, linkPreference: preference, ...(waitsForFixed ? {} : { proxyPending: false }) };
+}
+
+async function linkPreference(store: StateStore, target: AccessLinkTarget): Promise<AccessLinkPreference> {
+  return (await store.getPersisted()).accessLinks[target];
+}
+
+async function withFixedAddress(state: TunnelState, proxy: ProxyWorkerManager | null, cloudflare: CloudflareConnection | null, target: ProxyWorkerTarget, budget: WorkerBudget): Promise<TunnelState> {
   if (!proxy) return { ...state, proxyUrl: null, proxyPending: false };
   /*
    * A fixed address is an address only while something is behind it.
@@ -3327,6 +3407,9 @@ async function handleCloudflareRequest(context: RequestContext, cloudflare: Clou
  */
 async function handleCloudflareCallback(context: RequestContext, sessions: SessionStore, cloudflare: CloudflareConnection | null, r2: R2Manager, publishProxies: () => void, logger: LogSink, handoffs: HandoffStore, signIn: CloudflareSignInDeps): Promise<void> {
   const { response, searchParams } = context;
+  // The sign-in is often the first thing a blank machine is opened for, and
+  // the claim it writes carries this machine's name; see `status`.
+  r2.noteAddress(forwardedValue(context.request, 'x-forwarded-host') ?? headerValue(context.request.headers.host));
   const state = searchParams.get('state') ?? '';
   /*
    * Whether a console is waiting to collect this, rather than reading it here.
@@ -4696,15 +4779,23 @@ async function recoverEmptyProfile(settle: () => Promise<Profile>, r2: R2Manager
     const { job, signal } = running ?? jobs.createOperation('r2Fetch', logEvent('job.checkingAccount', 'Checking this account for data to bring back'));
     const meter = new TransferMeter();
     /*
-     * Saver mode writes the point straight into the profile, and gives
-     * SillyTavern's memory back to the download while it does: an empty
-     * profile has nothing in it to use, and it is started again afterwards.
+     * Straight into the profile, whichever mode this machine is in.
+     *
+     * Outside saver mode the point used to be rebuilt into a zip in the
+     * library first and restored from there, which put the profile on the disk
+     * twice and left an archive of it behind - a copy of what the bucket
+     * already holds, guarding a profile that was empty. The same sign-in on a
+     * machine in saver mode wrote it in place, so what a sign-in did depended
+     * on how much memory the machine had.
+     *
+     * Saver mode also gives SillyTavern's memory back to the download while
+     * it runs: an empty profile has nothing in it to use, and it is started
+     * again afterwards.
      */
-    const inPlace = backups.saving;
-    const pause = inPlace && supervisor && ['running', 'starting'].includes(supervisor.getState().status);
+    const pause = backups.saving && supervisor && ['running', 'starting'].includes(supervisor.getState().status);
     if (pause) await supervisor.stop('restore');
     const restored = await recoverProfileFromR2({
-      profile, r2, backups, signal, inPlace,
+      profile, r2, backups, signal, inPlace: true,
       logger: (line) => jobs.append('backup', line),
       onProgress: (progress) => {
         const { percent, params } = meter.update(progress);

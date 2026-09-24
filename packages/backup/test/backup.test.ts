@@ -508,6 +508,47 @@ async function modernProfile(fixture: Awaited<ReturnType<typeof createFixture>>,
   return { ...fixture.profile, runtimePath, dataPath, configPath: join(runtimePath, 'config.yaml') };
 }
 
+/** A profile holding two extensions and a chat, one extension of which a backup is about to lack. */
+async function profileWithExtensions(fixture: Awaited<ReturnType<typeof createFixture>>): Promise<{ profile: Profile; user: string }> {
+  const profile = await modernProfile(fixture, 'with-extensions');
+  const user = join(profile.dataPath, 'default-user');
+  for (const [name, body] of [['extensions/Kept/manifest.json', '{}'], ['extensions/Gone/manifest.json', '{}'], ['extensions/Gone/index.js', 'x'.repeat(10)], ['extensions/Gone/.git/HEAD', 'ref'], ['chats/old.json', '{}']] as const) {
+    await mkdir(join(user, name, '..'), { recursive: true });
+    await writeFile(join(user, name), body, 'utf8');
+  }
+  await mkdir(join(user, 'extensions', 'Empty'), { recursive: true });
+  await mkdir(join(user, 'worlds'), { recursive: true });
+  return { profile, user };
+}
+
+test('a replace says beforehand which files and extensions it takes away, junk not counted', async () => {
+  const fixture = await createFixture();
+  const store = new BackupStore({ paths: fixture.paths });
+  const { profile } = await profileWithExtensions(fixture);
+  const archive = await archiveOf(store, profile, ['chats/a.json', 'extensions/Kept/manifest.json', 'settings.json']);
+
+  const losses = await store.losses(profile, { archivePath: archive });
+  // Gone's manifest and script, and the old chat; not Gone's git history.
+  assert.equal(losses.files, 3);
+  assert.equal(losses.bytes, 2 + 10 + 2);
+  assert.deepEqual(losses.extensions, ['Gone']);
+});
+
+test('a replace leaves no empty folder behind, but keeps the user directory’s own', async () => {
+  const fixture = await createFixture();
+  const store = new BackupStore({ paths: fixture.paths });
+  const { profile, user } = await profileWithExtensions(fixture);
+  const archive = await archiveOf(store, profile, ['chats/a.json', 'extensions/Kept/manifest.json', 'settings.json']);
+
+  await store.restore(profile, archive, { mode: 'replace' });
+  await store.settle();
+
+  // SillyTavern named each of these in its log as an extension with no
+  // manifest, on every start.
+  assert.deepEqual((await readdir(join(user, 'extensions'))).sort(), ['Kept']);
+  assert.equal(await exists(join(user, 'worlds')), true);
+});
+
 test('a zip of the data directory restores the user directory inside it, not the wrapper', async () => {
   const fixture = await createFixture();
   const store = new BackupStore({ paths: fixture.paths });

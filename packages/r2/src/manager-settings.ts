@@ -1,4 +1,4 @@
-import { KEEP_ONLINE_DEFAULT_MINUTES, KEEP_ONLINE_MAX_MINUTES, KEEP_ONLINE_MIN_MINUTES, type ManagerSettingsRecord } from '../../contracts/src/index.js';
+import { KEEP_ONLINE_DEFAULT_MINUTES, KEEP_ONLINE_MAX_MINUTES, KEEP_ONLINE_MIN_MINUTES, parseAccessLinks, type ManagerSettingsRecord } from '../../contracts/src/index.js';
 import { R2HttpError, type ObjectStore } from './store.js';
 
 /**
@@ -103,6 +103,7 @@ export function parseManagerSettings(value: unknown): ManagerSettingsRecord | nu
     },
     versionSelector: text(record.versionSelector),
     versionRef: text(record.versionRef),
+    ...(record.accessLinks !== undefined ? { accessLinks: parseAccessLinks(record.accessLinks) } : {}),
   };
 }
 

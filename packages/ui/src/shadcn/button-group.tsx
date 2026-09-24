@@ -43,12 +43,19 @@ function ButtonGroup({
   )
 }
 
+/**
+ * The line between two joined buttons.
+ *
+ * Drawn in the buttons' own colour, a shade off, rather than as a see-through
+ * white: over a white card that left a pale gap which read as two buttons
+ * standing apart. Dimmed with them when they are disabled.
+ */
 function ButtonGroupSeparator({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       aria-hidden="true"
       data-slot="button-group-separator"
-      className={cn("w-px shrink-0 self-stretch bg-primary-foreground/30", className)}
+      className={cn("w-px shrink-0 self-stretch bg-[color-mix(in_oklab,var(--primary)_70%,var(--primary-foreground))] [[data-slot=button-group]:has(>button:disabled)>&]:opacity-50", className)}
       {...props}
     />
   )

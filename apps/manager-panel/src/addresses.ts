@@ -1,4 +1,4 @@
-import type { AccessGatewayState, TunnelState } from '../../../packages/contracts/src/index.js';
+import { DEFAULT_ACCESS_LINK, type AccessGatewayState, type AccessLinkKind, type TunnelState } from '../../../packages/contracts/src/index.js';
 
 /**
  * SillyTavern itself, which only this machine can reach.
@@ -12,7 +12,7 @@ export function localHost(sillyTavernPort: number): string {
 }
 
 /** What a tunnel's public address is read from, whichever card is asking. */
-export type PublicTunnel = Pick<TunnelState, 'url' | 'proxyUrl' | 'proxyPending'>;
+export type PublicTunnel = Pick<TunnelState, 'url' | 'proxyUrl' | 'proxyPending' | 'linkPreference'>;
 
 /**
  * The public address to put in front of a reader, or null while there is none.
@@ -25,15 +25,41 @@ export type PublicTunnel = Pick<TunnelState, 'url' | 'proxyUrl' | 'proxyPending'
  * that answers with an error. This is the only place that decision is made, so
  * the overview, the sharing card, the QR code, the embedded window and the
  * console's own link cannot disagree about it.
+ *
+ * Which of the two goes first is the reader's; see `AccessLinkPreference`.
  */
 export function publicAddress(tunnel: PublicTunnel): string | null {
-  if (tunnel.proxyPending) return null;
-  return tunnel.proxyUrl ?? tunnel.url ?? null;
+  return publicLinks(tunnel)[0]?.url ?? null;
+}
+
+/** One public address of a door, and which kind it is. */
+export interface PublicLink {
+  readonly kind: AccessLinkKind;
+  readonly url: string;
+}
+
+/**
+ * Every public address of a door, the preferred one first.
+ *
+ * The fixed address only while the reader has not hidden it. While it is still
+ * being deployed and it is the one preferred, there is nothing to offer yet -
+ * the tunnel's own address standing in for a few seconds is an address about
+ * to be replaced.
+ */
+export function publicLinks(tunnel: PublicTunnel): PublicLink[] {
+  const preference = tunnel.linkPreference ?? DEFAULT_ACCESS_LINK;
+  const fixed: PublicLink | null = preference.showFixed && tunnel.proxyUrl ? { kind: 'fixed', url: tunnel.proxyUrl } : null;
+  const own: PublicLink | null = tunnel.url ? { kind: 'tunnel', url: tunnel.url } : null;
+  if (preference.preferred === 'tunnel' || !preference.showFixed) return [own, fixed].filter((link): link is PublicLink => link !== null);
+  if (tunnel.proxyPending) return [];
+  return [fixed, own].filter((link): link is PublicLink => link !== null);
 }
 
 /** One place SillyTavern answers, as a link and as something short enough to show. */
 export interface ReachableAddress {
   readonly kind: 'tunnel' | 'lan' | 'local';
+  /** For a public address, whether it is the fixed one or the tunnel's own. */
+  readonly link?: AccessLinkKind;
   readonly url: string;
   /** The URL without its scheme, which is all a reader needs to recognise it. */
   readonly host: string;
@@ -94,10 +120,11 @@ export function reachableAddresses(tunnel: PublicTunnel, security: Pick<AccessGa
    * below, which work; a reader on a hosted studio has none, which is the
    * honest answer and the one the card is built to say.
    */
-  const publicUrl = publicAddress(tunnel);
-  if (publicUrl) {
-    const via = tunnel.proxyUrl && tunnel.url ? { via: bareHost(tunnel.url) } : {};
-    addresses.push({ kind: 'tunnel', url: publicUrl, host: bareHost(publicUrl), ...via });
+  // Both public addresses, the preferred one first: the second is still an
+  // address that works, and the card offers it behind a "+1".
+  for (const link of publicLinks(tunnel)) {
+    const via = link.kind === 'fixed' && tunnel.url ? { via: bareHost(tunnel.url) } : {};
+    addresses.push({ kind: 'tunnel', link: link.kind, url: link.url, host: bareHost(link.url), ...via });
   }
   if (security.lan && networkHost) {
     const host = `${networkHost}:${security.port}`;
@@ -115,17 +142,32 @@ export function bareHost(url: string): string {
 }
 
 /**
- * `example.trycloudflare.com` as `exam...flare.com`.
+ * `sillytavern.acme.workers.dev` as `silly...workers.dev`.
  *
- * The beginning says which tunnel it is and the end says what kind of address
- * it is; the middle is what a phone has no room for. The full address is in
- * the remote access card, one card further down.
+ * The beginning says which address it is and the end says what kind: the last
+ * two labels of the name where they are short enough to read at a glance, and
+ * their last nine characters where they are not - `good...flare.com`. The
+ * middle is what a phone has no room for; the whole address is one tap away.
  */
 export function shortenHost(host: string): string {
-  const head = 4;
-  const tail = 9;
+  const head = 5;
   // An IP address with its middle taken out is no address at all, and it is
   // never long enough to need it.
   if (/^[0-9.:]+$/u.test(host)) return host;
-  return host.length > head + tail + 5 ? `${host.slice(0, head)}...${host.slice(-tail)}` : host;
+  const domain = host.split('.').slice(-2).join('.');
+  const tail = domain.length <= 12 ? domain : domain.slice(-9);
+  return host.length > head + tail.length + 5 ? `${host.slice(0, head)}...${tail}` : host;
+}
+
+/**
+ * What another machine on the account is called, fit for a sentence.
+ *
+ * Usually its hostname, which is short. Where that said nothing the manager
+ * names the machine by the address it was opened at instead, which is long -
+ * and only its two ends are worth reading. More of each end than
+ * `shortenHost` keeps: this is read in a sentence, not squeezed onto a button.
+ */
+export function machineName(label: string): string {
+  const keep = 12;
+  return label.includes('.') && label.length > keep * 2 + 3 ? `${label.slice(0, keep)}...${label.slice(-keep)}` : label;
 }

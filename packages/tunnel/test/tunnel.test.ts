@@ -218,6 +218,8 @@ test('an exit nobody asked for is reconnected, and a requested stop is not', asy
     env: { PATH: '' },
     reconnectDelaysMs: [5],
     fetchImpl: offline,
+    edgeCheckDelayMs: 5,
+    edgeCheckAttempts: 2,
     logger: (line) => { lines.push(typeof line === 'string' ? line : line.message); },
   });
 
@@ -342,6 +344,8 @@ test('a network that blocks QUIC gets HTTP/2, once it has been noticed and ever 
     env: { PATH: '' },
     reconnectDelaysMs: [5],
     fetchImpl: offline,
+    edgeCheckDelayMs: 5,
+    edgeCheckAttempts: 2,
     logger: (line: Parameters<typeof lines.push>[0] | { message: string }) => {
       lines.push(typeof line === 'string' ? line : line.message);
     },
@@ -390,7 +394,7 @@ test('a tunnel that says nothing at all is given up on too, and asked again over
   }) as unknown as typeof spawnType;
   // A blocked UDP path produces no error to match on - the packets leave and
   // nothing comes back - so silence for long enough has to count as an answer.
-  const tunnel = new TunnelManager({ paths, spawnImpl, env: { PATH: '' }, quicPatienceMs: 20, fetchImpl: offline, logger: () => undefined });
+  const tunnel = new TunnelManager({ paths, spawnImpl, env: { PATH: '' }, quicPatienceMs: 20, fetchImpl: offline, edgeCheckDelayMs: 5, edgeCheckAttempts: 2, logger: () => undefined });
 
   await tunnel.start('quick');
   assert.ok(!invocations[0]!.includes('--protocol'));
@@ -452,6 +456,7 @@ test('a link that answers with error 1033 is a tunnel that never reached the edg
   const invocations: string[][] = [];
   const lines: string[] = [];
   const asked: string[] = [];
+  const announced: string[] = [];
   const spawnImpl = ((_command: string, args: readonly string[]): ChildProcess => {
     invocations.push([...args]);
     const child = fakeCloudflared();
@@ -469,17 +474,18 @@ test('a link that answers with error 1033 is a tunnel that never reached the edg
     env: { PATH: '' },
     reconnectDelaysMs: [5],
     edgeCheckDelayMs: 5,
+    onUrl: (url: string | null) => { if (url) announced.push(url); },
     logger: (line: string | { message: string }) => { lines.push(typeof line === 'string' ? line : line.message); },
   };
   const tunnel = new TunnelManager(options as unknown as ConstructorParameters<typeof TunnelManager>[0]);
 
   await tunnel.start('quick');
   // cloudflared is satisfied: it printed an address and said nothing wrong.
-  // Everything this manager could see says the tunnel is up.
+  // The address is still not handed out, because it does not answer.
   children[0]!.stdout.write('INF |  https://cedar-married-designer-ticket.trycloudflare.com  |\n');
-  await waitFor(() => tunnel.getState().status === 'running', 'the tunnel to report running');
 
   await waitFor(() => invocations.length === 2, 'the tunnel to be started again over HTTP/2');
+  assert.ok(!announced.includes('https://cedar-married-designer-ticket.trycloudflare.com'), 'an address that answered 1033 was never handed out');
   assert.deepEqual(invocations[1]!.slice(0, 6), ['tunnel', '--no-autoupdate', '--protocol', 'http2', '--edge-ip-version', '4']);
   assert.ok(asked.every((url) => url === 'https://cedar-married-designer-ticket.trycloudflare.com'), 'only the announced address is asked about');
   assert.ok(lines.some((line) => line.includes('1033')), 'and the log says what the link answered');
@@ -593,4 +599,35 @@ test('a network already known to need HTTP/2 is not measured again', async () =>
   await quic.start('quick');
   assert.ok(!invocations[1]!.includes('--protocol'));
   await quic.close();
+});
+
+test('an address is handed out only once it answers', async () => {
+  const paths = await createPaths();
+  await installFakeBinary(paths);
+  const children: FakeCloudflared[] = [];
+  const spawnImpl = ((): ChildProcess => {
+    const child = fakeCloudflared();
+    children.push(child);
+    return child as unknown as ChildProcess;
+  }) as unknown as typeof spawnType;
+  // The edge does not know the address for the first ask, and does for the next.
+  let ask = 0;
+  const fetchImpl = (async () => {
+    ask += 1;
+    return ask === 1 ? new Response('<html><body>Error 1033</body></html>', { status: 530 }) : new Response('sign in', { status: 401 });
+  }) as unknown as typeof globalThis.fetch;
+  const announced: Array<string | null> = [];
+  const tunnel = new TunnelManager({ paths, spawnImpl, fetchImpl, env: { PATH: '' }, edgeCheckDelayMs: 5, onUrl: (url) => { announced.push(url); }, logger: () => undefined });
+
+  await tunnel.start('quick');
+  children[0]!.stdout.write('INF |  https://cedar-married-designer-ticket.trycloudflare.com  |\n');
+  // Printed, but not yet anybody's link: the card goes on saying it is
+  // getting one rather than showing an address that is an error page.
+  assert.equal(tunnel.getState().status, 'starting');
+  assert.equal(tunnel.getState().url, null);
+  await waitFor(() => tunnel.getState().status === 'running', 'the address to be handed out');
+  assert.equal(tunnel.getState().url, 'https://cedar-married-designer-ticket.trycloudflare.com');
+  assert.deepEqual(announced, ['https://cedar-married-designer-ticket.trycloudflare.com'], 'announced once, after it answered');
+  assert.equal(ask, 2);
+  await tunnel.close();
 });

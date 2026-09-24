@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { appendFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { AppUsageDay, AppUsageSummary } from '../../../packages/contracts/src/index.js';
+import { isR2UsageMode, type AppUsageDay, type AppUsageSummary, type R2UsageMode } from '../../../packages/contracts/src/index.js';
 import type { PlatformPaths } from '../../../packages/platform/src/index.js';
 
 const STATE_FILE = 'app-usage.json';
@@ -52,6 +52,7 @@ interface DayCounts {
   sillyTavernSeconds: number;
   consoleSeconds: number;
   starts: number;
+  r2?: R2UsageMode;
 }
 
 export interface ActivityMeterOptions {
@@ -59,6 +60,14 @@ export interface ActivityMeterOptions {
   readonly now?: () => Date;
   /** Whether SillyTavern is up, asked at each sample. */
   readonly sillyTavernRunning?: () => boolean;
+  /**
+   * How backups to R2 are set up, asked at each sample.
+   *
+   * The project has no other way to know how many installations keep a copy
+   * anywhere but the machine: it holds no account and sees no bucket. The last
+   * answer of the day is the one the day keeps.
+   */
+  readonly r2Mode?: () => Promise<R2UsageMode>;
 }
 
 /**
@@ -80,6 +89,7 @@ export class ActivityMeter {
   private readonly paths: PlatformPaths;
   private readonly now: () => Date;
   private readonly sillyTavernRunning: () => boolean;
+  private readonly r2Mode: (() => Promise<R2UsageMode>) | null;
   private state: PersistedUsage = { schemaVersion: 1, days: {}, reported: [] };
   private loaded = false;
   private timer: NodeJS.Timeout | null = null;
@@ -91,6 +101,7 @@ export class ActivityMeter {
     this.paths = options.paths;
     this.now = options.now ?? (() => new Date());
     this.sillyTavernRunning = options.sillyTavernRunning ?? (() => false);
+    this.r2Mode = options.r2Mode ?? null;
   }
 
   public async start(): Promise<void> {
@@ -139,6 +150,10 @@ export class ActivityMeter {
         counts.managerSeconds += seconds;
         if (running) counts.sillyTavernSeconds += seconds;
       });
+    }
+    if (this.r2Mode) {
+      const mode = await this.r2Mode().catch(() => null);
+      if (mode) this.bump(this.day(), (counts) => { counts.r2 = mode; });
     }
     await this.reportFinishedDays();
     await this.save();
@@ -242,6 +257,7 @@ export function parseUsageDay(value: unknown): AppUsageDay | null {
     sillyTavernSeconds: seconds(record.sillyTavernSeconds),
     consoleSeconds: seconds(record.consoleSeconds),
     starts: seconds(record.starts),
+    ...(isR2UsageMode(record.r2) ? { r2: record.r2 } : {}),
   };
 }
 
@@ -252,7 +268,7 @@ function parseUsage(value: unknown): PersistedUsage {
   const stored = typeof record.days === 'object' && record.days !== null ? record.days as Record<string, unknown> : {};
   for (const [date, counts] of Object.entries(stored)) {
     const day = parseUsageDay({ ...(typeof counts === 'object' && counts !== null ? counts : {}), date });
-    if (day) days[date] = { managerSeconds: day.managerSeconds, sillyTavernSeconds: day.sillyTavernSeconds, consoleSeconds: day.consoleSeconds, starts: day.starts };
+    if (day) days[date] = { managerSeconds: day.managerSeconds, sillyTavernSeconds: day.sillyTavernSeconds, consoleSeconds: day.consoleSeconds, starts: day.starts, ...(day.r2 ? { r2: day.r2 } : {}) };
   }
   const reported = Array.isArray(record.reported) ? record.reported.filter((value): value is string => typeof value === 'string') : [];
   return { schemaVersion: 1, days, reported };

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile } from 'node:fs/promises';
+import type { R2UsageMode } from '../../../packages/contracts/src/index.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getPlatformPaths } from '../../../packages/platform/src/index.js';
@@ -95,4 +96,26 @@ test('a reading that could not be true is not kept', () => {
   assert.equal(parseUsageDay({ date: '2026-09-19', managerSeconds: -5 })?.managerSeconds, 0);
   // A day holds 86400 seconds however confused a clock is about it.
   assert.equal(parseUsageDay({ date: '2026-09-19', managerSeconds: 999_999 })?.managerSeconds, 86_400);
+});
+
+test('a finished day says how backups to R2 were set up when it was last looked at', async () => {
+  const clock = { now: Date.parse('2026-09-19T22:00:00.000Z') };
+  const root = await mkdtemp(join(tmpdir(), 'stm-activity-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  let mode: R2UsageMode = 'off';
+  const activity = new ActivityMeter({ paths, now: () => new Date(clock.now), r2Mode: async () => mode });
+  await activity.start();
+  clock.now += SAMPLE_INTERVAL_MS;
+  await activity.sample();
+  // Connected later that evening: the day keeps the last answer.
+  mode = 'cloudflare';
+  clock.now += SAMPLE_INTERVAL_MS;
+  await activity.sample();
+
+  clock.now = Date.parse('2026-09-20T00:30:00.000Z');
+  await activity.sample();
+  const [line] = (await readFile(activity.logPath, 'utf8')).split('\n').filter(Boolean);
+  assert.equal(parseUsageDay(JSON.parse(line ?? '{}'))?.r2, 'cloudflare');
+  // A day written before this was recorded is not known, rather than off.
+  assert.equal(parseUsageDay({ date: '2026-09-18', managerSeconds: 60 })?.r2, undefined);
 });

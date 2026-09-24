@@ -12,7 +12,7 @@ import type { TunnelManager } from '../../../packages/tunnel/src/index.js';
 import type { AccessGateway } from '../src/gateway.js';
 import type { TunnelState } from '../../../packages/contracts/src/index.js';
 import { StateStore } from '../src/state.js';
-import { applyManagerSettings, currentManagerSettings, foreignManagerSettings, managerSettingsOffer, saveManagerSettings, type ManagerSettingsDeps } from '../src/manager-settings.js';
+import { applyManagerSettings, currentManagerSettings, foreignManagerSettings, managerSettingsOffer, saveManagerSettings, SettingsOfferWatch, type ManagerSettingsDeps } from '../src/manager-settings.js';
 import { hashPassword, verifyPassword } from '../src/password.js';
 import { releaseToInstall } from '../src/server.js';
 
@@ -74,10 +74,12 @@ const INSTALLATION = { id: 'install-1', selector: 'latest', resolvedRef: '1.13.2
 function fakeGateway(): AccessGateway {
   let passwordConfigured = false;
   let lan = false;
+  let opened = false;
   return {
     setPassword: (hash: string | null) => { passwordConfigured = hash !== null; },
     setLan: async (next: boolean) => { lan = next; return { passwordConfigured, lan }; },
-    getState: () => ({ passwordConfigured, lan }),
+    setOpened: (next: boolean) => { opened = next; },
+    getState: () => ({ passwordConfigured, lan, opened }),
   } as unknown as AccessGateway;
 }
 
@@ -124,6 +126,9 @@ test('a machine that is gone leaves behind enough to be a machine again', async 
   await laptop.store.setKeepOnline(true, 5);
   await laptop.backups.setSchedule({ intervalMinutes: 180 });
   await laptop.r2.update({ hotIntervalMinutes: 15, keepDaily: 7 });
+  // And liked the tunnel's own address better than the fixed one.
+  await laptop.store.setAccessLink('sillyTavern', { preferred: 'tunnel' });
+  await laptop.store.setAccessLink('manager', { showFixed: false });
   assert.equal(await saveManagerSettings(laptop), true);
 
   // A different computer, set up from nothing an hour later. It has its own
@@ -165,6 +170,10 @@ test('a machine that is gone leaves behind enough to be a machine again', async 
   // them the other way round left the tunnel refused on the one machine whose
   // passcode had just come back.
   assert.equal(desktop.gateway.getState().passwordConfigured, true);
+  // And the link that came back on counts as turned on, so the setup list
+  // does not go on offering to turn it on.
+  assert.equal(state.accessLinkOpened, true);
+  assert.equal(desktop.gateway.getState().opened, true);
   assert.equal(state.autoStartSillyTavern, false);
   // How the machine was kept online came back too - written down, and told to
   // the keeper that is already running rather than left for the next restart.
@@ -172,6 +181,9 @@ test('a machine that is gone leaves behind enough to be a machine again', async 
   assert.equal(state.keepOnlineMinutes, 5);
   assert.deepEqual(toldKeeper, [{ enabled: true, minutes: 5 }]);
   assert.equal((await desktop.backups.getSchedule()).intervalMinutes, 180);
+  // Which address goes first came back with the rest of how it was set up.
+  assert.deepEqual(state.accessLinks, { sillyTavern: { preferred: 'tunnel', showFixed: true }, manager: { preferred: 'fixed', showFixed: false } });
+  assert.ok(result.applied.includes('accessLinks'));
   assert.equal((await desktop.r2.getConfig()).schedule.hotIntervalMinutes, 15);
   assert.equal((await desktop.r2.getConfig()).retention.keepDaily, 7);
 
@@ -347,4 +359,30 @@ test('the machine being offered survives this one writing its own settings', asy
 
   // Answered, so it stops being offered.
   assert.equal((await managerSettingsOffer(desktop)).available, false);
+});
+
+test('the offer a console polls for is read again when the connection changes, and not before a minute otherwise', async () => {
+  let now = 0;
+  const watch = new SettingsOfferWatch(() => now);
+  const offer = { available: true, label: 'laptop', writtenAt: '2026-09-24T09:00:00.000Z', mine: false, hasAdminPassword: true, hasAccessPassword: true };
+  let reads = 0;
+  const read = async () => { reads += 1; return offer; };
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(watch.current('bucket-a'), null, 'nothing is said before the bucket has been read');
+  watch.refresh('bucket-a', read, 60_000);
+  await settle();
+  assert.deepEqual(watch.current('bucket-a'), offer);
+  now += 30_000;
+  watch.refresh('bucket-a', read, 60_000);
+  await settle();
+  assert.equal(reads, 1, 'a read costs a request, so a poll inside the minute keeps the answer');
+  // Connecting a different bucket is a new question, asked at once.
+  assert.equal(watch.current('bucket-b'), null);
+  watch.refresh('bucket-b', read, 60_000);
+  await settle();
+  assert.equal(reads, 2);
+  // Answered or acted on, it is read again rather than offered from memory.
+  watch.forget();
+  assert.equal(watch.current('bucket-b'), null);
 });

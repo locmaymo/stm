@@ -81,16 +81,23 @@ const QUIC_FAILURES_WHILE_RUNNING = 2;
 const EDGE_TUNNEL_ERROR_STATUS = 530;
 const EDGE_TUNNEL_ERROR_BODY = /\b1033\b|argo tunnel error/iu;
 /**
- * When to ask the edge whether the address it just handed out actually works,
- * how many times, and how many refusals in a row settle it.
+ * How often to ask whether a new address answers, how many times before it is
+ * handed out anyway, and how many refusals in a row settle it.
  *
- * The first ask waits, because an address is announced a second or two before
- * every edge knows about it and a check that ran immediately would condemn a
- * tunnel that was about to be fine. Two refusals in a row rather than one, for
- * the same reason.
+ * The address is held back until it answers. It used to go on the card the
+ * moment cloudflared printed it, and the check came afterwards - so the reader
+ * pressed a link that was an error 1033 page, and a few seconds later it
+ * changed under them. A few seconds more before the link appears is the better
+ * trade.
+ *
+ * Handed out anyway after about half a minute of not knowing, because this
+ * machine may sit behind a proxy that cannot reach the address at all, and a
+ * link that might work beats a card that says "getting a link" for ever. Two
+ * refusals in a row rather than one, because an address is printed a moment
+ * before every edge knows about it.
  */
-const EDGE_CHECK_DELAY_MS = 4_000;
-const EDGE_CHECK_ATTEMPTS = 6;
+const EDGE_CHECK_DELAY_MS = 2_000;
+const EDGE_CHECK_ATTEMPTS = 15;
 const EDGE_FAILURE_STREAK = 2;
 /**
  * How long to wait before reconnecting, per consecutive failure.
@@ -227,7 +234,7 @@ export interface TunnelManagerOptions {
   readonly quicPatienceMs?: number;
   /** How long to wait between asks of the edge; shortened by tests. */
   readonly edgeCheckDelayMs?: number;
-  /** How many times to ask before letting it be; lowered by tests. */
+  /** How many times to ask before handing the address out anyway; lowered by tests. */
   readonly edgeCheckAttempts?: number;
 }
 
@@ -282,11 +289,13 @@ export class TunnelManager {
   /** Runs out if the tunnel is still at "starting" long after it should not be. */
   private quicTimer: NodeJS.Timeout | null = null;
   /**
-   * The address the edge is being asked about, while it is being asked.
+   * The address cloudflared printed and the edge is being asked about, before
+   * it is handed out.
    *
    * One check at a time, and only for the address that is current: a tunnel
    * that restarted while a check was in flight has a different address, and
-   * the old check must not switch transport on the new one's behalf.
+   * the old check must neither hand it out nor switch transport on the new
+   * one's behalf.
    */
   private edgeChecking: string | null = null;
   /**
@@ -407,6 +416,7 @@ export class TunnelManager {
       const owned = this.child === child;
       if (owned) {
         this.child = null;
+        this.edgeChecking = null;
         if (this.state.status !== 'error' && this.state.status !== 'stopped') {
           this.state = { ...this.state, status: reason || code === 0 ? 'stopped' : 'error', error: reason || code === 0 ? null : `cloudflared exited on its own (${exit})` };
         }
@@ -500,9 +510,12 @@ export class TunnelManager {
     const clean = line.replace(/\u001b\[[0-?]*[ -\/]*[@-~]/gu, '').trim();
     if (!clean) return;
     const url = parseTunnelUrl(clean);
-    if (url && this.state.mode === 'quick') {
-      this.state = { ...this.state, status: 'running', url, error: null };
-      this.announce(url);
+    // Held back until it answers; see EDGE_CHECK_DELAY_MS. cloudflared is
+    // satisfied, so nothing is waiting to be blamed for a start that never
+    // finished - whether the address reaches this machine is asked below.
+    if (url && this.state.mode === 'quick' && this.child) {
+      this.clearQuicTimer();
+      this.checkLink(url, this.child);
     }
     // A Named Tunnel never announces a trycloudflare address - its hostname is
     // the one configured in Cloudflare - so without this it stayed at
@@ -511,11 +524,7 @@ export class TunnelManager {
     if (this.state.mode === 'named' && /registered tunnel connection/iu.test(clean)) this.state = { ...this.state, status: 'running', error: null };
     if (this.state.status === 'running') {
       this.reconnectAttempt = 0;
-      // cloudflared is satisfied, so nothing is waiting to be blamed for a
-      // start that never finished. Whether the address it handed out actually
-      // reaches this machine is a separate question, asked below.
       this.clearQuicTimer();
-      if (url && this.child) this.watchEdge(url, this.child);
     }
     /*
      * Read on every line rather than only while the start is being waited out.
@@ -530,7 +539,10 @@ export class TunnelManager {
      */
     if (this.activeTransport === 'auto' && QUIC_FAILURE.test(clean)) {
       this.quicFailures += 1;
-      if (this.state.status !== 'running' || this.quicFailures >= QUIC_FAILURES_WHILE_RUNNING) {
+      // An address being checked is as far along as a running one: several
+      // edge connections, any one of which may have a bad minute.
+      const addressed = this.state.status === 'running' || this.edgeChecking !== null;
+      if (!addressed || this.quicFailures >= QUIC_FAILURES_WHILE_RUNNING) {
         // Said out loud rather than waited out, which is the faster half of the
         // same answer.
         this.useHttp2('cloudflared could not reach the edge over QUIC');
@@ -599,40 +611,46 @@ export class TunnelManager {
   }
 
   /**
-   * Check that the address cloudflared announced actually answers, and change
-   * transport if it does not.
+   * Hand out the address cloudflared printed once it answers, and change
+   * transport if it will not.
    *
-   * A tunnel can be up as far as this manager can tell - cloudflared printed a
-   * hostname, the switch says running, the link is on the card - and be an
-   * error 1033 page for everyone who opens it. That happens when the process
-   * got a name from the API but never registered a connection at the edge,
-   * which on a network that drops outbound UDP is exactly how far QUIC gets.
-   * Nothing in the log says so, because from cloudflared's side nothing failed;
-   * the only place the truth exists is at the address itself.
+   * A tunnel can be up as far as cloudflared can tell - it printed a hostname
+   * and said nothing wrong - and be an error 1033 page for everyone who opens
+   * it. That happens when the process got a name from the API but never
+   * registered a connection at the edge, which on a network that drops
+   * outbound UDP is exactly how far QUIC gets. The only place the truth exists
+   * is at the address itself, so the address is asked before anybody is given
+   * it.
    *
    * Only an answer from Cloudflare's edge counts. A request that fails here
    * proves nothing about the tunnel - the manager may be behind a proxy that
    * will not reach trycloudflare.com at all - so it is retried and never acted
-   * on. And only while there is somewhere else to go: once the tunnel is on
-   * HTTP/2, a 1033 is not something a transport change can fix.
+   * on. And the transport changes only while there is somewhere else to go:
+   * once the tunnel is on HTTP/2, a 1033 is not something a switch can fix.
    */
-  private watchEdge(url: string, child: ChildProcess): void {
-    if (this.transport === 'http2' || this.activeTransport === 'http2' || this.edgeChecking === url) return;
+  private checkLink(url: string, child: ChildProcess): void {
+    if (this.edgeChecking === url || this.state.url === url) return;
     this.edgeChecking = url;
-    void this.askEdgeRepeatedly(url, child).finally(() => {
+    void this.askUntilAnswered(url, child).finally(() => {
       if (this.edgeChecking === url) this.edgeChecking = null;
     });
   }
 
-  private async askEdgeRepeatedly(url: string, child: ChildProcess): Promise<void> {
+  private async askUntilAnswered(url: string, child: ChildProcess): Promise<void> {
     let refusals = 0;
+    const current = (): boolean => !this.closed && this.child === child && this.edgeChecking === url && !this.switchingTransport;
     for (let attempt = 0; attempt < this.edgeCheckAttempts; attempt += 1) {
       await new Promise((resolve) => { const timer = setTimeout(resolve, this.edgeCheckDelayMs); timer.unref?.(); });
       // A restart, a stop or a switch happened while this was waiting. Whatever
       // is running now is not what this check was about.
-      if (this.closed || this.child !== child || this.state.url !== url || this.switchingTransport) return;
+      if (!current()) return;
       const verdict = await this.askEdge(url);
-      if (verdict === 'answered') return;
+      if (!current()) return;
+      if (verdict === 'answered') {
+        this.logger(logEvent('cloudflared.linkAnswered', `[cloudflared] ${url} answers; handing it out`, { url }));
+        this.handOut(url);
+        return;
+      }
       /*
        * An ask that failed here is not evidence either way, so it is skipped
        * rather than counted - and rather than forgetting the refusals already
@@ -643,12 +661,22 @@ export class TunnelManager {
        */
       if (verdict === 'unknown') continue;
       refusals += 1;
-      if (refusals >= EDGE_FAILURE_STREAK) {
-        if (this.child !== child || this.state.url !== url) return;
+      const canSwitch = this.transport !== 'http2' && this.activeTransport !== 'http2';
+      if (refusals >= EDGE_FAILURE_STREAK && canSwitch) {
         this.useHttp2('the link answered with Cloudflare error 1033, so the tunnel never reached the edge');
         return;
       }
     }
+    if (!current()) return;
+    this.logger(logEvent('cloudflared.linkUnchecked', `[cloudflared] could not confirm that ${url} answers; handing it out anyway`, { url }));
+    this.handOut(url);
+  }
+
+  private handOut(url: string): void {
+    this.edgeChecking = null;
+    this.state = { ...this.state, status: 'running', url, error: null };
+    this.reconnectAttempt = 0;
+    this.announce(url);
   }
 
   /**

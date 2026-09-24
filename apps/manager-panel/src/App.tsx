@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react';
 import { centralDirectoryOffset, ZIP_TAIL_SEARCH_BYTES } from './zip-tail.js';
 import {
-  AppWindow, Archive, ArrowDown, CloudUpload, DatabaseBackup, Funnel, UserRound, ArrowUp, ArrowUpRight, BarChart3, Check, ChevronDown, Cloud, Copy, Database, Download,
+  AppWindow, Archive, ArrowDown, ArrowRight, CloudUpload, DatabaseBackup, Funnel, UserRound, ArrowUp, ArrowUpRight, BarChart3, Check, ChevronDown, Cloud, Copy, Database, Download,
   Globe2, LayoutDashboard, Maximize2, Minimize2, Moon, Package, Pencil, Plus,
   LogOut, RotateCcw, ScrollText, Search, Sun, Trash2, Upload, X, Rows3,
   BrainCircuit, CircleStop, Clock3, Cpu, Ellipsis, Play, QrCode as QrCodeIcon, RefreshCw, Scale, Settings2, ShieldCheck, Square,
@@ -15,7 +15,7 @@ import {
   Dialog, DialogBody, DialogContent, DialogDescription,
   DialogFooter, DialogHeader, DialogTitle,
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger,
-  Field, GithubMark, initialQuery, Input, Label, MobileNav, PageContainer, PasscodeInput, PasswordInput, Textarea,
+  Field, GithubMark, initialQuery, Input, Label, MobileNav, PageContainer, PasscodeInput, PasswordInput, Popover, PopoverContent, PopoverTrigger, Textarea,
   Skeleton,
   RadioGroup, RadioGroupItem,
   Select, SelectContent, SelectItem, SelectSeparator, SelectTrigger, SelectValue,
@@ -34,7 +34,7 @@ import { availableUpdate, readDismissedManagerRelease, readDismissedUpdate, save
 import { readDismissedDisplaced, readDismissedRecovery, readDismissedSettings, saveDismissedDisplaced, saveDismissedRecovery, saveDismissedSettings, shouldOfferSettings, shouldShowDisplaced, shouldShowRecovery } from './settings-offer.js';
 import { apiFetch, onSessionExpired, resetSessionWatch, sessionToken, setSessionToken } from './session.js';
 import { collectCloudflareResult, framed, openReturnWindow, popupsBlocked, whenAbandoned, type CollectedResult } from './oauth.js';
-import type { AccessGatewayState, BackupManifest, CloudflareAccountProblem, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LegalReview, LogEntry, LogSourceFilter, ManagerRelease, ManagerSettingsOffer, ManagerUpdateStatus, OnlineState, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, SaverState, SetupChecklistState, SetupStep, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, AccessLinkPreference, AccessLinkTarget, BackupManifest, CloudflareAccountProblem, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LegalReview, LogEntry, LogSourceFilter, ManagerRelease, ManagerSettingsOffer, ManagerUpdateStatus, OnlineState, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, SaverState, SetupChecklistState, SetupStep, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, isCloudJob, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
 import { usePoll } from './use-poll.js';
@@ -42,7 +42,7 @@ import { POLL_BACKGROUND_MS, POLL_RELEASE_MS, statusIntervalMs } from './polling
 import { foldForSearch, translateLogEntry, translateStep } from '../../../packages/contracts/src/index.js';
 import { QrCode } from './qr-code.js';
 import { CLOUDFLARE_ORANGE, CloudflareMark } from './cloudflare-mark.js';
-import { bareHost, localHost, publicAddress, reachableAddresses, shortenHost } from './addresses.js';
+import { bareHost, localHost, machineName, publicAddress, publicLinks, reachableAddresses, shortenHost, type PublicLink, type ReachableAddress } from './addresses.js';
 import { EmbedStage } from './embed-stage.js';
 import { SetupChecklist, type ChecklistItem } from './setup-checklist.js';
 import { LegalCredit, LegalDialog, LEGAL_REVISION } from './legal-dialog.js';
@@ -1254,6 +1254,10 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
      */
     setR2Owner(status.r2Owner);
     setR2Problem(status.r2Problem);
+    // Carried on the same clock, so connecting a bucket that holds another
+    // machine's setup offers it without a reload. Absent until the manager
+    // has read it, which leaves what is here alone.
+    if (status.settingsOffer) setSettingsOffer(status.settingsOffer);
     /*
      * Work this machine started for itself, adopted whenever it appears.
      *
@@ -1612,6 +1616,20 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
    * switch reports "starting" until cloudflared announces it - and moving the
    * reader to a link that does not exist yet would land them on nothing.
    */
+  /*
+   * Which address of a door goes first, and whether the fixed one is shown.
+   *
+   * Put straight onto the state the cards read, so the star and the switch
+   * move under the reader's finger rather than at the next poll.
+   */
+  const setAccessLink = async (target: AccessLinkTarget, change: Partial<AccessLinkPreference>): Promise<void> => {
+    const response = await apiFetch('/api/v1/access/links', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ target, ...change }) });
+    const payload = await response.json().catch(() => null) as { accessLinks?: Record<AccessLinkTarget, AccessLinkPreference> } | null;
+    if (!response.ok || !payload?.accessLinks) { toast({ title: fail.body(payload, t('console.actionFailed')), tone: 'destructive' }); return; }
+    const links = payload.accessLinks;
+    setTunnelState((current) => ({ ...current, linkPreference: links.sillyTavern }));
+    setManagerTunnelState((current) => ({ ...current, linkPreference: links.manager }));
+  };
   const setManagerTunnel = async (on: boolean): Promise<ActionFailure | null> => {
     const response = await apiFetch('/api/v1/manager-tunnel', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ mode: on ? 'quick' : 'off' }) });
     const payload = await response.json() as TunnelState & { error?: { code?: string; message?: string } };
@@ -1817,7 +1835,6 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     onStop={() => updateRuntime('/api/v1/process/stop')}
     onSetPassword={setAccessPassword}
     onPublish={() => updateRuntime('/api/v1/tunnel', { mode: 'quick' })}
-    onShowAddresses={() => { document.querySelector('[data-tour="remote-access"]')?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }}
     onOpenSettings={() => navigate('config')}
   />;
 
@@ -1862,7 +1879,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
                 <ShieldCheck />
                 <AlertTitle>{t('console.r2DisplacedTitle')}</AlertTitle>
                 <AlertDescription className="grid gap-2">
-                  <span>{t('console.r2DisplacedBody', { name: r2Owner.label, when: new Date(r2Owner.lastSeenAt).toLocaleString() })}</span>
+                  <span>{t('console.r2DisplacedBody', { name: machineName(r2Owner.label), when: new Date(r2Owner.claimedAt ?? r2Owner.lastSeenAt).toLocaleString() })}</span>
                   <span className="flex flex-wrap items-center gap-2">{reconnectUrl
                     ? <Button size="sm" asChild style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }} className="hover:opacity-90">
                       <a href={reconnectUrl} target="_blank" rel="noopener noreferrer"><CloudflareMark />{t('console.r2DisplacedSignIn')}</a>
@@ -1960,7 +1977,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
                 }}
               /></div>
               : null}
-            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}{checklist}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} locale={preferences.locale} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} intent={dataIntent} onIntentHandled={() => setDataIntent(null)} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} startup={startup} saver={saver} online={online} onSetAutoStart={setAutoStartSillyTavern} onSetSaver={setSaverMode} onSetKeepOnline={setKeepOnline} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} onEraseEverything={eraseEverything} /> : <ResourcePanel page={page} t={t} />}
+            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}{checklist}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} onSetAccessLink={setAccessLink} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} locale={preferences.locale} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} intent={dataIntent} onIntentHandled={() => setDataIntent(null)} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} onSetAccessLink={setAccessLink} startup={startup} saver={saver} online={online} onSetAutoStart={setAutoStartSillyTavern} onSetSaver={setSaverMode} onSetKeepOnline={setKeepOnline} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} onEraseEverything={eraseEverything} /> : <ResourcePanel page={page} t={t} />}
           </PageContainer>
           <MobileNav
             items={navigation.map(({ id, icon }) => ({ id, icon, href: `#${id}`, label: t(`nav.${id}`) }))}
@@ -2013,7 +2030,7 @@ function RestoreEverythingCard({ t, offer, busy, onRestore, onDismiss }: {
     <PanelHeading icon={<History />}>{t('console.r2RestoreAllTitle')}</PanelHeading>
     <CardContent className="grid gap-3">
       <p className="text-sm text-muted-foreground">
-        {t('console.r2RestoreAllBody', { name: offer.label ?? '', when: offer.writtenAt ? new Date(offer.writtenAt).toLocaleString() : '' })}
+        {t('console.r2RestoreAllBody', { name: machineName(offer.label ?? ''), when: offer.writtenAt ? new Date(offer.writtenAt).toLocaleString() : '' })}
       </p>
       <ul className="grid gap-1 text-sm text-muted-foreground">
         <li>{t('console.r2RestoreAllData')}</li>
@@ -2419,7 +2436,7 @@ function RuntimeCard({
   t, fail, catalog, process, tunnel, security, sillyTavernPort, networkHost, installed, installing, recovering, active, dataBytes, profileName,
   version, onVersionChange, versions, onPendingInstallationId, csrfToken, onInstalling, onInstallJob, onRemove,
   canCancelInstall, onCancelInstall,
-  onStart, onStop, onSetPassword, onPublish, onShowAddresses, onOpenSettings,
+  onStart, onStop, onSetPassword, onPublish, onOpenSettings,
 }: {
   t: Translate; fail: Fail; catalog: Record<string, unknown>; process: ProcessState; tunnel: TunnelState;
   security: AccessGatewayState; sillyTavernPort: number; networkHost: string | null; installed: boolean; installing: boolean;
@@ -2444,7 +2461,6 @@ function RuntimeCard({
   onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>;
   /** Turn the tunnel on, for a reader who has no address that reaches this machine. */
   onPublish: () => Promise<void>;
-  onShowAddresses: () => void;
   onOpenSettings: () => void;
 }) {
   const [stopAsked, setStopAsked] = useState(false);
@@ -2760,9 +2776,9 @@ function RuntimeCard({
                   <span className="address-short">{shortenHost(primary.host)}</span>
                 </AddressLink>
                 : <span className="text-muted-foreground">{t('console.noAddressYet')}</span>}
-              {otherCount > 0
-                ? <button type="button" className="runtime-shared" onClick={onShowAddresses}>{t('console.alsoOnline', { count: otherCount })}</button>
-                : null}
+              {/* The rest of the places it answers, one press away rather
+                  than a sentence sending the reader down to another card. */}
+              {otherCount > 0 ? <MoreLinks t={t} links={addresses.slice(1).map((address) => ({ label: addressLabel(t, address), url: address.url, host: address.host }))} /> : null}
             </dd>
           </div> : null}
 
@@ -2925,7 +2941,7 @@ function RuntimeCard({
   </>;
 }
 
-function AccessPanel({ t, process, tunnel, config, security, sillyTavernPort, onAction, onSetLan, onSetPassword }: { t: Translate; process: ProcessState; tunnel: TunnelState; config: ConfigDocument | null; security: AccessGatewayState; sillyTavernPort: number; onAction: (path: string, body?: unknown) => Promise<void>; onSetLan: (lan: boolean) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null> }) {
+function AccessPanel({ t, process, tunnel, config, security, sillyTavernPort, onAction, onSetLan, onSetPassword, onSetAccessLink }: { t: Translate; process: ProcessState; tunnel: TunnelState; config: ConfigDocument | null; security: AccessGatewayState; sillyTavernPort: number; onAction: (path: string, body?: unknown) => Promise<void>; onSetLan: (lan: boolean) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetAccessLink: (target: AccessLinkTarget, change: Partial<AccessLinkPreference>) => Promise<void> }) {
   const [busy, setBusy] = useState(false);
   const [securityBusy, setSecurityBusy] = useState(false);
   const running = process.status === 'running';
@@ -3095,10 +3111,12 @@ function AccessPanel({ t, process, tunnel, config, security, sillyTavernPort, on
             t={t}
             label={t('dashboard.publicAddress')}
             url={publicUrl}
-            display={publicUrl ?? ''}
+            display={publicUrl ? bareHost(publicUrl) : ''}
+            shorten
+            links={publicLinks(tunnel)}
+            choice={{ target: 'sillyTavern', tunnel, onChange: onSetAccessLink }}
             disabledHint={tunnelWanted ? t('console.addressComing') : t('console.tunnelOffShort')}
             pending={tunnelWanted}
-            {...(publicUrl && tunnel.proxyUrl && tunnel.url ? { alternates: [tunnel.url] } : {})}
           />
           {lanHost ? <AddressRow t={t} label={t('console.lanAddress')} url={lan ? lanUrl : null} display={lanHost} disabledHint={t('console.lanOffShort')} /> : null}
           <AddressRow t={t} label={t('console.local')} url={onThisMachine ? localUrl : null} display={local} disabledHint={t('console.localElsewhere')} />
@@ -3311,6 +3329,57 @@ function AddressLink({ t, href, children }: { t: Translate; href: string; childr
   return <a className="address-link" href={href} target="_blank" rel="noopener noreferrer" title={t('console.openInNewTab')}><code>{children}</code></a>;
 }
 
+/** What a place SillyTavern answers at is called, in a list of them. */
+function addressLabel(t: Translate, address: ReachableAddress): string {
+  if (address.kind === 'lan') return t('console.lanAddress');
+  if (address.kind === 'local') return t('console.local');
+  return address.link === 'tunnel' ? t('console.linkTunnel') : t('console.linkFixed');
+}
+
+/** How a door's two public addresses are chosen between; see `AccessLinkPreference`. */
+interface LinkChoice {
+  readonly target: AccessLinkTarget;
+  /** Read for both addresses and the preference, whichever is on screen. */
+  readonly tunnel: TunnelState;
+  readonly onChange: (target: AccessLinkTarget, change: Partial<AccessLinkPreference>) => Promise<void>;
+}
+
+/**
+ * "+2", and the addresses it stands for.
+ *
+ * A card has room for one address, and the rest used to be a sentence - "also
+ * reachable at two more links" - that scrolled the page to another card to
+ * find out which. They are here now, behind a count: opened by pointing at it
+ * with a mouse and by tapping it on a phone, each one a link.
+ */
+function MoreLinks({ t, links }: { t: Translate; links: readonly { label: string; url: string; host: string }[] }) {
+  const [open, setOpen] = useState(false);
+  const timer = useRef<number | undefined>(undefined);
+  // Pointing opens it where there is something to point with; a finger has no
+  // hover, and there a tap is the whole gesture.
+  const hover = (next: boolean) => {
+    if (!window.matchMedia('(hover: hover) and (pointer: fine)').matches) return;
+    window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => setOpen(next), next ? 100 : 200);
+  };
+  useEffect(() => () => window.clearTimeout(timer.current), []);
+  return <Popover open={open} onOpenChange={setOpen}>
+    <PopoverTrigger asChild>
+      {/* A press always opens it: with a mouse the pointer has usually opened
+          it already, and a toggle would close it under the click. It closes
+          by pressing elsewhere, by Escape, or by the pointer leaving. */}
+      <button type="button" className="link-more" aria-label={t('console.moreLinks', { count: links.length })} onMouseEnter={() => hover(true)} onMouseLeave={() => hover(false)} onClick={(event) => { event.preventDefault(); window.clearTimeout(timer.current); setOpen(true); }}>+{links.length}</button>
+    </PopoverTrigger>
+    <PopoverContent align="start" className="link-more-list" onOpenAutoFocus={(event) => event.preventDefault()} onMouseEnter={() => hover(true)} onMouseLeave={() => hover(false)}>
+      {links.map((link) => <a key={link.url} className="link-more-row" href={link.url} target="_blank" rel="noopener noreferrer">
+        <span className="link-more-label">{link.label}</span>
+        <span className="link-more-host">{link.host}</span>
+        <ArrowUpRight aria-hidden="true" />
+      </a>)}
+    </PopoverContent>
+  </Popover>;
+}
+
 /**
  * One address, and the one button that does everything else with it.
  *
@@ -3320,9 +3389,13 @@ function AddressLink({ t, href, children }: { t: Translate; href: string; childr
  * pressed. Each address now answers for itself: the address is the link, and
  * the button beside it opens the sheet that holds the code, the copy and the
  * open - for that address, not for whichever one the footer had in mind.
+ *
+ * A place with two public addresses shows the one preferred, shortened to its
+ * two ends, with the other behind a "+1".
  */
-function AddressRow({ t, label, url, display, disabledHint, pending, alternates }: { t: Translate; label: string; url: string | null; display: string; disabledHint?: string; pending?: boolean; alternates?: readonly string[] }) {
+function AddressRow({ t, label, url, display, disabledHint, pending, shorten, links, choice }: { t: Translate; label: string; url: string | null; display: string; disabledHint?: string; pending?: boolean; shorten?: boolean; /** Every public address, preferred first, where there are two. */ links?: readonly PublicLink[]; choice?: LinkChoice }) {
   const [open, setOpen] = useState(false);
+  const more = (links ?? []).slice(1).map((link) => ({ label: link.kind === 'tunnel' ? t('console.linkTunnel') : t('console.linkFixed'), url: link.url, host: bareHost(link.url) }));
   return <div className="address-row">
     <span className="address-name">{label}</span>
     <span className="address-value">
@@ -3330,7 +3403,12 @@ function AddressRow({ t, label, url, display, disabledHint, pending, alternates 
           on the settings page, so it is shown the same way: the words sweep
           while something is happening behind them. Standing text here read as
           a state that had settled, next to a switch that was already on. */}
-      {url ? <AddressLink t={t} href={url}>{display}</AddressLink> : <code className={pending ? 'address-absent thinking' : 'address-absent'}>{disabledHint ?? '—'}</code>}
+      {url
+        ? <>
+          <AddressLink t={t} href={url}>{shorten ? <span title={display}>{shortenHost(display)}</span> : display}</AddressLink>
+          {more.length > 0 ? <MoreLinks t={t} links={more} /> : null}
+        </>
+        : <code className={pending ? 'address-absent thinking' : 'address-absent'}>{disabledHint ?? '—'}</code>}
     </span>
     <Button
       variant="ghost"
@@ -3340,21 +3418,51 @@ function AddressRow({ t, label, url, display, disabledHint, pending, alternates 
       disabled={url === null}
       onClick={() => setOpen(true)}
     ><QrCodeIcon /></Button>
-    {url ? <ShareDialog t={t} open={open} onOpenChange={setOpen} label={label} links={[url, ...(alternates ?? [])]} /> : null}
+    {url ? <ShareDialog t={t} open={open} onOpenChange={setOpen} label={label} links={links && links.length > 0 ? links.map((link) => link.url) : [url]} {...(choice ? { choice } : {})} /> : null}
   </div>;
 }
 
 /**
  * The code, and every address that reaches this door.
  *
- * Three things and no fourth: the code, and one line per address, each of them
- * a link. Where a place has two addresses - a Worker with a fixed name and the
- * tunnel it forwards to - both are here, one under the other, because either
- * works and a reader is entitled to see the second rather than be told about
- * it. The first is the one the code carries and the one worth sharing.
+ * The code carries the first address. Where a door has two - a fixed address
+ * that never changes and the tunnel's own - both are here, one under the
+ * other with "or" between them, each a link with its own copy button: either
+ * works, and the reader is entitled to see the second rather than be told
+ * about it.
+ *
+ * With both, the reader also chooses between them here: a star on the one to
+ * put first everywhere, and a switch that hides the fixed address from the
+ * console for somebody who finds the Worker slow. Both are settings of theirs,
+ * kept on the manager and in the bucket with the rest.
  */
-function ShareDialog({ t, open, onOpenChange, label, links, description }: { t: Translate; open: boolean; onOpenChange: (open: boolean) => void; label: string; links: readonly string[]; /** What scanning it opens, when it is not SillyTavern. */ description?: string }) {
+function ShareDialog({ t, open, onOpenChange, label, links, description, choice }: { t: Translate; open: boolean; onOpenChange: (open: boolean) => void; label: string; links: readonly string[]; /** What scanning it opens, when it is not SillyTavern. */ description?: string; choice?: LinkChoice }) {
+  const { toast } = useToast();
+  const [saving, setSaving] = useState(false);
+  const preference = choice?.tunnel.linkPreference ?? { preferred: 'fixed' as const, showFixed: true };
+  const fixedUrl = choice?.tunnel.proxyUrl ?? null;
+  const ownUrl = choice?.tunnel.url ?? null;
+  // Both addresses, whether or not the fixed one is hidden: this is where it
+  // is brought back.
+  const rows: Array<{ kind: 'fixed' | 'tunnel'; url: string }> = choice && fixedUrl && ownUrl
+    ? (preference.preferred === 'tunnel' || !preference.showFixed ? [{ kind: 'tunnel' as const, url: ownUrl }, { kind: 'fixed' as const, url: fixedUrl }] : [{ kind: 'fixed' as const, url: fixedUrl }, { kind: 'tunnel' as const, url: ownUrl }])
+    : [];
   const primary = links[0] ?? '';
+  const change = async (next: Partial<AccessLinkPreference>) => {
+    if (!choice) return;
+    setSaving(true);
+    try { await choice.onChange(choice.target, next); } finally { setSaving(false); }
+  };
+  const copy = async (url: string) => {
+    try { await navigator.clipboard.writeText(url); toast({ title: t('console.linkCopied'), tone: 'success' }); }
+    catch { toast({ title: t('console.actionFailed'), tone: 'destructive' }); }
+  };
+  // A place with one address - this Wi-Fi, this machine - is laid out the
+  // same way, named by the place, so the three sheets read alike.
+  const plain: Array<{ kind: 'fixed' | 'tunnel' | null; url: string }> = rows.length === 0 ? links.map((url) => ({ kind: null, url })) : rows;
+  // The tunnel's own address is only explained when it is the fallback under
+  // a fixed one that is in use.
+  const fallbackUnderFixed = plain[0]?.kind === 'fixed' && preference.showFixed;
   return <Dialog open={open} onOpenChange={onOpenChange}>
     <DialogContent className="share-dialog">
       <DialogHeader>
@@ -3364,8 +3472,38 @@ function ShareDialog({ t, open, onOpenChange, label, links, description }: { t: 
       <DialogBody className="share-body">
         <QrCode value={primary} label={`${label}: ${primary}`} />
         <div className="share-links">
-          {links.map((link) => <a key={link} className="share-url" href={link} target="_blank" rel="noopener noreferrer">{link}</a>)}
+          {plain.map((row, index) => {
+            const hidden = row.kind === 'fixed' && !preference.showFixed;
+            const preferred = row.kind !== null && !hidden && index === 0;
+            return <div key={row.url} className="share-link-group">
+              {index > 0 ? <div className="share-or" aria-hidden="true"><span>{t('console.linkOr')}</span></div> : null}
+              <div className="share-link" data-hidden={hidden || undefined}>
+                {row.kind ? <button
+                  type="button"
+                  className="share-star"
+                  aria-pressed={preferred}
+                  aria-label={preferred ? t('console.linkPreferred') : t('console.linkPrefer')}
+                  title={preferred ? t('console.linkPreferred') : t('console.linkPrefer')}
+                  disabled={saving || hidden || preferred}
+                  onClick={() => void change({ preferred: row.kind as 'fixed' | 'tunnel' })}
+                ><Star aria-hidden="true" /></button> : null}
+                <div className="share-link-text">
+                  <span className="share-link-kind">
+                    {row.kind === 'fixed' ? t('console.linkFixed') : row.kind === 'tunnel' ? t('console.linkTunnel') : label}
+                    {hidden ? <Badge variant="secondary">{t('console.linkHidden')}</Badge> : preferred ? <Badge variant="secondary" className="bg-(--success-background) text-(--success)">{t('console.linkPreferred')}</Badge> : null}
+                  </span>
+                  <a className="share-url" href={row.url} target="_blank" rel="noopener noreferrer">{row.url}</a>
+                  {row.kind === 'tunnel' && index > 0 && fallbackUnderFixed ? <span className="share-link-hint">{t('console.linkTunnelHint')}</span> : null}
+                </div>
+                <Button variant="ghost" size="icon-sm" aria-label={t('dashboard.copyLink')} title={t('dashboard.copyLink')} onClick={() => void copy(row.url)}><Copy /></Button>
+              </div>
+            </div>;
+          })}
         </div>
+        {rows.length > 0 ? <Label className="share-switch">
+          <span className="font-medium">{t('console.linkShowFixed')}</span>
+          <Switch checked={preference.showFixed} disabled={saving} onCheckedChange={(checked) => void change({ showFixed: checked })} aria-label={t('console.linkShowFixed')} />
+        </Label> : null}
       </DialogBody>
     </DialogContent>
   </Dialog>;
@@ -4970,7 +5108,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
           <Settings2 />
           <AlertTitle>{t('console.r2SettingsTitle')}</AlertTitle>
           <AlertDescription className="grid gap-2">
-            <span>{t('console.r2SettingsBody', { name: settingsOffer.label ?? '', when: settingsOffer.writtenAt ? new Date(settingsOffer.writtenAt).toLocaleString() : '' })}</span>
+            <span>{t('console.r2SettingsBody', { name: machineName(settingsOffer.label ?? ''), when: settingsOffer.writtenAt ? new Date(settingsOffer.writtenAt).toLocaleString() : '' })}</span>
             {settingsOffer.hasAdminPassword ? <span className="text-xs">{t('console.r2SettingsPasswordWarning')}</span> : null}
             <span className="flex flex-wrap gap-2">
               <Button size="sm" variant="outline" onClick={() => restoreManagerSettings()} disabled={r2Busy !== null}>{t('console.r2SettingsRestore')}</Button>
@@ -5010,7 +5148,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
               is only a question while the answer to this one is yes. */}
           <DetailRow
             label={t('console.r2Enabled')}
-            hint={displaced ? t('console.r2DisplacedHint', { name: r2Config?.owner?.label ?? '' }) : !r2Config?.configured ? t('console.r2NeedsSetup') : r2Config.enabled ? r2ScheduleSummary(t, r2Config) : t('console.r2EnabledOffHint')}
+            hint={displaced ? t('console.r2DisplacedHint', { name: machineName(r2Config?.owner?.label ?? '') }) : !r2Config?.configured ? t('console.r2NeedsSetup') : r2Config.enabled ? r2ScheduleSummary(t, r2Config) : t('console.r2EnabledOffHint')}
           >
             {r2Config?.configured && r2Config.enabled
               ? <Button variant="outline" size="sm" onClick={() => setR2ScheduleOpen(true)}>{t('console.r2Change')}</Button>
@@ -5449,6 +5587,19 @@ function RestoreDialog({ t, catalog, name, safety, preview, mode, onModeChange, 
    * backup does not mention, so the result is a mixture nobody took a backup
    * of - occasionally what is wanted, usually not.
    */
+  /*
+   * With the junk left out, the heading says what is actually restored: the
+   * archive's count struck through, and what remains of it beside an arrow.
+   */
+  const trimmed = trim && capacity && capacity.junkFiles > 0 ? capacity : null;
+  /*
+   * What a replace takes away, said before it does.
+   *
+   * Replacing with an older backup deletes everything added since, and the
+   * one line describing Replace does not say how much that is. Extensions are
+   * named: a missing chat is noticed, a missing extension looks like a bug.
+   */
+  const losses = mode === 'replace' && preview.losses && preview.losses.files > 0 ? preview.losses : null;
   const options: Array<{ value: RestoreMode; label: string; body: string; recommended: boolean }> = [
     { value: 'replace', label: t('console.replaceRestore'), body: t('console.restoreReplaceBody'), recommended: true },
     { value: 'merge', label: t('console.mergeRestore'), body: t('console.restoreMergeBody'), recommended: false },
@@ -5457,7 +5608,13 @@ function RestoreDialog({ t, catalog, name, safety, preview, mode, onModeChange, 
     <DialogContent className="sm:max-w-lg">
       <DialogHeader>
         <DialogTitle>{t('console.restoreTitle', { name })}</DialogTitle>
-        <DialogDescription>{t('console.restoreCounts', { files: preview.fileCount, size: formatBytes(preview.totalBytes) })}</DialogDescription>
+        <DialogDescription>{trimmed
+          ? <span className="flex flex-wrap items-center gap-x-1.5">
+            <span className="line-through">{t('console.restoreCounts', { files: preview.fileCount, size: formatBytes(preview.totalBytes) })}</span>
+            <ArrowRight className="size-3.5" aria-hidden />
+            <span className="font-medium text-foreground">{t('console.restoreCounts', { files: preview.fileCount - trimmed.junkFiles, size: formatBytes(preview.totalBytes - trimmed.junkBytes) })}</span>
+          </span>
+          : t('console.restoreCounts', { files: preview.fileCount, size: formatBytes(preview.totalBytes) })}</DialogDescription>
       </DialogHeader>
       <DialogBody className="grid gap-4">
         <RadioGroup value={mode} onValueChange={(value) => onModeChange(value as RestoreMode)} aria-label={t('console.restoreChoose')}>
@@ -5469,6 +5626,19 @@ function RestoreDialog({ t, catalog, name, safety, preview, mode, onModeChange, 
             </div>
           </div>)}
         </RadioGroup>
+        {losses
+          ? <Alert>
+            <TriangleAlert />
+            <AlertDescription className="grid gap-2">
+              <span>{t('console.restoreLosses', { files: losses.files, size: formatBytes(losses.bytes) })}</span>
+              {losses.extensions.length > 0 ? <>
+                <span>{t('console.restoreLostExtensions')}</span>
+                <span className="flex flex-wrap gap-1.5">{losses.extensions.map((extension) => <Badge key={extension} variant="outline" className="font-mono">{extension}</Badge>)}</span>
+              </> : null}
+              <span>{t('console.restoreLossesKeep')}</span>
+            </AlertDescription>
+          </Alert>
+          : null}
         {preview.warnings.length > 0
           ? <Alert variant={unrecognized ? 'destructive' : 'default'}>
             <AlertDescription className="grid gap-2">
@@ -6724,7 +6894,7 @@ interface ActionFailure {
   readonly text: string;
 }
 
-function ConfigPage({ t, locale, config, security, ports, managerTunnel, process, catalog, startup, saver, online, onSetAutoStart, onSetSaver, onSetKeepOnline, onSetManagerTunnel, onPortChange, onConfigUpdate, onConfigReset, onChangeManagerPassword, onSetPassword, onSignOut, onSignOutDevices, onEraseEverything }: { t: Translate; locale: LocaleCode; config: ConfigDocument | null; security: AccessGatewayState; ports: PortSettings | null; managerTunnel: TunnelState; process: ProcessState; catalog: Record<string, unknown>; startup: StartupSettings | null; saver: SaverState | null; online: OnlineState | null; onSetAutoStart: (enabled: boolean) => Promise<string | null>; onSetSaver: (enabled: boolean) => Promise<string | null>; onSetKeepOnline: (enabled: boolean, minutes: number) => Promise<string | null>; onSetManagerTunnel: (on: boolean) => Promise<ActionFailure | null>; onPortChange: (port: number) => Promise<string | null>; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onConfigReset: () => Promise<string | null>; onChangeManagerPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSignOut: () => Promise<void>; onSignOutDevices: () => Promise<string | null>; onEraseEverything: (password: string) => Promise<string | null> }) {
+function ConfigPage({ t, locale, config, security, ports, managerTunnel, process, catalog, startup, saver, online, onSetAutoStart, onSetSaver, onSetKeepOnline, onSetManagerTunnel, onSetAccessLink, onPortChange, onConfigUpdate, onConfigReset, onChangeManagerPassword, onSetPassword, onSignOut, onSignOutDevices, onEraseEverything }: { t: Translate; locale: LocaleCode; config: ConfigDocument | null; security: AccessGatewayState; ports: PortSettings | null; managerTunnel: TunnelState; process: ProcessState; catalog: Record<string, unknown>; startup: StartupSettings | null; saver: SaverState | null; online: OnlineState | null; onSetAutoStart: (enabled: boolean) => Promise<string | null>; onSetSaver: (enabled: boolean) => Promise<string | null>; onSetKeepOnline: (enabled: boolean, minutes: number) => Promise<string | null>; onSetManagerTunnel: (on: boolean) => Promise<ActionFailure | null>; onSetAccessLink: (target: AccessLinkTarget, change: Partial<AccessLinkPreference>) => Promise<void>; onPortChange: (port: number) => Promise<string | null>; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onConfigReset: () => Promise<string | null>; onChangeManagerPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSignOut: () => Promise<void>; onSignOutDevices: () => Promise<string | null>; onEraseEverything: (password: string) => Promise<string | null> }) {
   const [form, setForm] = useState<ConfigSettingsInput>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -6896,7 +7066,10 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
           <DetailRow
             label={t('console.managerTunnel')}
             hint={managerTunnelLink
-              ? <a className="break-all font-mono underline underline-offset-4" href={managerTunnelLink} target="_blank" rel="noopener noreferrer">{managerTunnelLink}</a>
+              ? <span className="inline-flex flex-wrap items-center gap-1.5">
+                <a className="font-mono underline underline-offset-4" href={managerTunnelLink} target="_blank" rel="noopener noreferrer" title={managerTunnelLink}>{shortenHost(bareHost(managerTunnelLink))}</a>
+                {publicLinks(managerTunnel).length > 1 ? <MoreLinks t={t} links={publicLinks(managerTunnel).slice(1).map((link) => ({ label: link.kind === 'tunnel' ? t('console.linkTunnel') : t('console.linkFixed'), url: link.url, host: bareHost(link.url) }))} /> : null}
+              </span>
               // The switch is on and there is no address yet: cloudflared is
               // still connecting, or the fixed address in front of it is still
               // being deployed. Either way it is coming, which is a different
@@ -6913,7 +7086,7 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
                   <Button variant="outline" size="sm" aria-label={t('console.openInTab')} title={t('console.openInTab')} asChild>
                     <a href={managerTunnelLink} target="_blank" rel="noopener noreferrer"><ArrowUpRight /><span className="hidden sm:inline">{t('console.openInTab')}</span></a>
                   </Button>
-                  <ShareDialog t={t} open={managerQrOpen} onOpenChange={setManagerQrOpen} label={t('console.managerTunnel')} links={[managerTunnelLink]} description={t('console.scanToOpenManager')} />
+                  <ShareDialog t={t} open={managerQrOpen} onOpenChange={setManagerQrOpen} label={t('console.managerTunnel')} links={publicLinks(managerTunnel).map((link) => link.url)} description={t('console.scanToOpenManager')} choice={{ target: 'manager', tunnel: managerTunnel, onChange: onSetAccessLink }} />
                 </>
                 : null}
               <Switch
