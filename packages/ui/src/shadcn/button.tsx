@@ -3,6 +3,7 @@ import * as React from "react"
 import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "./utils.js"
 import { Slot } from "radix-ui"
+import { LoaderCircle } from "lucide-react"
 
 const buttonVariants = cva(
   "inline-flex shrink-0 items-center justify-center gap-2 rounded-md text-sm font-medium whitespace-nowrap transition-all outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
@@ -41,26 +42,85 @@ const buttonVariants = cva(
   }
 )
 
+/**
+ * A button that says when it is working.
+ *
+ * Pressing something that has to wait on the manager used to leave the button
+ * looking exactly as it did before the press, so it was pressed again. Now a
+ * handler that returns a promise turns the button into a spinner, disabled,
+ * until the promise settles - no state to thread through for it - and
+ * `loading` does the same for work the caller tracks itself.
+ *
+ * The spinner takes the place of the button's own icon rather than sitting
+ * beside it, so the button keeps its width. A button rendered `asChild` is
+ * someone else's element and is left alone.
+ */
 function Button({
   className,
   variant = "default",
   size = "default",
   asChild = false,
+  loading = false,
+  onClick,
+  disabled,
+  children,
   ...props
 }: React.ComponentProps<"button"> &
   VariantProps<typeof buttonVariants> & {
     asChild?: boolean
+    loading?: boolean
   }) {
-  const Comp = asChild ? Slot.Root : "button"
+  const [pending, setPending] = React.useState(false)
+  const mounted = React.useRef(true)
+  React.useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
+  const busy = loading || pending
+
+  const handleClick = onClick
+    ? (event: React.MouseEvent<HTMLButtonElement>) => {
+      const result: unknown = onClick(event)
+      if (typeof result === "object" && result !== null && typeof (result as PromiseLike<unknown>).then === "function") {
+        setPending(true)
+        void Promise.resolve(result as PromiseLike<unknown>)
+          .then(() => undefined, () => undefined)
+          .then(() => { if (mounted.current) setPending(false) })
+      }
+    }
+    : undefined
+
+  if (asChild) {
+    return (
+      <Slot.Root
+        data-slot="button"
+        data-variant={variant}
+        data-size={size}
+        className={cn(buttonVariants({ variant, size, className }))}
+        onClick={handleClick}
+        {...(disabled === undefined ? {} : { disabled })}
+        {...props}
+      >
+        {children}
+      </Slot.Root>
+    )
+  }
 
   return (
-    <Comp
+    <button
       data-slot="button"
       data-variant={variant}
       data-size={size}
-      className={cn(buttonVariants({ variant, size, className }))}
+      data-loading={busy || undefined}
+      aria-busy={busy || undefined}
+      className={cn(buttonVariants({ variant, size, className }), busy && "[&>svg:not(.button-spinner)]:hidden")}
+      disabled={disabled || busy}
+      onClick={handleClick}
       {...props}
-    />
+    >
+      {busy ? <LoaderCircle aria-hidden="true" className="button-spinner animate-spin" /> : null}
+      {children}
+    </button>
   )
 }
 

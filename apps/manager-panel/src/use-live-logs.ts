@@ -10,8 +10,8 @@ export interface LiveLogs {
   readonly entries: LogEntry[];
   /** The cursor to ask the next page from, for whoever is doing the asking. */
   readonly cursor: () => number;
-  /** Take a page the console's own poll collected. */
-  readonly accept: (page: LogPage) => void;
+  /** Take a page the console's own poll collected, for the source it asked about. */
+  readonly accept: (page: LogPage, source: LogSourceFilter) => void;
   /** Pull the page of retained lines that precedes the oldest one held. */
   readonly loadOlder: () => void;
   readonly hasOlder: boolean;
@@ -50,27 +50,56 @@ export function useLiveLogs(source: LogSourceFilter): LiveLogs {
    * fast clock cannot ask twice from the same place and show a line twice.
    */
   const cursor = useRef(0);
+  /** The newest line held, so a page that overlaps one already taken adds nothing twice. */
+  const newestId = useRef(0);
+  const current = useRef(source);
 
-  // A different source is a different log: what is held belongs to the old one.
-  useEffect(() => {
-    cursor.current = 0;
-    oldestId.current = null;
-    inFlight.current = false;
-    setEntries([]);
-    setHasOlder(false);
-  }, [source]);
-
-  const accept = useCallback((page: LogPage): void => {
+  const accept = useCallback((page: LogPage, pageSource: LogSourceFilter): void => {
+    /*
+     * A page for another source is dropped. The status poll can be in flight
+     * when the filter changes, and its answer - lines from every source - used
+     * to land in the freshly emptied buffer of the one just chosen.
+     */
+    if (pageSource !== current.current) return;
     const first = cursor.current === 0;
-    if (page.entries.length > 0) {
-      if (oldestId.current === null) oldestId.current = page.entries[0]!.id;
-      setEntries((current) => [...current, ...page.entries].slice(-RETAINED_ENTRIES));
+    const fresh = page.entries.filter((entry) => entry.id > newestId.current);
+    if (fresh.length > 0) {
+      if (oldestId.current === null) oldestId.current = fresh[0]!.id;
+      newestId.current = fresh.at(-1)!.id;
+      setEntries((held) => [...held, ...fresh].slice(-RETAINED_ENTRIES));
     }
     // Only the first answer can say whether anything precedes what we were
     // given; after that the answer comes from the history endpoint.
     if (first) setHasOlder((page.entries[0]?.id ?? 1) > 1);
-    cursor.current = page.nextCursor;
+    cursor.current = Math.max(cursor.current, page.nextCursor);
   }, []);
+
+  /*
+   * A different source is a different log: what is held belongs to the old
+   * one. The new one is asked for straight away rather than on the status
+   * poll's next tick, which is seconds away at best - long enough for the
+   * filter to look as if it had emptied the log.
+   */
+  useEffect(() => {
+    current.current = source;
+    cursor.current = 0;
+    newestId.current = 0;
+    oldestId.current = null;
+    inFlight.current = false;
+    setEntries([]);
+    setHasOlder(false);
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await apiFetch(`/api/v1/logs?after=0&source=${source}`, { credentials: 'same-origin' });
+        if (!response.ok || cancelled) return;
+        accept(await response.json() as LogPage, source);
+      } catch {
+        // The status poll brings it instead.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [source, accept]);
 
   const loadOlder = useCallback(() => {
     if (inFlight.current || !hasOlder) return;

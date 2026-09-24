@@ -1,16 +1,14 @@
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
-import { ArrowUpRight, Maximize2, Minus, PanelTop, X } from 'lucide-react';
-import type { Translate } from './i18n.js';
+import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { Archive, ArrowUpRight, CloudUpload, Maximize2, Minus, PanelTop, RotateCw, ScrollText, X } from 'lucide-react';
+import type { Fail, Translate } from './i18n.js';
+import { ToolsLogs, useManagerTools } from './embed-tools.js';
 import { browserStorage } from './preferences.js';
 import { handleOffset, readHandle, saveHandle, snapHandle, HANDLE_EDGE_GAP, type HandlePlacement } from './embed-handle.js';
 
-/** Tall enough for the four entries, so the menu can be kept on screen. */
-const MENU_HEIGHT = 190;
-
 /** Beside the handle, moved up where the handle is too low for the menu to fit under it. */
-function menuTop(placement: HandlePlacement, height: number): number {
+function menuTop(placement: HandlePlacement, height: number, menuHeight: number): number {
   const wanted = placement.top * height - HANDLE_SIZE / 2;
-  return Math.max(8, Math.min(wanted, height - MENU_HEIGHT - 8));
+  return Math.max(8, Math.min(wanted, height - menuHeight - 8));
 }
 
 /** How far a press may wander and still be a tap rather than a drag. */
@@ -19,6 +17,9 @@ const HANDLE_SIZE = 48;
 
 export interface EmbedStageProps {
   readonly t: Translate;
+  readonly fail: Fail;
+  readonly catalog: Record<string, unknown>;
+  readonly csrfToken: string | null;
   readonly open: boolean;
   /** What the frame loads: the gateway on this machine. */
   readonly url: string;
@@ -39,16 +40,28 @@ export interface EmbedStageProps {
  * back finds the chat as it was left; green gives SillyTavern the whole screen,
  * bar and all.
  *
- * Without the bar the way back is a floating button that can be dragged to
- * either edge, the way a phone's assistive button is. The old way back was a
+ * A floating button that can be dragged to either edge, the way a phone's
+ * assistive button is, holds the manager's tools - the same ones the tools
+ * window the door serves in its own tab has - and, without the bar, the way
+ * back. The old way back was a
  * fixed tab in the top right corner, which is exactly where SillyTavern keeps
  * the button that opens the character list - so the one was always being
  * pressed instead of the other.
  */
-export function EmbedStage({ t, open, url, openUrl, onMinimize, onClose }: EmbedStageProps) {
+export function EmbedStage({ t, fail, catalog, csrfToken, open, url, openUrl, onMinimize, onClose }: EmbedStageProps) {
   const stage = useRef<HTMLDivElement | null>(null);
   const [zoomed, setZoomed] = useState(false);
   const [dragging, setDragging] = useState(false);
+  const [logsOpen, setLogsOpen] = useState(false);
+  // Where the frame is pointed, and a key to load it afresh. There is no
+  // signing out here: this window belongs to the console, whose own session
+  // is what let it in, so the tools window's sign-out has nothing to do.
+  const [frameSrc, setFrameSrc] = useState(url);
+  const [frameKey, setFrameKey] = useState(0);
+  const tools = useManagerTools({ t, fail, csrfToken });
+  // A door that moved to another port is followed, the next time the frame loads.
+  useEffect(() => { setFrameSrc(url); }, [url]);
+  const reload = () => { setFrameSrc(url); setFrameKey((value) => value + 1); };
   /** Whether the browser was asked for full screen, so leaving it can bring the bar back. */
   const wentFullscreen = useRef(false);
 
@@ -82,15 +95,30 @@ export function EmbedStage({ t, open, url, openUrl, onMinimize, onClose }: Embed
     if (!open) return undefined;
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
-      if (zoomed) unzoom(); else onMinimize();
+      if (logsOpen) setLogsOpen(false);
+      else if (zoomed) unzoom(); else onMinimize();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   });
 
   return <div ref={stage} className="embed-stage" hidden={!open} aria-hidden={!open} data-dragging={dragging || undefined}>
+    {open ? <EmbedHandle
+      t={t}
+      url={openUrl}
+      zoomed={zoomed}
+      working={tools.working}
+      onToggleBar={zoomed ? unzoom : zoom}
+      onMinimize={minimize}
+      onClose={close}
+      onBackup={(target) => void tools.backup(target)}
+      onLogs={() => setLogsOpen(true)}
+      onReload={reload}
+      onDragging={setDragging}
+    /> : null}
+    {logsOpen ? <ToolsLogs t={t} catalog={catalog} onClose={() => setLogsOpen(false)} /> : null}
     {zoomed
-      ? <EmbedHandle t={t} url={openUrl} onShowBar={unzoom} onMinimize={minimize} onClose={close} onDragging={setDragging} />
+      ? null
       : <div className="embed-bar">
         <div className="embed-lights" role="group" aria-label={t('console.embedWindow')}>
           <button type="button" className="embed-light embed-light-close" onClick={close} aria-label={t('console.embedClose')} title={t('console.embedCloseHint')}><X aria-hidden="true" /></button>
@@ -103,8 +131,9 @@ export function EmbedStage({ t, open, url, openUrl, onMinimize, onClose }: Embed
         </div>
       </div>}
     <iframe
+      key={frameKey}
       className="embed-frame"
-      src={url}
+      src={frameSrc}
       title="SillyTavern"
       allow="clipboard-write; fullscreen; microphone"
     />
@@ -112,15 +141,33 @@ export function EmbedStage({ t, open, url, openUrl, onMinimize, onClose }: Embed
 }
 
 /**
- * The floating control shown while SillyTavern has the whole screen.
+ * The floating control over SillyTavern.
  *
  * Dragged, it follows the finger and settles against the nearer edge, and
- * remembers where. Tapped, it opens the few things the hidden bar held.
+ * remembers where. Tapped, it opens the manager's tools, and the few things
+ * the bar holds for when the bar is hidden.
  */
-function EmbedHandle({ t, url, onShowBar, onMinimize, onClose, onDragging }: { t: Translate; url: string; onShowBar: () => void; onMinimize: () => void; onClose: () => void; onDragging: (dragging: boolean) => void }) {
+function EmbedHandle({ t, url, zoomed, working, onToggleBar, onMinimize, onClose, onBackup, onLogs, onReload, onDragging }: {
+  t: Translate;
+  url: string;
+  zoomed: boolean;
+  working: boolean;
+  onToggleBar: () => void;
+  onMinimize: () => void;
+  onClose: () => void;
+  onBackup: (target: 'local' | 'cloud') => void;
+  onLogs: () => void;
+  onReload: () => void;
+  onDragging: (dragging: boolean) => void;
+}) {
   const [placement, setPlacement] = useState<HandlePlacement>(() => readHandle(browserStorage()));
   const [point, setPoint] = useState<{ x: number; y: number } | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const menu = useRef<HTMLDivElement | null>(null);
+  // Measured rather than assumed, so the menu stays on screen however many
+  // entries it has and however tall the text in them wraps.
+  const [menuHeight, setMenuHeight] = useState(360);
+  useLayoutEffect(() => { if (menuOpen && menu.current) setMenuHeight(menu.current.offsetHeight); }, [menuOpen]);
   const press = useRef<{ x: number; y: number; moved: boolean } | null>(null);
   /*
    * The window's size, watched rather than read once.
@@ -177,6 +224,7 @@ function EmbedHandle({ t, url, onShowBar, onMinimize, onClose, onDragging }: { t
       type="button"
       className="embed-handle"
       data-active={point !== null || menuOpen || undefined}
+      data-busy={working || undefined}
       style={style}
       aria-label={t('console.embedControls')}
       aria-expanded={menuOpen}
@@ -187,10 +235,16 @@ function EmbedHandle({ t, url, onShowBar, onMinimize, onClose, onDragging }: { t
       onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setMenuOpen((value) => !value); } }}
     ><span aria-hidden="true" /></button>
     {menuOpen && !point
-      ? <div className="embed-menu" data-side={placement.side} style={{ [placement.side]: HANDLE_SIZE + HANDLE_EDGE_GAP + 8, top: menuTop(placement, viewport.height) }} role="menu">
-        <button type="button" role="menuitem" onClick={act(onShowBar)}><PanelTop aria-hidden="true" />{t('console.showBar')}</button>
+      ? <div ref={menu} className="embed-menu" data-side={placement.side} style={{ [placement.side]: HANDLE_SIZE + HANDLE_EDGE_GAP + 8, top: menuTop(placement, viewport.height, menuHeight) }} role="menu">
+        <button type="button" role="menuitem" onClick={act(onToggleBar)}><PanelTop aria-hidden="true" />{zoomed ? t('console.showBar') : t('console.embedHideBar')}</button>
         <button type="button" role="menuitem" onClick={act(onMinimize)}><Minus aria-hidden="true" />{t('console.embedMinimize')}</button>
-        <a role="menuitem" href={url} target="_blank" rel="noopener noreferrer" onClick={() => setMenuOpen(false)}><ArrowUpRight aria-hidden="true" />{t('console.openInTab')}</a>
+        <span className="embed-menu-rule" aria-hidden="true" />
+        <button type="button" role="menuitem" disabled={working} onClick={act(() => onBackup('local'))}><Archive aria-hidden="true" />{t('console.embedBackupLocal')}</button>
+        <button type="button" role="menuitem" disabled={working} onClick={act(() => onBackup('cloud'))}><CloudUpload aria-hidden="true" />{t('console.embedBackupCloud')}</button>
+        <button type="button" role="menuitem" onClick={act(onLogs)}><ScrollText aria-hidden="true" />{t('console.embedLogs')}</button>
+        <button type="button" role="menuitem" onClick={act(onReload)}><RotateCw aria-hidden="true" />{t('console.embedReload')}</button>
+        <a role="menuitem" href={url} target="_blank" rel="noopener noreferrer" onClick={() => setMenuOpen(false)}><ArrowUpRight aria-hidden="true" />{t('console.embedOpenInTab')}</a>
+        <span className="embed-menu-rule" aria-hidden="true" />
         <button type="button" role="menuitem" className="embed-menu-danger" onClick={act(onClose)}><X aria-hidden="true" />{t('console.embedClose')}</button>
       </div>
       : null}

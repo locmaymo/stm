@@ -263,7 +263,9 @@ test('setup, login, CSRF, health, and logout work on the manager port', async (t
   assert.equal(unauthenticated.status, 401);
   const protectedResponse = await fetch(`${base}/api/v1/profiles`, { headers: { cookie } });
   assert.equal(protectedResponse.status, 200);
-  assert.deepEqual((await protectedResponse.json() as { profiles: unknown[] }).profiles, []);
+  // One profile from the start, waiting for SillyTavern to be installed.
+  const waiting = (await protectedResponse.json() as { profiles: Array<{ name: string; installationId: string; active: boolean }> }).profiles;
+  assert.deepEqual(waiting.map(({ name, installationId, active }) => ({ name, installationId, active })), [{ name: 'Default', installationId: '', active: true }]);
   await manager.metrics.append({ schemaVersion: 1, timestamp: new Date().toISOString(), provider: 'openai', model: 'gpt-test', endpointHost: 'api.openai.com', stream: false, maxTokens: 128, inputTokens: 4, outputTokens: 6, totalTokens: 10, status: 200, durationMs: 25 });
   const metricsResponse = await fetch(`${base}/api/v1/metrics?days=7`, { headers: { cookie } });
   assert.equal(metricsResponse.status, 200);
@@ -343,6 +345,32 @@ test('starting SillyTavern with the manager is on by default, and stays where it
   t.after(() => again.close());
   const restarted = await fetch(`${serverUrl(again)}/api/v1/startup`, { headers: { cookie: (await signIn(serverUrl(again))).cookie } });
   assert.equal((await restarted.json() as { startup: { autoStartSillyTavern: boolean } }).startup.autoStartSillyTavern, false);
+});
+
+test('a setup step written down as done stays done across a restart', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-checklist-'));
+  const manager = await createServer({ root, bootstrapPassword: 'correct horse battery staple' });
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  const post = (done: unknown, csrf = auth.csrfToken) => fetch(`${base}/api/v1/checklist`, { method: 'POST', headers: { cookie: auth.cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ done }) });
+
+  const initial = await fetch(`${base}/api/v1/checklist`, { headers: { cookie: auth.cookie } });
+  assert.deepEqual(await initial.json(), { done: [] });
+
+  // Added to, never replaced, and kept in the checklist's own order.
+  assert.deepEqual(await (await post(['pin'])).json(), { done: ['pin'] });
+  assert.deepEqual(await (await post(['install'])).json(), { done: ['install', 'pin'] });
+  assert.deepEqual(await (await post([])).json(), { done: ['install', 'pin'] });
+
+  // A step the checklist does not have is refused, and so is a write without the token.
+  assert.equal((await post(['everything'])).status, 400);
+  assert.equal((await post(['open'], 'wrong')).status, 403);
+
+  await manager.close();
+  const again = await createServer({ root });
+  t.after(() => again.close());
+  const restarted = await fetch(`${serverUrl(again)}/api/v1/checklist`, { headers: { cookie: (await signIn(serverUrl(again))).cookie } });
+  assert.deepEqual(await restarted.json(), { done: ['install', 'pin'] });
 });
 
 test('the startup setting is not readable without signing in', async (t) => {
@@ -801,6 +829,7 @@ test('one password opens SillyTavern on any version, and nothing is shared befor
   const savedState = await saved.json() as AccessGatewayState;
   assert.equal(savedState.passwordConfigured, true);
   assert.equal(savedState.passcode, true, 'the sign-in page is told to ask for a passcode');
+  assert.equal(savedState.opened, false, 'a PIN alone is not the access link turned on');
   // The passcode belongs to the manager, so it never lands in SillyTavern's
   // own configuration where a restore or a version switch could carry it off.
   assert.equal((await readFile(profile.configPath, 'utf8')).includes('417203'), false);
@@ -810,8 +839,16 @@ test('one password opens SillyTavern on any version, and nothing is shared befor
   const state = await opened.json() as AccessGatewayState;
   assert.equal(state.lan, true);
   assert.equal(state.host, '0.0.0.0');
+  assert.equal(state.opened, false, 'nor is the local network');
   const allowed = await fetch(`${base}/api/v1/tunnel`, { method: 'PUT', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'quick' }) });
   assert.notEqual(allowed.status, 409);
+  // Turned on once, the checklist's step is done - and stays done off again.
+  if (allowed.ok) {
+    assert.equal(manager.gateway.getState().opened, true);
+    assert.equal((await manager.store.getPersisted()).accessLinkOpened, true);
+    await fetch(`${base}/api/v1/tunnel`, { method: 'PUT', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'off' }) });
+    assert.equal(manager.gateway.getState().opened, true);
+  }
 });
 
 test('sharing opens before SillyTavern does, because what is published is the door', async (t) => {
@@ -1639,12 +1676,13 @@ test('erasing everything needs the password, and leaves a manager nobody has set
   const wrong = await fetch(`${base}/api/v1/reset`, { method: 'POST', headers, body: JSON.stringify({ password: 'not the password' }) });
   assert.equal(wrong.status, 403);
   assert.equal((await wrong.json() as { error: { code: string } }).error.code, 'invalid_password');
-  assert.deepEqual(await readdir(join(root, 'profiles')), ['default'], 'and nothing was touched');
+  assert.deepEqual(await readdir(join(root, 'profiles')), ['.profile-data', 'default'], 'and nothing was touched');
 
   const erased = await fetch(`${base}/api/v1/reset`, { method: 'POST', headers, body: JSON.stringify({ password: 'correct horse battery staple' }) });
   assert.equal(erased.status, 200);
   assert.deepEqual(await erased.json(), { ok: true, erased: 7, failures: [] });
-  assert.deepEqual(await readdir(join(root, 'profiles')), []);
+  // Only the empty Default a fresh manager starts with is there again.
+  assert.deepEqual(await readdir(join(root, 'profiles')), ['.profile-data']);
   assert.deepEqual(await readdir(join(root, 'archives')), []);
 
   // The password it was checked against is gone, so the session opened with it
@@ -1675,7 +1713,8 @@ test('a reset leaves no store still listing what it read before', async (t) => {
 
   // Asked again, they go back to the disk rather than to what they remember -
   // otherwise the console lists a profile with no files behind it.
-  assert.deepEqual(await manager.profiles.list(), []);
+  // Nothing but the profile a manager nobody has set up starts with.
+  assert.deepEqual((await manager.profiles.list()).map(({ name, installationId }) => ({ name, installationId })), [{ name: 'Default', installationId: '' }]);
   assert.deepEqual(await manager.runtime.listInstallations(), []);
   assert.equal((await manager.store.getPersisted()).adminPasswordHash, null);
 });

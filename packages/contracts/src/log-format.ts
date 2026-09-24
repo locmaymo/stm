@@ -1,4 +1,17 @@
-import type { LogEntry, MessageParams } from '../../../packages/contracts/src/index.js';
+import type { LogEntry, MessageParams } from './index.js';
+
+/**
+ * Text as a search compares it: one Unicode form, no case, no accents.
+ *
+ * Vietnamese keyboards write the same letter two ways - precomposed, or a
+ * base letter followed by its marks - and the catalogue is written in the
+ * first, so a search typed in the second used to find nothing at all. Folding
+ * the marks away as well lets "cong" find "cổng", which is how people search
+ * when they cannot be bothered to type the tones.
+ */
+export function foldForSearch(text: string): string {
+  return text.normalize('NFD').replace(/\p{Mn}+/gu, '').replace(/đ/gu, 'd').replace(/Đ/gu, 'D').toLocaleLowerCase();
+}
 
 /** Remove the internal job prefix from messages before showing them to operators. */
 export function formatLogMessage(message: string): string {

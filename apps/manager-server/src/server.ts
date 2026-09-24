@@ -2,10 +2,10 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
 import { readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
-import { networkInterfaces } from 'node:os';
+import { hostname, networkInterfaces } from 'node:os';
 import { createSocket } from 'node:dgram';
 import { extname, join, relative, resolve, sep } from 'node:path';
-import { applyQuery, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, isConsoleStatusSection, KEEP_ONLINE_DEFAULT_MINUTES, OPERATION_JOB_KINDS, type AccessGatewayState, type ApiErrorBody, type BackupManifest, type ConfigUpdateInput, type ConsoleStatus, type ConsoleStatusSection, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogPage, type LogSink, type LogSourceFilter, type LegalReview, type ManagerPorts, type ManagerUpdateStatus, type OnlineState, type PortSettings, type Profile, type ProfileLayout, type RestorePreview, type SetupStatus, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
+import { applyQuery, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, isConsoleStatusSection, KEEP_ONLINE_DEFAULT_MINUTES, OPERATION_JOB_KINDS, SETUP_STEPS, type AccessGatewayState, type ApiErrorBody, type BackupManifest, type ConfigUpdateInput, type ConsoleStatus, type ConsoleStatusSection, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogPage, type LogSink, type LogSourceFilter, type LegalReview, type ManagerPorts, type ManagerUpdateStatus, type OnlineState, type PortSettings, type Profile, type ProfileLayout, type RestorePreview, type SetupChecklistState, type SetupStatus, type SetupStep, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
 import { getPlatformPaths, storageDurability, storageMedium, storageReport, type PlatformPaths } from '../../../packages/platform/src/index.js';
 import { INSTALL_CANCELED, RuntimeError, RuntimeManager, type InstallationProgress } from '../../../packages/sillytavern-runtime/src/index.js';
 import { hashPassword, MIN_PASSWORD_LENGTH, validatePasscode, validatePassword, verifyPassword } from './password.js';
@@ -23,7 +23,7 @@ import { AccessGateway } from './gateway.js';
 import { ACCESS_GATEWAY_PORT, checkSillyTavernPort, findFreePort, isPortFree, MANAGER_PORT, PortError, portWasDemanded, resolveAccessPort, resolveConsolePort, SILLYTAVERN_PORT, type ResolvedPort } from './ports.js';
 import { previewImage, previewLogo, previewManifest } from './preview.js';
 import { TunnelManager } from '../../../packages/tunnel/src/index.js';
-import { ProfileError, ProfileStore } from '../../../packages/profiles/src/index.js';
+import { isWaitingProfile, ProfileError, ProfileStore } from '../../../packages/profiles/src/index.js';
 import { BackupError, BackupStore, type RestoreOptions } from '../../../packages/backup/src/index.js';
 import { CloudflareConnection, R2Error, R2Manager, type R2UpdateInput } from '../../../packages/r2/src/index.js';
 import { CloudflareApiError, CloudflareOAuthError, CloudflareRateLimitError, DEFAULT_SCOPES, PROXY_WORKER_TARGETS, ProxyWorkerManager, type ProxyWorkerTarget } from '../../../packages/cloudflare/src/index.js';
@@ -95,6 +95,7 @@ const PROTECTED_PATHS = new Set([
   '/api/v1/system',
   '/api/v1/system/measure',
   '/api/v1/startup',
+  '/api/v1/checklist',
   '/api/v1/saver',
   '/api/v1/status',
   '/api/v1/legal',
@@ -445,6 +446,21 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       return join(installation.runtimePath, 'public', 'img', 'logo.png');
     },
     logger: (line) => { jobs.append('manager', line); baseLogger(line); },
+    // The tools window over SillyTavern starts the same backups the console's
+    // buttons do; see gateway-window.ts. Called only once requests arrive, by
+    // which time everything named here exists.
+    tools: {
+      backup: async (target) => {
+        if (target === 'local') {
+          const started = await startLocalBackup({ profiles, backups, jobs }, { kind: 'scheduled' });
+          return 'error' in started ? started : 'unchanged' in started ? { unchanged: true } : { jobId: started.jobId };
+        }
+        const started = await startCloudBackup({ profiles, backups, r2, jobs, metrics, saveSettings: () => saveManagerSettings({ store, backups, r2, runtime, tunnel, managerTunnel, gateway, logger }, { force: true }) });
+        return 'error' in started ? started : { jobId: started.jobId };
+      },
+      job: (id) => jobs.get(id),
+      logs: (after) => jobs.logs(after, null),
+    },
   });
   const supervisor = options.supervisor ?? new ProcessSupervisor({
     runtime,
@@ -890,15 +906,22 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   // The door opens with the manager rather than with SillyTavern, so its
   // address is the same one every time and a saved bookmark keeps working.
   gateway.setPassword(persisted.accessPasswordHash, persisted.accessPasscode);
+  gateway.setOpened(persisted.accessLinkOpened);
   await gateway.start(persisted.accessLanEnabled);
   // The tunnel publishes the gateway, not SillyTavern, so it can come back as
   // soon as the gateway is listening - it does not have to wait for SillyTavern
   // and it does not go away again when SillyTavern is restarted.
-  void tunnel.resume().catch((error: unknown) => logger(logEvent('cloudflared.resumeFailed', `[cloudflared] the tunnel could not be restored: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' })));
+  // A link that is on from before counts as set up, on a manager that was
+  // updated past the checklist with it already running.
+  void tunnel.resume().then(() => { if (tunnel.getState().mode !== 'off') { gateway.setOpened(true); void store.setAccessLinkOpened().catch(() => undefined); } }).catch((error: unknown) => logger(logEvent('cloudflared.resumeFailed', `[cloudflared] the tunnel could not be restored: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' })));
   // The console's own link comes back the same way, and only now: its target is
   // the port that was bound a few lines above.
   void managerTunnel.resume().catch((error: unknown) => logger(logEvent('cloudflared.resumeFailed', `[cloudflared] the console's tunnel could not be restored: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' })));
   const activeInstallation = await runtime.getActiveInstallation();
+  // After the ready installation below has had its chance to claim or make a
+  // profile, so a machine that has one never gets a waiting one as well.
+  const ensureWaitingProfile = async (): Promise<void> => { await profiles.ensureWaiting().catch(() => undefined); };
+  if (activeInstallation?.status !== 'ready') await ensureWaitingProfile();
   if (activeInstallation?.status === 'ready') {
     // There is one, however it got here, so the manager has no first install
     // left to do. Claiming it now is what stops an upgrade of the manager from
@@ -1218,7 +1241,9 @@ async function handleRequest(options: {
     // The token comes back with it; see `parseSessionToken`. This request
     // already carried the session, so saying which one it was grants nothing
     // the caller did not just present.
-    sendJson(response, 200, { session, token: context.sessionToken });
+    // Whether the console has a password of its own, which a manager set up
+    // by signing in with Cloudflare does not until somebody gives it one.
+    sendJson(response, 200, { session, token: context.sessionToken, managerPassword: (await store.getPersisted()).adminPasswordHash !== null });
     return;
   }
 
@@ -1372,6 +1397,116 @@ interface ResetDeps {
  * would leave files from the old manager inside the new one - so the answer is
  * to say so and let the operator stop it.
  */
+/** Why a backup could not be started, in the shape a route answers with. */
+interface StartRefusal { readonly error: { readonly status: number; readonly code: string; readonly message: string } }
+
+/**
+ * Take a local backup of the active profile, followed as a job.
+ *
+ * Two things are asked for here. `scheduled` is "Back up now": the
+ * automatic backup, taken without waiting for the schedule, which replaces
+ * the previous automatic one like any other. Anything else is a manual
+ * backup - a restore point - kept until somebody deletes it.
+ *
+ * An automatic backup of data that has not changed since the newest backup
+ * would be an identical archive, so it is not written; the answer says so.
+ *
+ * Shared by the console's route and the tools SillyTavern's own window
+ * offers through the access gateway, so the two cannot drift apart.
+ */
+async function startLocalBackup(
+  deps: { readonly profiles: ProfileStore; readonly backups: BackupStore; readonly jobs: JobStore },
+  request: { readonly kind: 'scheduled' | 'manual'; readonly name?: string; readonly note?: string },
+): Promise<StartRefusal | { readonly unchanged: true; readonly backup: BackupManifest } | { readonly jobId: string; readonly job: Job }> {
+  const { profiles, backups, jobs } = deps;
+  const profile = await profiles.getActive();
+  if (!profile) return { error: { status: 409, code: 'profile_required', message: 'Create or activate a profile before creating a backup' } };
+  if (isWaitingProfile(profile)) return { error: { status: 409, code: 'installation_required', message: 'Install SillyTavern before backing up its data' } };
+  // Refused here rather than in the job, so the panel gets a code it can
+  // translate instead of a job that fails a moment after it started.
+  if (backups.saving) return { error: { status: 409, code: 'saver_mode', message: 'Local backups are off while saver mode is on' } };
+  if (request.kind === 'scheduled') {
+    const fingerprint = await backups.fingerprint(profile);
+    const newest = (await backups.list(profile.id))
+      .filter((manifest) => manifest.source === 'created')
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
+    if (newest?.fingerprint === fingerprint) return { unchanged: true, backup: newest };
+  }
+  const { job, signal } = jobs.createOperation('backup', logEvent('job.preparingBackup', 'Preparing backup'));
+  void backups.create(profile, {
+    ...(request.name && request.kind === 'manual' ? { name: request.name } : {}),
+    ...(request.note && request.kind === 'manual' ? { note: request.note } : {}),
+    kind: request.kind,
+    signal,
+    onProgress: ({ completed, total }) => jobs.updateOperation(job.id, total > 0 ? (completed / total) * 90 : 50, logEvent('job.compressingFiles', `Compressing files (${completed}/${total})`, { completed, total })),
+  }).then((manifest) => { jobs.updateOperation(job.id, 95, logEvent('job.savingLibrary', 'Saving backup library')); jobs.finishOperation(job.id, 'succeeded', null); return manifest; })
+    .catch((error: unknown) => jobs.finishOperation(job.id, 'failed', error instanceof Error ? error.message : 'Backup failed'));
+  return { jobId: job.id, job };
+}
+
+/**
+ * Send this machine to the bucket now, whatever the clock says.
+ *
+ * It sends the whole profile rather than the frequent subset, because someone
+ * asking for it by hand is asking for a complete recovery point. A first
+ * upload of a profile is gigabytes and many minutes, so it runs as a job the
+ * panel can follow and stop.
+ *
+ * Everything the slow clock sends goes, not only the chats. Somebody pressing
+ * Back up now is asking for this machine to be in the bucket, and it used to
+ * send the profile alone - so the console password, the passcode, the
+ * schedules, the release being run and the whole usage history were still
+ * only ever written by a timer nobody can see. The two small ones go first
+ * because they are small, and they are what a machine needs in order to be a
+ * machine again. The profile is the part worth a progress bar and it keeps one.
+ *
+ * Both of those are forced, because this is a press rather than a tick. Each
+ * has a shortcut that makes it free on the scheduler's clock - a belief about
+ * the bucket rather than a fact about it - and a press is exactly how
+ * somebody asks whether the belief is true.
+ */
+async function startCloudBackup(deps: {
+  readonly profiles: ProfileStore;
+  readonly backups: BackupStore;
+  readonly r2: R2Manager;
+  readonly jobs: JobStore;
+  readonly metrics: MetricsStore;
+  readonly saveSettings: () => Promise<boolean>;
+}): Promise<StartRefusal | { readonly jobId: string; readonly job: Job }> {
+  const { profiles, backups, r2, jobs, metrics } = deps;
+  const profile = await profiles.getActive();
+  if (!profile) return { error: { status: 409, code: 'profile_required', message: 'Create or activate a profile before uploading to R2' } };
+  // An empty profile sent to the bucket would be its newest recovery point.
+  if (isWaitingProfile(profile)) return { error: { status: 409, code: 'installation_required', message: 'Install SillyTavern before backing up its data' } };
+  const config = await r2.getConfig();
+  if (!config.configured) return { error: { status: 409, code: 'r2_not_configured', message: 'Connect the cloud before backing up to it' } };
+  const { job, signal } = jobs.createOperation('r2Upload', logEvent('job.sendingToR2', 'Sending to R2'));
+  const meter = new TransferMeter();
+  void (async () => {
+    const settingsSent = await deps.saveSettings();
+    jobs.append('backup', settingsSent
+      ? logEvent('r2.uploadNowSettings', '[r2] the manager’s own settings are up to date in the bucket')
+      : logEvent('r2.uploadNowSettingsSame', '[r2] the bucket already holds these manager settings'));
+    // Its own catch: the usage log is the one part nobody restores by hand,
+    // but it is also the one nobody would want to lose a backup over.
+    const metricsSent = await r2.syncMetricsFile(metrics.filePath, { force: true }).catch(() => null);
+    jobs.append('backup', metricsSent
+      ? logEvent('r2.uploadNowMetrics', `[r2] the usage history is up to date in the bucket (${String(metricsSent.uploadedChunks)} chunk(s) sent)`, { chunks: metricsSent.uploadedChunks })
+      : logEvent('r2.uploadNowMetricsSame', '[r2] the bucket already holds this usage history'));
+    await syncProfileToR2({
+      profile, backups, r2, tier: 'cold', signal,
+      logger: (line) => jobs.append('backup', line),
+      onProgress: (progress) => {
+        const { percent, params } = meter.update(progress);
+        jobs.updateOperation(job.id, percent, logEvent('job.sendingChunks', `Sending ${String(params.done)} of ${String(params.total)} - ${String(params.rate)}, ${String(params.eta)} left`, params));
+      },
+    });
+  })()
+    .then(() => jobs.finishOperation(job.id, 'succeeded', null))
+    .catch((error: unknown) => jobs.finishOperation(job.id, 'failed', error instanceof Error ? error.message : 'The R2 backup failed'));
+  return { jobId: job.id, job };
+}
+
 async function handleReset(context: RequestContext, deps: ResetDeps): Promise<void> {
   const { request, response } = context;
   const { store, sessions, jobs, supervisor, tunnel, managerTunnel, gateway, runtime, profiles, backups, online, logger, secureCookies } = deps;
@@ -1399,7 +1534,11 @@ async function handleReset(context: RequestContext, deps: ResetDeps): Promise<vo
   await profiles.settle();
   const report = await eraseManagerData(store.paths, logger);
   await Promise.all([store.forget(), runtime.forget(), profiles.forget(), backups.forget()]);
+  // A machine that has just been wiped is a machine nobody has set up, and
+  // it gets the same waiting profile a first start does.
+  await profiles.ensureWaiting().catch(() => undefined);
   gateway.setPassword(null, false);
+  gateway.setOpened(false);
   gateway.signOutEveryone();
   await gateway.setLan(false);
   // Back to what a manager nobody has touched does, along with everything
@@ -1669,7 +1808,10 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     // The durability of this machine's disk rides along with the backup
     // settings because it is the same question: whether a copy somewhere else
     // is a precaution or the only thing keeping the data.
-    sendJson(response, 200, { config: await r2.getConfig(), storage: storageReport(store.paths) });
+    // The machine's own name goes with it, so the warning can say which
+    // machine it is about - a reader with a console open on two of them
+    // should not have to guess.
+    sendJson(response, 200, { config: await r2.getConfig(), storage: { ...storageReport(store.paths), machine: hostname() } });
     return;
   }
   if (pathname === '/api/v1/r2' && method === 'PUT') {
@@ -1884,6 +2026,9 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
   if (snapshotRestoreMatch && method === 'POST') {
     const profile = await profiles.getActive();
     if (!profile) { sendError(response, 409, 'profile_required', 'Create or activate a profile before restoring a recovery point'); return; }
+    // Restoring stops and restarts SillyTavern around the files, and before
+    // it is installed there is none; installing recovers the newest point.
+    if (isWaitingProfile(profile)) { sendError(response, 409, 'installation_required', 'Install SillyTavern before restoring into its profile'); return; }
     const lost = await lostTheAccount(r2);
     if (lost) { sendError(response, 409, 'r2_in_use', displacedMessage(lost)); return; }
     const body = await readJson(request);
@@ -1972,65 +2117,9 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
   // rather than the frequent subset, because someone asking for it by hand is
   // asking for a complete recovery point.
   if ((pathname === '/api/v1/r2/upload' || pathname === '/api/v1/r2/sync') && method === 'POST') {
-    const profile = await profiles.getActive();
-    if (!profile) { sendError(response, 409, 'profile_required', 'Create or activate a profile before uploading to R2'); return; }
-    // A first upload of a profile is gigabytes and many minutes. Answering it
-    // synchronously meant the panel had an indeterminate bar and no way to
-    // stop - indistinguishable from a hang, and the reasonable response to a
-    // hang is to kill it, which is the one thing that makes it take longer.
-    const { job, signal } = jobs.createOperation('r2Upload', logEvent('job.sendingToR2', 'Sending to R2'));
-    const meter = new TransferMeter();
-    /*
-     * Everything the slow clock sends, not only the chats.
-     *
-     * Somebody pressing Back up now is asking for this machine to be in the
-     * bucket, and it used to send the profile alone - so the console password,
-     * the passcode, the schedules, the release being run and the whole usage
-     * history were still only ever written by a timer nobody can see. A reader
-     * who pressed the button, watched it finish, and then lost the machine got
-     * their chats back and nothing else, which is the exact shape of failure
-     * the button exists to prevent.
-     *
-     * The two small ones go first because they are small: a handful of
-     * kilobytes each, done before the bar has moved, and they are what a
-     * machine needs in order to be a machine again. The profile is the part
-     * worth a progress bar and it keeps one.
-     */
-    void (async () => {
-      /*
-       * Forced, both of them, because this is a press rather than a tick.
-       *
-       * Each of these has a shortcut that makes it free on the scheduler's
-       * clock: the settings are compared with what this process remembers
-       * sending, and the usage log with a stat this process wrote down. Both
-       * are beliefs about the bucket rather than facts about it, and a press
-       * is exactly how somebody asks whether the belief is true - so the press
-       * goes and looks. That is what "Back up now" was not doing: it reported
-       * success having sent neither, on a machine whose record in the bucket
-       * had been overwritten by another one.
-       */
-      const settingsSent = await saveManagerSettings({ store, backups, r2, runtime, tunnel, managerTunnel, gateway, logger }, { force: true });
-      jobs.append('backup', settingsSent
-        ? logEvent('r2.uploadNowSettings', '[r2] the manager’s own settings are up to date in the bucket')
-        : logEvent('r2.uploadNowSettingsSame', '[r2] the bucket already holds these manager settings'));
-      // Its own catch: the usage log is the one part nobody restores by hand,
-      // but it is also the one nobody would want to lose a backup over.
-      const metricsSent = await r2.syncMetricsFile(metrics.filePath, { force: true }).catch(() => null);
-      jobs.append('backup', metricsSent
-        ? logEvent('r2.uploadNowMetrics', `[r2] the usage history is up to date in the bucket (${String(metricsSent.uploadedChunks)} chunk(s) sent)`, { chunks: metricsSent.uploadedChunks })
-        : logEvent('r2.uploadNowMetricsSame', '[r2] the bucket already holds this usage history'));
-      await syncProfileToR2({
-        profile, backups, r2, tier: 'cold', signal,
-        logger: (line) => jobs.append('backup', line),
-        onProgress: (progress) => {
-          const { percent, params } = meter.update(progress);
-          jobs.updateOperation(job.id, percent, logEvent('job.sendingChunks', `Sending ${String(params.done)} of ${String(params.total)} - ${String(params.rate)}, ${String(params.eta)} left`, params));
-        },
-      });
-    })()
-      .then(() => jobs.finishOperation(job.id, 'succeeded', null))
-      .catch((error: unknown) => jobs.finishOperation(job.id, 'failed', error instanceof Error ? error.message : 'The R2 backup failed'));
-    sendJson(response, 202, { jobId: job.id, job });
+    const started = await startCloudBackup({ profiles, backups, r2, jobs, metrics, saveSettings: () => saveManagerSettings({ store, backups, r2, runtime, tunnel, managerTunnel, gateway, logger }, { force: true }) });
+    if ('error' in started) { sendError(response, started.error.status, started.error.code, started.error.message); return; }
+    sendJson(response, 202, started);
     return;
   }
   if (pathname === '/api/v1/logs' && method === 'GET') {
@@ -2157,39 +2246,14 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     return;
   }
   if (pathname === '/api/v1/backups' && method === 'POST') {
-    const profile = await profiles.getActive();
-    if (!profile) { sendError(response, 409, 'profile_required', 'Create or activate a profile before creating a backup'); return; }
     const body = await readJson(request);
     const name = isRecord(body) && typeof body.name === 'string' ? body.name : undefined;
-    /*
-     * Two things are asked for here. `scheduled` is "Back up now": the
-     * automatic backup, taken without waiting for the schedule, which replaces
-     * the previous automatic one like any other. Anything else is a manual
-     * backup, kept until somebody deletes it.
-     *
-     * An automatic backup of data that has not changed since the newest backup
-     * would be an identical archive, so it is not written; the reply says so.
-     */
+    const note = isRecord(body) && typeof body.note === 'string' ? body.note : undefined;
     const kind = isRecord(body) && body.kind === 'scheduled' ? 'scheduled' : 'manual';
-    // Refused here rather than in the job, so the panel gets a code it can
-    // translate instead of a job that fails a moment after it started.
-    if (backups.saving) { sendError(response, 409, 'saver_mode', 'Local backups are off while saver mode is on'); return; }
-    if (kind === 'scheduled') {
-      const fingerprint = await backups.fingerprint(profile);
-      const newest = (await backups.list(profile.id))
-        .filter((manifest) => manifest.source === 'created')
-        .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
-      if (newest?.fingerprint === fingerprint) { sendJson(response, 200, { unchanged: true, backup: newest }); return; }
-    }
-    const { job, signal } = jobs.createOperation('backup', logEvent('job.preparingBackup', 'Preparing backup'));
-    void backups.create(profile, {
-      ...(name && kind === 'manual' ? { name } : {}),
-      kind,
-      signal,
-      onProgress: ({ completed, total }) => jobs.updateOperation(job.id, total > 0 ? (completed / total) * 90 : 50, logEvent('job.compressingFiles', `Compressing files (${completed}/${total})`, { completed, total })),
-    }).then((manifest) => { jobs.updateOperation(job.id, 95, logEvent('job.savingLibrary', 'Saving backup library')); jobs.finishOperation(job.id, 'succeeded', null); return manifest; })
-      .catch((error: unknown) => jobs.finishOperation(job.id, 'failed', error instanceof Error ? error.message : 'Backup failed'));
-    sendJson(response, 202, { jobId: job.id, job });
+    const started = await startLocalBackup({ profiles, backups, jobs }, { kind, ...(name ? { name } : {}), ...(note ? { note } : {}) });
+    if ('error' in started) { sendError(response, started.error.status, started.error.code, started.error.message); return; }
+    if ('unchanged' in started) { sendJson(response, 200, started); return; }
+    sendJson(response, 202, started);
     return;
   }
   if (pathname === '/api/v1/backups/schedule' && method === 'GET') {
@@ -2269,6 +2333,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
   if (pathname === '/api/v1/backups/stream/restore' && method === 'POST') {
     const profile = await profiles.getActive();
     if (!profile) { sendError(response, 409, 'profile_required', 'Create or activate a profile before restoring a backup'); return; }
+    if (isWaitingProfile(profile)) { sendError(response, 409, 'installation_required', 'Install SillyTavern before restoring into its profile'); return; }
     const body = await readJson(request);
     const stream = isRecord(body) && typeof body.uploadId === 'string' ? backups.getStream(body.uploadId) : null;
     if (!stream) { sendError(response, 404, 'upload_missing', 'That upload is no longer open; choose the file again'); return; }
@@ -2370,6 +2435,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       return;
     }
     if (action === 'restore' && method === 'POST') {
+      if (isWaitingProfile(profile)) { sendError(response, 409, 'installation_required', 'Install SillyTavern before restoring into its profile'); return; }
       const body = await readJson(request);
       const mode = isRecord(body) && (body.mode === 'merge' || body.mode === 'replace') ? body.mode : null;
       if (!mode) { sendError(response, 400, 'invalid_restore_mode', 'Restore mode must be merge or replace'); return; }
@@ -2444,6 +2510,8 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
      */
     if (mode !== 'off' && !gateway.getState().passwordConfigured) { sendError(response, 409, 'public_access_password_required', 'Set the SillyTavern password before opening a public tunnel'); return; }
     const state = mode === 'off' ? await tunnel.disable() : await tunnel.start(mode, isRecord(body) && typeof body.token === 'string' ? body.token : undefined);
+    // Turned on once is the checklist's step done, whatever happens after.
+    if (mode !== 'off') { gateway.setOpened(true); await store.setAccessLinkOpened().catch(() => undefined); }
     sendJson(response, 200, await withProxyUrl(state, proxy, cloudflare, 'sillyTavern', budget));
     return;
   }
@@ -2530,6 +2598,27 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     }
     await store.setAutoStartSillyTavern(body.autoStartSillyTavern);
     sendJson(response, 200, { startup: { autoStartSillyTavern: body.autoStartSillyTavern } satisfies StartupSettings });
+    return;
+  }
+  /*
+   * The setup checklist's finished steps; see `SetupChecklistState`.
+   *
+   * Only ever added to. The panel reports a step the first time it sees it
+   * done, and nothing takes one back.
+   */
+  if (pathname === '/api/v1/checklist' && method === 'GET') {
+    const state = await store.getPersisted();
+    sendJson(response, 200, { done: state.setupStepsDone } satisfies SetupChecklistState);
+    return;
+  }
+  if (pathname === '/api/v1/checklist' && method === 'POST') {
+    const body = await readJson(request);
+    if (!isRecord(body) || !Array.isArray(body.done) || !body.done.every((step) => SETUP_STEPS.includes(step as SetupStep))) {
+      sendError(response, 400, 'invalid_input', `done must list steps from: ${SETUP_STEPS.join(', ')}`);
+      return;
+    }
+    const done = await store.markSetupStepsDone(body.done as SetupStep[]);
+    sendJson(response, 200, { done } satisfies SetupChecklistState);
     return;
   }
   /*
@@ -2885,7 +2974,9 @@ async function beginInstallation(deps: InstallationDeps, selector: VersionSelect
       return;
     }
     if (installation.status === 'ready') {
-      if (previousProfile) await profiles.rebind(previousProfile.id, installation.id, installation.runtimePath);
+      // A profile still waiting for its first installation is not a previous
+      // one: this is the first install, and the recovery below is its due.
+      if (previousProfile && !isWaitingProfile(previousProfile)) await profiles.rebind(previousProfile.id, installation.id, installation.runtimePath);
       else {
         // A first install on a machine that starts empty every time. If the
         // bucket holds what this machine used to have, it goes back now,
@@ -3477,7 +3568,9 @@ async function bringThisMachineBack(
    * job. That is also the answer to a sign-in which showed one line in the log
    * and nothing else while the reader sat waiting for something to happen.
    */
-  if (!profile) { await deps.firstInstall(restored?.record.versionRef); return; }
+  // A profile still waiting for SillyTavern is the same as none: there is
+  // nothing installed to recover into yet.
+  if (!profile || isWaitingProfile(profile)) { await deps.firstInstall(restored?.record.versionRef); return; }
   /*
    * A press, onto a machine that already has an installation and a profile.
    *

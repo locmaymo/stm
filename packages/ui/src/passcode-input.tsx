@@ -19,6 +19,8 @@ export interface PasscodeInputProps extends Omit<ComponentProps<'div'>, 'onChang
   readonly labels: PasscodeLabels;
   readonly autoFocus?: boolean;
   readonly disabled?: boolean;
+  /** The colour the entered digits fill with; a second entry reads differently from the first. */
+  readonly tone?: 'primary' | 'success';
 }
 
 /**
@@ -49,6 +51,7 @@ export function PasscodeInput({
   labels,
   autoFocus,
   disabled,
+  tone = 'primary',
   className,
   ...props
 }: PasscodeInputProps) {
@@ -107,7 +110,7 @@ export function PasscodeInput({
               key={index}
               className={cn(
                 'size-3.5 rounded-full border transition-[background-color,transform] motion-reduce:transition-none',
-                index < value.length ? 'scale-110 border-primary bg-primary' : 'border-input',
+                index < value.length ? (tone === 'success' ? 'scale-110 border-success bg-success' : 'scale-110 border-primary bg-primary') : 'border-input',
               )}
             />
           ))}

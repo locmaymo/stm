@@ -1,6 +1,6 @@
 import { logEvent, logLineText, type BackupManifest, type LogSink, type Profile, type TransferProgress } from '../../../packages/contracts/src/index.js';
 import { BackupStore, type ArchiveSource } from '../../../packages/backup/src/index.js';
-import { ProfileStore } from '../../../packages/profiles/src/index.js';
+import { isWaitingProfile, ProfileStore } from '../../../packages/profiles/src/index.js';
 import { R2Manager, type SyncSource } from '../../../packages/r2/src/index.js';
 import type { R2Config } from '../../../packages/contracts/src/index.js';
 import { hashFile, looksUnchanged, type HashedFile } from '../../../packages/r2/src/sync.js';
@@ -215,7 +215,13 @@ export class BackupScheduler {
        */
       if (remote) await this.syncMetrics(config);
       const profile = await this.profiles.getActive();
-      if (!profile) return;
+      /*
+       * A profile still waiting for SillyTavern holds nothing, and a copy of
+       * nothing is worse than none: sent to the bucket it becomes the newest
+       * recovery point there, and the machine that is about to install and
+       * recover would be given back an empty profile.
+       */
+      if (!profile || isWaitingProfile(profile)) return;
       // Safety copies expire on a clock, not only when something new is written.
       await this.backups.pruneCreated(profile.id);
       const fingerprint = await this.backups.fingerprint(profile);
