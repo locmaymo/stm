@@ -109,7 +109,7 @@ STM_TELEMETRY_ENDPOINT=`,
   portCheck: {
     lang: 'bash',
     code: `# Linux, macOS and Termux
-ss -ltnp | grep -E ':(7860|8000|8001)' || lsof -i :7860`,
+ss -ltnp | grep -E ':(7860|8002|8001)' || lsof -i :7860`,
   },
   portCheckWindows: {
     lang: 'powershell',

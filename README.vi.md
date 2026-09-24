@@ -41,11 +41,15 @@ SillyTavern là một cửa sổ terminal, một bản checkout Git và một th
 | --- | --- |
 | **Cài đặt và cập nhật** | Chọn một bản release hoặc một branch rồi bấm **Cài đặt**. Manager tự clone, cài dependency, kiểm tra bản cài và chỉ báo **Ready** khi SillyTavern thực sự trả lời trên cổng của nó. Có bản mới, manager sẽ báo. |
 | **Chạy và theo dõi** | Bật, tắt và mở SillyTavern ngay trong panel, cùng log trực tiếp của manager, SillyTavern, trình cài đặt, sao lưu và tunnel trong một dòng tin tìm kiếm được. |
+| **Dùng ngay tại đây** | Mở SillyTavern ngay bên trong panel, có thanh cửa sổ để sao lưu, xem log và phóng toàn màn hình — hoặc mở trong tab riêng với cùng bộ tiện ích. |
 | **Chia sẻ an toàn** | Bản thân SillyTavern chỉ nằm ở localhost. Thiết bị khác và Cloudflare Tunnel đi qua cổng truy cập của manager, cổng đó hỏi mật khẩu trước và không bao giờ chuyển tiếp bảng quản trị. |
 | **Link dùng được lâu dài** | Đăng nhập Cloudflare là manager đặt `sillytavern.<bạn>.workers.dev` và `stm.<bạn>.workers.dev` đứng trước tunnel. Hostname của Quick Tunnel đổi sau mỗi lần khởi động lại; hai địa chỉ này thì không. |
 | **Vào máy của mình từ xa** | Console có link riêng, nằm sau mật khẩu manager, để bạn quản trị máy từ nơi khác. Đó là một công tắc tách biệt với cái link bạn chia sẻ. |
-| **Sao lưu** | Archive ZIP theo lịch hoặc thủ công, tương thích với export của chính SillyTavern, kèm xem trước khi khôi phục và một safety snapshot trước khi ghi đè. |
+| **Sao lưu** | Archive ZIP theo lịch và các điểm khôi phục do bạn tự đặt tên, tương thích với export của chính SillyTavern, kèm xem trước khi khôi phục và một safety snapshot trước khi ghi đè. |
 | **Sao lưu ngoài máy** | Một nút đăng nhập Cloudflare, tìm hoặc tạo bucket R2 và giữ các điểm khôi phục ở đó. Không phải tạo hay dán khoá nào — hoặc dùng khoá S3 của bạn. |
+| **Dựng lại cả máy** | Bucket còn giữ cả cách manager được thiết lập. Đăng nhập cùng tài khoản Cloudflare trên máy mới là dữ liệu, bản SillyTavern và các thiết lập quay về. |
+| **Tiết kiệm chỗ** | Chế độ tiết kiệm, cho máy ít chỗ chứa file: không giữ archive trên máy, cloud giữ các điểm khôi phục, và bản khôi phục được ghi thẳng khi dữ liệu tới. |
+| **Luôn thức** | **Giữ STM online** để trình tiết kiệm pin, hay một host tự tắt chương trình đang rảnh, không cho manager ngủ — kéo theo cả SillyTavern. |
 | **Biết mình dùng bao nhiêu** | Số request, token, cache hit và độ trễ theo ngày, theo provider và theo model, đo từ chính lưu lượng của SillyTavern. |
 | **Tách dữ liệu** | Nhiều profile cho nhiều bộ dữ liệu SillyTavern, chuyển ngay trong panel, mỗi profile có bản sao lưu riêng. |
 | **Ngôn ngữ của bạn** | Tiếng Việt và tiếng Anh, giao diện sáng và tối, máy tính và điện thoại. |
@@ -237,12 +241,20 @@ Người dùng Windows nên chọn ZIP portable vì ZIP đã có sẵn Node.js. 
 
 ### Thiết lập lần đầu
 
-1. Mở manager ở cổng `7860` và tạo mật khẩu quản trị.
+1. Mở manager ở cổng `7860` và tạo mật khẩu quản trị — hoặc bấm **Tiếp tục với Cloudflare**: thiết lập manager và kết nối sao lưu trong một bước, và về sau chính tài khoản Cloudflare đó mở được manager.
 2. Chọn phiên bản SillyTavern; mặc định là `latest`.
 3. Bấm **Cài đặt** và chờ **Ready**. Ready nghĩa là SillyTavern đã trả lời ở cổng `8002`.
-4. Mở link local, hoặc đặt mật khẩu SillyTavern rồi bật truy cập mạng nội bộ hay public tunnel.
+4. Mở link local, hoặc đặt mã PIN SillyTavern rồi bật truy cập mạng nội bộ hay public tunnel.
 
-Mật khẩu manager và mật khẩu SillyTavern là hai mật khẩu khác nhau. Mật khẩu SillyTavern được hỏi ở trang đăng nhập do chính manager phục vụ, nên nó hoạt động giống nhau trên mọi phiên bản SillyTavern, cũ hay mới; đổi mật khẩu sẽ đăng xuất mọi thiết bị đang ở trong.
+Mật khẩu manager và mã PIN SillyTavern là hai thứ khác nhau. Mã PIN được hỏi ở trang đăng nhập do chính manager phục vụ, nên nó hoạt động giống nhau trên mọi phiên bản SillyTavern, cũ hay mới; đổi mã PIN sẽ đăng xuất mọi thiết bị đang ở trong.
+
+Cho tới khi mọi thứ xong xuôi, mục **Việc cần làm** ở trang Tổng quan liệt kê sáu bước nên làm — cài SillyTavern, kết nối Cloudflare, đặt mật khẩu STM và mã PIN SillyTavern, bật sao lưu R2 và mở link SillyTavern — và tự đánh dấu từng bước khi nó xong. Bước đã xong thì giữ nguyên dấu tích, và danh sách tự thu gọn khi đủ cả sáu.
+
+### Dùng SillyTavern ngay trong panel
+
+**Dùng ngay tại đây**, trên khung xem trước ở trang Tổng quan, mở SillyTavern ngay bên trong trang của manager. Nó đã đăng nhập sẵn — mật khẩu manager bạn vừa nhập mạnh hơn nên không hỏi mã PIN nữa — và thanh phía trên cho phép **Thu nhỏ** về console mà vẫn giữ SillyTavern đang mở, **Toàn màn hình**, **sao lưu** trên máy hoặc lên cloud, **xem logs**, tải lại hoặc chuyển sang tab mới. **Đóng** thì gỡ nó ra và trả lại bộ nhớ.
+
+Mũi tên cạnh **Mở SillyTavern** có **Mở kèm tiện ích**: một tab mới có cùng thanh cửa sổ và nút tiện ích nổi. Từ thiết bị khác, nơi không thể nhúng trang vào console, các nút đó mở SillyTavern trong tab mới ở địa chỉ tốt nhất.
 
 ## Ảnh màn hình
 
@@ -360,6 +372,8 @@ Cloudflare Quick Tunnel nhận một hostname ngẫu nhiên, và mỗi lần kh�
 
 Manager không deploy đè lên Worker trùng tên mà nó không tạo ra, nên tài khoản đã có sẵn một cái thì vẫn giữ nguyên — bảng điều khiển sẽ báo thay vì ghi đè. Ngắt kết nối Cloudflare sẽ xoá cả hai.
 
+Vì vậy khi đã đăng nhập, mỗi link có hai địa chỉ: **link cố định** đi qua Worker, và **link tunnel** đi thẳng tới cloudflared, đổi sau mỗi lần khởi động. Thẻ chỉ hiện một địa chỉ, cái còn lại nằm sau con số đếm bên cạnh. **Ưu tiên hiện link này** đưa một trong hai lên trước — trên thẻ, sau nút **Mở** và trong mã QR — cho ai thấy Worker chậm hơn hoặc chỉ mở link trên chính máy trước mặt; link cố định cũng có thể ẩn hẳn, còn Worker vẫn đi theo tunnel nên địa chỉ đã chia sẻ vẫn chạy. Địa chỉ của tunnel mới chỉ được đưa ra khi nó đã trả lời, và trong lúc Worker đang được trỏ sang, link cố định báo là đang tới thay vì đưa ra một địa chỉ sẽ lỗi.
+
 Tài khoản Cloudflare miễn phí trả lời 100.000 lượt Worker mỗi ngày, đặt lại vào nửa đêm UTC (7 giờ sáng giờ Việt Nam), và hai địa chỉ trên dùng chung hạn mức đó với Worker mang bản sao lưu của bạn. Hết hạn mức sẽ làm cả ba cùng ngừng, nên manager theo dõi con số này và buông dần theo thứ tự trước khi điều đó xảy ra: đầu tiên bảng điều khiển lặng lẽ hỏi thưa hơn, sau đó giữ lại địa chỉ cố định của chính bảng điều khiển, cuối cùng mới đến của SillyTavern. Mỗi lần như vậy địa chỉ tunnel được đưa ra thay thế, và mọi thứ trở lại bình thường khi hạn mức được đặt lại. Việc này được ghi vào log, và bạn không phải bấm gì cả.
 
 Dùng cá nhân bình thường thì không bao giờ chạm tới — một tab bảng điều khiển mở cả ngày, cộng SillyTavern đang dùng và sao lưu đang chạy, tốn khoảng một phần mười hạn mức. Cái có thể chạm tới là chia sẻ link SillyTavern cho nhiều người: mỗi lần tải trang tốn khoảng 320 lượt, nên trần rơi vào khoảng 300 lượt tải trang mỗi ngày. Cũng lưu ý: địa chỉ ai đó đã lưu sẵn vẫn đi qua Worker — việc giữ lại một địa chỉ chỉ bảo vệ những link được đưa ra từ lúc đó trở đi, chứ không phải cái đã nằm trong trình duyệt người khác.
@@ -375,11 +389,29 @@ Dữ liệu của bạn nằm ở đâu:
 
 Thư mục này chứa profile, backup, log, metrics và telemetry outbox. Nó không nằm trong thư mục ứng dụng, nên cập nhật ứng dụng không bao giờ đụng tới nó.
 
+### Giữ cho máy luôn thức
+
+Một chương trình không ai hỏi tới trong một lúc có thể bị cho ngủ — bởi trình tiết kiệm pin của laptop, chế độ quản lý năng lượng của điện thoại, hay một host tự dừng container đang rảnh — và SillyTavern tắt theo. **Thiết lập → Trong lúc trình quản lý đang mở → Giữ STM online**, bật sẵn, cho manager tự gọi tới địa chỉ của chính nó theo chu kỳ để không bao giờ rảnh: 15 phút một lần, hoặc 5, 10, 30, 60 phút nếu máy ngủ sớm hơn hay muộn hơn thế.
+
+Địa chỉ được giữ là cái bạn đặt trong `STM_PUBLIC_ORIGIN`, nếu không có thì là địa chỉ trình duyệt của bạn mở console gần nhất, nếu không nữa thì là `127.0.0.1` của chính máy — không bao giờ là tunnel hay Worker, nên không tốn chút hạn mức Cloudflare nào. Thẻ cho biết nó đang giữ địa chỉ nào và lần gần nhất nó trả lời là khi nào. Lựa chọn này đi theo các thiết lập khác của manager lên bucket.
+
 ## Sao lưu và khôi phục
 
 Backup local luôn hoạt động. Archive là ZIP streaming tương thích với export của SillyTavern. Mặc định loại `secrets.json`, thumbnail, vector, backup sinh tự động, `.git`, `node_modules` và metadata hệ điều hành. Đưa secrets vào backup là thao tác explicit kèm cảnh báo.
 
 Restore cho xem trước trước khi ghi. Replace là chế độ mặc định, merge là tùy chọn. Manager tạo safety snapshot trước khi replace hoặc chuyển profile.
+
+Ở trang **Dữ liệu**, **Tự động sao lưu trên bộ nhớ máy** tạo một archive mỗi 30 phút, mỗi giờ, mỗi 6 giờ hoặc mỗi ngày khi dữ liệu có thay đổi, và giữ bản mới nhất (`STM_LOCAL_BACKUPS` để giữ nhiều hơn). **Tạo điểm khôi phục** là chủ động tạo một bản, kèm ghi chú của bạn — "trước khi cập nhật tiện ích" — và manager không bao giờ tự xoá điểm khôi phục, file đã tải lên hay điểm khôi phục lấy về từ R2. Bản an toàn tạo trước khi khôi phục hoặc chuyển profile được giữ làm nút hoàn tác cho lần thay đổi gần nhất. Mỗi archive mang theo loại của nó, và danh sách tìm kiếm, lọc được theo loại. **Tải lên dữ liệu ZIP** để khôi phục một bản export từ nơi khác.
+
+Trước khi replace, phần xem trước cho biết cái gì sẽ mất: các file trong profile mà archive không có.
+
+### Chế độ tiết kiệm
+
+Với một máy ít chỗ chứa file — một container giữ mọi thứ trong bộ nhớ, một chiếc điện thoại gần đầy — chính các archive trên máy là thứ làm cạn chỗ. Trước đây, khôi phục một profile 2 GB từng chiếm tới ba lần dung lượng đó: file ZIP tải lên, một bản an toàn của profile sắp bị thay, và bản thân các file.
+
+Khi bật **Chế độ tiết kiệm**, trên máy không giữ archive nào và profile chỉ nằm trên đĩa một lần. Bucket Cloudflare R2 của bạn giữ các điểm khôi phục thay cho máy, và đóng vai bản an toàn: trước khi một lần khôi phục thay thế bất cứ thứ gì, dữ liệu hiện tại được gửi lên R2 trước. File ZIP tải lên và điểm khôi phục lấy từ R2 được ghi thẳng vào profile khi dữ liệu tới, trong lúc SillyTavern dừng. Manager kiểm tra lần khôi phục có vừa chỗ không trước khi bắt đầu, đề nghị bỏ bớt những thứ SillyTavern không cần — lịch sử git và `node_modules` của tiện ích, bản sao lưu riêng của SillyTavern, ảnh thumbnail — khi thiếu chỗ, và từ chối nếu vẫn không vừa thay vì hỏng giữa chừng.
+
+Nó tự bật khi thư mục dữ liệu nằm trong bộ nhớ, hoặc khi ổ đĩa còn dưới 5 GiB lúc manager khởi động, và nói rõ là vì lý do nào. Ngoài ra đây là một công tắc trong **Thiết lập → Khi mở trình quản lý**, hoặc đặt `STM_SAVER=1` / `STM_SAVER=0` để chốt hẳn. Hãy kết nối R2 trước khi dựa vào chế độ này: bật chế độ tiết kiệm mà không có bucket thì ngoài chính profile ra không còn gì giữ dữ liệu của bạn.
 
 ### Cloudflare R2
 
@@ -399,6 +431,14 @@ Chỉ refresh token của Cloudflare được lưu, trong một file riêng mà 
 
 **Dùng khoá S3.** Nếu không muốn đăng nhập, mở **Nơi lưu bản sao lưu**, chọn **Key R2 hoặc S3** và nhập endpoint, bucket, cặp khoá lấy từ trang R2 trong bảng điều khiển Cloudflare, hoặc đặt trong `.env` (xem [`.env.example`](.env.example)). Mọi storage tương thích S3 đều dùng được theo cách này. Cả hai cách kết nối tới bucket đều nằm trong cùng một form đó; bấm lưu chính là chọn cách nào sẽ mang bản sao lưu đi.
 
+### Dựng lại cả máy
+
+Bucket giữ nhiều hơn các đoạn chat. Mỗi khi thay đổi, manager ghi các thiết lập của chính nó cạnh dữ liệu: mật khẩu manager và mã PIN SillyTavern (dưới dạng hash nó đang lưu, không bao giờ là chữ thường), các cổng, các link và việc Quick Tunnel của chúng có đang bật hay không, **Giữ STM online**, lịch sao lưu và giới hạn R2, và bản SillyTavern thực sự đang chạy. Số liệu sử dụng cũng được giữ ở đó.
+
+Trên máy mới — máy tính mới, cài lại, hay một container khởi động trống — đăng nhập cùng tài khoản Cloudflare, ở màn hình lần đầu hoặc trên trang **Dữ liệu**. Profile đang trống trong khi bucket có dữ liệu thì điểm khôi phục mới nhất được lấy về trước khi SillyTavern khởi động, và SillyTavern được cài đúng bản bạn đang dùng. Khi tài khoản đang giữ thiết lập của một máy khác của bạn, một thẻ trên mọi trang đề nghị **Khôi phục tất cả**: dữ liệu, bản SillyTavern, mật khẩu console, mã PIN, các cổng, các link, lịch sao lưu và số liệu sử dụng, trong một lần. SillyTavern dừng trong lúc chạy, và những gì đang có trên máy này được giữ lại trong mục Sao lưu trước. Không có gì tự áp dụng: một máy đã thiết lập xong chỉ được đề nghị các thiết lập này, kèm tên máy đã ghi chúng và thời điểm, và khôi phục mật khẩu sẽ yêu cầu bạn đăng nhập lại.
+
+Mỗi tài khoản chỉ sao lưu từ một máy tại một thời điểm, để hai máy không bao giờ cùng dọn một bucket. Đăng nhập trên máy thứ hai khiến máy đó thành máy sao lưu; máy thứ nhất dừng lại, bỏ quyền đăng nhập của chính nó và báo máy nào đã tiếp quản. Đăng nhập lại ở đó là lấy lại quyền.
+
 ### Làm lại từ đầu
 
 **Cài đặt → Làm lại từ đầu** xoá sạch mọi thứ trình quản lý này giữ trên máy: chính SillyTavern, mọi hồ sơ cùng các đoạn chat và nhân vật trong đó, mọi bản sao lưu trên ổ đĩa này, kết nối R2, tunnel, mã PIN và mật khẩu trình quản lý. Nó hỏi hai lần - chờ một lúc nút mới bật lên, và phải gõ lại mật khẩu trình quản lý - vì một bảng điều khiển bỏ quên trên bàn không có nghĩa là có người muốn làm việc này.
@@ -412,6 +452,13 @@ Mọi thứ đều đặt được trong panel. Các biến môi trường sau, 
 | Biến | Tác dụng |
 | --- | --- |
 | `STM_ADMIN_PASSWORD` | Tạo mật khẩu quản trị ngay lần khởi động đầu, cho Docker và nền tảng cloud |
+| `STM_HOST` | Địa chỉ lắng nghe: `127.0.0.1` (chỉ máy này) hoặc `0.0.0.0` (mọi mạng). Đặt mật khẩu trước khi mở ra mạng |
+| `STM_PORT` · `STM_ACCESS_PORT` | Cố định cổng của console (`7860`) và của cổng truy cập (`8001`). Nếu không đặt, cổng đã bị chiếm sẽ được bỏ qua, và dùng `PORT` khi host có công bố |
+| `STM_SAVER` | `1` hoặc `0` để chốt hẳn [chế độ tiết kiệm](#chế-độ-tiết-kiệm); công tắc trong panel không đổi được nữa |
+| `STM_STORAGE_IN_MEMORY` | `1` hoặc `0` cho biết file ghi ở đây có chiếm bộ nhớ của máy hay không. Tự nhận biết qua bảng mount (tmpfs, ramfs) và biến `K_SERVICE` của Knative |
+| `STM_PUBLIC_ORIGIN` | Địa chỉ console được truy cập từ bên ngoài, khi đứng sau proxy đổi `Host`; cũng là địa chỉ **Giữ STM online** sẽ giữ |
+| `STM_TUNNEL_PROTOCOL` | `http2` để bỏ qua bước thử QUIC của cloudflared trên mạng không cho UDP ra ngoài |
+| `STM_LOCAL_BACKUPS` | Số archive tự động giữ trên máy (mặc định là một) |
 | `STM_R2_ENDPOINT` | Endpoint R2 hoặc S3, `https://<account-id>.r2.cloudflarestorage.com` |
 | `STM_R2_BUCKET` | Tên bucket |
 | `STM_R2_ACCESS_KEY_ID` | Access key ID |

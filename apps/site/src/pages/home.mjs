@@ -161,7 +161,7 @@ function portDiagram(locale) {
     ? { machine: 'Máy của bạn', panel: 'Bảng quản trị', gateway: 'Cổng truy cập', silly: 'SillyTavern', you: 'Bạn, trên máy này', lan: 'Điện thoại cùng Wi-Fi', tunnel: 'Cloudflare Tunnel', pass: 'mã truy cập', only: 'chỉ nội bộ' }
     : { machine: 'Your machine', panel: 'Manager panel', gateway: 'Access gateway', silly: 'SillyTavern', you: 'You, on this machine', lan: 'Phone on the same Wi-Fi', tunnel: 'Cloudflare Tunnel', pass: 'passcode', only: 'localhost only' };
 
-  return raw(`<svg viewBox="0 0 420 300" role="img" aria-label="${labels.machine}: 7860, 8001, 8000">
+  return raw(`<svg viewBox="0 0 420 300" role="img" aria-label="${labels.machine}: 7860, 8001, 8002">
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
       <path d="M0 0 10 5 0 10Z" fill="var(--muted-foreground)"/>
@@ -181,7 +181,7 @@ function portDiagram(locale) {
 
     <rect x="190" y="212" width="200" height="54" rx="10" fill="var(--muted)" stroke="var(--border)"/>
     <text x="206" y="236" fill="var(--foreground)" font-size="11.5" font-weight="620">${labels.silly}</text>
-    <text x="206" y="251" fill="var(--muted-foreground)" font-family="monospace">:8000 · ${labels.only}</text>
+    <text x="206" y="251" fill="var(--muted-foreground)" font-family="monospace">:8002 · ${labels.only}</text>
 
     <!-- The panel reaches SillyTavern directly, so its line goes around the
          gateway rather than through it; drawn through the box it read as the

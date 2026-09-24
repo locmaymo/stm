@@ -41,11 +41,15 @@ SillyTavern is a terminal, a Git checkout and a folder of data you must not lose
 | --- | --- |
 | **Install and update** | Pick a release or a branch and press **Install**. The manager clones it, installs dependencies, health-checks the build and reports **Ready** only once SillyTavern answers on its port. It tells you when a newer release is out. |
 | **Run and watch** | Start, stop and open SillyTavern from the panel, with live logs from the manager, SillyTavern, the installer, backups and the tunnel in one searchable feed. |
+| **Use it here** | Open SillyTavern inside the panel, with a window bar for backing up, reading the logs and going full screen — or in a tab of its own with the same tools. |
 | **Share safely** | SillyTavern itself stays on localhost. Other devices and Cloudflare Tunnel reach it through the manager's access gateway, which asks for a password first and never forwards the admin panel. |
 | **A link that keeps working** | Sign in to Cloudflare and the manager puts `sillytavern.<you>.workers.dev` and `stm.<you>.workers.dev` in front of the tunnels. A Quick Tunnel's own hostname changes every restart; these two never do. |
 | **Reach your own machine** | The console has its own link, behind the manager password, for administering the machine from somewhere else. It is a separate switch from the one you share. |
-| **Back up** | Scheduled and manual ZIP archives, compatible with SillyTavern's own exports, plus previewed restores and a safety snapshot before anything is replaced. |
+| **Back up** | Scheduled ZIP archives and restore points you name yourself, compatible with SillyTavern's own exports, plus previewed restores and a safety snapshot before anything is replaced. |
 | **Back up off-site** | One button signs in to Cloudflare, finds or creates an R2 bucket and keeps recovery points there. No keys to create or paste — or bring your own S3 keys. |
+| **Bring a machine back** | The bucket also keeps how the manager was set up. Sign in with the same Cloudflare account on a new machine and the data, the SillyTavern release and the settings come back. |
+| **Save space** | Saver mode, for machines with little room for files: no archives on the machine, the cloud holds the recovery points, and a restore is written as it arrives. |
+| **Stay awake** | **Keep STM online** stops a battery saver, or a host that shuts idle programs down, from putting the manager to sleep — and SillyTavern with it. |
 | **Know your usage** | Requests, tokens, cache hits and latency per day, per provider and per model, measured from SillyTavern's own traffic. |
 | **Keep data separate** | Named profiles for separate SillyTavern data sets, switched from the panel, each with its own backups. |
 | **Speak your language** | English and Vietnamese, light and dark, desktop and phone. |
@@ -237,12 +241,20 @@ Windows users should prefer the portable ZIP, because it already includes Node.j
 
 ### First setup
 
-1. Open the manager at port `7860` and create the manager administrator password.
+1. Open the manager at port `7860` and create the manager administrator password — or press **Continue with Cloudflare**, which sets the manager up and connects backups in one step, and lets that Cloudflare account open the manager again later.
 2. Choose a SillyTavern version — `latest` is selected by default.
 3. Press **Install** and wait for **Ready**. Ready means SillyTavern answered on port `8002`.
-4. Open the local link, or set the SillyTavern password and then turn on local-network access or a public tunnel.
+4. Open the local link, or set the SillyTavern PIN and then turn on local-network access or a public tunnel.
 
-The manager password and the SillyTavern password are two different things. The SillyTavern password is asked for by a sign-in page the manager serves, so it works the same on every SillyTavern version, old or new; changing it signs out every device that was already in.
+The manager password and the SillyTavern PIN are two different things. The PIN is asked for by a sign-in page the manager serves, so it works the same on every SillyTavern version, old or new; changing it signs out every device that was already in.
+
+Until everything is in place, a **Setup checklist** on the overview lists the six steps worth taking — install SillyTavern, connect Cloudflare, set the STM password and the SillyTavern PIN, turn on R2 backups and open SillyTavern's link — and ticks each one off as it happens. A step stays ticked once done, and the list folds itself away when all six are.
+
+### Using SillyTavern from the panel
+
+**Use it here**, on the preview in the overview, opens SillyTavern inside the manager's own page. It is signed in already — the manager password you gave is the stronger of the two, so the PIN is not asked for — and a bar above it can **minimize** it back to the console while it stays loaded, give it the **full screen**, **back up** on this machine or to the cloud, show the **logs**, reload it or move it to a tab. **Close** unloads it and gives its memory back.
+
+The arrow beside **Open SillyTavern** offers **Open with tools**: a new tab with the same window bar and a floating tools button. From another device, where a page cannot be put inside the console, the same buttons open SillyTavern in a tab at the best address instead.
 
 ## Screenshots
 
@@ -360,6 +372,8 @@ Sign in to Cloudflare (the same sign-in that sets up backups) and the manager pu
 
 The manager will not deploy over a Worker of those names that it did not create, so an account that already has one keeps it — the panel says so instead. Disconnecting Cloudflare removes both.
 
+With a sign-in each link therefore has two addresses: the **fixed link** through the Worker, and the **tunnel link** straight to cloudflared, which changes at every start. The card shows one and keeps the other behind a count beside it. **Show this link first** puts either one in front — on the card, behind **Open** and in the QR code — for somebody who finds the Worker slower or only ever opens the link on the machine in front of them; the fixed link can also be hidden altogether, and the Worker keeps following the tunnel so an address already shared goes on working. A new tunnel's address is handed out only once it answers, and while the Worker is being pointed at it the fixed link says it is on its way rather than offering one that would fail.
+
 A free Cloudflare account answers 100,000 Worker requests a day, resetting at midnight UTC, and those two addresses share that allowance with the Worker that carries your backups. Running it out would take all three down at once, so the manager watches the figure and gives things up in order before that can happen: first the console quietly asks for updates less often, then the console's own fixed address is held back, and last SillyTavern's. In each case the tunnel's own address is offered in its place, and everything is handed out again when the allowance resets. It is written in the log when it happens, and there is nothing to press.
 
 In ordinary personal use this never comes up — a console left open all day, SillyTavern in use and backups running costs around a tenth of the allowance. What can reach it is sharing your SillyTavern link widely: a page load costs roughly 320 requests, so the ceiling is about 300 of them a day. Note also that an address somebody already bookmarked keeps going through the Worker; holding one back protects the links handed out from that point on, not one already in somebody's browser.
@@ -375,11 +389,29 @@ Where your data lives:
 
 The directory holds profiles, backups, logs, metrics and the telemetry outbox. It is never inside the application folder, so updating the application never touches it.
 
+### Keeping it awake
+
+A program nobody has asked anything of for a while can be put to sleep — by a laptop's battery saver, a phone's power management, or a host that stops idle containers — and SillyTavern goes with it. **Settings → While the manager is open → Keep STM online**, on by default, has the manager reach its own address on a clock so it is never idle: every 15 minutes, or every 5, 10, 30 or 60 if the machine goes quiet sooner or later than that.
+
+The address it holds is the one you set in `STM_PUBLIC_ORIGIN`, otherwise the one your browser last reached the console at, otherwise this machine's own `127.0.0.1` — never the tunnel or the Worker, so it costs nothing from the Cloudflare allowance. The card says which address it is holding and when it last answered. The choice travels to the bucket with the rest of the manager's settings.
+
 ## Backup and restore
 
 Local backup is always available. The archive is a streaming ZIP compatible with SillyTavern exports. By default it excludes `secrets.json`, thumbnails, vectors, generated backups, `.git`, `node_modules` and operating-system metadata. Including secrets is an explicit action with a warning.
 
 Restore previews the archive before writing. Replace is the default mode; merge is available when needed. A safety snapshot is created before a replace or a profile switch.
+
+On the **Data** page, **Back up automatically** takes an archive every 30 minutes, hour, six hours or day when the data has changed, and keeps the newest one (`STM_LOCAL_BACKUPS` keeps more). **Create a restore point** takes one on purpose, with a note of your own — "before updating extensions" — and the manager never deletes a restore point, an upload or a recovery point brought back from R2 by itself. The safety copy taken before a restore or a profile switch is kept as the undo for the last such change. Every archive carries its kind, and the list can be searched and filtered by it. **Upload a ZIP** restores an export from elsewhere.
+
+Before a replace, the preview says what it takes away: the files in the profile that the archive does not have.
+
+### Saver mode
+
+For a machine with little room for files — a container that keeps everything in memory, a phone that is nearly full — archives on the machine are the thing that runs it out. A restore of a 2 GB profile used to hold it three times over: the uploaded ZIP, a safety copy of the profile it was replacing, and the files themselves.
+
+With **Saver mode** on, no archive is kept on the machine at all and the profile is on the disk once. Your Cloudflare R2 bucket holds the recovery points instead, and it stands in for the safety copy: before a restore replaces anything, the current data is sent to R2 first. An uploaded ZIP and a recovery point brought back from R2 are written straight into the profile as they arrive, with SillyTavern stopped. The manager checks that the restore fits before it starts, offers to leave out what SillyTavern can do without — extensions' git history and `node_modules`, SillyTavern's own backups, thumbnails — when room is short, and refuses one that still will not fit rather than failing halfway.
+
+It turns itself on when the data directory is kept in memory, or when the disk has less than 5 GiB free as the manager starts, and says which of the two it was. Otherwise it is a switch under **Settings → When the manager opens**, or `STM_SAVER=1` / `STM_SAVER=0` to settle it for good. Connect R2 before relying on it: with saver mode on and no bucket, nothing holds your data but the profile itself.
 
 ### Cloudflare R2
 
@@ -399,6 +431,14 @@ Only the Cloudflare refresh token is stored, in its own file readable by your us
 
 **S3 keys instead.** If you would rather not sign in, open **Where backups go**, choose **R2 or S3 keys** and enter the endpoint, bucket and key pair from the R2 page of the Cloudflare dashboard, or set them in `.env` (see [`.env.example`](.env.example)). Any S3-compatible storage works this way. Both ways of reaching a bucket are in that one form; saving is choosing which one carries the backups.
 
+### Bringing a machine back
+
+The bucket keeps more than your chats. Whenever they change, the manager writes its own settings beside the data: the manager password and the SillyTavern PIN (as the hashes it stores, never as text), the ports, the links and whether their Quick Tunnels were on, **Keep STM online**, the backup schedules and R2 limits, and the SillyTavern release that was actually running. The usage figures are kept there too.
+
+On a new machine — a new computer, a reinstall, a container that starts empty — sign in with the same Cloudflare account, on the first-run screen or on the **Data** page. A profile that is empty while the bucket is not gets the newest recovery point back before SillyTavern is started, and SillyTavern is installed at the release you were running. When the account holds the setup of one of your other machines, a card on every page offers **Restore everything**: the data, the SillyTavern release, the console password, the PIN, the ports, the links, the backup schedules and the usage figures, in one go. SillyTavern is stopped while it runs, and what was on this machine is kept under Backups first. Nothing is applied on its own: a machine that is already set up is offered these settings, with the name of the machine that wrote them and when, and restoring the password asks you to sign in again.
+
+One account backs up from one machine at a time, so two machines never sweep the same bucket. Signing in on a second machine makes it the one that backs up; the first stops, throws away its own sign-in, and says which machine took over. Signing in there again takes it back.
+
 ### Starting over
 
 **Settings → Start over** erases everything this manager keeps on the machine: SillyTavern itself, every profile with the chats and characters in it, every backup on this disk, the R2 connection, the tunnel, the PIN and the manager password. It asks twice - a short wait before the button comes alive, and the manager password typed again - because a console left signed in on a desk is not the same as somebody asking for this.
@@ -412,6 +452,13 @@ Everything can be set in the panel. These environment variables, read from the p
 | Variable | What it does |
 | --- | --- |
 | `STM_ADMIN_PASSWORD` | Creates the manager administrator password at first start, for Docker and hosted platforms |
+| `STM_HOST` | The address to bind: `127.0.0.1` (this machine only) or `0.0.0.0` (every network). Set a password before opening it |
+| `STM_PORT` · `STM_ACCESS_PORT` | Pin the console's port (`7860`) and the access gateway's (`8001`). Unset, a port something else holds is stepped over, and a host's `PORT` is used when it announces one |
+| `STM_SAVER` | `1` or `0` settles [saver mode](#saver-mode) for good; the switch in the panel then cannot change it |
+| `STM_STORAGE_IN_MEMORY` | `1` or `0` says whether files written here take the machine's memory. Detected on its own from the mount table (tmpfs, ramfs) and the Knative `K_SERVICE` variable |
+| `STM_PUBLIC_ORIGIN` | The address the console is reached at from outside, behind a proxy that rewrites `Host`; also the address **Keep STM online** holds |
+| `STM_TUNNEL_PROTOCOL` | `http2` to skip cloudflared's QUIC attempt on a network that does not let UDP out |
+| `STM_LOCAL_BACKUPS` | How many automatic archives to keep on the machine (one by default) |
 | `STM_R2_ENDPOINT` | R2 or S3 endpoint, `https://<account-id>.r2.cloudflarestorage.com` |
 | `STM_R2_BUCKET` | Bucket name |
 | `STM_R2_ACCESS_KEY_ID` | Access key ID |
