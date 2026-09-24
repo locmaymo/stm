@@ -561,7 +561,6 @@
     "toolsDone": "Backup finished",
     "toolsUnchanged": "Nothing has changed since the last backup",
     "toolsFailed": "The backup did not finish",
-    "toolsRefresh": "Refresh",
     "toolsLogsEmpty": "Nothing logged yet.",
     "logsMaximize": "Fill the screen",
     "logsRestore": "Back to its size",
