@@ -246,17 +246,17 @@ Mật khẩu manager và mật khẩu SillyTavern là hai mật khẩu khác nha
 
 ## Ảnh màn hình
 
-Mọi ảnh bên dưới đều tự đổi theo giao diện sáng hay tối của máy bạn.
+Mọi ảnh bên dưới được chụp với dữ liệu mẫu và tự đổi theo giao diện sáng hay tối của máy bạn.
 
 <table>
 <tr>
-<td width="50%">
+<td width="50%" valign="top">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/vi/data-dark.webp">
   <img src=".github/screenshots/vi/data-light.webp" alt="Trang Dữ liệu với profile, sao lưu local và Cloudflare R2">
 </picture>
 </td>
-<td width="50%">
+<td width="50%" valign="top">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/vi/metrics-dark.webp">
   <img src=".github/screenshots/vi/metrics-light.webp" alt="Trang Số liệu với request, token, cache hit và độ trễ">
@@ -268,13 +268,13 @@ Mọi ảnh bên dưới đều tự đổi theo giao diện sáng hay tối c�
 <td><b>Số liệu</b> — request, token, cache hit và độ trễ theo ngày, theo provider và model.</td>
 </tr>
 <tr>
-<td>
+<td valign="top">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/vi/settings-dark.webp">
   <img src=".github/screenshots/vi/settings-light.webp" alt="Trang Thiết lập với bảo mật và cấu hình SillyTavern">
 </picture>
 </td>
-<td>
+<td valign="top">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/vi/sign-in-dark.webp">
   <img src=".github/screenshots/vi/sign-in-light.webp" alt="Màn hình đăng nhập của manager">
@@ -287,13 +287,37 @@ Mọi ảnh bên dưới đều tự đổi theo giao diện sáng hay tối c�
 </tr>
 </table>
 
-<div align="center">
+<table>
+<tr>
+<td width="25%" valign="top">
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/vi/mobile-dark.webp">
-  <img src=".github/screenshots/vi/mobile-light.webp" alt="Trang tổng quan trên điện thoại" width="320">
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/vi/overview-mobile-dark.webp">
+  <img src=".github/screenshots/vi/overview-mobile-light.webp" alt="Trang tổng quan trên điện thoại">
 </picture>
-<p><b>Trên điện thoại</b> — vẫn panel đó, thanh điều hướng chuyển xuống dưới.</p>
-</div>
+</td>
+<td width="25%" valign="top">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/vi/data-mobile-dark.webp">
+  <img src=".github/screenshots/vi/data-mobile-light.webp" alt="Trang Dữ liệu trên điện thoại">
+</picture>
+</td>
+<td width="25%" valign="top">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/vi/metrics-mobile-dark.webp">
+  <img src=".github/screenshots/vi/metrics-mobile-light.webp" alt="Trang Số liệu trên điện thoại">
+</picture>
+</td>
+<td width="25%" valign="top">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/vi/settings-mobile-dark.webp">
+  <img src=".github/screenshots/vi/settings-mobile-light.webp" alt="Trang Thiết lập trên điện thoại">
+</picture>
+</td>
+</tr>
+<tr>
+<td colspan="4" align="center"><b>Trên điện thoại</b> — vẫn panel đó, thanh điều hướng chuyển xuống dưới.</td>
+</tr>
+</table>
 
 ## Cách hoạt động
 

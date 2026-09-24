@@ -75,9 +75,9 @@ export const home = {
       heading: 'Built to be read at a glance',
       lede: 'The same interface on a desktop and on a phone, in light and dark, in English and Vietnamese.',
       shots: [
-        { name: 'data', alt: 'The data page: profiles, local backups and Cloudflare R2 recovery points' },
-        { name: 'metrics', alt: 'The usage page: requests, tokens, cache hits and latency per day, provider and model' },
-        { name: 'settings', alt: 'The settings page: security, performance, extensions, API keys and chat backups' },
+        { name: 'data', title: 'Data', body: 'Profiles, scheduled and manual backups, and Cloudflare R2 on one page.', alt: 'The data page: profiles, local backups and Cloudflare R2 recovery points' },
+        { name: 'metrics', title: 'Metrics', body: 'Requests, tokens, cache hits and latency, per day, provider and model.', alt: 'The usage page: requests, tokens, cache hits and latency per day, provider and model' },
+        { name: 'settings', title: 'Settings', body: 'Passwords, and SillyTavern’s own `config.yaml` as plain switches.', alt: 'The settings page: security, performance, extensions, API keys and chat backups' },
       ],
     },
     backups: {
@@ -172,9 +172,9 @@ export const home = {
       heading: 'Nhìn một cái là hiểu',
       lede: 'Cùng một giao diện trên máy tính và điện thoại, ở chế độ sáng và tối, bằng tiếng Việt và tiếng Anh.',
       shots: [
-        { name: 'data', alt: 'Trang dữ liệu: hồ sơ, bản sao lưu cục bộ và điểm phục hồi trên Cloudflare R2' },
-        { name: 'metrics', alt: 'Trang mức dùng: lượt gọi, token, tỷ lệ trúng bộ nhớ đệm và độ trễ theo ngày, nhà cung cấp và mô hình' },
-        { name: 'settings', alt: 'Trang cài đặt: bảo mật, hiệu năng, tiện ích mở rộng, API key và sao lưu chat' },
+        { name: 'data', title: 'Dữ liệu', body: 'Hồ sơ, sao lưu theo lịch và thủ công, và Cloudflare R2 trong cùng một trang.', alt: 'Trang dữ liệu: hồ sơ, bản sao lưu cục bộ và điểm phục hồi trên Cloudflare R2' },
+        { name: 'metrics', title: 'Số liệu', body: 'Lượt gọi, token, cache hit và độ trễ theo ngày, nhà cung cấp và mô hình.', alt: 'Trang mức dùng: lượt gọi, token, tỷ lệ trúng bộ nhớ đệm và độ trễ theo ngày, nhà cung cấp và mô hình' },
+        { name: 'settings', title: 'Thiết lập', body: 'Mật khẩu, và `config.yaml` của SillyTavern dưới dạng công tắc.', alt: 'Trang cài đặt: bảo mật, hiệu năng, tiện ích mở rộng, API key và sao lưu chat' },
       ],
     },
     backups: {

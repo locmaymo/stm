@@ -189,10 +189,15 @@ html.dark [data-theme-icon="dark"] { display: grid; }
   border-radius: 10px;
   background: var(--primary);
   color: var(--primary-foreground);
+  /* A `<button>` does not inherit the page's face on its own, so the relay's
+     Continue was set in the system sans beside every link-button in Noto. */
+  font-family: inherit;
   font-size: 14.5px;
   font-weight: 620;
+  line-height: 1.2;
   text-decoration: none;
   white-space: nowrap;
+  cursor: pointer;
 }
 .button:hover { background: color-mix(in srgb, var(--primary) 88%, black); color: var(--primary-foreground); }
 .button svg { width: 17px; height: 17px; }
@@ -209,6 +214,10 @@ main > section + section { border-top: 1px solid var(--border); }
 @media (min-width: 640px) { main > section { padding-block: 76px; } }
 
 .section-head { max-width: 42rem; margin-bottom: 30px; }
+/* A note under a row of cards, which would otherwise sit flush against it. */
+.after-grid { margin-top: 14px; }
+.cta { text-align: center; }
+.cta .lede { max-width: 36rem; margin-inline: auto; }
 .eyebrow { margin: 0 0 8px; color: var(--primary); font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
 h1, h2, h3, h4 { letter-spacing: -0.02em; text-wrap: balance; }
 h2 { margin: 0 0 10px; font-size: clamp(24px, 3.4vw, 32px); line-height: 1.2; }
@@ -227,11 +236,21 @@ h3 { margin: 0 0 6px; font-size: 17px; }
   background:
     radial-gradient(42rem 24rem at 50% -4rem, color-mix(in srgb, var(--primary) 16%, transparent), transparent 70%),
     radial-gradient(32rem 20rem at 50% 105%, color-mix(in srgb, var(--primary) 8%, transparent), transparent 70%);
+  /* The lower glow is centred on this box's bottom edge and was cut off there
+     in a straight line - hidden behind the screenshot on a wide screen, and a
+     visible stripe across a phone's hero. Faded out instead. */
+  -webkit-mask-image: linear-gradient(to bottom, #000 55%, transparent);
+  mask-image: linear-gradient(to bottom, #000 55%, transparent);
 }
 .hero img.hero-mark { width: 78px; height: 78px; filter: drop-shadow(0 .5rem 1.25rem color-mix(in srgb, var(--primary) 30%, transparent)); }
 .hero h1 { margin: 20px 0 14px; font-size: clamp(30px, 5.6vw, 50px); line-height: 1.08; }
 .hero p.lede { max-width: 40rem; margin-inline: auto; font-size: clamp(16px, 2vw, 18px); }
 .hero-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin-top: 26px; }
+/* On a phone the two buttons wrap onto two lines at two different widths; one
+   column of equal buttons reads as a choice rather than a stagger. */
+@media (max-width: 479px) {
+  .hero-actions { flex-direction: column; align-items: stretch; max-width: 22rem; margin-inline: auto; }
+}
 .hero-meta { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px 18px; margin-top: 18px; color: var(--muted-foreground); font-size: 13px; }
 .hero-meta span { display: inline-flex; align-items: center; gap: 6px; }
 .hero-meta svg { width: 15px; height: 15px; }
@@ -245,19 +264,94 @@ h3 { margin: 0 0 6px; font-size: 17px; }
  */
 .shot { margin: 42px 0 0; border: 1px solid var(--border); border-radius: 14px; overflow: hidden; background: var(--card); box-shadow: var(--elevation-3); }
 .shot img { display: none; width: 100%; }
-.shot img.wide.light { display: block; }
-html.dark .shot img.wide.light { display: none; }
-html.dark .shot img.wide.dark { display: block; }
+html:not(.dark) .shot img.wide.light, html.dark .shot img.wide.dark { display: block; }
+
+/* A phone frame: the shape a narrow shot is shown in wherever it is shown. */
+.shot img.narrow { max-width: 19rem; margin-inline: auto; border: 1px solid var(--border); border-radius: 18px; box-shadow: var(--elevation-3); }
 
 @media (max-width: 639px) {
   /* A desktop panel at 390px is a grey rectangle. Where the same page was
      photographed on a phone, that is the honest picture to show. */
-  .shot.has-narrow { border: 0; border-radius: 0; background: transparent; box-shadow: none; }
-  .shot.has-narrow img { max-width: 19rem; margin-inline: auto; border: 1px solid var(--border); border-radius: 18px; box-shadow: var(--elevation-3); }
-  .shot.has-narrow img.wide { display: none; }
-  .shot.has-narrow img.narrow.light { display: block; }
-  html.dark .shot.has-narrow img.narrow.light { display: none; }
-  html.dark .shot.has-narrow img.narrow.dark { display: block; }
+  .shot.has-narrow { border: 0; border-radius: 0; background: transparent; box-shadow: none; overflow: visible; }
+  html:not(.dark) .shot.has-narrow img.wide.light, html.dark .shot.has-narrow img.wide.dark { display: none; }
+  html:not(.dark) .shot.has-narrow img.narrow.light, html.dark .shot.has-narrow img.narrow.dark { display: block; }
+}
+
+/*
+ * The hero's overview, cut to a window.
+ *
+ * The whole overview is a page and a half tall, which put the first section
+ * of the site two screens below the fold. The frame stops at about a screen
+ * and the page fades into the panel's own background there, so it reads as a
+ * window onto the panel rather than a picture that was cropped.
+ */
+@media (min-width: 640px) {
+  .hero-shot { position: relative; max-height: 48rem; }
+  .hero-shot::after { content: ""; position: absolute; inset: auto 0 0; height: 8rem; background: linear-gradient(to bottom, transparent, var(--background)); pointer-events: none; }
+}
+
+/*
+ * The panel, three pages of it.
+ *
+ * On a wide screen one page at a time, full width and cut to a window like
+ * the hero, with a tab for each: three desktop shots side by side are a third
+ * of a desktop each, and a third of a desktop is too small to read. The tabs
+ * are radio buttons and labels, so they work with scripting off like the rest
+ * of the site. Below that width the phone shots of the same pages - three
+ * columns on a tablet, and on a phone a strip to swipe through rather than
+ * three screens of scrolling.
+ */
+.screen-pick { position: absolute; opacity: 0; pointer-events: none; }
+.screen-tabs { display: none; }
+.screen-list { display: grid; gap: 22px; }
+.screen { margin: 0; display: grid; gap: 14px; align-content: start; }
+.screen .shot { margin: 0; }
+.screen figcaption { color: var(--muted-foreground); font-size: 14px; text-align: center; }
+.screen figcaption strong { color: var(--foreground); font-weight: 650; }
+.screen figcaption strong::after { content: " ·"; color: var(--muted-foreground); font-weight: 400; }
+
+@media (min-width: 960px) {
+  .screen-tabs { display: inline-flex; gap: 4px; margin-bottom: 18px; padding: 4px; border: 1px solid var(--border); border-radius: 12px; background: var(--muted); }
+  .screen-tabs label { padding: 7px 18px; border-radius: 9px; color: var(--muted-foreground); font-size: 14px; font-weight: 600; cursor: pointer; }
+  .screen-tabs label:hover { color: var(--foreground); }
+  .screen-list .screen { display: none; }
+  .screen .shot { position: relative; max-height: 44rem; }
+  .screen .shot::after { content: ""; position: absolute; inset: auto 0 0; height: 7rem; background: linear-gradient(to bottom, transparent, var(--background)); pointer-events: none; }
+  .screen-pick:nth-of-type(1):checked ~ .screen-list .screen:nth-child(1),
+  .screen-pick:nth-of-type(2):checked ~ .screen-list .screen:nth-child(2),
+  .screen-pick:nth-of-type(3):checked ~ .screen-list .screen:nth-child(3),
+  .screen-pick:nth-of-type(4):checked ~ .screen-list .screen:nth-child(4) { display: grid; }
+  .screen-pick:nth-of-type(1):checked ~ .screen-tabs label:nth-child(1),
+  .screen-pick:nth-of-type(2):checked ~ .screen-tabs label:nth-child(2),
+  .screen-pick:nth-of-type(3):checked ~ .screen-tabs label:nth-child(3),
+  .screen-pick:nth-of-type(4):checked ~ .screen-tabs label:nth-child(4) { background: var(--card); color: var(--foreground); box-shadow: var(--elevation-1); }
+  .screen-pick:nth-of-type(1):focus-visible ~ .screen-tabs label:nth-child(1),
+  .screen-pick:nth-of-type(2):focus-visible ~ .screen-tabs label:nth-child(2),
+  .screen-pick:nth-of-type(3):focus-visible ~ .screen-tabs label:nth-child(3),
+  .screen-pick:nth-of-type(4):focus-visible ~ .screen-tabs label:nth-child(4) { outline: 2px solid var(--ring); outline-offset: 2px; }
+}
+/* No tabs to drive below that width, so no focus stops that go nowhere. */
+@media (max-width: 959px) { .screen-pick { display: none; } }
+@media (min-width: 640px) and (max-width: 959px) {
+  .screen-list { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .screen .shot.has-narrow { border: 0; border-radius: 0; background: transparent; box-shadow: none; overflow: visible; }
+  html:not(.dark) .screen .shot img.wide.light, html.dark .screen .shot img.wide.dark { display: none; }
+  html:not(.dark) .screen .shot img.narrow.light, html.dark .screen .shot img.narrow.dark { display: block; }
+}
+@media (max-width: 639px) {
+  .screen-list {
+    display: flex;
+    gap: 16px;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    margin-inline: calc(var(--gutter) * -1);
+    padding: 4px var(--gutter) 28px;
+    scroll-padding-inline: var(--gutter);
+    scrollbar-width: none;
+  }
+  .screen-list::-webkit-scrollbar { display: none; }
+  .screen { flex: 0 0 min(76%, 17rem); scroll-snap-align: center; }
+  .screen .shot img.narrow { box-shadow: var(--elevation-2); }
 }
 
 /* ---- cards ----------------------------------------------------------- */
@@ -273,14 +367,20 @@ html.dark .shot img.wide.dark { display: block; }
 .card-icon { display: grid; place-items: center; width: 36px; height: 36px; margin-bottom: 14px; border-radius: 10px; background: color-mix(in srgb, var(--primary) 12%, transparent); color: var(--primary); }
 .card-icon svg { width: 19px; height: 19px; }
 
-a.card { display: block; color: inherit; text-decoration: none; transition: border-color .15s ease, transform .15s ease; }
+/* A column, so the "guide" link sits on the bottom edge of every card and the
+   links in a row line up however long each card's sentence is. */
+a.card { display: flex; flex-direction: column; color: inherit; text-decoration: none; transition: border-color .15s ease, transform .15s ease; }
 a.card:hover { border-color: color-mix(in srgb, var(--primary) 50%, var(--border)); color: inherit; }
-a.card .card-go { display: inline-flex; align-items: center; gap: 6px; margin-top: 12px; color: var(--link); font-size: 13px; font-weight: 620; }
+a.card .card-go { display: inline-flex; align-self: flex-start; align-items: center; gap: 6px; margin-top: auto; padding-top: 14px; color: var(--link); font-size: 13px; font-weight: 620; }
 a.card .card-go svg { width: 14px; height: 14px; }
 
 /* ---- diagram / table ------------------------------------------------- */
 
-.figure { padding: 22px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); }
+/* `margin: 0` because a `<figure>` comes with 40px either side, which is what
+   pushed the port diagram in from the column edge and out of line with the
+   heading above it and the table beside it. */
+.figure { align-self: start; margin: 0; padding: 22px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); }
+.how-side { align-content: start; }
 .figure svg { display: block; width: 100%; height: auto; }
 .figure figcaption { margin-top: 14px; color: var(--muted-foreground); font-size: 13px; text-align: center; }
 
@@ -352,6 +452,8 @@ tbody tr:last-child td { border-bottom: 0; }
   .docs-toc { max-height: 15rem; overflow-y: auto; padding: 18px 20px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); }
 }
 .docs-toc-title { margin: 0 0 12px; color: var(--muted-foreground); font-size: 11.5px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.docs-toc-next { margin-top: 22px; }
+.docs-toc a[aria-current="page"] { background: var(--accent); color: var(--foreground); font-weight: 600; }
 .docs-toc ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 1px; }
 .docs-toc > ul > li > a { display: block; padding: 5px 10px; margin-inline-start: -10px; border-radius: 7px; color: var(--muted-foreground); text-decoration: none; }
 .docs-toc a:hover { background: var(--accent); color: var(--foreground); }
@@ -439,6 +541,8 @@ tbody tr:last-child td { border-bottom: 0; }
 .relay-main h1 { margin: 0 0 8px; font-size: 22px; letter-spacing: -0.01em; text-wrap: balance; }
 .relay-main p { margin: 0 0 8px; color: var(--muted-foreground); font-size: 14px; text-wrap: balance; }
 .relay-card { margin-top: 20px; padding: 22px; border: 1px solid var(--border); border-radius: 14px; background: var(--card); box-shadow: var(--elevation-2); }
-.relay-card code { display: block; font-size: 15px; overflow-wrap: anywhere; }
+/* The address is the one thing on the card to check, so it is set apart as a
+   field rather than left floating as a line of text. */
+.relay-card code { display: block; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--muted); font-size: 14.5px; line-height: 1.5; overflow-wrap: anywhere; }
 .relay-card .relay-warn { margin: 14px 0 0; }
 .relay-card .button { margin-top: 16px; width: 100%; justify-content: center; }

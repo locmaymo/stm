@@ -246,17 +246,17 @@ The manager password and the SillyTavern password are two different things. The 
 
 ## Screenshots
 
-Every shot below follows your own system theme, light or dark.
+Every shot below is taken with demo data and follows your own system theme, light or dark.
 
 <table>
 <tr>
-<td width="50%">
+<td width="50%" valign="top">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/en/data-dark.webp">
   <img src=".github/screenshots/en/data-light.webp" alt="Data page with profiles, local backups and Cloudflare R2">
 </picture>
 </td>
-<td width="50%">
+<td width="50%" valign="top">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/en/metrics-dark.webp">
   <img src=".github/screenshots/en/metrics-light.webp" alt="Metrics page with requests, tokens, cache hits and latency">
@@ -268,13 +268,13 @@ Every shot below follows your own system theme, light or dark.
 <td><b>Metrics</b> — requests, tokens, cache hits and latency, per day, provider and model.</td>
 </tr>
 <tr>
-<td>
+<td valign="top">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/en/settings-dark.webp">
   <img src=".github/screenshots/en/settings-light.webp" alt="Settings page with security and SillyTavern configuration">
 </picture>
 </td>
-<td>
+<td valign="top">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/en/sign-in-dark.webp">
   <img src=".github/screenshots/en/sign-in-light.webp" alt="The manager sign-in screen">
@@ -287,13 +287,37 @@ Every shot below follows your own system theme, light or dark.
 </tr>
 </table>
 
-<div align="center">
+<table>
+<tr>
+<td width="25%" valign="top">
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/en/mobile-dark.webp">
-  <img src=".github/screenshots/en/mobile-light.webp" alt="The overview page on a phone" width="320">
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/en/overview-mobile-dark.webp">
+  <img src=".github/screenshots/en/overview-mobile-light.webp" alt="The overview page on a phone">
 </picture>
-<p><b>On a phone</b> — the same panel, with the navigation moved to the bottom.</p>
-</div>
+</td>
+<td width="25%" valign="top">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/en/data-mobile-dark.webp">
+  <img src=".github/screenshots/en/data-mobile-light.webp" alt="The data page on a phone">
+</picture>
+</td>
+<td width="25%" valign="top">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/en/metrics-mobile-dark.webp">
+  <img src=".github/screenshots/en/metrics-mobile-light.webp" alt="The metrics page on a phone">
+</picture>
+</td>
+<td width="25%" valign="top">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/en/settings-mobile-dark.webp">
+  <img src=".github/screenshots/en/settings-mobile-light.webp" alt="The settings page on a phone">
+</picture>
+</td>
+</tr>
+<tr>
+<td colspan="4" align="center"><b>On a phone</b> — the same panel, with the navigation moved to the bottom.</td>
+</tr>
+</table>
 
 ## How it works
 

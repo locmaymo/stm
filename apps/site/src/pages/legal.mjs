@@ -50,7 +50,7 @@ export function legalPage(locale, id) {
       <ul>
         ${join(LEGAL_DOCUMENTS.map((other) => html`<li><a href="${root}/${other}"${other === id ? html` aria-current="page"` : ''}>${bundle.documents[other].short}</a></li>`))}
       </ul>
-      <p class="docs-toc-title" style="margin-top:22px">${s.legal.inThisDocument}</p>
+      <p class="docs-toc-title docs-toc-next">${s.legal.inThisDocument}</p>
       <ul>
         ${join(sections.map(([sectionId, section], index) => html`<li><a href="#${sectionId}"><span class="legal-number">${index + 1}.</span>${section.heading}</a></li>`))}
       </ul>

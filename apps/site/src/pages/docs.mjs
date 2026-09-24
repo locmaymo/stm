@@ -84,7 +84,7 @@ function renderBlock(block, locale, root) {
         <tbody>${join(block.rows.map((row) => html`<tr>${join(row.map((cell) => html`<td>${prose(cell, root)}</td>`))}</tr>`))}</tbody>
       </table></div>`;
     case 'shot':
-      return html`<figure class="${NARROW} docs-shot">${screenshot(locale, block.name, block.alt, { narrow: 'mobile' })}</figure>`;
+      return html`<figure class="${NARROW} docs-shot">${screenshot(locale, block.name, block.alt, { narrow: true })}</figure>`;
     default:
       return raw('');
   }

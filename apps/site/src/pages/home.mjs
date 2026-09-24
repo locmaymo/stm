@@ -21,7 +21,7 @@ export function homePage(locale) {
       ${action(c.hero.secondary, true)}
     </div>
     <p class="hero-meta">${join(c.hero.meta.map((item) => html`<span>${iconOf(item.icon)}${item.label}</span>`))}</p>
-    <figure class="${NARROW}">${screenshot(locale, c.hero.shot, c.hero.shotAlt, { narrow: 'mobile' })}</figure>
+    <figure class="${NARROW} hero-shot">${screenshot(locale, c.hero.shot, c.hero.shotAlt, { narrow: true })}</figure>
   </div>
 </section>
 
@@ -60,7 +60,7 @@ export function homePage(locale) {
         ${portDiagram(locale)}
         <figcaption>${c.how.caption}</figcaption>
       </figure>
-      <div class="grid" style="align-content:start">
+      <div class="grid how-side">
         <div class="table-wrap">
           <table>
             <thead><tr>${join(c.how.table.columns.map((column) => html`<th scope="col">${column}</th>`))}</tr></thead>
@@ -76,8 +76,17 @@ export function homePage(locale) {
 <section id="screens">
   <div class="shell">
     ${sectionHead(c.screens)}
-    <div class="grid">
-      ${join(c.screens.shots.map((shot) => html`<figure class="shot">${screenshot(locale, shot.name, shot.alt)}</figure>`))}
+    <div class="screens">
+      ${join(c.screens.shots.map((shot, index) => html`<input class="screen-pick" type="radio" name="screen" id="screen-${shot.name}"${index === 0 ? raw(' checked') : ''}>`))}
+      <div class="screen-tabs">
+        ${join(c.screens.shots.map((shot) => html`<label for="screen-${shot.name}">${shot.title}</label>`))}
+      </div>
+      <div class="screen-list">
+        ${join(c.screens.shots.map((shot) => html`<figure class="screen">
+          <div class="${NARROW}">${screenshot(locale, shot.name, shot.alt, { narrow: true })}</div>
+          <figcaption><strong>${shot.title}</strong> ${text(shot.body)}</figcaption>
+        </figure>`))}
+      </div>
     </div>
   </div>
 </section>
@@ -92,7 +101,7 @@ export function homePage(locale) {
         <p>${text(point.body)}</p>
       </article>`))}
     </div>
-    <div class="note note-warn" style="margin-top:14px">${icons.warn()}<p>${text(c.backups.note)}</p></div>
+    <div class="note note-warn after-grid">${icons.warn()}<p>${text(c.backups.note)}</p></div>
   </div>
 </section>
 
@@ -103,10 +112,10 @@ export function homePage(locale) {
   </div>
 </section>
 
-<section id="get" style="text-align:center">
+<section id="get" class="cta">
   <div class="shell">
     <h2>${c.cta.heading}</h2>
-    <p class="lede" style="max-width:36rem;margin-inline:auto">${c.cta.lede}</p>
+    <p class="lede">${c.cta.lede}</p>
     <div class="hero-actions">
       ${action(c.cta.primary)}
       ${action(c.cta.secondary, true)}
