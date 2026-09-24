@@ -92,6 +92,7 @@ export async function currentManagerSettings(deps: ManagerSettingsDeps): Promise
     },
     versionSelector: installation?.selector ?? null,
     versionRef: installation?.resolvedRef ?? null,
+    accessLinks: state.accessLinks,
   };
 }
 
@@ -284,6 +285,12 @@ export async function applyManagerSettings(deps: ManagerSettingsDeps, record: Ma
     await deps.store.setKeepOnline(record.keepOnline, record.keepOnlineMinutes);
     deps.adoptKeepOnline?.(record.keepOnline, record.keepOnlineMinutes);
     applied.push('schedules');
+    // Which address goes first is the reader's taste, not a fact about the
+    // machine, so it comes back with the rest of how they set things up.
+    if (record.accessLinks) {
+      await deps.store.setAccessLinks(record.accessLinks);
+      applied.push('accessLinks');
+    }
   }
 
   try {

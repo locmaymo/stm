@@ -1140,6 +1140,59 @@ export interface TunnelState {
    * Absent where nothing decorates the state, like `proxyUrl` above.
    */
   readonly proxyPending?: boolean;
+  /**
+   * Which of the two addresses the reader wants in front, and whether the
+   * fixed one is shown at all; see `AccessLinkPreference`.
+   *
+   * Absent where nothing decorates the state, which reads as the default.
+   */
+  readonly linkPreference?: AccessLinkPreference;
+}
+
+/** The two doors a tunnel's address can be for. */
+export type AccessLinkTarget = 'sillyTavern' | 'manager';
+export const ACCESS_LINK_TARGETS: readonly AccessLinkTarget[] = ['sillyTavern', 'manager'];
+
+/** The fixed address in front of a tunnel, or the tunnel's own. */
+export type AccessLinkKind = 'fixed' | 'tunnel';
+
+/**
+ * How the reader wants a door's addresses offered.
+ *
+ * With a Cloudflare sign-in each door has two: the fixed address, which never
+ * changes and goes through a Worker, and the tunnel's own, which changes at
+ * every start and goes straight to cloudflared. The fixed one was always put
+ * first. Somebody who finds the Worker slower, or who only ever opens the link
+ * on the machine in front of them, had no way to say so.
+ *
+ * `preferred` is the one put first - on the card, behind the Open button and in
+ * the QR code. `showFixed` false hides the fixed address from the console
+ * altogether; the Worker goes on following the tunnel, so a fixed address
+ * already shared with somebody keeps working.
+ *
+ * A setting of the reader's, so it travels with the rest of the manager's
+ * settings to the bucket and back.
+ */
+export interface AccessLinkPreference {
+  readonly preferred: AccessLinkKind;
+  readonly showFixed: boolean;
+}
+
+export type AccessLinkPreferences = Readonly<Record<AccessLinkTarget, AccessLinkPreference>>;
+
+export const DEFAULT_ACCESS_LINK: AccessLinkPreference = { preferred: 'fixed', showFixed: true };
+
+/** Read preferences back, correcting anything missing or malformed to the default. */
+export function parseAccessLinks(value: unknown): AccessLinkPreferences {
+  const record = typeof value === 'object' && value !== null ? value as Record<string, unknown> : {};
+  const one = (entry: unknown): AccessLinkPreference => {
+    const fields = typeof entry === 'object' && entry !== null ? entry as Record<string, unknown> : {};
+    return {
+      preferred: fields.preferred === 'tunnel' ? 'tunnel' : 'fixed',
+      showFixed: fields.showFixed !== false,
+    };
+  };
+  return { sillyTavern: one(record.sillyTavern), manager: one(record.manager) };
 }
 
 /**
@@ -1384,6 +1437,13 @@ export interface ManagerSettingsRecord {
    * recovered machine comes back running the same build it lost.
    */
   readonly versionRef: string | null;
+  /**
+   * How each door's addresses are offered; see `AccessLinkPreference`.
+   *
+   * Absent on a record written before these existed, which leaves the machine
+   * restoring it with whatever it has.
+   */
+  readonly accessLinks?: AccessLinkPreferences;
 }
 
 /** What the panel is told about settings waiting in the bucket. */

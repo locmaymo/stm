@@ -37,7 +37,7 @@ import { OnlineKeeper } from './online.js';
 import { formatGibibytes, SaverMode } from './saver.js';
 import { capacityFor, checkFits, decideTrim, diskSpace, memoryGuard, roomCheck } from './headroom.js';
 import { applyManagerSettings, foreignManagerSettings, managerSettingsOffer, restoreFromBucketIfBlank, saveManagerSettings, SettingsOfferWatch, settingsOfferKey, type ManagerSettingsDeps } from './manager-settings.js';
-import type { ManagerSettingsOffer, ManagerSettingsRecord } from '../../../packages/contracts/src/index.js';
+import type { AccessLinkKind, AccessLinkPreference, AccessLinkTarget, ManagerSettingsOffer, ManagerSettingsRecord } from '../../../packages/contracts/src/index.js';
 import { instrumentationLoaderPath } from '../../../packages/instrumentation/src/index.js';
 import { ConfigError, ConfigStore } from '../../../packages/config/src/index.js';
 import { DEFAULT_TELEMETRY_ENDPOINT, DEFAULT_TELEMETRY_ENROLLMENT_ENDPOINT, TelemetryTransport } from '../../../packages/telemetry/src/index.js';
@@ -88,6 +88,7 @@ const PROTECTED_PATHS = new Set([
   '/api/v1/access/network',
   '/api/v1/access/sessions',
   '/api/v1/access/embed-session',
+  '/api/v1/access/links',
   '/api/v1/preview',
   '/api/v1/preview/image',
   '/api/v1/auth/password',
@@ -2514,7 +2515,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
    * shows the fixed one and keeps the tunnel's own beside it, because that is
    * where the traffic really goes and it is worth being able to see.
    */
-  if (pathname === '/api/v1/tunnel' && method === 'GET') { sendJson(response, 200, await withProxyUrl(tunnel.getState(), proxy, cloudflare, 'sillyTavern', budget)); return; }
+  if (pathname === '/api/v1/tunnel' && method === 'GET') { sendJson(response, 200, await withProxyUrl(tunnel.getState(), proxy, cloudflare, 'sillyTavern', budget, await linkPreference(store, 'sillyTavern'))); return; }
   if (pathname === '/api/v1/tunnel' && method === 'PUT') {
     const body = await readJson(request);
     const mode = isRecord(body) && (body.mode === 'off' || body.mode === 'quick' || body.mode === 'named') ? body.mode : null;
@@ -2539,7 +2540,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     const state = mode === 'off' ? await tunnel.disable() : await tunnel.start(mode, isRecord(body) && typeof body.token === 'string' ? body.token : undefined);
     // Turned on once is the checklist's step done, whatever happens after.
     if (mode !== 'off') { gateway.setOpened(true); await store.setAccessLinkOpened().catch(() => undefined); }
-    sendJson(response, 200, await withProxyUrl(state, proxy, cloudflare, 'sillyTavern', budget));
+    sendJson(response, 200, await withProxyUrl(state, proxy, cloudflare, 'sillyTavern', budget, await linkPreference(store, 'sillyTavern')));
     return;
   }
   /**
@@ -2552,7 +2553,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
    * platform's own address does not work, which is a problem the console has
    * whether or not anything is installed yet.
    */
-  if (pathname === '/api/v1/manager-tunnel' && method === 'GET') { sendJson(response, 200, await withProxyUrl(managerTunnel.getState(), proxy, cloudflare, 'manager', budget)); return; }
+  if (pathname === '/api/v1/manager-tunnel' && method === 'GET') { sendJson(response, 200, await withProxyUrl(managerTunnel.getState(), proxy, cloudflare, 'manager', budget, await linkPreference(store, 'manager'))); return; }
   if (pathname === '/api/v1/manager-tunnel' && method === 'PUT') {
     const body = await readJson(request);
     const mode = isRecord(body) && (body.mode === 'off' || body.mode === 'quick' || body.mode === 'named') ? body.mode : null;
@@ -2565,7 +2566,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       return;
     }
     const state = mode === 'off' ? await managerTunnel.disable() : await managerTunnel.start(mode, isRecord(body) && typeof body.token === 'string' ? body.token : undefined);
-    sendJson(response, 200, await withProxyUrl(state, proxy, cloudflare, 'manager', budget));
+    sendJson(response, 200, await withProxyUrl(state, proxy, cloudflare, 'manager', budget, await linkPreference(store, 'manager')));
     return;
   }
   /*
@@ -2612,6 +2613,24 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
    * the version installed, and this one belongs to the manager and outlives
    * every version it installs.
    */
+  /*
+   * How each door's addresses are offered; see `AccessLinkPreference`.
+   *
+   * A setting of the reader's, so it is also put in the bucket at once, where
+   * there is one, rather than waiting for the next backup to notice it.
+   */
+  if (pathname === '/api/v1/access/links' && method === 'PUT') {
+    const body = await readJson(request);
+    const target = isRecord(body) ? body.target : null;
+    if (target !== 'sillyTavern' && target !== 'manager') { sendError(response, 400, 'invalid_input', 'target must be sillyTavern or manager'); return; }
+    const change: { preferred?: AccessLinkKind; showFixed?: boolean } = {};
+    if (isRecord(body) && (body.preferred === 'fixed' || body.preferred === 'tunnel')) change.preferred = body.preferred;
+    if (isRecord(body) && typeof body.showFixed === 'boolean') change.showFixed = body.showFixed;
+    const accessLinks = await store.setAccessLink(target, change);
+    void saveManagerSettings({ store, backups, r2, runtime, tunnel, managerTunnel, gateway, logger }).catch(() => false);
+    sendJson(response, 200, { accessLinks });
+    return;
+  }
   if (pathname === '/api/v1/startup' && method === 'GET') {
     const state = await store.getPersisted();
     sendJson(response, 200, { startup: { autoStartSillyTavern: state.autoStartSillyTavern } satisfies StartupSettings });
@@ -2772,8 +2791,8 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     const settingsOffer = acting || !connected ? NO_SETTINGS_OFFER : offers.current(offerKey);
     const status: ConsoleStatus = {
       process: supervisor.getState(),
-      tunnel: await withProxyUrl(tunnel.getState(), proxy, cloudflare, 'sillyTavern', budget),
-      managerTunnel: await withProxyUrl(managerTunnel.getState(), proxy, cloudflare, 'manager', budget),
+      tunnel: await withProxyUrl(tunnel.getState(), proxy, cloudflare, 'sillyTavern', budget, await linkPreference(store, 'sillyTavern')),
+      managerTunnel: await withProxyUrl(managerTunnel.getState(), proxy, cloudflare, 'manager', budget, await linkPreference(store, 'manager')),
       security: await decorateSecurity(gateway.getState()),
       // All read from memory, so they cost this answer nothing.
       install: jobs.activeInstallation(),
@@ -2871,7 +2890,24 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
  * address that answers with an error. Everything downstream then falls back to
  * the tunnel's own address, which is the address there is.
  */
-async function withProxyUrl(state: TunnelState, proxy: ProxyWorkerManager | null, cloudflare: CloudflareConnection | null, target: ProxyWorkerTarget, budget: WorkerBudget): Promise<TunnelState> {
+/**
+ * A tunnel's state as the console shows it: the fixed address in front of it,
+ * and which of the two the reader wants first.
+ *
+ * Somebody who prefers the tunnel's own address, or has hidden the fixed one,
+ * is not kept waiting for a Worker deploy they are not going to use.
+ */
+async function withProxyUrl(state: TunnelState, proxy: ProxyWorkerManager | null, cloudflare: CloudflareConnection | null, target: ProxyWorkerTarget, budget: WorkerBudget, preference: AccessLinkPreference): Promise<TunnelState> {
+  const decorated = await withFixedAddress(state, proxy, cloudflare, target, budget);
+  const waitsForFixed = preference.showFixed && preference.preferred === 'fixed';
+  return { ...decorated, linkPreference: preference, ...(waitsForFixed ? {} : { proxyPending: false }) };
+}
+
+async function linkPreference(store: StateStore, target: AccessLinkTarget): Promise<AccessLinkPreference> {
+  return (await store.getPersisted()).accessLinks[target];
+}
+
+async function withFixedAddress(state: TunnelState, proxy: ProxyWorkerManager | null, cloudflare: CloudflareConnection | null, target: ProxyWorkerTarget, budget: WorkerBudget): Promise<TunnelState> {
   if (!proxy) return { ...state, proxyUrl: null, proxyPending: false };
   /*
    * A fixed address is an address only while something is behind it.

@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { KEEP_ONLINE_DEFAULT_MINUTES, SETUP_STEPS, type ManagerState, type SetupStep } from '../../../packages/contracts/src/index.js';
+import { KEEP_ONLINE_DEFAULT_MINUTES, parseAccessLinks, SETUP_STEPS, type AccessLinkPreference, type AccessLinkPreferences, type AccessLinkTarget, type ManagerState, type SetupStep } from '../../../packages/contracts/src/index.js';
 import { getPlatformPaths, type PlatformPaths } from '../../../packages/platform/src/index.js';
 import { LEGAL_META } from '../../../packages/legal/src/index.js';
 import { SILLYTAVERN_PORT } from './ports.js';
@@ -138,6 +138,8 @@ interface PersistedManagerState {
   readonly firstRunDeferred: boolean;
   /** The checklist steps seen done, which stay done; see `SetupChecklistState`. */
   readonly setupStepsDone: readonly SetupStep[];
+  /** How each door's addresses are offered; see `AccessLinkPreference`. */
+  readonly accessLinks: AccessLinkPreferences;
 }
 
 export interface StateStoreOptions {
@@ -212,6 +214,7 @@ export class StateStore {
         accessLinkOpened: false,
         firstRunDeferred: false,
         setupStepsDone: [],
+        accessLinks: parseAccessLinks(null),
       };
       await this.write(state);
       this.state = state;
@@ -409,6 +412,30 @@ export class StateStore {
     this.adminWriteQueue = previous.then(operation, operation);
     await this.adminWriteQueue;
     return done;
+  }
+
+  /** Change how one door's addresses are offered; returns every door's. */
+  public async setAccessLink(target: AccessLinkTarget, change: Partial<AccessLinkPreference>): Promise<AccessLinkPreferences> {
+    let result: AccessLinkPreferences = parseAccessLinks(null);
+    const operation = async (): Promise<void> => {
+      const state = await this.load();
+      const next = parseAccessLinks({ ...state.accessLinks, [target]: { ...state.accessLinks[target], ...change } });
+      result = next;
+      if (JSON.stringify(next) === JSON.stringify(state.accessLinks)) return;
+      const updated: PersistedManagerState = { ...state, accessLinks: next, updatedAt: this.now().toISOString() };
+      await this.write(updated);
+      this.state = updated;
+    };
+    const previous = this.adminWriteQueue;
+    this.adminWriteQueue = previous.then(operation, operation);
+    await this.adminWriteQueue;
+    return result;
+  }
+
+  /** Put every door's preference back at once, as a restore does. */
+  public async setAccessLinks(links: AccessLinkPreferences): Promise<void> {
+    await this.setAccessLink('sillyTavern', links.sillyTavern);
+    await this.setAccessLink('manager', links.manager);
   }
 
   /** Whether SillyTavern comes up with the manager. */
@@ -727,7 +754,10 @@ export class StateStore {
     // the panel writes down again whatever it finds already done.
     const recorded: readonly unknown[] = Array.isArray(input.setupStepsDone) ? input.setupStepsDone : [];
     const setupStepsDone = SETUP_STEPS.filter((step) => recorded.includes(step));
-    return { ...input, accessPasswordHash, accessPasscode, accessLanEnabled, sillyTavernPort, autoStartSillyTavern, firstInstallStartedAt, keepOnline, keepOnlineMinutes, keepOnlineOrigin, ownerAccountId, ownerAccountName, noticeAcknowledgedAt, saverMode, accessLinkOpened, firstRunDeferred, setupStepsDone } as unknown as PersistedManagerState;
+    // Absent in a file written before either address could be preferred: the
+    // fixed one first, and shown, which is what the console always did.
+    const accessLinks = parseAccessLinks(input.accessLinks);
+    return { ...input, accessPasswordHash, accessPasscode, accessLanEnabled, sillyTavernPort, autoStartSillyTavern, firstInstallStartedAt, keepOnline, keepOnlineMinutes, keepOnlineOrigin, ownerAccountId, ownerAccountName, noticeAcknowledgedAt, saverMode, accessLinkOpened, firstRunDeferred, setupStepsDone, accessLinks } as unknown as PersistedManagerState;
   }
 }
 

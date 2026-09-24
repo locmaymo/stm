@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { machineName, publicAddress, reachableAddresses, shortenHost } from '../src/addresses.js';
+import { machineName, publicAddress, publicLinks, reachableAddresses, shortenHost } from '../src/addresses.js';
 
 test('the tunnel comes first, then the network, then this machine', () => {
   const all = reachableAddresses({ url: 'https://example.trycloudflare.com' }, { lan: true, port: 8001 }, '192.168.1.20', 8000, true);
@@ -40,7 +40,10 @@ test('a fixed address in front of the tunnel is the one offered', () => {
     8000,
     false,
   );
-  assert.deepEqual(withProxy.map((address) => address.url), ['https://sillytavern.acme.workers.dev']);
+  // First, and the tunnel's own after it: still an address that works, and
+  // the card offers it behind a "+1".
+  assert.deepEqual(withProxy.map((address) => address.url), ['https://sillytavern.acme.workers.dev', 'https://example.trycloudflare.com']);
+  assert.deepEqual(withProxy.map((address) => address.link), ['fixed', 'tunnel']);
   // The tunnel behind it is still worth being able to see: it is what the
   // traffic really goes through, and the share sheet says so.
   assert.equal(withProxy[0]?.via, 'example.trycloudflare.com');
@@ -88,7 +91,9 @@ test('an address still being deployed is not an address anybody is given', () =>
 });
 
 test('a long host keeps its two ends and a short one is left alone', () => {
-  assert.equal(shortenHost('example.trycloudflare.com'), 'exam...flare.com');
+  assert.equal(shortenHost('example.trycloudflare.com'), 'examp...flare.com');
+  // A short kind of address keeps its last two labels whole.
+  assert.equal(shortenHost('sillytavern.acme.workers.dev'), 'silly...workers.dev');
   assert.equal(shortenHost('127.0.0.1:8000'), '127.0.0.1:8000');
   assert.equal(shortenHost('192.168.100.200:8001'), '192.168.100.200:8001');
 });
@@ -127,4 +132,16 @@ test('another machine is named by its hostname, or by both ends of its address',
   assert.equal(machineName('laptop'), 'laptop');
   assert.equal(machineName('studio-123456789012.hosted.example'), 'studio-12345...sted.example');
   assert.equal(machineName('studio.hosted.example'), 'studio.hosted.example');
+});
+
+test('the address the reader starred goes first, and a hidden fixed address is not offered', () => {
+  const both = { url: 'https://example.trycloudflare.com', proxyUrl: 'https://sillytavern.acme.workers.dev' };
+  assert.deepEqual(publicLinks(both).map((link) => link.kind), ['fixed', 'tunnel'], 'the fixed one first, as always, when nothing was chosen');
+  assert.deepEqual(publicLinks({ ...both, linkPreference: { preferred: 'tunnel', showFixed: true } }).map((link) => link.kind), ['tunnel', 'fixed']);
+  assert.equal(publicAddress({ ...both, linkPreference: { preferred: 'tunnel', showFixed: true } }), 'https://example.trycloudflare.com');
+  assert.deepEqual(publicLinks({ ...both, linkPreference: { preferred: 'fixed', showFixed: false } }).map((link) => link.kind), ['tunnel']);
+  // Preferring the tunnel's own address is not kept waiting for a Worker
+  // deploy nobody is going to use.
+  assert.equal(publicAddress({ ...both, proxyPending: true, linkPreference: { preferred: 'tunnel', showFixed: true } }), 'https://example.trycloudflare.com');
+  assert.equal(publicAddress({ ...both, proxyPending: true }), null);
 });

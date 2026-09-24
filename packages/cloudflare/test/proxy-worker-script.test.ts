@@ -80,7 +80,7 @@ test('with no tunnel behind it, the address says so instead of forwarding', asyn
     const page = await answer.text();
     assert.ok(page.includes('ready yet'), JSON.stringify(env));
     // Named, so a reader who has two of these addresses knows which one this is.
-    assert.ok(page.includes('the manager console'), JSON.stringify(env));
+    assert.ok(page.includes('STM isn’t ready yet'), JSON.stringify(env));
   }
   assert.equal(reached, false, 'nothing is forwarded into nowhere');
 

@@ -126,6 +126,9 @@ test('a machine that is gone leaves behind enough to be a machine again', async 
   await laptop.store.setKeepOnline(true, 5);
   await laptop.backups.setSchedule({ intervalMinutes: 180 });
   await laptop.r2.update({ hotIntervalMinutes: 15, keepDaily: 7 });
+  // And liked the tunnel's own address better than the fixed one.
+  await laptop.store.setAccessLink('sillyTavern', { preferred: 'tunnel' });
+  await laptop.store.setAccessLink('manager', { showFixed: false });
   assert.equal(await saveManagerSettings(laptop), true);
 
   // A different computer, set up from nothing an hour later. It has its own
@@ -178,6 +181,9 @@ test('a machine that is gone leaves behind enough to be a machine again', async 
   assert.equal(state.keepOnlineMinutes, 5);
   assert.deepEqual(toldKeeper, [{ enabled: true, minutes: 5 }]);
   assert.equal((await desktop.backups.getSchedule()).intervalMinutes, 180);
+  // Which address goes first came back with the rest of how it was set up.
+  assert.deepEqual(state.accessLinks, { sillyTavern: { preferred: 'tunnel', showFixed: true }, manager: { preferred: 'fixed', showFixed: false } });
+  assert.ok(result.applied.includes('accessLinks'));
   assert.equal((await desktop.r2.getConfig()).schedule.hotIntervalMinutes, 15);
   assert.equal((await desktop.r2.getConfig()).retention.keepDaily, 7);
 

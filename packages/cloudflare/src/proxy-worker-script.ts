@@ -39,7 +39,7 @@
  * Bump `PROXY_WORKER_VERSION` whenever the source changes; a manager that finds
  * an older version deployed replaces it.
  */
-export const PROXY_WORKER_VERSION = 4;
+export const PROXY_WORKER_VERSION = 5;
 
 /**
  * The two names, and what each one is in front of.
@@ -145,20 +145,20 @@ function offline(env, request) {
   const manager = env.TARGET === 'manager';
   const texts = manager ? {
     vi: {
-      title: 'Bảng điều khiển chưa sẵn sàng',
+      title: 'STM chưa sẵn sàng',
       check: 'Hãy kiểm tra:',
       s1: 'Máy tính đang chạy SillyTavern Manager đã bật và vẫn kết nối mạng.',
-      s2: 'Trong SillyTavern Manager, kiểm tra link bảng điều khiển đã bật chưa.',
-      note: 'Trang này sẽ tự mở bảng điều khiển ngay khi sẵn sàng, không cần tải lại.',
-      wait: 'Đang chờ liên kết bảng điều khiển của bạn',
+      s2: 'Trong Thiết lập của SillyTavern Manager, kiểm tra “Mở stm ra internet” đã bật chưa.',
+      note: 'Trang này sẽ tự mở STM ngay khi sẵn sàng, không cần tải lại.',
+      wait: 'Đang chờ liên kết STM của bạn',
     },
     en: {
-      title: 'The manager console isn’t ready yet',
+      title: 'STM isn’t ready yet',
       check: 'Things to check:',
       s1: 'The computer running SillyTavern Manager is on and connected.',
-      s2: 'In SillyTavern Manager, check that the console link is switched on.',
-      note: 'This page opens the manager console by itself as soon as it’s ready. No need to reload.',
-      wait: 'Waiting for your manager console link',
+      s2: 'In SillyTavern Manager’s settings, check that “Open stm to the internet” is switched on.',
+      note: 'This page opens STM by itself as soon as it’s ready. No need to reload.',
+      wait: 'Waiting for your STM link',
     },
   } : {
     vi: {
