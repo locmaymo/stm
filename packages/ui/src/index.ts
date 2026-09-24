@@ -7,6 +7,7 @@ export * from './shadcn/checkbox.js';
 export * from './shadcn/dialog.js';
 export * from './shadcn/dropdown-menu.js';
 export * from './shadcn/input.js';
+export * from './shadcn/textarea.js';
 export * from './shadcn/label.js';
 export * from './shadcn/progress.js';
 export * from './shadcn/radio-group.js';

@@ -445,6 +445,8 @@ export interface BackupManifest {
    */
   readonly autoNamed?: boolean;
   readonly fingerprint?: string;
+  /** What the reader wrote down about a restore point when they made it. */
+  readonly note?: string;
 }
 
 /** A connection setting that can come from `.env` instead of the panel. */
@@ -547,6 +549,8 @@ export interface StorageDurabilityReport {
    * chats.
    */
   readonly assurance: StorageAssurance;
+  /** What the machine calls itself, so the warning can name it. */
+  readonly machine?: string;
 }
 
 export type StorageAssurance = 'durable' | 'unverified' | 'temporary';

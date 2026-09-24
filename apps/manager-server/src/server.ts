@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
 import { readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
-import { networkInterfaces } from 'node:os';
+import { hostname, networkInterfaces } from 'node:os';
 import { createSocket } from 'node:dgram';
 import { extname, join, relative, resolve, sep } from 'node:path';
 import { applyQuery, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, isConsoleStatusSection, KEEP_ONLINE_DEFAULT_MINUTES, OPERATION_JOB_KINDS, type AccessGatewayState, type ApiErrorBody, type BackupManifest, type ConfigUpdateInput, type ConsoleStatus, type ConsoleStatusSection, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogPage, type LogSink, type LogSourceFilter, type LegalReview, type ManagerPorts, type ManagerUpdateStatus, type OnlineState, type PortSettings, type Profile, type ProfileLayout, type RestorePreview, type SetupStatus, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
@@ -1669,7 +1669,10 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     // The durability of this machine's disk rides along with the backup
     // settings because it is the same question: whether a copy somewhere else
     // is a precaution or the only thing keeping the data.
-    sendJson(response, 200, { config: await r2.getConfig(), storage: storageReport(store.paths) });
+    // The machine's own name goes with it, so the warning can say which
+    // machine it is about - a reader with a console open on two of them
+    // should not have to guess.
+    sendJson(response, 200, { config: await r2.getConfig(), storage: { ...storageReport(store.paths), machine: hostname() } });
     return;
   }
   if (pathname === '/api/v1/r2' && method === 'PUT') {
@@ -2161,6 +2164,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     if (!profile) { sendError(response, 409, 'profile_required', 'Create or activate a profile before creating a backup'); return; }
     const body = await readJson(request);
     const name = isRecord(body) && typeof body.name === 'string' ? body.name : undefined;
+    const note = isRecord(body) && typeof body.note === 'string' ? body.note : undefined;
     /*
      * Two things are asked for here. `scheduled` is "Back up now": the
      * automatic backup, taken without waiting for the schedule, which replaces
@@ -2184,6 +2188,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     const { job, signal } = jobs.createOperation('backup', logEvent('job.preparingBackup', 'Preparing backup'));
     void backups.create(profile, {
       ...(name && kind === 'manual' ? { name } : {}),
+      ...(note && kind === 'manual' ? { note } : {}),
       kind,
       signal,
       onProgress: ({ completed, total }) => jobs.updateOperation(job.id, total > 0 ? (completed / total) * 90 : 50, logEvent('job.compressingFiles', `Compressing files (${completed}/${total})`, { completed, total })),

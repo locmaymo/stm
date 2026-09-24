@@ -318,6 +318,20 @@ test('a backup records why it was taken, and is named for it when nobody named i
   assert.equal((await store.importArchive(fixture.profile, uploaded, 'from-my-laptop.zip')).manifest.kind, 'uploaded');
 });
 
+test('a restore point keeps the note written with it, trimmed and capped', async () => {
+  const fixture = await createFixture();
+  const store = new BackupStore({ paths: fixture.paths });
+  const noted = await store.create(fixture.profile, { name: 'before the big edit', note: '  rewrote the lore book\n  ' });
+  assert.equal(noted.note, 'rewrote the lore book');
+  const long = await store.create(fixture.profile, { note: 'x'.repeat(2000) });
+  assert.equal(long.note?.length, 500);
+  // Blank is no note at all, rather than an empty one to render.
+  const blank = await store.create(fixture.profile, { note: '   ' });
+  assert.equal('note' in blank, false);
+  const reopened = new BackupStore({ paths: fixture.paths });
+  assert.equal((await reopened.get(noted.id))?.note, 'rewrote the lore book');
+});
+
 test('each kind of backup is kept by its own rule', async () => {
   const fixture = await createFixture();
   let clock = new Date(2026, 8, 1, 9, 0).getTime();

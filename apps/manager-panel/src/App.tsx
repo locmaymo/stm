@@ -1,11 +1,11 @@
 import { useEffect, useId, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react';
 import { centralDirectoryOffset, ZIP_TAIL_SEARCH_BYTES } from './zip-tail.js';
 import {
-  Archive, ArrowDown, ArrowUp, ArrowUpRight, BarChart3, Cloud, Copy, Database, Download,
+  Archive, ArrowDown, ArrowUp, ArrowUpRight, BarChart3, Check, Cloud, Copy, Database, Download,
   Globe2, LayoutDashboard, Maximize2, Minimize2, Moon, Package, Pencil, Plus,
   LogOut, RotateCcw, ScrollText, Search, Sun, Trash2, Upload, Users as UsersIcon, X, Rows3,
   BrainCircuit, CircleStop, Clock3, Cpu, Ellipsis, Play, QrCode as QrCodeIcon, RefreshCw, Scale, Settings2, ShieldCheck, Square,
-  Blocks, BookmarkPlus, Bug, Feather, FileCode2, LoaderCircle, Gauge, History, KeyRound, Leaf, Monitor, CircleArrowUp, Star, TriangleAlert,
+  Blocks, BookmarkPlus, Bug, FileCode2, LoaderCircle, Gauge, History, KeyRound, Leaf, Monitor, CircleArrowUp, Star, TriangleAlert,
 } from 'lucide-react';
 import {
   Alert, AlertDescription, AlertTitle, AuthLayout, Badge, BrandMark, Button, buttonVariants, Card, CardAction,
@@ -15,7 +15,7 @@ import {
   Dialog, DialogBody, DialogContent, DialogDescription,
   DialogFooter, DialogHeader, DialogTitle,
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
-  Field, GithubMark, initialQuery, Input, Label, MobileNav, PageContainer, PasscodeInput, PasswordInput,
+  Field, GithubMark, initialQuery, Input, Label, MobileNav, PageContainer, PasscodeInput, PasswordInput, Textarea,
   Skeleton,
   RadioGroup, RadioGroupItem,
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -515,13 +515,14 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, refusal, onPr
           size="lg"
           className="w-full hover:opacity-90"
           style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }}
-          disabled={busy || cloudflareBusy}
+          disabled={busy}
+          loading={cloudflareBusy}
           // Live whether or not the box is ticked. Signing in this way is what
           // sets the manager up, so the agreement is still required first - it
           // is asked for by pointing at it, not by refusing to respond.
           onClick={() => { if (consented()) void signInWithCloudflare(); }}
         >
-          <CloudflareMark />{cloudflareBusy ? t('common.loading') : t('setup.cloudSignIn')}
+          <CloudflareMark />{t('setup.cloudSignIn')}
         </Button>}
       <span className="cloud-way-tag" aria-hidden="true">{t('setup.cloudRecommended')}</span>
     </div>
@@ -590,8 +591,8 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, refusal, onPr
                 Cloudflare redirect - which the reader has no other way of
                 being told about. */}
             {error ?? refusal ? <Alert variant="destructive"><AlertDescription>{error ?? refusal}</AlertDescription></Alert> : null}
-            <Button type="submit" size="lg" className="w-full" disabled={busy || cloudflareBusy || !ready}>
-              {busy ? t('common.loading') : setup ? t('setup.createAdmin') : t('setup.signIn')}
+            <Button type="submit" size="lg" className="w-full" disabled={cloudflareBusy || !ready} loading={busy}>
+              {setup ? t('setup.createAdmin') : t('setup.signIn')}
             </Button>
             {!setup ? cloudflareWay : null}
           </form>
@@ -911,13 +912,13 @@ function FirstRun({ t, csrfToken, preferences, onPreferencesChange, onDone }: { 
             <p className="text-sm text-muted-foreground">{t('setup.cloudBody')}</p>
           </div>
           <ul className="grid gap-2.5">
-            <li className="cloud-offer-point"><Feather /><span>{t('setup.cloudPointFree')}</span></li>
+            <li className="cloud-offer-point"><Leaf /><span>{t('setup.cloudPointFree')}</span></li>
             <li className="cloud-offer-point"><History /><span>{t('setup.cloudPointRestore')}</span></li>
           </ul>
           {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
           <div className="grid gap-2">
-            <Button size="lg" className="w-full hover:opacity-90" style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }} disabled={busy} onClick={() => void connect()}>
-              <CloudflareMark />{busy ? t('common.loading') : t('setup.cloudConnect')}
+            <Button size="lg" className="w-full hover:opacity-90" style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }} loading={busy} onClick={() => connect()}>
+              <CloudflareMark />{t('setup.cloudConnect')}
             </Button>
             <Button variant="ghost" size="lg" className="w-full" disabled={busy} onClick={onDone}>{t('setup.cloudSkip')}</Button>
           </div>
@@ -1124,6 +1125,16 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     } catch {
       opened?.close();
       // The card stays, and pressing again tries again.
+    }
+  };
+  /** The overview's half of the R2 check; see `R2ActivationActions`. */
+  const recheckR2 = async (quiet = false) => {
+    const outcome = await recheckR2Activation(csrfToken);
+    if (outcome.state === 'enabled') {
+      setR2Problem(null);
+      toast({ title: t('console.cfConnected', { bucket: outcome.config.cloudflare?.bucket ?? '' }), tone: 'success' });
+    } else if (!quiet) {
+      toast({ title: outcome.state === 'still_off' ? t('console.cfR2StillOff') : fail.body(outcome.payload, t('console.cfConnectFailed')), tone: 'destructive' });
     }
   };
 
@@ -1737,7 +1748,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
                     ? <Button size="sm" asChild style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }} className="hover:opacity-90">
                       <a href={reconnectUrl} target="_blank" rel="noopener noreferrer"><CloudflareMark />{t('console.r2DisplacedSignIn')}</a>
                     </Button>
-                    : <Button size="sm" style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }} className="hover:opacity-90" onClick={() => void signInToCloudflareAgain()}><CloudflareMark />{t('console.r2DisplacedSignIn')}</Button>}
+                    : <Button size="sm" style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }} className="hover:opacity-90" onClick={() => signInToCloudflareAgain()}><CloudflareMark />{t('console.r2DisplacedSignIn')}</Button>}
                   {/* Somebody who has moved to the other machine on purpose is
                       being told the same thing on every page for good. The
                       backup card goes on saying it where it matters. */}
@@ -1758,9 +1769,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
                 <AlertTitle>{t('console.cfR2NotEnabledTitle')}</AlertTitle>
                 <AlertDescription className="grid gap-2">
                   <span>{t('console.cfR2NotEnabledBody')}</span>
-                  <span><Button size="sm" asChild style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }} className="hover:opacity-90">
-                    <a href={CLOUDFLARE_R2_URL} target="_blank" rel="noopener noreferrer"><CloudflareMark />{t('console.cfR2NotEnabledAction')}</a>
-                  </Button></span>
+                  <R2ActivationActions t={t} onRecheck={recheckR2} />
                 </AlertDescription>
               </Alert></div>
               : null}
@@ -1895,7 +1904,7 @@ function RestoreEverythingCard({ t, offer, busy, onRestore, onDismiss }: {
       </ul>
       <p className="text-xs text-muted-foreground">{t('console.r2RestoreAllSafety')}</p>
       <div className="flex flex-wrap gap-2">
-        <Button size="sm" onClick={onRestore} disabled={busy}><History />{busy ? t('common.loading') : t('console.r2RestoreAll')}</Button>
+        <Button size="sm" onClick={onRestore} loading={busy}><History />{t('console.r2RestoreAll')}</Button>
         {/* Saying no is an answer. Without it this is a card about somebody
             else's machine that stays on every page for good. */}
         <Button size="sm" variant="ghost" onClick={onDismiss} disabled={busy}>{t('console.r2SettingsDismiss')}</Button>
@@ -1955,7 +1964,7 @@ function LegalReviewCard({ t, locale, review, busy, failure, checked, nudges, on
       />
       {failure ? <p className="install-error" role="alert">{failure}</p> : null}
       <div className="flex flex-wrap gap-2">
-        <Button size="sm" onClick={onAccept} disabled={busy}>{busy ? t('common.loading') : t('console.legalReviewAccept')}</Button>
+        <Button size="sm" onClick={onAccept} loading={busy}>{t('console.legalReviewAccept')}</Button>
       </div>
     </CardContent>
   </Card>;
@@ -2512,11 +2521,11 @@ function RuntimeCard({
         <CardAction className="runtime-actions">
           {installed ? <>
             {waitingForLink
-              ? <Button variant="outline" size="sm" onClick={() => void publish()} disabled={publishing || tunnel.mode !== 'off'}><Globe2 />{publishing || tunnel.mode !== 'off' ? t('common.loading') : t('console.getLink')}</Button>
+              ? <Button variant="outline" size="sm" onClick={() => publish()} loading={publishing || tunnel.mode !== 'off'}><Globe2 />{t('console.getLink')}</Button>
               : <Button variant="outline" size="sm" disabled={!running || primary === null} onClick={openPrimary}><ArrowUpRight />{t('console.openInTab')}</Button>}
             {running
               ? <Button variant="destructive" size="sm" onClick={() => setStopAsked(true)} disabled={pending}><Square />{t('dashboard.stop')}</Button>
-              : <Button size="sm" onClick={() => void run(onStart)} disabled={pending || installingNow}><Play />{pending ? t('common.loading') : t('dashboard.start')}</Button>}
+              : <Button size="sm" onClick={() => run(onStart)} disabled={installingNow} loading={pending}><Play />{t('dashboard.start')}</Button>}
           </> : null}
         </CardAction>
       </CardHeader>
@@ -2583,7 +2592,7 @@ function RuntimeCard({
               </Select>
               {alreadyInstalled
                 ? <Tooltip><TooltipTrigger asChild><span className="inline-flex"><Button variant="outline" size="sm" disabled><Download />{t('console.versionInstalled')}</Button></span></TooltipTrigger><TooltipContent>{t('console.versionInstalledHint')}</TooltipContent></Tooltip>
-                : <Button variant="success" size="sm" onClick={requestInstall} disabled={!csrfToken || installing || recovering !== null}><Download />{installing || recovering ? t('common.loading') : t('dashboard.install')}</Button>}
+                : <Button variant="success" size="sm" onClick={requestInstall} disabled={!csrfToken} loading={installing || recovering !== null}><Download />{t('dashboard.install')}</Button>}
             </dd>
           </div>
 
@@ -2621,8 +2630,8 @@ function RuntimeCard({
                 {/* Red, like every other stop in the console. An outline button
                     beside a progress bar read as a second, milder choice; it is
                     not - it ends the work the bar is measuring. */}
-                <Button variant="destructive" size="sm" disabled={stoppingInstall} onClick={() => void stopInstall()}>
-                  {stoppingInstall ? <LoaderCircle className="animate-spin" /> : <Square />}{stoppingInstall ? t('console.installStopping') : t('console.installStop')}
+                <Button variant="destructive" size="sm" loading={stoppingInstall} onClick={() => stopInstall()}>
+                  <Square />{stoppingInstall ? t('console.installStopping') : t('console.installStop')}
                 </Button>
               </div> : null}
             </dd>
@@ -2700,9 +2709,10 @@ function RuntimeCard({
       onSubmit={async (passcode, confirmPasscode) => {
         const failure = await onSetPassword(passcode, confirmPasscode);
         if (failure) return failure;
-        // The PIN was only ever the condition. Publishing is what was asked for.
+        // The PIN was only ever the condition. Publishing is what was asked
+        // for, and it goes on with the dialog already gone.
         setPublishing(true);
-        try { await onPublish(); } finally { setPublishing(false); }
+        void onPublish().finally(() => setPublishing(false));
         return null;
       }}
     />
@@ -2925,8 +2935,8 @@ function AccessPanel({ t, process, tunnel, config, security, sillyTavernPort, on
           if (failure) return failure;
           const next = waiting;
           setWaiting(null);
-          if (next === 'tunnel') await setTunnel(true);
-          if (next === 'lan') await setLanTo(true);
+          if (next === 'tunnel') void setTunnel(true);
+          if (next === 'lan') void setLanTo(true);
           return null;
         }}
       />
@@ -2991,7 +3001,7 @@ function PasswordDialog({ t, open, onOpenChange, title, description, note, minLe
         </DialogBody>
         <DialogFooter>
           <Button variant="ghost" onClick={() => close(false)}>{t('common.cancel')}</Button>
-          <Button onClick={() => void save()} disabled={busy || !ready}>{submitLabel}</Button>
+          <Button onClick={() => save()} disabled={busy || !ready}>{submitLabel}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -3004,72 +3014,104 @@ function PasswordDialog({ t, open, onOpenChange, title, description, note, minLe
  * Twice because a passcode that was mistyped once locks the door on its owner
  * from wherever they were going to use it, and there is no "forgot it" here -
  * only the console on the machine itself.
+ *
+ * The two entries used to be the same screen with a different sentence under
+ * the title, and people typed the confirmation believing they were still
+ * choosing. They are two steps now, and look it: a step marker at the top, a
+ * title and a mark of their own, and the second entry fills in green.
+ *
+ * The dialog goes the moment the second entry matches. Saving the PIN, and
+ * whatever it was the condition for - a link, the network - carries on
+ * behind it; a failure comes back as a notification rather than as a dialog
+ * that sat there spinning.
  */
 function PasscodeDialog({ t, open, onOpenChange, note, onSubmit }: { t: Translate; open: boolean; onOpenChange: (open: boolean) => void; note: string | null; onSubmit: (passcode: string, confirmPasscode: string) => Promise<string | null> }) {
   const [entered, setEntered] = useState('');
   const [confirmed, setConfirmed] = useState('');
   const [stage, setStage] = useState<'enter' | 'confirm'>('enter');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [mismatch, setMismatch] = useState(false);
+  const { toast } = useToast();
   const labels = { digit: t('console.passcodeDigit'), clear: t('console.passcodeClear'), backspace: t('console.passcodeBackspace') };
 
-  const close = (next: boolean) => {
-    onOpenChange(next);
-    if (!next) { setEntered(''); setConfirmed(''); setStage('enter'); setError(null); }
+  const reset = () => { setEntered(''); setConfirmed(''); setStage('enter'); setMismatch(false); };
+  // Cleared on the way in rather than the way out, so the dialog does not
+  // flick back to the first step while it fades.
+  useEffect(() => { if (open) reset(); }, [open]);
+  const close = (next: boolean) => { onOpenChange(next); };
+
+  const finish = (code: string) => {
+    const passcode = entered;
+    close(false);
+    void (async () => {
+      try {
+        const failure = await onSubmit(passcode, code);
+        // Success is announced by whoever saved it; only a failure is news here.
+        if (failure) toast({ title: failure, tone: 'destructive' });
+      } catch {
+        toast({ title: t('console.passwordSaveFailed'), tone: 'destructive' });
+      }
+    })();
   };
 
-  const save = async (code: string) => {
-    setBusy(true); setError(null);
-    try {
-      const failure = await onSubmit(entered, code);
-      if (failure) { setError(failure); setConfirmed(''); setStage('enter'); setEntered(''); return; }
-      close(false);
-    } finally { setBusy(false); }
-  };
-
-  const mismatch = stage === 'confirm' && confirmed.length === PASSCODE_DIGITS && confirmed !== entered;
+  const confirming = stage === 'confirm';
+  const steps = [
+    { id: 'enter', label: t('console.passcodeStepCreate') },
+    { id: 'confirm', label: t('console.passcodeStepConfirm') },
+  ] as const;
 
   return <Dialog open={open} onOpenChange={close}>
     {/* A dialog focuses its first field as it opens. On a touch screen that
         field is the one under the dots, and focus there is what used to bring
         the device's keypad up over the one drawn below it. */}
-    <DialogContent className="sm:max-w-sm" onOpenAutoFocus={(event) => { if (!window.matchMedia('(pointer: fine)').matches) event.preventDefault(); }}>
-      <DialogHeader>
-        <DialogTitle>{t('console.passwordSettings')}</DialogTitle>
-        <DialogDescription>{stage === 'enter' ? t('console.passcodeChoose') : t('console.passcodeRepeat')}</DialogDescription>
+    {/* No corner X: Cancel is at the bottom, and the X kept the header's
+        right edge free for itself, which put the centred title off centre. */}
+    <DialogContent className="sm:max-w-sm" showCloseButton={false} onOpenAutoFocus={(event) => { if (!window.matchMedia('(pointer: fine)').matches) event.preventDefault(); }}>
+      <DialogHeader className="items-center pr-5 text-center sm:text-center">
+        <ol className="passcode-steps mb-2" aria-label={t('console.passwordSettings')}>
+          {steps.map((step, index) => {
+            const state = step.id === stage ? 'current' : index === 0 && confirming ? 'done' : 'todo';
+            return <li key={step.id} className="passcode-step" data-state={state} aria-current={state === 'current' ? 'step' : undefined}>
+              <span className="passcode-step-mark" aria-hidden="true">{state === 'done' ? <Check /> : index + 1}</span>
+              <span>{step.label}</span>
+            </li>;
+          })}
+        </ol>
+        <span className="passcode-badge" data-stage={stage} aria-hidden="true">{confirming ? <ShieldCheck /> : <KeyRound />}</span>
+        <DialogTitle>{confirming ? t('console.passcodeConfirmTitle') : t('console.passcodeCreateTitle')}</DialogTitle>
+        <DialogDescription>{confirming ? t('console.passcodeRepeat') : t('console.passcodeChoose')}</DialogDescription>
       </DialogHeader>
       <DialogBody className="grid gap-4">
-        {stage === 'enter'
-          ? <PasscodeInput
-            key="enter"
-            value={entered}
-            onChange={(value) => { setEntered(value); setError(null); }}
-            onComplete={() => setStage('confirm')}
-            label={t('console.passwordSettings')}
-            length={PASSCODE_DIGITS}
-            labels={labels}
-            disabled={busy}
-            autoFocus
-          />
-          : <PasscodeInput
-            key="confirm"
-            value={confirmed}
-            onChange={(value) => setConfirmed(value)}
-            onComplete={(value) => { if (value === entered) void save(value); }}
-            label={t('console.confirmPassword')}
-            length={PASSCODE_DIGITS}
-            labels={labels}
-            disabled={busy}
-            autoFocus
-          />}
-        {mismatch ? <Alert variant="destructive"><AlertDescription>{t('setup.mismatch')}</AlertDescription></Alert> : null}
-        {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
-        {note ? <p className="text-xs text-muted-foreground">{note}</p> : null}
+        {/* Keyed on the step, so each one arrives rather than being the last
+            one with its dots emptied. */}
+        <div key={stage} className="animate-in fade-in slide-in-from-right-4 duration-200 motion-reduce:animate-none">
+          {confirming
+            ? <PasscodeInput
+              value={confirmed}
+              tone="success"
+              onChange={(value) => { setConfirmed(value); if (value.length > 0) setMismatch(false); }}
+              onComplete={(value) => { if (value === entered) finish(value); else { setMismatch(true); setConfirmed(''); } }}
+              label={t('console.confirmPassword')}
+              length={PASSCODE_DIGITS}
+              labels={labels}
+              autoFocus
+            />
+            : <PasscodeInput
+              value={entered}
+              onChange={setEntered}
+              onComplete={() => setStage('confirm')}
+              label={t('console.passwordSettings')}
+              length={PASSCODE_DIGITS}
+              labels={labels}
+              autoFocus
+            />}
+        </div>
+        {mismatch ? <Alert variant="destructive"><AlertDescription>{t('console.passcodeMismatch')}</AlertDescription></Alert> : null}
+        {note ? <p className="text-center text-xs text-muted-foreground">{note}</p> : null}
       </DialogBody>
       <DialogFooter>
-        <Button variant="ghost" onClick={() => close(false)} disabled={busy}>{t('common.cancel')}</Button>
-        {stage === 'confirm'
-          ? <Button variant="outline" onClick={() => { setStage('enter'); setConfirmed(''); }} disabled={busy}>{t('console.passcodeAgain')}</Button>
+        <Button variant="ghost" onClick={() => close(false)}>{t('common.cancel')}</Button>
+        {confirming
+          ? <Button variant="outline" onClick={reset}><RotateCcw />{t('console.passcodeAgain')}</Button>
           : null}
       </DialogFooter>
     </DialogContent>
@@ -3195,7 +3237,7 @@ function DataPanel({ t, navigate, latestBackup, snapshot, onRemeasure }: { t: Tr
       </div>
       {storage ? <p className="system-note">
         {storage.measuredAt ? <span>{t('system.sizesMeasuredAt')} {new Date(storage.measuredAt).toLocaleTimeString()}</span> : <span />}
-        <Button variant="ghost" size="sm" onClick={() => void onRemeasure()} disabled={storage.measuring}><RefreshCw />{storage.measuring ? t('system.measuring') : t('system.remeasure')}</Button>
+        <Button variant="ghost" size="sm" onClick={() => onRemeasure()} disabled={storage.measuring}><RefreshCw />{storage.measuring ? t('system.measuring') : t('system.remeasure')}</Button>
       </p> : null}
     </CardContent>
     <CardFooter><Button variant="outline" className="w-full" onClick={() => navigate('data')}><Database />{t('console.manageData')}<ArrowUpRight /></Button></CardFooter>
@@ -3849,12 +3891,12 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
    * accepted the job, so the dialog closes at once and the progress is shown
    * where the Stop button is.
    */
-  const startBackup = async (kind: 'scheduled' | 'manual', name = ''): Promise<string | null> => {
+  const startBackup = async (kind: 'scheduled' | 'manual', name = '', note = ''): Promise<string | null> => {
     const label = kind === 'scheduled' ? t('dashboard.backupNow') : t('console.manualBackup');
     setBusyAction(label); setOperationProgress(null);
     let jobId: string;
     try {
-      const response = await apiFetch('/api/v1/backups', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ kind, ...(name ? { name } : {}) }) });
+      const response = await apiFetch('/api/v1/backups', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ kind, ...(name ? { name } : {}), ...(note ? { note } : {}) }) });
       const payload = await response.json() as { jobId?: string; unchanged?: boolean; error?: { message?: string } };
       if (response.ok && payload.unchanged) { setBusyAction(null); toast({ title: t('console.backupUpToDate'), tone: 'default' }); return null; }
       if (!response.ok || !payload.jobId) { setBusyAction(null); return fail.body(payload, t('console.backupCreateFailed')); }
@@ -4216,6 +4258,25 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       setCloudflareSignInUrl(payload.url);
     } catch { tab?.close(); failed(t('console.cfConnectFailed')); } finally { setCloudflareBusy(false); }
   };
+  /*
+   * Ask again whether the account has R2 now.
+   *
+   * Turning R2 on happens in Cloudflare's dashboard, in another tab, and
+   * nothing tells this page when it is done. So it is asked when the reader
+   * says so, and quietly whenever they come back to this tab - which is
+   * what somebody who has just finished over there does next.
+   */
+  const recheckR2 = async (quiet = false) => {
+    const outcome = await recheckR2Activation(csrfToken);
+    if (outcome.state === 'enabled') {
+      setR2Config(outcome.config);
+      done(t('console.cfConnected', { bucket: outcome.config.cloudflare?.bucket ?? '' }));
+      await refresh();
+      await checkAfterConnect(outcome.config);
+    } else if (!quiet) {
+      failed(outcome.state === 'still_off' ? t('console.cfR2StillOff') : fail.body(outcome.payload, t('console.cfConnectFailed')));
+    }
+  };
   const chooseCloudflareAccount = async (accountId: string): Promise<string | null> => {
     if (!accountId) return null;
     setCloudflareBusy(true);
@@ -4434,7 +4495,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   const backupColumns: DataTableColumn<BackupManifest>[] = [
     // The kind rides under the name on a phone, where there is no room for a
     // column of its own, and has its column from `md` up.
-    { id: 'name', header: t('common.name'), sortable: true, cell: (backup) => <span className="grid min-w-0 justify-items-start gap-1"><span className="font-medium break-all" title={backup.name}>{displayName(backup)}</span><span className="md:hidden"><BackupKindBadge t={t} kind={backupKind(backup)} /></span></span> },
+    { id: 'name', header: t('common.name'), sortable: true, cell: (backup) => <span className="grid min-w-0 justify-items-start gap-1"><span className="font-medium break-all" title={backup.name}>{displayName(backup)}</span>{backup.note ? <span className="line-clamp-2 text-xs whitespace-pre-line text-muted-foreground" title={backup.note}>{backup.note}</span> : null}<span className="md:hidden"><BackupKindBadge t={t} kind={backupKind(backup)} /></span></span> },
     { id: 'kind', header: t('console.backupKind'), sortable: true, showFrom: 'md', cell: (backup) => <BackupKindBadge t={t} kind={backupKind(backup)} /> },
     { id: 'createdAt', header: t('console.backupCreated'), sortable: true, showFrom: 'sm', cell: (backup) => <span className="whitespace-nowrap text-muted-foreground">{new Date(backup.createdAt).toLocaleString()}</span> },
     { id: 'sizeBytes', header: t('console.backupSize'), sortable: true, align: 'end', showFrom: 'sm', cell: (backup) => <span className="whitespace-nowrap text-muted-foreground">{formatBytes(backup.sizeBytes)}</span> },
@@ -4510,23 +4571,45 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       // In saver mode there is no library to bring it into, so the row offers
       // what fetching was always the first half of: restoring it.
       cell: (snapshot) => saving
-        ? <Button variant="ghost" size="sm" className="whitespace-nowrap" onClick={() => void openPointRestore(snapshot)} disabled={r2Busy !== null}><RotateCcw />{t('console.restore')}</Button>
-        : <Button variant="ghost" size="sm" className="whitespace-nowrap" onClick={() => void fetchSnapshot(snapshot)} disabled={r2Busy !== null}><History />{t('console.r2Fetch')}</Button>,
+        ? <Button variant="ghost" size="sm" className="whitespace-nowrap" onClick={() => openPointRestore(snapshot)} disabled={r2Busy !== null}><RotateCcw />{t('console.restore')}</Button>
+        : <Button variant="ghost" size="sm" className="whitespace-nowrap" onClick={() => fetchSnapshot(snapshot)} disabled={r2Busy !== null}><History />{t('console.r2Fetch')}</Button>,
     },
   ];
 
   return <div className="grid min-w-0 gap-4">
-    <Card>
-      <PanelHeading icon={<UsersIcon />} action={<Button variant="outline" size="sm" onClick={() => setProfileOpen(true)} disabled={busy}><Plus />{t('console.newProfile')}</Button>}>{t('console.profilesTitle')}</PanelHeading>
-      <CardContent>
+    {/* First on the page, because it is the reason to read the rest of it. It
+        stops being shown once backups are leaving this machine: the storage is
+        still temporary then, but it no longer costs the reader anything.
+
+        Said about anything that is not plainly the reader's own computer, not
+        only about a filesystem caught being temporary. This console recognises
+        no hosting platform by name and so cannot vouch for any of them; an
+        unverified machine is told about in the same words as one already known
+        to be thrown away, because for the reader they are the same risk. */}
+    {storage && storage.assurance !== 'durable' && !(r2Config?.enabled && r2Config.configured) ? <Alert variant="destructive">
+      <TriangleAlert />
+      <AlertTitle>{t('console.storageTemporaryTitle')}</AlertTitle>
+      <AlertDescription className="grid gap-3">
+        <span>{storage.machine ? t('console.storageTemporaryBody', { machine: storage.machine }) : t('console.storageTemporaryBodyUnnamed')}</span>
+        {/* Straight to Cloudflare when nothing is connected yet, which is the
+            one press this warning is asking for; the form otherwise, because
+            whatever is half done is finished there. */}
+        <span><Button size="sm" style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }} className="hover:opacity-90" onClick={() => (cloudflare?.state === 'disconnected' ? connectCloudflare() : setDestinationOpen(true))} loading={cloudflareBusy}><CloudflareMark />{t('console.storageTemporaryConnect')}</Button></span>
+      </AlertDescription>
+    </Alert> : null}
+
+    {/* Which profile is in use, as the one control it takes. It had a card
+        heading and a field label of its own, which between them said "profile"
+        three times around a single dropdown. */}
+    <Card className="py-4">
+      <CardContent className="flex flex-wrap items-center gap-2">
         {activeProfile === null
-          ? <EmptyState icon={<UsersIcon />} title={t('console.noProfiles')} />
-          : <Field label={t('console.switchProfile')}>
-            <Select value={activeProfile.id} onValueChange={(id) => void activate(id)} disabled={busy}>
-              <SelectTrigger className="w-full sm:max-w-xs"><SelectValue /></SelectTrigger>
-              <SelectContent>{profiles.map((profile) => <SelectItem key={profile.id} value={profile.id}>{profile.name}</SelectItem>)}</SelectContent>
-            </Select>
-          </Field>}
+          ? <span className="flex min-w-0 flex-1 items-center gap-2 text-sm text-muted-foreground"><UsersIcon className="size-4" />{t('console.noProfiles')}</span>
+          : <Select value={activeProfile.id} onValueChange={(id) => void activate(id)} disabled={busy}>
+            <SelectTrigger className="min-w-0 flex-1 sm:max-w-xs" aria-label={t('console.switchProfile')}><UsersIcon className="text-muted-foreground" /><SelectValue /></SelectTrigger>
+            <SelectContent>{profiles.map((profile) => <SelectItem key={profile.id} value={profile.id}>{profile.name}</SelectItem>)}</SelectContent>
+          </Select>}
+        <Button variant="outline" onClick={() => setProfileOpen(true)} disabled={busy}><Plus />{t('console.newProfile')}</Button>
       </CardContent>
     </Card>
 
@@ -4552,6 +4635,21 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
           </DetailRow> : null}
         </div> : null}
         {mixedProfile ? <Alert variant="destructive"><AlertDescription>{mixedProfile}</AlertDescription></Alert> : null}
+        {/* The three things to do here, in a row of their own above the list
+            rather than squeezed in beside its search box, where they wrapped
+            into a staircase at every width between a phone and a desktop.
+            Uploading comes first and filled in: it is the one people come to
+            this card to do. */}
+        <div className="grid gap-2 sm:flex sm:flex-wrap">
+          <label className={cn(buttonVariants({ size: 'sm' }), 'cursor-pointer has-[:disabled]:pointer-events-none has-[:disabled]:opacity-50')}>
+            <Upload aria-hidden="true" />{t('console.importZip')}
+            <input type="file" accept=".zip,application/zip" className="sr-only" disabled={busy} onChange={(event) => void inspectUpload(event.target.files?.[0])} />
+          </label>
+          {saving ? null : <>
+            <Button variant="outline" size="sm" onClick={() => setBackupOpen(true)} disabled={busy || activeProfileId === null}><BookmarkPlus />{t('console.manualBackup')}</Button>
+            <Button variant="outline" size="sm" onClick={() => startBackup('scheduled').then((failure) => { if (failure) failed(failure); })} disabled={busy || activeProfileId === null}><Archive />{t('dashboard.backupNow')}</Button>
+          </>}
+        </div>
         {busyAction ? <OperationProgress t={t} label={busyAction} progress={operationProgress} canStop={uploading || runningJobId !== null} stopping={stopping} onStop={() => void stopOperation()} warning={uploading ? t('console.uploadKeepTabOpen') : null} /> : null}
         <DataTable
           rows={kindFilter === 'all' ? backups : backups.filter((backup) => backupKind(backup) === kindFilter)}
@@ -4563,42 +4661,16 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
           searchText={(backup) => `${displayName(backup)} ${backupSearchText(backup)}`}
           sortValue={(backup, column) => column === 'name' ? displayName(backup) : backupSortValue(backup, column)}
           empty={<EmptyState icon={<Archive />} title={t('dashboard.noBackup')} />}
-          toolbar={<div className="flex flex-1 flex-wrap items-center justify-end gap-2">
-            <Select value={kindFilter} onValueChange={(value) => { setKindFilter(value as BackupKind | 'all'); setBackupQuery((current) => ({ ...current, page: 1 })); }}>
-              <SelectTrigger size="sm" className="mr-auto w-44" aria-label={t('console.backupKind')}><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">{t('console.backupKindAll')}</SelectItem>
-                {BACKUP_KINDS.map((kind) => <SelectItem key={kind} value={kind}>{t(BACKUP_KIND_LABEL[kind])}</SelectItem>)}
-              </SelectContent>
-            </Select>
-            {saving ? null : <>
-              <Button size="sm" onClick={() => void startBackup('scheduled').then((failure) => { if (failure) failed(failure); })} disabled={busy || activeProfileId === null}><Archive />{t('dashboard.backupNow')}</Button>
-              <Button variant="outline" size="sm" onClick={() => setBackupOpen(true)} disabled={busy || activeProfileId === null}><BookmarkPlus />{t('console.manualBackup')}</Button>
-            </>}
-            <label className={cn(buttonVariants({ variant: 'outline', size: 'sm' }), 'cursor-pointer')}>
-              <Upload aria-hidden="true" />{t('console.importZip')}
-              <input type="file" accept=".zip,application/zip" className="sr-only" disabled={busy} onChange={(event) => void inspectUpload(event.target.files?.[0])} />
-            </label>
-          </div>}
+          toolbar={<Select value={kindFilter} onValueChange={(value) => { setKindFilter(value as BackupKind | 'all'); setBackupQuery((current) => ({ ...current, page: 1 })); }}>
+            <SelectTrigger size="sm" className="w-full sm:w-44" aria-label={t('console.backupKind')}><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">{t('console.backupKindAll')}</SelectItem>
+              {BACKUP_KINDS.map((kind) => <SelectItem key={kind} value={kind}>{t(BACKUP_KIND_LABEL[kind])}</SelectItem>)}
+            </SelectContent>
+          </Select>}
         />
       </CardContent>
     </Card>
-
-    {/* Said above the card rather than inside it, because it is the reason to
-        read the card at all. It stops being shown once backups are leaving this
-        machine: at that point the storage is still temporary and it no longer
-        costs the reader anything, so repeating it would only be noise.
-
-        Said about anything that is not plainly the reader's own computer, not
-        only about a filesystem caught being temporary. This console recognises
-        no hosting platform by name and so cannot vouch for any of them; an
-        unverified machine is told about in the same words as one already known
-        to be thrown away, because for the reader they are the same risk. */}
-    {storage && storage.assurance !== 'durable' && !(r2Config?.enabled && r2Config.configured) ? <Alert variant="destructive">
-      <TriangleAlert />
-      <AlertTitle>{t('console.storageTemporaryTitle')}</AlertTitle>
-      <AlertDescription>{t('console.storageTemporaryBody')}</AlertDescription>
-    </Alert> : null}
 
     <Card className="cloud-card">
       <PanelHeading icon={<Cloud />}>
@@ -4630,7 +4702,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
           <AlertTitle>{t('console.cfR2NotEnabledTitle')}</AlertTitle>
           <AlertDescription className="grid gap-2">
             <span>{t('console.cfR2NotEnabledBody')}</span>
-            <a className="font-medium underline underline-offset-4" href={CLOUDFLARE_R2_URL} target="_blank" rel="noopener noreferrer">{t('console.cfR2NotEnabledAction')}</a>
+            <R2ActivationActions t={t} onRecheck={recheckR2} />
           </AlertDescription>
         </Alert> : null}
         {/*
@@ -4659,7 +4731,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
             <span>{t('console.r2SettingsBody', { name: settingsOffer.label ?? '', when: settingsOffer.writtenAt ? new Date(settingsOffer.writtenAt).toLocaleString() : '' })}</span>
             {settingsOffer.hasAdminPassword ? <span className="text-xs">{t('console.r2SettingsPasswordWarning')}</span> : null}
             <span className="flex flex-wrap gap-2">
-              <Button size="sm" variant="outline" onClick={() => void restoreManagerSettings()} disabled={r2Busy !== null}>{t('console.r2SettingsRestore')}</Button>
+              <Button size="sm" variant="outline" onClick={() => restoreManagerSettings()} disabled={r2Busy !== null}>{t('console.r2SettingsRestore')}</Button>
               <Button size="sm" variant="ghost" disabled={r2Busy !== null} onClick={() => {
                 const when = settingsOffer.writtenAt;
                 if (when) saveDismissedSettings(when, browserStorage());
@@ -4718,7 +4790,9 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
               because it is one question; the two ways of answering it are both
               inside the one form behind this button. */}
           <DetailRow label={t('console.r2Destination')} hint={destination}>
-            <Button variant="outline" size="sm" onClick={() => setDestinationOpen(true)}>{r2Config?.configured || displaced ? t('console.r2Change') : t('console.r2DestinationSet')}</Button>
+            {r2Config?.configured || displaced
+              ? <Button variant="outline" size="sm" onClick={() => setDestinationOpen(true)}>{t('console.r2Change')}</Button>
+              : <Button size="sm" onClick={() => setDestinationOpen(true)}><Cloud />{t('console.r2DestinationSet')}</Button>}
           </DetailRow>
           {/* Then the two things there are to do with a bucket: send to it now,
               and look at it. Everything else that used to be a button here
@@ -4730,9 +4804,9 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
                 a desktop card has the width, and stacking them there left a
                 column of two short buttons against a row with a name on it. */}
             <div className="flex flex-col gap-2 sm:flex-row">
-              <Button size="sm" onClick={() => void uploadR2()} disabled={r2Busy !== null || !r2Config.enabled}><Upload />{t('console.r2UploadLatest')}</Button>
+              <Button size="sm" onClick={() => uploadR2()} disabled={r2Busy !== null || !r2Config.enabled}><Upload />{t('console.r2UploadLatest')}</Button>
               <Tooltip><TooltipTrigger asChild><span className="inline-flex">
-                <Button variant="outline" size="sm" className="w-full sm:w-auto" onClick={() => void checkR2()} disabled={r2Busy !== null}><ShieldCheck />{t('console.r2CheckNow')}</Button>
+                <Button variant="outline" size="sm" className="w-full sm:w-auto" onClick={() => checkR2()} disabled={r2Busy !== null}><ShieldCheck />{t('console.r2CheckNow')}</Button>
               </span></TooltipTrigger><TooltipContent>{t('console.r2CheckHint')}</TooltipContent></Tooltip>
             </div>
             {/* Backups taken under the old whole-file scheme. Nothing reads them
@@ -4797,11 +4871,12 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       open={backupOpen}
       onOpenChange={setBackupOpen}
       title={t('console.manualBackup')}
-      label={t('common.name')}
+      label={t('console.backupNameLabel')}
       hint={t('console.backupNameHint')}
+      note={{ label: t('console.backupNoteLabel'), hint: t('console.backupNoteHint') }}
       submitLabel={t('console.manualBackup')}
       optional
-      onSubmit={(name) => startBackup('manual', name)}
+      onSubmit={(name, note) => startBackup('manual', name, note)}
     />
     <NameDialog
       t={t}
@@ -4836,6 +4911,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       onChooseAccount={chooseCloudflareAccount}
       onChooseBucket={chooseCloudflareBucket}
       onDisconnect={() => setDisconnectOpen(true)}
+      onRecheckR2={recheckR2}
       onUseCloudflare={backUpToCloudflare}
       onSaveKeys={saveR2Keys}
     />
@@ -4888,6 +4964,66 @@ const CLOUDFLARE_R2_URL = 'https://dash.cloudflare.com/?to=/:account/r2/overview
  * notification that was gone in a few seconds, which meant the reader could
  * press a button, look away, and be left exactly as uncertain as before.
  */
+type R2Activation =
+  | { readonly state: 'enabled'; readonly config: R2Config }
+  | { readonly state: 'still_off' }
+  | { readonly state: 'failed'; readonly payload: unknown };
+
+/**
+ * Choose the account again, which is how a bucket gets made once R2 is on.
+ *
+ * The connection keeps the account that failed for exactly this, so nothing
+ * has to be picked a second time.
+ */
+async function recheckR2Activation(csrfToken: string): Promise<R2Activation> {
+  try {
+    const current = await apiFetch('/api/v1/r2', { credentials: 'same-origin' });
+    const accountId = current.ok ? (await current.json() as { config: R2Config }).config.cloudflare?.account?.id : undefined;
+    if (!accountId) return { state: 'failed', payload: null };
+    const response = await apiFetch('/api/v1/r2/cloudflare/account', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ accountId }) });
+    const payload = await response.json().catch(() => null) as { config?: R2Config; error?: { code?: string } } | null;
+    if (response.ok && payload?.config?.cloudflare?.state === 'connected') return { state: 'enabled', config: payload.config };
+    if (payload?.error?.code === 'cloudflare_r2_not_enabled') return { state: 'still_off' };
+    return { state: 'failed', payload };
+  } catch {
+    return { state: 'failed', payload: null };
+  }
+}
+
+/** How often coming back to the tab may ask Cloudflare again. */
+const R2_RECHECK_GAP_MS = 5000;
+
+/**
+ * The way to R2 on Cloudflare, and the way back from it.
+ *
+ * The link went to Cloudflare and that was all: somebody who turned R2 on and
+ * came back found the same warning, with nothing to say they had done it. Now
+ * there is a button for that, and the page asks by itself whenever the tab
+ * comes back into view - which is what finishing over there looks like from
+ * here.
+ */
+function R2ActivationActions({ t, onRecheck }: { t: Translate; onRecheck: (quiet?: boolean) => Promise<void> }) {
+  const last = useRef(0);
+  const latest = useRef(onRecheck);
+  latest.current = onRecheck;
+  useEffect(() => {
+    const back = () => {
+      if (document.visibilityState !== 'visible' || Date.now() - last.current < R2_RECHECK_GAP_MS) return;
+      last.current = Date.now();
+      void latest.current(true);
+    };
+    window.addEventListener('focus', back);
+    document.addEventListener('visibilitychange', back);
+    return () => { window.removeEventListener('focus', back); document.removeEventListener('visibilitychange', back); };
+  }, []);
+  return <span className="flex flex-wrap items-center gap-2">
+    <Button size="sm" asChild style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }} className="hover:opacity-90">
+      <a href={CLOUDFLARE_R2_URL} target="_blank" rel="noopener noreferrer"><CloudflareMark />{t('console.cfR2NotEnabledAction')}</a>
+    </Button>
+    <Button size="sm" variant="outline" onClick={() => { last.current = Date.now(); return onRecheck(false); }}><RefreshCw />{t('console.cfR2Recheck')}</Button>
+  </span>;
+}
+
 function R2CheckLine({ t, check }: { t: Translate; check: R2CheckResult }) {
   const when = new Date(check.checkedAt);
   const fresh = Date.now() - when.getTime() < 60_000;
@@ -4912,7 +5048,7 @@ function OperationProgress({ t, label, progress, canStop, stopping, onStop, warn
   return <div className="grid gap-2 rounded-lg border bg-muted/40 p-3" role="status">
     <div className="flex flex-wrap items-center justify-between gap-2">
       <TaskLine task={label} step={progress?.step ?? t('console.taskPreparing')} {...(progress ? { percent: progress.percent } : {})} />
-      {canStop ? <Button variant="destructive" size="sm" onClick={onStop} disabled={stopping} aria-busy={stopping}>{stopping ? <LoaderCircle className="animate-spin" /> : <CircleStop />}{stopping ? t('console.stopping') : t('common.stop')}</Button> : null}
+      {canStop ? <Button variant="destructive" size="sm" onClick={onStop} loading={stopping}><CircleStop />{stopping ? t('console.stopping') : t('common.stop')}</Button> : null}
     </div>
     <TaskBar {...(progress ? { percent: Math.max(2, progress.percent) } : {})} />
     {warning ? <span className="text-xs text-destructive">{warning}</span> : null}
@@ -4972,6 +5108,11 @@ function BackgroundTaskCard({ t, catalog, job }: { t: Translate; catalog: Record
   </Card>;
 }
 
+/** A field's name, and a quiet word beside it when it can be left empty. */
+function FieldLabel({ label, optional }: { label: string; optional: string }) {
+  return <span className="flex items-center gap-1.5">{label}<span className="text-xs font-normal text-muted-foreground">({optional})</span></span>;
+}
+
 /**
  * One field, and the button that uses it.
  *
@@ -4980,21 +5121,22 @@ function BackgroundTaskCard({ t, catalog, job }: { t: Translate; catalog: Record
  * be translated, could not be styled, and asked in the browser's voice rather
  * than this program's.
  */
-function NameDialog({ t, open, onOpenChange, title, label, hint, initial = '', submitLabel, optional = false, onSubmit }: { t: Translate; open: boolean; onOpenChange: (open: boolean) => void; title: string; label: string; hint?: string; initial?: string; submitLabel: string; optional?: boolean; onSubmit: (name: string) => Promise<string | null> }) {
+function NameDialog({ t, open, onOpenChange, title, label, hint, note, initial = '', submitLabel, optional = false, onSubmit }: { t: Translate; open: boolean; onOpenChange: (open: boolean) => void; title: string; label: string; hint?: string; /** A second, free-text field under the name, for a line about why. */ note?: { label: string; hint: string }; initial?: string; submitLabel: string; optional?: boolean; onSubmit: (name: string, note: string) => Promise<string | null> }) {
   const [name, setName] = useState(initial);
+  const [noteText, setNoteText] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // The dialog stays mounted, so what was typed last time is cleared on the way
   // in rather than on the way out: a rename has to open on the name of the row
   // that was actually pressed.
-  useEffect(() => { if (open) { setName(initial); setError(null); } }, [open, initial]);
+  useEffect(() => { if (open) { setName(initial); setNoteText(''); setError(null); } }, [open, initial]);
   const ready = optional || name.trim().length > 0;
 
   const submit = async () => {
     if (!ready || busy) return;
     setBusy(true); setError(null);
     try {
-      const failure = await onSubmit(name.trim());
+      const failure = await onSubmit(name.trim(), noteText.trim());
       setError(failure);
       if (!failure) onOpenChange(false);
     } finally { setBusy(false); }
@@ -5004,14 +5146,17 @@ function NameDialog({ t, open, onOpenChange, title, label, hint, initial = '', s
     <DialogContent className="sm:max-w-md">
       <DialogHeader><DialogTitle>{title}</DialogTitle></DialogHeader>
       <DialogBody className="grid gap-4">
-        <Field label={label} hint={hint}>
+        <Field label={optional ? <FieldLabel label={label} optional={t('common.optional')} /> : label} hint={hint}>
           <Input value={name} onChange={(event) => setName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); void submit(); } }} autoComplete="off" />
         </Field>
+        {note ? <Field label={<FieldLabel label={note.label} optional={t('common.optional')} />} hint={note.hint}>
+          <Textarea value={noteText} onChange={(event) => setNoteText(event.target.value)} rows={3} maxLength={500} className="max-h-40 resize-none" />
+        </Field> : null}
         {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
       </DialogBody>
       <DialogFooter>
         <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={busy}>{t('common.cancel')}</Button>
-        <Button onClick={() => void submit()} disabled={busy || !ready}>{submitLabel}</Button>
+        <Button onClick={() => submit()} disabled={busy || !ready}>{submitLabel}</Button>
       </DialogFooter>
     </DialogContent>
   </Dialog>;
@@ -5119,7 +5264,7 @@ function RestoreDialog({ t, catalog, name, safety, preview, mode, onModeChange, 
       </DialogBody>
       <DialogFooter>
         <Button variant="ghost" onClick={onClose}>{t('common.cancel')}</Button>
-        <Button variant={mode === 'replace' ? 'destructive' : 'default'} disabled={(unrecognized && !anyway) || blockedBySize} onClick={() => void onRestore()}>{t('console.restoreStart')}</Button>
+        <Button variant={mode === 'replace' ? 'destructive' : 'default'} disabled={(unrecognized && !anyway) || blockedBySize} onClick={() => onRestore()}>{t('console.restoreStart')}</Button>
       </DialogFooter>
     </DialogContent>
   </Dialog>;
@@ -5171,7 +5316,7 @@ function CloudflareSignInNotice({ t, url, onDismiss }: { t: Translate; url?: str
  * to. Saving means "use this one", which is the choice that used to need a
  * confirmation dialog of its own, asked here where it is being made.
  */
-function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled, signInUrl, onDismissSignIn, onConnect, onChooseAccount, onChooseBucket, onDisconnect, onUseCloudflare, onSaveKeys }: {
+function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled, signInUrl, onDismissSignIn, onConnect, onChooseAccount, onChooseBucket, onDisconnect, onRecheckR2, onUseCloudflare, onSaveKeys }: {
   t: Translate;
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -5186,6 +5331,7 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled
   onChooseAccount: (accountId: string) => Promise<string | null>;
   onChooseBucket: (name: string) => Promise<string | null>;
   onDisconnect: () => void;
+  onRecheckR2: (quiet?: boolean) => Promise<void>;
   onUseCloudflare: () => Promise<void>;
   onSaveKeys: (form: R2KeysForm & { readonly enabled?: boolean }) => Promise<string | null>;
 }) {
@@ -5283,6 +5429,7 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled
               onChooseAccount={async () => { setError(await onChooseAccount(account)); }}
               onChooseBucket={async (name) => { setError(await onChooseBucket(name)); }}
               onDisconnect={onDisconnect}
+              onRecheckR2={onRecheckR2}
             />
           </div> : null}
           <div className="grid gap-3 rounded-lg border p-3 has-[[data-state=checked]]:border-primary has-[[data-state=checked]]:bg-primary/5">
@@ -5314,9 +5461,8 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled
         {error && !(choice === 'cloudflare' && cloudflare?.problem === 'r2_not_enabled') ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
       </DialogBody>
       <DialogFooter>
-        {cloudflarePending ? <span className="mr-auto text-xs text-muted-foreground">{t('console.r2SaveNeedsCloudflare')}</span> : null}
         <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={saving}>{t('common.cancel')}</Button>
-        <Button onClick={() => void save()} disabled={saving || !canSave}>{t('common.save')}</Button>
+        <Button onClick={() => save()} disabled={saving || !canSave}>{t('common.save')}</Button>
       </DialogFooter>
     </DialogContent>
   </Dialog>;
@@ -5330,7 +5476,7 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled
  * dialog of its own on top of this one. The buckets are asked for when this
  * first shows connected, which is the only moment the list is wanted.
  */
-function CloudflareMethod({ t, status, busy, account, signInUrl, onAccountChange, onConnect, onChooseAccount, onChooseBucket, onDisconnect }: {
+function CloudflareMethod({ t, status, busy, account, signInUrl, onAccountChange, onConnect, onChooseAccount, onChooseBucket, onDisconnect, onRecheckR2 }: {
   t: Translate;
   status: NonNullable<R2Config['cloudflare']>;
   busy: boolean;
@@ -5348,6 +5494,7 @@ function CloudflareMethod({ t, status, busy, account, signInUrl, onAccountChange
   onChooseAccount: () => Promise<void>;
   onChooseBucket: (name: string) => Promise<void>;
   onDisconnect: () => void;
+  onRecheckR2: (quiet?: boolean) => Promise<void>;
 }) {
   // Cloudflare's own colour, because this button hands the reader over to
   // Cloudflare and they decide whether to trust it by recognising it.
@@ -5406,7 +5553,7 @@ function CloudflareMethod({ t, status, busy, account, signInUrl, onAccountChange
             {status.accounts.map((entry) => <SelectItem key={entry.id} value={entry.id}>{entry.name}</SelectItem>)}
           </SelectContent>
         </Select>
-        <Button size="sm" onClick={() => void onChooseAccount()} disabled={busy || !account}>{t('console.cfUseAccount')}</Button>
+        <Button size="sm" onClick={() => onChooseAccount()} disabled={busy || !account}>{t('console.cfUseAccount')}</Button>
         {/* Signed in, with the account still to pick - and no way back out. The
             grant exists from this point on, so the way to give it back has to
             exist from this point on too, and this is where somebody who has
@@ -5419,7 +5566,7 @@ function CloudflareMethod({ t, status, busy, account, signInUrl, onAccountChange
           with the sign-in itself in perfect order. The way out is on Cloudflare. */}
       {status.problem === 'r2_not_enabled' ? <Alert variant="destructive"><TriangleAlert /><AlertDescription className="grid gap-2">
         <span>{t('console.cfR2NotEnabledBody')}</span>
-        <a className="font-medium underline underline-offset-4" href={CLOUDFLARE_R2_URL} target="_blank" rel="noopener noreferrer">{t('console.cfR2NotEnabledAction')}</a>
+        <R2ActivationActions t={t} onRecheck={onRecheckR2} />
       </AlertDescription></Alert> : null}
     </div>;
   }
@@ -5523,7 +5670,7 @@ function R2ScheduleDialog({ t, open, onOpenChange, config, onSave }: { t: Transl
       </DialogBody>
       <DialogFooter>
         <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={busy}>{t('common.cancel')}</Button>
-        <Button onClick={() => void save()} disabled={busy}>{t('common.save')}</Button>
+        <Button onClick={() => save()} disabled={busy}>{t('common.save')}</Button>
       </DialogFooter>
     </DialogContent>
   </Dialog>;
@@ -6288,8 +6435,8 @@ function PortsCard({ t, ports, process, busy, onPortChange }: { t: Translate; po
               aria-invalid={failure !== null}
               onChange={(event) => { setValue(event.target.value); setError(null); }}
             />
-            <Button size="sm" disabled={busy || saving || unchanged || failure !== null} onClick={() => setConfirmOpen(true)}>
-              {saving ? <LoaderCircle className="animate-spin" /> : null}{t('common.save')}
+            <Button size="sm" disabled={busy || unchanged || failure !== null} loading={saving} onClick={() => setConfirmOpen(true)}>
+              {t('common.save')}
             </Button>
           </div>
         </DetailRow>
@@ -6628,7 +6775,7 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
             </div> : null}
           </CardContent>
           <CardFooter className="justify-end">
-            <Button onClick={() => setSaveOpen(true)} disabled={busy}>{busy ? <LoaderCircle className="animate-spin" /> : null}{t('console.saveChanges')}</Button>
+            <Button onClick={() => setSaveOpen(true)} loading={busy}>{t('console.saveChanges')}</Button>
           </CardFooter>
         </Card>
         <ConfirmDialog
@@ -6751,8 +6898,8 @@ function StartOverDialog({ t, open, onOpenChange, onErase }: { t: Translate; ope
       </DialogBody>
       <DialogFooter>
         <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={busy}>{t('common.cancel')}</Button>
-        <Button variant="destructive" onClick={() => void erase()} disabled={!ready}>
-          {busy ? <LoaderCircle className="animate-spin" /> : <Trash2 />}
+        <Button variant="destructive" onClick={() => erase()} disabled={!ready} loading={busy}>
+          <Trash2 />
           {busy ? t('console.resetRunning') : remaining > 0 ? t('console.resetCountdown', { seconds: remaining }) : t('console.resetAction')}
         </Button>
       </DialogFooter>
@@ -6827,7 +6974,7 @@ function YamlDialog({ t, open, onOpenChange, initial, busy, onApply }: { t: Tran
       </DialogBody>
       <DialogFooter>
         <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={busy}>{t('common.cancel')}</Button>
-        <Button onClick={() => void apply()} disabled={busy}>{t('console.applyYaml')}</Button>
+        <Button onClick={() => apply()} disabled={busy}>{t('console.applyYaml')}</Button>
       </DialogFooter>
     </DialogContent>
   </Dialog>;

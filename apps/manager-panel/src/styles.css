@@ -863,16 +863,21 @@
 }
 .cloud-offer-tile svg { width: 21px; height: 21px; }
 /*
- * The far end is the point of the screen, so it is the one that is filled in -
- * and it is filled in Cloudflare's orange, the one borrowed colour on the
- * card, because that is whose storage it stands for. Everything around it
- * stays the console's own blue: the orange is a label, not a theme.
+ * The far end is the point of the screen, so it is the one that is filled in,
+ * in the console's own colour: the storage is the reader's, and Cloudflare's
+ * orange is kept for the button that hands them over to Cloudflare. The near
+ * end is tinted the same colour rather than left white, so the two read as
+ * one pair joined by the stream.
  */
+.cloud-offer-node:not(.cloud-offer-node-away) .cloud-offer-tile {
+  background: color-mix(in srgb, var(--primary) 12%, var(--card));
+  color: var(--primary);
+}
 .cloud-offer-node-away .cloud-offer-tile {
   border-color: transparent;
-  background: var(--cloudflare);
-  box-shadow: 0 8px 20px -10px color-mix(in srgb, var(--cloudflare) 90%, transparent);
-  color: #fff;
+  background: var(--primary);
+  box-shadow: 0 8px 20px -10px color-mix(in srgb, var(--primary) 90%, transparent);
+  color: var(--primary-foreground);
 }
 .cloud-offer-label { color: var(--muted-foreground); font-size: 11px; line-height: 1.3; text-align: center; }
 /*
@@ -1213,3 +1218,24 @@
   .log-density-toggle { margin-left: 0; }
   .config-editor { min-height: 24rem; }
 }
+
+/*
+ * The two steps of setting a PIN.
+ *
+ * Choosing and confirming used to be one screen with the sentence under the
+ * title changed, and the confirmation was typed by people who thought they
+ * were still choosing. The step marker says where they are; the badge under
+ * it changes shape and colour with the step, and so do the dots.
+ */
+.passcode-steps { display: flex; align-items: center; justify-content: center; gap: 10px; margin: 0 auto; padding: 0; list-style: none; font-size: 12px; }
+.passcode-step { display: flex; align-items: center; gap: 6px; color: var(--muted-foreground); }
+.passcode-step + .passcode-step::before { content: ""; width: 28px; height: 1px; margin-right: 4px; background: var(--border); }
+.passcode-step-mark { display: grid; width: 20px; height: 20px; place-items: center; border: 1px solid var(--border); border-radius: 999px; font-size: 11px; font-weight: 600; }
+.passcode-step-mark svg { width: 12px; height: 12px; }
+.passcode-step[data-state="current"] { color: var(--foreground); font-weight: 500; }
+.passcode-step[data-state="current"] .passcode-step-mark { border-color: var(--primary); background: var(--primary); color: var(--primary-foreground); }
+.passcode-step[data-state="done"] { color: var(--success); }
+.passcode-step[data-state="done"] .passcode-step-mark { border-color: var(--success); background: var(--success); color: var(--success-foreground); }
+.passcode-badge { display: grid; width: 44px; height: 44px; margin-bottom: 4px; place-items: center; border-radius: 14px; background: color-mix(in srgb, var(--primary) 12%, transparent); color: var(--primary); transition: background-color 0.2s, color 0.2s; }
+.passcode-badge svg { width: 22px; height: 22px; }
+.passcode-badge[data-stage="confirm"] { background: color-mix(in srgb, var(--success) 14%, transparent); color: var(--success); }

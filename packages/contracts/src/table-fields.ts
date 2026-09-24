@@ -33,7 +33,7 @@ type SortValue = string | number | boolean | null | undefined;
  * whenever the id happens to share a few characters with what was typed.
  */
 export function backupSearchText(backup: BackupManifest): string {
-  return `${backup.name} ${backup.profileName}`;
+  return `${backup.name} ${backup.profileName}${backup.note ? ` ${backup.note}` : ''}`;
 }
 
 export function backupSortValue(backup: BackupManifest, column: string): SortValue {

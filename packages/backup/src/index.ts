@@ -78,6 +78,8 @@ export interface BackupStoreOptions {
 
 export interface CreateBackupOptions {
   readonly name?: string;
+  /** A line or two from the reader about why this one was taken. */
+  readonly note?: string;
   /** Why it is being written; a manual backup unless said otherwise. */
   readonly kind?: 'manual' | 'scheduled' | 'before-restore' | 'before-switch';
   readonly onProgress?: (progress: { completed: number; total: number }) => void;
@@ -509,6 +511,7 @@ export class BackupStore {
         fileCount: sources.length - skipped.length,
         kind: options.kind ?? 'manual',
         ...(options.name?.trim() ? {} : { autoNamed: true }),
+        ...(normalizeBackupNote(options.note) ? { note: normalizeBackupNote(options.note) } : {}),
         source: 'created',
         fingerprint,
       };
@@ -2148,6 +2151,12 @@ function normalizeBackupName(value: string | undefined, profileName: string, cre
   return base.endsWith('.zip') ? base : `${base}.zip`;
 }
 
+/** A note is for reading back in a list, so it is kept to a paragraph. */
+export const MAX_BACKUP_NOTE_LENGTH = 500;
+function normalizeBackupNote(value: string | undefined): string {
+  return (value ?? '').trim().slice(0, MAX_BACKUP_NOTE_LENGTH);
+}
+
 async function checksumFile(path: string): Promise<string> {
   const hash = createHash('sha256');
   for await (const chunk of createReadStream(path)) hash.update(chunk as Buffer);
@@ -2158,8 +2167,9 @@ function parseManifest(value: unknown): BackupManifest {
   if (!isRecord(value) || value.schemaVersion !== BACKUP_SCHEMA_VERSION || typeof value.id !== 'string' || typeof value.name !== 'string' || typeof value.createdAt !== 'string' || typeof value.profileId !== 'string' || typeof value.profileName !== 'string' || (value.layout !== 'data' && value.layout !== 'public') || typeof value.sizeBytes !== 'number' || typeof value.checksumSha256 !== 'string' || typeof value.fileCount !== 'number') throw new Error('Invalid backup manifest');
   const source: BackupSource = value.source === 'uploaded' ? 'uploaded' : 'created';
   const kind = typeof value.kind === 'string' && (BACKUP_KINDS as readonly string[]).includes(value.kind) ? value.kind : undefined;
-  const { kind: _stored, autoNamed, ...rest } = value;
-  return { ...rest, source, ...(kind ? { kind } : {}), ...(autoNamed === true ? { autoNamed: true } : {}) } as unknown as BackupManifest;
+  const { kind: _stored, autoNamed, note, ...rest } = value;
+  const kept = typeof note === 'string' ? normalizeBackupNote(note) : '';
+  return { ...rest, source, ...(kind ? { kind } : {}), ...(autoNamed === true ? { autoNamed: true } : {}), ...(kept ? { note: kept } : {}) } as unknown as BackupManifest;
 }
 
 function parseSchedule(value: unknown): LocalBackupSchedule | null {
