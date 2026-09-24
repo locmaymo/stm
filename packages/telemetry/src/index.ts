@@ -1,5 +1,5 @@
 import { createHmac, randomUUID } from 'node:crypto';
-import { appendFile, mkdir, open, readFile, rename, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { isR2UsageMode, type AppUsageDay, type PlatformKind, type TelemetryBatch, type TelemetryEnvelope, type UsageEvent } from '../../contracts/src/index.js';
 import { isUsageEvent } from '../../instrumentation/src/index.js';
@@ -278,7 +278,15 @@ export class TelemetryTransport {
           body: JSON.stringify(envelope),
           signal: AbortSignal.timeout(5_000),
         });
-        if (!response.ok) throw new Error(`endpoint returned ${response.status}`);
+        if (!response.ok) {
+          // The receiver forgets an enrollment that never delivered anything.
+          // The key it handed out is then worthless, so drop it and enroll
+          // again next time; the batch waits for the new key. A signature the
+          // receiver rejects for an id it still knows is not this, and asking
+          // it for a second key would only be refused.
+          if (response.status === 401 && await receiverError(response) === 'unknown_installation') await this.forgetSigningKey();
+          throw new Error(`endpoint returned ${response.status}`);
+        }
       } catch (error: unknown) {
         remaining.push(line);
         this.logger(`[telemetry] endpoint unavailable: ${error instanceof Error ? error.message : 'unknown error'}`);
@@ -318,6 +326,12 @@ export class TelemetryTransport {
     await atomicWrite(this.signingKeyPath, `${JSON.stringify({ schemaVersion: 1, installId: this.installId, key: body.key })}\n`);
     this.signingKey = body.key;
     return this.signingKey;
+  }
+
+  private async forgetSigningKey(): Promise<void> {
+    this.signingKey = null;
+    await rm(this.signingKeyPath, { force: true });
+    this.logger('[telemetry] receiver no longer knows this installation; enrolling again');
   }
 
   private async loadCursor(): Promise<void> {
@@ -421,6 +435,14 @@ function deriveEnrollmentEndpoint(endpoint: string | null): string | null {
     parsed.search = '';
     parsed.hash = '';
     return parsed.toString();
+  } catch { return null; }
+}
+
+/** The `error` field of a JSON refusal, or null when the body is not one. */
+async function receiverError(response: Response): Promise<string | null> {
+  try {
+    const body: unknown = await response.json();
+    return isRecord(body) && typeof body.error === 'string' ? body.error : null;
   } catch { return null; }
 }
 

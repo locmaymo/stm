@@ -115,3 +115,78 @@ test('how long the manager was used travels with the events, and alone when ther
   assert.equal('usageDays' in latest, false);
   await transport.close();
 });
+
+/**
+ * A started transport that has enrolled once with nothing to send, and then
+ * queued one batch for a receiver that answers with `refusal`.
+ */
+async function refusedTransport(installId: string, refusal: () => Response) {
+  const root = await mkdtemp(join(tmpdir(), 'stm-telemetry-refused-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const metrics = join(paths.metrics, 'usage-events.jsonl');
+  await mkdir(paths.metrics, { recursive: true });
+  const keys = [Buffer.alloc(32, 1).toString('base64url'), Buffer.alloc(32, 2).toString('base64url')];
+  const state = { enrollments: 0, refuse: true, envelopes: [] as string[] };
+  const transport = new TelemetryTransport({ paths, metricsFile: metrics, installId, platform: 'linux', endpoint: 'https://telemetry.example.invalid/v1/telemetry', fetch: async (input, init) => {
+    if (String(input).endsWith('/v1/enroll')) {
+      const key = keys[state.enrollments] ?? keys[1];
+      state.enrollments += 1;
+      return new Response(JSON.stringify({ key }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    state.envelopes.push(String(init?.body ?? ''));
+    return state.refuse ? refusal() : new Response(null, { status: 204 });
+  } });
+  await transport.start();
+  await transport.flushNow();
+  await appendFile(metrics, `${JSON.stringify(event())}\n`, 'utf8');
+  await transport.pollNow();
+  return { transport, state, keys, identity: join(paths.outbox, 'telemetry-identity.json') };
+}
+
+function jsonRefusal(status: number, error: string): Response {
+  return new Response(JSON.stringify({ error }), { status, headers: { 'content-type': 'application/json' } });
+}
+
+function signedWith(key: string | undefined, body: string | undefined): boolean {
+  const { signature, ...unsigned } = JSON.parse(body ?? '{}') as { signature?: string };
+  return signature === createHmac('sha256', Buffer.from(key ?? '', 'base64url')).update(JSON.stringify(unsigned), 'utf8').digest('base64url');
+}
+
+test('an installation the receiver has forgotten drops its key and enrolls again, keeping the batch', async () => {
+  const { transport, state, keys, identity } = await refusedTransport('install-5', () => jsonRefusal(401, 'unknown_installation'));
+  await transport.flushNow();
+  assert.equal(state.enrollments, 1);
+  assert.equal(state.envelopes.length, 1);
+  assert.ok(signedWith(keys[0], state.envelopes[0]));
+  await assert.rejects(readFile(identity, 'utf8'), { code: 'ENOENT' });
+  assert.notEqual((await readFile(transport.outboxPath, 'utf8')).trim(), '');
+
+  state.refuse = false;
+  await transport.flushNow();
+  assert.equal(state.enrollments, 2);
+  assert.equal((await readFile(transport.outboxPath, 'utf8')).trim(), '');
+  assert.equal((JSON.parse(await readFile(identity, 'utf8')) as { key: string }).key, keys[1]);
+  assert.equal(state.envelopes.length, 2);
+  assert.ok(signedWith(keys[1], state.envelopes[1]));
+  await transport.close();
+});
+
+for (const [label, refusal] of [
+  ['401 invalid_signature', () => jsonRefusal(401, 'invalid_signature')],
+  ['401 without a JSON body', () => new Response('unauthorized', { status: 401 })],
+  ['403 unknown_installation', () => jsonRefusal(403, 'unknown_installation')],
+  ['500 unknown_installation', () => jsonRefusal(500, 'unknown_installation')],
+  ['503', () => new Response(null, { status: 503 })],
+] as const) {
+  test(`a ${label} refusal keeps the key and the batch and does not enroll again`, async () => {
+    const { transport, state, keys, identity } = await refusedTransport(`install-${label.replace(/\W+/gu, '-')}`, refusal);
+    await transport.flushNow();
+    await transport.flushNow();
+    assert.equal(state.enrollments, 1);
+    assert.equal(state.envelopes.length, 2);
+    assert.ok(state.envelopes.every((body) => signedWith(keys[0], body)));
+    assert.equal((JSON.parse(await readFile(identity, 'utf8')) as { key: string }).key, keys[0]);
+    assert.notEqual((await readFile(transport.outboxPath, 'utf8')).trim(), '');
+    await transport.close();
+  });
+}
