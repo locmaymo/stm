@@ -216,6 +216,16 @@ export async function applyManagerSettings(deps: ManagerSettingsDeps, record: Ma
      */
     if (await restoreQuickTunnel(deps.tunnel, record.tunnelQuick)) applied.push('accessTunnel');
     if (await restoreQuickTunnel(deps.managerTunnel, record.managerTunnelQuick)) applied.push('managerTunnel');
+    /*
+     * A link that came back on is a link that has been turned on, the same as
+     * pressing its switch - which is the only other place that wrote it down.
+     * The setup list kept offering "Open SillyTavern's access link" on a
+     * machine whose switch was already on, until the next restart noticed.
+     */
+    if (deps.tunnel.getState().mode !== 'off') {
+      deps.gateway.setOpened(true);
+      await deps.store.setAccessLinkOpened().catch(() => undefined);
+    }
   }
 
   if (wanted.schedules) {

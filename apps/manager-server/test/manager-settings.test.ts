@@ -74,10 +74,12 @@ const INSTALLATION = { id: 'install-1', selector: 'latest', resolvedRef: '1.13.2
 function fakeGateway(): AccessGateway {
   let passwordConfigured = false;
   let lan = false;
+  let opened = false;
   return {
     setPassword: (hash: string | null) => { passwordConfigured = hash !== null; },
     setLan: async (next: boolean) => { lan = next; return { passwordConfigured, lan }; },
-    getState: () => ({ passwordConfigured, lan }),
+    setOpened: (next: boolean) => { opened = next; },
+    getState: () => ({ passwordConfigured, lan, opened }),
   } as unknown as AccessGateway;
 }
 
@@ -165,6 +167,10 @@ test('a machine that is gone leaves behind enough to be a machine again', async 
   // them the other way round left the tunnel refused on the one machine whose
   // passcode had just come back.
   assert.equal(desktop.gateway.getState().passwordConfigured, true);
+  // And the link that came back on counts as turned on, so the setup list
+  // does not go on offering to turn it on.
+  assert.equal(state.accessLinkOpened, true);
+  assert.equal(desktop.gateway.getState().opened, true);
   assert.equal(state.autoStartSillyTavern, false);
   // How the machine was kept online came back too - written down, and told to
   // the keeper that is already running rather than left for the next restart.

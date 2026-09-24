@@ -4696,15 +4696,23 @@ async function recoverEmptyProfile(settle: () => Promise<Profile>, r2: R2Manager
     const { job, signal } = running ?? jobs.createOperation('r2Fetch', logEvent('job.checkingAccount', 'Checking this account for data to bring back'));
     const meter = new TransferMeter();
     /*
-     * Saver mode writes the point straight into the profile, and gives
-     * SillyTavern's memory back to the download while it does: an empty
-     * profile has nothing in it to use, and it is started again afterwards.
+     * Straight into the profile, whichever mode this machine is in.
+     *
+     * Outside saver mode the point used to be rebuilt into a zip in the
+     * library first and restored from there, which put the profile on the disk
+     * twice and left an archive of it behind - a copy of what the bucket
+     * already holds, guarding a profile that was empty. The same sign-in on a
+     * machine in saver mode wrote it in place, so what a sign-in did depended
+     * on how much memory the machine had.
+     *
+     * Saver mode also gives SillyTavern's memory back to the download while
+     * it runs: an empty profile has nothing in it to use, and it is started
+     * again afterwards.
      */
-    const inPlace = backups.saving;
-    const pause = inPlace && supervisor && ['running', 'starting'].includes(supervisor.getState().status);
+    const pause = backups.saving && supervisor && ['running', 'starting'].includes(supervisor.getState().status);
     if (pause) await supervisor.stop('restore');
     const restored = await recoverProfileFromR2({
-      profile, r2, backups, signal, inPlace,
+      profile, r2, backups, signal, inPlace: true,
       logger: (line) => jobs.append('backup', line),
       onProgress: (progress) => {
         const { percent, params } = meter.update(progress);
