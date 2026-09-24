@@ -2019,7 +2019,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     const snapshot = await r2.readSnapshot(sourceProfileId, snapshotPreviewMatch[1] ?? '');
     const files = snapshot.files.map((file) => ({ name: file.name, sizeBytes: file.sizeBytes }));
     const preview = backups.previewFiles(files, profile.layout);
-    sendJson(response, 200, backups.saving ? { ...preview, capacity: await capacityFor(backups, profile, { files }) } : preview);
+    sendJson(response, 200, { ...preview, losses: await backups.losses(profile, { files }), ...(backups.saving ? { capacity: await capacityFor(backups, profile, { files }) } : {}) });
     return;
   }
   const snapshotRestoreMatch = /^\/api\/v1\/r2\/snapshots\/([^/]+)\/restore$/u.exec(pathname);
@@ -2322,7 +2322,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     const archiveSize = Number(headerValue(request.headers['x-archive-size']) ?? '');
     const tail = await readBody(request, MAX_STREAM_DIRECTORY_BYTES);
     const stream = backups.openStream(tail, archiveSize, profile.layout);
-    sendJson(response, 200, { ...stream.preview, uploadId: stream.id, ...(backups.saving ? { capacity: await capacityFor(backups, profile, { stream }) } : {}) });
+    sendJson(response, 200, { ...stream.preview, uploadId: stream.id, losses: await backups.losses(profile, { stream }), ...(backups.saving ? { capacity: await capacityFor(backups, profile, { stream }) } : {}) });
     return;
   }
   if (pathname === '/api/v1/backups/stream' && method === 'DELETE') {
@@ -2431,7 +2431,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     if (!profile) { sendError(response, 409, 'profile_required', 'Create or activate a profile before restoring a backup'); return; }
     if (action === 'preview' && method === 'POST') {
       const preview = await backups.preview(archivePath, profile.layout);
-      sendJson(response, 200, backups.saving ? { ...preview, capacity: await capacityFor(backups, profile, { archivePath }) } : preview);
+      sendJson(response, 200, { ...preview, losses: await backups.losses(profile, { archivePath }), ...(backups.saving ? { capacity: await capacityFor(backups, profile, { archivePath }) } : {}) });
       return;
     }
     if (action === 'restore' && method === 'POST') {

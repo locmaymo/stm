@@ -5,10 +5,10 @@ import { once } from 'node:events';
 import { PassThrough, Transform, Readable } from 'node:stream';
 import { finished } from 'node:stream/promises';
 import { pipeline } from 'node:stream/promises';
-import { chmod, lstat, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, open, readFile, readdir, rename, rm, rmdir, stat, writeFile } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
-import { BACKUP_KINDS, backupKind, defaultBackupName, logEvent, logLineText, type BackupFilePreview, type BackupKind, type BackupManifest, type BackupSource, type LogEvent, type LogSink, type Profile, type ProfileLayout, type RestoreMode, type RestorePreview, type LocalBackupSchedule } from '../../contracts/src/index.js';
+import { BACKUP_KINDS, backupKind, defaultBackupName, logEvent, logLineText, type BackupFilePreview, type BackupKind, type BackupManifest, type BackupSource, type LogEvent, type LogSink, type Profile, type ProfileLayout, type RestoreLosses, type RestoreMode, type RestorePreview, type LocalBackupSchedule } from '../../contracts/src/index.js';
 import { createIoLimiter, ioConcurrency, runPooled } from '../../platform/src/index.js';
 import type { PlatformPaths } from '../../platform/src/index.js';
 
@@ -762,8 +762,8 @@ export class BackupStore {
    * Asked in saver mode, of whatever the restore is going to read: an archive
    * in the library, a streamed upload, or the files of a recovery point.
    */
-  public async estimate(profile: Profile, source: { readonly archivePath: string } | { readonly stream: ArchiveStream } | { readonly files: readonly RestoreFile[] }, mode: RestoreMode): Promise<RestoreEstimate> {
-    const entries: readonly EntryInfo[] = 'archivePath' in source ? await readZipDirectory(source.archivePath) : 'stream' in source ? source.stream.entries : source.files.map(fileEntry);
+  public async estimate(profile: Profile, source: RestoreSource, mode: RestoreMode): Promise<RestoreEstimate> {
+    const entries = await entriesOf(source);
     const dataDestination = await resolveProfileDataRoot(profile);
     const plan = planEntries(entries, { dataDestination, configPath: resolve(profile.configPath) });
     let incomingBytes = 0;
@@ -779,6 +779,33 @@ export class BackupStore {
       ? await treeBytes(dataDestination, dataDestination === resolve(profile.dataPath))
       : await sizesOf(plan.map((item) => item.target));
     return { incomingBytes, junkBytes, junkFiles, freedBytes };
+  }
+
+  /**
+   * What a replace would take away from this profile; see `RestoreLosses`.
+   *
+   * The same list a replace deletes, read the same way, before anything is
+   * stopped. Junk is left out of it: losing an extension's git history is not
+   * losing the extension.
+   */
+  public async losses(profile: Profile, source: RestoreSource): Promise<RestoreLosses> {
+    const entries = await entriesOf(source);
+    const dataDestination = await resolveProfileDataRoot(profile);
+    const plan = planEntries(entries, { dataDestination, configPath: resolve(profile.configPath) });
+    const obsolete = await collectObsolete(dataDestination, dataDestination === resolve(profile.dataPath), new Set(plan.map((item) => item.target)));
+    const kept = new Set<string>();
+    for (const item of plan) {
+      const name = relativeName(dataDestination, item.target);
+      const extension = extensionOf(name);
+      if (extension && !isJunk(name)) kept.add(extension);
+    }
+    const lost = obsolete.filter((path) => !isJunk(relativeName(dataDestination, path)));
+    const extensions = new Set<string>();
+    for (const path of lost) {
+      const extension = extensionOf(relativeName(dataDestination, path));
+      if (extension && !kept.has(extension)) extensions.add(extension);
+    }
+    return { files: lost.length, bytes: await sizesOf(lost), extensions: [...extensions].sort((left, right) => left.localeCompare(right)) };
   }
 
   /** What restoring these files would do, the way `preview` says it of a zip. */
@@ -849,6 +876,7 @@ export class BackupStore {
     this.logger(logEvent('backup.restoring', `[backup] restoring ${plan.length} files into ${dataDestination}`, { count: plan.length, path: dataDestination }));
     await this.timed(logEvent('backup.phaseWroteFiles', `wrote ${plan.length} files`, { count: plan.length }), () => write(plan));
     if (!this.saving) await removeObsolete();
+    if (options.mode === 'replace') await pruneEmptyDirectories(dataDestination, dataDestination === resolve(profile.dataPath));
     options.onStatus?.(logEvent('restore.finalizing', 'Finalizing restored data'));
     const targetLabel = profile.layout === 'data' ? relative(resolve(profile.dataPath), dataDestination).replaceAll('\\', '/') || '.' : 'public/';
     this.logger(logEvent('backup.restored', `[backup] restored ${plan.length} files to ${profile.name}/${targetLabel} (${options.mode})`, { count: plan.length, profile: profile.name, target: targetLabel, mode: options.mode }));
@@ -1512,6 +1540,19 @@ async function sizesOf(paths: readonly string[]): Promise<number> {
   return total;
 }
 
+/** The extension folder a name inside the user directory belongs to, if any. */
+function extensionOf(name: string): string | null {
+  const segments = name.split('/');
+  return segments.length > 2 && segments[0] === 'extensions' ? segments[1]! : null;
+}
+
+/** Whatever a restore is going to read: an archive in the library, a streamed upload, or a recovery point's files. */
+export type RestoreSource = { readonly archivePath: string } | { readonly stream: ArchiveStream } | { readonly files: readonly RestoreFile[] };
+
+async function entriesOf(source: RestoreSource): Promise<readonly EntryInfo[]> {
+  return 'archivePath' in source ? await readZipDirectory(source.archivePath) : 'stream' in source ? source.stream.entries : source.files.map(fileEntry);
+}
+
 /** A file of a restore, described the way a zip entry is. */
 function fileEntry(file: RestoreFile): EntryInfo {
   return { name: file.name, uncompressedSize: file.sizeBytes, directory: false, symlink: false };
@@ -2052,6 +2093,45 @@ async function collectObsolete(root: string, isDataRoot: boolean, keep: Readonly
   };
   await visit(root, 0);
   return obsolete;
+}
+
+/**
+ * Remove the folders a replace leaves with nothing in them.
+ *
+ * A replace deletes files, and the folders that held them stayed behind. An
+ * extension the backup did not hold became an empty folder, and SillyTavern
+ * named every one of them in its log on each start as an extension with no
+ * manifest. The profile is meant to end up as the backup was, and the backup
+ * had no such folder.
+ *
+ * The user directory's own top-level folders are left alone even when empty:
+ * they are SillyTavern's layout, not anything restored.
+ */
+async function pruneEmptyDirectories(root: string, isDataRoot: boolean): Promise<void> {
+  const limiter = createIoLimiter(ioConcurrency());
+  // Whether `current` is empty once its empty folders are gone.
+  const visit = async (current: string, depth: number): Promise<boolean> => {
+    let children;
+    try {
+      children = await limiter.run(() => readdir(current, { withFileTypes: true }));
+    } catch {
+      return false;
+    }
+    const emptied = await Promise.all(children.map(async (child) => {
+      if (depth === 0 && isPreservedAtRoot(child.name, isDataRoot)) return false;
+      if (child.isSymbolicLink() || !child.isDirectory()) return false;
+      const full = join(current, child.name);
+      if (!await visit(full, depth + 1) || depth === 0) return false;
+      try {
+        await limiter.run(() => rmdir(full));
+        return true;
+      } catch {
+        return false;
+      }
+    }));
+    return emptied.every(Boolean);
+  };
+  await visit(root, 0);
 }
 
 function isPreservedAtRoot(name: string, isDataRoot: boolean): boolean {

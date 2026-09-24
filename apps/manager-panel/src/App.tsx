@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from 'react';
 import { centralDirectoryOffset, ZIP_TAIL_SEARCH_BYTES } from './zip-tail.js';
 import {
-  AppWindow, Archive, ArrowDown, CloudUpload, DatabaseBackup, Funnel, UserRound, ArrowUp, ArrowUpRight, BarChart3, Check, ChevronDown, Cloud, Copy, Database, Download,
+  AppWindow, Archive, ArrowDown, ArrowRight, CloudUpload, DatabaseBackup, Funnel, UserRound, ArrowUp, ArrowUpRight, BarChart3, Check, ChevronDown, Cloud, Copy, Database, Download,
   Globe2, LayoutDashboard, Maximize2, Minimize2, Moon, Package, Pencil, Plus,
   LogOut, RotateCcw, ScrollText, Search, Sun, Trash2, Upload, X, Rows3,
   BrainCircuit, CircleStop, Clock3, Cpu, Ellipsis, Play, QrCode as QrCodeIcon, RefreshCw, Scale, Settings2, ShieldCheck, Square,
@@ -5449,6 +5449,19 @@ function RestoreDialog({ t, catalog, name, safety, preview, mode, onModeChange, 
    * backup does not mention, so the result is a mixture nobody took a backup
    * of - occasionally what is wanted, usually not.
    */
+  /*
+   * With the junk left out, the heading says what is actually restored: the
+   * archive's count struck through, and what remains of it beside an arrow.
+   */
+  const trimmed = trim && capacity && capacity.junkFiles > 0 ? capacity : null;
+  /*
+   * What a replace takes away, said before it does.
+   *
+   * Replacing with an older backup deletes everything added since, and the
+   * one line describing Replace does not say how much that is. Extensions are
+   * named: a missing chat is noticed, a missing extension looks like a bug.
+   */
+  const losses = mode === 'replace' && preview.losses && preview.losses.files > 0 ? preview.losses : null;
   const options: Array<{ value: RestoreMode; label: string; body: string; recommended: boolean }> = [
     { value: 'replace', label: t('console.replaceRestore'), body: t('console.restoreReplaceBody'), recommended: true },
     { value: 'merge', label: t('console.mergeRestore'), body: t('console.restoreMergeBody'), recommended: false },
@@ -5457,7 +5470,13 @@ function RestoreDialog({ t, catalog, name, safety, preview, mode, onModeChange, 
     <DialogContent className="sm:max-w-lg">
       <DialogHeader>
         <DialogTitle>{t('console.restoreTitle', { name })}</DialogTitle>
-        <DialogDescription>{t('console.restoreCounts', { files: preview.fileCount, size: formatBytes(preview.totalBytes) })}</DialogDescription>
+        <DialogDescription>{trimmed
+          ? <span className="flex flex-wrap items-center gap-x-1.5">
+            <span className="line-through">{t('console.restoreCounts', { files: preview.fileCount, size: formatBytes(preview.totalBytes) })}</span>
+            <ArrowRight className="size-3.5" aria-hidden />
+            <span className="font-medium text-foreground">{t('console.restoreCounts', { files: preview.fileCount - trimmed.junkFiles, size: formatBytes(preview.totalBytes - trimmed.junkBytes) })}</span>
+          </span>
+          : t('console.restoreCounts', { files: preview.fileCount, size: formatBytes(preview.totalBytes) })}</DialogDescription>
       </DialogHeader>
       <DialogBody className="grid gap-4">
         <RadioGroup value={mode} onValueChange={(value) => onModeChange(value as RestoreMode)} aria-label={t('console.restoreChoose')}>
@@ -5469,6 +5488,19 @@ function RestoreDialog({ t, catalog, name, safety, preview, mode, onModeChange, 
             </div>
           </div>)}
         </RadioGroup>
+        {losses
+          ? <Alert>
+            <TriangleAlert />
+            <AlertDescription className="grid gap-2">
+              <span>{t('console.restoreLosses', { files: losses.files, size: formatBytes(losses.bytes) })}</span>
+              {losses.extensions.length > 0 ? <>
+                <span>{t('console.restoreLostExtensions')}</span>
+                <span className="flex flex-wrap gap-1.5">{losses.extensions.map((extension) => <Badge key={extension} variant="outline" className="font-mono">{extension}</Badge>)}</span>
+              </> : null}
+              <span>{t('console.restoreLossesKeep')}</span>
+            </AlertDescription>
+          </Alert>
+          : null}
         {preview.warnings.length > 0
           ? <Alert variant={unrecognized ? 'destructive' : 'default'}>
             <AlertDescription className="grid gap-2">

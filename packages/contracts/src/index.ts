@@ -885,6 +885,28 @@ export interface RestorePreview {
    * overwrites.
    */
   readonly capacity?: Readonly<Record<RestoreMode, RestoreCapacity>>;
+  /**
+   * What a replace would delete of the profile as it stands.
+   *
+   * Absent on an older manager's answer, which is read as nothing to say.
+   */
+  readonly losses?: RestoreLosses;
+}
+
+/**
+ * The files and extensions a replace would take away.
+ *
+ * A replace leaves the profile holding exactly what the backup held, so
+ * restoring an older backup takes away everything added since. On one machine
+ * that was 525 files and seven extensions, from a zip two weeks older than the
+ * profile, and nothing on the screen said so before it ran. Junk is not
+ * counted; see `RestoreCapacity`.
+ */
+export interface RestoreLosses {
+  readonly files: number;
+  readonly bytes: number;
+  /** Extensions in the profile now that the backup holds none of, by folder name. */
+  readonly extensions: readonly string[];
 }
 
 /**
