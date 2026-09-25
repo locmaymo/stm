@@ -1,5 +1,5 @@
 import { createHmac, randomUUID } from 'node:crypto';
-import { appendFile, mkdir, open, readFile, rename, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { isR2UsageMode, type AppUsageDay, type PlatformKind, type TelemetryBatch, type TelemetryEnvelope, type UsageEvent } from '../../contracts/src/index.js';
 import { isUsageEvent } from '../../instrumentation/src/index.js';
@@ -278,7 +278,17 @@ export class TelemetryTransport {
           body: JSON.stringify(envelope),
           signal: AbortSignal.timeout(5_000),
         });
-        if (!response.ok) throw new Error(`endpoint returned ${response.status}`);
+        if (!response.ok) {
+          // The receiver has no enrollment for this install any more. The key
+          // is worthless, so it goes, and the next delivery enrolls again. A
+          // key that merely does not match is left alone: that id has
+          // reported, and the receiver refuses to enroll it a second time.
+          if (response.status === 401 && await isUnknownInstallation(response)) {
+            await this.forgetSigningKey();
+            throw new Error('endpoint no longer knows this install; enrolling again');
+          }
+          throw new Error(`endpoint returned ${response.status}`);
+        }
       } catch (error: unknown) {
         remaining.push(line);
         this.logger(`[telemetry] endpoint unavailable: ${error instanceof Error ? error.message : 'unknown error'}`);
@@ -318,6 +328,12 @@ export class TelemetryTransport {
     await atomicWrite(this.signingKeyPath, `${JSON.stringify({ schemaVersion: 1, installId: this.installId, key: body.key })}\n`);
     this.signingKey = body.key;
     return this.signingKey;
+  }
+
+  /** Memory first, so a file that will not go still leaves the next delivery to enroll. */
+  private async forgetSigningKey(): Promise<void> {
+    this.signingKey = null;
+    await rm(this.signingKeyPath, { force: true });
   }
 
   private async loadCursor(): Promise<void> {
@@ -422,6 +438,13 @@ function deriveEnrollmentEndpoint(endpoint: string | null): string | null {
     parsed.hash = '';
     return parsed.toString();
   } catch { return null; }
+}
+
+async function isUnknownInstallation(response: Response): Promise<boolean> {
+  try {
+    const body: unknown = await response.json();
+    return isRecord(body) && body.error === 'unknown_installation';
+  } catch { return false; }
 }
 
 function isSigningKey(value: string): boolean { return /^[A-Za-z0-9_-]{43,128}$/u.test(value); }

@@ -115,3 +115,91 @@ test('how long the manager was used travels with the events, and alone when ther
   assert.equal('usageDays' in latest, false);
   await transport.close();
 });
+
+test('a receiver that no longer knows the install gets a fresh enrollment, and the batch waits for it', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-telemetry-forgotten-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const metrics = join(paths.metrics, 'usage-events.jsonl');
+  const identity = join(paths.outbox, 'telemetry-identity.json');
+  await mkdir(paths.metrics, { recursive: true });
+  const keys =[Buffer.alloc(32, 1).toString('base64url'), Buffer.alloc(32, 2).toString('base64url')];
+  let enrollments = 0;
+  let attempts = 0;
+  let envelopeBody = '';
+  const transport = new TelemetryTransport({ paths, metricsFile: metrics, installId: 'install-5', platform: 'linux', endpoint: 'https://telemetry.example/v1/telemetry', fetch: async (input, init) => {
+    if (String(input).endsWith('/v1/enroll')) {
+      enrollments += 1;
+      return new Response(JSON.stringify({ key: keys[enrollments - 1] }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    attempts += 1;
+    envelopeBody = String(init?.body ?? '');
+    if (attempts === 1) return new Response(JSON.stringify({ error: 'unknown_installation' }), { status: 401, headers: { 'content-type': 'application/json' } });
+    return new Response(null, { status: 204 });
+  } });
+  // Startup enrolls on its own; the batch is queued once that has settled, so
+  // every delivery below is one this test asked for.
+  await transport.start();
+  await transport.flushNow();
+  await appendFile(metrics, `${JSON.stringify(event())}\n`, 'utf8');
+  await transport.pollNow();
+  await transport.flushNow();
+  assert.equal(enrollments, 1);
+  assert.equal(attempts, 1);
+  await assert.rejects(readFile(identity, 'utf8'), { code: 'ENOENT' });
+  assert.notEqual((await readFile(transport.outboxPath, 'utf8')).trim(), '');
+
+  await transport.flushNow();
+  assert.equal(enrollments, 2);
+  assert.equal(attempts, 2);
+  assert.equal((await readFile(transport.outboxPath, 'utf8')).trim(), '');
+  assert.equal((JSON.parse(await readFile(identity, 'utf8')) as { key: string }).key, keys[1]);
+  const envelope = JSON.parse(envelopeBody) as { schemaVersion: 1; installId: string; sentAt: string; nonce: string; signature: string; batch: unknown };
+  const unsigned = { schemaVersion: envelope.schemaVersion, installId: envelope.installId, sentAt: envelope.sentAt, nonce: envelope.nonce, batch: envelope.batch };
+  assert.equal(envelope.signature, createHmac('sha256', Buffer.from(keys[1] ?? '', 'base64url')).update(JSON.stringify(unsigned), 'utf8').digest('base64url'));
+  await transport.close();
+});
+
+test('any other refusal keeps the key and the batch, and never enrolls again', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-telemetry-refused-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const metrics = join(paths.metrics, 'usage-events.jsonl');
+  const identity = join(paths.outbox, 'telemetry-identity.json');
+  await mkdir(paths.metrics, { recursive: true });
+  const signingKey = Buffer.alloc(32, 3).toString('base64url');
+  const json = { 'content-type': 'application/json' };
+  // A key that does not match, a 401 with nothing to read, the right words on
+  // the wrong status, and a receiver that is simply down.
+  const refusals = [
+    () => new Response(JSON.stringify({ error: 'invalid_signature' }), { status: 401, headers: json }),
+    () => new Response('not json', { status: 401 }),
+    () => new Response(JSON.stringify({ error: 'unknown_installation' }), { status: 403, headers: json }),
+    () => new Response(JSON.stringify({ error: 'invalid_batch' }), { status: 400, headers: json }),
+    () => new Response(null, { status: 500 }),
+    () => new Response(null, { status: 503 }),
+  ];
+  let enrollments = 0;
+  let attempts = 0;
+  const transport = new TelemetryTransport({ paths, metricsFile: metrics, installId: 'install-6', platform: 'linux', endpoint: 'https://telemetry.example/v1/telemetry', fetch: async (input) => {
+    if (String(input).endsWith('/v1/enroll')) {
+      enrollments += 1;
+      return new Response(JSON.stringify({ key: signingKey }), { status: 200, headers: json });
+    }
+    attempts += 1;
+    return refusals[attempts - 1]?.() ?? new Response(null, { status: 204 });
+  } });
+  await transport.start();
+  await transport.flushNow();
+  await appendFile(metrics, `${JSON.stringify(event())}\n`, 'utf8');
+  await transport.pollNow();
+  for (let index = 0; index < refusals.length; index += 1) {
+    await transport.flushNow();
+    assert.equal(attempts, index + 1);
+    assert.equal(enrollments, 1);
+    assert.equal((JSON.parse(await readFile(identity, 'utf8')) as { key: string }).key, signingKey);
+    assert.notEqual((await readFile(transport.outboxPath, 'utf8')).trim(), '');
+  }
+  await transport.flushNow();
+  assert.equal(enrollments, 1);
+  assert.equal((await readFile(transport.outboxPath, 'utf8')).trim(), '');
+  await transport.close();
+});
