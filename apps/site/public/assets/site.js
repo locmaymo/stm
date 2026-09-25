@@ -90,6 +90,42 @@
     })(blocks[index]);
   }
 
+  // Things come up as they are scrolled to. Only what is still below the fold
+  // is held back, so nothing on screen blinks out and back in, and a browser
+  // without IntersectionObserver - or a reader who asked for less motion -
+  // gets the page as it is.
+  var still = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (!still && 'IntersectionObserver' in window) {
+    var watcher = new window.IntersectionObserver(function (entries) {
+      for (var at = 0; at < entries.length; at += 1) {
+        if (!entries[at].isIntersecting) continue;
+        entries[at].target.classList.add('is-in');
+        watcher.unobserve(entries[at].target);
+      }
+    }, { rootMargin: '0px 0px -8% 0px', threshold: 0.12 });
+    var moving = document.querySelectorAll('main > section:not(.hero) .section-head, .feature-text, .feature-shot, main .grid > *, main > section .note, .screens, .cta .shell > *');
+    for (var item = 0; item < moving.length; item += 1) {
+      var element = moving[item];
+      if (element.getBoundingClientRect().top < window.innerHeight) continue;
+      element.classList.add('reveal');
+      if (element.classList.contains('feature-shot')) {
+        // The picture comes from the side it sits on: the right in odd rows,
+        // the left in even ones, once the page is wide enough for two columns.
+        var row = element.closest('.feature');
+        var even = row && Array.prototype.indexOf.call(row.parentNode.children, row) % 2 === 1;
+        if (window.innerWidth >= 900) element.classList.add(even ? 'from-left' : 'from-right');
+        element.style.setProperty('--reveal-delay', '0.12s');
+      } else if (element.parentNode.classList.contains('grid')) {
+        var place = Array.prototype.indexOf.call(element.parentNode.children, element);
+        element.style.setProperty('--reveal-delay', Math.min(place, 5) * 0.08 + 's');
+      } else if (element.parentNode.classList.contains('shell') && element.closest('.cta')) {
+        var step = Array.prototype.indexOf.call(element.parentNode.children, element);
+        element.style.setProperty('--reveal-delay', step * 0.08 + 's');
+      }
+      watcher.observe(element);
+    }
+  }
+
   // Remember which language was chosen, so the next visit to the bare domain
   // opens in it. Only ever set by a click on the switch: an address somebody
   // typed or was sent is answered as typed, never redirected.

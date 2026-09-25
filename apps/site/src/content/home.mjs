@@ -22,7 +22,7 @@ export const home = {
     hero: {
       badge: 'Free forever · open source',
       heading: 'Your SillyTavern, safe and everywhere',
-      lede: `Install, run, update and back up [SillyTavern](${UPSTREAM}) from one simple page — no commands to remember. Your chats are copied to your own cloud all the time, and SillyTavern opens on your phone, tablet or laptop, wherever you are.`,
+      lede: `Install, update and back up [SillyTavern](${UPSTREAM}) in a few clicks, with no commands. Your chats stay safe in your own cloud, and SillyTavern opens on any device you own.`,
       primary: { href: RELEASES, label: 'Download for Windows', icon: 'download' },
       secondary: { href: '/#install', label: 'Android, Mac and Linux', icon: 'phone' },
       meta: [
@@ -197,7 +197,7 @@ export const home = {
     hero: {
       badge: 'Miễn phí trọn đời · mã nguồn mở',
       heading: 'SillyTavern của bạn, an toàn và ở mọi nơi',
-      lede: `Cài đặt, chạy, cập nhật và sao lưu [SillyTavern](${UPSTREAM}) ngay trên một trang web đơn giản — không cần nhớ câu lệnh nào. Chat của bạn được chép lên cloud của riêng bạn liên tục, và SillyTavern mở được trên điện thoại, máy tính bảng hay laptop, ở bất cứ đâu.`,
+      lede: `Cài đặt, cập nhật và sao lưu [SillyTavern](${UPSTREAM}) chỉ vài cú bấm, không cần câu lệnh. Chat luôn an toàn trên cloud của riêng bạn, và SillyTavern mở được trên mọi thiết bị.`,
       primary: { href: RELEASES, label: 'Tải cho Windows', icon: 'download' },
       secondary: { href: '/#install', label: 'Android, Mac và Linux', icon: 'phone' },
       meta: [
