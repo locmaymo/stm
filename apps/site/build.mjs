@@ -124,11 +124,14 @@ async function copyFonts() {
   }
 }
 
-/** The README's screenshots, which are the panel's, in both languages. */
+/**
+ * The README's screenshots, which are the panel's, in both languages, and the
+ * Termux terminal, which is the same in either.
+ */
 async function copyScreenshots() {
   const source = join(repository, '.github', 'screenshots');
-  for (const locale of LOCALES) {
-    await cp(join(source, locale), join(dist, 'img', locale), { recursive: true });
+  for (const folder of [...LOCALES, 'termux']) {
+    await cp(join(source, folder), join(dist, 'img', folder), { recursive: true });
   }
 }
 

@@ -4,7 +4,7 @@ import { docs } from '../content/docs.mjs';
 import { snippets } from '../content/snippets.mjs';
 import { localeRoot, strings } from '../content/strings.mjs';
 import { layout } from '../layout.mjs';
-import { NARROW, screenshot } from '../shots.mjs';
+import { NARROW, photo, screenshot } from '../shots.mjs';
 import { portDiagram } from '../diagram.mjs';
 import { prose } from '../links.mjs';
 
@@ -88,6 +88,10 @@ function renderBlock(block, locale, root) {
       return html`<figure class="figure docs-figure">${portDiagram(locale)}<figcaption>${block.caption}</figcaption></figure>`;
     case 'shot':
       return html`<figure class="${NARROW} docs-shot">${screenshot(locale, block.name, block.alt, { narrow: true })}</figure>`;
+    case 'photo':
+      return html`<figure class="docs-photo">${photo(block.name, block.alt)}<figcaption>${prose(block.caption, root)}</figcaption></figure>`;
+    case 'step':
+      return html`<h4 id="${block.id}" class="docs-step">${block.title}</h4>`;
     default:
       return raw('');
   }

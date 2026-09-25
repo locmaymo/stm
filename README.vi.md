@@ -212,7 +212,9 @@ ZIP portable đã gồm Node.js, server manager, giao diện và dependency prod
 
 <br>
 
-Cài [Termux từ F-Droid](https://f-droid.org/packages/com.termux/) hoặc nguồn đáng tin cậy khác. Không dùng bản Termux cũ trên Play Store. Mở Termux và dán từng khối lệnh sau:
+Cài [Termux từ F-Droid](https://f-droid.org/packages/com.termux/) hoặc nguồn đáng tin cậy khác. Không dùng bản Termux cũ trên Play Store.
+
+**1. Cài đặt (một lần).** Mở Termux, dán các lệnh sau rồi bấm Enter. Hai lệnh đầu cập nhật chính Termux, mất một hai phút.
 
 ```bash
 pkg update -y
@@ -221,23 +223,28 @@ pkg install -y git nodejs-lts
 git clone https://github.com/locmaymo/stm.git
 cd stm
 npm ci
+```
+
+Lần đầu cập nhật, Termux sẽ dừng vài lần để hỏi về một tệp cấu hình (`sources.list`, `bash.bashrc`, `profile`, `openssl.cnf`), với dòng kết thúc bằng `(Y/I/N/O/D/Z) [default=N] ?`. **Cứ bấm Enter mỗi lần được hỏi.** Như vậy là chọn mặc định **N**, giữ nguyên tệp bạn đang có: đây là lựa chọn an toàn, không mất gì cả, và quá trình cập nhật chạy tiếp. Cứ bấm Enter cho tới khi các lệnh chạy xong.
+
+<p align="center"><img src=".github/screenshots/termux/pkg-prompt.webp" width="360" alt="Termux hỏi về bash.bashrc và profile trong lần cập nhật đầu, mỗi câu kết thúc bằng (Y/I/N/O/D/Z) [default=N] ?"></p>
+
+**2. Bật.** Mỗi lần muốn dùng SillyTavern, mở Termux và chạy:
+
+```bash
+cd stm
 npm start
 ```
 
-Giữ phiên Termux này chạy trong lúc dùng SillyTavern. Mở manager trên điện thoại tại `http://127.0.0.1:7860`; SillyTavern ở `http://127.0.0.1:8002`. Khi cần dùng iPhone hoặc mạng khác để truy cập, bạn có thể tạo public tunnel trong manager.
+Termux luôn mở ở thư mục chính, cũng là nơi `stm` đã được tải về, nên `cd stm` sẽ tìm thấy nó. Khi khung có các địa chỉ hiện ra, mở `http://127.0.0.1:7860` trong trình duyệt của điện thoại; địa chỉ Wi‑Fi dành cho các thiết bị khác trong cùng mạng. Cứ để Termux mở trong lúc dùng SillyTavern, bấm **Ctrl+C** để dừng. Khi cần dùng iPhone hoặc mạng khác để truy cập, bạn có thể tạo public tunnel trong manager.
 
-Lần sau khởi động lại:
+<p align="center"><img src=".github/screenshots/termux/start.webp" width="360" alt="Termux sau lệnh npm start: khung ST Manager với địa chỉ trên điện thoại này và trên Wi-Fi này"></p>
 
-```bash
-cd "$HOME/stm"
-npm start
-```
-
-Cập nhật, sau khi đã dừng manager:
+**3. Cập nhật.** Dừng manager bằng **Ctrl+C**, rồi chạy:
 
 ```bash
-cd "$HOME/stm"
-git pull --ff-only
+cd stm
+git pull
 npm ci
 npm start
 ```
@@ -603,7 +610,8 @@ Manager **không** gửi API key, authorization header, prompt, chat, model resp
 | Nền tảng | Cách làm |
 | --- | --- |
 | Windows | Dừng bản cũ, giải nén ZIP mới vào thư mục khác, chạy executable mới. Giữ thư mục cũ để rollback. |
-| Termux, macOS, Linux | Dừng tiến trình, chạy `git pull --ff-only`, `npm ci`, rồi khởi động launcher lại. |
+| Termux | Dừng bằng **Ctrl+C**, rồi `cd stm`, `git pull`, `npm ci`, `npm start` ([chi tiết](#android-termux)). |
+| macOS, Linux | Dừng tiến trình, chạy `git pull --ff-only`, `npm ci`, rồi khởi động launcher lại. |
 | Docker | Build lại image và chạy container mới trên cùng volume. |
 
 Thư mục dữ liệu nền tảng được giữ nguyên trong mọi trường hợp, nên profile, backup, log, metrics và settings vẫn còn.

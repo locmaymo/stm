@@ -549,6 +549,13 @@ tbody tr:last-child td { border-bottom: 0; }
 .docs-list li::marker, .docs-steps li::marker { color: var(--muted-foreground); }
 .docs-shot { margin-block: 22px; }
 
+/* A terminal photographed on a phone: kept to about the width it was on the
+   phone, so its text reads at the size it was written rather than blown up. */
+.docs-photo { max-width: 26rem; margin: 20px 0 22px; }
+.docs-photo img { display: block; width: 100%; height: auto; border: 1px solid var(--border); border-radius: var(--radius); background: #000; }
+.docs-photo figcaption { margin-top: 8px; color: var(--muted-foreground); font-size: 13px; }
+.docs-step { margin: 28px 0 10px; font-size: 15.5px; scroll-margin-top: calc(var(--header-height) + 16px); }
+
 .code { margin: 0 0 18px; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--card); }
 .code figcaption { display: flex; align-items: center; gap: 8px; min-height: 38px; padding: 5px 8px 5px 14px; border-bottom: 1px solid var(--border); background: var(--muted); color: var(--muted-foreground); font-size: 12px; font-weight: 600; }
 .code-copy { display: inline-flex; align-items: center; gap: 5px; height: 26px; margin-inline-start: auto; padding: 0 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--card); color: var(--muted-foreground); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }

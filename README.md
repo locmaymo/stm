@@ -212,7 +212,9 @@ The portable bundle already contains Node.js, the manager server, the panel and 
 
 <br>
 
-Install [Termux from F-Droid](https://f-droid.org/packages/com.termux/) or another trusted source. Do not use the old Play Store build. Open Termux and paste these commands one block at a time:
+Install [Termux from F-Droid](https://f-droid.org/packages/com.termux/) or another trusted source. Do not use the old Play Store build.
+
+**1. Install (once).** Open Termux, paste these commands and press Enter. The first two update Termux itself and take a minute or two.
 
 ```bash
 pkg update -y
@@ -221,23 +223,28 @@ pkg install -y git nodejs-lts
 git clone https://github.com/locmaymo/stm.git
 cd stm
 npm ci
+```
+
+The first time Termux updates, it stops a few times to ask about a settings file (`sources.list`, `bash.bashrc`, `profile`, `openssl.cnf`), with a line ending in `(Y/I/N/O/D/Z) [default=N] ?`. **Press Enter each time.** That takes the default, **N**, which keeps the file you already have: it is the safe answer, nothing is lost, and the update carries on. Keep pressing Enter until the commands finish.
+
+<p align="center"><img src=".github/screenshots/termux/pkg-prompt.webp" width="360" alt="Termux asking about bash.bashrc and profile during the first update, each ending in (Y/I/N/O/D/Z) [default=N] ?"></p>
+
+**2. Start.** Each time you want to use SillyTavern, open Termux and run:
+
+```bash
+cd stm
 npm start
 ```
 
-Leave that Termux session running while SillyTavern is in use. Open the manager on the phone at `http://127.0.0.1:7860`; SillyTavern itself is at `http://127.0.0.1:8002`. The manager can create a public tunnel when you want to reach SillyTavern from an iPhone or another network.
+Termux always opens in its home folder, which is where `stm` was downloaded, so `cd stm` finds it. When the box with the addresses appears, open `http://127.0.0.1:7860` in the phone's browser; the Wi‑Fi address is for other devices on the same network. Leave Termux open while you use SillyTavern, and press **Ctrl+C** to stop it. The manager can create a public tunnel when you want to reach SillyTavern from an iPhone or another network.
 
-Later starts:
+<p align="center"><img src=".github/screenshots/termux/start.webp" width="360" alt="Termux after npm start: the ST Manager box with the address on this phone and on this Wi-Fi"></p>
 
-```bash
-cd "$HOME/stm"
-npm start
-```
-
-Updates, after stopping the running manager:
+**3. Update.** Stop the manager with **Ctrl+C**, then run:
 
 ```bash
-cd "$HOME/stm"
-git pull --ff-only
+cd stm
+git pull
 npm ci
 npm start
 ```
@@ -603,7 +610,8 @@ It does **not** send API keys, authorization headers, prompts, chats, model resp
 | Platform | How |
 | --- | --- |
 | Windows | Stop the old manager, extract the new ZIP into a new folder, run the new executable. Keep the old folder for rollback. |
-| Termux, macOS, Linux | Stop the process, then `git pull --ff-only`, `npm ci`, and start the launcher again. |
+| Termux | Stop it with **Ctrl+C**, then `cd stm`, `git pull`, `npm ci`, `npm start` ([details](#android-termux)). |
+| macOS, Linux | Stop the process, then `git pull --ff-only`, `npm ci`, and start the launcher again. |
 | Docker | Rebuild the image and start a new container against the same volume. |
 
 The platform data directory is preserved either way, so profiles, backups, logs, metrics and settings remain.

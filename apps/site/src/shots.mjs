@@ -57,6 +57,18 @@ function image(locale, name, theme, alt, width) {
   return raw(`<img class="${width} ${theme}" src="/img/${locale}/${file}" alt="${escapeAttribute(alt)}" width="${size.width}" height="${size.height}" loading="lazy" decoding="async">`);
 }
 
+/**
+ * A photograph of somebody else's screen, such as a Termux terminal.
+ *
+ * It is one file in `.github/screenshots/termux`: a terminal looks the same in
+ * both languages and both themes, so there is only ever the one copy of it.
+ */
+export function photo(name, alt) {
+  const file = `${name}.webp`;
+  const size = webpSize(join(screenshots, 'termux', file));
+  return raw(`<img src="/img/termux/${file}" alt="${escapeAttribute(alt)}" width="${size.width}" height="${size.height}" loading="lazy" decoding="async">`);
+}
+
 /** How tall a screenshot is for its width, from its light copy. */
 export function aspect(locale, name) {
   const size = webpSize(join(screenshots, locale, `${name}-light.webp`));
