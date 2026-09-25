@@ -12,7 +12,7 @@ import { ISSUES, RELEASES, REPOSITORY, UPSTREAM } from './strings.mjs';
  * A shell line is the same in every language, and one copied into two content
  * files is one that will eventually be fixed in only one of them.
  *
- * Block types: `p`, `list`, `steps`, `code`, `note`, `table`, `shot`, `keys`.
+ * Block types: `p`, `list`, `steps`, `code`, `note`, `table`, `shot`, `ports`, `keys`.
  */
 
 const p = (...items) => items.map((body) => ({ type: 'p', body }));
@@ -198,6 +198,9 @@ export const docs = {
         blocks: [
           ...p(
             'SillyTavern itself never leaves `127.0.0.1`. Everything from outside arrives at the **access gateway** on port `8001`, which asks for a six-digit passcode and then forwards to SillyTavern — and never to the manager panel.',
+          ),
+          { type: 'ports', caption: 'The link you share reaches the gateway. The panel’s own link is a different switch, and it is not for sharing.' },
+          ...p(
             'There are two ways to open the gateway, and both are switches on the overview page:',
           ),
           {
@@ -616,6 +619,9 @@ export const docs = {
         blocks: [
           ...p(
             'Bản thân SillyTavern không bao giờ rời khỏi `127.0.0.1`. Mọi thứ từ bên ngoài đều đi vào **cổng truy cập** ở cổng `8001`, nơi hỏi mã sáu chữ số rồi mới chuyển tiếp tới SillyTavern — và không bao giờ chuyển tiếp tới bảng quản trị.',
+          ),
+          { type: 'ports', caption: 'Link bạn chia sẻ dẫn tới cổng truy cập. Link riêng của bảng quản trị là một công tắc khác, và không dùng để chia sẻ.' },
+          ...p(
             'Có hai cách mở cổng truy cập, cả hai đều là công tắc trên trang tổng quan:',
           ),
           {

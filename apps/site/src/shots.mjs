@@ -57,6 +57,12 @@ function image(locale, name, theme, alt, width) {
   return raw(`<img class="${width} ${theme}" src="/img/${locale}/${file}" alt="${escapeAttribute(alt)}" width="${size.width}" height="${size.height}" loading="lazy" decoding="async">`);
 }
 
+/** How tall a screenshot is for its width, from its light copy. */
+export function aspect(locale, name) {
+  const size = webpSize(join(screenshots, locale, `${name}-light.webp`));
+  return size.height / size.width;
+}
+
 /** The pixel size of a WebP file, from its header. */
 export function webpSize(path) {
   let bytes;

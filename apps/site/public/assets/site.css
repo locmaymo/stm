@@ -242,8 +242,10 @@ h3 { margin: 0 0 6px; font-size: 17px; }
   -webkit-mask-image: linear-gradient(to bottom, #000 55%, transparent);
   mask-image: linear-gradient(to bottom, #000 55%, transparent);
 }
-.hero img.hero-mark { width: 78px; height: 78px; filter: drop-shadow(0 .5rem 1.25rem color-mix(in srgb, var(--primary) 30%, transparent)); }
-.hero h1 { margin: 20px 0 14px; font-size: clamp(30px, 5.6vw, 50px); line-height: 1.08; }
+.hero img.hero-mark { display: block; margin-inline: auto; width: 78px; height: 78px; filter: drop-shadow(0 .5rem 1.25rem color-mix(in srgb, var(--primary) 30%, transparent)); }
+.hero-badge { display: inline-flex; align-items: center; gap: 7px; margin: 20px 0 0; padding: 5px 13px; border: 1px solid color-mix(in srgb, var(--primary) 28%, var(--border)); border-radius: 999px; background: color-mix(in srgb, var(--primary) 7%, var(--card)); color: var(--primary); font-size: 12.5px; font-weight: 650; }
+.hero-badge svg { width: 14px; height: 14px; }
+.hero h1 { margin: 14px 0 14px; font-size: clamp(30px, 5.6vw, 50px); line-height: 1.08; }
 .hero p.lede { max-width: 40rem; margin-inline: auto; font-size: clamp(16px, 2vw, 18px); }
 .hero-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin-top: 26px; }
 /* On a phone the two buttons wrap onto two lines at two different widths; one
@@ -354,13 +356,48 @@ html:not(.dark) .shot img.wide.light, html.dark .shot img.wide.dark { display: b
   .screen .shot img.narrow { box-shadow: var(--elevation-2); }
 }
 
+/*
+ * What the manager does, one thing at a time.
+ *
+ * Each row is a claim in plain words beside the screen that proves it, the
+ * picture on alternate sides so the page reads down rather than across. On a
+ * phone the words come first and the phone shot of the same screen under them.
+ */
+.features { display: grid; gap: 64px; }
+@media (min-width: 900px) { .features { gap: 96px; } }
+.feature { display: grid; gap: 26px; align-items: center; }
+@media (min-width: 900px) {
+  .feature { grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); gap: 56px; }
+  /* The picture keeps the wide column whichever side it is on. */
+  .feature:nth-child(even) { grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); }
+  .feature:nth-child(even) .feature-text { order: 2; }
+}
+.feature-label { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 0 0 14px; color: var(--primary); font-size: 12.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
+.feature-icon { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; background: color-mix(in srgb, var(--primary) 12%, transparent); }
+.feature-icon svg { width: 18px; height: 18px; }
+.feature-badge { padding: 3px 10px; border-radius: 999px; background: var(--success-background); color: var(--success); font-size: 11.5px; letter-spacing: 0.02em; text-transform: none; }
+.feature h3 { margin: 0 0 12px; font-size: clamp(22px, 2.6vw, 28px); line-height: 1.2; }
+.feature-text > p { margin: 0 0 18px; color: var(--muted-foreground); font-size: 16px; }
+.feature-points { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.feature-points li { display: flex; align-items: flex-start; gap: 10px; font-size: 15px; }
+.feature-points svg { flex-shrink: 0; width: 18px; height: 18px; margin-top: 3px; color: var(--success); }
+.feature-shot { margin: 0; }
+/* A tall screen is cut to a window, as the hero is, so one picture does not
+   make its row twice the height of its words. */
+@media (min-width: 640px) {
+  .feature-shot.is-tall { position: relative; max-height: 36rem; }
+  .feature-shot.is-tall::after { content: ""; position: absolute; inset: auto 0 0; height: 6rem; background: linear-gradient(to bottom, transparent, var(--card)); pointer-events: none; }
+}
+
 /* ---- cards ----------------------------------------------------------- */
 
 .grid { display: grid; gap: 14px; }
 .grid-2 { grid-template-columns: 1fr; }
 .grid-3 { grid-template-columns: 1fr; }
-@media (min-width: 620px) { .grid-2, .grid-3 { grid-template-columns: repeat(2, 1fr); } }
+@media (min-width: 620px) { .grid-2, .grid-3, .grid-4 { grid-template-columns: repeat(2, 1fr); } }
 @media (min-width: 960px) { .grid-3 { grid-template-columns: repeat(3, 1fr); } }
+@media (min-width: 1100px) { .grid-4 { grid-template-columns: repeat(4, 1fr); } }
+.card-quiet { background: transparent; box-shadow: none; }
 
 .card { padding: 20px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); box-shadow: var(--elevation-1); }
 .card p { margin: 0; color: var(--muted-foreground); font-size: 14px; }
@@ -380,7 +417,7 @@ a.card .card-go svg { width: 14px; height: 14px; }
    pushed the port diagram in from the column edge and out of line with the
    heading above it and the table beside it. */
 .figure { align-self: start; margin: 0; padding: 22px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card); }
-.how-side { align-content: start; }
+.docs-figure { margin-block: 18px; max-width: 34rem; }
 .figure svg { display: block; width: 100%; height: auto; }
 .figure figcaption { margin-top: 14px; color: var(--muted-foreground); font-size: 13px; text-align: center; }
 
@@ -482,7 +519,11 @@ tbody tr:last-child td { border-bottom: 0; }
 .docs-shot { margin-block: 22px; }
 
 .code { margin: 0 0 18px; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: var(--card); }
-.code figcaption { padding: 8px 14px; border-bottom: 1px solid var(--border); background: var(--muted); color: var(--muted-foreground); font-size: 12px; font-weight: 600; }
+.code figcaption { display: flex; align-items: center; gap: 8px; min-height: 38px; padding: 5px 8px 5px 14px; border-bottom: 1px solid var(--border); background: var(--muted); color: var(--muted-foreground); font-size: 12px; font-weight: 600; }
+.code-copy { display: inline-flex; align-items: center; gap: 5px; height: 26px; margin-inline-start: auto; padding: 0 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--card); color: var(--muted-foreground); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+.code-copy:hover { background: var(--accent); color: var(--foreground); }
+.code-copy svg { width: 14px; height: 14px; }
+.code-copy[data-state="done"] { border-color: color-mix(in srgb, var(--success) 40%, var(--border)); color: var(--success); }
 .code pre { margin: 0; padding: 14px; overflow-x: auto; font-size: 13px; line-height: 1.7; tab-size: 2; }
 .code code { font-size: inherit; }
 

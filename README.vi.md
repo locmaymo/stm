@@ -35,20 +35,137 @@
 
 ## Manager làm được gì
 
-SillyTavern là một cửa sổ terminal, một bản checkout Git và một thư mục dữ liệu bạn không được phép mất. SillyTavern Manager biến cả ba thành một trang web mà bạn mở được từ bất kỳ thiết bị nào.
+SillyTavern Manager lo hết phần kỹ thuật của SillyTavern cho bạn — cài đặt, giữ cho nó chạy, cập nhật, sao lưu và mở nó trên các thiết bị khác — ngay trên một trang web. Không cửa sổ dòng lệnh, không phải chép những câu lệnh dài.
+
+### Không bao giờ mất chat nữa
+
+Đăng nhập Cloudflare một lần, và chat, nhân vật, thiết lập của bạn được chép lên kho lưu trữ cloud miễn phí trong **chính tài khoản của bạn** vài phút một lần, tự động. Máy hỏng, mất điện thoại hay lỡ tay xoá nhầm, chỉ cần đăng nhập lại trên bất kỳ thiết bị nào là mọi thứ quay về.
+
+- Tự sao lưu vài phút một lần — chỉ gửi phần thay đổi
+- Miễn phí với gói miễn phí của Cloudflare R2 (10 GB)
+- Đăng nhập một lần trên máy mới là lấy lại chat, phiên bản SillyTavern và thiết lập
+
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/vi/f-signin-dark.webp">
+  <img src=".github/screenshots/vi/f-signin-light.webp" alt="Màn hình mời kết nối kho lưu trữ cloud của riêng bạn ở lần chạy đầu" width="360">
+</picture>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/vi/f-cloud-dark.webp">
+  <img src=".github/screenshots/vi/f-cloud-light.webp" alt="Thẻ sao lưu đám mây: sao lưu mỗi 5 phút, bản gần nhất, và các điểm khôi phục để lấy về" width="440">
+</picture>
+</p>
+
+### SillyTavern trên mọi thiết bị của bạn
+
+Bật một link là SillyTavern mở được trên điện thoại, máy tính bảng hay máy tính khác — ở nhà hay bất cứ đâu. Quét mã QR là mở ngay trên điện thoại. Mã PIN của riêng bạn giữ người khác ở ngoài.
+
+- Link cố định, lưu bookmark là dùng mãi
+- Quét mã QR thay vì gõ địa chỉ
+- Khoá bằng mã PIN chỉ bạn biết; bản thân trình quản lý vẫn nằm sau mật khẩu riêng
+
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/vi/f-link-dark.webp">
+  <img src=".github/screenshots/vi/f-link-light.webp" alt="Menu Mở SillyTavern với Mở kèm tiện ích và mã QR để mở SillyTavern trên điện thoại">
+</picture>
+</p>
+
+### Phiên bản SillyTavern nào cũng chỉ một cú bấm
+
+Chọn phiên bản bạn thích trong danh sách rồi bấm **Cài đặt**. Trình quản lý tải về từ GitHub chính thức của SillyTavern và cài sẵn cho bạn. Muốn thử bản mới hơn, hay quay về bản bạn ưng? Vẫn danh sách đó, vẫn nút đó — chat của bạn được chép ra chỗ an toàn trước.
+
+- Bật, tắt SillyTavern bằng một nút
+- Đổi phiên bản không cần cài lại gì
+- Luôn là bản chính thức, lấy thẳng từ GitHub
+
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/vi/f-versions-dark.webp">
+  <img src=".github/screenshots/vi/f-versions-light.webp" alt="Danh sách phiên bản đang mở trên trang tổng quan">
+</picture>
+</p>
+
+### Có bản mới là biết ngay
+
+Khi SillyTavern ra phiên bản mới, một thông báo hiện ngay trên trang tổng quan. Bấm **Cài bản này** là lên bản mới; **Để sau** thì nó ẩn đi tới bản kế tiếp.
+
+- Báo ngay trên giao diện, không cần canh GitHub
+- Một cú bấm để cập nhật, dữ liệu được chép ra chỗ an toàn trước
+
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/vi/f-update-dark.webp">
+  <img src=".github/screenshots/vi/f-update-light.webp" alt="Thông báo trên trang tổng quan: đã có SillyTavern 1.19.0, kèm nút cài và để sau">
+</picture>
+</p>
+
+### Khôi phục bản sao lưu bằng một nút
+
+Chuyển từ SillyTavern cũ sang? Tải lên file ZIP bạn đã tải về từ nó, hoặc một bản sao lưu từ SillyTavern Manager khác. Không cần cài thêm app, không cần giải nén, không phải đi tìm đúng thư mục. Trình quản lý cho xem bên trong có gì, chép lại bản hiện tại, rồi đưa tất cả trở về.
+
+- Dùng được file ZIP sao lưu của chính SillyTavern
+- Xem bên trong có gì trước khi thay đổi
+- Luôn chép một bản an toàn trước, nên lỡ tay vẫn hoàn tác được
+
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/vi/f-restore-dark.webp">
+  <img src=".github/screenshots/vi/f-restore-light.webp" alt="Cửa sổ khôi phục một file ZIP tải lên: 1604 tệp, thay thế hoặc gộp" width="520">
+</picture>
+</p>
+
+### SillyTavern, kèm hộp đồ nghề bên cạnh
+
+**Mở kèm tiện ích** đặt một nút nhỏ ở mép SillyTavern. Sao lưu lên máy hay lên cloud mà không phải rời đoạn chat, xem nhật ký trực tiếp khi có gì lạ, tải lại SillyTavern hay phóng toàn màn hình — không cần cửa sổ dòng lệnh, trên điện thoại lẫn máy tính.
+
+- Sao lưu ngay giữa lúc đang chat
+- Nhật ký trực tiếp của SillyTavern và trình quản lý
+- Dùng được cả qua link online
+
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/vi/f-tools-dark.webp">
+  <img src=".github/screenshots/vi/f-tools-light.webp" alt="SillyTavern với menu tiện ích đang mở: sao lưu, nhật ký, tải lại" width="420">
+</picture>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/vi/f-logs-dark.webp">
+  <img src=".github/screenshots/vi/f-logs-light.webp" alt="SillyTavern với bảng nhật ký trực tiếp đang mở" width="420">
+</picture>
+</p>
+
+### Máy ít dung lượng? Vẫn vừa
+
+Trên điện thoại hay máy chủ nhỏ gần đầy, **Chế độ tiết kiệm** giữ bản sao lưu trên cloud thay vì trên máy. Khi bản sao lưu quá lớn để khôi phục, nó đề nghị bỏ bớt những thứ SillyTavern không cần — tệp tải về cũ của tiện ích, ảnh thu nhỏ, bản sao lưu riêng của SillyTavern — mà mọi chat, nhân vật và thiết lập vẫn quay về đủ.
+
+- Tự bật khi máy thiếu chỗ
+- Bỏ bớt tệp SillyTavern không cần
+- Từ chối lần khôi phục không vừa, thay vì hỏng giữa chừng
+
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/vi/f-saver-dark.webp">
+  <img src=".github/screenshots/vi/f-saver-light.webp" alt="Khôi phục ở chế độ tiết kiệm: 1,7 GB giảm còn 823 MB nhờ bỏ những thứ SillyTavern không cần" width="520">
+</picture>
+</p>
+
+### Miễn phí trọn đời, dữ liệu là của bạn
+
+- **Miễn phí trọn đời.** Không thuê bao, không dùng thử, không giới hạn — mã nguồn mở theo giấy phép AGPL-3.0.
+- **SillyTavern chính chủ.** Luôn tải từ kho GitHub chính thức; tệp của nó không bao giờ bị sửa.
+- **Chỉ bạn giữ dữ liệu.** Chat và nhân vật nằm trên thiết bị của bạn và trong tài khoản Cloudflare của chính bạn. Dự án không có máy chủ nào lưu chúng.
+- **Khoá bằng mật khẩu của bạn.** Trình quản lý mở bằng mật khẩu của bạn, SillyTavern mở bằng mã PIN; đoán sai quá nhiều lần là cửa tự khoá.
+
+Trình quản lý gửi một bản tóm tắt sử dụng nhỏ và ẩn danh — không bao giờ có chat, prompt, nhân vật hay khoá API của bạn. Xem [Telemetry](#telemetry) để biết từng trường và cách tắt hẳn.
+
+### Còn nữa
 
 | | |
 | --- | --- |
-| **Cài đặt và cập nhật** | Chọn một bản release hoặc một branch rồi bấm **Cài đặt**. Manager tự clone, cài dependency, kiểm tra bản cài và chỉ báo **Ready** khi SillyTavern thực sự trả lời trên cổng của nó. Có bản mới, manager sẽ báo. |
 | **Chạy và theo dõi** | Bật, tắt và mở SillyTavern ngay trong panel, cùng log trực tiếp của manager, SillyTavern, trình cài đặt, sao lưu và tunnel trong một dòng tin tìm kiếm được. |
-| **Dùng ngay tại đây** | Mở SillyTavern ngay bên trong panel, có thanh cửa sổ để sao lưu, xem log và phóng toàn màn hình — hoặc mở trong tab riêng với cùng bộ tiện ích. |
 | **Chia sẻ an toàn** | Bản thân SillyTavern chỉ nằm ở localhost. Thiết bị khác và Cloudflare Tunnel đi qua cổng truy cập của manager, cổng đó hỏi mật khẩu trước và không bao giờ chuyển tiếp bảng quản trị. |
 | **Link dùng được lâu dài** | Đăng nhập Cloudflare là manager đặt `sillytavern.<bạn>.workers.dev` và `stm.<bạn>.workers.dev` đứng trước tunnel. Hostname của Quick Tunnel đổi sau mỗi lần khởi động lại; hai địa chỉ này thì không. |
 | **Vào máy của mình từ xa** | Console có link riêng, nằm sau mật khẩu manager, để bạn quản trị máy từ nơi khác. Đó là một công tắc tách biệt với cái link bạn chia sẻ. |
-| **Sao lưu** | Archive ZIP theo lịch và các điểm khôi phục do bạn tự đặt tên, tương thích với export của chính SillyTavern, kèm xem trước khi khôi phục và một safety snapshot trước khi ghi đè. |
-| **Sao lưu ngoài máy** | Một nút đăng nhập Cloudflare, tìm hoặc tạo bucket R2 và giữ các điểm khôi phục ở đó. Không phải tạo hay dán khoá nào — hoặc dùng khoá S3 của bạn. |
-| **Dựng lại cả máy** | Bucket còn giữ cả cách manager được thiết lập. Đăng nhập cùng tài khoản Cloudflare trên máy mới là dữ liệu, bản SillyTavern và các thiết lập quay về. |
-| **Tiết kiệm chỗ** | Chế độ tiết kiệm, cho máy ít chỗ chứa file: không giữ archive trên máy, cloud giữ các điểm khôi phục, và bản khôi phục được ghi thẳng khi dữ liệu tới. |
 | **Luôn thức** | **Giữ STM online** để trình tiết kiệm pin, hay một host tự tắt chương trình đang rảnh, không cho manager ngủ — kéo theo cả SillyTavern. |
 | **Biết mình dùng bao nhiêu** | Số request, token, cache hit và độ trễ theo ngày, theo provider và theo model, đo từ chính lưu lượng của SillyTavern. |
 | **Tách dữ liệu** | Nhiều profile cho nhiều bộ dữ liệu SillyTavern, chuyển ngay trong panel, mỗi profile có bản sao lưu riêng. |

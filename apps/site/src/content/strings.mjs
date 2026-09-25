@@ -32,12 +32,13 @@ export const strings = {
     },
     switchLanguage: 'Đọc trang này bằng tiếng Việt',
     skip: 'Skip to content',
+    copy: { label: 'Copy', done: 'Copied' },
     useDark: 'Switch to the dark theme',
     useLight: 'Switch to the light theme',
     nav: [
-      { href: '/#what', label: 'Features' },
-      { href: '/#install', label: 'Install' },
-      { href: '/#how', label: 'How it works' },
+      { href: '/#features', label: 'Features' },
+      { href: '/#free', label: 'Free and private' },
+      { href: '/#install', label: 'Get started' },
       { href: '/docs', label: 'Documentation' },
     ],
     footer: {
@@ -86,12 +87,13 @@ export const strings = {
     },
     switchLanguage: 'Read this page in English',
     skip: 'Tới nội dung chính',
+    copy: { label: 'Sao chép', done: 'Đã chép' },
     useDark: 'Chuyển sang giao diện tối',
     useLight: 'Chuyển sang giao diện sáng',
     nav: [
-      { href: '/vi/#what', label: 'Tính năng' },
-      { href: '/vi/#install', label: 'Cài đặt' },
-      { href: '/vi/#how', label: 'Cách hoạt động' },
+      { href: '/vi/#features', label: 'Tính năng' },
+      { href: '/vi/#free', label: 'Miễn phí và riêng tư' },
+      { href: '/vi/#install', label: 'Bắt đầu' },
       { href: '/vi/docs', label: 'Tài liệu' },
     ],
     footer: {

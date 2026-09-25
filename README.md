@@ -35,20 +35,137 @@
 
 ## What it does
 
-SillyTavern is a terminal, a Git checkout and a folder of data you must not lose. SillyTavern Manager turns all three into a page you can open from any device.
+SillyTavern Manager does the technical parts of SillyTavern for you — installing it, keeping it running, updating it, backing it up and opening it on your other devices — from one page in your browser. No terminal, no long commands to copy.
+
+### Never lose a chat again
+
+Sign in to Cloudflare once, and your chats, characters and settings are copied to free cloud storage in **your own** account every few minutes, by themselves. If your computer breaks, your phone is lost, or you delete something by mistake, sign in again on any device and everything comes back.
+
+- Backs up on its own, every few minutes — only what changed
+- Free with Cloudflare R2’s free plan (10 GB)
+- One sign-in on a new device brings back your chats, the SillyTavern version and your settings
+
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/en/f-signin-dark.webp">
+  <img src=".github/screenshots/en/f-signin-light.webp" alt="The first-run offer to connect your own cloud storage" width="360">
+</picture>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/en/f-cloud-dark.webp">
+  <img src=".github/screenshots/en/f-cloud-light.webp" alt="The cloud backup card: backing up every 5 minutes, the last copy, and recovery points to bring back" width="440">
+</picture>
+</p>
+
+### Your SillyTavern, on every device
+
+Switch on one link and SillyTavern opens on your phone, tablet or another computer — at home or anywhere else. Scan the QR code to open it on your phone in a second. Your own PIN keeps everybody else out.
+
+- A link that stays the same, so bookmarks keep working
+- Scan a QR code instead of typing an address
+- Locked with a PIN only you know; the manager itself stays behind its own password
+
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/en/f-link-dark.webp">
+  <img src=".github/screenshots/en/f-link-light.webp" alt="The Open SillyTavern menu with Open with tools and a QR code to open SillyTavern on a phone">
+</picture>
+</p>
+
+### Any SillyTavern version, one click
+
+Pick the version you like from the list and press **Install**. The manager downloads it from SillyTavern’s official GitHub and sets it up for you. Want to try a newer one, or go back to the one you liked? Same list, same button — your chats are copied somewhere safe first.
+
+- Start and stop SillyTavern with a button
+- Switch versions without reinstalling anything
+- Always the official release, straight from GitHub
+
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/en/f-versions-dark.webp">
+  <img src=".github/screenshots/en/f-versions-light.webp" alt="The version list open on the overview">
+</picture>
+</p>
+
+### New releases, the moment they are out
+
+When SillyTavern publishes a new version, a notice appears right on your overview. Press **Install it** and you are up to date; **Not now** hides it until the next one.
+
+- Told on the page, no need to watch GitHub
+- One click to update, with your data copied to safety first
+
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/en/f-update-dark.webp">
+  <img src=".github/screenshots/en/f-update-light.webp" alt="A notice on the overview saying SillyTavern 1.19.0 is out, with Install it and Not now">
+</picture>
+</p>
+
+### Bring back a backup with one button
+
+Moving from an old SillyTavern? Upload the ZIP you downloaded from it, or a backup from another SillyTavern Manager. No extra apps, no unzipping, no hunting for the right folder. The manager shows what is inside, takes a copy of what you have now, then puts it all back.
+
+- Works with SillyTavern’s own backup ZIP
+- See what is inside before anything changes
+- A safety copy is taken first, so a mistake can be undone
+
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/en/f-restore-dark.webp">
+  <img src=".github/screenshots/en/f-restore-light.webp" alt="The restore window for an uploaded ZIP: 1604 files, replace or merge" width="520">
+</picture>
+</p>
+
+### SillyTavern, with a toolbox beside it
+
+**Open with tools** puts a small button at the edge of SillyTavern. Back up to your computer or to the cloud without leaving your chat, read the live logs when something looks wrong, reload SillyTavern or go full screen — no terminal window needed, on a phone as well as a computer.
+
+- Back up in the middle of a chat
+- Live logs from SillyTavern and the manager
+- Works through the online link too
+
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/en/f-tools-dark.webp">
+  <img src=".github/screenshots/en/f-tools-light.webp" alt="SillyTavern with the tools menu open: back up, logs, reload" width="420">
+</picture>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/en/f-logs-dark.webp">
+  <img src=".github/screenshots/en/f-logs-light.webp" alt="SillyTavern with the live logs panel open" width="420">
+</picture>
+</p>
+
+### Little space? It still fits
+
+On a phone or a small server that is nearly full, **Saver mode** keeps your backups in the cloud instead of on the device. When a backup is too big to bring back, it offers to leave out what SillyTavern does not need — old extension downloads, thumbnails, SillyTavern’s own backup copies — and every chat, character and setting still comes back.
+
+- Turns itself on when space is short
+- Leaves out files SillyTavern can do without
+- Refuses a restore that would not fit, instead of failing halfway
+
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/en/f-saver-dark.webp">
+  <img src=".github/screenshots/en/f-saver-light.webp" alt="A restore in saver mode shrinking 1.7 GB to 823 MB by leaving out what SillyTavern can do without" width="520">
+</picture>
+</p>
+
+### Free forever, and your data stays yours
+
+- **Free for life.** No subscription, no trial, no limits — open source under the AGPL-3.0.
+- **The official SillyTavern.** Always downloaded from its official GitHub repository; its files are never changed.
+- **Only you hold your data.** Chats and characters stay on your device and in your own Cloudflare account. This project has no server that stores them.
+- **Locked with your passwords.** The manager opens with your password and SillyTavern with your PIN; too many wrong guesses and the door locks itself.
+
+The manager sends a small, anonymous usage summary — never your chats, prompts, characters or keys. See [Telemetry](#telemetry) for every field and how to switch it off.
+
+### And also
 
 | | |
 | --- | --- |
-| **Install and update** | Pick a release or a branch and press **Install**. The manager clones it, installs dependencies, health-checks the build and reports **Ready** only once SillyTavern answers on its port. It tells you when a newer release is out. |
 | **Run and watch** | Start, stop and open SillyTavern from the panel, with live logs from the manager, SillyTavern, the installer, backups and the tunnel in one searchable feed. |
-| **Use it here** | Open SillyTavern inside the panel, with a window bar for backing up, reading the logs and going full screen — or in a tab of its own with the same tools. |
 | **Share safely** | SillyTavern itself stays on localhost. Other devices and Cloudflare Tunnel reach it through the manager's access gateway, which asks for a password first and never forwards the admin panel. |
 | **A link that keeps working** | Sign in to Cloudflare and the manager puts `sillytavern.<you>.workers.dev` and `stm.<you>.workers.dev` in front of the tunnels. A Quick Tunnel's own hostname changes every restart; these two never do. |
 | **Reach your own machine** | The console has its own link, behind the manager password, for administering the machine from somewhere else. It is a separate switch from the one you share. |
-| **Back up** | Scheduled ZIP archives and restore points you name yourself, compatible with SillyTavern's own exports, plus previewed restores and a safety snapshot before anything is replaced. |
-| **Back up off-site** | One button signs in to Cloudflare, finds or creates an R2 bucket and keeps recovery points there. No keys to create or paste — or bring your own S3 keys. |
-| **Bring a machine back** | The bucket also keeps how the manager was set up. Sign in with the same Cloudflare account on a new machine and the data, the SillyTavern release and the settings come back. |
-| **Save space** | Saver mode, for machines with little room for files: no archives on the machine, the cloud holds the recovery points, and a restore is written as it arrives. |
 | **Stay awake** | **Keep STM online** stops a battery saver, or a host that shuts idle programs down, from putting the manager to sleep — and SillyTavern with it. |
 | **Know your usage** | Requests, tokens, cache hits and latency per day, per provider and per model, measured from SillyTavern's own traffic. |
 | **Keep data separate** | Named profiles for separate SillyTavern data sets, switched from the panel, each with its own backups. |
