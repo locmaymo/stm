@@ -14,18 +14,17 @@ pkg upgrade -y
 pkg install -y git nodejs-lts
 git clone https://github.com/locmaymo/stm.git
 cd stm
-npm ci
-npm start`,
+npm ci`,
   },
   termuxStart: {
     lang: 'bash',
-    code: `cd "$HOME/stm"
+    code: `cd stm
 npm start`,
   },
   termuxUpdate: {
     lang: 'bash',
-    code: `cd "$HOME/stm"
-git pull --ff-only
+    code: `cd stm
+git pull
 npm ci
 npm start`,
   },
@@ -109,7 +108,7 @@ STM_TELEMETRY_ENDPOINT=`,
   portCheck: {
     lang: 'bash',
     code: `# Linux, macOS and Termux
-ss -ltnp | grep -E ':(7860|8000|8001)' || lsof -i :7860`,
+ss -ltnp | grep -E ':(7860|8002|8001)' || lsof -i :7860`,
   },
   portCheckWindows: {
     lang: 'powershell',

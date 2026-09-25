@@ -5006,7 +5006,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
               room for a label is what pushed the menu to a line of its own. */}
           {backupSchedule.intervalMinutes > 0 ? <DetailRow label={t('console.localScheduleEvery')} className="[&>div:first-child]:basis-24">
             <Select value={localChoice?.id ?? CUSTOM_CHOICE} onValueChange={(id) => { const choice = LOCAL_BACKUP_CHOICES.find((item) => item.id === id); if (choice) void saveBackupSchedule(choice.intervalMinutes); }} disabled={scheduleSaving}>
-              <SelectTrigger size="sm" className="w-40" aria-label={t('console.localScheduleEvery')}><SelectValue /></SelectTrigger>
+              <SelectTrigger size="sm" className="w-auto min-w-40" aria-label={t('console.localScheduleEvery')}><SelectValue /></SelectTrigger>
               <SelectContent>
                 {LOCAL_BACKUP_CHOICES.map((choice) => <SelectItem key={choice.id} value={choice.id}>{t(choice.label)}</SelectItem>)}
                 {localChoice ? null : <SelectItem value={CUSTOM_CHOICE} disabled>{t('console.everyMinutes', { minutes: backupSchedule.intervalMinutes })}</SelectItem>}

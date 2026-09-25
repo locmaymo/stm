@@ -2,9 +2,10 @@ import { html, join, raw } from '../html.mjs';
 import { iconOf, icons } from '../icons.mjs';
 import { docs } from '../content/docs.mjs';
 import { snippets } from '../content/snippets.mjs';
-import { localeRoot } from '../content/strings.mjs';
+import { localeRoot, strings } from '../content/strings.mjs';
 import { layout } from '../layout.mjs';
-import { NARROW, screenshot } from '../shots.mjs';
+import { NARROW, photo, screenshot } from '../shots.mjs';
+import { portDiagram } from '../diagram.mjs';
 import { prose } from '../links.mjs';
 
 /**
@@ -75,7 +76,7 @@ function renderBlock(block, locale, root) {
     case 'steps':
       return html`<ol class="docs-steps">${join(block.items.map((item) => html`<li>${prose(item, root)}</li>`))}</ol>`;
     case 'code':
-      return codeBlock(block);
+      return codeBlock(block, locale);
     case 'note':
       return html`<div class="note note-${block.tone}">${noteIcon(block.tone)}<p>${prose(block.body, root)}</p></div>`;
     case 'table':
@@ -83,23 +84,32 @@ function renderBlock(block, locale, root) {
         <thead><tr>${join(block.columns.map((column) => html`<th scope="col">${column}</th>`))}</tr></thead>
         <tbody>${join(block.rows.map((row) => html`<tr>${join(row.map((cell) => html`<td>${prose(cell, root)}</td>`))}</tr>`))}</tbody>
       </table></div>`;
+    case 'ports':
+      return html`<figure class="figure docs-figure">${portDiagram(locale)}<figcaption>${block.caption}</figcaption></figure>`;
     case 'shot':
-      return html`<figure class="${NARROW} docs-shot">${screenshot(locale, block.name, block.alt, { narrow: 'mobile' })}</figure>`;
+      return html`<figure class="${NARROW} docs-shot">${screenshot(locale, block.name, block.alt, { narrow: true })}</figure>`;
+    case 'photo':
+      return html`<figure class="docs-photo">${photo(block.name, block.alt)}<figcaption>${prose(block.caption, root)}</figcaption></figure>`;
+    case 'step':
+      return html`<h4 id="${block.id}" class="docs-step">${block.title}</h4>`;
     default:
       return raw('');
   }
 }
 
 /**
- * A command, with the language it is written in and nothing to click.
+ * A command, with the language it is written in and a button that copies it.
  *
- * No copy button. It would need script on a page that otherwise needs none,
- * and every browser has selected a `<pre>` on double-click for thirty years.
+ * The button is added by `site.js` rather than written here: without scripting
+ * it could only be a button that does nothing, and the block still selects on
+ * a double-click the way a `<pre>` always has. Its two words are carried on the
+ * figure so the script has nothing to translate.
  */
-function codeBlock(block) {
+function codeBlock(block, locale) {
   const snippet = snippets[block.snippet];
   if (!snippet) throw new Error(`Unknown snippet: ${block.snippet}`);
-  return html`<figure class="code">
+  const copy = strings[locale].copy;
+  return html`<figure class="code" data-copy="${copy.label}" data-copied="${copy.done}">
     <figcaption>${block.caption ?? snippet.lang}</figcaption>
     <pre><code>${snippet.code}</code></pre>
   </figure>`;

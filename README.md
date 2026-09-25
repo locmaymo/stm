@@ -35,17 +35,138 @@
 
 ## What it does
 
-SillyTavern is a terminal, a Git checkout and a folder of data you must not lose. SillyTavern Manager turns all three into a page you can open from any device.
+SillyTavern Manager does the technical parts of SillyTavern for you — installing it, keeping it running, updating it, backing it up and opening it on your other devices — from one page in your browser. No terminal, no long commands to copy.
+
+### Never lose a chat again
+
+Sign in to Cloudflare once, and your chats, characters and settings are copied to free cloud storage in **your own** account every few minutes, by themselves. If your computer breaks, your phone is lost, or you delete something by mistake, sign in again on any device and everything comes back.
+
+- Backs up on its own, every few minutes — only what changed
+- Free with Cloudflare R2’s free plan (10 GB)
+- One sign-in on a new device brings back your chats, the SillyTavern version and your settings
+
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/en/f-signin-dark.webp">
+  <img src=".github/screenshots/en/f-signin-light.webp" alt="The first-run offer to connect your own cloud storage" width="360">
+</picture>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/en/f-cloud-dark.webp">
+  <img src=".github/screenshots/en/f-cloud-light.webp" alt="The cloud backup card: backing up every 5 minutes, the last copy, and recovery points to bring back" width="440">
+</picture>
+</p>
+
+### Your SillyTavern, on every device
+
+Switch on one link and SillyTavern opens on your phone, tablet or another computer — at home or anywhere else. Scan the QR code to open it on your phone in a second. Your own PIN keeps everybody else out.
+
+- A link that stays the same, so bookmarks keep working
+- Scan a QR code instead of typing an address
+- Locked with a PIN only you know; the manager itself stays behind its own password
+
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/en/f-link-dark.webp">
+  <img src=".github/screenshots/en/f-link-light.webp" alt="The Open SillyTavern menu with Open with tools and a QR code to open SillyTavern on a phone">
+</picture>
+</p>
+
+### Any SillyTavern version, one click
+
+Pick the version you like from the list and press **Install**. The manager downloads it from SillyTavern’s official GitHub and sets it up for you. Want to try a newer one, or go back to the one you liked? Same list, same button — your chats are copied somewhere safe first.
+
+- Start and stop SillyTavern with a button
+- Switch versions without reinstalling anything
+- Always the official release, straight from GitHub
+
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/en/f-versions-dark.webp">
+  <img src=".github/screenshots/en/f-versions-light.webp" alt="The version list open on the overview">
+</picture>
+</p>
+
+### New releases, the moment they are out
+
+When SillyTavern publishes a new version, a notice appears right on your overview. Press **Install it** and you are up to date; **Not now** hides it until the next one.
+
+- Told on the page, no need to watch GitHub
+- One click to update, with your data copied to safety first
+
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/en/f-update-dark.webp">
+  <img src=".github/screenshots/en/f-update-light.webp" alt="A notice on the overview saying SillyTavern 1.19.0 is out, with Install it and Not now">
+</picture>
+</p>
+
+### Bring back a backup with one button
+
+Moving from an old SillyTavern? Upload the ZIP you downloaded from it, or a backup from another SillyTavern Manager. No extra apps, no unzipping, no hunting for the right folder. The manager shows what is inside, takes a copy of what you have now, then puts it all back.
+
+- Works with SillyTavern’s own backup ZIP
+- See what is inside before anything changes
+- A safety copy is taken first, so a mistake can be undone
+
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/en/f-restore-dark.webp">
+  <img src=".github/screenshots/en/f-restore-light.webp" alt="The restore window for an uploaded ZIP: 1604 files, replace or merge" width="520">
+</picture>
+</p>
+
+### SillyTavern, with a toolbox beside it
+
+**Open with tools** puts a small button at the edge of SillyTavern. Back up to your computer or to the cloud without leaving your chat, read the live logs when something looks wrong, reload SillyTavern or go full screen — no terminal window needed, on a phone as well as a computer.
+
+- Back up in the middle of a chat
+- Live logs from SillyTavern and the manager
+- Works through the online link too
+
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/en/f-tools-dark.webp">
+  <img src=".github/screenshots/en/f-tools-light.webp" alt="SillyTavern with the tools menu open: back up, logs, reload" width="420">
+</picture>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/en/f-logs-dark.webp">
+  <img src=".github/screenshots/en/f-logs-light.webp" alt="SillyTavern with the live logs panel open" width="420">
+</picture>
+</p>
+
+### Little space? It still fits
+
+On a phone or a small server that is nearly full, **Saver mode** keeps your backups in the cloud instead of on the device. When a backup is too big to bring back, it offers to leave out what SillyTavern does not need — old extension downloads, thumbnails, SillyTavern’s own backup copies — and every chat, character and setting still comes back.
+
+- Turns itself on when space is short
+- Leaves out files SillyTavern can do without
+- Refuses a restore that would not fit, instead of failing halfway
+
+<p align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/en/f-saver-dark.webp">
+  <img src=".github/screenshots/en/f-saver-light.webp" alt="A restore in saver mode shrinking 1.7 GB to 823 MB by leaving out what SillyTavern can do without" width="520">
+</picture>
+</p>
+
+### Free forever, and your data stays yours
+
+- **Free for life.** No subscription, no trial, no limits — open source under the AGPL-3.0.
+- **The official SillyTavern.** Always downloaded from its official GitHub repository; its files are never changed.
+- **Only you hold your data.** Chats and characters stay on your device and in your own Cloudflare account. This project has no server that stores them.
+- **Locked with your passwords.** The manager opens with your password and SillyTavern with your PIN; too many wrong guesses and the door locks itself.
+
+The manager sends a small, anonymous usage summary — never your chats, prompts, characters or keys. See [Telemetry](#telemetry) for every field and how to switch it off.
+
+### And also
 
 | | |
 | --- | --- |
-| **Install and update** | Pick a release or a branch and press **Install**. The manager clones it, installs dependencies, health-checks the build and reports **Ready** only once SillyTavern answers on its port. It tells you when a newer release is out. |
 | **Run and watch** | Start, stop and open SillyTavern from the panel, with live logs from the manager, SillyTavern, the installer, backups and the tunnel in one searchable feed. |
 | **Share safely** | SillyTavern itself stays on localhost. Other devices and Cloudflare Tunnel reach it through the manager's access gateway, which asks for a password first and never forwards the admin panel. |
 | **A link that keeps working** | Sign in to Cloudflare and the manager puts `sillytavern.<you>.workers.dev` and `stm.<you>.workers.dev` in front of the tunnels. A Quick Tunnel's own hostname changes every restart; these two never do. |
 | **Reach your own machine** | The console has its own link, behind the manager password, for administering the machine from somewhere else. It is a separate switch from the one you share. |
-| **Back up** | Scheduled and manual ZIP archives, compatible with SillyTavern's own exports, plus previewed restores and a safety snapshot before anything is replaced. |
-| **Back up off-site** | One button signs in to Cloudflare, finds or creates an R2 bucket and keeps recovery points there. No keys to create or paste — or bring your own S3 keys. |
+| **Stay awake** | **Keep STM online** stops a battery saver, or a host that shuts idle programs down, from putting the manager to sleep — and SillyTavern with it. |
 | **Know your usage** | Requests, tokens, cache hits and latency per day, per provider and per model, measured from SillyTavern's own traffic. |
 | **Keep data separate** | Named profiles for separate SillyTavern data sets, switched from the panel, each with its own backups. |
 | **Speak your language** | English and Vietnamese, light and dark, desktop and phone. |
@@ -91,7 +212,9 @@ The portable bundle already contains Node.js, the manager server, the panel and 
 
 <br>
 
-Install [Termux from F-Droid](https://f-droid.org/packages/com.termux/) or another trusted source. Do not use the old Play Store build. Open Termux and paste these commands one block at a time:
+Install [Termux from F-Droid](https://f-droid.org/packages/com.termux/) or another trusted source. Do not use the old Play Store build.
+
+**1. Install (once).** Open Termux, paste these commands and press Enter. The first two update Termux itself and take a minute or two.
 
 ```bash
 pkg update -y
@@ -100,23 +223,28 @@ pkg install -y git nodejs-lts
 git clone https://github.com/locmaymo/stm.git
 cd stm
 npm ci
+```
+
+The first time Termux updates, it stops a few times to ask about a settings file (`sources.list`, `bash.bashrc`, `profile`, `openssl.cnf`), with a line ending in `(Y/I/N/O/D/Z) [default=N] ?`. **Press Enter each time.** That takes the default, **N**, which keeps the file you already have: it is the safe answer, nothing is lost, and the update carries on. Keep pressing Enter until the commands finish.
+
+<p align="center"><img src=".github/screenshots/termux/pkg-prompt.webp" width="360" alt="Termux asking about bash.bashrc and profile during the first update, each ending in (Y/I/N/O/D/Z) [default=N] ?"></p>
+
+**2. Start.** Each time you want to use SillyTavern, open Termux and run:
+
+```bash
+cd stm
 npm start
 ```
 
-Leave that Termux session running while SillyTavern is in use. Open the manager on the phone at `http://127.0.0.1:7860`; SillyTavern itself is at `http://127.0.0.1:8002`. The manager can create a public tunnel when you want to reach SillyTavern from an iPhone or another network.
+Termux always opens in its home folder, which is where `stm` was downloaded, so `cd stm` finds it. When the box with the addresses appears, open `http://127.0.0.1:7860` in the phone's browser; the Wi‑Fi address is for other devices on the same network. Leave Termux open while you use SillyTavern, and press **Ctrl+C** to stop it. The manager can create a public tunnel when you want to reach SillyTavern from an iPhone or another network.
 
-Later starts:
+<p align="center"><img src=".github/screenshots/termux/start.webp" width="360" alt="Termux after npm start: the ST Manager box with the address on this phone and on this Wi-Fi"></p>
 
-```bash
-cd "$HOME/stm"
-npm start
-```
-
-Updates, after stopping the running manager:
+**3. Update.** Stop the manager with **Ctrl+C**, then run:
 
 ```bash
-cd "$HOME/stm"
-git pull --ff-only
+cd stm
+git pull
 npm ci
 npm start
 ```
@@ -237,26 +365,34 @@ Windows users should prefer the portable ZIP, because it already includes Node.j
 
 ### First setup
 
-1. Open the manager at port `7860` and create the manager administrator password.
+1. Open the manager at port `7860` and create the manager administrator password — or press **Continue with Cloudflare**, which sets the manager up and connects backups in one step, and lets that Cloudflare account open the manager again later.
 2. Choose a SillyTavern version — `latest` is selected by default.
 3. Press **Install** and wait for **Ready**. Ready means SillyTavern answered on port `8002`.
-4. Open the local link, or set the SillyTavern password and then turn on local-network access or a public tunnel.
+4. Open the local link, or set the SillyTavern PIN and then turn on local-network access or a public tunnel.
 
-The manager password and the SillyTavern password are two different things. The SillyTavern password is asked for by a sign-in page the manager serves, so it works the same on every SillyTavern version, old or new; changing it signs out every device that was already in.
+The manager password and the SillyTavern PIN are two different things. The PIN is asked for by a sign-in page the manager serves, so it works the same on every SillyTavern version, old or new; changing it signs out every device that was already in.
+
+Until everything is in place, a **Setup checklist** on the overview lists the six steps worth taking — install SillyTavern, connect Cloudflare, set the STM password and the SillyTavern PIN, turn on R2 backups and open SillyTavern's link — and ticks each one off as it happens. A step stays ticked once done, and the list folds itself away when all six are.
+
+### Using SillyTavern from the panel
+
+**Use it here**, on the preview in the overview, opens SillyTavern inside the manager's own page. It is signed in already — the manager password you gave is the stronger of the two, so the PIN is not asked for — and a bar above it can **minimize** it back to the console while it stays loaded, give it the **full screen**, **back up** on this machine or to the cloud, show the **logs**, reload it or move it to a tab. **Close** unloads it and gives its memory back.
+
+The arrow beside **Open SillyTavern** offers **Open with tools**: a new tab with the same window bar and a floating tools button. From another device, where a page cannot be put inside the console, the same buttons open SillyTavern in a tab at the best address instead.
 
 ## Screenshots
 
-Every shot below follows your own system theme, light or dark.
+Every shot below is taken with demo data and follows your own system theme, light or dark.
 
 <table>
 <tr>
-<td width="50%">
+<td width="50%" valign="top">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/en/data-dark.webp">
   <img src=".github/screenshots/en/data-light.webp" alt="Data page with profiles, local backups and Cloudflare R2">
 </picture>
 </td>
-<td width="50%">
+<td width="50%" valign="top">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/en/metrics-dark.webp">
   <img src=".github/screenshots/en/metrics-light.webp" alt="Metrics page with requests, tokens, cache hits and latency">
@@ -268,13 +404,13 @@ Every shot below follows your own system theme, light or dark.
 <td><b>Metrics</b> — requests, tokens, cache hits and latency, per day, provider and model.</td>
 </tr>
 <tr>
-<td>
+<td valign="top">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/en/settings-dark.webp">
   <img src=".github/screenshots/en/settings-light.webp" alt="Settings page with security and SillyTavern configuration">
 </picture>
 </td>
-<td>
+<td valign="top">
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/en/sign-in-dark.webp">
   <img src=".github/screenshots/en/sign-in-light.webp" alt="The manager sign-in screen">
@@ -287,13 +423,37 @@ Every shot below follows your own system theme, light or dark.
 </tr>
 </table>
 
-<div align="center">
+<table>
+<tr>
+<td width="25%" valign="top">
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/en/mobile-dark.webp">
-  <img src=".github/screenshots/en/mobile-light.webp" alt="The overview page on a phone" width="320">
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/en/overview-mobile-dark.webp">
+  <img src=".github/screenshots/en/overview-mobile-light.webp" alt="The overview page on a phone">
 </picture>
-<p><b>On a phone</b> — the same panel, with the navigation moved to the bottom.</p>
-</div>
+</td>
+<td width="25%" valign="top">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/en/data-mobile-dark.webp">
+  <img src=".github/screenshots/en/data-mobile-light.webp" alt="The data page on a phone">
+</picture>
+</td>
+<td width="25%" valign="top">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/en/metrics-mobile-dark.webp">
+  <img src=".github/screenshots/en/metrics-mobile-light.webp" alt="The metrics page on a phone">
+</picture>
+</td>
+<td width="25%" valign="top">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/screenshots/en/settings-mobile-dark.webp">
+  <img src=".github/screenshots/en/settings-mobile-light.webp" alt="The settings page on a phone">
+</picture>
+</td>
+</tr>
+<tr>
+<td colspan="4" align="center"><b>On a phone</b> — the same panel, with the navigation moved to the bottom.</td>
+</tr>
+</table>
 
 ## How it works
 
@@ -336,6 +496,8 @@ Sign in to Cloudflare (the same sign-in that sets up backups) and the manager pu
 
 The manager will not deploy over a Worker of those names that it did not create, so an account that already has one keeps it — the panel says so instead. Disconnecting Cloudflare removes both.
 
+With a sign-in each link therefore has two addresses: the **fixed link** through the Worker, and the **tunnel link** straight to cloudflared, which changes at every start. The card shows one and keeps the other behind a count beside it. **Show this link first** puts either one in front — on the card, behind **Open** and in the QR code — for somebody who finds the Worker slower or only ever opens the link on the machine in front of them; the fixed link can also be hidden altogether, and the Worker keeps following the tunnel so an address already shared goes on working. A new tunnel's address is handed out only once it answers, and while the Worker is being pointed at it the fixed link says it is on its way rather than offering one that would fail.
+
 A free Cloudflare account answers 100,000 Worker requests a day, resetting at midnight UTC, and those two addresses share that allowance with the Worker that carries your backups. Running it out would take all three down at once, so the manager watches the figure and gives things up in order before that can happen: first the console quietly asks for updates less often, then the console's own fixed address is held back, and last SillyTavern's. In each case the tunnel's own address is offered in its place, and everything is handed out again when the allowance resets. It is written in the log when it happens, and there is nothing to press.
 
 In ordinary personal use this never comes up — a console left open all day, SillyTavern in use and backups running costs around a tenth of the allowance. What can reach it is sharing your SillyTavern link widely: a page load costs roughly 320 requests, so the ceiling is about 300 of them a day. Note also that an address somebody already bookmarked keeps going through the Worker; holding one back protects the links handed out from that point on, not one already in somebody's browser.
@@ -351,11 +513,29 @@ Where your data lives:
 
 The directory holds profiles, backups, logs, metrics and the telemetry outbox. It is never inside the application folder, so updating the application never touches it.
 
+### Keeping it awake
+
+A program nobody has asked anything of for a while can be put to sleep — by a laptop's battery saver, a phone's power management, or a host that stops idle containers — and SillyTavern goes with it. **Settings → While the manager is open → Keep STM online**, on by default, has the manager reach its own address on a clock so it is never idle: every 15 minutes, or every 5, 10, 30 or 60 if the machine goes quiet sooner or later than that.
+
+The address it holds is the one you set in `STM_PUBLIC_ORIGIN`, otherwise the one your browser last reached the console at, otherwise this machine's own `127.0.0.1` — never the tunnel or the Worker, so it costs nothing from the Cloudflare allowance. The card says which address it is holding and when it last answered. The choice travels to the bucket with the rest of the manager's settings.
+
 ## Backup and restore
 
 Local backup is always available. The archive is a streaming ZIP compatible with SillyTavern exports. By default it excludes `secrets.json`, thumbnails, vectors, generated backups, `.git`, `node_modules` and operating-system metadata. Including secrets is an explicit action with a warning.
 
 Restore previews the archive before writing. Replace is the default mode; merge is available when needed. A safety snapshot is created before a replace or a profile switch.
+
+On the **Data** page, **Back up automatically** takes an archive every 30 minutes, hour, six hours or day when the data has changed, and keeps the newest one (`STM_LOCAL_BACKUPS` keeps more). **Create a restore point** takes one on purpose, with a note of your own — "before updating extensions" — and the manager never deletes a restore point, an upload or a recovery point brought back from R2 by itself. The safety copy taken before a restore or a profile switch is kept as the undo for the last such change. Every archive carries its kind, and the list can be searched and filtered by it. **Upload a ZIP** restores an export from elsewhere.
+
+Before a replace, the preview says what it takes away: the files in the profile that the archive does not have.
+
+### Saver mode
+
+For a machine with little room for files — a container that keeps everything in memory, a phone that is nearly full — archives on the machine are the thing that runs it out. A restore of a 2 GB profile used to hold it three times over: the uploaded ZIP, a safety copy of the profile it was replacing, and the files themselves.
+
+With **Saver mode** on, no archive is kept on the machine at all and the profile is on the disk once. Your Cloudflare R2 bucket holds the recovery points instead, and it stands in for the safety copy: before a restore replaces anything, the current data is sent to R2 first. An uploaded ZIP and a recovery point brought back from R2 are written straight into the profile as they arrive, with SillyTavern stopped. The manager checks that the restore fits before it starts, offers to leave out what SillyTavern can do without — extensions' git history and `node_modules`, SillyTavern's own backups, thumbnails — when room is short, and refuses one that still will not fit rather than failing halfway.
+
+It turns itself on when the data directory is kept in memory, or when the disk has less than 5 GiB free as the manager starts, and says which of the two it was. Otherwise it is a switch under **Settings → When the manager opens**, or `STM_SAVER=1` / `STM_SAVER=0` to settle it for good. Connect R2 before relying on it: with saver mode on and no bucket, nothing holds your data but the profile itself.
 
 ### Cloudflare R2
 
@@ -375,6 +555,14 @@ Only the Cloudflare refresh token is stored, in its own file readable by your us
 
 **S3 keys instead.** If you would rather not sign in, open **Where backups go**, choose **R2 or S3 keys** and enter the endpoint, bucket and key pair from the R2 page of the Cloudflare dashboard, or set them in `.env` (see [`.env.example`](.env.example)). Any S3-compatible storage works this way. Both ways of reaching a bucket are in that one form; saving is choosing which one carries the backups.
 
+### Bringing a machine back
+
+The bucket keeps more than your chats. Whenever they change, the manager writes its own settings beside the data: the manager password and the SillyTavern PIN (as the hashes it stores, never as text), the ports, the links and whether their Quick Tunnels were on, **Keep STM online**, the backup schedules and R2 limits, and the SillyTavern release that was actually running. The usage figures are kept there too.
+
+On a new machine — a new computer, a reinstall, a container that starts empty — sign in with the same Cloudflare account, on the first-run screen or on the **Data** page. A profile that is empty while the bucket is not gets the newest recovery point back before SillyTavern is started, and SillyTavern is installed at the release you were running. When the account holds the setup of one of your other machines, a card on every page offers **Restore everything**: the data, the SillyTavern release, the console password, the PIN, the ports, the links, the backup schedules and the usage figures, in one go. SillyTavern is stopped while it runs, and what was on this machine is kept under Backups first. Nothing is applied on its own: a machine that is already set up is offered these settings, with the name of the machine that wrote them and when, and restoring the password asks you to sign in again.
+
+One account backs up from one machine at a time, so two machines never sweep the same bucket. Signing in on a second machine makes it the one that backs up; the first stops, throws away its own sign-in, and says which machine took over. Signing in there again takes it back.
+
 ### Starting over
 
 **Settings → Start over** erases everything this manager keeps on the machine: SillyTavern itself, every profile with the chats and characters in it, every backup on this disk, the R2 connection, the tunnel, the PIN and the manager password. It asks twice - a short wait before the button comes alive, and the manager password typed again - because a console left signed in on a desk is not the same as somebody asking for this.
@@ -388,6 +576,13 @@ Everything can be set in the panel. These environment variables, read from the p
 | Variable | What it does |
 | --- | --- |
 | `STM_ADMIN_PASSWORD` | Creates the manager administrator password at first start, for Docker and hosted platforms |
+| `STM_HOST` | The address to bind: `127.0.0.1` (this machine only) or `0.0.0.0` (every network). Set a password before opening it |
+| `STM_PORT` · `STM_ACCESS_PORT` | Pin the console's port (`7860`) and the access gateway's (`8001`). Unset, a port something else holds is stepped over, and a host's `PORT` is used when it announces one |
+| `STM_SAVER` | `1` or `0` settles [saver mode](#saver-mode) for good; the switch in the panel then cannot change it |
+| `STM_STORAGE_IN_MEMORY` | `1` or `0` says whether files written here take the machine's memory. Detected on its own from the mount table (tmpfs, ramfs) and the Knative `K_SERVICE` variable |
+| `STM_PUBLIC_ORIGIN` | The address the console is reached at from outside, behind a proxy that rewrites `Host`; also the address **Keep STM online** holds |
+| `STM_TUNNEL_PROTOCOL` | `http2` to skip cloudflared's QUIC attempt on a network that does not let UDP out |
+| `STM_LOCAL_BACKUPS` | How many automatic archives to keep on the machine (one by default) |
 | `STM_R2_ENDPOINT` | R2 or S3 endpoint, `https://<account-id>.r2.cloudflarestorage.com` |
 | `STM_R2_BUCKET` | Bucket name |
 | `STM_R2_ACCESS_KEY_ID` | Access key ID |
@@ -415,7 +610,8 @@ It does **not** send API keys, authorization headers, prompts, chats, model resp
 | Platform | How |
 | --- | --- |
 | Windows | Stop the old manager, extract the new ZIP into a new folder, run the new executable. Keep the old folder for rollback. |
-| Termux, macOS, Linux | Stop the process, then `git pull --ff-only`, `npm ci`, and start the launcher again. |
+| Termux | Stop it with **Ctrl+C**, then `cd stm`, `git pull`, `npm ci`, `npm start` ([details](#android-termux)). |
+| macOS, Linux | Stop the process, then `git pull --ff-only`, `npm ci`, and start the launcher again. |
 | Docker | Rebuild the image and start a new container against the same volume. |
 
 The platform data directory is preserved either way, so profiles, backups, logs, metrics and settings remain.

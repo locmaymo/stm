@@ -12,7 +12,7 @@ import { ISSUES, RELEASES, REPOSITORY, UPSTREAM } from './strings.mjs';
  * A shell line is the same in every language, and one copied into two content
  * files is one that will eventually be fixed in only one of them.
  *
- * Block types: `p`, `list`, `steps`, `code`, `note`, `table`, `shot`, `keys`.
+ * Block types: `p`, `list`, `steps`, `code`, `note`, `table`, `shot`, `ports`, `keys`.
  */
 
 const p = (...items) => items.map((body) => ({ type: 'p', body }));
@@ -48,7 +48,7 @@ export const docs = {
               ['Anything with Node 22+', 'npm 11+', '[npm](#npm)'],
             ],
           },
-          note('info', 'The manager and SillyTavern use three ports: `7860` for the panel, `8000` for SillyTavern and `8001` for the access gateway. If something else on the machine already holds one of them, see [Troubleshooting](#trouble).'),
+          note('info', 'The manager and SillyTavern use three ports: `7860` for the panel, `8002` for SillyTavern and `8001` for the access gateway. If something else on the machine already holds one of them, see [Troubleshooting](#trouble).'),
         ],
       },
       {
@@ -85,15 +85,33 @@ export const docs = {
             blocks: [
               ...p(
                 'Install [Termux from F-Droid](https://f-droid.org/packages/com.termux/) or another trusted source. **Do not use the old Play Store build** — it is years out of date and its package manager no longer works.',
-                'Open Termux and paste these commands. Give the first two a minute each; they update Termux itself.',
+                'Open Termux, paste these commands, and press **Enter**. The first two update Termux itself and take a minute or two; the last one downloads what the manager needs. This is done once.',
               ),
               code('termuxInstall'),
               ...p(
-                'Leave that Termux session running while SillyTavern is in use. On the phone, the manager is at `http://127.0.0.1:7860` and SillyTavern at `http://127.0.0.1:8000`.',
-                'Starting it again later:',
+                'The first time Termux updates, it stops a few times and asks what to do with a settings file — `sources.list`, `bash.bashrc`, `profile`, `openssl.cnf` — with a line ending in `(Y/I/N/O/D/Z) [default=N] ?`.',
+                '**Press Enter** each time it asks. That takes the default, **N**: keep the file you already have. It is the safe answer, nothing is lost, and the update carries on. The question can come several times in a row; keep pressing Enter until the commands finish and the `$` prompt is back.',
               ),
+              {
+                type: 'photo',
+                name: 'pkg-prompt',
+                alt: 'Termux asking about bash.bashrc and profile during the first update, each ending in (Y/I/N/O/D/Z) [default=N] ?',
+                caption: 'Termux asking about its own settings files. Press Enter at each one.',
+              },
+              { type: 'step', id: 'android-start', title: 'Start the manager' },
+              ...p('Each time you want to use SillyTavern, open Termux and run:'),
               code('termuxStart'),
-              ...p('Updating the manager, after stopping it with **Ctrl+C**:'),
+              ...p(
+                'Termux always opens in its home folder, which is where `stm` was downloaded, so `cd stm` finds it. When the box with the addresses appears, open `http://127.0.0.1:7860` in the phone’s browser. The second address is for other devices on the same Wi‑Fi.',
+              ),
+              {
+                type: 'photo',
+                name: 'start',
+                alt: 'Termux after npm start: the ST Manager box with the address on this phone and on this Wi-Fi',
+                caption: 'The manager is running. Leave Termux open while you use SillyTavern; **Ctrl+C** stops it.',
+              },
+              { type: 'step', id: 'android-update', title: 'Update the manager' },
+              ...p('Stop it with **Ctrl+C** first, then run:'),
               code('termuxUpdate'),
               note('good', 'Termux keeps your data at `$PREFIX/var/sillytavern-manager`, outside the repository, so `git pull` never touches it.'),
               note('info', 'Turning the tunnel on needs nothing installed by hand. Android only starts position-independent executables and Cloudflare’s own builds are not, so the manager asks Termux for its build of `cloudflared` first and falls back to running Cloudflare’s under `proot`, installing whichever it needs.'),
@@ -134,7 +152,7 @@ export const docs = {
               ...p('Then run it with durable storage:'),
               code('dockerRun'),
               ...p(
-                'The manager is at `http://127.0.0.1:7860`. SillyTavern stays on the container’s internal port `8000`, and a tunnel points only at that port.',
+                'The manager is at `http://127.0.0.1:7860`. SillyTavern stays on the container’s internal port `8002`, and a tunnel points only at the access gateway on `8001`.',
                 'On a hosted container platform: expose `7860`, mount durable storage at `/data`, and supply `STM_ADMIN_PASSWORD` through the platform’s secret settings.',
               ),
               note('warn', 'Never put the administrator password in a Dockerfile or commit it to git. `STM_ADMIN_PASSWORD` is read once, at the first start, to create the password without a browser.'),
@@ -164,12 +182,16 @@ export const docs = {
               'Open `http://127.0.0.1:7860`. The first screen asks you to create the **manager administrator password**. Choose something long; this password is what opens the panel that can install, restore and delete.',
               'Read the terms — the line beside the tick opens them — then accept and finish setup.',
               'Choose a SillyTavern version. `latest` is selected by default and is the right answer unless you have a reason to pin one.',
-              'Press **Install** and wait for **Ready**. It clones the repository, installs dependencies and then health-checks the result; **Ready** means SillyTavern actually answered on port `8000`, not that the files finished copying.',
+              'Press **Install** and wait for **Ready**. It clones the repository, installs dependencies and then health-checks the result; **Ready** means SillyTavern actually answered on port `8002`, not that the files finished copying.',
               'Open the local link, or set a SillyTavern passcode first and then turn on local-network access or a tunnel.',
             ],
           },
           { type: 'shot', name: 'sign-in', alt: 'The first-run screen: manager password, confirmation, and the line that opens the terms' },
           note('warn', 'The manager password and the SillyTavern passcode are two different things. The manager password opens the admin panel. The passcode opens SillyTavern to other devices, and changing it signs out every device already in.'),
+          ...p(
+            'Beside the password, **Continue with Cloudflare** sets the manager up and connects backups to an R2 bucket in your own account in one step; afterwards that Cloudflare account opens the manager as well as the password does. If the account already holds the backups and settings of one of your machines, they come back here — see [Bringing a machine back](#machine).',
+            'Until everything is in place, a **Setup checklist** on the overview lists the six steps worth taking — install SillyTavern, connect Cloudflare, set the STM password and the SillyTavern PIN, turn on R2 backups and open SillyTavern’s link — and ticks each one off as it happens. It folds itself away once all six are done.',
+          ),
           ...p('A first install downloads a few hundred megabytes of dependencies and takes a few minutes on a laptop, longer on a phone. The live log says what it is doing; nothing is stuck just because it is quiet for thirty seconds during `npm ci`.'),
         ],
       },
@@ -180,7 +202,7 @@ export const docs = {
         blocks: [
           ...p(
             'The overview page is the whole of normal use: **Start**, **Stop**, and a link that opens SillyTavern. It also shows the installed version, whether a newer release exists, how much space your data takes and what the machine is doing.',
-            'SillyTavern can be opened in a panel of its own inside the manager, which is what a phone wants, or in a new tab, which is what a desktop usually wants.',
+            '**Use it here**, on the preview, opens SillyTavern inside the manager’s own page, already signed in — the manager password is the stronger of the two, so the PIN is not asked for. The bar above it can minimize it back to the console while it stays loaded, give it the full screen, back up on this machine or to the cloud, show the logs, reload it or move it to a tab; **Close** unloads it and gives its memory back. The arrow beside **Open SillyTavern** offers **Open with tools**: a new tab with the same bar and a floating tools button. From another device, where a page cannot be put inside the console, the same buttons open SillyTavern in a tab instead.',
           ),
           { type: 'shot', name: 'overview', alt: 'The overview page: SillyTavern running, remote access, data and backups, system usage and live logs' },
           ...p('The log feed carries five sources in one searchable list — the manager, SillyTavern, the installer, backups and the tunnel. When something fails, the reason is in there, and the panel translates the manager’s own lines into your language while leaving SillyTavern’s, npm’s and git’s output exactly as those programs wrote it.'),
@@ -194,13 +216,16 @@ export const docs = {
         blocks: [
           ...p(
             'SillyTavern itself never leaves `127.0.0.1`. Everything from outside arrives at the **access gateway** on port `8001`, which asks for a six-digit passcode and then forwards to SillyTavern — and never to the manager panel.',
+          ),
+          { type: 'ports', caption: 'The link you share reaches the gateway. The panel’s own link is a different switch, and it is not for sharing.' },
+          ...p(
             'There are two ways to open the gateway, and both are switches on the overview page:',
           ),
           {
             type: 'list',
             items: [
               '**Local network.** Other devices on the same Wi-Fi reach it at your machine’s LAN address. Nothing leaves your network.',
-              '**Cloudflare Tunnel.** A `trycloudflare.com` address that works from anywhere, with no port forwarding and no router configuration. The address changes each time the tunnel starts.',
+              '**Cloudflare Tunnel.** A `trycloudflare.com` address that works from anywhere, with no port forwarding and no router configuration. The address changes each time the tunnel starts; signed in to Cloudflare, a fixed `workers.dev` address stands in front of it and never does.',
             ],
           },
           {
@@ -212,6 +237,7 @@ export const docs = {
               'On the other device, enter the passcode once.',
             ],
           },
+          ...p('With a Cloudflare sign-in each link has two addresses: the fixed one through a Worker, and the tunnel’s own. The card shows one and keeps the other behind a count beside it. **Show this link first** decides which goes in front — on the card, behind **Open** and in the QR code — and the fixed one can be hidden altogether while the Worker goes on following the tunnel. A new tunnel’s address is handed out only once it answers.'),
           note('warn', 'Six digits are not a password. The gateway locks globally after five consecutive wrong tries, which is what makes a short code workable — but do not leave a tunnel running when nobody is using it, and do not expose an installation holding data you could not bear to lose or to reveal.'),
           note('good', 'Whoever has the address and the passcode gets SillyTavern and only SillyTavern. They cannot install, restore, delete, read your logs or reach the settings.'),
         ],
@@ -230,7 +256,7 @@ export const docs = {
             title: 'Local archives',
             blocks: [
               ...p('**Back up now** writes a ZIP that SillyTavern’s own import understands. By default it leaves out `secrets.json`, thumbnails, vectors, generated backups, `.git`, `node_modules` and operating-system clutter, which is why an archive is far smaller than the data folder. Including secrets is a separate, deliberate choice with a warning attached.'),
-              ...p('A schedule can make one daily or weekly and keep the last few. Archives are ordinary files: copy them anywhere.'),
+              ...p('The schedule takes one every 30 minutes, hour, six hours or day when the data has changed, and keeps the newest (`STM_LOCAL_BACKUPS` keeps more). **Create a restore point** takes one on purpose, with a note of your own, and the manager never deletes a restore point, an upload or a recovery point brought back from R2 by itself; the safety copy taken before a restore or a profile switch is kept as the undo for the last one. Archives are ordinary files: copy them anywhere.'),
             ],
           },
           {
@@ -241,7 +267,7 @@ export const docs = {
                 type: 'steps',
                 items: [
                   'Pick an archive — one the manager made, one from Cloudflare R2, or a ZIP you upload.',
-                  'Read the preview. It lists what is in the archive before anything is written.',
+                  'Read the preview. It lists what is in the archive before anything is written, and for a replace, which files in the profile the archive does not have.',
                   'Choose **Replace** (the default: the profile becomes the archive) or **Merge** (files in the archive overwrite their counterparts, everything else is left).',
                   'Confirm. A safety snapshot of the current state is taken first, automatically.',
                 ],
@@ -271,6 +297,30 @@ export const docs = {
               note('info', 'Only the refresh token is stored, in a file readable by your user alone. Access tokens and Worker keys are short-lived and live in memory. Backups go from your machine to your bucket; no server of this project is on that path.'),
               note('warn', 'R2 has a free tier, and beyond it Cloudflare bills you. Large or frequent backups cost storage and operations. Set your own limits and alerts in the Cloudflare dashboard — the charge is yours, whatever caused it.'),
               ...p('Prefer not to sign in? Choose **R2/S3 keys (manual)** and enter the endpoint, bucket and key pair from the R2 page of the Cloudflare dashboard. Any S3-compatible storage works the same way.'),
+            ],
+          },
+          {
+            id: 'saver',
+            title: 'Saver mode',
+            blocks: [
+              ...p(
+                'For a machine with little room for files — a container that keeps everything in memory, a phone that is nearly full — the archives on the machine are what runs it out. With **Saver mode** on, no archive is kept on the machine and the profile is on the disk once. Your R2 bucket holds the recovery points and stands in for the safety copy: the current data is sent to R2 before a restore replaces it.',
+                'An uploaded ZIP and a recovery point from R2 are written straight into the profile as they arrive, with SillyTavern stopped. The restore is checked against the room there is before it starts; when room is short, the manager offers to leave out what SillyTavern can do without — extensions’ git history and `node_modules`, SillyTavern’s own backups, thumbnails — and refuses one that still will not fit rather than failing halfway.',
+                'It turns itself on when the data directory is kept in memory, or when the disk has less than 5 GiB free as the manager starts, and says which. Otherwise it is a switch under **Settings → When the manager opens**, or `STM_SAVER=1` / `STM_SAVER=0` in the environment to settle it for good.',
+              ),
+              note('warn', 'Connect R2 before relying on saver mode. With it on and no bucket, nothing holds your data but the profile itself.'),
+            ],
+          },
+          {
+            id: 'machine',
+            title: 'Bringing a machine back',
+            blocks: [
+              ...p(
+                'The bucket also keeps how the manager was set up, beside the data: the manager password and the SillyTavern PIN as the hashes it stores, the ports, the links, **Keep STM online**, the backup schedules and R2 limits, and the SillyTavern release that was running. The usage figures go there too.',
+                'On a new machine, sign in with the same Cloudflare account — on the first-run screen or on the Data page. A profile that is empty while the bucket is not gets the newest recovery point back before SillyTavern starts, and SillyTavern is installed at the release you were running. When the account holds the setup of another of your machines, a card on every page offers **Restore everything** in one go; SillyTavern is stopped while it runs, and what was on this machine is kept under Backups first.',
+                'One account backs up from one machine at a time. Signing in on a second machine makes it the one that backs up; the first stops, gives up its own sign-in and says which machine took over. Signing in there again takes it back.',
+              ),
+              note('info', 'Nothing is applied behind your back. A machine that is already set up is only offered the settings, with the name of the machine that wrote them and when, and restoring a password asks you to sign in again.'),
             ],
           },
         ],
@@ -316,6 +366,7 @@ export const docs = {
             ],
           },
           note('warn', 'Editing the file by hand is a different act from flipping a switch. An invalid file stops SillyTavern from starting; the panel checks the YAML parses before it writes, but it cannot know whether a value makes sense.'),
+          ...p('Above SillyTavern’s settings are the manager’s own: the STM password and the SillyTavern PIN, the console’s own link to the internet, **Start SillyTavern automatically**, [Saver mode](#saver), the ports, and **Keep STM online**. That last one has the manager reach its own address every 15 minutes — or 5, 10, 30 or 60 — so a battery saver, or a host that stops idle programs, does not put it to sleep and SillyTavern with it. It holds the address in `STM_PUBLIC_ORIGIN`, otherwise the one your browser last reached the console at, otherwise `127.0.0.1`; never the tunnel or the Worker, so it costs nothing from the Cloudflare allowance.'),
         ],
       },
       {
@@ -328,7 +379,8 @@ export const docs = {
             columns: ['Platform', 'How to update the manager'],
             rows: [
               ['Windows', 'Stop the manager, extract the new ZIP into a **new** folder, run the new executable. Keep the old folder until you are sure.'],
-              ['Termux, macOS, Linux', 'Stop the process, then `git pull --ff-only`, `npm ci`, and start the launcher again.'],
+              ['Termux', 'Stop it with **Ctrl+C**, then run [the update commands](#android-update): `cd stm`, `git pull`, `npm ci`, `npm start`.'],
+              ['macOS, Linux', 'Stop the process, then `git pull --ff-only`, `npm ci`, and start the launcher again.'],
               ['Docker', 'Rebuild the image and start a new container against the same volume.'],
               ['npm', '`npm install --global sillytavern-manager@latest`, or just run `npx sillytavern-manager` again.'],
             ],
@@ -351,9 +403,14 @@ export const docs = {
               ['`STM_ADMIN_PASSWORD`', 'Creates the administrator password at the first start, so a headless install needs no browser'],
               ['`STM_HOST`', 'What the manager binds to. Defaults to loopback; set `0.0.0.0` only behind other access control'],
               ['`STM_DATA_DIR`', 'Where profiles, backups, logs and metrics are kept, instead of the platform default'],
+              ['`STM_PORT`', 'The console’s port, instead of `7860`. Unset, a port something else holds is stepped over, and a host’s `PORT` is used when it announces one'],
               ['`STM_ACCESS_PORT`', 'The access gateway’s port, instead of `8001`'],
+              ['`STM_SAVER`', '`1` or `0` settles [saver mode](#saver) for good; the switch in the panel then cannot change it'],
+              ['`STM_STORAGE_IN_MEMORY`', '`1` or `0` says whether files written here take the machine’s memory. Detected on its own from the mount table and the Knative `K_SERVICE` variable'],
+              ['`STM_PUBLIC_ORIGIN`', 'The address the console is reached at from outside, behind a proxy that rewrites `Host`; also the address **Keep STM online** holds'],
+              ['`STM_TUNNEL_PROTOCOL`', '`http2` skips cloudflared’s QUIC attempt on a network that does not let UDP out'],
               ['`STM_OPEN_BROWSER`', '`0` stops the manager opening a browser at start'],
-              ['`STM_LOCAL_BACKUPS`', 'How many local archives to keep'],
+              ['`STM_LOCAL_BACKUPS`', 'How many automatic archives to keep (one by default)'],
               ['`STM_CLOUDFLARED_PATH`', 'A `cloudflared` binary to use instead of the one the manager would find'],
               ['`STM_R2_ENDPOINT` · `STM_R2_BUCKET`', 'R2 or S3 endpoint and bucket, for keys supplied rather than signed in'],
               ['`STM_R2_ACCESS_KEY_ID` · `STM_R2_SECRET_ACCESS_KEY`', 'The key pair. With all four set, R2 backups start switched on'],
@@ -376,7 +433,7 @@ export const docs = {
             rows: [
               ['The panel does not open at all', 'Something else holds port `7860`, or the manager stopped. Check the console window, then the port.'],
               ['Install fails during `npm ci`', 'No internet, a proxy in the way, or a full disk. The log carries npm’s own error.'],
-              ['**Ready** never arrives', 'SillyTavern started but did not answer on `8000`. Read the SillyTavern lines in the log; a bad `config.yaml` is the usual cause.'],
+              ['**Ready** never arrives', 'SillyTavern started but did not answer on `8002`. Read the SillyTavern lines in the log; a bad `config.yaml` is the usual cause.'],
               ['The tunnel will not start', '`cloudflared` is missing or Cloudflare is unreachable. Local access keeps working regardless.'],
               ['Another device cannot connect', 'The gateway is off, no passcode is set, or the two devices are not on the same network.'],
               ['A passcode stopped working', 'Five wrong tries lock the gateway. Wait, or change the passcode from the panel.'],
@@ -431,7 +488,7 @@ export const docs = {
               ['Máy nào có Node 22+', 'npm 11+', '[npm](#npm)'],
             ],
           },
-          note('info', 'Trình quản lý và SillyTavern dùng ba cổng: `7860` cho bảng điều khiển, `8000` cho SillyTavern và `8001` cho cổng truy cập. Nếu trên máy đã có thứ khác chiếm một trong số đó, xem mục [Xử lý sự cố](#trouble).'),
+          note('info', 'Trình quản lý và SillyTavern dùng ba cổng: `7860` cho bảng điều khiển, `8002` cho SillyTavern và `8001` cho cổng truy cập. Nếu trên máy đã có thứ khác chiếm một trong số đó, xem mục [Xử lý sự cố](#trouble).'),
         ],
       },
       {
@@ -468,15 +525,33 @@ export const docs = {
             blocks: [
               ...p(
                 'Cài [Termux từ F-Droid](https://f-droid.org/packages/com.termux/) hoặc một nguồn đáng tin khác. **Đừng dùng bản Play Store cũ** — bản đó lạc hậu nhiều năm và trình quản lý gói của nó không còn hoạt động.',
-                'Mở Termux và dán các lệnh sau. Hai lệnh đầu cần khoảng một phút mỗi lệnh; chúng cập nhật chính Termux.',
+                'Mở Termux, dán các lệnh sau rồi bấm **Enter**. Hai lệnh đầu cập nhật chính Termux, mất một hai phút; lệnh cuối tải những gì trình quản lý cần. Việc này chỉ làm một lần.',
               ),
               code('termuxInstall'),
               ...p(
-                'Cứ để phiên Termux đó chạy trong lúc bạn dùng SillyTavern. Trên điện thoại, trình quản lý ở `http://127.0.0.1:7860` còn SillyTavern ở `http://127.0.0.1:8000`.',
-                'Lần sau muốn chạy lại:',
+                'Lần đầu cập nhật, Termux sẽ dừng vài lần để hỏi nên làm gì với một tệp cấu hình — `sources.list`, `bash.bashrc`, `profile`, `openssl.cnf` — với dòng kết thúc bằng `(Y/I/N/O/D/Z) [default=N] ?`.',
+                '**Cứ bấm Enter** mỗi lần được hỏi. Như vậy là chọn mặc định **N**: giữ nguyên tệp bạn đang có. Đây là lựa chọn an toàn, không mất gì cả, và quá trình cập nhật chạy tiếp. Câu hỏi có thể hiện nhiều lần liên tiếp; cứ bấm Enter cho tới khi các lệnh chạy xong và dấu nhắc `$` hiện lại.',
               ),
+              {
+                type: 'photo',
+                name: 'pkg-prompt',
+                alt: 'Termux hỏi về bash.bashrc và profile trong lần cập nhật đầu, mỗi câu kết thúc bằng (Y/I/N/O/D/Z) [default=N] ?',
+                caption: 'Termux hỏi về các tệp cấu hình của nó. Bấm Enter ở mỗi câu.',
+              },
+              { type: 'step', id: 'android-start', title: 'Bật trình quản lý' },
+              ...p('Mỗi lần muốn dùng SillyTavern, mở Termux và chạy:'),
               code('termuxStart'),
-              ...p('Cập nhật trình quản lý, sau khi đã dừng bằng **Ctrl+C**:'),
+              ...p(
+                'Termux luôn mở ở thư mục chính, cũng là nơi `stm` đã được tải về, nên `cd stm` sẽ tìm thấy nó. Khi khung có các địa chỉ hiện ra, mở `http://127.0.0.1:7860` trong trình duyệt của điện thoại. Địa chỉ thứ hai dành cho các thiết bị khác dùng chung Wi‑Fi.',
+              ),
+              {
+                type: 'photo',
+                name: 'start',
+                alt: 'Termux sau lệnh npm start: khung ST Manager với địa chỉ trên điện thoại này và trên Wi-Fi này',
+                caption: 'Trình quản lý đang chạy. Cứ để Termux mở trong lúc dùng SillyTavern; **Ctrl+C** để dừng.',
+              },
+              { type: 'step', id: 'android-update', title: 'Cập nhật trình quản lý' },
+              ...p('Dừng nó bằng **Ctrl+C** trước, rồi chạy:'),
               code('termuxUpdate'),
               note('good', 'Termux giữ dữ liệu của bạn tại `$PREFIX/var/sillytavern-manager`, nằm ngoài kho mã, nên `git pull` không bao giờ đụng tới nó.'),
               note('info', 'Bật tunnel không cần cài gì bằng tay. Android chỉ khởi chạy tệp thực thi độc lập vị trí, còn bản dựng của Cloudflare thì không, nên trình quản lý hỏi Termux lấy bản `cloudflared` của Termux trước, và nếu không có thì chạy bản của Cloudflare dưới `proot`, tự cài thứ nào nó cần.'),
@@ -517,7 +592,7 @@ export const docs = {
               ...p('Rồi chạy kèm lưu trữ bền:'),
               code('dockerRun'),
               ...p(
-                'Trình quản lý ở `http://127.0.0.1:7860`. SillyTavern vẫn nằm trên cổng nội bộ `8000` của container, và tunnel chỉ trỏ tới cổng đó.',
+                'Trình quản lý ở `http://127.0.0.1:7860`. SillyTavern vẫn nằm trên cổng nội bộ `8002` của container, và tunnel chỉ trỏ tới cổng truy cập `8001`.',
                 'Trên nền tảng container thuê ngoài: mở cổng `7860`, gắn lưu trữ bền vào `/data`, và đưa `STM_ADMIN_PASSWORD` qua phần secret của nền tảng.',
               ),
               note('warn', 'Đừng bao giờ đặt mật khẩu quản trị trong Dockerfile hay commit nó vào git. `STM_ADMIN_PASSWORD` chỉ được đọc một lần, ở lần khởi động đầu tiên, để tạo mật khẩu mà không cần trình duyệt.'),
@@ -547,12 +622,16 @@ export const docs = {
               'Mở `http://127.0.0.1:7860`. Màn hình đầu tiên yêu cầu bạn tạo **mật khẩu quản trị**. Hãy chọn mật khẩu dài; đây là thứ mở ra bảng điều khiển có quyền cài, phục hồi và xoá.',
               'Đọc điều khoản — bấm vào dòng chữ cạnh ô tick là mở ra — rồi đồng ý và hoàn tất thiết lập.',
               'Chọn phiên bản SillyTavern. `latest` được chọn sẵn và là đáp án đúng, trừ khi bạn có lý do phải ghim một bản cụ thể.',
-              'Bấm **Cài đặt** rồi chờ tới khi hiện **Sẵn sàng**. Nó clone kho mã, cài phụ thuộc rồi kiểm tra sức khoẻ; **Sẵn sàng** nghĩa là SillyTavern đã thực sự trả lời trên cổng `8000`, không phải chỉ là chép xong tệp.',
+              'Bấm **Cài đặt** rồi chờ tới khi hiện **Sẵn sàng**. Nó clone kho mã, cài phụ thuộc rồi kiểm tra sức khoẻ; **Sẵn sàng** nghĩa là SillyTavern đã thực sự trả lời trên cổng `8002`, không phải chỉ là chép xong tệp.',
               'Mở liên kết nội bộ, hoặc đặt mã truy cập cho SillyTavern trước rồi mới bật mạng nội bộ hay tunnel.',
             ],
           },
           { type: 'shot', name: 'sign-in', alt: 'Màn hình thiết lập lần đầu: mật khẩu quản trị, xác nhận, và dòng chữ mở điều khoản' },
           note('warn', 'Mật khẩu quản trị và mã truy cập SillyTavern là hai thứ khác nhau. Mật khẩu quản trị mở bảng quản trị. Mã truy cập mở SillyTavern cho thiết bị khác, và đổi mã sẽ đăng xuất mọi thiết bị đang vào.'),
+          ...p(
+            'Bên cạnh mật khẩu, **Tiếp tục với Cloudflare** thiết lập trình quản lý và kết nối sao lưu vào một bucket R2 trong chính tài khoản của bạn trong một bước; sau đó tài khoản Cloudflare ấy mở được trình quản lý, cũng như mật khẩu. Nếu tài khoản đã giữ bản sao lưu và thiết lập của một máy khác của bạn, chúng sẽ quay về đây — xem [Dựng lại cả máy](#machine).',
+            'Cho tới khi mọi thứ xong xuôi, mục **Việc cần làm** ở trang tổng quan liệt kê sáu bước nên làm — cài SillyTavern, kết nối Cloudflare, đặt mật khẩu STM và mã PIN SillyTavern, bật sao lưu R2 và mở link SillyTavern — và tự đánh dấu từng bước khi nó xong. Đủ cả sáu thì danh sách tự thu gọn.',
+          ),
           ...p('Lần cài đầu tiên tải vài trăm megabyte phụ thuộc, mất vài phút trên laptop và lâu hơn trên điện thoại. Nhật ký trực tiếp cho biết nó đang làm gì; im lặng ba mươi giây trong lúc `npm ci` chạy không có nghĩa là bị treo.'),
         ],
       },
@@ -563,7 +642,7 @@ export const docs = {
         blocks: [
           ...p(
             'Trang tổng quan là toàn bộ việc dùng thường ngày: **Chạy**, **Dừng**, và một liên kết mở SillyTavern. Trang này cũng cho biết phiên bản đang cài, có bản mới hơn hay không, dữ liệu chiếm bao nhiêu và máy đang làm gì.',
-            'SillyTavern có thể mở ngay trong một khung của trình quản lý, thứ mà điện thoại cần, hoặc mở ở tab mới, thứ mà máy tính thường muốn hơn.',
+            '**Dùng ngay tại đây**, trên khung xem trước, mở SillyTavern ngay bên trong trang của trình quản lý và đã đăng nhập sẵn — mật khẩu quản trị mạnh hơn nên không hỏi mã PIN. Thanh phía trên cho phép thu nhỏ về bảng điều khiển mà SillyTavern vẫn giữ nguyên, phóng toàn màn hình, sao lưu trên máy hoặc lên cloud, xem nhật ký, tải lại hoặc chuyển sang tab mới; **Đóng** thì gỡ nó ra và trả lại bộ nhớ. Mũi tên cạnh **Mở SillyTavern** có **Mở kèm tiện ích**: một tab mới có cùng thanh đó và một nút tiện ích nổi. Từ thiết bị khác, nơi không thể nhúng trang vào bảng điều khiển, các nút đó mở SillyTavern trong tab mới.',
           ),
           { type: 'shot', name: 'overview', alt: 'Trang tổng quan: SillyTavern đang chạy, truy cập từ xa, dữ liệu và sao lưu, tài nguyên hệ thống và nhật ký trực tiếp' },
           ...p('Luồng nhật ký gộp năm nguồn vào một danh sách tìm kiếm được — trình quản lý, SillyTavern, trình cài đặt, sao lưu và tunnel. Khi có gì hỏng, lý do nằm trong đó, và bảng điều khiển dịch những dòng của chính trình quản lý sang ngôn ngữ của bạn, còn output của SillyTavern, npm và git thì để nguyên như các chương trình đó viết ra.'),
@@ -577,13 +656,16 @@ export const docs = {
         blocks: [
           ...p(
             'Bản thân SillyTavern không bao giờ rời khỏi `127.0.0.1`. Mọi thứ từ bên ngoài đều đi vào **cổng truy cập** ở cổng `8001`, nơi hỏi mã sáu chữ số rồi mới chuyển tiếp tới SillyTavern — và không bao giờ chuyển tiếp tới bảng quản trị.',
+          ),
+          { type: 'ports', caption: 'Link bạn chia sẻ dẫn tới cổng truy cập. Link riêng của bảng quản trị là một công tắc khác, và không dùng để chia sẻ.' },
+          ...p(
             'Có hai cách mở cổng truy cập, cả hai đều là công tắc trên trang tổng quan:',
           ),
           {
             type: 'list',
             items: [
               '**Mạng nội bộ.** Thiết bị khác cùng Wi-Fi truy cập qua địa chỉ LAN của máy bạn. Không gì rời khỏi mạng của bạn.',
-              '**Cloudflare Tunnel.** Một địa chỉ `trycloudflare.com` dùng được từ mọi nơi, không cần mở cổng router hay cấu hình gì. Địa chỉ thay đổi mỗi lần bật tunnel.',
+              '**Cloudflare Tunnel.** Một địa chỉ `trycloudflare.com` dùng được từ mọi nơi, không cần mở cổng router hay cấu hình gì. Địa chỉ thay đổi mỗi lần bật tunnel; khi đã đăng nhập Cloudflare, một địa chỉ `workers.dev` cố định đứng trước nó và không bao giờ đổi.',
             ],
           },
           {
@@ -595,6 +677,7 @@ export const docs = {
               'Trên thiết bị kia, nhập mã một lần.',
             ],
           },
+          ...p('Khi đã đăng nhập Cloudflare, mỗi link có hai địa chỉ: địa chỉ cố định đi qua một Worker, và địa chỉ riêng của tunnel. Thẻ chỉ hiện một, cái còn lại nằm sau con số đếm bên cạnh. **Ưu tiên hiện link này** quyết định cái nào đứng trước — trên thẻ, sau nút **Mở** và trong mã QR — và link cố định cũng có thể ẩn hẳn trong khi Worker vẫn đi theo tunnel. Địa chỉ của tunnel mới chỉ được đưa ra khi nó đã trả lời.'),
           note('warn', 'Sáu chữ số không phải mật khẩu. Cổng truy cập tự khoá trên toàn hệ thống sau năm lần nhập sai liên tiếp, đó là điều khiến một mã ngắn vẫn dùng được — nhưng đừng để tunnel chạy khi không ai dùng, và đừng mở ra ngoài một bản cài đang giữ dữ liệu mà bạn không chịu nổi việc mất hay bị lộ.'),
           note('good', 'Người có địa chỉ và mã truy cập chỉ vào được SillyTavern và chỉ SillyTavern. Họ không cài, không phục hồi, không xoá, không đọc nhật ký và không chạm tới thiết lập được.'),
         ],
@@ -613,7 +696,7 @@ export const docs = {
             title: 'Bản lưu cục bộ',
             blocks: [
               ...p('**Sao lưu ngay** tạo một tệp ZIP mà chức năng nhập của chính SillyTavern đọc được. Mặc định nó bỏ qua `secrets.json`, ảnh thu nhỏ, vector, các bản sao lưu tự sinh, `.git`, `node_modules` và rác của hệ điều hành, vì vậy tệp lưu nhỏ hơn thư mục dữ liệu rất nhiều. Muốn kèm secret thì phải chọn riêng, có cảnh báo đi kèm.'),
-              ...p('Một lịch có thể tạo bản lưu hằng ngày hoặc hằng tuần và giữ lại vài bản gần nhất. Tệp lưu là tệp bình thường: chép đi đâu cũng được.'),
+              ...p('Lịch tự động tạo một bản mỗi 30 phút, mỗi giờ, mỗi 6 giờ hoặc mỗi ngày khi dữ liệu có thay đổi, và giữ bản mới nhất (`STM_LOCAL_BACKUPS` để giữ nhiều hơn). **Tạo điểm khôi phục** là chủ động tạo một bản kèm ghi chú của bạn, và trình quản lý không bao giờ tự xoá điểm khôi phục, tệp đã tải lên hay điểm phục hồi lấy về từ R2; bản an toàn tạo trước khi phục hồi hoặc chuyển hồ sơ được giữ làm nút hoàn tác cho lần gần nhất. Tệp lưu là tệp bình thường: chép đi đâu cũng được.'),
             ],
           },
           {
@@ -624,7 +707,7 @@ export const docs = {
                 type: 'steps',
                 items: [
                   'Chọn một tệp lưu — do trình quản lý tạo, lấy từ Cloudflare R2, hoặc một tệp ZIP bạn tải lên.',
-                  'Đọc phần xem trước. Nó liệt kê những gì có trong tệp lưu trước khi bất cứ gì được ghi.',
+                  'Đọc phần xem trước. Nó liệt kê những gì có trong tệp lưu trước khi bất cứ gì được ghi, và với Thay thế, cả những tệp trong hồ sơ mà tệp lưu không có.',
                   'Chọn **Thay thế** (mặc định: hồ sơ trở thành đúng nội dung tệp lưu) hoặc **Gộp** (tệp trong bản lưu ghi đè lên bản tương ứng, phần còn lại giữ nguyên).',
                   'Xác nhận. Một bản chụp an toàn của trạng thái hiện tại được tạo trước, tự động.',
                 ],
@@ -654,6 +737,30 @@ export const docs = {
               note('info', 'Chỉ refresh token được lưu, trong một tệp chỉ người dùng của bạn đọc được. Access token và khoá Worker đều ngắn hạn và nằm trong bộ nhớ. Bản sao lưu đi thẳng từ máy bạn tới bucket của bạn; không máy chủ nào của dự án nằm trên đường đó.'),
               note('warn', 'R2 có hạn mức miễn phí, vượt quá thì Cloudflare tính tiền bạn. Sao lưu lớn hoặc dày tốn dung lượng và số thao tác. Hãy tự đặt hạn mức và cảnh báo trong bảng điều khiển Cloudflare — khoản phí là của bạn, bất kể nguyên nhân là gì.'),
               ...p('Không muốn đăng nhập? Chọn **Khoá R2/S3 (thủ công)** rồi nhập endpoint, bucket và cặp khoá lấy từ trang R2 trong bảng điều khiển Cloudflare. Mọi kho lưu trữ tương thích S3 đều dùng được theo cách này.'),
+            ],
+          },
+          {
+            id: 'saver',
+            title: 'Chế độ tiết kiệm',
+            blocks: [
+              ...p(
+                'Với một máy ít chỗ chứa tệp — một container giữ mọi thứ trong bộ nhớ, một chiếc điện thoại gần đầy — chính các tệp lưu trên máy là thứ làm cạn chỗ. Khi bật **Chế độ tiết kiệm**, trên máy không giữ tệp lưu nào và hồ sơ chỉ nằm trên đĩa một lần. Bucket R2 của bạn giữ các điểm phục hồi và đóng vai bản an toàn: dữ liệu hiện tại được gửi lên R2 trước khi một lần phục hồi ghi đè lên nó.',
+                'Tệp ZIP tải lên và điểm phục hồi lấy từ R2 được ghi thẳng vào hồ sơ khi dữ liệu tới, trong lúc SillyTavern dừng. Lần phục hồi được so với chỗ trống trước khi bắt đầu; nếu thiếu chỗ, trình quản lý đề nghị bỏ bớt những thứ SillyTavern không cần — lịch sử git và `node_modules` của tiện ích, bản sao lưu riêng của SillyTavern, ảnh thu nhỏ — và từ chối nếu vẫn không vừa, thay vì hỏng giữa chừng.',
+                'Nó tự bật khi thư mục dữ liệu nằm trong bộ nhớ, hoặc khi ổ đĩa còn dưới 5 GiB lúc trình quản lý khởi động, và nói rõ vì lý do nào. Ngoài ra đây là một công tắc trong **Thiết lập → Khi mở trình quản lý**, hoặc đặt `STM_SAVER=1` / `STM_SAVER=0` trong môi trường để chốt hẳn.',
+              ),
+              note('warn', 'Hãy kết nối R2 trước khi dựa vào chế độ tiết kiệm. Bật nó mà không có bucket thì ngoài chính hồ sơ ra, không còn gì giữ dữ liệu của bạn.'),
+            ],
+          },
+          {
+            id: 'machine',
+            title: 'Dựng lại cả máy',
+            blocks: [
+              ...p(
+                'Bucket còn giữ cả cách trình quản lý được thiết lập, cạnh dữ liệu: mật khẩu quản trị và mã PIN SillyTavern dưới dạng hash nó đang lưu, các cổng, các link, **Giữ STM online**, lịch sao lưu và giới hạn R2, và bản SillyTavern đang chạy. Số liệu sử dụng cũng được giữ ở đó.',
+                'Trên máy mới, đăng nhập cùng tài khoản Cloudflare — ở màn hình lần đầu hoặc trên trang Dữ liệu. Hồ sơ đang trống trong khi bucket có dữ liệu thì điểm phục hồi mới nhất được lấy về trước khi SillyTavern khởi động, và SillyTavern được cài đúng bản bạn đang dùng. Khi tài khoản đang giữ thiết lập của một máy khác của bạn, một thẻ trên mọi trang đề nghị **Khôi phục tất cả** trong một lần; SillyTavern dừng trong lúc chạy, và những gì đang có trên máy này được giữ trong mục Sao lưu trước.',
+                'Mỗi tài khoản chỉ sao lưu từ một máy tại một thời điểm. Đăng nhập trên máy thứ hai khiến máy đó thành máy sao lưu; máy thứ nhất dừng lại, bỏ quyền đăng nhập của chính nó và báo máy nào đã tiếp quản. Đăng nhập lại ở đó là lấy lại quyền.',
+              ),
+              note('info', 'Không có gì tự áp dụng sau lưng bạn. Máy đã thiết lập xong chỉ được đề nghị các thiết lập này, kèm tên máy đã ghi chúng và thời điểm, và khôi phục mật khẩu sẽ yêu cầu bạn đăng nhập lại.'),
             ],
           },
         ],
@@ -699,6 +806,7 @@ export const docs = {
             ],
           },
           note('warn', 'Sửa tệp bằng tay là một việc khác hẳn với gạt một công tắc. Tệp sai khiến SillyTavern không khởi động được; bảng điều khiển kiểm tra YAML có phân tích được không trước khi ghi, nhưng nó không thể biết một giá trị có hợp lý hay không.'),
+          ...p('Phía trên thiết lập của SillyTavern là thiết lập của chính trình quản lý: mật khẩu STM và mã PIN SillyTavern, link riêng của bảng điều khiển ra internet, **Tự chạy SillyTavern**, [Chế độ tiết kiệm](#saver), các cổng, và **Giữ STM online**. Cái cuối cùng cho trình quản lý tự gọi tới địa chỉ của chính nó mỗi 15 phút — hoặc 5, 10, 30, 60 phút — để trình tiết kiệm pin, hay một host tự dừng chương trình đang rảnh, không cho nó ngủ, kéo theo cả SillyTavern. Địa chỉ được giữ là cái trong `STM_PUBLIC_ORIGIN`, nếu không thì là địa chỉ trình duyệt mở bảng điều khiển gần nhất, nếu không nữa thì `127.0.0.1`; không bao giờ là tunnel hay Worker, nên không tốn chút hạn mức Cloudflare nào.'),
         ],
       },
       {
@@ -711,7 +819,8 @@ export const docs = {
             columns: ['Nền tảng', 'Cập nhật trình quản lý thế nào'],
             rows: [
               ['Windows', 'Dừng trình quản lý, giải nén bản ZIP mới vào một thư mục **mới**, chạy tệp thực thi mới. Giữ thư mục cũ cho tới khi bạn yên tâm.'],
-              ['Termux, macOS, Linux', 'Dừng tiến trình, rồi `git pull --ff-only`, `npm ci`, và chạy lại launcher.'],
+              ['Termux', 'Dừng bằng **Ctrl+C**, rồi chạy [các lệnh cập nhật](#android-update): `cd stm`, `git pull`, `npm ci`, `npm start`.'],
+              ['macOS, Linux', 'Dừng tiến trình, rồi `git pull --ff-only`, `npm ci`, và chạy lại launcher.'],
               ['Docker', 'Dựng lại image và chạy container mới trên cùng volume.'],
               ['npm', '`npm install --global sillytavern-manager@latest`, hoặc chỉ cần chạy lại `npx sillytavern-manager`.'],
             ],
@@ -734,9 +843,14 @@ export const docs = {
               ['`STM_ADMIN_PASSWORD`', 'Tạo mật khẩu quản trị ngay lần khởi động đầu tiên, để cài không cần trình duyệt'],
               ['`STM_HOST`', 'Trình quản lý lắng nghe ở đâu. Mặc định là loopback; chỉ đặt `0.0.0.0` khi đã có kiểm soát truy cập khác'],
               ['`STM_DATA_DIR`', 'Nơi giữ hồ sơ, bản sao lưu, nhật ký và số liệu, thay cho mặc định của nền tảng'],
+              ['`STM_PORT`', 'Cổng của bảng điều khiển, thay cho `7860`. Không đặt thì cổng đã bị chiếm sẽ được bỏ qua, và dùng `PORT` khi host có công bố'],
               ['`STM_ACCESS_PORT`', 'Cổng của cổng truy cập, thay cho `8001`'],
+              ['`STM_SAVER`', '`1` hoặc `0` để chốt hẳn [chế độ tiết kiệm](#saver); công tắc trong bảng điều khiển không đổi được nữa'],
+              ['`STM_STORAGE_IN_MEMORY`', '`1` hoặc `0` cho biết tệp ghi ở đây có chiếm bộ nhớ của máy hay không. Tự nhận biết qua bảng mount và biến `K_SERVICE` của Knative'],
+              ['`STM_PUBLIC_ORIGIN`', 'Địa chỉ bảng điều khiển được truy cập từ bên ngoài, khi đứng sau proxy đổi `Host`; cũng là địa chỉ **Giữ STM online** sẽ giữ'],
+              ['`STM_TUNNEL_PROTOCOL`', '`http2` để bỏ qua bước thử QUIC của cloudflared trên mạng không cho UDP ra ngoài'],
               ['`STM_OPEN_BROWSER`', '`0` để trình quản lý không tự mở trình duyệt khi khởi động'],
-              ['`STM_LOCAL_BACKUPS`', 'Giữ lại bao nhiêu bản lưu cục bộ'],
+              ['`STM_LOCAL_BACKUPS`', 'Giữ lại bao nhiêu bản lưu tự động (mặc định là một)'],
               ['`STM_CLOUDFLARED_PATH`', 'Chỉ định tệp `cloudflared` để dùng, thay vì bản trình quản lý tự tìm'],
               ['`STM_R2_ENDPOINT` · `STM_R2_BUCKET`', 'Endpoint và bucket R2 hoặc S3, cho trường hợp dùng khoá thay vì đăng nhập'],
               ['`STM_R2_ACCESS_KEY_ID` · `STM_R2_SECRET_ACCESS_KEY`', 'Cặp khoá. Đặt đủ cả bốn thì sao lưu R2 bật sẵn ngay lần đầu'],
@@ -759,7 +873,7 @@ export const docs = {
             rows: [
               ['Bảng điều khiển không mở được', 'Thứ khác đang giữ cổng `7860`, hoặc trình quản lý đã dừng. Xem cửa sổ dòng lệnh trước, rồi tới cổng.'],
               ['Cài đặt hỏng lúc chạy `npm ci`', 'Không có internet, có proxy chặn, hoặc đầy ổ đĩa. Nhật ký mang nguyên lỗi của npm.'],
-              ['Mãi không thấy **Sẵn sàng**', 'SillyTavern đã chạy nhưng không trả lời trên `8000`. Hãy đọc các dòng SillyTavern trong nhật ký; `config.yaml` sai là nguyên nhân thường gặp.'],
+              ['Mãi không thấy **Sẵn sàng**', 'SillyTavern đã chạy nhưng không trả lời trên `8002`. Hãy đọc các dòng SillyTavern trong nhật ký; `config.yaml` sai là nguyên nhân thường gặp.'],
               ['Tunnel không lên được', '`cloudflared` thiếu hoặc không với tới Cloudflare. Truy cập nội bộ vẫn hoạt động bình thường.'],
               ['Thiết bị khác không kết nối được', 'Cổng truy cập đang tắt, chưa đặt mã, hoặc hai thiết bị không cùng mạng.'],
               ['Mã truy cập đột nhiên không dùng được', 'Năm lần sai sẽ khoá cổng truy cập. Hãy đợi, hoặc đổi mã trong bảng điều khiển.'],
