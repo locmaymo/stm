@@ -359,6 +359,18 @@ export const docs = {
         ],
       },
       {
+        id: 'notifications',
+        icon: 'bell',
+        title: 'Notifications',
+        blocks: [
+          ...p(
+            'The bell at the top of the console lists what happened while you were away: SillyTavern stopping unexpectedly, a backup finishing or failing, a new version of SillyTavern or of the manager, a link that dropped, space running out, and news from the project.',
+            'To get them on your phone or computer even with the console closed, open the bell and switch on **Notifications on this device**. This needs the console\u2019s https link: its own link, or the fixed Cloudflare address. On iPhone and iPad, first add the console to the Home Screen from Safari\u2019s Share menu, then switch it on from there.',
+          ),
+          note('info', 'The Android app shows them as ordinary phone notifications by itself. Allow notifications when the app asks.'),
+        ],
+      },
+      {
         id: 'usage',
         icon: 'chart',
         title: 'Usage figures',
@@ -817,6 +829,18 @@ export const docs = {
             'Một hồ sơ là một bộ dữ liệu SillyTavern hoàn chỉnh và tách biệt: nhân vật, đoạn chat, thiết lập và bản sao lưu riêng. Chuyển hồ sơ là đổi luôn thứ mà SillyTavern nhìn thấy.',
             'Nó hữu ích khi bạn muốn tách việc với giải trí, muốn thử một tiện ích mở rộng mà không đụng tới bộ dữ liệu thật, hoặc khi có người thứ hai dùng chung máy. Tạo hồ sơ là tức thì; chuyển hồ sơ sẽ chụp một bản an toàn trước.',
           ),
+        ],
+      },
+      {
+        id: 'notifications',
+        icon: 'bell',
+        title: 'Thông báo',
+        blocks: [
+          ...p(
+            'Nút chuông ở đầu bảng điều khiển liệt kê những gì đã xảy ra khi bạn vắng mặt: SillyTavern dừng bất ngờ, sao lưu xong hoặc lỗi, có bản SillyTavern hay bản trình quản lý mới, link bị rớt, sắp hết dung lượng, và tin từ dự án.',
+            'Muốn nhận ngay trên điện thoại hay máy tính kể cả khi đã đóng bảng điều khiển, mở chuông và bật **Thông báo trên thiết bị này**. Việc này cần mở bảng điều khiển bằng link https: link riêng của nó, hoặc địa chỉ Cloudflare cố định. Trên iPhone và iPad, trước hết hãy thêm bảng điều khiển vào Màn hình chính từ nút Chia sẻ của Safari, rồi bật từ đó.',
+          ),
+          note('info', 'Ứng dụng Android tự hiện các thông báo này như thông báo bình thường của điện thoại. Hãy cho phép thông báo khi ứng dụng hỏi.'),
         ],
       },
       {

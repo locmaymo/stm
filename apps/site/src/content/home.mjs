@@ -110,9 +110,9 @@ export const home = {
           icon: 'bell',
           label: 'Updates',
           title: 'New releases, the moment they are out',
-          body: 'When SillyTavern publishes a new version, a notice appears right on your overview. Press Install it and you are up to date. Not ready yet? Not now hides it until the next one.',
+          body: 'When SillyTavern publishes a new version, a notice appears right on your overview, and the bell can tell your phone too. Press Install it and you are up to date. Not ready yet? Not now hides it until the next one.',
           points: [
-            'Told on the page, no need to watch GitHub',
+            'Told on the page and on your phone, no need to watch GitHub',
             'One click to update',
             'Your data is always backed up safely before switching',
           ],
@@ -285,9 +285,9 @@ export const home = {
           icon: 'bell',
           label: 'Cập nhật',
           title: 'Có bản mới là biết ngay',
-          body: 'Khi SillyTavern ra phiên bản mới, một thông báo hiện ngay trên trang tổng quan. Bấm Cài bản này là lên bản mới. Chưa muốn cập nhật? Bấm Để sau là nó ẩn đi tới bản kế tiếp.',
+          body: 'Khi SillyTavern ra phiên bản mới, một thông báo hiện ngay trên trang tổng quan, và chuông thông báo có thể báo cả lên điện thoại của bạn. Bấm Cài bản này là lên bản mới. Chưa muốn cập nhật? Bấm Để sau là nó ẩn đi tới bản kế tiếp.',
           points: [
-            'Báo ngay trên giao diện, không cần canh GitHub',
+            'Báo ngay trên giao diện và trên điện thoại, không cần canh GitHub',
             'Một cú bấm để cập nhật',
             'Dữ liệu luôn tự sao lưu an toàn trước khi đổi',
           ],
