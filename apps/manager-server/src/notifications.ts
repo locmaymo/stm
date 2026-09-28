@@ -13,6 +13,9 @@ const MAX_AGE_MS = 60 * 24 * 60 * 60 * 1000;
 
 export type NotificationLocale = 'en' | 'vi';
 
+/** How a notification is handed to the Android app: a line of output starting with this. */
+export const APP_NOTIFICATION_PREFIX = 'STM-NOTIFY ';
+
 /** A notification in words, as a push or the Android app shows it. */
 export interface RenderedNotification {
   readonly id: string;

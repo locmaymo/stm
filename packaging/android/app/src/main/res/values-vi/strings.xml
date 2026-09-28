@@ -2,6 +2,7 @@
 <resources>
     <string name="app_name">ST Manager</string>
     <string name="channel_name">Trình quản lý đang chạy</string>
+    <string name="channel_events">Thông báo của trình quản lý</string>
     <string name="notification_running">SillyTavern Manager đang hoạt động</string>
     <string name="notification_starting">Đang khởi động SillyTavern Manager…</string>
     <string name="notification_stopped">SillyTavern Manager đã dừng</string>

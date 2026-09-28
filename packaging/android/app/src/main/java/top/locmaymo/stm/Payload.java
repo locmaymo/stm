@@ -89,6 +89,11 @@ final class Payload {
         env.put("STM_APP_ROOT", manager.getPath());
         env.put("STM_STATIC_ROOT", new File(manager, "panel").getPath());
         env.put("STM_OPEN_BROWSER", "0");
+        // Says the manager is inside this app, which turns its notifications
+        // into lines this app reads (see ManagerService), and which language
+        // to write them in until the console says otherwise.
+        env.put("STM_ANDROID_APP", "1");
+        env.put("LANG", java.util.Locale.getDefault().toLanguageTag());
         return env;
     }
 

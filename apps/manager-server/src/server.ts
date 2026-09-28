@@ -33,7 +33,7 @@ import { TransferMeter } from './progress.js';
 import { MetricsStore } from './metrics.js';
 import { ActivityMeter } from './activity.js';
 import { ReleaseWatch } from './manager-release.js';
-import { NotificationCenter, NotificationRules, type NotificationLocale } from './notifications.js';
+import { APP_NOTIFICATION_PREFIX, NotificationCenter, NotificationRules, renderNotification, type NotificationLocale } from './notifications.js';
 import { validSubscription, WebPush } from './web-push.js';
 import { OnlineKeeper } from './online.js';
 import { formatGibibytes, SaverMode } from './saver.js';
@@ -809,6 +809,13 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   // Every browser that asked to be told is told, in the language it asked in.
   const push = new WebPush({ paths });
   notifications.subscribe((notification) => { void push.deliver(notification); });
+  // Inside the Android app, the app shows them: one line of output each,
+  // which it reads instead of printing. See ManagerService.
+  if (env.STM_ANDROID_APP === '1') {
+    notifications.subscribe((notification) => {
+      process.stdout.write(`${APP_NOTIFICATION_PREFIX}${JSON.stringify(renderNotification(notification, notifications.locale))}\n`);
+    });
+  }
   jobs.onLine((line) => notificationRules.onLog(line));
   jobs.onFinish((job) => notificationRules.onJob(job));
   if (!testRuntime) notificationRules.start();

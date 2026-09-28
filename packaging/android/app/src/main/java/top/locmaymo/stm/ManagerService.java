@@ -8,10 +8,13 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
+import android.net.Uri;
 import android.os.Build;
 import android.os.IBinder;
 import android.os.PowerManager;
 import android.util.Log;
+
+import org.json.JSONObject;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -43,7 +46,15 @@ public class ManagerService extends Service {
     static final String ACTION_STOP = "top.locmaymo.stm.action.STOP";
     private static final String TAG = "STM";
     private static final String CHANNEL = "manager";
+    /** The manager's own notifications, apart from the one saying it runs. */
+    private static final String EVENTS_CHANNEL = "events";
+    /**
+     * How the manager hands this app a notification: one line of its output,
+     * this prefix and then the notification in words, as JSON.
+     */
+    private static final String NOTIFY_PREFIX = "STM-NOTIFY ";
     private static final int NOTIFICATION = 1;
+    private static final int EVENT_NOTIFICATION = 2;
     static final int DEFAULT_PORT = 7860;
 
     /** Read by the activity: where the console is, and what is happening. */
@@ -64,6 +75,9 @@ public class ManagerService extends Service {
             NotificationChannel channel = new NotificationChannel(CHANNEL, getString(R.string.channel_name), NotificationManager.IMPORTANCE_LOW);
             channel.setShowBadge(false);
             getSystemService(NotificationManager.class).createNotificationChannel(channel);
+            // Heard, unlike the one above: these are the things somebody wanted to know.
+            NotificationChannel events = new NotificationChannel(EVENTS_CHANNEL, getString(R.string.channel_events), NotificationManager.IMPORTANCE_DEFAULT);
+            getSystemService(NotificationManager.class).createNotificationChannel(events);
         }
     }
 
@@ -213,6 +227,41 @@ public class ManagerService extends Service {
         return from;
     }
 
+    /**
+     * One of the manager's notifications, as a phone notification.
+     *
+     * Notifications of one kind share a tag, so a second "SillyTavern stopped"
+     * replaces the first rather than stacking under it. A press opens the
+     * console, or the page a broadcast points at.
+     */
+    private void postEvent(String json) {
+        try {
+            JSONObject event = new JSONObject(json);
+            String title = event.optString("title", getString(R.string.app_name));
+            String body = event.optString("body", "");
+            String tag = event.optString("tag", "event");
+            String url = event.isNull("url") ? "" : event.optString("url", "");
+            Intent open = url.startsWith("https://")
+                    ? new Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                    : new Intent(this, MainActivity.class).setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
+            PendingIntent press = PendingIntent.getActivity(this, tag.hashCode(), open, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+            Notification.Builder builder = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                    ? new Notification.Builder(this, EVENTS_CHANNEL)
+                    : new Notification.Builder(this);
+            Notification notification = builder
+                    .setSmallIcon(R.drawable.ic_notification)
+                    .setContentTitle(title)
+                    .setContentText(body)
+                    .setStyle(new Notification.BigTextStyle().bigText(body))
+                    .setContentIntent(press)
+                    .setAutoCancel(true)
+                    .build();
+            getSystemService(NotificationManager.class).notify(tag, EVENT_NOTIFICATION, notification);
+        } catch (Exception error) {
+            Log.w(TAG, "a notification from the manager could not be shown", error);
+        }
+    }
+
     private void pumpOutput(Process child) {
         File log = new File(getFilesDir(), "manager-output.log");
         Thread pump = new Thread(() -> {
@@ -220,6 +269,10 @@ public class ManagerService extends Service {
                  PrintWriter writer = new PrintWriter(new FileOutputStream(log, false), true)) {
                 String line;
                 while ((line = reader.readLine()) != null) {
+                    if (line.startsWith(NOTIFY_PREFIX)) {
+                        postEvent(line.substring(NOTIFY_PREFIX.length()));
+                        continue;
+                    }
                     Log.i(TAG, line);
                     writer.println(line);
                 }

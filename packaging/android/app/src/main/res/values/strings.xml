@@ -2,6 +2,7 @@
 <resources>
     <string name="app_name">ST Manager</string>
     <string name="channel_name">Manager running</string>
+    <string name="channel_events">Manager notifications</string>
     <string name="notification_running">SillyTavern Manager is running</string>
     <string name="notification_starting">Starting SillyTavern Manager…</string>
     <string name="notification_stopped">SillyTavern Manager stopped</string>
