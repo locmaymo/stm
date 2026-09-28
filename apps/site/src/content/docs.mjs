@@ -40,7 +40,7 @@ export const docs = {
             type: 'table',
             columns: ['Platform', 'What you need', 'Where to start'],
             rows: [
-              ['Windows 10 or 11', 'Nothing. Node.js is inside the download.', '[Windows](#windows)'],
+              ['Windows 10 or 11', 'Nothing. Node.js, npm and Git are inside the download.', '[Windows](#windows)'],
               ['Android 7+', 'Termux from F-Droid', '[Termux](#android)'],
               ['macOS 13+', 'Homebrew and Node.js 22+', '[macOS](#macos)'],
               ['Linux or a VPS', 'Node.js 22+ and git', '[Linux](#linux)'],
@@ -423,7 +423,7 @@ export const docs = {
             type: 'table',
             columns: ['Nền tảng', 'Cần những gì', 'Bắt đầu ở đâu'],
             rows: [
-              ['Windows 10 hoặc 11', 'Không cần gì. Node.js nằm sẵn trong bản tải.', '[Windows](#windows)'],
+              ['Windows 10 hoặc 11', 'Không cần gì. Node.js, npm và Git nằm sẵn trong bản tải.', '[Windows](#windows)'],
               ['Android 7 trở lên', 'Termux từ F-Droid', '[Termux](#android)'],
               ['macOS 13 trở lên', 'Homebrew và Node.js 22+', '[macOS](#macos)'],
               ['Linux hoặc VPS', 'Node.js 22+ và git', '[Linux](#linux)'],

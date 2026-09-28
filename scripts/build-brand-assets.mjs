@@ -11,6 +11,9 @@
  * Usage:
  *   node scripts/build-brand-assets.mjs [source.png]
  *
+ * It also writes `packaging/windows/app.ico`, the icon of the Windows
+ * executable.
+ *
  * The default source is the STVN logo inside a sibling SillyTavern checkout.
  * Re-run it only when the artwork changes.
  */
@@ -271,5 +274,12 @@ write('icon-512.png', encodePng(square(512)));
 write('icon-maskable-512.png', encodePng(onPlate(square(512), 512, 0.12, PLATE)));
 write('apple-touch-icon.png', encodePng(onPlate(square(180), 180, 0.06, PLATE)));
 write('favicon.ico', encodeIco([square(16), square(32), square(48)]));
+
+// The Windows executable's own icon. Explorer picks among these by view and
+// display scaling, and draws the large views from the 256px one, so a set that
+// stopped at 48px - the favicon's - showed a blurred mark there.
+const windowsIcon = encodeIco([16, 20, 24, 32, 40, 48, 64, 128, 256].map(square));
+writeFileSync(join(repositoryRoot, 'packaging', 'windows', 'app.ico'), windowsIcon);
+console.log(`[brand] packaging/windows/app.ico (${windowsIcon.length.toLocaleString()} bytes)`);
 
 console.log(`[brand] built from ${sourcePath}`);

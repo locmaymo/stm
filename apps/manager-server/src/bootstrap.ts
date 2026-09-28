@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { readdir, stat } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { detectPlatform } from '../../../packages/platform/src/index.js';
@@ -22,6 +23,11 @@ export function panelStaticRoot(env: NodeJS.ProcessEnv = process.env): string {
 /** The panel sources, so a build older than them can be noticed. */
 function panelSourceRoots(): string[] {
   const panel = join(process.cwd(), 'apps', 'manager-panel');
+  // A release carries the server's compiled copy of `packages/ui`, written
+  // after the panel was built, and no panel sources at all. Counting that copy
+  // made every start of a release decide its panel was stale and run a build
+  // that has nothing to build from.
+  if (!existsSync(join(panel, 'src'))) return [];
   return [join(panel, 'src'), join(panel, 'index.html'), join(panel, 'vite.config.ts'), join(process.cwd(), 'packages', 'ui')];
 }
 

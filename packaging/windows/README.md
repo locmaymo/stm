@@ -7,8 +7,12 @@ first `import` with a SyntaxError before anything else happens.
 The launcher starts the manager on `127.0.0.1:7860`, waits for its health
 endpoint, opens the browser, and then keeps its console window as the place the
 operator reads status and stops from. It carries the compiled server, panel
-assets, production dependencies, and a Node runtime inside `resources/`, so
-nothing has to be installed first.
+assets, production dependencies, a Node runtime with its npm, and MinGit inside
+`resources/`, so nothing has to be installed first. Installing SillyTavern is a
+Git fetch and an `npm install`, so the launcher puts `resources/runtime` and
+`resources/git/cmd` first on the manager's `PATH`, and everything the manager
+starts inherits them. MinGit is pinned by version and SHA-256 in
+`scripts/build-windows-release.mjs` and cached under `build/cache/`.
 
 Stopping is the part that needs care. Windows has no SIGTERM, so killing the
 manager would leave SillyTavern and cloudflared running with nothing owning
