@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Bell, CircleAlert, CircleCheck, Info, Megaphone, TriangleAlert } from 'lucide-react';
-import { Button, cn, Popover, PopoverContent, PopoverTrigger } from '../../../packages/ui/src/index.js';
+import { Button, cn, Popover, PopoverContent, PopoverTrigger, Switch } from '../../../packages/ui/src/index.js';
 import type { ManagerNotification, MessageParams, NotificationList, NotificationSummary } from '../../../packages/contracts/src/index.js';
 import type { MessageKey, Translate } from './i18n.js';
 import type { LocaleCode } from './preferences.js';
+import { currentPush, disablePush, enablePush, pushSupport, testPush, type PushSupport } from './push.js';
 import { apiFetch } from './session.js';
 
 /**
@@ -40,6 +41,62 @@ function levelIcon(item: ManagerNotification): ReactNode {
   if (item.level === 'warning') return <TriangleAlert className="text-(--attention)" />;
   if (item.level === 'error') return <CircleAlert className="text-destructive" />;
   return <Info className="text-muted-foreground" />;
+}
+
+/**
+ * Whether this device is told, at the foot of the bell.
+ *
+ * A switch where the browser can take a push; a sentence saying why not where
+ * it cannot, since each reason has a different fix and only one of them is a
+ * setting.
+ */
+export function PushToggle({ t, locale, csrfToken }: { t: Translate; locale: LocaleCode; csrfToken: string }) {
+  const [support, setSupport] = useState<PushSupport>(() => pushSupport());
+  const [subscription, setSubscription] = useState<PushSubscription | null>(null);
+  const [checked, setChecked] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void currentPush().then((found) => { if (!cancelled) { setSubscription(found); setChecked(true); } }).catch(() => { if (!cancelled) setChecked(true); });
+    return () => { cancelled = true; };
+  }, []);
+
+  if (support === 'app') return <p className="text-xs text-muted-foreground">{t('notify.appManaged')}</p>;
+  const reason = support === 'needs-home-screen' ? t('notify.pushNeedsHomeScreen')
+    : support === 'needs-https' ? t('notify.pushNeedsHttps')
+      : support === 'unsupported' ? t('notify.pushUnsupported')
+        : support === 'blocked' ? t('notify.pushBlocked')
+          : null;
+
+  const toggle = async (on: boolean) => {
+    setBusy(true); setNote(null);
+    try {
+      if (on) {
+        const outcome = await enablePush(csrfToken, locale);
+        if (outcome === 'blocked') { setSupport('blocked'); return; }
+        if (outcome === 'failed') { setNote(t('notify.pushFailed')); return; }
+        setSubscription(await currentPush());
+      } else if (subscription) {
+        await disablePush(csrfToken, subscription);
+        setSubscription(null);
+      }
+    } finally { setBusy(false); }
+  };
+
+  return <div className="grid gap-2">
+    <div className="flex items-center justify-between gap-3">
+      <span className="text-sm">{t('notify.push')}</span>
+      {reason ? null : <Switch checked={subscription !== null} disabled={busy || !checked} onCheckedChange={(on) => void toggle(on)} aria-label={t('notify.push')} />}
+    </div>
+    {reason ? <p className="text-xs text-muted-foreground">{reason}</p> : null}
+    {subscription ? <Button variant="outline" size="sm" className="justify-self-start" disabled={busy} onClick={() => {
+      setBusy(true);
+      void testPush(csrfToken, subscription).then((sent) => setNote(sent ? t('notify.pushTestSent') : t('notify.pushFailed'))).finally(() => setBusy(false));
+    }}>{t('notify.pushTest')}</Button> : null}
+    {note ? <p className="text-xs text-muted-foreground" role="status">{note}</p> : null}
+  </div>;
 }
 
 /**

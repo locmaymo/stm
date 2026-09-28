@@ -34,6 +34,7 @@ import { MetricsStore } from './metrics.js';
 import { ActivityMeter } from './activity.js';
 import { ReleaseWatch } from './manager-release.js';
 import { NotificationCenter, NotificationRules, type NotificationLocale } from './notifications.js';
+import { validSubscription, WebPush } from './web-push.js';
 import { OnlineKeeper } from './online.js';
 import { formatGibibytes, SaverMode } from './saver.js';
 import { capacityFor, checkFits, decideTrim, diskSpace, memoryGuard, roomCheck } from './headroom.js';
@@ -103,6 +104,9 @@ const PROTECTED_PATHS = new Set([
   '/api/v1/status',
   '/api/v1/notifications',
   '/api/v1/notifications/read',
+  '/api/v1/push',
+  '/api/v1/push/subscriptions',
+  '/api/v1/push/test',
   '/api/v1/legal',
   '/api/v1/legal/acknowledge',
   '/api/v1/tunnel',
@@ -802,6 +806,9 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       return releases.status().update?.version ?? null;
     },
   });
+  // Every browser that asked to be told is told, in the language it asked in.
+  const push = new WebPush({ paths });
+  notifications.subscribe((notification) => { void push.deliver(notification); });
   jobs.onLine((line) => notificationRules.onLog(line));
   jobs.onFinish((job) => notificationRules.onJob(job));
   if (!testRuntime) notificationRules.start();
@@ -916,6 +923,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       releases,
       online,
       notifications,
+      push,
       proxy,
       publishProxies,
       budget,
@@ -1104,6 +1112,8 @@ async function handleRequest(options: {
   readonly online: OnlineKeeper;
   /** The bell; see `notifications.ts`. */
   readonly notifications: NotificationCenter;
+  /** Browsers that asked for push notifications; see `web-push.ts`. */
+  readonly push: WebPush;
   readonly proxy: ProxyWorkerManager | null;
   /** Put the fixed addresses in place, for a Cloudflare account just connected. */
   readonly publishProxies: () => void;
@@ -1122,7 +1132,7 @@ async function handleRequest(options: {
   readonly autoInstall: boolean;
   readonly onShutdownRequest: (() => void) | undefined;
 }): Promise<void> {
-  const { request, response, store, sessions, rateLimiter, handoffs, startedAt, publicOrigins, proxiedOrigin, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, releases, online, notifications, proxy, publishProxies, budget, saver, shutdownToken, autoInstall, onShutdownRequest } = options;
+  const { request, response, store, sessions, rateLimiter, handoffs, startedAt, publicOrigins, proxiedOrigin, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, releases, online, notifications, push, proxy, publishProxies, budget, saver, shutdownToken, autoInstall, onShutdownRequest } = options;
   // Whether the browser's side of this connection is HTTPS, which is not the
   // same question as whether ours is: a hosted console is reached over HTTPS
   // that a proxy terminates before us, and only the proxy's own header says so.
@@ -1424,7 +1434,7 @@ async function handleRequest(options: {
     if (method !== 'GET' && !requireCsrf(context, session.csrfToken)) {
       return;
     }
-    await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, online, proxy, publishProxies, budget, logger, handoffs, saver, sessions, notifications);
+    await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, online, proxy, publishProxies, budget, logger, handoffs, saver, sessions, notifications, push);
     return;
   }
 
@@ -1677,7 +1687,7 @@ async function adoptRestoredPort(deps: PortAdoptionDeps, port: number): Promise<
   }
 }
 
-async function handleRuntimeRequest(context: RequestContext, store: StateStore, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, managerTunnel: TunnelManager, gateway: AccessGateway, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, cloudflare: CloudflareConnection | null, metrics: MetricsStore, activity: ActivityMeter, config: ConfigStore, system: SystemStore, online: OnlineKeeper, proxy: ProxyWorkerManager | null, publishProxies: () => void, budget: WorkerBudget, logger: LogSink, handoffs: HandoffStore, saver: SaverMode, sessions: SessionStore, notifications: NotificationCenter): Promise<void> {
+async function handleRuntimeRequest(context: RequestContext, store: StateStore, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, managerTunnel: TunnelManager, gateway: AccessGateway, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, cloudflare: CloudflareConnection | null, metrics: MetricsStore, activity: ActivityMeter, config: ConfigStore, system: SystemStore, online: OnlineKeeper, proxy: ProxyWorkerManager | null, publishProxies: () => void, budget: WorkerBudget, logger: LogSink, handoffs: HandoffStore, saver: SaverMode, sessions: SessionStore, notifications: NotificationCenter, push: WebPush): Promise<void> {
   const { pathname, ports, request, response, searchParams } = context;
   const method = request.method ?? 'GET';
   const adoptSillyTavernPort = (port: number): Promise<void> =>
@@ -2809,6 +2819,40 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     const body = await readJson(request);
     const ids = isRecord(body) && Array.isArray(body.ids) ? body.ids.filter((id): id is string => typeof id === 'string').slice(0, 200) : undefined;
     sendJson(response, 200, await notifications.markRead(ids));
+    return;
+  }
+  /*
+   * Push notifications for this browser. The key a browser needs to subscribe,
+   * whether the one asking already has, and the subscription itself - which
+   * names a push service and holds the keys to encrypt for it, so it is taken
+   * only from a signed-in console and only in the shape a browser makes.
+   */
+  if (pathname === '/api/v1/push' && method === 'GET') {
+    const endpoint = searchParams.get('endpoint');
+    sendJson(response, 200, { publicKey: await push.publicKey(), subscribed: endpoint ? await push.has(endpoint) : false });
+    return;
+  }
+  if (pathname === '/api/v1/push/subscriptions' && (method === 'POST' || method === 'DELETE')) {
+    const body = await readJson(request);
+    const subscription = isRecord(body) ? body.subscription : null;
+    if (method === 'DELETE') {
+      const endpoint = isRecord(body) && typeof body.endpoint === 'string' ? body.endpoint : null;
+      if (!endpoint) { sendError(response, 400, 'invalid_subscription', 'Which subscription to remove is required'); return; }
+      await push.unsubscribe(endpoint);
+      sendJson(response, 200, { subscribed: false });
+      return;
+    }
+    if (!validSubscription(subscription)) { sendError(response, 400, 'invalid_subscription', 'That is not a push subscription a browser makes'); return; }
+    const locale: NotificationLocale = isRecord(body) && body.locale === 'vi' ? 'vi' : 'en';
+    await push.subscribe({ endpoint: subscription.endpoint, p256dh: subscription.keys.p256dh, auth: subscription.keys.auth, locale });
+    sendJson(response, 200, { subscribed: true });
+    return;
+  }
+  if (pathname === '/api/v1/push/test' && method === 'POST') {
+    const body = await readJson(request);
+    const endpoint = isRecord(body) && typeof body.endpoint === 'string' ? body.endpoint : null;
+    const sent = endpoint ? await push.sendTest(endpoint) : false;
+    sendJson(response, sent ? 200 : 409, sent ? { delivered: true } : { error: { code: 'push_failed', message: 'The push service did not take the test' } });
     return;
   }
   if (pathname === '/api/v1/notifications' && method === 'DELETE') {
@@ -5021,7 +5065,9 @@ async function servePanel(request: IncomingMessage, response: ServerResponse, pa
  * never picked up again on a machine that had loaded the old one once.
  */
 function cacheControlFor(filePath: string): string {
-  if (filePath.endsWith('index.html')) return 'no-cache';
+  // The service worker too: a browser keeps running an old one until it
+  // sees the file change, and it cannot see that through an hour of cache.
+  if (filePath.endsWith('index.html') || filePath.endsWith(`${sep}sw.js`)) return 'no-cache';
   const inBundle = filePath.includes(`${sep}assets${sep}`);
   return inBundle ? 'public, max-age=31536000, immutable' : 'public, max-age=3600';
 }
