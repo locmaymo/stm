@@ -79,6 +79,7 @@ export const CLOUDFLARE_CALLBACK_PATH = '/oauth/cloudflare/callback';
 const PROTECTED_PATHS = new Set([
   '/api/v1/versions',
   '/api/v1/installations',
+  '/api/v1/installations/reinstall',
   '/api/v1/profiles',
   '/api/v1/backups',
   '/api/v1/config',
@@ -2230,6 +2231,29 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     }
     return;
   }
+  /*
+   * The version already installed, installed again from scratch.
+   *
+   * For a SillyTavern that stopped starting: the checkout is reset and the
+   * dependencies are fetched again, while the data in the profile stays where
+   * it is. The same release, not whatever "latest" means today - a repair is
+   * not an upgrade.
+   */
+  if (pathname === '/api/v1/installations/reinstall' && method === 'POST') {
+    const current = await runtime.getActiveInstallation();
+    if (!current) { sendError(response, 409, 'installation_required', 'There is no SillyTavern installed to reinstall'); return; }
+    const moving = current.selector === 'release' || current.selector === 'staging';
+    const selector = moving ? current.selector : current.resolvedRef;
+    if (!isVersionSelector(selector)) { sendError(response, 409, 'invalid_version', 'The installed version cannot be installed again'); return; }
+    try {
+      const started = await beginInstallation({ runtime, jobs, supervisor, profiles, backups, r2, system, metrics }, selector as VersionSelector, { fresh: true });
+      sendJson(response, 202, { installationId: started.installationId, job: started.job });
+    } catch (error: unknown) {
+      if (error instanceof RuntimeError) { sendError(response, 409, error.code, error.message); return; }
+      throw error;
+    }
+    return;
+  }
   if (pathname === '/api/v1/profiles' && method === 'GET') {
     const activeInstallation = await runtime.getActiveInstallation();
     if (activeInstallation?.status === 'ready') await profiles.ensureDefault({ installationId: activeInstallation.id, runtimePath: activeInstallation.runtimePath });
@@ -3007,7 +3031,7 @@ interface InstallationDeps {
  * Throws RuntimeError when an installation is already in flight; the caller
  * decides what that means for its own answer.
  */
-async function beginInstallation(deps: InstallationDeps, selector: VersionSelector): Promise<{ installationId: string; job: Job }> {
+async function beginInstallation(deps: InstallationDeps, selector: VersionSelector, options: { readonly fresh?: boolean } = {}): Promise<{ installationId: string; job: Job }> {
   const { runtime, jobs, supervisor, profiles, backups, r2, system } = deps;
   const previousProfile = await profiles.getActive();
   const previousInstallation = await runtime.getActiveInstallation();
@@ -3041,6 +3065,7 @@ async function beginInstallation(deps: InstallationDeps, selector: VersionSelect
         await backups.createSafetyCopy(previousProfile, { kind: 'before-switch' });
       },
       stopping.signal,
+      options,
     );
   } catch (error: unknown) {
     await supervisor.start().catch(() => supervisor.getState());

@@ -734,6 +734,39 @@ test('installing a new version rebinds the active data profile and keeps its fil
   assert.equal(await readFile(join(profile.dataPath, 'chat.json'), 'utf8'), '{"message":"keep"}');
 });
 
+test('a reinstall installs the same release again, from scratch', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-reinstall-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const runtimePath = join(root, 'runtime');
+  await mkdir(runtimePath, { recursive: true });
+  const now = new Date().toISOString();
+  const installation: Installation = { id: 'install-1', selector: 'latest', resolvedRef: '1.19.0', channel: 'release', runtimePath, markerPath: join(runtimePath, '.stm-installation.json'), status: 'ready', progress: 100, step: 'Installation ready', error: null, createdAt: now, updatedAt: now, activatedAt: now };
+  const asked: Array<{ selector: string; fresh: boolean | undefined }> = [];
+  const fakeRuntime = {
+    listVersions: async () => [], listInstallations: async () => [installation], getActiveInstallation: async () => installation,
+    getInstallation: async () => installation,
+    queueInstall: (selector: string, _progress: unknown, _before: unknown, _signal: unknown, options?: { fresh?: boolean }) => {
+      asked.push({ selector, fresh: options?.fresh });
+      return { id: 'install-2', promise: Promise.resolve({ ...installation, id: 'install-2' }) };
+    },
+  } as unknown as RuntimeManager;
+  const processState: ProcessState = { status: 'stopped', installationId: null, profileId: null, pid: null, startedAt: null, error: null };
+  const fakeSupervisor = { getState: () => processState, start: async () => processState, stop: async () => processState, restart: async () => processState, close: async () => undefined } as unknown as ProcessSupervisor;
+  const manager = await startManagerServer({ host: '127.0.0.1', port: 0, paths, env: { STM_ADMIN_PASSWORD: 'correct horse battery staple' }, secureCookies: false,
+    accessPort: 0, runtime: fakeRuntime, supervisor: fakeSupervisor, logger: () => undefined });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const login = await fetch(`${base}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'correct horse battery staple' }) });
+  const cookie = cookieFrom(login); const csrf = (await login.json() as { session: { csrfToken: string } }).session.csrfToken;
+
+  const unguarded = await fetch(`${base}/api/v1/installations/reinstall`, { method: 'POST', headers: { cookie } });
+  assert.equal(unguarded.status, 403);
+  const reinstall = await fetch(`${base}/api/v1/installations/reinstall`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf } });
+  assert.equal(reinstall.status, 202);
+  // The release that is installed, not whatever "latest" is today.
+  assert.deepEqual(asked, [{ selector: '1.19.0', fresh: true }]);
+});
+
 test('a failed install that also fails to restart leaves the manager serving', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'stm-install-recovery-'));
   const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });

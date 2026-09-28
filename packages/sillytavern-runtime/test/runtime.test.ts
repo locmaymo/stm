@@ -332,6 +332,29 @@ test('shared Git checkout switches refs without creating one runtime per version
   assert.equal((await runtime.listInstallations()).filter((item) => item.status === 'ready').length, 3);
 });
 
+test('a fresh install fetches the dependencies again instead of reusing them', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-runtime-fresh-'));
+  const repository = join(root, 'source');
+  await exec('git', ['init', repository]);
+  await exec('git', ['-C', repository, 'config', 'user.email', 'stm@test.local']);
+  await exec('git', ['-C', repository, 'config', 'user.name', 'STM Test']);
+  await writeFile(join(repository, 'package.json'), '{"name":"sillytavern","scripts":{"start":"node server.js"}}', 'utf8');
+  await exec('git', ['-C', repository, 'add', '.']); await exec('git', ['-C', repository, 'commit', '-m', 'one']); await exec('git', ['-C', repository, 'tag', '1.0.0']);
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: join(root, 'manager') } });
+  let installs = 0;
+  const runtime = new RuntimeManager({ paths, useGit: true, repositoryUrl: repository, healthCheck: async () => undefined, installDependencies: async (runtimePath) => {
+    installs += 1;
+    await mkdir(join(runtimePath, 'node_modules', 'left-over'), { recursive: true });
+  } });
+  const first = await runtime.install('1.0.0');
+  await runtime.install('1.0.0');
+  assert.equal(installs, 1, 'the same release reuses what it installed');
+  const fresh = await runtime.queueInstall('1.0.0', undefined, undefined, undefined, { fresh: true }).promise;
+  assert.equal(fresh.status, 'ready');
+  assert.equal(installs, 2);
+  assert.equal(fresh.runtimePath, first.runtimePath);
+});
+
 test('a version change falls back to a complete pack when a fetch keeps failing', async () => {
   const root = await mkdtemp(join(tmpdir(), 'stm-runtime-refetch-'));
   const repository = join(root, 'source');

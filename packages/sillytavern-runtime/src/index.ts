@@ -36,6 +36,11 @@ const DEFAULT_SILLYTAVERN_PORT = 8002;
 /** How work running before the download says what it is doing. */
 export type BeforeInstallReport = (progress: number, step: LogEvent) => Promise<void>;
 
+export interface InstallOptions {
+  /** Install the dependencies again rather than reusing the ones already there. */
+  readonly fresh?: boolean;
+}
+
 export interface InstallationProgress {
   readonly status: InstallationStatus;
   readonly progress: number;
@@ -383,11 +388,12 @@ export class RuntimeManager {
     beforeInstall?: (report: BeforeInstallReport) => Promise<void>,
     /** Stops the install and takes back everything it wrote; see INSTALL_CANCELED. */
     signal?: AbortSignal,
+    options: InstallOptions = {},
   ): { id: string; promise: Promise<Installation> } {
     if (this.inFlightId) throw new RuntimeError('installation_busy', 'An installation is already in progress');
     const id = randomUUID();
     this.inFlightId = id;
-    const promise = this.installWithId(id, selector, onProgress, beforeInstall, signal).finally(() => { this.inFlightId = null; });
+    const promise = this.installWithId(id, selector, onProgress, beforeInstall, signal, options).finally(() => { this.inFlightId = null; });
     return { id, promise };
   }
 
@@ -397,6 +403,7 @@ export class RuntimeManager {
     onProgress?: (progress: InstallationProgress) => void,
     beforeInstall?: (report: BeforeInstallReport) => Promise<void>,
     signal?: AbortSignal,
+    options: InstallOptions = {},
   ): Promise<Installation> {
     const now = this.now().toISOString();
     const initial: Installation = {
@@ -445,6 +452,9 @@ export class RuntimeManager {
         await extractZipSafely(zipPath, extractedPath, (progress) => onProgress?.({ status: 'extracting', progress: 48 + progress * 0.2, step: logEvent('install.extracting', 'Extracting source archive') }), signal);
       }
       await update('installing', 70, logEvent('install.installingDependencies', 'Installing SillyTavern dependencies'));
+      // A reinstall is asked for when something is broken, and the cached
+      // dependencies are the part a checkout does not put back.
+      if (options.fresh) await rm(join(extractedPath, 'node_modules'), { recursive: true, force: true });
       await this.installDependenciesIfNeeded(extractedPath, (line) => this.logger(`[installer:${id}] ${line}`), signal);
       await update('health_check', 90, logEvent('install.checking', 'Checking the installation'));
       throwIfCanceled(signal);

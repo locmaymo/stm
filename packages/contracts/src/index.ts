@@ -266,6 +266,13 @@ export interface OnlineState {
    */
   readonly source: 'configured' | 'seen' | 'local';
   /**
+   * The address the host of this machine gave it, whether or not it is being
+   * kept open: the configured or seen address, never loopback. On a platform
+   * that puts the app to sleep it is the one link that reaches the platform
+   * itself, which the console shows as a plain link.
+   */
+  readonly hostAddress: string | null;
+  /**
    * `off` when switched off, `holding` while the address answers,
    * `unreachable` when it stopped.
    */
