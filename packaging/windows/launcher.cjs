@@ -84,6 +84,8 @@ function withBundledTools(environment) {
   return { ...environment, [key]: [...tools, environment[key]].filter(Boolean).join(delimiter) };
 }
 
+const bundledCloudflared = join(packagedRoot, 'bin', 'cloudflared.exe');
+
 const compiledEntry = join(applicationRoot, 'apps', 'manager-server', 'src', 'main.js');
 const sourceEntry = join(applicationRoot, 'apps', 'manager-server', 'src', 'main.ts');
 const serverEntry = exists(compiledEntry) ? compiledEntry : sourceEntry;
@@ -307,6 +309,10 @@ async function start() {
     env: {
       ...withBundledTools(process.env),
       STM_WINDOWS_LAUNCHER: '1',
+      // The cloudflared this download came with. Not STM_CLOUDFLARED_PATH,
+      // which is the reader's own choice and always wins: this one gives way
+      // to a newer build the manager fetches when it gets old.
+      ...(packaged && exists(bundledCloudflared) ? { STM_CLOUDFLARED_BUNDLED: bundledCloudflared } : {}),
       STM_APP_ROOT: applicationRoot,
       STM_STATIC_ROOT: staticRoot,
       STM_SHUTDOWN_TOKEN: shutdownToken,

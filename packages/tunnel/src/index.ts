@@ -25,6 +25,41 @@ const TUNNEL_STATE_FILE = 'tunnel-config.json';
  * package installs at once, which is not safe at all.
  */
 const binaryInFlight = new Map<string, Promise<string>>();
+/**
+ * How old a cloudflared this manager shipped with may get before a newer one
+ * is fetched in its place.
+ *
+ * Cloudflare supports each release for about a year and may refuse older ones
+ * after that. A manager nobody updates still carries the build it shipped
+ * with, so it looks at that build's date - cloudflared's versions are the
+ * year and month they came out - and fetches the current one a little before
+ * the year is up. The one it shipped with stays, and is used again whenever
+ * the fetch cannot be made.
+ */
+export const CLOUDFLARED_STALE_MS = 330 * 24 * 60 * 60 * 1000;
+
+/** A cloudflared version, `year.month.patch`, from whatever it printed; null when there is none. */
+export function cloudflaredVersion(output: string): readonly [number, number, number] | null {
+  const match = /\b(20\d{2})\.(\d{1,2})\.(\d+)\b/u.exec(output);
+  if (!match) return null;
+  const version = [Number(match[1]), Number(match[2]), Number(match[3])] as const;
+  return version[1] >= 1 && version[1] <= 12 ? version : null;
+}
+
+/** Whether a build of that version is old enough to replace; an unreadable one is not. */
+export function cloudflaredStale(version: readonly [number, number, number] | null, now: Date): boolean {
+  if (!version) return false;
+  return now.getTime() - Date.UTC(version[0], version[1] - 1, 1) > CLOUDFLARED_STALE_MS;
+}
+
+function compareVersions(left: readonly number[] | null, right: readonly number[] | null): number {
+  if (!left || !right) return left ? 1 : right ? -1 : 0;
+  for (let index = 0; index < 3; index += 1) {
+    const difference = (left[index] ?? 0) - (right[index] ?? 0);
+    if (difference !== 0) return difference;
+  }
+  return 0;
+}
 const TUNNEL_SCHEMA_VERSION = 1 as const;
 /**
  * How cloudflared talks to Cloudflare's edge.
@@ -213,6 +248,15 @@ export interface TunnelManagerOptions {
   readonly logger?: LogSink;
   readonly now?: () => Date;
   readonly binaryPath?: string;
+  /**
+   * A cloudflared that came with this manager, as the Windows download does.
+   * Defaults to `STM_CLOUDFLARED_BUNDLED`. Unlike `binaryPath` it is not an
+   * instruction: a newer one fetched into the data directory is preferred,
+   * and one that is too old, or that dies before it ever connects, is replaced.
+   */
+  readonly bundledBinaryPath?: string;
+  /** What `cloudflared --version` prints; injectable so tests need no real binary. */
+  readonly versionOf?: (path: string) => Promise<string | null>;
   readonly env?: NodeJS.ProcessEnv;
   readonly beforeStart?: () => Promise<void>;
   /** Injectable for tests; defaults to the global fetch. */
@@ -244,6 +288,17 @@ export class TunnelManager {
   private readonly now: () => Date;
   private readonly env: NodeJS.ProcessEnv;
   private readonly configuredBinaryPath: string | undefined;
+  private readonly bundledBinaryPath: string | undefined;
+  private readonly versionOf: (path: string) => Promise<string | null>;
+  private readonly versions = new Map<string, Promise<readonly [number, number, number] | null>>();
+  /** Where the shipped cloudflared was found, so a launch can tell it was the one used. */
+  private bundledLocated: string | null = null;
+  /** Set when the shipped cloudflared exited before ever connecting; see `start`. */
+  private bundledRejected = false;
+  /** Whether the child now running is the shipped cloudflared. */
+  private launchedBundled = false;
+  /** A fetch to replace an old shipped build is tried once per run, not on every start. */
+  private refreshTried = false;
   private readonly resolveTargetUrl: () => string;
   private readonly stateFile: string;
   private readonly beforeStart: (() => Promise<void>) | undefined;
@@ -314,6 +369,13 @@ export class TunnelManager {
     this.now = options.now ?? (() => new Date());
     this.env = options.env ?? process.env;
     this.configuredBinaryPath = options.binaryPath ?? this.env.STM_CLOUDFLARED_PATH;
+    this.bundledBinaryPath = options.bundledBinaryPath ?? (this.env.STM_CLOUDFLARED_BUNDLED || undefined);
+    this.versionOf = options.versionOf ?? (async (path) => {
+      try {
+        const { stdout, stderr } = await execFileAsync(path, ['--version'], { timeout: 15_000, windowsHide: true });
+        return `${stdout}\n${stderr}`;
+      } catch { return null; }
+    });
     const target = options.targetUrl ?? 'http://127.0.0.1:8001';
     this.resolveTargetUrl = typeof target === 'function' ? target : (): string => target;
     this.stateFile = options.stateFile ?? TUNNEL_STATE_FILE;
@@ -365,6 +427,7 @@ export class TunnelManager {
     // take down a cloudflared nobody here started.
     const child = this.spawnImpl(plan.command, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, env: plan.env, ...(plan.wrapped ? { detached: true } : {}) });
     this.wrapped = plan.wrapped;
+    this.launchedBundled = this.bundledLocated !== null && plan.command === this.bundledLocated;
     this.child = child;
     this.activeTransport = transport;
     this.quicFailures = 0;
@@ -414,6 +477,18 @@ export class TunnelManager {
       this.stopReason = null;
       const exit = describeExit(code, signal);
       const owned = this.child === child;
+      /*
+       * The shipped cloudflared died before it ever connected.
+       *
+       * That is what a build Cloudflare no longer accepts looks like, and it
+       * is also what a machine with no network looks like. Either way the
+       * next attempt fetches the current build; when that fetch fails too,
+       * the shipped one is used again, so nothing is lost by asking.
+       */
+      if (owned && !reason && code !== 0 && this.launchedBundled && this.state.status === 'starting' && !this.bundledRejected) {
+        this.bundledRejected = true;
+        this.logger(logEvent('cloudflared.bundledRejected', '[cloudflared] the cloudflared that came with the manager stopped before connecting; the next attempt fetches the current one'));
+      }
       if (owned) {
         this.child = null;
         this.edgeChecking = null;
@@ -795,6 +870,15 @@ export class TunnelManager {
     // costs a sixth of the download and needs no proot in front of it, so it is
     // worth one ask - here, and again for a binary that would otherwise be
     // wrapped, but never more than once per run.
+    if (existing && !termux && existing === this.bundledLocated && !this.refreshTried && cloudflaredStale(await this.versionAt(existing), this.now())) {
+      this.refreshTried = true;
+      this.logger(logEvent('cloudflared.bundledStale', '[cloudflared] the cloudflared that came with the manager is almost a year old; fetching the current one'));
+      try { return await this.downloadLatest(); } catch (error: unknown) {
+        const reason = error instanceof Error ? error.message : 'unknown error';
+        this.logger(logEvent('cloudflared.keptBundled', `[cloudflared] the current cloudflared could not be fetched (${reason}); using the one that came with the manager`, { reason }));
+        return existing;
+      }
+    }
     if (existing && (!termux || this.askedForPackage || await startsOnAndroid(existing, true))) return existing;
     if (termux) {
       this.askedForPackage = true;
@@ -804,6 +888,22 @@ export class TunnelManager {
       }
       if (existing) return existing;
     }
+    try {
+      return await this.downloadLatest();
+    } catch (error: unknown) {
+      // Put aside because it once failed to connect, but it is still here and
+      // still a cloudflared: better than none when nothing newer can be had.
+      const shipped = this.bundledRejected && this.bundledBinaryPath ? await this.locate(this.bundledBinaryPath) : null;
+      if (!shipped) throw error;
+      this.bundledRejected = false;
+      const reason = error instanceof Error ? error.message : 'unknown error';
+      this.logger(logEvent('cloudflared.keptBundled', `[cloudflared] the current cloudflared could not be fetched (${reason}); using the one that came with the manager`, { reason }));
+      return shipped;
+    }
+  }
+
+  /** Fetch the current cloudflared into the manager's own bin directory. */
+  private async downloadLatest(): Promise<string> {
     const asset = cloudflaredAsset();
     const target = join(this.paths.bin, asset.exe);
     const temporary = `${target}.${randomUUID()}.part`;
@@ -834,7 +934,7 @@ export class TunnelManager {
     const exe = process.platform === 'win32' ? 'cloudflared.exe' : 'cloudflared';
     const termux = runsOnAndroid(this.paths.platform);
     let needsProot: string | null = null;
-    for (const candidate of [this.configuredBinaryPath, join(this.paths.bin, exe), exe]) {
+    for (const candidate of [this.configuredBinaryPath, ...await this.ownBinaries(join(this.paths.bin, exe)), exe]) {
       if (!candidate) continue;
       const path = await this.locate(candidate);
       if (!path) continue;
@@ -869,6 +969,33 @@ export class TunnelManager {
       env: certificates ? { ...this.env, SSL_CERT_FILE: certificates } : this.env,
       wrapped: true,
     };
+  }
+
+  /**
+   * The fetched cloudflared and the shipped one, newest first.
+   *
+   * A fetched copy is usually the newer, since it is only ever fetched to
+   * replace the shipped one - but a manager updated since then may ship a
+   * build newer than what was fetched for its predecessor, so they are
+   * compared rather than ranked by where they are.
+   */
+  private async ownBinaries(fetchedPath: string): Promise<string[]> {
+    const fetched = await this.locate(fetchedPath);
+    const shipped = this.bundledBinaryPath && !this.bundledRejected ? await this.locate(this.bundledBinaryPath) : null;
+    this.bundledLocated = shipped;
+    if (!shipped) return fetched ? [fetched] : [];
+    if (!fetched) return [shipped];
+    const [shippedVersion, fetchedVersion] = await Promise.all([this.versionAt(shipped), this.versionAt(fetched)]);
+    return compareVersions(shippedVersion, fetchedVersion) > 0 ? [shipped, fetched] : [fetched, shipped];
+  }
+
+  private versionAt(path: string): Promise<readonly [number, number, number] | null> {
+    let known = this.versions.get(path);
+    if (!known) {
+      known = this.versionOf(path).then((output) => (output ? cloudflaredVersion(output) : null)).catch(() => null);
+      this.versions.set(path, known);
+    }
+    return known;
   }
 
   /** Where `proot` puts termux-chroot, which is next to Termux's own programs. */

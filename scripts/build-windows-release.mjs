@@ -14,6 +14,7 @@ const appRoot = join(resourcesRoot, 'app');
 const panelRoot = join(resourcesRoot, 'panel');
 const runtimeRoot = join(resourcesRoot, 'runtime');
 const gitRoot = join(resourcesRoot, 'git');
+const binRoot = join(resourcesRoot, 'bin');
 const executable = join(releaseRoot, 'SillyTavernManager.exe');
 const blob = join(releaseRoot, 'SillyTavernManager.blob');
 
@@ -32,6 +33,19 @@ const MINGIT = {
   version: '2.55.0.5',
   url: 'https://github.com/git-for-windows/git/releases/download/v2.55.0.windows.5/MinGit-2.55.0.5-64-bit.zip',
   sha256: '56d7b226b7693196cfc71fef26568f536c4a021ab6c37ff2db4287bed908e96e',
+};
+
+/*
+ * cloudflared, so the first link somebody turns on does not start with a 55 MB
+ * download. Pinned and checked the same way. It is a starting point rather
+ * than the only one the manager will use: when it is close to a year old, or
+ * stops before it connects, the manager fetches the current build into its
+ * own data folder and prefers that (see `packages/tunnel`).
+ */
+const CLOUDFLARED = {
+  version: '2026.9.3',
+  url: 'https://github.com/cloudflare/cloudflared/releases/download/2026.9.3/cloudflared-windows-amd64.exe',
+  sha256: 'f096265ec2fcbe9bb6e2d64268db167ced3fcbb83d894bdb9e2fcdb26f2ea7e2',
 };
 
 if (process.platform !== 'win32') throw new Error('The Windows portable bundle must be built on Windows.');
@@ -56,6 +70,7 @@ run('npm', ['install', '--omit=dev', '--ignore-scripts', '--no-package-lock', '-
 await cp(process.execPath, join(runtimeRoot, 'node.exe'));
 await bundleNpm();
 await bundleGit();
+await bundleCloudflared();
 await cp(join(repositoryRoot, 'THIRD_PARTY_NOTICES.md'), join(releaseRoot, 'THIRD_PARTY_NOTICES.md'));
 await cp(join(repositoryRoot, 'LICENSE'), join(releaseRoot, 'LICENSE'));
 // Sorts first in Explorer, so it is the file someone sees before the exe.
@@ -118,6 +133,21 @@ async function bundleGit() {
   // Windows' own bsdtar reads ZIP archives, so nothing else is needed to unpack one.
   run(join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe'), ['-xf', archive, '-C', gitRoot]);
   if (!existsSync(join(gitRoot, 'cmd', 'git.exe'))) throw new Error('MinGit unpacked without cmd\\git.exe');
+}
+
+async function bundleCloudflared() {
+  const cached = join(cacheRoot, `cloudflared-${CLOUDFLARED.version}-windows-amd64.exe`);
+  if (!existsSync(cached) || sha256(await readFile(cached)) !== CLOUDFLARED.sha256) {
+    await mkdir(cacheRoot, { recursive: true });
+    const response = await fetch(CLOUDFLARED.url);
+    if (!response.ok) throw new Error(`cloudflared download failed: HTTP ${response.status}`);
+    const bytes = Buffer.from(await response.arrayBuffer());
+    const actual = sha256(bytes);
+    if (actual !== CLOUDFLARED.sha256) throw new Error(`cloudflared checksum mismatch: expected ${CLOUDFLARED.sha256}, got ${actual}`);
+    await writeFile(cached, bytes);
+  }
+  await mkdir(binRoot, { recursive: true });
+  await cp(cached, join(binRoot, 'cloudflared.exe'));
 }
 
 function sha256(bytes) {
