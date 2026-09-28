@@ -49,6 +49,13 @@ export default [
     },
   },
   {
+    // The release builders run in Node; the Windows one downloads MinGit.
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      globals: { fetch: 'readonly' },
+    },
+  },
+  {
     // The Windows launcher has to be CommonJS: Node runs a single-executable
     // entry point as CommonJS, so an ES module entry never gets as far as
     // running at all.

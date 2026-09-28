@@ -18,7 +18,7 @@ const { spawn, spawnSync } = require('node:child_process');
 const net = require('node:net');
 const { accessSync, readFileSync } = require('node:fs');
 const { randomBytes } = require('node:crypto');
-const { dirname, join } = require('node:path');
+const { delimiter, dirname, join } = require('node:path');
 const readline = require('node:readline');
 
 /**
@@ -62,6 +62,27 @@ const release = readJson(join(packagedRoot, 'release.json')) ?? readJson(join(ap
 const dataLocation = process.env.STM_DATA_DIR
   ?? release.dataLocation
   ?? (process.platform === 'win32' ? join(process.env.LOCALAPPDATA ?? '', 'SillyTavernManager') : join(process.env.HOME ?? '', '.sillytavern-manager'));
+
+/**
+ * The environment the manager and everything under it run in, with the
+ * bundle's own tools first on the search path.
+ *
+ * Installing SillyTavern runs `git` and `npm` by name, and so does
+ * SillyTavern itself when it installs an extension. A machine that has never
+ * had either used to fail the first install; putting `node`, `npm` and `git`
+ * from `resources/` ahead of whatever the machine has means every child finds
+ * the ones this release was built and tested with.
+ *
+ * Windows spells the variable `Path`, and a spread of `process.env` keeps that
+ * spelling. Adding a second key spelled `PATH` beside it leaves the child with
+ * two, and which one it reads is not something to leave to chance.
+ */
+function withBundledTools(environment) {
+  const tools = packaged ? [join(packagedRoot, 'runtime'), join(packagedRoot, 'git', 'cmd')].filter(exists) : [];
+  if (tools.length === 0) return environment;
+  const key = Object.keys(environment).find((name) => name.toUpperCase() === 'PATH') ?? 'PATH';
+  return { ...environment, [key]: [...tools, environment[key]].filter(Boolean).join(delimiter) };
+}
 
 const compiledEntry = join(applicationRoot, 'apps', 'manager-server', 'src', 'main.js');
 const sourceEntry = join(applicationRoot, 'apps', 'manager-server', 'src', 'main.ts');
@@ -284,7 +305,7 @@ async function start() {
   server = spawn(nodeBinary, serverArguments, {
     cwd: applicationRoot,
     env: {
-      ...process.env,
+      ...withBundledTools(process.env),
       STM_WINDOWS_LAUNCHER: '1',
       STM_APP_ROOT: applicationRoot,
       STM_STATIC_ROOT: staticRoot,

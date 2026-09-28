@@ -16,6 +16,24 @@ Permission is hereby granted, free of charge, to any person obtaining a copy of 
 
 "QR Code" is a registered trademark of DENSO WAVE INCORPORATED.
 
+## Bundled in the Windows download
+
+The Windows download carries three programs, unmodified, under `resources/`,
+so that installing SillyTavern needs nothing else on the machine:
+
+- `resources/runtime/node.exe` is Node.js, licensed under the MIT License
+  (<https://github.com/nodejs/node/blob/main/LICENSE>).
+- `resources/runtime/node_modules/npm` is npm, licensed under the Artistic
+  License 2.0; its license is in that directory.
+- `resources/git` is MinGit from Git for Windows, licensed under the GNU
+  General Public License version 2, with the licenses of its components in
+  `resources/git/usr/share/licenses` and `resources/git/mingw64/share/licenses`.
+  The complete corresponding source for the exact build shipped
+  is published with its release:
+  <https://github.com/git-for-windows/git/releases/tag/v2.55.0.windows.5>.
+  The version is pinned in `scripts/build-windows-release.mjs`, and this link
+  changes with it.
+
 ## Trademarks and artwork
 
 The application icon, favicon, and in-application brand mark under
