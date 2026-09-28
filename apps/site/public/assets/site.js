@@ -126,6 +126,56 @@
     }
   }
 
+  // The download buttons: the file for this device, from the newest release,
+  // one press away. GitHub lists a release's files with version numbers in
+  // their names, so the newest one is asked for and its file picked by shape;
+  // a device the manager ships no file for goes to its guide instead. Until
+  // the answer arrives, or if it never does, the button is the release page.
+  var downloads = document.querySelectorAll('[data-download]');
+  if (downloads.length) {
+    var agent = window.navigator.userAgent || '';
+    var device = /Android/i.test(agent) ? 'android'
+      : /iPhone|iPad|iPod/i.test(agent) || (/Macintosh/i.test(agent) && window.navigator.maxTouchPoints > 1) ? 'other'
+        : /Windows/i.test(agent) ? 'windows'
+          : /Macintosh|Mac OS X/i.test(agent) ? 'mac'
+            : /Linux|X11|CrOS/i.test(agent) ? 'linux'
+              : 'other';
+    var FILES = { windows: /windows-x64.*\.zip$/i, android: /android-arm64-v8a.*\.apk$/i };
+    var point = function (button, href, external) {
+      button.setAttribute('href', href);
+      if (external) return;
+      button.removeAttribute('target');
+      button.removeAttribute('rel');
+    };
+    for (var at = 0; at < downloads.length; at += 1) {
+      var button = downloads[at];
+      var label = button.querySelector('[data-download-label]');
+      var text = button.getAttribute('data-label-' + device);
+      if (label && text) label.textContent = text;
+      if (!FILES[device]) point(button, button.getAttribute('data-href-' + device) || button.getAttribute('href'), false);
+    }
+    if (FILES[device] && window.fetch) {
+      window.fetch('https://api.github.com/repos/locmaymo/stm/releases/latest', { headers: { accept: 'application/vnd.github+json' } })
+        .then(function (response) { return response.ok ? response.json() : null; })
+        .then(function (release) {
+          var assets = release && release.assets ? release.assets : [];
+          var file = null;
+          for (var index = 0; index < assets.length; index += 1) {
+            if (FILES[device].test(assets[index].name || '')) { file = assets[index]; break; }
+          }
+          for (var each = 0; each < downloads.length; each += 1) {
+            // No APK in the newest release: the Android guide, not a page of
+            // files that has nothing for this phone.
+            if (file) point(downloads[each], file.browser_download_url, false);
+            else if (device === 'android') point(downloads[each], downloads[each].getAttribute('data-href-android'), false);
+          }
+        })
+        .catch(function () {
+          // The release page is still there, and still the right place.
+        });
+    }
+  }
+
   // Remember which language was chosen, so the next visit to the bare domain
   // opens in it. Only ever set by a click on the switch: an address somebody
   // typed or was sent is answered as typed, never redirected.

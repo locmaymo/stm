@@ -15,6 +15,31 @@ import { RELEASES, UPSTREAM } from './strings.mjs';
  * are in the order people value them, and each one is shown, not described.
  */
 
+/**
+ * What the download buttons become once the page knows the reader's device.
+ *
+ * Without scripting the button is what the markup says: Windows, pointing at
+ * the release page. With it, a phone gets the APK and a Windows machine the
+ * ZIP, straight from the newest release; a device the manager ships no file
+ * for is sent to its guide instead of to a page of attachments.
+ */
+const DOWNLOAD = {
+  en: {
+    windows: 'Download for Windows',
+    android: 'Download for Android',
+    mac: 'Install on Mac',
+    linux: 'Install on Linux',
+    other: 'Choose your device',
+  },
+  vi: {
+    windows: 'Tải cho Windows',
+    android: 'Tải cho Android',
+    mac: 'Cài trên Mac',
+    linux: 'Cài trên Linux',
+    other: 'Chọn thiết bị của bạn',
+  },
+};
+
 export const home = {
   en: {
     title: 'SillyTavern, safe and everywhere',
@@ -23,8 +48,8 @@ export const home = {
       badge: 'Free forever · open source',
       heading: 'Your SillyTavern, safe and everywhere',
       lede: `Install, update and back up [SillyTavern](${UPSTREAM}) in a few clicks, with no commands. Your chats stay safe in your own cloud, and SillyTavern opens on any device you own.`,
-      primary: { href: RELEASES, label: 'Download for Windows', icon: 'download' },
-      secondary: { href: '/#install', label: 'Android, Mac and Linux', icon: 'phone' },
+      primary: { href: RELEASES, label: 'Download for Windows', icon: 'download', download: DOWNLOAD.en },
+      secondary: { href: '/#install', label: 'Other devices', icon: 'phone' },
       meta: [
         { icon: 'gift', label: 'Free forever, no limits' },
         { icon: 'lock', label: 'Your data stays yours' },
@@ -43,7 +68,7 @@ export const home = {
           badge: 'Most loved',
           label: 'Cloud backup',
           title: 'Never lose a chat again',
-          body: 'Sign in to Cloudflare once, and your chats, characters and settings are copied to free cloud storage in your own account — every few minutes, by themselves. If your computer breaks, your phone is lost, or you delete something by mistake, sign in again on any device and everything comes back.',
+          body: 'Sign in to Cloudflare once, and your chats, characters and settings are copied to free cloud storage in your own account every few minutes, by themselves. If your computer breaks, your phone is lost, or you delete something by mistake, sign in again on any device and everything comes back.',
           points: [
             'Backs up on its own, every few minutes',
             'Free with Cloudflare R2’s free plan',
@@ -57,7 +82,7 @@ export const home = {
           icon: 'globe',
           label: 'Online link',
           title: 'Your SillyTavern, on every device',
-          body: 'Switch on one link and SillyTavern opens on your phone, tablet or another computer — at home or anywhere else. Scan the QR code to open it on your phone in a second. Your own PIN keeps everybody else out.',
+          body: 'Switch on one link and SillyTavern opens on your phone, tablet or another computer, at home or anywhere else. Scan the QR code to open it on your phone in a second. Protected by your own PIN.',
           points: [
             'A link that stays the same, so bookmarks keep working',
             'Scan a QR code instead of typing an address',
@@ -71,7 +96,7 @@ export const home = {
           icon: 'download',
           label: 'Install and versions',
           title: 'Any SillyTavern version, one click',
-          body: 'Pick the SillyTavern version you like from the list and press Install. The manager downloads it from SillyTavern’s official GitHub and sets it up for you. Want to try a newer one, or go back to the one you liked? Same list, same button — your chats are copied somewhere safe first.',
+          body: 'Pick the SillyTavern version you like from the list and press Install. The manager always downloads it from SillyTavern’s official GitHub and installs it for you. Want to try a newer one, or go back to your favourite? Same list, same button, and your chats open fine on every version.',
           points: [
             'Start and stop SillyTavern with a button',
             'Switch versions without reinstalling anything',
@@ -89,7 +114,7 @@ export const home = {
           points: [
             'Told on the page, no need to watch GitHub',
             'One click to update',
-            'Your data is copied to safety before switching',
+            'Your data is always backed up safely before switching',
           ],
           shot: 'f-update',
           narrow: 'f-update-mobile',
@@ -99,7 +124,7 @@ export const home = {
           icon: 'upload',
           label: 'Restore',
           title: 'Bring back a backup with one button',
-          body: 'Moving from an old SillyTavern? Upload the ZIP you downloaded from it, or a backup from another SillyTavern Manager. No extra apps, no unzipping, no hunting for the right folder. The manager shows what is inside, takes a copy of what you have now, then puts it all back.',
+          body: 'Moving from an old SillyTavern? Upload the ZIP you downloaded from SillyTavern, or a backup from another SillyTavern Manager. No extra apps, no unzipping, no hunting for the right folder. The manager shows what is inside, then puts it all back.',
           points: [
             'Works with SillyTavern’s own backup ZIP',
             'See what is inside before anything changes',
@@ -127,7 +152,7 @@ export const home = {
           icon: 'box',
           label: 'Saver mode',
           title: 'Little space? It still fits',
-          body: 'On a phone or a small server that is nearly full, Saver mode keeps your backups in the cloud instead of on the device. When a backup is too big to bring back, it offers to leave out what SillyTavern does not need — old extension downloads, thumbnails, SillyTavern’s own backup copies — and every chat, character and setting still comes back.',
+          body: 'On a phone or a small server that is nearly full, Saver mode keeps your backups in the cloud instead of on the device. When a backup is too big to bring back, it offers to leave out what SillyTavern does not need: old extension downloads, thumbnails and SillyTavern’s own backup copies. Every chat, character and setting still comes back.',
           points: [
             'Turns itself on when space is short',
             'Leaves out files SillyTavern can do without',
@@ -149,7 +174,7 @@ export const home = {
         { icon: 'lock', title: 'Only you hold your data', body: 'Chats and characters stay on your device and in your own Cloudflare account. This project has no server that stores them and never sees them.' },
         { icon: 'shield', title: 'Locked with your passwords', body: 'The manager opens with your password and SillyTavern with your PIN. Too many wrong guesses and the door locks itself.' },
       ],
-      note: 'The manager sends the project a small, anonymous usage summary — never your chats, prompts, characters or keys. The [Privacy Notice](/privacy) lists every field and shows how to switch it off.',
+      note: 'The manager sends the project a small, anonymous usage summary, never your chats, prompts, characters or API keys. The [Privacy Notice](/privacy) has the details.',
     },
     install: {
       eyebrow: 'Get started',
@@ -157,7 +182,7 @@ export const home = {
       lede: 'Every way ends at the same place: a page in your browser that asks you to choose a password. Then pick a SillyTavern version and press Install.',
       cards: [
         { icon: 'monitor', title: 'Windows', body: 'Download the ZIP, unzip it and double-click SillyTavernManager.exe. Nothing else to install.', href: '/docs#windows', go: 'Windows guide' },
-        { icon: 'phone', title: 'Android', body: 'Install Termux, paste the commands from the guide, and open the manager in your phone’s browser.', href: '/docs#android', go: 'Android guide' },
+        { icon: 'phone', title: 'Android', body: 'Download the app, install it and open ST Manager. Everything SillyTavern needs is inside. Termux works too.', href: '/docs#android', go: 'Android guide' },
         { icon: 'apple', title: 'Mac', body: 'Paste a few lines into Terminal once. Works on Apple Silicon and Intel Macs.', href: '/docs#macos', go: 'Mac guide' },
         { icon: 'server', title: 'Linux and servers', body: 'One command starts it, and it can start by itself after a reboot.', href: '/docs#linux', go: 'Linux guide' },
         { icon: 'box', title: 'Docker', body: 'Run the ready-made image and keep your data in a volume.', href: '/docs#docker', go: 'Docker guide' },
@@ -187,7 +212,7 @@ export const home = {
     cta: {
       heading: 'Set it up in a few minutes',
       lede: 'Nothing to sign up for and nothing to pay. Download it, choose a password, press Install.',
-      primary: { href: RELEASES, label: 'Download the latest release', icon: 'download' },
+      primary: { href: RELEASES, label: 'Download the latest release', icon: 'download', download: DOWNLOAD.en },
       secondary: { href: '/docs', label: 'Read the step-by-step guide', icon: 'book' },
     },
   },
@@ -198,8 +223,8 @@ export const home = {
       badge: 'Miễn phí trọn đời · mã nguồn mở',
       heading: 'SillyTavern của bạn, an toàn và ở mọi nơi',
       lede: `Cài đặt, cập nhật và sao lưu [SillyTavern](${UPSTREAM}) chỉ vài cú bấm, không cần câu lệnh. Chat luôn an toàn trên cloud của riêng bạn, và SillyTavern mở được trên mọi thiết bị.`,
-      primary: { href: RELEASES, label: 'Tải cho Windows', icon: 'download' },
-      secondary: { href: '/#install', label: 'Android, Mac và Linux', icon: 'phone' },
+      primary: { href: RELEASES, label: 'Tải cho Windows', icon: 'download', download: DOWNLOAD.vi },
+      secondary: { href: '/#install', label: 'Thiết bị khác', icon: 'phone' },
       meta: [
         { icon: 'gift', label: 'Miễn phí trọn đời, không giới hạn' },
         { icon: 'lock', label: 'Dữ liệu là của bạn' },
@@ -218,7 +243,7 @@ export const home = {
           badge: 'Được yêu thích nhất',
           label: 'Sao lưu lên cloud',
           title: 'Không bao giờ mất chat nữa',
-          body: 'Đăng nhập Cloudflare một lần, và chat, nhân vật, thiết lập của bạn được chép lên kho lưu trữ cloud miễn phí trong chính tài khoản của bạn — vài phút một lần, tự động. Máy hỏng, mất điện thoại hay lỡ tay xoá nhầm, chỉ cần đăng nhập lại trên bất kỳ thiết bị nào là mọi thứ quay về.',
+          body: 'Đăng nhập Cloudflare một lần, và chat, nhân vật, thiết lập của bạn được chép lên kho lưu trữ cloud miễn phí trong chính tài khoản của bạn, tự động vài phút một lần. Máy hỏng, mất điện thoại hay lỡ tay xoá nhầm, chỉ cần đăng nhập lại trên bất kỳ thiết bị nào là mọi thứ quay về.',
           points: [
             'Tự sao lưu, vài phút một lần',
             'Miễn phí với gói miễn phí của Cloudflare R2',
@@ -232,7 +257,7 @@ export const home = {
           icon: 'globe',
           label: 'Link online',
           title: 'SillyTavern trên mọi thiết bị của bạn',
-          body: 'Bật một link là SillyTavern mở được trên điện thoại, máy tính bảng hay máy tính khác — ở nhà hay bất cứ đâu. Quét mã QR là mở ngay trên điện thoại. Mã PIN của riêng bạn giữ người khác ở ngoài.',
+          body: 'Bật một link là SillyTavern mở được trên điện thoại, máy tính bảng hay máy tính khác, ở nhà hay bất cứ đâu. Quét mã QR là mở ngay trên điện thoại. Bảo mật bằng mã PIN của bạn.',
           points: [
             'Link cố định, lưu bookmark là dùng mãi',
             'Quét mã QR thay vì gõ địa chỉ',
@@ -246,7 +271,7 @@ export const home = {
           icon: 'download',
           label: 'Cài đặt và phiên bản',
           title: 'Phiên bản SillyTavern nào cũng chỉ một cú bấm',
-          body: 'Chọn phiên bản SillyTavern bạn thích trong danh sách rồi bấm Cài đặt. Trình quản lý tải về từ GitHub chính thức của SillyTavern và cài sẵn cho bạn. Muốn thử bản mới hơn, hay quay về bản bạn ưng? Vẫn danh sách đó, vẫn nút đó — chat của bạn được chép ra chỗ an toàn trước.',
+          body: 'Chọn phiên bản SillyTavern bạn thích trong danh sách rồi bấm Cài đặt. Trình quản lý luôn tải về từ GitHub chính thức của SillyTavern và cài đặt cho bạn. Muốn thử bản mới hơn, hay quay về bản bạn yêu thích? Vẫn danh sách đó, vẫn nút đó, chat của bạn luôn khởi động hoàn hảo mọi phiên bản.',
           points: [
             'Bật, tắt SillyTavern bằng một nút',
             'Đổi phiên bản không cần cài lại gì',
@@ -264,7 +289,7 @@ export const home = {
           points: [
             'Báo ngay trên giao diện, không cần canh GitHub',
             'Một cú bấm để cập nhật',
-            'Dữ liệu được chép ra chỗ an toàn trước khi đổi',
+            'Dữ liệu luôn tự sao lưu an toàn trước khi đổi',
           ],
           shot: 'f-update',
           narrow: 'f-update-mobile',
@@ -274,7 +299,7 @@ export const home = {
           icon: 'upload',
           label: 'Khôi phục',
           title: 'Khôi phục bản sao lưu bằng một nút',
-          body: 'Chuyển từ SillyTavern cũ sang? Tải lên file ZIP bạn đã tải về từ nó, hoặc một bản sao lưu từ SillyTavern Manager khác. Không cần cài thêm app, không cần giải nén, không phải đi tìm đúng thư mục. Trình quản lý cho xem bên trong có gì, chép lại bản hiện tại, rồi đưa tất cả trở về.',
+          body: 'Chuyển từ SillyTavern cũ sang? Tải lên file ZIP bạn đã tải về từ SillyTavern, hoặc một bản sao lưu từ SillyTavern Manager khác. Không cần cài thêm app, không cần giải nén, không phải đi tìm đúng thư mục. Trình quản lý cho xem bên trong có gì, rồi đưa tất cả trở về.',
           points: [
             'Dùng được file ZIP sao lưu của chính SillyTavern',
             'Xem bên trong có gì trước khi thay đổi',
@@ -302,7 +327,7 @@ export const home = {
           icon: 'box',
           label: 'Chế độ tiết kiệm',
           title: 'Máy ít dung lượng? Vẫn vừa',
-          body: 'Trên điện thoại hay máy chủ nhỏ gần đầy, Chế độ tiết kiệm giữ bản sao lưu trên cloud thay vì trên máy. Khi bản sao lưu quá lớn để khôi phục, nó đề nghị bỏ bớt những thứ SillyTavern không cần — tệp tải về cũ của tiện ích, ảnh thu nhỏ, bản sao lưu riêng của SillyTavern — mà mọi chat, nhân vật và thiết lập vẫn quay về đủ.',
+          body: 'Trên điện thoại hay máy chủ nhỏ gần đầy, Chế độ tiết kiệm giữ bản sao lưu trên cloud thay vì trên máy. Khi bản sao lưu quá lớn để khôi phục, nó đề nghị bỏ bớt những thứ SillyTavern không cần: tệp tải về cũ của tiện ích, ảnh thu nhỏ, bản sao lưu riêng của SillyTavern. Mọi chat, nhân vật và thiết lập vẫn quay về đủ.',
           points: [
             'Tự bật khi máy thiếu chỗ',
             'Bỏ bớt tệp SillyTavern không cần',
@@ -324,7 +349,7 @@ export const home = {
         { icon: 'lock', title: 'Chỉ bạn giữ dữ liệu', body: 'Chat và nhân vật nằm trên thiết bị của bạn và trong tài khoản Cloudflare của chính bạn. Dự án không có máy chủ nào lưu chúng và không bao giờ nhìn thấy chúng.' },
         { icon: 'shield', title: 'Khoá bằng mật khẩu của bạn', body: 'Trình quản lý mở bằng mật khẩu của bạn, SillyTavern mở bằng mã PIN của bạn. Đoán sai quá nhiều lần là cửa tự khoá.' },
       ],
-      note: 'Trình quản lý gửi cho dự án một bản tóm tắt sử dụng nhỏ và ẩn danh — không bao giờ có chat, prompt, nhân vật hay khoá API của bạn. [Thông báo quyền riêng tư](/privacy) liệt kê từng trường và chỉ cách tắt hẳn.',
+      note: 'Trình quản lý gửi cho dự án một bản tóm tắt sử dụng nhỏ và ẩn danh, không bao giờ có chat, prompt, nhân vật hay khoá API của bạn. [Thông báo quyền riêng tư](/privacy) có nói chi tiết.',
     },
     install: {
       eyebrow: 'Bắt đầu',
@@ -332,7 +357,7 @@ export const home = {
       lede: 'Cách nào cũng dẫn tới cùng một chỗ: một trang trên trình duyệt hỏi bạn đặt mật khẩu. Sau đó chọn phiên bản SillyTavern và bấm Cài đặt.',
       cards: [
         { icon: 'monitor', title: 'Windows', body: 'Tải file ZIP, giải nén rồi bấm đúp SillyTavernManager.exe. Không cần cài gì thêm.', href: '/docs#windows', go: 'Hướng dẫn Windows' },
-        { icon: 'phone', title: 'Android', body: 'Cài Termux, dán các lệnh trong hướng dẫn, rồi mở trình quản lý bằng trình duyệt trên điện thoại.', href: '/docs#android', go: 'Hướng dẫn Android' },
+        { icon: 'phone', title: 'Android', body: 'Tải ứng dụng về, cài đặt rồi mở ST Manager. Mọi thứ SillyTavern cần đã có sẵn bên trong. Dùng Termux cũng được.', href: '/docs#android', go: 'Hướng dẫn Android' },
         { icon: 'apple', title: 'Mac', body: 'Dán vài dòng vào Terminal một lần. Chạy trên cả Mac chip Apple và Intel.', href: '/docs#macos', go: 'Hướng dẫn Mac' },
         { icon: 'server', title: 'Linux và máy chủ', body: 'Một lệnh là chạy, và có thể tự chạy lại sau khi khởi động máy.', href: '/docs#linux', go: 'Hướng dẫn Linux' },
         { icon: 'box', title: 'Docker', body: 'Chạy image dựng sẵn và giữ dữ liệu trong một volume.', href: '/docs#docker', go: 'Hướng dẫn Docker' },
@@ -362,7 +387,7 @@ export const home = {
     cta: {
       heading: 'Cài xong trong vài phút',
       lede: 'Không phải đăng ký, không mất tiền. Tải về, đặt mật khẩu, bấm Cài đặt.',
-      primary: { href: RELEASES, label: 'Tải bản mới nhất', icon: 'download' },
+      primary: { href: RELEASES, label: 'Tải bản mới nhất', icon: 'download', download: DOWNLOAD.vi },
       secondary: { href: '/docs', label: 'Xem hướng dẫn từng bước', icon: 'book' },
     },
   },
