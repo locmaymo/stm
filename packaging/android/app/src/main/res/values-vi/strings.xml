@@ -15,4 +15,11 @@
     <string name="status_restart">Chạm để khởi động lại</string>
     <string name="download_started">Đang lưu vào thư mục Tải xuống</string>
     <string name="download_unsupported">Chưa lưu được tệp này từ đây.</string>
+    <string name="channel_chats">Tin nhắn của nhân vật</string>
+    <string name="bubble_label">Trò chuyện</string>
+    <string name="bubble_you">Bạn</string>
+    <string name="bubble_loading">Đang mở SillyTavern…</string>
+    <string name="bubble_open_first">Hãy mở SillyTavern trong app một lần, sau đó bong bóng sẽ mở được ở đây. Chạm để mở app.</string>
+    <string name="bubble_busy">Một nhân vật khác vẫn đang trả lời. Cuộc trò chuyện đó được giữ nguyên cho tới khi trả lời xong.</string>
+    <string name="sillytavern_unavailable">SillyTavern chưa phản hồi. Hãy kiểm tra ở bảng điều khiển của app.</string>
 </resources>

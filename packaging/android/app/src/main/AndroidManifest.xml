@@ -44,6 +44,20 @@
             </intent-filter>
         </activity>
 
+        <!--
+          What a chat bubble opens to. Android shows a bubble's activity inside
+          the bubble only when it may be embedded, resized and started as a
+          document of its own.
+        -->
+        <activity
+            android:name=".BubbleActivity"
+            android:allowEmbedded="true"
+            android:documentLaunchMode="always"
+            android:exported="false"
+            android:label="@string/bubble_label"
+            android:resizeableActivity="true"
+            android:windowSoftInputMode="adjustResize" />
+
         <service
             android:name=".ManagerService"
             android:exported="false"

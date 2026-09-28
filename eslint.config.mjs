@@ -38,6 +38,25 @@ export default [
     },
   },
   {
+    // The Android app adds this to the pages its WebView loads; STMApp is the
+    // channel the app gives them.
+    files: ['packaging/android/app/src/main/res/raw/*.js'],
+    languageOptions: {
+      sourceType: 'script',
+      globals: {
+        FileReader: 'readonly',
+        STMApp: 'readonly',
+        clearInterval: 'readonly',
+        document: 'readonly',
+        fetch: 'readonly',
+        location: 'readonly',
+        setInterval: 'readonly',
+        setTimeout: 'readonly',
+        window: 'readonly',
+      },
+    },
+  },
+  {
     // The console's service worker, which runs in the browser with no window.
     files: ['apps/manager-panel/public/sw.js'],
     languageOptions: {

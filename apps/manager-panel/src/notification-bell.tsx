@@ -5,6 +5,7 @@ import type { ManagerNotification, MessageParams, NotificationList, Notification
 import type { MessageKey, Translate } from './i18n.js';
 import type { LocaleCode } from './preferences.js';
 import { currentPush, disablePush, enablePush, pushSupport, type PushSupport } from './push.js';
+import { bubbleRequest, hasAppChannel, type BubbleState } from './app-bridge.js';
 import { apiFetch } from './session.js';
 
 /**
@@ -63,7 +64,7 @@ export function PushToggle({ t, locale, csrfToken }: { t: Translate; locale: Loc
     return () => { cancelled = true; };
   }, []);
 
-  if (support === 'app') return <p className="text-xs text-muted-foreground">{t('notify.appManaged')}</p>;
+  if (support === 'app') return hasAppChannel() ? <BubbleToggle t={t} /> : null;
   const reason = support === 'needs-home-screen' ? t('notify.pushNeedsHomeScreen')
     : support === 'needs-https' ? t('notify.pushNeedsHttps')
       : support === 'unsupported' ? t('notify.pushUnsupported')
@@ -92,6 +93,56 @@ export function PushToggle({ t, locale, csrfToken }: { t: Translate; locale: Loc
     </div>
     {reason ? <p className="text-xs text-muted-foreground">{reason}</p> : null}
     {note ? <p className="text-xs text-muted-foreground" role="status">{note}</p> : null}
+  </div>;
+}
+
+/**
+ * Character replies, in the Android app: a finished reply is a phone
+ * notification with the character's avatar whenever the reader is not looking
+ * at SillyTavern, and can also float over other apps as a bubble, the way a
+ * messenger shows one.
+ *
+ * The switches live in the app, not the manager: they are this phone's, and
+ * the app is what shows the notifications. Android has a switch of its own
+ * for bubbles, which the reader is sent to when it is off; the state is asked
+ * again when they come back.
+ */
+export function BubbleToggle({ t }: { t: Translate }) {
+  const [state, setState] = useState<BubbleState | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = () => { if (document.visibilityState === 'visible') void bubbleRequest().then((next) => { if (!cancelled && next) setState(next); }); };
+    refresh();
+    document.addEventListener('visibilitychange', refresh);
+    return () => { cancelled = true; document.removeEventListener('visibilitychange', refresh); };
+  }, []);
+
+  if (!state) return null;
+  const change = async (request: { replies?: boolean; enabled?: boolean; settings?: boolean }) => {
+    setBusy(true);
+    try {
+      const next = await bubbleRequest(request);
+      if (next) setState(next);
+    } finally { setBusy(false); }
+  };
+  const blocked = state.replies && state.enabled && state.bubbles && !state.allowed;
+
+  return <div className="grid gap-2">
+    <div className="flex items-center justify-between gap-3">
+      <span className="text-sm">{t('notify.replies')}</span>
+      <Switch checked={state.replies} disabled={busy} onCheckedChange={(on) => void change({ replies: on })} aria-label={t('notify.replies')} />
+    </div>
+    {/* A bubble is a way of showing that notification, so it has nothing to float without it; and before Android 11 there are none. */}
+    {state.replies && state.bubbles ? <div className="flex items-center justify-between gap-3">
+      <span className="text-sm">{t('notify.bubbles')}</span>
+      <Switch checked={state.enabled} disabled={busy} onCheckedChange={(on) => void change({ enabled: on })} aria-label={t('notify.bubbles')} />
+    </div> : null}
+    {blocked ? <div className="grid gap-2">
+      <p className="text-xs text-(--attention)" role="status">{t('notify.bubblesBlocked')}</p>
+      <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => void change({ settings: true })}>{t('notify.bubblesSettings')}</Button>
+    </div> : null}
   </div>;
 }
 

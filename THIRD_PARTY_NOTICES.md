@@ -62,6 +62,11 @@ packages, versions and SHA-256 digests are listed in
   <https://github.com/termux/termux-packages>, and each recipe names the
   upstream source release it builds; that is the corresponding source for the
   binaries shipped.
+- The app itself is built with AndroidX WebKit 1.8.0 and the AndroidX
+  libraries it depends on (Core, Annotation, Collection, Lifecycle, Arch Core
+  and VersionedParcelable), from the Android Open Source Project under the
+  Apache License 2.0. They let SillyTavern's page tell the app when a
+  character has replied, for chat bubbles.
 
 ## Trademarks and artwork
 

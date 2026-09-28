@@ -1185,7 +1185,10 @@
     "pushNeedsHttps": "Hãy mở bảng điều khiển bằng link https để nhận thông báo",
     "pushNeedsHomeScreen": "Trên iPhone, hãy thêm bảng điều khiển vào Màn hình chính trước",
     "pushFailed": "Không bật được thông báo",
-    "appManaged": "Ứng dụng hiện các thông báo này trên điện thoại",
+    "replies": "Thông báo tin nhắn từ character",
+    "bubbles": "Bong bóng chat",
+    "bubblesBlocked": "Bong bóng đang bị tắt cho app này trong cài đặt Android, nên câu trả lời chỉ hiện thành thông báo.",
+    "bubblesSettings": "Mở cài đặt bong bóng",
     "jobs": {
       "backup": "Sao lưu",
       "restore": "Khôi phục",
