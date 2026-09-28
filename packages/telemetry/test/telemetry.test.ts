@@ -90,7 +90,7 @@ test('how long the manager was used travels with the events, and alone when ther
   const metrics = join(paths.metrics, 'usage-events.jsonl');
   const usage = join(paths.metrics, 'app-usage.jsonl');
   await mkdir(paths.metrics, { recursive: true });
-  await appendFile(usage, `${JSON.stringify({ schemaVersion: 1, date: '2026-09-19', managerSeconds: 3600, sillyTavernSeconds: 1800, consoleSeconds: 240, starts: 2 })}\n`, 'utf8');
+  await appendFile(usage, `${JSON.stringify({ schemaVersion: 1, date: '2026-09-19', managerSeconds: 3600, sillyTavernSeconds: 1800, consoleSeconds: 240, starts: 2, dataBytes: 5_000, cloudBytes: 4_000 })}\n`, 'utf8');
 
   // A manager nobody has pointed at a provider still has something to say:
   // that it was installed, started, and left running.
@@ -99,10 +99,14 @@ test('how long the manager was used travels with the events, and alone when ther
   await transport.flushNow();
   const first = (await readFile(transport.outboxPath, 'utf8')).trim().split(/\r?\n/u).filter(Boolean);
   assert.equal(first.length, 1);
-  const alone = JSON.parse(first[0] ?? '{}') as { events: unknown[]; usageDays?: Array<{ date: string; consoleSeconds: number }> };
+  const alone = JSON.parse(first[0] ?? '{}') as { events: unknown[]; usageDays?: Array<{ date: string; consoleSeconds: number; dataBytes?: number; backupBytes?: number; cloudBytes?: number }> };
   assert.deepEqual(alone.events, []);
   assert.equal(alone.usageDays?.[0]?.date, '2026-09-19');
   assert.equal(alone.usageDays?.[0]?.consoleSeconds, 240);
+  // Sizes go as they were measured, and one that was not is not invented.
+  assert.equal(alone.usageDays?.[0]?.dataBytes, 5_000);
+  assert.equal(alone.usageDays?.[0]?.cloudBytes, 4_000);
+  assert.equal(alone.usageDays?.[0] && 'backupBytes' in alone.usageDays[0], false);
 
   // A day already sent is not sent again, and a batch with only provider
   // events carries no usage field at all.

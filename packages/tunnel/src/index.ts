@@ -7,7 +7,7 @@ import { Readable } from 'node:stream';
 import type { ReadableStream } from 'node:stream/web';
 import { pipeline } from 'node:stream/promises';
 import { delimiter, join } from 'node:path';
-import { describeExit, logEvent, logLineText, STOP_REASON_TEXT, stopReasonCode, type LogSink, type StopReason, type TunnelMode, type TunnelState } from '../../contracts/src/index.js';
+import { describeExit, logEvent, logLineText, runsOnAndroid, STOP_REASON_TEXT, stopReasonCode, type LogSink, type StopReason, type TunnelMode, type TunnelState } from '../../contracts/src/index.js';
 import type { PlatformPaths } from '../../platform/src/index.js';
 
 const execFileAsync = promisify(execFile);
@@ -563,7 +563,7 @@ export class TunnelManager {
     const configured = this.env.STM_TUNNEL_PROTOCOL?.trim().toLowerCase();
     if (configured === 'http2') return 'http2';
     if (configured === 'quic' || configured === 'auto') return 'auto';
-    if (this.paths.platform === 'termux') return 'http2';
+    if (runsOnAndroid(this.paths.platform)) return 'http2';
     return this.transport;
   }
 
@@ -789,7 +789,7 @@ export class TunnelManager {
   }
 
   private async locateOrInstallBinary(): Promise<string> {
-    const termux = this.paths.platform === 'termux';
+    const termux = runsOnAndroid(this.paths.platform);
     const existing = await this.findBinary();
     // Termux packages a build of cloudflared that Android starts unaided. It
     // costs a sixth of the download and needs no proot in front of it, so it is
@@ -832,7 +832,7 @@ export class TunnelManager {
    */
   private async findBinary(): Promise<string | null> {
     const exe = process.platform === 'win32' ? 'cloudflared.exe' : 'cloudflared';
-    const termux = this.paths.platform === 'termux';
+    const termux = runsOnAndroid(this.paths.platform);
     let needsProot: string | null = null;
     for (const candidate of [this.configuredBinaryPath, join(this.paths.bin, exe), exe]) {
       if (!candidate) continue;
@@ -858,7 +858,7 @@ export class TunnelManager {
   private async launchPlan(): Promise<{ command: string; prefix: readonly string[]; env: NodeJS.ProcessEnv; wrapped: boolean }> {
     const binary = await this.ensureBinary();
     const plan = { command: binary, prefix: [] as readonly string[], env: this.env, wrapped: false };
-    if (this.paths.platform !== 'termux' || await startsOnAndroid(await this.locate(binary) ?? binary, true)) return plan;
+    if (!runsOnAndroid(this.paths.platform) || await startsOnAndroid(await this.locate(binary) ?? binary, true)) return plan;
     const chroot = await this.findChroot() ?? (await this.installPackage('proot') ? await this.findChroot() : null);
     if (!chroot) throw new Error('cloudflared needs proot on Android. Install it with `pkg install proot`, then turn the tunnel on again.');
     this.logger(logEvent('cloudflared.throughProot', '[cloudflared] starting it through termux-chroot, which is how Android runs this build'));

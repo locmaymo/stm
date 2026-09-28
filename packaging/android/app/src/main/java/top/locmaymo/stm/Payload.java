@@ -89,6 +89,9 @@ final class Payload {
         env.put("STM_APP_ROOT", manager.getPath());
         env.put("STM_STATIC_ROOT", new File(manager, "panel").getPath());
         env.put("STM_OPEN_BROWSER", "0");
+        // Tells the manager it is this app rather than Termux: its Node reports
+        // the same platform either way.
+        env.put("STM_ANDROID_APP", "1");
         return env;
     }
 

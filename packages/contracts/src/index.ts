@@ -11,7 +11,16 @@ export * from './log-format.js';
  * with any of them, trusts none of them by name, and treats every one of them
  * the same: as a machine whose storage may not be kept.
  */
-export type PlatformKind = 'windows' | 'linux' | 'termux' | 'docker' | 'hosted' | 'unknown';
+export type PlatformKind = 'windows' | 'linux' | 'termux' | 'android' | 'docker' | 'hosted' | 'unknown';
+
+/**
+ * Whether the manager is running on Android's kernel: in Termux, or inside the
+ * Android app. The two differ in who installed the programs and where the data
+ * is; they share every rule Android sets about starting programs.
+ */
+export function runsOnAndroid(kind: PlatformKind): boolean {
+  return kind === 'termux' || kind === 'android';
+}
 
 /** The ports this project ships with, before anything moves them. */
 export interface ManagerPorts {
@@ -1719,6 +1728,28 @@ export interface AppUsageDay {
    * rather than as off.
    */
   readonly r2?: R2UsageMode;
+  /**
+   * How much there was to keep, as last measured that day: SillyTavern's own
+   * data in the profile in use, the backup archives on the machine, and what
+   * the manager has stored in R2 by its own count. Absent when it was not
+   * measured, which is not the same as nothing.
+   */
+  readonly dataBytes?: number;
+  readonly backupBytes?: number;
+  readonly cloudBytes?: number;
+}
+
+/** The sizes a day carries; see `AppUsageDay`. */
+export interface AppUsageSizes {
+  readonly dataBytes: number | null;
+  readonly backupBytes: number | null;
+  readonly cloudBytes: number | null;
+}
+
+/** A size in bytes, or null when it is not one. Capped where a receiver stops accepting it. */
+export function usageBytes(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return null;
+  return Math.min(Math.round(value), 2 ** 50);
 }
 
 /** Whether backups go to R2, and through which kind of connection. */
