@@ -121,6 +121,11 @@ export function detectPlatform(options: PlatformPathOptions = {}): PlatformKind 
   if (hasTruthyEnvironmentValue(env.STM_DOCKER) || env.DOCKER_CONTAINER === 'true' || env.CONTAINER === 'docker') {
     return 'docker';
   }
+  // The Android app says so outright. Its Node is Termux's own build and
+  // reports the same platform, so without this the two looked the same.
+  if (hasTruthyEnvironmentValue(env.STM_ANDROID_APP)) {
+    return 'android';
+  }
   // Node built for Termux reports its own platform, which is the one signal
   // that survives a shell started without Termux's environment.
   if (platform === 'android' || (env.PREFIX && env.PREFIX.includes('com.termux'))) {
@@ -148,6 +153,10 @@ function defaultRoot(kind: PlatformKind, options: PlatformPathOptions, env: Node
   }
   if (kind === 'termux') {
     return join(env.PREFIX ?? home, 'var', 'sillytavern-manager');
+  }
+  // The app always names its own storage; this is only for a start without it.
+  if (kind === 'android') {
+    return join(home, 'sillytavern-manager');
   }
   if (kind === 'windows') {
     return join(env.LOCALAPPDATA ?? join(home, 'AppData', 'Local'), 'SillyTavernManager');
@@ -264,7 +273,7 @@ function mountOf(dataRoot: string, table: string): { point: string; filesystem: 
  * mount table - where there is one - confirms it. Those are the only cases
  * this stays quiet about.
  */
-const OWN_MACHINE_PLATFORMS = new Set<PlatformKind>(['windows', 'linux', 'termux']);
+const OWN_MACHINE_PLATFORMS = new Set<PlatformKind>(['windows', 'linux', 'termux', 'android']);
 
 /**
  * How far this machine can be trusted to still hold the data tomorrow.

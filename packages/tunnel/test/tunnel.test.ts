@@ -631,3 +631,95 @@ test('an address is handed out only once it answers', async () => {
   assert.equal(ask, 2);
   await tunnel.close();
 });
+
+/**
+ * A cloudflared that came with the manager, in a folder of its own, and a
+ * `--version` that says whatever the test needs it to.
+ */
+async function shippedBinary(): Promise<string> {
+  const folder = await mkdtemp(join(tmpdir(), 'stm-shipped-'));
+  const path = join(folder, binaryName);
+  await writeFile(path, 'shipped cloudflared', { mode: 0o755 });
+  return path;
+}
+
+test('the cloudflared that came with the manager is used while it is current', async () => {
+  const paths = await createPaths();
+  const shipped = await shippedBinary();
+  const tunnel = new TunnelManager({
+    paths, env: { PATH: '' }, logger: () => undefined, fetchImpl: offline,
+    bundledBinaryPath: shipped,
+    versionOf: async () => 'cloudflared version 2026.9.3 (built 2026-09-24)',
+    now: () => new Date('2026-12-01T00:00:00.000Z'),
+  });
+  assert.equal(await tunnel.ensureBinary(), shipped);
+});
+
+test('an old shipped cloudflared is replaced by the current one, and kept when that cannot be fetched', async () => {
+  const shipped = await shippedBinary();
+  const versions = async (path: string) => (path === shipped ? 'cloudflared version 2026.9.3' : 'cloudflared version 2027.10.1');
+  const later = () => new Date('2027-10-15T00:00:00.000Z');
+
+  // A year on, with the network there: the current build is fetched and used.
+  const online = await createPaths();
+  let fetched = 0;
+  const fetchImpl = (async () => { fetched += 1; return new Response('current', { status: 200 }); }) as unknown as typeof globalThis.fetch;
+  const refreshed = new TunnelManager({ paths: online, env: { PATH: '' }, logger: () => undefined, fetchImpl, bundledBinaryPath: shipped, versionOf: versions, now: later });
+  assert.equal(await refreshed.ensureBinary(), join(online.bin, binaryName));
+  assert.equal(fetched, 1);
+  // Fetched is newer than shipped, so it stays the one used.
+  assert.equal(await refreshed.ensureBinary(), join(online.bin, binaryName));
+  assert.equal(fetched, 1);
+
+  // The same year on, with no network: the shipped build is still better than none.
+  const offlinePaths = await createPaths();
+  const lines: string[] = [];
+  const kept = new TunnelManager({ paths: offlinePaths, env: { PATH: '' }, logger: (line) => { lines.push(typeof line === 'string' ? line : line.code ?? ''); }, fetchImpl: offline, bundledBinaryPath: shipped, versionOf: versions, now: later });
+  assert.equal(await kept.ensureBinary(), shipped);
+  assert.ok(lines.includes('cloudflared.keptBundled'));
+});
+
+test('a manager updated since shipping a newer cloudflared prefers it over an older fetched one', async () => {
+  const paths = await createPaths();
+  await installFakeBinary(paths);
+  const shipped = await shippedBinary();
+  const tunnel = new TunnelManager({
+    paths, env: { PATH: '' }, logger: () => undefined, fetchImpl: offline,
+    bundledBinaryPath: shipped,
+    versionOf: async (path) => (path === shipped ? 'cloudflared version 2027.3.0' : 'cloudflared version 2026.9.3'),
+    now: () => new Date('2027-04-01T00:00:00.000Z'),
+  });
+  assert.equal(await tunnel.ensureBinary(), shipped);
+});
+
+test('a shipped cloudflared that dies before connecting is replaced on the next attempt', async () => {
+  const paths = await createPaths();
+  const shipped = await shippedBinary();
+  const children: FakeCloudflared[] = [];
+  const commands: string[] = [];
+  const spawnImpl = ((command: string): ChildProcess => {
+    commands.push(command);
+    const child = fakeCloudflared();
+    children.push(child);
+    return child as unknown as ChildProcess;
+  }) as unknown as typeof spawnType;
+  const fetchImpl = (async (url: string | URL | Request) => {
+    if (String(url).includes('/releases/latest/download/')) return new Response('current', { status: 200 });
+    throw new Error('the network must not be reached');
+  }) as unknown as typeof globalThis.fetch;
+  const tunnel = new TunnelManager({
+    paths, spawnImpl, fetchImpl, env: { PATH: '' }, logger: () => undefined,
+    bundledBinaryPath: shipped,
+    versionOf: async () => 'cloudflared version 2026.9.3',
+    now: () => new Date('2026-10-01T00:00:00.000Z'),
+    reconnectDelaysMs: [5],
+  });
+
+  await tunnel.start('quick');
+  assert.equal(commands[0], shipped);
+  // Refused before it printed an address: what an unsupported build looks like.
+  children[0]!.emit('close', 1, null);
+  await waitFor(() => children.length === 2, 'the reconnect');
+  assert.equal(commands[1], join(paths.bin, binaryName));
+  await tunnel.close();
+});

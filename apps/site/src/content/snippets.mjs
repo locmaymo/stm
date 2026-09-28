@@ -100,11 +100,6 @@ sillytavern-manager`,
     code: `git pull --ff-only
 npm ci`,
   },
-  telemetryOff: {
-    lang: 'bash',
-    code: `# .env, next to the repository or the launcher
-STM_TELEMETRY_ENDPOINT=`,
-  },
   portCheck: {
     lang: 'bash',
     code: `# Linux, macOS and Termux

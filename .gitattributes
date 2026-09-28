@@ -16,3 +16,5 @@
 *.woff  binary
 *.woff2 binary
 *.zip   binary
+*.bat   text eol=crlf
+*.jar   binary

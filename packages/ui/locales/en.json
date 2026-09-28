@@ -70,6 +70,8 @@
     "cloudExpired": "That sign-in link has expired. Start again.",
     "cloudReturning": "Signed in. Returning to the manager...",
     "cloudReturningClose": "You can close this window.",
+    "cloudReturningApp": "Signed in. Taking you back to the ST Manager app...",
+    "cloudReturnToApp": "Open ST Manager",
     "mismatch": "The two passwords are not the same",
     "signedOut": "You were signed out. Sign in again to carry on.",
     "reveal": "Show password",
@@ -226,7 +228,7 @@
     "r2KeepWeekly": "Weeks that keep one point each",
     "r2UploadLatest": "Back up now",
     "r2Uploaded": "Sent to R2",
-    "r2Snapshots": "Recovery points in R2",
+    "r2Snapshots": "Recovery points in the cloud",
     "r2NoSnapshots": "No recovery points yet.",
     "r2Fetch": "Bring back",
     "r2Fetched": "Brought back into the backup library. Restore it from there.",
@@ -243,11 +245,11 @@
     "r2Reads": "Read operations this month",
     "r2UsageNote": "Counted by the manager as it works, not read back from Cloudflare. The R2 page of your Cloudflare dashboard is the final word.",
     "r2UsageShared": "Counted into the bucket itself since {since}, so the month's total follows your data to a new machine. The R2 page of your Cloudflare dashboard is the final word.",
-    "r2SettingsTitle": "This account remembers how a manager was set up",
-    "r2SettingsBody": "Your machine {name} saved its settings here on {when}: the passcode that opens SillyTavern, how often to back up, how much of the free allowance to use, and which SillyTavern to run.",
-    "r2SettingsPasswordWarning": "It also carries that machine's manager password. Restoring replaces the password for this console, and you will be asked to sign in again.",
-    "r2SettingsRestore": "Restore these settings",
-    "r2SettingsDismiss": "Not these",
+    "r2SettingsTitle": "Your cloud account holds your earlier settings from {name}, saved {when}. You can restore them to SillyTavern Manager here.",
+    "r2SettingsBody": "SillyTavern Manager restores settings such as the PIN, the password and the SillyTavern version. Chats are not included: restore those from a point in the recovery points below.",
+    "r2SettingsPasswordWarning": "The password of this console changes with them, and you will be asked to sign in again.",
+    "r2SettingsRestore": "Restore settings",
+    "r2SettingsDismiss": "Not now",
     "r2SettingsRestored": "Settings restored. Signing in again.",
     "r2SettingsRestoreFailed": "The settings could not be restored",
     "localScheduleLabel": "Back up automatically to this machine’s storage",
@@ -353,6 +355,16 @@
     "versionInstalled": "Already installed",
     "versionInstalledHint": "This is the version running now. Pick a different one to change it.",
     "uninstall": "Remove SillyTavern",
+    "runtimeOptions": "Options",
+    "restoreOldData": "Restore old data",
+    "connectCloud": "Connect the cloud",
+    "cloudBackups": "Cloud backups",
+    "recommended": "Recommended",
+    "reinstall": "Reinstall SillyTavern",
+    "reinstallConfirm": "Reinstall SillyTavern {version}?",
+    "reinstallConfirmBody": "SillyTavern stops and the same version is installed again from scratch. Your chats and data stay as they are.",
+    "uploadExisting": "Upload existing data",
+    "hostAddress": "Host link",
     "uninstallConfirm": "Remove SillyTavern?",
     "uninstallConfirmBody": "The program is deleted so it can be installed again. Your characters, chats, settings and backups are kept.",
     "uninstallFailed": "Could not remove SillyTavern",
@@ -612,7 +624,6 @@
     "cfErrorDenied": "Access was not granted on Cloudflare.",
     "cfErrorUnavailable": "This manager has no Cloudflare sign-in configured.",
     "cfErrorGeneric": "Connecting to Cloudflare failed ({code}). Try again.",
-    "cfNewMachine": "This bucket already holds {count} recovery points, from this or another machine. Bring one back below to restore it here.",
     "cfUsageTitle": "Usage reported by Cloudflare",
     "cfUsageAccount": "Whole account, this month",
     "cfStorage": "Storage",
@@ -975,6 +986,9 @@
       "startingNamed": "Starting Named Tunnel to {target}",
       "downloading": "Downloading {file}",
       "installed": "Installed to {path}",
+      "bundledStale": "The cloudflared that came with the manager is almost a year old; fetching the current one",
+      "bundledRejected": "The cloudflared that came with the manager stopped before connecting; the next attempt fetches the current one",
+      "keptBundled": "The current cloudflared could not be fetched ({reason}); using the one that came with the manager",
       "installingPackage": "Installing {package} with pkg",
       "packageInstalled": "{package} is installed",
       "packageNotInstalled": "{package} could not be installed: {reason}",
@@ -1033,7 +1047,7 @@
       "settingsOffered": "This account holds settings from another machine; they are on the Data page rather than applied, because this one is already set up",
       "settingsRestored": "Restored the manager’s settings from your machine {from}: {applied}",
       "settingsRestoreFailed": "The settings in the bucket could not be applied: {reason}",
-      "settingsSaved": "The manager’s own settings are in the bucket, so a new machine can pick them up",
+      "settingsSaved": "Manager settings saved to the cloud",
       "settingsSaveSkipped": "The manager’s own settings could not be saved to the bucket: {reason}",
       "takeOwnershipFailed": "This machine could not take the bucket: {reason}",
       "targetChanged": "Backups now go to a different bucket, which already holds {chunks} chunk(s); only what it is missing is sent",
@@ -1155,5 +1169,102 @@
     "previous": "Previous page",
     "next": "Next page",
     "page": "Page {page} of {of}"
+  },
+  "notify": {
+    "title": "Notifications",
+    "open": "Notifications",
+    "unread": "{count} unread",
+    "empty": "Nothing new",
+    "markAllRead": "Mark all read",
+    "clear": "Clear",
+    "openLink": "Open",
+    "push": "Notifications on this device",
+    "pushOn": "On",
+    "pushBlocked": "Blocked in this browser's settings",
+    "pushUnsupported": "This browser cannot show notifications from here",
+    "pushNeedsHttps": "Open the console through its https link to get notifications",
+    "pushNeedsHomeScreen": "On iPhone, add the console to the Home Screen first",
+    "pushFailed": "Notifications could not be turned on",
+    "appManaged": "The app shows these as phone notifications",
+    "jobs": {
+      "backup": "The backup",
+      "restore": "The restore",
+      "r2Upload": "The cloud backup",
+      "r2Fetch": "Bringing back the recovery point",
+      "installation": "The install"
+    },
+    "quota": {
+      "storage": "storage",
+      "writes": "write operations",
+      "reads": "read operations"
+    },
+    "sillytavernCrashed": {
+      "title": "SillyTavern stopped unexpectedly",
+      "body": "It exited on its own ({detail}). Open the manager to start it again or read the log."
+    },
+    "installFinished": {
+      "title": "SillyTavern {ref} is installed",
+      "body": "It is ready to use."
+    },
+    "installFailed": {
+      "title": "SillyTavern could not be installed",
+      "body": "{reason}"
+    },
+    "backupFailed": {
+      "title": "Automatic backups are failing",
+      "body": "{reason}"
+    },
+    "backupRecovered": {
+      "title": "Automatic backups are working again",
+      "body": "The latest backup went through."
+    },
+    "backupDone": {
+      "title": "Backup finished",
+      "body": "A new backup is on this machine."
+    },
+    "cloudBackupDone": {
+      "title": "Cloud backup finished",
+      "body": "Your data is up to date in the cloud."
+    },
+    "restoreDone": {
+      "title": "Restore finished",
+      "body": "SillyTavern has your data back."
+    },
+    "cloudRestoreDone": {
+      "title": "Recovery point restored",
+      "body": "SillyTavern has your data back from the cloud."
+    },
+    "operationFailed": {
+      "title": "{job} did not finish",
+      "body": "{reason}"
+    },
+    "sillytavernUpdate": {
+      "title": "SillyTavern {version} is out",
+      "body": "Open the manager to update."
+    },
+    "managerUpdate": {
+      "title": "SillyTavern Manager {version} is out",
+      "body": "Download the new version to update."
+    },
+    "tunnelDown": {
+      "title": "Your SillyTavern link is down",
+      "body": "It has not come back for a few minutes. The manager keeps trying."
+    },
+    "diskLow": {
+      "title": "Running out of space",
+      "body": "Only {free} is left where the manager keeps your data."
+    },
+    "cloudQuota": {
+      "title": "The cloud backup is near its limit",
+      "body": "{percent}% of this month's {what} is used."
+    },
+    "bucketTaken": {
+      "title": "Another machine took over cloud backups",
+      "body": "This machine has stopped backing up to your Cloudflare account."
+    },
+    "broadcast": {
+      "title": "News from SillyTavern Manager",
+      "body": ""
+    }
   }
 }

@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { getPlatformPaths } from '../../platform/src/index.js';
-import { RuntimeError, RuntimeManager, extractZipSafely, gitFetchAttempts } from '../src/index.js';
+import { RuntimeError, RuntimeManager, extractZipSafely, gitFetchAttempts, npmInvocation } from '../src/index.js';
 import { logLineText } from '../../contracts/src/index.js';
 
 const exec = promisify(execFile);
@@ -151,6 +151,18 @@ test('a first installation can be stopped, and takes back everything it wrote', 
   // And the machine is in a state a second attempt can use.
   const installed = await runtime.install('1.0.0');
   assert.equal(installed.status, 'ready');
+});
+
+test('npm runs by name, or through this Node when STM_NPM_CLI names its entry script', () => {
+  const args = ['install', '--omit=dev'];
+  assert.deepEqual(npmInvocation('npm', args, {}, 'linux', '/usr/bin/node'), { command: 'npm', args, shell: false });
+  assert.deepEqual(npmInvocation('npm', args, {}, 'win32', 'C:\\node.exe'), { command: 'npm', args, shell: true });
+  // An Android app can start only its own native libraries, so npm is run by the Node it already has.
+  assert.deepEqual(
+    npmInvocation('npm', args, { STM_NPM_CLI: '/data/user/0/app/files/runtime/npm/bin/npm-cli.js' }, 'android', '/data/app/lib/arm64/libnode.so'),
+    { command: '/data/app/lib/arm64/libnode.so', args: ['/data/user/0/app/files/runtime/npm/bin/npm-cli.js', ...args], shell: false },
+  );
+  assert.deepEqual(npmInvocation('npm', args, { STM_NPM_CLI: '  ' }, 'linux', '/usr/bin/node'), { command: 'npm', args, shell: false });
 });
 
 test('safe extraction strips GitHub root and rejects zip slip', async () => {
@@ -318,6 +330,29 @@ test('shared Git checkout switches refs without creating one runtime per version
   assert.equal(second.runtimePath, third.runtimePath);
   assert.equal((await readFile(join(third.runtimePath, 'server.js'), 'utf8')).replaceAll('\r\n', '\n'), 'module.exports = "one";\n');
   assert.equal((await runtime.listInstallations()).filter((item) => item.status === 'ready').length, 3);
+});
+
+test('a fresh install fetches the dependencies again instead of reusing them', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-runtime-fresh-'));
+  const repository = join(root, 'source');
+  await exec('git', ['init', repository]);
+  await exec('git', ['-C', repository, 'config', 'user.email', 'stm@test.local']);
+  await exec('git', ['-C', repository, 'config', 'user.name', 'STM Test']);
+  await writeFile(join(repository, 'package.json'), '{"name":"sillytavern","scripts":{"start":"node server.js"}}', 'utf8');
+  await exec('git', ['-C', repository, 'add', '.']); await exec('git', ['-C', repository, 'commit', '-m', 'one']); await exec('git', ['-C', repository, 'tag', '1.0.0']);
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: join(root, 'manager') } });
+  let installs = 0;
+  const runtime = new RuntimeManager({ paths, useGit: true, repositoryUrl: repository, healthCheck: async () => undefined, installDependencies: async (runtimePath) => {
+    installs += 1;
+    await mkdir(join(runtimePath, 'node_modules', 'left-over'), { recursive: true });
+  } });
+  const first = await runtime.install('1.0.0');
+  await runtime.install('1.0.0');
+  assert.equal(installs, 1, 'the same release reuses what it installed');
+  const fresh = await runtime.queueInstall('1.0.0', undefined, undefined, undefined, { fresh: true }).promise;
+  assert.equal(fresh.status, 'ready');
+  assert.equal(installs, 2);
+  assert.equal(fresh.runtimePath, first.runtimePath);
 });
 
 test('a version change falls back to a complete pack when a fetch keeps failing', async () => {

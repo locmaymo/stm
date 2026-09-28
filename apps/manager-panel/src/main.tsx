@@ -41,7 +41,7 @@ if (chrome) {
 createRoot(root).render(
   <StrictMode>
     {returning
-      ? <CloudflareReturn outcome={returning.outcome} locale={chrome?.locale ?? 'en'} />
+      ? <CloudflareReturn outcome={returning.outcome} locale={chrome?.locale ?? 'en'} app={returning.app} />
       : gallery ? <Gallery /> : <App />}
   </StrictMode>,
 );

@@ -1,0 +1,7 @@
+# Written by scripts/build-android.mjs on every build.
+/app/src/main/assets/
+/app/src/main/jniLibs/
+.gradle/
+/app/build/
+/build/
+local.properties

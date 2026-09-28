@@ -38,6 +38,14 @@ export default [
     },
   },
   {
+    // The console's service worker, which runs in the browser with no window.
+    files: ['apps/manager-panel/public/sw.js'],
+    languageOptions: {
+      sourceType: 'script',
+      globals: { URL: 'readonly', self: 'readonly' },
+    },
+  },
+  {
     // The site builder runs in Node and writes files. `ecmaVersion: 'latest'`
     // because it reads the legal texts with an import attribute, which the
     // 2022 grammar the rest of this config uses cannot parse.

@@ -12,7 +12,7 @@
  *   node scripts/build-brand-assets.mjs [source.png]
  *
  * It also writes `packaging/windows/app.ico`, the icon of the Windows
- * executable.
+ * executable, and the Android app's launcher icons.
  *
  * The default source is the STVN logo inside a sibling SillyTavern checkout.
  * Re-run it only when the artwork changes.
@@ -281,5 +281,14 @@ write('favicon.ico', encodeIco([square(16), square(32), square(48)]));
 const windowsIcon = encodeIco([16, 20, 24, 32, 40, 48, 64, 128, 256].map(square));
 writeFileSync(join(repositoryRoot, 'packaging', 'windows', 'app.ico'), windowsIcon);
 console.log(`[brand] packaging/windows/app.ico (${windowsIcon.length.toLocaleString()} bytes)`);
+
+// The Android launcher icon, one per screen density at the size Android asks for.
+for (const [density, size] of [['mdpi', 48], ['hdpi', 72], ['xhdpi', 96], ['xxhdpi', 144], ['xxxhdpi', 192]]) {
+  const directory = join(repositoryRoot, 'packaging', 'android', 'app', 'src', 'main', 'res', `mipmap-${density}`);
+  mkdirSync(directory, { recursive: true });
+  const icon = encodePng(square(size));
+  writeFileSync(join(directory, 'ic_launcher.png'), icon);
+  console.log(`[brand] packaging/android/.../mipmap-${density}/ic_launcher.png (${icon.length.toLocaleString()} bytes)`);
+}
 
 console.log(`[brand] built from ${sourcePath}`);

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ST Manager</string>
+    <string name="channel_name">Trình quản lý đang chạy</string>
+    <string name="channel_events">Thông báo của trình quản lý</string>
+    <string name="notification_running">SillyTavern Manager đang hoạt động</string>
+    <string name="notification_starting">Đang khởi động SillyTavern Manager…</string>
+    <string name="notification_stopped">SillyTavern Manager đã dừng</string>
+    <string name="notification_open">Chạm để mở bảng điều khiển</string>
+    <string name="action_stop">Dừng</string>
+    <string name="status_unpacking">Đang giải nén môi trường chạy (lần đầu hoặc sau khi cập nhật)…</string>
+    <string name="status_starting">Đang khởi động trình quản lý…</string>
+    <string name="status_waiting">Đang chờ bảng điều khiển phản hồi…</string>
+    <string name="status_failed">Trình quản lý đã dừng: %1$s</string>
+    <string name="status_restart">Chạm để khởi động lại</string>
+    <string name="download_started">Đang lưu vào thư mục Tải xuống</string>
+    <string name="download_unsupported">Chưa lưu được tệp này từ đây.</string>
+</resources>

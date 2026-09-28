@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { cloudflareReturn, collectCloudflareResult, isReturnWindow, popupsBlocked, savePopupsBlocked, whenAbandoned, type CollectedResult } from '../src/oauth.js';
+import { cloudflareReturn, collectCloudflareResult, inPhoneApp, isReturnWindow, popupsBlocked, savePopupsBlocked, whenAbandoned, type CollectedResult } from '../src/oauth.js';
 
 test('the outcome is read from the address the manager sent the browser back to', () => {
-  assert.deepEqual(cloudflareReturn('?cloudflare=signed_in'), { outcome: 'signed_in', code: '', collected: false });
-  assert.deepEqual(cloudflareReturn('?cloudflare=connected&handoff=1'), { outcome: 'connected', code: '', collected: true });
-  assert.deepEqual(cloudflareReturn('?cloudflare=error&cloudflare_error=login_required'), { outcome: 'error', code: 'login_required', collected: false });
+  assert.deepEqual(cloudflareReturn('?cloudflare=signed_in'), { outcome: 'signed_in', code: '', collected: false, app: false });
+  assert.deepEqual(cloudflareReturn('?cloudflare=connected&handoff=1'), { outcome: 'connected', code: '', collected: true, app: false });
+  assert.deepEqual(cloudflareReturn('?cloudflare=error&cloudflare_error=login_required'), { outcome: 'error', code: 'login_required', collected: false, app: false });
+  assert.deepEqual(cloudflareReturn('?cloudflare=signed_in&handoff=1&app=1'), { outcome: 'signed_in', code: '', collected: true, app: true });
 });
 
 test('an address that says nothing about a sign-in is not one', () => {
@@ -187,4 +188,10 @@ test('a browser that refuses a window is only asked once', () => {
   };
   assert.equal(popupsBlocked(blocked), false);
   assert.doesNotThrow(() => savePopupsBlocked(true, blocked));
+});
+
+test('the phone app is recognised by the name it adds to its user agent, and nothing else is', () => {
+  assert.equal(inPhoneApp('Mozilla/5.0 (Linux; Android 11; LM-V500N Build/RKQ1; wv) AppleWebKit/537.36 Chrome/131.0 Mobile Safari/537.36 STMAndroid/1.0.0'), true);
+  assert.equal(inPhoneApp('Mozilla/5.0 (Linux; Android 11; LM-V500N) AppleWebKit/537.36 Chrome/131.0 Mobile Safari/537.36'), false);
+  assert.equal(inPhoneApp('Mozilla/5.0 NotSTMAndroid/1.0'), false);
 });

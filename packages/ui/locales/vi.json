@@ -70,6 +70,8 @@
     "cloudExpired": "Liên kết đăng nhập đó đã hết hạn. Hãy bắt đầu lại.",
     "cloudReturning": "Đã đăng nhập. Đang quay lại trình quản lý...",
     "cloudReturningClose": "Bạn có thể đóng cửa sổ này.",
+    "cloudReturningApp": "Đã đăng nhập. Đang đưa bạn về ứng dụng ST Manager...",
+    "cloudReturnToApp": "Mở ST Manager",
     "mismatch": "Hai mật khẩu không giống nhau",
     "signedOut": "Bạn đã bị đăng xuất. Hãy đăng nhập lại để tiếp tục.",
     "reveal": "Hiện mật khẩu",
@@ -226,7 +228,7 @@
     "r2KeepWeekly": "Số tuần, mỗi tuần giữ một bản",
     "r2UploadLatest": "Sao lưu ngay",
     "r2Uploaded": "Đã gửi lên R2",
-    "r2Snapshots": "Điểm khôi phục trên R2",
+    "r2Snapshots": "Điểm khôi phục trên cloud",
     "r2NoSnapshots": "Chưa có điểm khôi phục nào.",
     "r2Fetch": "Lấy về",
     "r2Fetched": "Đã lấy về thư viện sao lưu. Khôi phục từ đó.",
@@ -243,11 +245,11 @@
     "r2Reads": "Lượt đọc trong tháng",
     "r2UsageNote": "Do chính trình quản lý đếm khi chạy, không đọc lại từ Cloudflare. Con số chính thức nằm ở trang R2 trong bảng điều khiển Cloudflare.",
     "r2UsageShared": "Được đếm vào chính kho lưu trữ từ {since}, nên tổng của tháng đi theo dữ liệu sang máy mới. Con số chính thức nằm ở trang R2 trong bảng điều khiển Cloudflare.",
-    "r2SettingsTitle": "Tài khoản này còn nhớ một trình quản lý đã được thiết lập thế nào",
-    "r2SettingsBody": "Máy {name} của bạn đã lưu thiết lập của nó ở đây lúc {when}: mã PIN mở SillyTavern, tần suất sao lưu, mức dùng hạn mức miễn phí, và bản SillyTavern đang chạy.",
-    "r2SettingsPasswordWarning": "Kèm theo đó là mật khẩu trình quản lý của máy kia. Khôi phục sẽ thay mật khẩu của bảng điều khiển này, và bạn sẽ phải đăng nhập lại.",
-    "r2SettingsRestore": "Khôi phục các thiết lập này",
-    "r2SettingsDismiss": "Không lấy",
+    "r2SettingsTitle": "Tài khoản cloud của bạn có chứa các thiết lập cũ của bạn tại máy {name} lúc {when}. Bạn có thể khôi phục các thiết lập cho SillyTavern Manager tại đây.",
+    "r2SettingsBody": "SillyTavern Manager sẽ khôi phục lại các thiết lập như mã PIN, mật khẩu, phiên bản SillyTavern,... (không bao gồm dữ liệu chat, bạn có thể khôi phục dữ liệu chat ở một điểm khôi phục trong bảng điểm khôi phục bên dưới)",
+    "r2SettingsPasswordWarning": "Mật khẩu của bảng điều khiển này sẽ đổi theo, và bạn sẽ phải đăng nhập lại.",
+    "r2SettingsRestore": "Khôi phục thiết lập",
+    "r2SettingsDismiss": "Để sau",
     "r2SettingsRestored": "Đã khôi phục thiết lập. Đang đăng nhập lại.",
     "r2SettingsRestoreFailed": "Không khôi phục được các thiết lập",
     "localScheduleLabel": "Tự động sao lưu trên bộ nhớ máy",
@@ -353,6 +355,16 @@
     "versionInstalled": "Đã cài bản này",
     "versionInstalledHint": "Đây là phiên bản đang chạy. Chọn phiên bản khác nếu muốn đổi.",
     "uninstall": "Gỡ SillyTavern",
+    "runtimeOptions": "Tùy chọn",
+    "restoreOldData": "Khôi phục dữ liệu cũ",
+    "connectCloud": "Kết nối cloud",
+    "cloudBackups": "Sao lưu cloud",
+    "recommended": "Nên dùng",
+    "reinstall": "Cài lại SillyTavern",
+    "reinstallConfirm": "Cài lại SillyTavern {version}?",
+    "reinstallConfirmBody": "SillyTavern sẽ dừng và được cài sạch lại đúng phiên bản này. Chat và dữ liệu của bạn vẫn giữ nguyên.",
+    "uploadExisting": "Tải lên dữ liệu có sẵn",
+    "hostAddress": "Link máy chủ gốc",
     "uninstallConfirm": "Gỡ SillyTavern?",
     "uninstallConfirmBody": "Chương trình sẽ bị xoá để cài lại được. Nhân vật, đoạn chat, thiết lập và các bản sao lưu của bạn vẫn được giữ.",
     "uninstallFailed": "Không gỡ được SillyTavern",
@@ -612,7 +624,6 @@
     "cfErrorDenied": "Quyền truy cập chưa được cấp trên Cloudflare.",
     "cfErrorUnavailable": "Trình quản lý này chưa được cấu hình đăng nhập Cloudflare.",
     "cfErrorGeneric": "Kết nối Cloudflare thất bại ({code}). Hãy thử lại.",
-    "cfNewMachine": "Kho lưu trữ này đã có {count} điểm khôi phục, từ máy này hoặc máy khác. Lấy một điểm về bên dưới để khôi phục tại đây.",
     "cfUsageTitle": "Mức dùng theo Cloudflare",
     "cfUsageAccount": "Toàn tài khoản, tháng này",
     "cfStorage": "Dung lượng",
@@ -975,6 +986,9 @@
       "startingNamed": "Đang khởi động Named Tunnel tới {target}",
       "downloading": "Đang tải {file}",
       "installed": "Đã cài vào {path}",
+      "bundledStale": "Bản cloudflared đi kèm trình quản lý đã gần một năm tuổi; đang tải bản mới nhất",
+      "bundledRejected": "Bản cloudflared đi kèm trình quản lý dừng trước khi kết nối được; lần thử sau sẽ tải bản mới nhất",
+      "keptBundled": "Không tải được bản cloudflared mới nhất ({reason}); dùng bản đi kèm trình quản lý",
       "installingPackage": "Đang cài {package} bằng pkg",
       "packageInstalled": "Đã cài {package}",
       "packageNotInstalled": "Không cài được {package}: {reason}",
@@ -1033,7 +1047,7 @@
       "settingsOffered": "Tài khoản này đang giữ thiết lập của một máy khác; thiết lập nằm ở trang Dữ liệu chứ không được áp dụng, vì máy này đã được thiết lập rồi",
       "settingsRestored": "Đã khôi phục thiết lập của trình quản lý từ máy {from} của bạn: {applied}",
       "settingsRestoreFailed": "Không áp dụng được thiết lập trong kho lưu trữ: {reason}",
-      "settingsSaved": "Thiết lập của trình quản lý đã nằm trong kho lưu trữ, nên một máy mới có thể lấy về",
+      "settingsSaved": "Đã lưu thiết lập của trình quản lý lên cloud",
       "settingsSaveSkipped": "Không lưu được thiết lập của trình quản lý vào kho lưu trữ: {reason}",
       "takeOwnershipFailed": "Máy này không tiếp quản được kho lưu trữ: {reason}",
       "targetChanged": "Bản sao lưu giờ đi tới một kho lưu trữ khác, nơi đã có sẵn {chunks} mảnh; chỉ gửi phần còn thiếu",
@@ -1155,5 +1169,102 @@
     "previous": "Trang trước",
     "next": "Trang sau",
     "page": "Trang {page} trên {of}"
+  },
+  "notify": {
+    "title": "Thông báo",
+    "open": "Thông báo",
+    "unread": "{count} chưa đọc",
+    "empty": "Chưa có gì mới",
+    "markAllRead": "Đánh dấu đã đọc",
+    "clear": "Xoá hết",
+    "openLink": "Mở",
+    "push": "Thông báo trên thiết bị này",
+    "pushOn": "Đang bật",
+    "pushBlocked": "Đã bị chặn trong cài đặt của trình duyệt",
+    "pushUnsupported": "Trình duyệt này không hiện được thông báo từ đây",
+    "pushNeedsHttps": "Hãy mở bảng điều khiển bằng link https để nhận thông báo",
+    "pushNeedsHomeScreen": "Trên iPhone, hãy thêm bảng điều khiển vào Màn hình chính trước",
+    "pushFailed": "Không bật được thông báo",
+    "appManaged": "Ứng dụng hiện các thông báo này trên điện thoại",
+    "jobs": {
+      "backup": "Sao lưu",
+      "restore": "Khôi phục",
+      "r2Upload": "Sao lưu lên cloud",
+      "r2Fetch": "Lấy điểm khôi phục",
+      "installation": "Cài đặt"
+    },
+    "quota": {
+      "storage": "dung lượng",
+      "writes": "lượt ghi",
+      "reads": "lượt đọc"
+    },
+    "sillytavernCrashed": {
+      "title": "SillyTavern dừng bất ngờ",
+      "body": "SillyTavern tự thoát ({detail}). Mở trình quản lý để chạy lại hoặc xem nhật ký."
+    },
+    "installFinished": {
+      "title": "Đã cài xong SillyTavern {ref}",
+      "body": "SillyTavern đã sẵn sàng."
+    },
+    "installFailed": {
+      "title": "Cài SillyTavern không thành công",
+      "body": "{reason}"
+    },
+    "backupFailed": {
+      "title": "Sao lưu tự động đang lỗi",
+      "body": "{reason}"
+    },
+    "backupRecovered": {
+      "title": "Sao lưu tự động đã chạy lại",
+      "body": "Bản sao lưu mới nhất đã thành công."
+    },
+    "backupDone": {
+      "title": "Đã sao lưu xong",
+      "body": "Có một bản sao lưu mới trên máy."
+    },
+    "cloudBackupDone": {
+      "title": "Đã sao lưu lên cloud xong",
+      "body": "Dữ liệu của bạn trên cloud đã được cập nhật."
+    },
+    "restoreDone": {
+      "title": "Đã khôi phục xong",
+      "body": "Dữ liệu đã trở lại SillyTavern."
+    },
+    "cloudRestoreDone": {
+      "title": "Đã khôi phục từ cloud",
+      "body": "Dữ liệu từ cloud đã trở lại SillyTavern."
+    },
+    "operationFailed": {
+      "title": "{job} không thành công",
+      "body": "{reason}"
+    },
+    "sillytavernUpdate": {
+      "title": "Đã có SillyTavern {version}",
+      "body": "Mở trình quản lý để cập nhật."
+    },
+    "managerUpdate": {
+      "title": "Đã có SillyTavern Manager {version}",
+      "body": "Tải bản mới để cập nhật."
+    },
+    "tunnelDown": {
+      "title": "Link SillyTavern đang bị rớt",
+      "body": "Link chưa kết nối lại được vài phút nay. Trình quản lý vẫn đang thử."
+    },
+    "diskLow": {
+      "title": "Sắp hết dung lượng",
+      "body": "Chỉ còn {free} trống ở nơi trình quản lý giữ dữ liệu của bạn."
+    },
+    "cloudQuota": {
+      "title": "Sao lưu cloud sắp chạm giới hạn",
+      "body": "Đã dùng {percent}% {what} của tháng này."
+    },
+    "bucketTaken": {
+      "title": "Máy khác đã tiếp quản sao lưu cloud",
+      "body": "Máy này đã dừng sao lưu lên tài khoản Cloudflare của bạn."
+    },
+    "broadcast": {
+      "title": "Tin từ SillyTavern Manager",
+      "body": ""
+    }
   }
 }

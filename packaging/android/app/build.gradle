@@ -1,0 +1,63 @@
+import groovy.json.JsonSlurper
+
+plugins {
+    id 'com.android.application'
+}
+
+// The app carries the manager at the repository's own version.
+def rootPackage = new JsonSlurper().parse(rootProject.file('../../package.json'))
+def version = rootPackage.version as String
+def parts = version.tokenize('.-')
+
+android {
+    namespace 'top.locmaymo.stm'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'top.locmaymo.stm'
+        minSdk 24
+        targetSdk 34
+        versionName version
+        versionCode parts[0].toInteger() * 10000 + parts[1].toInteger() * 100 + parts[2].toInteger()
+    }
+
+    signingConfigs {
+        release {
+            // Supplied by the release build; a local build without them is
+            // signed with the debug key instead.
+            def keystore = System.getenv('STM_ANDROID_KEYSTORE')
+            if (keystore) {
+                storeFile file(keystore)
+                storePassword System.getenv('STM_ANDROID_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('STM_ANDROID_KEY_ALIAS')
+                keyPassword System.getenv('STM_ANDROID_KEY_PASSWORD')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig System.getenv('STM_ANDROID_KEYSTORE') ? signingConfigs.release : signingConfigs.debug
+        }
+    }
+
+    packagingOptions {
+        jniLibs {
+            // Installed as real files in the native library directory, the one
+            // place an app may start a program from. node, git and cloudflared
+            // travel there under lib*.so names.
+            useLegacyPackaging true
+        }
+    }
+
+    buildFeatures {
+        // The console reads the app's version off the user agent.
+        buildConfig true
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}

@@ -116,6 +116,16 @@ test('switched off, nothing is reached and nothing is claimed', async () => {
   assert.equal(reach.urls.length, 0);
   assert.equal(watch.state().status, 'off');
   assert.equal(watch.state().address, null);
+  // What the host calls this machine is still worth a link, kept open or not.
+  assert.equal(watch.state().hostAddress, 'https://written.example.invalid');
+});
+
+test('the host address is never this machine’s own loopback', () => {
+  const watch = keeper({ fetch: fakeReach().fetch });
+  assert.equal(watch.state().source, 'local');
+  assert.equal(watch.state().hostAddress, null);
+  watch.seen('https://app.hosted.example');
+  assert.equal(watch.state().hostAddress, 'https://app.hosted.example');
 });
 
 test('nothing is ever reported as held without having been reached', async () => {

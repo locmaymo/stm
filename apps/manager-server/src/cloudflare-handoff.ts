@@ -51,6 +51,8 @@ interface Handoff {
   readonly secret: string;
   readonly state: string;
   readonly createdAt: number;
+  /** Started by the Android app, whose sign-in finishes in the phone's browser. */
+  readonly phoneApp: boolean;
   result: HandoffResult | null;
 }
 
@@ -69,9 +71,9 @@ export class HandoffStore {
   }
 
   /** Name this sign-in, and hand the name to the console that asked for it. */
-  public open(state: string): string {
+  public open(state: string, options: { phoneApp?: boolean } = {}): string {
     const secret = randomBytes(32).toString('base64url');
-    this.prune().push({ secret, state, createdAt: this.now(), result: null });
+    this.prune().push({ secret, state, createdAt: this.now(), phoneApp: options.phoneApp === true, result: null });
     while (this.waiting.length > HANDOFF_LIMIT) this.waiting.shift();
     return secret;
   }
@@ -79,6 +81,15 @@ export class HandoffStore {
   /** Whether a sign-in is being collected this way, which decides the return page. */
   public isOpen(state: string): boolean {
     return this.prune().some((entry) => entry.state === state);
+  }
+
+  /**
+   * Whether the console collecting this is the Android app's. Its sign-in
+   * ends in the phone's browser, and the page it ends on sends the reader
+   * back to the app rather than closing itself.
+   */
+  public forPhoneApp(state: string): boolean {
+    return this.prune().some((entry) => entry.state === state && entry.phoneApp);
   }
 
   /** Leave the answer for whoever is waiting on it. */

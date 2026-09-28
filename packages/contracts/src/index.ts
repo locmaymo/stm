@@ -11,7 +11,16 @@ export * from './log-format.js';
  * with any of them, trusts none of them by name, and treats every one of them
  * the same: as a machine whose storage may not be kept.
  */
-export type PlatformKind = 'windows' | 'linux' | 'termux' | 'docker' | 'hosted' | 'unknown';
+export type PlatformKind = 'windows' | 'linux' | 'termux' | 'android' | 'docker' | 'hosted' | 'unknown';
+
+/**
+ * Whether the manager is running on Android's kernel: in Termux, or inside the
+ * Android app. The two differ in who installed the programs and where the data
+ * is; they share every rule Android sets about starting programs.
+ */
+export function runsOnAndroid(kind: PlatformKind): boolean {
+  return kind === 'termux' || kind === 'android';
+}
 
 /** The ports this project ships with, before anything moves them. */
 export interface ManagerPorts {
@@ -265,6 +274,13 @@ export interface OnlineState {
    * when nothing else has been seen.
    */
   readonly source: 'configured' | 'seen' | 'local';
+  /**
+   * The address the host of this machine gave it, whether or not it is being
+   * kept open: the configured or seen address, never loopback. On a platform
+   * that puts the app to sleep it is the one link that reaches the platform
+   * itself, which the console shows as a plain link.
+   */
+  readonly hostAddress: string | null;
   /**
    * `off` when switched off, `holding` while the address answers,
    * `unreachable` when it stopped.
@@ -1565,6 +1581,8 @@ export interface ConsoleStatus {
    * whatever pace the screen calls for.
    */
   readonly easePolling?: boolean;
+  /** The bell: how many are unread, and the newest, so the list is fetched only when it moved. */
+  readonly notifications?: NotificationSummary;
 }
 
 /** New log lines and the cursor to ask from next time. */
@@ -1719,6 +1737,28 @@ export interface AppUsageDay {
    * rather than as off.
    */
   readonly r2?: R2UsageMode;
+  /**
+   * How much there was to keep, as last measured that day: SillyTavern's own
+   * data in the profile in use, the backup archives on the machine, and what
+   * the manager has stored in R2 by its own count. Absent when it was not
+   * measured, which is not the same as nothing.
+   */
+  readonly dataBytes?: number;
+  readonly backupBytes?: number;
+  readonly cloudBytes?: number;
+}
+
+/** The sizes a day carries; see `AppUsageDay`. */
+export interface AppUsageSizes {
+  readonly dataBytes: number | null;
+  readonly backupBytes: number | null;
+  readonly cloudBytes: number | null;
+}
+
+/** A size in bytes, or null when it is not one. Capped where a receiver stops accepting it. */
+export function usageBytes(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return null;
+  return Math.min(Math.round(value), 2 ** 50);
 }
 
 /** Whether backups go to R2, and through which kind of connection. */
@@ -1759,4 +1799,110 @@ export interface TelemetryEnvelope {
   readonly nonce: string;
   readonly signature: string;
   readonly batch: TelemetryBatch;
+}
+
+export interface AvailableUpdate {
+  /** The ref the newest release resolves to, which is what gets dismissed. */
+  readonly ref: string;
+  /** What to call it on screen: the tag when there is one, else the ref. */
+  readonly label: string;
+}
+
+/**
+ * The newer release worth mentioning, or null when there is nothing to say.
+ *
+ * Someone who has deliberately stayed on an older version does not want to be
+ * told about it every time they open the page, and someone who has not noticed
+ * a release does want to be told once. Both are served by naming the release
+ * rather than the fact of being behind: the notice carries the ref it is
+ * about, dismissing it remembers that ref, and the next release is a different
+ * ref and so says so again. Nobody is asked twice about the same version, and
+ * nobody misses one.
+ *
+ * Staging is left alone entirely. It is a branch, not a release: it moves
+ * under whoever is following it, and being behind it is its normal state
+ * rather than news.
+ */
+export function availableUpdate(versions: readonly VersionOption[], installation: Installation | null | undefined): AvailableUpdate | null {
+  if (!installation || installation.status !== 'ready') return null;
+  if (installation.selector === 'staging') return null;
+  const installed = installation.resolvedRef;
+  if (!installed) return null;
+  const newest = newestRelease(versions);
+  if (!newest) return null;
+  if (newest.ref === installed) return null;
+  return { ref: newest.ref, label: newest.tag ?? newest.ref };
+}
+
+/**
+ * What the release channel currently points at.
+ *
+ * `latest` is the pointer the server keeps for exactly this, so it is asked
+ * first; the scan for a release-channel option is for a payload that predates
+ * it or omits it.
+ */
+function newestRelease(versions: readonly VersionOption[]): VersionOption | null {
+  const pointer = versions.find((option) => option.selector === 'latest');
+  if (pointer) return pointer;
+  return versions.find((option) => option.channel === 'release') ?? null;
+}
+
+/**
+ * Something the manager tells its owner about, in the bell and, where they
+ * asked for it, as a push notification.
+ *
+ * The kinds are fixed and their words live in the locale files under
+ * `notify.<kind>`, so a notification reads in whichever language it is shown
+ * in rather than the one the manager happened to be in when it was written.
+ * A broadcast carries its own words in both languages instead.
+ */
+export const NOTIFICATION_KINDS = [
+  'sillytavernCrashed',
+  'installFinished',
+  'installFailed',
+  'backupFailed',
+  'backupRecovered',
+  'backupDone',
+  'cloudBackupDone',
+  'restoreDone',
+  'cloudRestoreDone',
+  'operationFailed',
+  'sillytavernUpdate',
+  'managerUpdate',
+  'tunnelDown',
+  'diskLow',
+  'cloudQuota',
+  'bucketTaken',
+  'broadcast',
+] as const;
+export type NotificationKind = (typeof NOTIFICATION_KINDS)[number];
+export type NotificationLevel = 'info' | 'success' | 'warning' | 'error';
+
+/** Words written by a person rather than looked up, in both languages. */
+export interface BroadcastText {
+  readonly en: string;
+  readonly vi: string;
+}
+
+export interface ManagerNotification {
+  readonly id: string;
+  readonly kind: NotificationKind;
+  readonly level: NotificationLevel;
+  readonly createdAt: string;
+  /** Null until somebody has seen it in the bell. */
+  readonly readAt: string | null;
+  readonly params?: MessageParams;
+  /** Only on a broadcast: what it says, and where it points. */
+  readonly broadcast?: { readonly title: BroadcastText; readonly body: BroadcastText; readonly url: string | null };
+}
+
+export interface NotificationList {
+  readonly items: readonly ManagerNotification[];
+  readonly unread: number;
+}
+
+/** What the console's clock carries about the bell: enough to know when to ask for the list. */
+export interface NotificationSummary {
+  readonly unread: number;
+  readonly latestId: string | null;
 }

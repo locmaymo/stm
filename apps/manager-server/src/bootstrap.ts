@@ -97,7 +97,8 @@ export async function openInBrowser(url: string, options: BootstrapOptions = {})
   if (env.STM_OPEN_BROWSER === '0') return false;
   const host = options.platform ?? process.platform;
   const platform = detectPlatform({ env, platform: host });
-  if (platform === 'docker' || platform === 'hosted') return false;
+  // The Android app shows the console itself; there is no browser to open.
+  if (platform === 'docker' || platform === 'hosted' || platform === 'android') return false;
   const runner = options.spawnImpl ?? spawn;
   const launcher = platform === 'termux'
     ? { file: 'termux-open-url', args: [url] }

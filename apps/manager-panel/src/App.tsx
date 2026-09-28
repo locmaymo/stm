@@ -5,7 +5,7 @@ import {
   Globe2, LayoutDashboard, Maximize2, Minimize2, Moon, Package, Pencil, Plus,
   LogOut, RotateCcw, ScrollText, Search, Sun, Trash2, Upload, X, Rows3,
   BrainCircuit, CircleStop, Clock3, Cpu, Ellipsis, Play, QrCode as QrCodeIcon, RefreshCw, Scale, Settings2, ShieldCheck, Square,
-  Blocks, BookmarkPlus, Bug, FileCode2, LoaderCircle, Gauge, History, KeyRound, Leaf, Monitor, CircleArrowUp, Star, TriangleAlert,
+  Blocks, BookmarkPlus, Bug, FileCode2, LoaderCircle, Gauge, HardDrive, History, KeyRound, Leaf, MemoryStick, Monitor, CircleArrowUp, Star, TriangleAlert,
 } from 'lucide-react';
 import {
   Alert, AlertDescription, AlertTitle, AuthLayout, Badge, BrandMark, Button, ButtonGroup, ButtonGroupSeparator, buttonVariants, Card, CardAction,
@@ -29,12 +29,13 @@ import { failures, logCatalog, translator, type Fail, type MessageKey, type Tran
 import { browserEnvironment, browserStorage, readPreferences, savePreferences, type LocaleCode, type Preferences } from './preferences.js';
 import { authErrorKey } from './auth-error.js';
 import { DEFAULT_SILLYTAVERN_PORT, portRefusal } from './ports.js';
-import { isThisMachine, readAddressOfferAnswered, readOwnLinkWanted, saveAddressOfferAnswered, saveOwnLinkWanted, shouldOfferPlatformAddress } from './hosting.js';
+import { isLocalHostname, isThisMachine, readAddressOfferAnswered, readOwnLinkWanted, saveAddressOfferAnswered, saveOwnLinkWanted, shouldOfferPlatformAddress } from './hosting.js';
 import { availableUpdate, readDismissedManagerRelease, readDismissedUpdate, saveDismissedManagerRelease, saveDismissedUpdate, shouldShowManagerRelease } from './updates.js';
 import { readDismissedDisplaced, readDismissedRecovery, readDismissedSettings, saveDismissedDisplaced, saveDismissedRecovery, saveDismissedSettings, shouldOfferSettings, shouldShowDisplaced, shouldShowRecovery } from './settings-offer.js';
 import { apiFetch, onSessionExpired, resetSessionWatch, sessionToken, setSessionToken } from './session.js';
-import { collectCloudflareResult, framed, openReturnWindow, popupsBlocked, whenAbandoned, type CollectedResult } from './oauth.js';
-import type { AccessGatewayState, AccessLinkPreference, AccessLinkTarget, BackupManifest, CloudflareAccountProblem, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LegalReview, LogEntry, LogSourceFilter, ManagerRelease, ManagerSettingsOffer, ManagerUpdateStatus, OnlineState, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, SaverState, SetupChecklistState, SetupStep, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import { NotificationBell, PushToggle } from './notification-bell.js';
+import { collectCloudflareResult, framed, inPhoneApp, openReturnWindow, popupsBlocked, whenAbandoned, type CollectedResult } from './oauth.js';
+import type { AccessGatewayState, AccessLinkPreference, AccessLinkTarget, BackupManifest, CloudflareAccountProblem, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LegalReview, LogEntry, LogSourceFilter, ManagerRelease, ManagerSettingsOffer, ManagerUpdateStatus, NotificationSummary, OnlineState, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, SaverState, SetupChecklistState, SetupStep, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, isCloudJob, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
 import { usePoll } from './use-poll.js';
@@ -451,22 +452,27 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, refusal, onPr
      * turns into below.
      */
     const inFrame = framed();
+    const inApp = inPhoneApp();
     const opened = inFrame && !popupsBlocked() ? openReturnWindow() : null;
     setCloudflareBusy(true); setError(null);
     try {
-      // Inside a frame the answer is always collected from the manager,
-      // whether the window was opened here or by the reader: either way it
-      // cannot carry the answer home by itself.
-      const response = await fetch(`/api/v1/auth/cloudflare${inFrame ? '?handoff=1' : ''}`, { method: 'POST', credentials: 'same-origin' });
+      // Inside a frame, or in the phone app, the answer is always collected
+      // from the manager: the page the sign-in comes home to is not this one,
+      // and cannot carry the answer here by itself.
+      const response = await fetch(`/api/v1/auth/cloudflare${inFrame || inApp ? '?handoff=1' : ''}`, { method: 'POST', credentials: 'same-origin' });
       const payload = await response.json() as { url?: string; handoff?: string; error?: { code?: string; message?: string } };
       if (!response.ok || !payload.url) { opened?.close(); setCloudflareBusy(false); setError(fail.body(payload, t('setup.cloudSignInFailed'))); return; }
-      if (!inFrame) { window.location.assign(payload.url); return; }
+      if (!inFrame && !inApp) { window.location.assign(payload.url); return; }
       if (payload.handoff) {
         const stopCollecting = collectCloudflareResult(payload.handoff, collected);
         const stopWatching = opened ? whenAbandoned(opened, () => { stopCollecting(); setCloudflareBusy(false); }) : null;
         collecting.current = () => { stopCollecting(); stopWatching?.(); };
       }
       if (opened) { opened.location.href = payload.url; return; }
+      // The app hands this address to the phone's browser and this page stays
+      // where it is, collecting; the button is free again in case the reader
+      // comes back without finishing.
+      if (inApp) { setCloudflareBusy(false); window.location.assign(payload.url); return; }
       /*
        * No window, so the reader opens it: the same button, one more press,
        * now an ordinary link that no browser blocks.
@@ -866,7 +872,9 @@ function FirstRun({ t, csrfToken, preferences, onPreferencesChange, onDone }: { 
     setBusy(true);
     setError(null);
     try {
-      const response = await apiFetch('/api/v1/r2/cloudflare/connect', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      // In the phone app the browser's last page sends the reader back to the
+      // app rather than opening a second console there; see oauth.ts.
+      const response = await apiFetch(`/api/v1/r2/cloudflare/connect${inPhoneApp() ? '?handoff=1' : ''}`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       const payload = await response.json() as { url?: string; error?: { message?: string } };
       if (!response.ok || !payload.url) { setError(fail.body(payload, t('console.cfConnectFailed'))); return; }
       // Cloudflare answers back to the console's own address, which lands on
@@ -957,6 +965,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
   /** What the manager does with SillyTavern on its own way up. Null until read. */
   const [startup, setStartup] = useState<StartupSettings | null>(null);
   const [saver, setSaver] = useState<SaverState | null>(null);
+  const [notificationSummary, setNotificationSummary] = useState<NotificationSummary | null>(null);
   /** Whether the manager keeps itself online, and how that is going. */
   const [online, setOnline] = useState<OnlineState | null>(null);
   const [logSource, setLogSource] = useState<LogSourceFilter>('all');
@@ -1121,7 +1130,9 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     const inFrame = framed();
     const opened = inFrame && !popupsBlocked() ? openReturnWindow() : null;
     try {
-      const response = await apiFetch(`/api/v1/r2/cloudflare/connect${inFrame ? '?handoff=1' : ''}`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      // In the phone app the browser's last page sends the reader back to the
+      // app rather than opening a second console there; see oauth.ts.
+      const response = await apiFetch(`/api/v1/r2/cloudflare/connect${inFrame || inPhoneApp() ? '?handoff=1' : ''}`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       const payload = await response.json() as { url?: string };
       if (!response.ok || !payload.url) { opened?.close(); return; }
       if (!inFrame) { window.location.assign(payload.url); return; }
@@ -1232,6 +1243,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     // Said by the manager, which is the only side that can see how much of the
     // day's Worker allowance is left.
     setEasePolling(status.easePolling === true);
+    if (status.notifications) setNotificationSummary(status.notifications);
     setProcessState(status.process);
     setTunnelState(status.tunnel);
     setManagerTunnelState(status.managerTunnel);
@@ -1741,8 +1753,10 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
   };
   const [checklistPasswordOpen, setChecklistPasswordOpen] = useState(false);
   // The data page opens its connection form once it has read the settings.
-  const [dataIntent, setDataIntent] = useState<'connect' | null>(null);
-  const openConnect = () => { setDataIntent('connect'); navigate('data'); };
+  const [dataIntent, setDataIntent] = useState<DataIntent | null>(null);
+  const openConnect = () => { setDataIntent({ kind: 'connect' }); navigate('data'); };
+  const openUpload = (file: File) => { setDataIntent({ kind: 'upload', file }); navigate('data'); };
+  const openBackup = () => { setDataIntent({ kind: 'backup' }); navigate('data'); };
   const cloudflareSignedIn = checklistR2?.cloudflare ? checklistR2.cloudflare.state === 'connected' || checklistR2.cloudflare.state === 'choose_account' : false;
   /*
    * Whether each step is done now, as far as the reads above can tell.
@@ -1836,6 +1850,9 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     onSetPassword={setAccessPassword}
     onPublish={() => updateRuntime('/api/v1/tunnel', { mode: 'quick' })}
     onOpenSettings={() => navigate('config')}
+    cloudConnected={stepsSeen.r2}
+    onRestoreData={openUpload}
+    onConnectCloud={() => { if (stepsSeen.r2) navigate('data'); else openConnect(); }}
   />;
 
   return (
@@ -1858,6 +1875,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
                   aria-label={hasNewLogs ? `${t('console.openLogs')} · ${t('console.newLogs')}` : undefined}
                   onClick={() => setLogsExpanded(true)}
                 ><ScrollText />{t('console.openLogs')}{hasNewLogs ? <span className="log-new-dot" aria-hidden="true" /> : null}</Button>
+                <NotificationBell t={t} locale={preferences.locale} summary={notificationSummary} csrfToken={csrfToken} footer={<PushToggle t={t} locale={preferences.locale} csrfToken={csrfToken} />} />
                 <LanguageControl t={t} preferences={preferences} onChange={changePreferences} />
                 <Button variant="ghost" size="icon-sm" aria-label={preferences.theme === 'dark' ? t('console.useLight') : t('console.useDark')} onClick={() => changePreferences({ theme: preferences.theme === 'dark' ? 'light' : 'dark' })}>
                   {preferences.theme === 'dark' ? <Sun /> : <Moon />}
@@ -1977,7 +1995,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
                 }}
               /></div>
               : null}
-            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}{checklist}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} onSetAccessLink={setAccessLink} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} locale={preferences.locale} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} intent={dataIntent} onIntentHandled={() => setDataIntent(null)} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} onSetAccessLink={setAccessLink} startup={startup} saver={saver} online={online} onSetAutoStart={setAutoStartSillyTavern} onSetSaver={setSaverMode} onSetKeepOnline={setKeepOnline} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} onEraseEverything={eraseEverything} /> : <ResourcePanel page={page} t={t} />}
+            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}{checklist}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} hostAddress={shownHostAddress(online?.hostAddress ?? null)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} onSetAccessLink={setAccessLink} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} canBackUp={activeProfileId !== null && saver?.enabled !== true} onBackup={openBackup} onUpload={openUpload} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} locale={preferences.locale} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} intent={dataIntent} onIntentHandled={() => setDataIntent(null)} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} onSetAccessLink={setAccessLink} startup={startup} saver={saver} online={online} onSetAutoStart={setAutoStartSillyTavern} onSetSaver={setSaverMode} onSetKeepOnline={setKeepOnline} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} onEraseEverything={eraseEverything} /> : <ResourcePanel page={page} t={t} />}
           </PageContainer>
           <MobileNav
             items={navigation.map(({ id, icon }) => ({ id, icon, href: `#${id}`, label: t(`nav.${id}`) }))}
@@ -2436,7 +2454,7 @@ function RuntimeCard({
   t, fail, catalog, process, tunnel, security, sillyTavernPort, networkHost, installed, installing, recovering, active, dataBytes, profileName,
   version, onVersionChange, versions, onPendingInstallationId, csrfToken, onInstalling, onInstallJob, onRemove,
   canCancelInstall, onCancelInstall,
-  onStart, onStop, onSetPassword, onPublish, onOpenSettings,
+  onStart, onStop, onSetPassword, onPublish, onOpenSettings, cloudConnected, onRestoreData, onConnectCloud,
 }: {
   t: Translate; fail: Fail; catalog: Record<string, unknown>; process: ProcessState; tunnel: TunnelState;
   security: AccessGatewayState; sillyTavernPort: number; networkHost: string | null; installed: boolean; installing: boolean;
@@ -2462,8 +2480,16 @@ function RuntimeCard({
   /** Turn the tunnel on, for a reader who has no address that reaches this machine. */
   onPublish: () => Promise<void>;
   onOpenSettings: () => void;
+  /** Whether backups already go to the cloud, which takes the nudge off its button. */
+  cloudConnected: boolean;
+  onRestoreData: (file: File) => void;
+  onConnectCloud: () => void;
 }) {
   const [stopAsked, setStopAsked] = useState(false);
+  // Folded away until asked for, like the checklist once it is finished:
+  // these are the things done once in a while, not every visit.
+  const [optionsOpen, setOptionsOpen] = useState(false);
+  const [askedReinstall, setAskedReinstall] = useState(false);
   // What setting the PIN was the condition for: a link, or the tools window.
   const [afterPasscode, setAfterPasscode] = useState<'publish' | 'tools'>('publish');
   // Asked for on the way to a link, not before: the PIN is what the tunnel
@@ -2547,11 +2573,13 @@ function RuntimeCard({
     try { await work(); } finally { setBusy(false); }
   };
 
-  const install = async () => {
+  const install = async (reinstall = false) => {
     if (!csrfToken) return;
     onInstalling(true);
     try {
-      const response = await apiFetch('/api/v1/installations', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ version }) });
+      const response = reinstall
+        ? await apiFetch('/api/v1/installations/reinstall', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } })
+        : await apiFetch('/api/v1/installations', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ version }) });
       const payload = await response.json() as { installationId?: string; job?: { id?: string }; error?: { message?: string } };
       if (!response.ok) { report(fail.body(payload, t('console.installRequestFailed'))); onInstalling(false); return; }
       if (!payload.installationId) { report(t('console.installRequestFailed')); onInstalling(false); return; }
@@ -2565,6 +2593,12 @@ function RuntimeCard({
   // The first install has nothing to interrupt. Every one after it replaces a
   // working copy and restarts it, which is worth a question.
   const requestInstall = () => { if (installed || running) setAskedVersion(version); else void install(); };
+  const pickRestore = (event: { target: HTMLInputElement }) => {
+    const file = event.target.files?.[0];
+    // Cleared, so choosing the same file again is still a choice.
+    event.target.value = '';
+    if (file) onRestoreData(file);
+  };
   // Asked about, because what is being given up is however many minutes of
   // downloading have already been spent.
   const stopInstall = () => { setAskedStopInstall(true); };
@@ -2866,11 +2900,37 @@ function RuntimeCard({
         </div>
       </div> : null}
 
-      {installed ? <CardFooter className="runtime-foot">
-        <div className="runtime-foot-actions">
-          <Button variant="ghost" size="sm" onClick={onOpenSettings}><Settings2 />{t('nav.config')}</Button>
-          <Button variant="ghost" size="sm" onClick={() => setAskedRemove(true)} disabled={installing || removing}><Trash2 />{t('console.uninstall')}</Button>
-        </div>
+      {installed ? <CardFooter className="runtime-foot runtime-options">
+        <button type="button" className="runtime-options-toggle" aria-expanded={optionsOpen} onClick={() => setOptionsOpen(!optionsOpen)}>
+          <span>{t('console.runtimeOptions')}</span>
+          <ChevronDown className={cn('transition-transform', optionsOpen ? '' : '-rotate-90')} aria-hidden="true" />
+        </button>
+        {optionsOpen ? <div className="runtime-options-list">
+          <button type="button" className="checklist-item" onClick={onOpenSettings}>
+            <span className="checklist-icon" aria-hidden="true"><Settings2 /></span>
+            <span className="checklist-label">{t('nav.config')}</span>
+          </button>
+          <label className="checklist-item cursor-pointer has-[:disabled]:pointer-events-none has-[:disabled]:opacity-50">
+            <span className="checklist-icon" aria-hidden="true"><Upload /></span>
+            <span className="checklist-label">{t('console.restoreOldData')}</span>
+            <input type="file" accept=".zip,application/zip" className="sr-only" disabled={installingNow || removing} onChange={pickRestore} />
+          </label>
+          <button type="button" className="checklist-item" onClick={onConnectCloud}>
+            <span className="checklist-icon" aria-hidden="true"><Cloud /></span>
+            <span className="checklist-label">{t(cloudConnected ? 'console.cloudBackups' : 'console.connectCloud')}</span>
+            {cloudConnected
+              ? <Check className="checklist-check" aria-hidden="true" />
+              : <span className="access-badge"><Star />{t('console.recommended')}</span>}
+          </button>
+          <button type="button" className="checklist-item" onClick={() => setAskedReinstall(true)} disabled={installingNow || removing || !csrfToken}>
+            <span className="checklist-icon" aria-hidden="true"><RotateCcw /></span>
+            <span className="checklist-label">{t('console.reinstall')}</span>
+          </button>
+          <button type="button" className="checklist-item" data-danger="" onClick={() => setAskedRemove(true)} disabled={installingNow || removing}>
+            <span className="checklist-icon" aria-hidden="true"><Trash2 /></span>
+            <span className="checklist-label">{t('console.uninstall')}</span>
+          </button>
+        </div> : null}
       </CardFooter> : null}
     </Card>
 
@@ -2900,7 +2960,17 @@ function RuntimeCard({
       description={t('console.installConfirmBody')}
       confirmLabel={t('dashboard.install')}
       cancelLabel={t('common.cancel')}
-      onConfirm={install}
+      onConfirm={() => install()}
+    />
+    <ConfirmDialog
+      open={askedReinstall}
+      onOpenChange={setAskedReinstall}
+      tone="default"
+      title={t('console.reinstallConfirm', { version: active?.resolvedRef ?? version })}
+      description={t('console.reinstallConfirmBody')}
+      confirmLabel={t('console.reinstall')}
+      cancelLabel={t('common.cancel')}
+      onConfirm={() => install(true)}
     />
     <PasscodeDialog
       t={t}
@@ -2941,7 +3011,7 @@ function RuntimeCard({
   </>;
 }
 
-function AccessPanel({ t, process, tunnel, config, security, sillyTavernPort, onAction, onSetLan, onSetPassword, onSetAccessLink }: { t: Translate; process: ProcessState; tunnel: TunnelState; config: ConfigDocument | null; security: AccessGatewayState; sillyTavernPort: number; onAction: (path: string, body?: unknown) => Promise<void>; onSetLan: (lan: boolean) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetAccessLink: (target: AccessLinkTarget, change: Partial<AccessLinkPreference>) => Promise<void> }) {
+function AccessPanel({ t, process, tunnel, config, security, sillyTavernPort, hostAddress, onAction, onSetLan, onSetPassword, onSetAccessLink }: { t: Translate; process: ProcessState; tunnel: TunnelState; config: ConfigDocument | null; security: AccessGatewayState; sillyTavernPort: number; /** The address the machine's host gave it, when there is one worth showing. */ hostAddress: string | null; onAction: (path: string, body?: unknown) => Promise<void>; onSetLan: (lan: boolean) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetAccessLink: (target: AccessLinkTarget, change: Partial<AccessLinkPreference>) => Promise<void> }) {
   const [busy, setBusy] = useState(false);
   const [securityBusy, setSecurityBusy] = useState(false);
   const running = process.status === 'running';
@@ -3122,6 +3192,11 @@ function AccessPanel({ t, process, tunnel, config, security, sillyTavernPort, on
           <AddressRow t={t} label={t('console.local')} url={onThisMachine ? localUrl : null} display={local} disabledHint={t('console.localElsewhere')} />
         </div>
       </> : null}
+      {/* Where the host itself serves this manager. Shown whether or not
+          SillyTavern is up: it is the link to the machine, not to SillyTavern. */}
+      {hostAddress ? <div className="address-rows">
+        <AddressRow t={t} label={t('console.hostAddress')} url={hostAddress} display={bareHost(hostAddress)} shorten />
+      </div> : null}
       <ConfirmDialog
         open={closing !== null}
         onOpenChange={(open) => { if (!open) setClosing(null); }}
@@ -3518,7 +3593,7 @@ function ShareDialog({ t, open, onOpenChange, label, links, description, choice 
  * is advice printed on a page rather than offered where it can be acted on;
  * that belongs next to the setting itself.
  */
-function DataPanel({ t, navigate, latestBackup, snapshot, onRemeasure }: { t: Translate; navigate: Navigate; latestBackup: BackupManifest | null; snapshot: SystemSnapshot | null; onRemeasure: () => Promise<void> }) {
+function DataPanel({ t, navigate, latestBackup, snapshot, onRemeasure, canBackUp, onBackup, onUpload }: { t: Translate; navigate: Navigate; latestBackup: BackupManifest | null; snapshot: SystemSnapshot | null; onRemeasure: () => Promise<void>; /** False in saver mode, which keeps no copy on this machine. */ canBackUp: boolean; onBackup: () => void; onUpload: (file: File) => void }) {
   /*
    * Two figures, because they answer two different questions.
    *
@@ -3555,11 +3630,21 @@ function DataPanel({ t, navigate, latestBackup, snapshot, onRemeasure }: { t: Tr
             </span>
             : <span className="thinking">{t('system.measuring')}</span>}
         </DetailRow>
-        {latestBackup
-          ? <DetailRow label={t('status.lastBackup')}>{new Date(latestBackup.createdAt).toLocaleString()}</DetailRow>
-          : <DetailRow label={t('status.lastBackup')}>
-            <Button variant="outline" size="sm" onClick={() => navigate('data')}><DatabaseBackup />{t('dashboard.backupNow')}</Button>
-          </DetailRow>}
+        <DetailRow label={t('status.lastBackup')}>
+          {latestBackup ? new Date(latestBackup.createdAt).toLocaleString() : <span className="text-muted-foreground">{t('dashboard.noBackup')}</span>}
+        </DetailRow>
+      </div>
+      {/* Side by side while they fit, one under the other on a phone. */}
+      <div className="data-panel-actions">
+        {canBackUp ? <Button variant="outline" size="sm" onClick={onBackup}><DatabaseBackup />{t('dashboard.backupNow')}</Button> : null}
+        <label className={cn(buttonVariants({ variant: 'outline', size: 'sm' }), 'cursor-pointer')}>
+          <Upload aria-hidden="true" />{t('console.uploadExisting')}
+          <input type="file" accept=".zip,application/zip" className="sr-only" onChange={(event) => {
+            const file = event.target.files?.[0];
+            event.target.value = '';
+            if (file) onUpload(file);
+          }} />
+        </label>
       </div>
       {storage ? <p className="system-note">
         {storage.measuredAt ? <span>{t('system.sizesMeasuredAt')} {new Date(storage.measuredAt).toLocaleTimeString()}</span> : <span />}
@@ -3935,7 +4020,20 @@ function jobLabel(t: Translate, kind: Job['kind']): string {
 /** The dropdown's last line, which opens the form instead of switching. */
 const NEW_PROFILE = '__new_profile__';
 
-function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfileId, backups, onProfilesChange, onBackupsChange, intent, onIntentHandled }: { t: Translate; locale: string; fail: Fail; catalog: Record<string, unknown>; csrfToken: string; profiles: Profile[]; activeProfileId: string | null; backups: BackupManifest[]; onProfilesChange: (profiles: Profile[], activeProfileId: string | null) => void; onBackupsChange: (backups: BackupManifest[]) => void; /** Something the overview's checklist sent the reader here to do. */ intent: 'connect' | null; onIntentHandled: () => void }) {
+/**
+ * The host's own address, when it is somewhere other than this machine or
+ * its network: a LAN address is already on the card, and loopback is not a
+ * link anybody else can use.
+ */
+function shownHostAddress(address: string | null): string | null {
+  if (!address) return null;
+  try { return isLocalHostname(new URL(address).hostname) ? null : address; } catch { return null; }
+}
+
+/** Something another page sends the reader to the data page to do. */
+type DataIntent = { readonly kind: 'connect' } | { readonly kind: 'backup' } | { readonly kind: 'upload'; readonly file: File };
+
+function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfileId, backups, onProfilesChange, onBackupsChange, intent, onIntentHandled }: { t: Translate; locale: string; fail: Fail; catalog: Record<string, unknown>; csrfToken: string; profiles: Profile[]; activeProfileId: string | null; backups: BackupManifest[]; onProfilesChange: (profiles: Profile[], activeProfileId: string | null) => void; onBackupsChange: (backups: BackupManifest[]) => void; /** Something the overview sent the reader here to do. */ intent: DataIntent | null; onIntentHandled: () => void }) {
   const [busyAction, setBusyAction] = useState<string | null>(null);
   /*
    * The one thing on this page that is state rather than a result.
@@ -4047,13 +4145,23 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
     if (scheduleResponse?.ok) setBackupSchedule((await scheduleResponse.json() as { schedule: LocalBackupSchedule }).schedule);
     if (saverResponse?.ok) setSaving((await saverResponse.json() as { saver: SaverState }).saver.enabled);
   };
-  useEffect(() => { void refresh(); }, []);
-  // Opened once the settings are in, so the form opens on the right answer.
+  const [loaded, setLoaded] = useState(false);
+  useEffect(() => { void refresh().finally(() => setLoaded(true)); }, []);
+  /*
+   * What the overview asked for, once this page has read what it needs.
+   *
+   * The connection form opens on the settings, so it waits for them. A backup
+   * or an upload waits for the rest of the page: an upload in saver mode is
+   * streamed rather than staged, and which one it is comes from that read.
+   */
   useEffect(() => {
-    if (intent !== 'connect' || r2Config === null) return;
-    setDestinationOpen(true);
+    if (intent === null || !loaded) return;
+    if (intent.kind === 'connect' && r2Config === null) return;
     onIntentHandled();
-  }, [intent, r2Config === null]);
+    if (intent.kind === 'connect') setDestinationOpen(true);
+    else if (intent.kind === 'upload') void inspectUpload(intent.file);
+    else void startBackup('scheduled').then((failure) => { if (failure) failed(failure); });
+  }, [intent, loaded, r2Config === null]);
 
   /*
    * Coming back from Cloudflare, by either of the two ways back.
@@ -4613,22 +4721,25 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
      * the one thing that is never blocked.
      */
     const inFrame = framed();
+    const inApp = inPhoneApp();
     const tab = inFrame && !popupsBlocked() ? openReturnWindow() : null;
     setCloudflareBusy(true);
     try {
-      // Inside a frame the answer is collected from the manager however the
-      // sign-in was opened, because the tab cannot bring it back itself; see
-      // oauth.ts.
-      const response = await apiFetch(`/api/v1/r2/cloudflare/connect${inFrame ? '?handoff=1' : ''}`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      // Inside a frame, or in the phone app, the answer is collected from the
+      // manager however the sign-in was opened, because the tab cannot bring
+      // it back itself; see oauth.ts.
+      const response = await apiFetch(`/api/v1/r2/cloudflare/connect${inFrame || inApp ? '?handoff=1' : ''}`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       const payload = await response.json() as { url?: string; handoff?: string; error?: { message?: string } };
       if (!response.ok || !payload.url) { tab?.close(); failed(fail.body(payload, t('console.cfConnectFailed'))); return; }
-      if (!inFrame) { window.location.assign(payload.url); return; }
+      if (!inFrame && !inApp) { window.location.assign(payload.url); return; }
       if (payload.handoff) {
         const stopCollecting = collectCloudflareResult(payload.handoff, (result) => settleCloudflare(result.outcome, result.code));
         const stopWatching = tab ? whenAbandoned(tab, stopCollecting) : null;
         collecting.current = () => { stopCollecting(); stopWatching?.(); };
       }
       if (tab) { tab.location.href = payload.url; return; }
+      // The app sends this to the phone's browser and stays here, collecting.
+      if (inApp) { window.location.assign(payload.url); return; }
       // No tab, so the reader opens one. The sign-in is already started and
       // already being collected; the address goes on the button they pressed.
       setCloudflareSignInUrl(payload.url);
@@ -5106,9 +5217,9 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
           */}
         {settingsOffer?.available && !settingsOffer.mine && !displaced ? <Alert>
           <Settings2 />
-          <AlertTitle>{t('console.r2SettingsTitle')}</AlertTitle>
+          <AlertTitle>{t('console.r2SettingsTitle', { name: machineName(settingsOffer.label ?? ''), when: settingsOffer.writtenAt ? new Date(settingsOffer.writtenAt).toLocaleString() : '' })}</AlertTitle>
           <AlertDescription className="grid gap-2">
-            <span>{t('console.r2SettingsBody', { name: machineName(settingsOffer.label ?? ''), when: settingsOffer.writtenAt ? new Date(settingsOffer.writtenAt).toLocaleString() : '' })}</span>
+            <span className="text-xs">{t('console.r2SettingsBody')}</span>
             {settingsOffer.hasAdminPassword ? <span className="text-xs">{t('console.r2SettingsPasswordWarning')}</span> : null}
             <span className="flex flex-wrap gap-2">
               <Button size="sm" variant="outline" onClick={() => restoreManagerSettings()} disabled={r2Busy !== null}>{t('console.r2SettingsRestore')}</Button>
@@ -5208,9 +5319,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
         {signedIn && cloudflare?.restReason ? <Alert><TriangleAlert /><AlertDescription>{t(cloudflare.restReason === 'workers_not_granted' ? 'console.cfSlowNotGranted' : 'console.cfSlowUnavailable')}</AlertDescription></Alert> : null}
         {r2Config?.configured && activeProfile === null && r2Snapshots.length > 0
           ? <Alert><Cloud /><AlertDescription>{t('console.r2AwaitingInstall', { count: r2Snapshots.length })}</AlertDescription></Alert>
-          : r2Config?.configured && r2Config.lastUploadAt === null && r2Snapshots.length > 0
-            ? <Alert><Cloud /><AlertDescription>{t('console.cfNewMachine', { count: r2Snapshots.length })}</AlertDescription></Alert>
-            : null}
+          : null}
         {r2Config?.configured ? <>
           {/* One set of figures, not two: Cloudflare's own when it can be asked,
               because it sees every machine on the bucket, and the manager's
@@ -6281,6 +6390,9 @@ function useSystemSnapshot(csrfToken: string): { snapshot: SystemSnapshot | null
  * core count nobody was acting on has gone with them.
  */
 function SystemPanel({ t, snapshot }: { t: Translate; snapshot: SystemSnapshot | null }) {
+  // Only a phone folds it: there the three readings are a line of their own
+  // and the bars are one press away. A desktop has the room and keeps them.
+  const [open, setOpen] = useState(false);
   const rows: Array<{ key: string; label: string; value: string; ratio?: number }> = [];
   if (snapshot) {
     const { cpu, memory, storage } = snapshot;
@@ -6311,7 +6423,16 @@ function SystemPanel({ t, snapshot }: { t: Translate; snapshot: SystemSnapshot |
     }
   }
 
-  return <Card data-tour="system" className="overview-pair"><PanelHeading icon={<Cpu />}>{t('system.title')}</PanelHeading><CardContent className="flex-1">
+  const icons: Record<string, ReactNode> = { cpu: <Cpu />, memory: <MemoryStick />, disk: <HardDrive /> };
+  const compact = rows.filter((row) => row.ratio !== undefined);
+  return <Card data-tour="system" className="overview-pair system-card" data-open={open ? '' : undefined}>
+    <button type="button" className="system-compact" aria-expanded={open} aria-label={t('system.title')} onClick={() => setOpen(!open)}>
+      {snapshot
+        ? compact.map((row) => <span key={row.key} className="system-chip" title={row.label}>{icons[row.key]}<span>{Math.round(Math.max(0, Math.min(1, row.ratio ?? 0)) * 100)}%</span></span>)
+        : <Skeleton className="h-4 w-40" />}
+      <ChevronDown className={cn('system-compact-chevron transition-transform', open ? '' : '-rotate-90')} aria-hidden="true" />
+    </button>
+    <PanelHeading icon={<Cpu />}>{t('system.title')}</PanelHeading><CardContent className="flex-1">
     {snapshot ? <dl className="system-list">{rows.map((row) => <div key={row.key}>
       <dt>{row.label}</dt>
       <dd>

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ST Manager</string>
+    <string name="channel_name">Manager running</string>
+    <string name="channel_events">Manager notifications</string>
+    <string name="notification_running">SillyTavern Manager is running</string>
+    <string name="notification_starting">Starting SillyTavern Manager…</string>
+    <string name="notification_stopped">SillyTavern Manager stopped</string>
+    <string name="notification_open">Tap to open the console</string>
+    <string name="action_stop">Stop</string>
+    <string name="status_unpacking">Unpacking the runtime (first start or after an update)…</string>
+    <string name="status_starting">Starting the manager…</string>
+    <string name="status_waiting">Waiting for the console to answer…</string>
+    <string name="status_failed">The manager stopped: %1$s</string>
+    <string name="status_restart">Tap to start it again</string>
+    <string name="download_started">Saving to Downloads</string>
+    <string name="download_unsupported">This file cannot be saved from here yet.</string>
+</resources>

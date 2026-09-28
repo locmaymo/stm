@@ -156,7 +156,7 @@ On a phone or a small server that is nearly full, **Saver mode** keeps your back
 - **Only you hold your data.** Chats and characters stay on your device and in your own Cloudflare account. This project has no server that stores them.
 - **Locked with your passwords.** The manager opens with your password and SillyTavern with your PIN; too many wrong guesses and the door locks itself.
 
-The manager sends a small, anonymous usage summary — never your chats, prompts, characters or keys. See [Telemetry](#telemetry) for every field and how to switch it off.
+The manager sends a small, anonymous usage summary, never your chats, prompts, characters or keys. See [Telemetry](#telemetry) for every field.
 
 ### And also
 
@@ -176,7 +176,7 @@ The manager sends a small, anonymous usage summary — never your chats, prompts
 | Platform | Start here |
 | --- | --- |
 | **Windows** | [Download the portable ZIP](#windows) — nothing to install |
-| **Android** | [Copy the Termux commands](#android-termux) |
+| **Android** | [Install the app](https://stm.locmaymo.top/docs#android) from the APK, or [copy the Termux commands](#android-termux) |
 | **macOS** | [Install from source](#macos) |
 | **Linux / VPS** | [Run the Unix launcher](#linux-and-vps) |
 | **Docker / hosted** | [Build and run the image](#docker-and-hosted-platforms) |

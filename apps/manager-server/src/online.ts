@@ -206,6 +206,7 @@ export class OnlineKeeper {
       minutes: this.minutes,
       address: this.enabled ? target.origin : null,
       source: target.source,
+      hostAddress: target.source === 'local' ? null : target.origin,
       status: this.enabled ? (this.reachable === false ? 'unreachable' : 'holding') : 'off',
       lastAt: this.lastAt?.toISOString() ?? null,
       error: this.error,

@@ -18,8 +18,9 @@ Permission is hereby granted, free of charge, to any person obtaining a copy of 
 
 ## Bundled in the Windows download
 
-The Windows download carries three programs, unmodified, under `resources/`,
-so that installing SillyTavern needs nothing else on the machine:
+The Windows download carries four programs, unmodified, under `resources/`,
+so that installing SillyTavern and opening a link need nothing else on the
+machine:
 
 - `resources/runtime/node.exe` is Node.js, licensed under the MIT License
   (<https://github.com/nodejs/node/blob/main/LICENSE>).
@@ -33,6 +34,34 @@ so that installing SillyTavern needs nothing else on the machine:
   <https://github.com/git-for-windows/git/releases/tag/v2.55.0.windows.5>.
   The version is pinned in `scripts/build-windows-release.mjs`, and this link
   changes with it.
+- `resources/bin/cloudflared.exe` is cloudflared from Cloudflare, licensed
+  under the Apache License 2.0
+  (<https://github.com/cloudflare/cloudflared/blob/master/LICENSE>). The
+  version is pinned in the same script. When it grows old the manager fetches
+  the current release from the same project into its data folder.
+
+## Bundled in the Android app
+
+The Android app carries Termux's Android builds of Node.js, Git, cloudflared
+and the libraries they load, plus npm from its registry, unmodified. The exact
+packages, versions and SHA-256 digests are listed in
+`packaging/android/runtime-packages.json`.
+
+- Node.js is licensed under the MIT License, npm under the Artistic License 2.0,
+  and cloudflared under the Apache License 2.0.
+- Git is licensed under the GNU General Public License version 2, and libiconv
+  under the GNU Lesser General Public License version 2.1. The other libraries
+  are under their own permissive licenses: OpenSSL and libc++ (Apache 2.0),
+  ICU (Unicode License), curl, zlib, c-ares, expat, nghttp2, nghttp3, ngtcp2,
+  libssh2, PCRE2 and SQLite (each under its own terms), and the Mozilla CA
+  certificate bundle (MPL 2.0).
+- Each package's copyright file and the license texts it refers to are
+  installed with it, under `share/doc/<package>/copyright` and
+  `share/LICENSES/` in the app's runtime directory.
+- The build recipes are published by the Termux project at
+  <https://github.com/termux/termux-packages>, and each recipe names the
+  upstream source release it builds; that is the corresponding source for the
+  binaries shipped.
 
 ## Trademarks and artwork
 

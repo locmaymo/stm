@@ -5,7 +5,7 @@ import { createReadStream } from 'node:fs';
 import { hostname, networkInterfaces } from 'node:os';
 import { createSocket } from 'node:dgram';
 import { extname, join, relative, resolve, sep } from 'node:path';
-import { applyQuery, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, isConsoleStatusSection, KEEP_ONLINE_DEFAULT_MINUTES, OPERATION_JOB_KINDS, SETUP_STEPS, type AccessGatewayState, type ApiErrorBody, type BackupManifest, type ConfigUpdateInput, type ConsoleStatus, type ConsoleStatusSection, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogPage, type LogSink, type LogSourceFilter, type LegalReview, type ManagerPorts, type ManagerUpdateStatus, type OnlineState, type PortSettings, type Profile, type ProfileLayout, type RestorePreview, type SetupChecklistState, type SetupStatus, type SetupStep, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
+import { applyQuery, availableUpdate, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, isConsoleStatusSection, KEEP_ONLINE_DEFAULT_MINUTES, OPERATION_JOB_KINDS, SETUP_STEPS, type AccessGatewayState, type ApiErrorBody, type BackupManifest, type ConfigUpdateInput, type ConsoleStatus, type ConsoleStatusSection, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogPage, type LogSink, type LogSourceFilter, type LegalReview, type ManagerPorts, type ManagerUpdateStatus, type OnlineState, type PortSettings, type Profile, type ProfileLayout, type RestorePreview, type SetupChecklistState, type SetupStatus, type SetupStep, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
 import { getPlatformPaths, storageDurability, storageMedium, storageReport, type PlatformPaths } from '../../../packages/platform/src/index.js';
 import { INSTALL_CANCELED, RuntimeError, RuntimeManager, type InstallationProgress } from '../../../packages/sillytavern-runtime/src/index.js';
 import { hashPassword, MIN_PASSWORD_LENGTH, validatePasscode, validatePassword, verifyPassword } from './password.js';
@@ -33,6 +33,9 @@ import { TransferMeter } from './progress.js';
 import { MetricsStore } from './metrics.js';
 import { ActivityMeter } from './activity.js';
 import { ReleaseWatch } from './manager-release.js';
+import { APP_NOTIFICATION_PREFIX, NotificationCenter, NotificationRules, renderNotification, type NotificationLocale } from './notifications.js';
+import { validSubscription, WebPush } from './web-push.js';
+import { AnnouncementFeed, DEFAULT_ANNOUNCEMENTS_URL } from './announcements.js';
 import { OnlineKeeper } from './online.js';
 import { formatGibibytes, SaverMode } from './saver.js';
 import { capacityFor, checkFits, decideTrim, diskSpace, memoryGuard, roomCheck } from './headroom.js';
@@ -79,6 +82,7 @@ export const CLOUDFLARE_CALLBACK_PATH = '/oauth/cloudflare/callback';
 const PROTECTED_PATHS = new Set([
   '/api/v1/versions',
   '/api/v1/installations',
+  '/api/v1/installations/reinstall',
   '/api/v1/profiles',
   '/api/v1/backups',
   '/api/v1/config',
@@ -99,6 +103,10 @@ const PROTECTED_PATHS = new Set([
   '/api/v1/checklist',
   '/api/v1/saver',
   '/api/v1/status',
+  '/api/v1/notifications',
+  '/api/v1/notifications/read',
+  '/api/v1/push',
+  '/api/v1/push/subscriptions',
   '/api/v1/legal',
   '/api/v1/legal/acknowledge',
   '/api/v1/tunnel',
@@ -273,7 +281,8 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   const store = options.store ?? new StateStore(
     options.managerVersion ? { paths, managerVersion: options.managerVersion } : { paths },
   );
-  const sessions = options.sessions ?? new SessionStore();
+  // Kept with the manager's state so a restart does not sign everybody out.
+  const sessions = options.sessions ?? new SessionStore({ file: join(paths.state, 'sessions.json') });
   const rateLimiter = options.rateLimiter ?? new RateLimiter();
   const baseLogger: LogSink = options.logger ?? ((line) => console.log(logLineText(line)));
   const jobs = new JobStore(options.logBuffer ?? new LogBuffer(paths));
@@ -760,8 +769,78 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       if (!config.enabled || !config.configured) return 'off';
       return config.mode === 'cloudflare' ? 'cloudflare' : 'keys';
     },
+    // Figures the manager already holds: the last measurement of the profile,
+    // the archives' own sizes, and its count of what went to the bucket.
+    sizes: async () => {
+      const snapshot = await system.snapshot();
+      const archives = await backups.list().catch(() => null);
+      const config = await r2.getConfig().catch(() => null);
+      return {
+        dataBytes: snapshot.storage.dataBytes,
+        backupBytes: archives ? archives.reduce((sum, archive) => sum + archive.sizeBytes, 0) : null,
+        cloudBytes: config && config.configured ? config.usage.storageBytes : null,
+      };
+    },
   });
   await activity.start();
+  /*
+   * The bell, and what rings it. Read off the log the manager already writes
+   * and off a slow clock for the things nothing logs; see `notifications.ts`.
+   */
+  const notifications = new NotificationCenter({ paths, locale: env.LANG?.toLowerCase().startsWith('vi') ? 'vi' : 'en' });
+  await notifications.load();
+  const notificationRules = new NotificationRules({
+    center: notifications,
+    tunnelDown: () => {
+      const state = tunnel.getState();
+      return state.mode !== 'off' && state.status !== 'running';
+    },
+    freeBytes: async () => {
+      const storage = (await system.snapshot()).storage;
+      return storage.inMemory || storage.totalBytes === null || storage.freeBytes === null ? null : { free: storage.freeBytes, total: storage.totalBytes };
+    },
+    cloudUse: async () => {
+      const config = await r2.getConfig();
+      if (!config.enabled || !config.configured) return null;
+      const share = (used: number, limit: number): number => (limit > 0 ? used / limit : 0);
+      return {
+        storage: share(config.usage.storageBytes, config.limits.maxStorageBytes),
+        writes: share(config.usage.writeOperations, config.limits.maxWriteOperations),
+        reads: share(config.usage.readOperations, config.limits.maxReadOperations),
+      };
+    },
+    sillyTavernUpdate: async () => {
+      const update = availableUpdate(await runtime.listVersions(), await runtime.getActiveInstallation());
+      return update?.label ?? null;
+    },
+    managerUpdate: async () => {
+      await releases.check();
+      return releases.status().update?.version ?? null;
+    },
+  });
+  // Every browser that asked to be told is told, in the language it asked in.
+  const push = new WebPush({ paths });
+  notifications.subscribe((notification) => { void push.deliver(notification); });
+  // Inside the Android app, the app shows them: one line of output each,
+  // which it reads instead of printing. See ManagerService.
+  if (env.STM_ANDROID_APP === '1') {
+    notifications.subscribe((notification) => {
+      process.stdout.write(`${APP_NOTIFICATION_PREFIX}${JSON.stringify(renderNotification(notification, notifications.locale))}\n`);
+    });
+  }
+  jobs.onLine((line) => notificationRules.onLog(line));
+  jobs.onFinish((job) => notificationRules.onJob(job));
+  if (!testRuntime) notificationRules.start();
+  /*
+   * News from the project, read a few times a day with only the platform and
+   * version attached. Empty STM_ANNOUNCEMENTS_URL turns it off; the test
+   * runner never asks.
+   */
+  const announcementsUrl = env.STM_ANNOUNCEMENTS_URL ?? (testRuntime ? '' : DEFAULT_ANNOUNCEMENTS_URL);
+  const announcements = announcementsUrl.trim()
+    ? new AnnouncementFeed({ center: notifications, url: announcementsUrl.trim(), platform: paths.platform, version: persisted.managerVersion })
+    : null;
+  announcements?.start();
   const telemetry = options.telemetry ?? new TelemetryTransport({
     paths,
     metricsFile: metrics.filePath,
@@ -872,6 +951,8 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       system,
       releases,
       online,
+      notifications,
+      push,
       proxy,
       publishProxies,
       budget,
@@ -1012,7 +1093,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     online,
     // The meter closes first, so the part of today that has just been spent is
     // written down before the transport looks for finished days.
-    close: async () => { online.close(); await activity.close(); await telemetry.close(); await scheduler.close(); await tunnel.close(); await managerTunnel.close(); await gateway.close(); await supervisor.close(); await backups.settle(); await profiles.settle(); await closeServer(server); },
+    close: async () => { online.close(); notificationRules.close(); announcements?.close(); await activity.close(); await telemetry.close(); await scheduler.close(); await tunnel.close(); await managerTunnel.close(); await gateway.close(); await supervisor.close(); await backups.settle(); await profiles.settle(); await closeServer(server); },
   };
 }
 
@@ -1058,6 +1139,10 @@ async function handleRequest(options: {
   readonly releases: ReleaseWatch;
   /** What keeps this manager online; see `online.ts`. */
   readonly online: OnlineKeeper;
+  /** The bell; see `notifications.ts`. */
+  readonly notifications: NotificationCenter;
+  /** Browsers that asked for push notifications; see `web-push.ts`. */
+  readonly push: WebPush;
   readonly proxy: ProxyWorkerManager | null;
   /** Put the fixed addresses in place, for a Cloudflare account just connected. */
   readonly publishProxies: () => void;
@@ -1076,7 +1161,7 @@ async function handleRequest(options: {
   readonly autoInstall: boolean;
   readonly onShutdownRequest: (() => void) | undefined;
 }): Promise<void> {
-  const { request, response, store, sessions, rateLimiter, handoffs, startedAt, publicOrigins, proxiedOrigin, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, releases, online, proxy, publishProxies, budget, saver, shutdownToken, autoInstall, onShutdownRequest } = options;
+  const { request, response, store, sessions, rateLimiter, handoffs, startedAt, publicOrigins, proxiedOrigin, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, releases, online, notifications, push, proxy, publishProxies, budget, saver, shutdownToken, autoInstall, onShutdownRequest } = options;
   // Whether the browser's side of this connection is HTTPS, which is not the
   // same question as whether ours is: a hosted console is reached over HTTPS
   // that a proxy terminates before us, and only the proxy's own header says so.
@@ -1238,6 +1323,11 @@ async function handleRequest(options: {
     if (!claim) { sendError(response, 404, 'not_found', 'There is no sign-in waiting under that name'); return; }
     if (claim.status === 'waiting') { sendJson(response, 200, { ready: false }); return; }
     const { outcome, code, sessionToken } = claim.result;
+    // The cookie as well as the token: a console that collected its sign-in
+    // this way - inside a frame, or in the phone app while the sign-in ran in
+    // the phone's browser - otherwise held it only in the tab, and was signed
+    // out again the next time it opened.
+    if (sessionToken && sessions.get(sessionToken)) response.setHeader('Set-Cookie', sessionCookie(sessionToken, secureCookies));
     sendJson(response, 200, {
       ready: true,
       outcome,
@@ -1373,7 +1463,7 @@ async function handleRequest(options: {
     if (method !== 'GET' && !requireCsrf(context, session.csrfToken)) {
       return;
     }
-    await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, online, proxy, publishProxies, budget, logger, handoffs, saver);
+    await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, online, proxy, publishProxies, budget, logger, handoffs, saver, sessions, notifications, push);
     return;
   }
 
@@ -1626,7 +1716,7 @@ async function adoptRestoredPort(deps: PortAdoptionDeps, port: number): Promise<
   }
 }
 
-async function handleRuntimeRequest(context: RequestContext, store: StateStore, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, managerTunnel: TunnelManager, gateway: AccessGateway, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, cloudflare: CloudflareConnection | null, metrics: MetricsStore, activity: ActivityMeter, config: ConfigStore, system: SystemStore, online: OnlineKeeper, proxy: ProxyWorkerManager | null, publishProxies: () => void, budget: WorkerBudget, logger: LogSink, handoffs: HandoffStore, saver: SaverMode): Promise<void> {
+async function handleRuntimeRequest(context: RequestContext, store: StateStore, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, managerTunnel: TunnelManager, gateway: AccessGateway, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, cloudflare: CloudflareConnection | null, metrics: MetricsStore, activity: ActivityMeter, config: ConfigStore, system: SystemStore, online: OnlineKeeper, proxy: ProxyWorkerManager | null, publishProxies: () => void, budget: WorkerBudget, logger: LogSink, handoffs: HandoffStore, saver: SaverMode, sessions: SessionStore, notifications: NotificationCenter, push: WebPush): Promise<void> {
   const { pathname, ports, request, response, searchParams } = context;
   const method = request.method ?? 'GET';
   const adoptSillyTavernPort = (port: number): Promise<void> =>
@@ -1655,6 +1745,9 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
      * to know.
      */
     await store.setAdminPassword(hashPassword(body.password));
+    // Sessions last a month now, so ones opened with the old password end
+    // here rather than outliving it. The one changing it stays signed in.
+    sessions.revokeOthers(context.sessionToken);
     sendJson(response, 200, { ok: true });
     return;
   }
@@ -2221,6 +2314,29 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     }
     return;
   }
+  /*
+   * The version already installed, installed again from scratch.
+   *
+   * For a SillyTavern that stopped starting: the checkout is reset and the
+   * dependencies are fetched again, while the data in the profile stays where
+   * it is. The same release, not whatever "latest" means today - a repair is
+   * not an upgrade.
+   */
+  if (pathname === '/api/v1/installations/reinstall' && method === 'POST') {
+    const current = await runtime.getActiveInstallation();
+    if (!current) { sendError(response, 409, 'installation_required', 'There is no SillyTavern installed to reinstall'); return; }
+    const moving = current.selector === 'release' || current.selector === 'staging';
+    const selector = moving ? current.selector : current.resolvedRef;
+    if (!isVersionSelector(selector)) { sendError(response, 409, 'invalid_version', 'The installed version cannot be installed again'); return; }
+    try {
+      const started = await beginInstallation({ runtime, jobs, supervisor, profiles, backups, r2, system, metrics }, selector as VersionSelector, { fresh: true });
+      sendJson(response, 202, { installationId: started.installationId, job: started.job });
+    } catch (error: unknown) {
+      if (error instanceof RuntimeError) { sendError(response, 409, error.code, error.message); return; }
+      throw error;
+    }
+    return;
+  }
   if (pathname === '/api/v1/profiles' && method === 'GET') {
     const activeInstallation = await runtime.getActiveInstallation();
     if (activeInstallation?.status === 'ready') await profiles.ensureDefault({ installationId: activeInstallation.id, runtimePath: activeInstallation.runtimePath });
@@ -2451,7 +2567,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       response.statusCode = 200;
       response.setHeader('Content-Type', 'application/zip');
       response.setHeader('Content-Length', details.size.toString(10));
-      response.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(manifest.name)}`);
+      response.setHeader('Content-Disposition', attachmentDisposition(manifest.name));
       createReadStream(archivePath).pipe(response);
       return;
     }
@@ -2718,6 +2834,54 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
    * The endpoints it replaces are untouched: something already open against an
    * older panel, or a script somebody wrote, still has them.
    */
+  /*
+   * The bell. The list is asked for when the console's clock says it moved;
+   * `locale` is remembered for the channels that cannot ask, like a push.
+   */
+  if (pathname === '/api/v1/notifications' && method === 'GET') {
+    const locale = searchParams.get('locale');
+    if (locale === 'en' || locale === 'vi') await notifications.setLocale(locale as NotificationLocale);
+    sendJson(response, 200, await notifications.list());
+    return;
+  }
+  if (pathname === '/api/v1/notifications/read' && method === 'POST') {
+    const body = await readJson(request);
+    const ids = isRecord(body) && Array.isArray(body.ids) ? body.ids.filter((id): id is string => typeof id === 'string').slice(0, 200) : undefined;
+    sendJson(response, 200, await notifications.markRead(ids));
+    return;
+  }
+  /*
+   * Push notifications for this browser. The key a browser needs to subscribe,
+   * whether the one asking already has, and the subscription itself - which
+   * names a push service and holds the keys to encrypt for it, so it is taken
+   * only from a signed-in console and only in the shape a browser makes.
+   */
+  if (pathname === '/api/v1/push' && method === 'GET') {
+    const endpoint = searchParams.get('endpoint');
+    sendJson(response, 200, { publicKey: await push.publicKey(), subscribed: endpoint ? await push.has(endpoint) : false });
+    return;
+  }
+  if (pathname === '/api/v1/push/subscriptions' && (method === 'POST' || method === 'DELETE')) {
+    const body = await readJson(request);
+    const subscription = isRecord(body) ? body.subscription : null;
+    if (method === 'DELETE') {
+      const endpoint = isRecord(body) && typeof body.endpoint === 'string' ? body.endpoint : null;
+      if (!endpoint) { sendError(response, 400, 'invalid_subscription', 'Which subscription to remove is required'); return; }
+      await push.unsubscribe(endpoint);
+      sendJson(response, 200, { subscribed: false });
+      return;
+    }
+    if (!validSubscription(subscription)) { sendError(response, 400, 'invalid_subscription', 'That is not a push subscription a browser makes'); return; }
+    const locale: NotificationLocale = isRecord(body) && body.locale === 'vi' ? 'vi' : 'en';
+    await push.subscribe({ endpoint: subscription.endpoint, p256dh: subscription.keys.p256dh, auth: subscription.keys.auth, locale });
+    sendJson(response, 200, { subscribed: true });
+    return;
+  }
+  if (pathname === '/api/v1/notifications' && method === 'DELETE') {
+    await notifications.clear();
+    sendJson(response, 200, notifications.summary());
+    return;
+  }
   if (pathname === '/api/v1/status' && method === 'GET') {
     /*
      * The expensive halves, sent only to a caller that says it is showing them.
@@ -2810,6 +2974,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
        * decided in the console because the console cannot see the figure.
        */
       ...(easesPolling(budget.level()) ? { easePolling: true } : {}),
+      notifications: notifications.summary(),
       // Asked for by name above; absent when the console is not showing them.
       ...(sections.has('system') ? { system: await system.snapshot() } : {}),
       ...(logs ? { logs } : {}),
@@ -2998,7 +3163,7 @@ interface InstallationDeps {
  * Throws RuntimeError when an installation is already in flight; the caller
  * decides what that means for its own answer.
  */
-async function beginInstallation(deps: InstallationDeps, selector: VersionSelector): Promise<{ installationId: string; job: Job }> {
+async function beginInstallation(deps: InstallationDeps, selector: VersionSelector, options: { readonly fresh?: boolean } = {}): Promise<{ installationId: string; job: Job }> {
   const { runtime, jobs, supervisor, profiles, backups, r2, system } = deps;
   const previousProfile = await profiles.getActive();
   const previousInstallation = await runtime.getActiveInstallation();
@@ -3032,6 +3197,7 @@ async function beginInstallation(deps: InstallationDeps, selector: VersionSelect
         await backups.createSafetyCopy(previousProfile, { kind: 'before-switch' });
       },
       stopping.signal,
+      options,
     );
   } catch (error: unknown) {
     await supervisor.start().catch(() => supervisor.getState());
@@ -3422,12 +3588,16 @@ async function handleCloudflareCallback(context: RequestContext, sessions: Sessi
    * different partition, and can no longer tell what it is on its own.
    */
   const collected = handoffs.isOpen(state);
+  const phoneApp = collected && handoffs.forPhoneApp(state);
   const redirect = (outcome: string, code?: string, page = '#data', sessionToken: string | null = null): void => {
     if (collected) handoffs.settle(state, { outcome, code: code ?? '', sessionToken });
     const query = new URLSearchParams({
       cloudflare: outcome,
       ...(code ? { cloudflare_error: code } : {}),
       ...(collected ? { handoff: '1' } : {}),
+      // The page this lands on is in the phone's browser, and its job is to
+      // send the reader back to the app; see cloudflare-return.tsx.
+      ...(phoneApp ? { app: '1' } : {}),
     });
     response.writeHead(303, {
       location: `/?${query.toString()}${page}`,
@@ -4482,7 +4652,23 @@ function openHandoff(context: RequestContext, handoffs: HandoffStore, url: strin
   // right place for it. What comes back is the secret, and that is in the body.
   if (context.searchParams.get('handoff') !== '1') return {};
   const state = new URL(url).searchParams.get('state');
-  return state ? { handoff: handoffs.open(state) } : {};
+  const phoneApp = /\bSTMAndroid\//u.test(headerValue(context.request.headers['user-agent']) ?? '');
+  return state ? { handoff: handoffs.open(state, { phoneApp }) } : {};
+}
+
+/**
+ * A download's name, said both ways RFC 6266 allows.
+ *
+ * `filename*` carries the real name in UTF-8, and browsers prefer it. It used
+ * to be the only one, and a downloader that reads just `filename` - Android's,
+ * which the phone app hands downloads to - saved every backup as
+ * `download.zip`. The plain `filename` beside it is the same name with anything
+ * outside printable ASCII, and the quote and backslash that would end it early,
+ * replaced.
+ */
+export function attachmentDisposition(name: string): string {
+  const plain = name.replace(/[^\x20-\x7e]|["\\]/gu, '_');
+  return `attachment; filename="${plain}"; filename*=UTF-8''${encodeURIComponent(name)}`;
 }
 
 function parseSessionToken(request: IncomingMessage): string | undefined {
@@ -4901,7 +5087,9 @@ async function servePanel(request: IncomingMessage, response: ServerResponse, pa
  * never picked up again on a machine that had loaded the old one once.
  */
 function cacheControlFor(filePath: string): string {
-  if (filePath.endsWith('index.html')) return 'no-cache';
+  // The service worker too: a browser keeps running an old one until it
+  // sees the file change, and it cannot see that through an hour of cache.
+  if (filePath.endsWith('index.html') || filePath.endsWith(`${sep}sw.js`)) return 'no-cache';
   const inBundle = filePath.includes(`${sep}assets${sep}`);
   return inBundle ? 'public, max-age=31536000, immutable' : 'public, max-age=3600';
 }
@@ -4927,11 +5115,30 @@ function contentTypeFor(filePath: string): string {
 class JobStore {
   private readonly jobs = new Map<string, Job>();
   private readonly controllers = new Map<string, AbortController>();
+  private readonly lineListeners = new Set<(line: LogLine) => void>();
+  private readonly finishListeners = new Set<(job: Job) => void>();
 
   public constructor(private readonly logBuffer = new LogBuffer()) {}
 
   public append(source: LogEntry['source'], line: LogLine, level: LogEntry['level'] = 'info'): void {
     this.logBuffer.append(source, line, level);
+    for (const listener of this.lineListeners) {
+      try { listener(line); } catch { /* a listener failing must not stop the log */ }
+    }
+  }
+
+  /** Every line written, for whatever reads meaning off the codes; see `notifications.ts`. */
+  public onLine(listener: (line: LogLine) => void): void { this.lineListeners.add(listener); }
+
+  /** Every job as it finishes, however it finished. */
+  public onFinish(listener: (job: Job) => void): void { this.finishListeners.add(listener); }
+
+  private finished(id: string): void {
+    const job = this.jobs.get(id);
+    if (!job) return;
+    for (const listener of this.finishListeners) {
+      try { listener(job); } catch { /* as above */ }
+    }
   }
 
   public logs(after: number, source: LogEntry['source'] | null): LogPage {
@@ -5063,6 +5270,7 @@ class JobStore {
       error: settled === 'canceled' ? null : error,
       updatedAt: new Date().toISOString(),
     });
+    this.finished(id);
   }
 
   public updateOperation(id: string, progress: number, step: LogEvent): void {
@@ -5083,6 +5291,7 @@ class JobStore {
     const stepCode = options.stepCode ?? (settled === 'succeeded' ? 'job.completed' : settled === 'canceled' ? 'job.stopped' : 'job.failed');
     this.controllers.delete(id);
     this.jobs.set(id, { ...current, state: settled, progress: settled === 'succeeded' ? 100 : current.progress, step, stepCode, ...(options.backupId ? { resultBackupId: options.backupId } : {}), error: settled === 'canceled' ? null : error, updatedAt: new Date().toISOString() });
+    this.finished(id);
   }
 }
 

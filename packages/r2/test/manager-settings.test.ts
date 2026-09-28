@@ -96,6 +96,16 @@ test('when the settings were written, and by whom, is not a reason to write them
   assert.equal(settingsUnchanged(null, record), false);
 });
 
+test('a record read back from the bucket matches the one that was written', () => {
+  // The parsed record lists its keys in another order than this machine's;
+  // that alone once meant a write, and a log line, every ten minutes.
+  const written: ManagerSettingsRecord = { ...SETTINGS, label: 'laptop', writtenAt: '2026-09-19T09:00:00.000Z' };
+  const read = parseManagerSettings(JSON.parse(JSON.stringify(written)));
+  assert.ok(read);
+  assert.notEqual(Object.keys(read).join(), Object.keys(written).join());
+  assert.equal(settingsUnchanged(read, written), true);
+});
+
 test('one machine leaves its settings, and the next one finds them', async () => {
   const bucket = sharedBucket();
   const first = await machine(bucket.fetchImpl, 'laptop');
