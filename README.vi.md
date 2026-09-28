@@ -156,7 +156,7 @@ Trên điện thoại hay máy chủ nhỏ gần đầy, **Chế độ tiết ki
 - **Chỉ bạn giữ dữ liệu.** Chat và nhân vật nằm trên thiết bị của bạn và trong tài khoản Cloudflare của chính bạn. Dự án không có máy chủ nào lưu chúng.
 - **Khoá bằng mật khẩu của bạn.** Trình quản lý mở bằng mật khẩu của bạn, SillyTavern mở bằng mã PIN; đoán sai quá nhiều lần là cửa tự khoá.
 
-Trình quản lý gửi một bản tóm tắt sử dụng nhỏ và ẩn danh — không bao giờ có chat, prompt, nhân vật hay khoá API của bạn. Xem [Telemetry](#telemetry) để biết từng trường và cách tắt hẳn.
+Trình quản lý gửi một bản tóm tắt sử dụng nhỏ và ẩn danh, không bao giờ có chat, prompt, nhân vật hay khoá API của bạn. Xem [Telemetry](#telemetry) để biết từng trường.
 
 ### Còn nữa
 
@@ -176,7 +176,7 @@ Trình quản lý gửi một bản tóm tắt sử dụng nhỏ và ẩn danh �
 | Nền tảng | Bắt đầu tại đây |
 | --- | --- |
 | **Windows** | [Tải ZIP portable](#windows) — không phải cài gì |
-| **Android** | [Copy các lệnh Termux](#android-termux) |
+| **Android** | [Cài ứng dụng](https://stm.locmaymo.top/vi/docs#android) từ tệp APK, hoặc [copy các lệnh Termux](#android-termux) |
 | **macOS** | [Cài từ source](#macos) |
 | **Linux / VPS** | [Chạy launcher Unix](#linux-và-vps) |
 | **Docker / cloud** | [Build và chạy image](#docker-và-nền-tảng-cloud) |

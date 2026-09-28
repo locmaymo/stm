@@ -134,7 +134,16 @@ export function homePage(locale) {
   function action(item, quiet = false) {
     const external = item.href.startsWith('http');
     const href = external ? item.href : localePath(item.href, root);
-    return html`<a class="button${quiet ? raw(' button-quiet') : raw('')}" href="${href}"${external ? raw(' target="_blank" rel="noreferrer noopener"') : raw('')}>${iconOf(item.icon)}${item.label}</a>`;
+    const target = external ? raw(' target="_blank" rel="noreferrer noopener"') : raw('');
+    if (item.download) {
+      // The script in site.js picks the reader's device, then the file for it
+      // from the newest release. What is written here is the page without it.
+      const labels = item.download;
+      return html`<a class="button${quiet ? raw(' button-quiet') : raw('')}" href="${href}"${target} data-download
+        data-label-windows="${labels.windows}" data-label-android="${labels.android}" data-label-mac="${labels.mac}" data-label-linux="${labels.linux}" data-label-other="${labels.other}"
+        data-href-android="${localePath('/docs#android', root)}" data-href-mac="${localePath('/docs#macos', root)}" data-href-linux="${localePath('/docs#linux', root)}" data-href-other="${localePath('/#install', root)}">${iconOf(item.icon)}<span data-download-label>${item.label}</span></a>`;
+    }
+    return html`<a class="button${quiet ? raw(' button-quiet') : raw('')}" href="${href}"${target}>${iconOf(item.icon)}${item.label}</a>`;
   }
 }
 
