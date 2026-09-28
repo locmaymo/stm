@@ -833,13 +833,30 @@ async function runNpmInstall(runtimePath: string, npmCommand: string, onLine: (l
   }
 }
 
+/**
+ * What to start for an npm command.
+ *
+ * Normally `npm` by name, through a shell on Windows where it is a `.cmd`. With
+ * `STM_NPM_CLI` it is this Node running npm's own entry script instead: an
+ * Android app may only start programs from its native library directory, so
+ * there is no `npm` there to find by name - a shell script standing in for one
+ * is refused like any other file in the app's own storage - but the Node
+ * already running the manager can run npm itself.
+ */
+export function npmInvocation(npmCommand: string, args: readonly string[], env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform, nodePath: string = process.execPath): { command: string; args: string[]; shell: boolean } {
+  const cli = env.STM_NPM_CLI?.trim();
+  if (cli) return { command: nodePath, args: [cli, ...args], shell: false };
+  return { command: npmCommand, args: [...args], shell: platform === 'win32' };
+}
+
 async function spawnNpmInstall(runtimePath: string, npmCommand: string, cacheDirectory: string, onLine: (line: string) => void, signal?: AbortSignal): Promise<void> {
   await new Promise<void>((resolvePromise, reject) => {
-    const child = spawn(npmCommand, ['install', '--omit=dev', '--no-audit', '--no-fund', '--prefer-offline', '--progress=false'], {
+    const invocation = npmInvocation(npmCommand, ['install', '--omit=dev', '--no-audit', '--no-fund', '--prefer-offline', '--progress=false']);
+    const child = spawn(invocation.command, invocation.args, {
       cwd: runtimePath,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
-      shell: process.platform === 'win32',
+      shell: invocation.shell,
       // Node kills the child when this fires, which is the whole of what
       // stopping an install means while npm is the thing taking the minutes.
       ...(signal ? { signal } : {}),

@@ -273,7 +273,8 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   const store = options.store ?? new StateStore(
     options.managerVersion ? { paths, managerVersion: options.managerVersion } : { paths },
   );
-  const sessions = options.sessions ?? new SessionStore();
+  // Kept with the manager's state so a restart does not sign everybody out.
+  const sessions = options.sessions ?? new SessionStore({ file: join(paths.state, 'sessions.json') });
   const rateLimiter = options.rateLimiter ?? new RateLimiter();
   const baseLogger: LogSink = options.logger ?? ((line) => console.log(logLineText(line)));
   const jobs = new JobStore(options.logBuffer ?? new LogBuffer(paths));
@@ -1238,6 +1239,11 @@ async function handleRequest(options: {
     if (!claim) { sendError(response, 404, 'not_found', 'There is no sign-in waiting under that name'); return; }
     if (claim.status === 'waiting') { sendJson(response, 200, { ready: false }); return; }
     const { outcome, code, sessionToken } = claim.result;
+    // The cookie as well as the token: a console that collected its sign-in
+    // this way - inside a frame, or in the phone app while the sign-in ran in
+    // the phone's browser - otherwise held it only in the tab, and was signed
+    // out again the next time it opened.
+    if (sessionToken && sessions.get(sessionToken)) response.setHeader('Set-Cookie', sessionCookie(sessionToken, secureCookies));
     sendJson(response, 200, {
       ready: true,
       outcome,
@@ -1373,7 +1379,7 @@ async function handleRequest(options: {
     if (method !== 'GET' && !requireCsrf(context, session.csrfToken)) {
       return;
     }
-    await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, online, proxy, publishProxies, budget, logger, handoffs, saver);
+    await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, online, proxy, publishProxies, budget, logger, handoffs, saver, sessions);
     return;
   }
 
@@ -1626,7 +1632,7 @@ async function adoptRestoredPort(deps: PortAdoptionDeps, port: number): Promise<
   }
 }
 
-async function handleRuntimeRequest(context: RequestContext, store: StateStore, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, managerTunnel: TunnelManager, gateway: AccessGateway, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, cloudflare: CloudflareConnection | null, metrics: MetricsStore, activity: ActivityMeter, config: ConfigStore, system: SystemStore, online: OnlineKeeper, proxy: ProxyWorkerManager | null, publishProxies: () => void, budget: WorkerBudget, logger: LogSink, handoffs: HandoffStore, saver: SaverMode): Promise<void> {
+async function handleRuntimeRequest(context: RequestContext, store: StateStore, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, managerTunnel: TunnelManager, gateway: AccessGateway, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, cloudflare: CloudflareConnection | null, metrics: MetricsStore, activity: ActivityMeter, config: ConfigStore, system: SystemStore, online: OnlineKeeper, proxy: ProxyWorkerManager | null, publishProxies: () => void, budget: WorkerBudget, logger: LogSink, handoffs: HandoffStore, saver: SaverMode, sessions: SessionStore): Promise<void> {
   const { pathname, ports, request, response, searchParams } = context;
   const method = request.method ?? 'GET';
   const adoptSillyTavernPort = (port: number): Promise<void> =>
@@ -1655,6 +1661,9 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
      * to know.
      */
     await store.setAdminPassword(hashPassword(body.password));
+    // Sessions last a month now, so ones opened with the old password end
+    // here rather than outliving it. The one changing it stays signed in.
+    sessions.revokeOthers(context.sessionToken);
     sendJson(response, 200, { ok: true });
     return;
   }
@@ -2451,7 +2460,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       response.statusCode = 200;
       response.setHeader('Content-Type', 'application/zip');
       response.setHeader('Content-Length', details.size.toString(10));
-      response.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(manifest.name)}`);
+      response.setHeader('Content-Disposition', attachmentDisposition(manifest.name));
       createReadStream(archivePath).pipe(response);
       return;
     }
@@ -3422,12 +3431,16 @@ async function handleCloudflareCallback(context: RequestContext, sessions: Sessi
    * different partition, and can no longer tell what it is on its own.
    */
   const collected = handoffs.isOpen(state);
+  const phoneApp = collected && handoffs.forPhoneApp(state);
   const redirect = (outcome: string, code?: string, page = '#data', sessionToken: string | null = null): void => {
     if (collected) handoffs.settle(state, { outcome, code: code ?? '', sessionToken });
     const query = new URLSearchParams({
       cloudflare: outcome,
       ...(code ? { cloudflare_error: code } : {}),
       ...(collected ? { handoff: '1' } : {}),
+      // The page this lands on is in the phone's browser, and its job is to
+      // send the reader back to the app; see cloudflare-return.tsx.
+      ...(phoneApp ? { app: '1' } : {}),
     });
     response.writeHead(303, {
       location: `/?${query.toString()}${page}`,
@@ -4482,7 +4495,23 @@ function openHandoff(context: RequestContext, handoffs: HandoffStore, url: strin
   // right place for it. What comes back is the secret, and that is in the body.
   if (context.searchParams.get('handoff') !== '1') return {};
   const state = new URL(url).searchParams.get('state');
-  return state ? { handoff: handoffs.open(state) } : {};
+  const phoneApp = /\bSTMAndroid\//u.test(headerValue(context.request.headers['user-agent']) ?? '');
+  return state ? { handoff: handoffs.open(state, { phoneApp }) } : {};
+}
+
+/**
+ * A download's name, said both ways RFC 6266 allows.
+ *
+ * `filename*` carries the real name in UTF-8, and browsers prefer it. It used
+ * to be the only one, and a downloader that reads just `filename` - Android's,
+ * which the phone app hands downloads to - saved every backup as
+ * `download.zip`. The plain `filename` beside it is the same name with anything
+ * outside printable ASCII, and the quote and backslash that would end it early,
+ * replaced.
+ */
+export function attachmentDisposition(name: string): string {
+  const plain = name.replace(/[^\x20-\x7e]|["\\]/gu, '_');
+  return `attachment; filename="${plain}"; filename*=UTF-8''${encodeURIComponent(name)}`;
 }
 
 function parseSessionToken(request: IncomingMessage): string | undefined {

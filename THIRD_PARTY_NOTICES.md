@@ -34,6 +34,29 @@ so that installing SillyTavern needs nothing else on the machine:
   The version is pinned in `scripts/build-windows-release.mjs`, and this link
   changes with it.
 
+## Bundled in the Android app
+
+The Android app carries Termux's Android builds of Node.js, Git, cloudflared
+and the libraries they load, plus npm from its registry, unmodified. The exact
+packages, versions and SHA-256 digests are listed in
+`packaging/android/runtime-packages.json`.
+
+- Node.js is licensed under the MIT License, npm under the Artistic License 2.0,
+  and cloudflared under the Apache License 2.0.
+- Git is licensed under the GNU General Public License version 2, and libiconv
+  under the GNU Lesser General Public License version 2.1. The other libraries
+  are under their own permissive licenses: OpenSSL and libc++ (Apache 2.0),
+  ICU (Unicode License), curl, zlib, c-ares, expat, nghttp2, nghttp3, ngtcp2,
+  libssh2, PCRE2 and SQLite (each under its own terms), and the Mozilla CA
+  certificate bundle (MPL 2.0).
+- Each package's copyright file and the license texts it refers to are
+  installed with it, under `share/doc/<package>/copyright` and
+  `share/LICENSES/` in the app's runtime directory.
+- The build recipes are published by the Termux project at
+  <https://github.com/termux/termux-packages>, and each recipe names the
+  upstream source release it builds; that is the corresponding source for the
+  binaries shipped.
+
 ## Trademarks and artwork
 
 The application icon, favicon, and in-application brand mark under

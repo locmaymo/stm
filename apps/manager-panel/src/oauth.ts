@@ -50,6 +50,8 @@ export interface CloudflareReturn {
   readonly code: string;
   /** Whether a console is waiting to collect this, so this page is a window. */
   readonly collected: boolean;
+  /** Whether that console is the Android app's, so this page is in the phone's browser. */
+  readonly app: boolean;
 }
 
 /** The session a sign-in opened, for the console collecting it. */
@@ -73,8 +75,16 @@ export function cloudflareReturn(search: string): CloudflareReturn | null {
     outcome: outcome as CloudflareOutcome,
     code: params.get('cloudflare_error') ?? '',
     collected: params.get('handoff') === '1',
+    app: params.get('app') === '1',
   };
 }
+
+/**
+ * The address that brings the Android app to the front, from the phone's
+ * browser, in Chrome's `intent:` form. Only a sign-in the app started lands on
+ * a page that uses it, so the app is there to answer.
+ */
+export const PHONE_APP_RETURN = 'intent://cloudflare#Intent;scheme=top.locmaymo.stm;package=top.locmaymo.stm;end';
 
 /**
  * Whether this page is the window a sign-in happened in, rather than a console.
@@ -241,6 +251,20 @@ function safeLocalStorage(): PopupStorage | undefined {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Whether this console is the Android app's.
+ *
+ * The app shows the console in a view of its own and sends every other site -
+ * Cloudflare's sign-in included - to the phone's browser, because a sign-in
+ * that can use the browser's saved accounts is the one people can finish. That
+ * browser is somewhere else as far as cookies go, exactly as a window opened
+ * from a frame is, so the sign-in comes home the same way: collected from the
+ * manager. The app says so in its user agent.
+ */
+export function inPhoneApp(userAgent: string = globalThis.navigator?.userAgent ?? ''): boolean {
+  return /\bSTMAndroid\//u.test(userAgent);
 }
 
 /** Whether this console is a document inside some other site's page. */

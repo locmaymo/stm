@@ -63,3 +63,13 @@ test('each sign-in is collected under its own name', () => {
   assert.deepEqual(store.claim(first), { status: 'waiting' });
   assert.deepEqual(store.claim(second), { status: 'ready', result });
 });
+
+test('a sign-in the phone app started is marked, so its last page sends the reader back to the app', () => {
+  const store = new HandoffStore();
+  store.open('from-the-app', { phoneApp: true });
+  store.open('from-a-frame');
+  assert.equal(store.forPhoneApp('from-the-app'), true);
+  assert.equal(store.forPhoneApp('from-a-frame'), false);
+  assert.equal(store.isOpen('from-a-frame'), true);
+  assert.equal(store.forPhoneApp('never-opened'), false);
+});

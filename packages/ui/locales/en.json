@@ -70,6 +70,8 @@
     "cloudExpired": "That sign-in link has expired. Start again.",
     "cloudReturning": "Signed in. Returning to the manager...",
     "cloudReturningClose": "You can close this window.",
+    "cloudReturningApp": "Signed in. Taking you back to the ST Manager app...",
+    "cloudReturnToApp": "Open ST Manager",
     "mismatch": "The two passwords are not the same",
     "signedOut": "You were signed out. Sign in again to carry on.",
     "reveal": "Show password",

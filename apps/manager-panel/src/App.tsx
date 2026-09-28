@@ -33,7 +33,7 @@ import { isThisMachine, readAddressOfferAnswered, readOwnLinkWanted, saveAddress
 import { availableUpdate, readDismissedManagerRelease, readDismissedUpdate, saveDismissedManagerRelease, saveDismissedUpdate, shouldShowManagerRelease } from './updates.js';
 import { readDismissedDisplaced, readDismissedRecovery, readDismissedSettings, saveDismissedDisplaced, saveDismissedRecovery, saveDismissedSettings, shouldOfferSettings, shouldShowDisplaced, shouldShowRecovery } from './settings-offer.js';
 import { apiFetch, onSessionExpired, resetSessionWatch, sessionToken, setSessionToken } from './session.js';
-import { collectCloudflareResult, framed, openReturnWindow, popupsBlocked, whenAbandoned, type CollectedResult } from './oauth.js';
+import { collectCloudflareResult, framed, inPhoneApp, openReturnWindow, popupsBlocked, whenAbandoned, type CollectedResult } from './oauth.js';
 import type { AccessGatewayState, AccessLinkPreference, AccessLinkTarget, BackupManifest, CloudflareAccountProblem, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LegalReview, LogEntry, LogSourceFilter, ManagerRelease, ManagerSettingsOffer, ManagerUpdateStatus, OnlineState, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, SaverState, SetupChecklistState, SetupStep, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, isCloudJob, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
@@ -451,22 +451,27 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, refusal, onPr
      * turns into below.
      */
     const inFrame = framed();
+    const inApp = inPhoneApp();
     const opened = inFrame && !popupsBlocked() ? openReturnWindow() : null;
     setCloudflareBusy(true); setError(null);
     try {
-      // Inside a frame the answer is always collected from the manager,
-      // whether the window was opened here or by the reader: either way it
-      // cannot carry the answer home by itself.
-      const response = await fetch(`/api/v1/auth/cloudflare${inFrame ? '?handoff=1' : ''}`, { method: 'POST', credentials: 'same-origin' });
+      // Inside a frame, or in the phone app, the answer is always collected
+      // from the manager: the page the sign-in comes home to is not this one,
+      // and cannot carry the answer here by itself.
+      const response = await fetch(`/api/v1/auth/cloudflare${inFrame || inApp ? '?handoff=1' : ''}`, { method: 'POST', credentials: 'same-origin' });
       const payload = await response.json() as { url?: string; handoff?: string; error?: { code?: string; message?: string } };
       if (!response.ok || !payload.url) { opened?.close(); setCloudflareBusy(false); setError(fail.body(payload, t('setup.cloudSignInFailed'))); return; }
-      if (!inFrame) { window.location.assign(payload.url); return; }
+      if (!inFrame && !inApp) { window.location.assign(payload.url); return; }
       if (payload.handoff) {
         const stopCollecting = collectCloudflareResult(payload.handoff, collected);
         const stopWatching = opened ? whenAbandoned(opened, () => { stopCollecting(); setCloudflareBusy(false); }) : null;
         collecting.current = () => { stopCollecting(); stopWatching?.(); };
       }
       if (opened) { opened.location.href = payload.url; return; }
+      // The app hands this address to the phone's browser and this page stays
+      // where it is, collecting; the button is free again in case the reader
+      // comes back without finishing.
+      if (inApp) { setCloudflareBusy(false); window.location.assign(payload.url); return; }
       /*
        * No window, so the reader opens it: the same button, one more press,
        * now an ordinary link that no browser blocks.
@@ -866,7 +871,9 @@ function FirstRun({ t, csrfToken, preferences, onPreferencesChange, onDone }: { 
     setBusy(true);
     setError(null);
     try {
-      const response = await apiFetch('/api/v1/r2/cloudflare/connect', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      // In the phone app the browser's last page sends the reader back to the
+      // app rather than opening a second console there; see oauth.ts.
+      const response = await apiFetch(`/api/v1/r2/cloudflare/connect${inPhoneApp() ? '?handoff=1' : ''}`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       const payload = await response.json() as { url?: string; error?: { message?: string } };
       if (!response.ok || !payload.url) { setError(fail.body(payload, t('console.cfConnectFailed'))); return; }
       // Cloudflare answers back to the console's own address, which lands on
@@ -1121,7 +1128,9 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     const inFrame = framed();
     const opened = inFrame && !popupsBlocked() ? openReturnWindow() : null;
     try {
-      const response = await apiFetch(`/api/v1/r2/cloudflare/connect${inFrame ? '?handoff=1' : ''}`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      // In the phone app the browser's last page sends the reader back to the
+      // app rather than opening a second console there; see oauth.ts.
+      const response = await apiFetch(`/api/v1/r2/cloudflare/connect${inFrame || inPhoneApp() ? '?handoff=1' : ''}`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       const payload = await response.json() as { url?: string };
       if (!response.ok || !payload.url) { opened?.close(); return; }
       if (!inFrame) { window.location.assign(payload.url); return; }
@@ -4613,22 +4622,25 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
      * the one thing that is never blocked.
      */
     const inFrame = framed();
+    const inApp = inPhoneApp();
     const tab = inFrame && !popupsBlocked() ? openReturnWindow() : null;
     setCloudflareBusy(true);
     try {
-      // Inside a frame the answer is collected from the manager however the
-      // sign-in was opened, because the tab cannot bring it back itself; see
-      // oauth.ts.
-      const response = await apiFetch(`/api/v1/r2/cloudflare/connect${inFrame ? '?handoff=1' : ''}`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      // Inside a frame, or in the phone app, the answer is collected from the
+      // manager however the sign-in was opened, because the tab cannot bring
+      // it back itself; see oauth.ts.
+      const response = await apiFetch(`/api/v1/r2/cloudflare/connect${inFrame || inApp ? '?handoff=1' : ''}`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       const payload = await response.json() as { url?: string; handoff?: string; error?: { message?: string } };
       if (!response.ok || !payload.url) { tab?.close(); failed(fail.body(payload, t('console.cfConnectFailed'))); return; }
-      if (!inFrame) { window.location.assign(payload.url); return; }
+      if (!inFrame && !inApp) { window.location.assign(payload.url); return; }
       if (payload.handoff) {
         const stopCollecting = collectCloudflareResult(payload.handoff, (result) => settleCloudflare(result.outcome, result.code));
         const stopWatching = tab ? whenAbandoned(tab, stopCollecting) : null;
         collecting.current = () => { stopCollecting(); stopWatching?.(); };
       }
       if (tab) { tab.location.href = payload.url; return; }
+      // The app sends this to the phone's browser and stays here, collecting.
+      if (inApp) { window.location.assign(payload.url); return; }
       // No tab, so the reader opens one. The sign-in is already started and
       // already being collected; the address goes on the button they pressed.
       setCloudflareSignInUrl(payload.url);

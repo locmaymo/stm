@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { RateLimiter } from '../src/rate-limit.js';
+import { attachmentDisposition } from '../src/server.js';
 import { clearSessionCookie, parseSessionCookie, SessionStore, sessionCookie } from '../src/sessions.js';
 
 test('sessions are opaque, expire, and revoke', () => {
@@ -41,6 +45,62 @@ test('signing in again drops the sessions that have expired', () => {
   now += 99;
   sessions.create();
   assert.equal(sessions.get(live.token)?.csrfToken, live.session.csrfToken);
+});
+
+test('sessions outlive a restart, and the file holds no token that signs anybody in', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'stm-sessions-'));
+  try {
+    const file = join(directory, 'state', 'sessions.json');
+    let now = 1_000;
+    const first = new SessionStore({ now: () => now, file });
+    const kept = first.create();
+    const ended = first.create();
+    first.revoke(ended.token);
+
+    // A new process reading the same file: the manager restarted.
+    const second = new SessionStore({ now: () => now, file });
+    assert.equal(second.get(kept.token)?.csrfToken, kept.session.csrfToken);
+    assert.equal(second.get(ended.token), null);
+
+    const written = await readFile(file, 'utf8');
+    assert.equal(written.includes(kept.token), false, 'the token itself is never written down');
+    if (process.platform !== 'win32') assert.equal((await stat(file)).mode & 0o777, 0o600);
+
+    // Expired while the manager was down: not brought back.
+    now += 31 * 24 * 60 * 60 * 1000;
+    assert.equal(new SessionStore({ now: () => now, file }).get(kept.token), null);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('a session in use keeps going, and one left alone for its idle time ends', () => {
+  const hour = 60 * 60 * 1000;
+  let now = 0;
+  const sessions = new SessionStore({ now: () => now, ttlMs: 10 * hour });
+  const used = sessions.create();
+  const idle = sessions.create();
+  for (let step = 0; step < 30; step += 1) {
+    now += 2 * hour;
+    assert.ok(sessions.get(used.token), `still signed in after ${now / hour} hours of use`);
+  }
+  assert.equal(sessions.get(idle.token), null);
+});
+
+test('changing the password ends every other session', () => {
+  const sessions = new SessionStore();
+  const mine = sessions.create();
+  const phone = sessions.create();
+  const laptop = sessions.create();
+  assert.equal(sessions.revokeOthers(mine.token), 2);
+  assert.ok(sessions.get(mine.token));
+  assert.equal(sessions.get(phone.token), null);
+  assert.equal(sessions.get(laptop.token), null);
+});
+
+test('a download is named both ways, so a downloader that reads only filename keeps the name', () => {
+  assert.equal(attachmentDisposition('stm-backup-2026-09-28.zip'), `attachment; filename="stm-backup-2026-09-28.zip"; filename*=UTF-8''stm-backup-2026-09-28.zip`);
+  assert.equal(attachmentDisposition('sao lưu "một".zip'), `attachment; filename="sao l_u _m_t_.zip"; filename*=UTF-8''sao%20l%C6%B0u%20%22m%E1%BB%99t%22.zip`);
 });
 
 test('cookies parse and include browser security attributes', () => {

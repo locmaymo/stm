@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { getPlatformPaths } from '../../platform/src/index.js';
-import { RuntimeError, RuntimeManager, extractZipSafely, gitFetchAttempts } from '../src/index.js';
+import { RuntimeError, RuntimeManager, extractZipSafely, gitFetchAttempts, npmInvocation } from '../src/index.js';
 import { logLineText } from '../../contracts/src/index.js';
 
 const exec = promisify(execFile);
@@ -151,6 +151,18 @@ test('a first installation can be stopped, and takes back everything it wrote', 
   // And the machine is in a state a second attempt can use.
   const installed = await runtime.install('1.0.0');
   assert.equal(installed.status, 'ready');
+});
+
+test('npm runs by name, or through this Node when STM_NPM_CLI names its entry script', () => {
+  const args = ['install', '--omit=dev'];
+  assert.deepEqual(npmInvocation('npm', args, {}, 'linux', '/usr/bin/node'), { command: 'npm', args, shell: false });
+  assert.deepEqual(npmInvocation('npm', args, {}, 'win32', 'C:\\node.exe'), { command: 'npm', args, shell: true });
+  // An Android app can start only its own native libraries, so npm is run by the Node it already has.
+  assert.deepEqual(
+    npmInvocation('npm', args, { STM_NPM_CLI: '/data/user/0/app/files/runtime/npm/bin/npm-cli.js' }, 'android', '/data/app/lib/arm64/libnode.so'),
+    { command: '/data/app/lib/arm64/libnode.so', args: ['/data/user/0/app/files/runtime/npm/bin/npm-cli.js', ...args], shell: false },
+  );
+  assert.deepEqual(npmInvocation('npm', args, { STM_NPM_CLI: '  ' }, 'linux', '/usr/bin/node'), { command: 'npm', args, shell: false });
 });
 
 test('safe extraction strips GitHub root and rejects zip slip', async () => {

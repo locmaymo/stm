@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
-import type { CloudflareOutcome } from './oauth.js';
+import { Button } from '../../../packages/ui/src/index.js';
+import { PHONE_APP_RETURN, type CloudflareOutcome } from './oauth.js';
 import { translator } from './i18n.js';
 import type { LocaleCode } from './preferences.js';
 
@@ -25,16 +26,35 @@ import type { LocaleCode } from './preferences.js';
 /** Long enough for a window that is going to close to have done it. */
 const CLOSE_GRACE_MS = 1200;
 
-export function CloudflareReturn({ outcome, locale }: { outcome: CloudflareOutcome; locale: LocaleCode }) {
+export function CloudflareReturn({ outcome, locale, app = false }: { outcome: CloudflareOutcome; locale: LocaleCode; app?: boolean }) {
   const t = translator(locale);
   useEffect(() => {
+    /*
+     * A sign-in the Android app started finished here, in the phone's
+     * browser, and the app is where the reader belongs: it is already
+     * collecting the answer. So this sends them back to it. A browser that
+     * will not open an app without a fresh tap still shows the button below,
+     * which is that tap.
+     */
+    if (app) {
+      window.location.href = PHONE_APP_RETURN;
+      return undefined;
+    }
     window.close();
     const settled = window.setTimeout(
       () => window.location.replace(`${window.location.pathname}${window.location.hash}`),
       CLOSE_GRACE_MS,
     );
     return () => window.clearTimeout(settled);
-  }, []);
+  }, [app]);
+  if (app) {
+    return <div className="auth-shell grid content-center justify-items-center gap-4 p-6" role="status">
+      <p className="text-sm text-muted-foreground text-center">
+        {outcome === 'error' ? t('setup.cloudSignInFailed') : t('setup.cloudReturningApp')}
+      </p>
+      <Button asChild size="lg"><a href={PHONE_APP_RETURN}>{t('setup.cloudReturnToApp')}</a></Button>
+    </div>;
+  }
   return <div className="auth-shell" role="status">
     <p className="text-sm text-muted-foreground text-center">
       {outcome === 'error' ? t('setup.cloudSignInFailed') : t('setup.cloudReturning')}
