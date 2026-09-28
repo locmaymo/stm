@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Status bar icon: Android draws it as a single-colour silhouette. -->
+<!--
+  Status bar icon: Android draws it as a single-colour silhouette, so the
+  app's mark is drawn here as one. The disc with ST cut out of it, and the
+  starred badge at its foot, set apart by a gap the way the mark's rim sets
+  it apart.
+-->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
@@ -7,5 +12,13 @@
     android:viewportHeight="24">
     <path
         android:fillColor="#FFFFFFFF"
-        android:pathData="M12,2A10,10 0,1 0,22 12A10,10 0,0 0,12 2ZM12,4.5A7.5,7.5 0,1 1,4.5 12A7.5,7.5 0,0 1,12 4.5ZM9,8v1.8h2.1V16h1.8V9.8H15V8Z" />
+        android:fillType="evenOdd"
+        android:pathData="M21.655,14.167A10.5,10.5 0,1 0,14.167 21.655A5.6,5.6 0,0 1,21.655 14.167Z
+            M4.3,7.2H10.3V8.7H5.8V10.2H10.3V14.7H4.3V13.2H8.8V11.7H4.3Z
+            M11.3,7.2H17.3V8.7H15.15V14.7H13.45V8.7H11.3Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M14.9,19.2A4.3,4.3 0,1 0,23.5 19.2A4.3,4.3 0,1 0,14.9 19.2Z
+            M19.2,16.7L19.788,18.391L21.578,18.427L20.151,19.509L20.67,21.223L19.2,20.2L17.73,21.223L18.249,19.509L16.822,18.427L18.612,18.391Z" />
 </vector>

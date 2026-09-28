@@ -34,6 +34,7 @@ import { availableUpdate, readDismissedManagerRelease, readDismissedUpdate, save
 import { readDismissedDisplaced, readDismissedRecovery, readDismissedSettings, saveDismissedDisplaced, saveDismissedRecovery, saveDismissedSettings, shouldOfferSettings, shouldShowDisplaced, shouldShowRecovery } from './settings-offer.js';
 import { apiFetch, onSessionExpired, resetSessionWatch, sessionToken, setSessionToken } from './session.js';
 import { NotificationBell, PushToggle } from './notification-bell.js';
+import { openInApp } from './app-bridge.js';
 import { collectCloudflareResult, framed, inPhoneApp, openReturnWindow, popupsBlocked, whenAbandoned, type CollectedResult } from './oauth.js';
 import type { AccessGatewayState, AccessLinkPreference, AccessLinkTarget, BackupManifest, CloudflareAccountProblem, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LegalReview, LogEntry, LogSourceFilter, ManagerRelease, ManagerSettingsOffer, ManagerUpdateStatus, NotificationSummary, OnlineState, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, SaverState, SetupChecklistState, SetupStep, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, isCloudJob, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
@@ -2650,6 +2651,8 @@ function RuntimeCard({
     try {
       const response = await apiFetch('/api/v1/access/embed-session', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       if (!response.ok) { report(fail.body(await response.json().catch(() => null), t('console.embedFailed'))); return; }
+      // The phone app runs one SillyTavern page for itself and its chat bubbles; a frame here would be a second.
+      if (openInApp(embedUrl)) return;
       setEmbedMounted(true);
       setEmbedOpen(true);
     } catch { report(t('console.embedFailed')); } finally { setEmbedOpening(false); }

@@ -1185,7 +1185,10 @@
     "pushNeedsHttps": "Open the console through its https link to get notifications",
     "pushNeedsHomeScreen": "On iPhone, add the console to the Home Screen first",
     "pushFailed": "Notifications could not be turned on",
-    "appManaged": "The app shows these as phone notifications",
+    "replies": "Message notifications from characters",
+    "bubbles": "Chat bubbles",
+    "bubblesBlocked": "Bubbles are turned off for this app in Android's settings, so replies only show as notifications.",
+    "bubblesSettings": "Open bubble settings",
     "jobs": {
       "backup": "The backup",
       "restore": "The restore",

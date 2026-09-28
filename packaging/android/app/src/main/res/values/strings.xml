@@ -15,4 +15,11 @@
     <string name="status_restart">Tap to start it again</string>
     <string name="download_started">Saving to Downloads</string>
     <string name="download_unsupported">This file cannot be saved from here yet.</string>
+    <string name="channel_chats">Character replies</string>
+    <string name="bubble_label">Chat</string>
+    <string name="bubble_you">You</string>
+    <string name="bubble_loading">Opening SillyTavern…</string>
+    <string name="bubble_open_first">Open SillyTavern in the app once, then its bubbles open here. Tap to open the app.</string>
+    <string name="bubble_busy">A character is still replying in another chat. That chat stays open until the reply is done.</string>
+    <string name="sillytavern_unavailable">SillyTavern is not answering. Check it in the app\'s console.</string>
 </resources>
