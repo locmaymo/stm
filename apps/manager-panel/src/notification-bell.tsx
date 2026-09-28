@@ -4,7 +4,7 @@ import { Button, cn, Popover, PopoverContent, PopoverTrigger, Switch } from '../
 import type { ManagerNotification, MessageParams, NotificationList, NotificationSummary } from '../../../packages/contracts/src/index.js';
 import type { MessageKey, Translate } from './i18n.js';
 import type { LocaleCode } from './preferences.js';
-import { currentPush, disablePush, enablePush, pushSupport, testPush, type PushSupport } from './push.js';
+import { currentPush, disablePush, enablePush, pushSupport, type PushSupport } from './push.js';
 import { apiFetch } from './session.js';
 
 /**
@@ -91,10 +91,6 @@ export function PushToggle({ t, locale, csrfToken }: { t: Translate; locale: Loc
       {reason ? null : <Switch checked={subscription !== null} disabled={busy || !checked} onCheckedChange={(on) => void toggle(on)} aria-label={t('notify.push')} />}
     </div>
     {reason ? <p className="text-xs text-muted-foreground">{reason}</p> : null}
-    {subscription ? <Button variant="outline" size="sm" className="justify-self-start" disabled={busy} onClick={() => {
-      setBusy(true);
-      void testPush(csrfToken, subscription).then((sent) => setNote(sent ? t('notify.pushTestSent') : t('notify.pushFailed'))).finally(() => setBusy(false));
-    }}>{t('notify.pushTest')}</Button> : null}
     {note ? <p className="text-xs text-muted-foreground" role="status">{note}</p> : null}
   </div>;
 }

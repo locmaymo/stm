@@ -190,11 +190,6 @@ export class NotificationCenter {
 
 const CATALOGS: Readonly<Record<NotificationLocale, unknown>> = { en, vi };
 
-/** One of the bell's own phrases, `notify.<key>`, in a language. */
-export function notifyWords(locale: NotificationLocale, key: string): string {
-  return lookup(CATALOGS[locale], `notify.${key}`) ?? lookup(CATALOGS.en, `notify.${key}`) ?? '';
-}
-
 /** A notification in one language, for a channel that shows words rather than codes. */
 export function renderNotification(notification: ManagerNotification, locale: NotificationLocale): RenderedNotification {
   const base = { id: notification.id, level: notification.level, tag: notification.kind === 'broadcast' ? `broadcast-${notification.id}` : notification.kind };

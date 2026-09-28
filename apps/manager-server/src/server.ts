@@ -107,7 +107,6 @@ const PROTECTED_PATHS = new Set([
   '/api/v1/notifications/read',
   '/api/v1/push',
   '/api/v1/push/subscriptions',
-  '/api/v1/push/test',
   '/api/v1/legal',
   '/api/v1/legal/acknowledge',
   '/api/v1/tunnel',
@@ -2876,13 +2875,6 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     const locale: NotificationLocale = isRecord(body) && body.locale === 'vi' ? 'vi' : 'en';
     await push.subscribe({ endpoint: subscription.endpoint, p256dh: subscription.keys.p256dh, auth: subscription.keys.auth, locale });
     sendJson(response, 200, { subscribed: true });
-    return;
-  }
-  if (pathname === '/api/v1/push/test' && method === 'POST') {
-    const body = await readJson(request);
-    const endpoint = isRecord(body) && typeof body.endpoint === 'string' ? body.endpoint : null;
-    const sent = endpoint ? await push.sendTest(endpoint) : false;
-    sendJson(response, sent ? 200 : 409, sent ? { delivered: true } : { error: { code: 'push_failed', message: 'The push service did not take the test' } });
     return;
   }
   if (pathname === '/api/v1/notifications' && method === 'DELETE') {

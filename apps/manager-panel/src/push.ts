@@ -88,13 +88,3 @@ export async function disablePush(csrfToken: string, subscription: PushSubscript
   }).catch(() => null);
   await subscription.unsubscribe().catch(() => false);
 }
-
-export async function testPush(csrfToken: string, subscription: PushSubscription): Promise<boolean> {
-  const response = await apiFetch('/api/v1/push/test', {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken },
-    body: JSON.stringify({ endpoint: subscription.endpoint }),
-  }).catch(() => null);
-  return response?.ok === true;
-}

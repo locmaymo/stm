@@ -3,7 +3,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ManagerNotification } from '../../../packages/contracts/src/index.js';
 import type { PlatformPaths } from '../../../packages/platform/src/index.js';
-import { notifyWords, renderNotification, type NotificationLocale } from './notifications.js';
+import { renderNotification, type NotificationLocale } from './notifications.js';
 
 /*
  * Web Push, from the sending side: RFC 8030 to deliver, RFC 8291 to encrypt
@@ -160,13 +160,6 @@ export class WebPush {
       const words = renderNotification(notification, subscription.locale);
       await this.send(subscription, { title: words.title, body: words.body, url: words.url, tag: words.tag, level: words.level }, notification.level === 'error' ? 'high' : 'normal');
     }));
-  }
-
-  /** A test, to the one browser that asked for it. */
-  public async sendTest(endpoint: string): Promise<boolean> {
-    const subscription = (await this.loadSubscriptions()).find((item) => item.endpoint === endpoint);
-    if (!subscription) return false;
-    return await this.send(subscription, { title: 'SillyTavern Manager', body: notifyWords(subscription.locale, 'pushTestBody'), url: null, tag: 'test', level: 'info' });
   }
 
   /** One message to one browser; true when the push service took it. */

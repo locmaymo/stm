@@ -1185,9 +1185,6 @@
     "pushNeedsHttps": "Open the console through its https link to get notifications",
     "pushNeedsHomeScreen": "On iPhone, add the console to the Home Screen first",
     "pushFailed": "Notifications could not be turned on",
-    "pushTest": "Send a test",
-    "pushTestSent": "A test notification was sent",
-    "pushTestBody": "Notifications are on for this device.",
     "appManaged": "The app shows these as phone notifications",
     "jobs": {
       "backup": "The backup",

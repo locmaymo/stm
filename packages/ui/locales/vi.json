@@ -1185,9 +1185,6 @@
     "pushNeedsHttps": "Hãy mở bảng điều khiển bằng link https để nhận thông báo",
     "pushNeedsHomeScreen": "Trên iPhone, hãy thêm bảng điều khiển vào Màn hình chính trước",
     "pushFailed": "Không bật được thông báo",
-    "pushTest": "Gửi thử",
-    "pushTestSent": "Đã gửi một thông báo thử",
-    "pushTestBody": "Thông báo đã được bật trên thiết bị này.",
     "appManaged": "Ứng dụng hiện các thông báo này trên điện thoại",
     "jobs": {
       "backup": "Sao lưu",
