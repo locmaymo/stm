@@ -35,6 +35,7 @@ import { ActivityMeter } from './activity.js';
 import { ReleaseWatch } from './manager-release.js';
 import { APP_NOTIFICATION_PREFIX, NotificationCenter, NotificationRules, renderNotification, type NotificationLocale } from './notifications.js';
 import { validSubscription, WebPush } from './web-push.js';
+import { AnnouncementFeed, DEFAULT_ANNOUNCEMENTS_URL } from './announcements.js';
 import { OnlineKeeper } from './online.js';
 import { formatGibibytes, SaverMode } from './saver.js';
 import { capacityFor, checkFits, decideTrim, diskSpace, memoryGuard, roomCheck } from './headroom.js';
@@ -819,6 +820,16 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   jobs.onLine((line) => notificationRules.onLog(line));
   jobs.onFinish((job) => notificationRules.onJob(job));
   if (!testRuntime) notificationRules.start();
+  /*
+   * News from the project, read a few times a day with only the platform and
+   * version attached. Empty STM_ANNOUNCEMENTS_URL turns it off; the test
+   * runner never asks.
+   */
+  const announcementsUrl = env.STM_ANNOUNCEMENTS_URL ?? (testRuntime ? '' : DEFAULT_ANNOUNCEMENTS_URL);
+  const announcements = announcementsUrl.trim()
+    ? new AnnouncementFeed({ center: notifications, url: announcementsUrl.trim(), platform: paths.platform, version: persisted.managerVersion })
+    : null;
+  announcements?.start();
   const telemetry = options.telemetry ?? new TelemetryTransport({
     paths,
     metricsFile: metrics.filePath,
@@ -1071,7 +1082,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     online,
     // The meter closes first, so the part of today that has just been spent is
     // written down before the transport looks for finished days.
-    close: async () => { online.close(); notificationRules.close(); await activity.close(); await telemetry.close(); await scheduler.close(); await tunnel.close(); await managerTunnel.close(); await gateway.close(); await supervisor.close(); await backups.settle(); await profiles.settle(); await closeServer(server); },
+    close: async () => { online.close(); notificationRules.close(); announcements?.close(); await activity.close(); await telemetry.close(); await scheduler.close(); await tunnel.close(); await managerTunnel.close(); await gateway.close(); await supervisor.close(); await backups.settle(); await profiles.settle(); await closeServer(server); },
   };
 }
 
