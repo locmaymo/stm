@@ -18,7 +18,8 @@
     "summary": "Every revision publishes all four documents in full, so nothing from an earlier one carries over unsaid. This is the revision in force.",
     "changes": [
       "The daily report now also carries three sizes: how much SillyTavern data the profile in use holds, how much the backups kept on the machine take, and how much the manager has stored in R2. Only the totals are sent, never a file name or anything inside the files.",
-      "The Android app is now named as a platform of its own, apart from Termux."
+      "The Android app is now named as a platform of its own, apart from Termux.",
+      "The manager now asks the project for announcements a few times a day. The request carries only the platform and the application version."
     ]
   },
   "documents": {
@@ -230,6 +231,7 @@
             "With each batch: the platform (Windows, Linux, Termux, the Android app, Docker, a hosted workspace or unknown) and the application version.",
             "For each model request SillyTavern makes: the timestamp, provider name, completion API format, model name, endpoint hostname, whether streaming was used, the maximum token setting, input, output and total token counts, cache read and write tokens, reasoning tokens, the HTTP status, and the duration in milliseconds.",
             "Once for each finished day: how long the manager ran, how long SillyTavern ran under it, how long the console was open and in view, how many times the manager started, whether backups to R2 were off, set up with keys, or set up through a Cloudflare sign-in, and three sizes in bytes: the SillyTavern data in the profile in use, the backups kept on the machine, and what the manager has stored in R2. No bucket name, account or file is included.",
+            "A few times a day the manager also asks the project for announcements to show in its notifications. That request carries the platform and the application version and nothing else: no installation identifier and nothing about you.",
             "That is the complete list. The allowlist is in the source code, under packages/instrumentation and packages/telemetry, and you can read it."
           ]
         },

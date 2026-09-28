@@ -18,7 +18,8 @@
     "summary": "Mỗi bản sửa đổi đều công bố trọn vẹn cả bốn văn bản, nên không có điều nào của bản cũ được giữ lại mà không nói ra. Đây là bản đang có hiệu lực.",
     "changes": [
       "Báo cáo theo ngày nay có thêm ba con số dung lượng: dữ liệu SillyTavern trong hồ sơ đang dùng, các bản sao lưu giữ trên máy, và phần trình quản lý đã lưu trên R2. Chỉ gửi tổng dung lượng, không bao giờ gửi tên tệp hay nội dung bên trong.",
-      "Ứng dụng Android nay được ghi nhận là một nền tảng riêng, tách khỏi Termux."
+      "Ứng dụng Android nay được ghi nhận là một nền tảng riêng, tách khỏi Termux.",
+      "Trình quản lý nay hỏi dự án xem có thông báo mới không, vài lần mỗi ngày. Yêu cầu chỉ mang theo nền tảng và phiên bản ứng dụng."
     ]
   },
   "documents": {
@@ -230,6 +231,7 @@
             "Kèm mỗi lô dữ liệu: nền tảng (Windows, Linux, Termux, ứng dụng Android, Docker, máy chủ lưu trữ hoặc không xác định) và phiên bản ứng dụng.",
             "Với mỗi lượt gọi mô hình mà SillyTavern thực hiện: thời điểm, tên nhà cung cấp, định dạng API hoàn thành, tên mô hình, tên máy chủ điểm cuối, có dùng truyền theo luồng hay không, thiết lập token tối đa, số token đầu vào, đầu ra và tổng cộng, số token đọc và ghi bộ nhớ đệm, số token suy luận, mã trạng thái HTTP, và thời lượng tính bằng mili giây.",
             "Một lần cho mỗi ngày đã qua: trình quản lý chạy bao lâu, SillyTavern chạy bao lâu trong đó, bảng điều khiển được mở và xem bao lâu, trình quản lý khởi động bao nhiêu lần, sao lưu lên R2 đang tắt, được thiết lập bằng khoá, hay qua đăng nhập Cloudflare, và ba con số dung lượng tính bằng byte: dữ liệu SillyTavern trong hồ sơ đang dùng, các bản sao lưu giữ trên máy, và phần trình quản lý đã lưu trên R2. Không kèm tên bucket, tài khoản hay tệp nào.",
+            "Vài lần mỗi ngày, trình quản lý cũng hỏi dự án xem có thông báo nào để hiện trong mục thông báo không. Yêu cầu đó chỉ mang theo nền tảng và phiên bản ứng dụng: không có mã định danh cài đặt, không có gì về bạn.",
             "Đó là toàn bộ danh sách. Danh sách cho phép nằm trong mã nguồn, tại packages/instrumentation và packages/telemetry, và bạn có thể đọc nó."
           ]
         },
