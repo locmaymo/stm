@@ -35,6 +35,51 @@ jobs:
             build/SillyTavernManager-windows-x64-*.zip
             build/SillyTavernManager-windows-x64-*.zip.sha256
 
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 17
+      - run: npm ci
+      # A phone only takes an update signed with the key it installed from, so
+      # a tagged build without the release key fails here rather than shipping
+      # an APK signed with a throwaway debug key.
+      - name: Build the APK
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.STM_ANDROID_KEYSTORE_BASE64 }}
+          STM_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.STM_ANDROID_KEYSTORE_PASSWORD }}
+          STM_ANDROID_KEY_ALIAS: ${{ secrets.STM_ANDROID_KEY_ALIAS }}
+          STM_ANDROID_KEY_PASSWORD: ${{ secrets.STM_ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.p12"
+            export STM_ANDROID_KEYSTORE="$RUNNER_TEMP/release.p12"
+          elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "::error::STM_ANDROID_KEYSTORE_BASE64 is not set; a release APK must carry the release signature"
+            exit 1
+          fi
+          npm run release:android
+          rm -f "$RUNNER_TEMP/release.p12"
+      - name: Create checksum
+        shell: bash
+        run: |
+          cd build
+          for apk in SillyTavernManager-android-*.apk; do sha256sum "$apk" > "$apk.sha256"; done
+      - uses: actions/upload-artifact@v7
+        with:
+          name: android-apk
+          path: |
+            build/SillyTavernManager-android-*.apk
+            build/SillyTavernManager-android-*.apk.sha256
+
   container:
     runs-on: ubuntu-latest
     steps:
@@ -70,13 +115,17 @@ jobs:
 
   publish:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [windows, npm-package]
+    needs: [windows, android, npm-package]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v8
         with:
           name: windows-portable
           path: release/windows
+      - uses: actions/download-artifact@v8
+        with:
+          name: android-apk
+          path: release/android
       - uses: actions/download-artifact@v8
         with:
           name: npm-package

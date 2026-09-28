@@ -51,6 +51,13 @@ and the Android SDK (`ANDROID_HOME`, or `sdk.dir` in `local.properties`), and
 and its password, alias and key password variables, the APK is signed with the
 debug key.
 
+A release tag builds the arm64 APK in `.github/workflows/release.yml`, signed
+with the release key from the repository secrets `STM_ANDROID_KEYSTORE_BASE64`
+(the PKCS12 keystore, base64), `STM_ANDROID_KEYSTORE_PASSWORD`,
+`STM_ANDROID_KEY_ALIAS` and `STM_ANDROID_KEY_PASSWORD`. A tag without them
+fails the release: phones only take an update signed with the key they
+installed from, so that key must never change.
+
 Termux's mirror keeps only current builds, so a pinned package eventually stops
 downloading. `node scripts/build-android.mjs --refresh` rewrites
 `runtime-packages.json` from the mirror as it is now.
