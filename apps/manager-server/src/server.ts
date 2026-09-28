@@ -5,7 +5,7 @@ import { createReadStream } from 'node:fs';
 import { hostname, networkInterfaces } from 'node:os';
 import { createSocket } from 'node:dgram';
 import { extname, join, relative, resolve, sep } from 'node:path';
-import { applyQuery, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, isConsoleStatusSection, KEEP_ONLINE_DEFAULT_MINUTES, OPERATION_JOB_KINDS, SETUP_STEPS, type AccessGatewayState, type ApiErrorBody, type BackupManifest, type ConfigUpdateInput, type ConsoleStatus, type ConsoleStatusSection, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogPage, type LogSink, type LogSourceFilter, type LegalReview, type ManagerPorts, type ManagerUpdateStatus, type OnlineState, type PortSettings, type Profile, type ProfileLayout, type RestorePreview, type SetupChecklistState, type SetupStatus, type SetupStep, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
+import { applyQuery, availableUpdate, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, isConsoleStatusSection, KEEP_ONLINE_DEFAULT_MINUTES, OPERATION_JOB_KINDS, SETUP_STEPS, type AccessGatewayState, type ApiErrorBody, type BackupManifest, type ConfigUpdateInput, type ConsoleStatus, type ConsoleStatusSection, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogPage, type LogSink, type LogSourceFilter, type LegalReview, type ManagerPorts, type ManagerUpdateStatus, type OnlineState, type PortSettings, type Profile, type ProfileLayout, type RestorePreview, type SetupChecklistState, type SetupStatus, type SetupStep, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
 import { getPlatformPaths, storageDurability, storageMedium, storageReport, type PlatformPaths } from '../../../packages/platform/src/index.js';
 import { INSTALL_CANCELED, RuntimeError, RuntimeManager, type InstallationProgress } from '../../../packages/sillytavern-runtime/src/index.js';
 import { hashPassword, MIN_PASSWORD_LENGTH, validatePasscode, validatePassword, verifyPassword } from './password.js';
@@ -33,6 +33,7 @@ import { TransferMeter } from './progress.js';
 import { MetricsStore } from './metrics.js';
 import { ActivityMeter } from './activity.js';
 import { ReleaseWatch } from './manager-release.js';
+import { NotificationCenter, NotificationRules, type NotificationLocale } from './notifications.js';
 import { OnlineKeeper } from './online.js';
 import { formatGibibytes, SaverMode } from './saver.js';
 import { capacityFor, checkFits, decideTrim, diskSpace, memoryGuard, roomCheck } from './headroom.js';
@@ -100,6 +101,8 @@ const PROTECTED_PATHS = new Set([
   '/api/v1/checklist',
   '/api/v1/saver',
   '/api/v1/status',
+  '/api/v1/notifications',
+  '/api/v1/notifications/read',
   '/api/v1/legal',
   '/api/v1/legal/acknowledge',
   '/api/v1/tunnel',
@@ -764,6 +767,44 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     },
   });
   await activity.start();
+  /*
+   * The bell, and what rings it. Read off the log the manager already writes
+   * and off a slow clock for the things nothing logs; see `notifications.ts`.
+   */
+  const notifications = new NotificationCenter({ paths, locale: env.LANG?.toLowerCase().startsWith('vi') ? 'vi' : 'en' });
+  await notifications.load();
+  const notificationRules = new NotificationRules({
+    center: notifications,
+    tunnelDown: () => {
+      const state = tunnel.getState();
+      return state.mode !== 'off' && state.status !== 'running';
+    },
+    freeBytes: async () => {
+      const storage = (await system.snapshot()).storage;
+      return storage.inMemory || storage.totalBytes === null || storage.freeBytes === null ? null : { free: storage.freeBytes, total: storage.totalBytes };
+    },
+    cloudUse: async () => {
+      const config = await r2.getConfig();
+      if (!config.enabled || !config.configured) return null;
+      const share = (used: number, limit: number): number => (limit > 0 ? used / limit : 0);
+      return {
+        storage: share(config.usage.storageBytes, config.limits.maxStorageBytes),
+        writes: share(config.usage.writeOperations, config.limits.maxWriteOperations),
+        reads: share(config.usage.readOperations, config.limits.maxReadOperations),
+      };
+    },
+    sillyTavernUpdate: async () => {
+      const update = availableUpdate(await runtime.listVersions(), await runtime.getActiveInstallation());
+      return update?.label ?? null;
+    },
+    managerUpdate: async () => {
+      await releases.check();
+      return releases.status().update?.version ?? null;
+    },
+  });
+  jobs.onLine((line) => notificationRules.onLog(line));
+  jobs.onFinish((job) => notificationRules.onJob(job));
+  if (!testRuntime) notificationRules.start();
   const telemetry = options.telemetry ?? new TelemetryTransport({
     paths,
     metricsFile: metrics.filePath,
@@ -874,6 +915,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       system,
       releases,
       online,
+      notifications,
       proxy,
       publishProxies,
       budget,
@@ -1014,7 +1056,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     online,
     // The meter closes first, so the part of today that has just been spent is
     // written down before the transport looks for finished days.
-    close: async () => { online.close(); await activity.close(); await telemetry.close(); await scheduler.close(); await tunnel.close(); await managerTunnel.close(); await gateway.close(); await supervisor.close(); await backups.settle(); await profiles.settle(); await closeServer(server); },
+    close: async () => { online.close(); notificationRules.close(); await activity.close(); await telemetry.close(); await scheduler.close(); await tunnel.close(); await managerTunnel.close(); await gateway.close(); await supervisor.close(); await backups.settle(); await profiles.settle(); await closeServer(server); },
   };
 }
 
@@ -1060,6 +1102,8 @@ async function handleRequest(options: {
   readonly releases: ReleaseWatch;
   /** What keeps this manager online; see `online.ts`. */
   readonly online: OnlineKeeper;
+  /** The bell; see `notifications.ts`. */
+  readonly notifications: NotificationCenter;
   readonly proxy: ProxyWorkerManager | null;
   /** Put the fixed addresses in place, for a Cloudflare account just connected. */
   readonly publishProxies: () => void;
@@ -1078,7 +1122,7 @@ async function handleRequest(options: {
   readonly autoInstall: boolean;
   readonly onShutdownRequest: (() => void) | undefined;
 }): Promise<void> {
-  const { request, response, store, sessions, rateLimiter, handoffs, startedAt, publicOrigins, proxiedOrigin, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, releases, online, proxy, publishProxies, budget, saver, shutdownToken, autoInstall, onShutdownRequest } = options;
+  const { request, response, store, sessions, rateLimiter, handoffs, startedAt, publicOrigins, proxiedOrigin, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, releases, online, notifications, proxy, publishProxies, budget, saver, shutdownToken, autoInstall, onShutdownRequest } = options;
   // Whether the browser's side of this connection is HTTPS, which is not the
   // same question as whether ours is: a hosted console is reached over HTTPS
   // that a proxy terminates before us, and only the proxy's own header says so.
@@ -1380,7 +1424,7 @@ async function handleRequest(options: {
     if (method !== 'GET' && !requireCsrf(context, session.csrfToken)) {
       return;
     }
-    await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, online, proxy, publishProxies, budget, logger, handoffs, saver, sessions);
+    await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, online, proxy, publishProxies, budget, logger, handoffs, saver, sessions, notifications);
     return;
   }
 
@@ -1633,7 +1677,7 @@ async function adoptRestoredPort(deps: PortAdoptionDeps, port: number): Promise<
   }
 }
 
-async function handleRuntimeRequest(context: RequestContext, store: StateStore, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, managerTunnel: TunnelManager, gateway: AccessGateway, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, cloudflare: CloudflareConnection | null, metrics: MetricsStore, activity: ActivityMeter, config: ConfigStore, system: SystemStore, online: OnlineKeeper, proxy: ProxyWorkerManager | null, publishProxies: () => void, budget: WorkerBudget, logger: LogSink, handoffs: HandoffStore, saver: SaverMode, sessions: SessionStore): Promise<void> {
+async function handleRuntimeRequest(context: RequestContext, store: StateStore, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, managerTunnel: TunnelManager, gateway: AccessGateway, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, cloudflare: CloudflareConnection | null, metrics: MetricsStore, activity: ActivityMeter, config: ConfigStore, system: SystemStore, online: OnlineKeeper, proxy: ProxyWorkerManager | null, publishProxies: () => void, budget: WorkerBudget, logger: LogSink, handoffs: HandoffStore, saver: SaverMode, sessions: SessionStore, notifications: NotificationCenter): Promise<void> {
   const { pathname, ports, request, response, searchParams } = context;
   const method = request.method ?? 'GET';
   const adoptSillyTavernPort = (port: number): Promise<void> =>
@@ -2751,6 +2795,27 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
    * The endpoints it replaces are untouched: something already open against an
    * older panel, or a script somebody wrote, still has them.
    */
+  /*
+   * The bell. The list is asked for when the console's clock says it moved;
+   * `locale` is remembered for the channels that cannot ask, like a push.
+   */
+  if (pathname === '/api/v1/notifications' && method === 'GET') {
+    const locale = searchParams.get('locale');
+    if (locale === 'en' || locale === 'vi') await notifications.setLocale(locale as NotificationLocale);
+    sendJson(response, 200, await notifications.list());
+    return;
+  }
+  if (pathname === '/api/v1/notifications/read' && method === 'POST') {
+    const body = await readJson(request);
+    const ids = isRecord(body) && Array.isArray(body.ids) ? body.ids.filter((id): id is string => typeof id === 'string').slice(0, 200) : undefined;
+    sendJson(response, 200, await notifications.markRead(ids));
+    return;
+  }
+  if (pathname === '/api/v1/notifications' && method === 'DELETE') {
+    await notifications.clear();
+    sendJson(response, 200, notifications.summary());
+    return;
+  }
   if (pathname === '/api/v1/status' && method === 'GET') {
     /*
      * The expensive halves, sent only to a caller that says it is showing them.
@@ -2843,6 +2908,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
        * decided in the console because the console cannot see the figure.
        */
       ...(easesPolling(budget.level()) ? { easePolling: true } : {}),
+      notifications: notifications.summary(),
       // Asked for by name above; absent when the console is not showing them.
       ...(sections.has('system') ? { system: await system.snapshot() } : {}),
       ...(logs ? { logs } : {}),
@@ -4981,11 +5047,30 @@ function contentTypeFor(filePath: string): string {
 class JobStore {
   private readonly jobs = new Map<string, Job>();
   private readonly controllers = new Map<string, AbortController>();
+  private readonly lineListeners = new Set<(line: LogLine) => void>();
+  private readonly finishListeners = new Set<(job: Job) => void>();
 
   public constructor(private readonly logBuffer = new LogBuffer()) {}
 
   public append(source: LogEntry['source'], line: LogLine, level: LogEntry['level'] = 'info'): void {
     this.logBuffer.append(source, line, level);
+    for (const listener of this.lineListeners) {
+      try { listener(line); } catch { /* a listener failing must not stop the log */ }
+    }
+  }
+
+  /** Every line written, for whatever reads meaning off the codes; see `notifications.ts`. */
+  public onLine(listener: (line: LogLine) => void): void { this.lineListeners.add(listener); }
+
+  /** Every job as it finishes, however it finished. */
+  public onFinish(listener: (job: Job) => void): void { this.finishListeners.add(listener); }
+
+  private finished(id: string): void {
+    const job = this.jobs.get(id);
+    if (!job) return;
+    for (const listener of this.finishListeners) {
+      try { listener(job); } catch { /* as above */ }
+    }
   }
 
   public logs(after: number, source: LogEntry['source'] | null): LogPage {
@@ -5117,6 +5202,7 @@ class JobStore {
       error: settled === 'canceled' ? null : error,
       updatedAt: new Date().toISOString(),
     });
+    this.finished(id);
   }
 
   public updateOperation(id: string, progress: number, step: LogEvent): void {
@@ -5137,6 +5223,7 @@ class JobStore {
     const stepCode = options.stepCode ?? (settled === 'succeeded' ? 'job.completed' : settled === 'canceled' ? 'job.stopped' : 'job.failed');
     this.controllers.delete(id);
     this.jobs.set(id, { ...current, state: settled, progress: settled === 'succeeded' ? 100 : current.progress, step, stepCode, ...(options.backupId ? { resultBackupId: options.backupId } : {}), error: settled === 'canceled' ? null : error, updatedAt: new Date().toISOString() });
+    this.finished(id);
   }
 }
 

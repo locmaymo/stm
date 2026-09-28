@@ -33,8 +33,9 @@ import { isLocalHostname, isThisMachine, readAddressOfferAnswered, readOwnLinkWa
 import { availableUpdate, readDismissedManagerRelease, readDismissedUpdate, saveDismissedManagerRelease, saveDismissedUpdate, shouldShowManagerRelease } from './updates.js';
 import { readDismissedDisplaced, readDismissedRecovery, readDismissedSettings, saveDismissedDisplaced, saveDismissedRecovery, saveDismissedSettings, shouldOfferSettings, shouldShowDisplaced, shouldShowRecovery } from './settings-offer.js';
 import { apiFetch, onSessionExpired, resetSessionWatch, sessionToken, setSessionToken } from './session.js';
+import { NotificationBell } from './notification-bell.js';
 import { collectCloudflareResult, framed, inPhoneApp, openReturnWindow, popupsBlocked, whenAbandoned, type CollectedResult } from './oauth.js';
-import type { AccessGatewayState, AccessLinkPreference, AccessLinkTarget, BackupManifest, CloudflareAccountProblem, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LegalReview, LogEntry, LogSourceFilter, ManagerRelease, ManagerSettingsOffer, ManagerUpdateStatus, OnlineState, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, SaverState, SetupChecklistState, SetupStep, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, AccessLinkPreference, AccessLinkTarget, BackupManifest, CloudflareAccountProblem, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LegalReview, LogEntry, LogSourceFilter, ManagerRelease, ManagerSettingsOffer, ManagerUpdateStatus, NotificationSummary, OnlineState, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, SaverState, SetupChecklistState, SetupStep, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, isCloudJob, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
 import { usePoll } from './use-poll.js';
@@ -964,6 +965,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
   /** What the manager does with SillyTavern on its own way up. Null until read. */
   const [startup, setStartup] = useState<StartupSettings | null>(null);
   const [saver, setSaver] = useState<SaverState | null>(null);
+  const [notificationSummary, setNotificationSummary] = useState<NotificationSummary | null>(null);
   /** Whether the manager keeps itself online, and how that is going. */
   const [online, setOnline] = useState<OnlineState | null>(null);
   const [logSource, setLogSource] = useState<LogSourceFilter>('all');
@@ -1241,6 +1243,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     // Said by the manager, which is the only side that can see how much of the
     // day's Worker allowance is left.
     setEasePolling(status.easePolling === true);
+    if (status.notifications) setNotificationSummary(status.notifications);
     setProcessState(status.process);
     setTunnelState(status.tunnel);
     setManagerTunnelState(status.managerTunnel);
@@ -1872,6 +1875,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
                   aria-label={hasNewLogs ? `${t('console.openLogs')} · ${t('console.newLogs')}` : undefined}
                   onClick={() => setLogsExpanded(true)}
                 ><ScrollText />{t('console.openLogs')}{hasNewLogs ? <span className="log-new-dot" aria-hidden="true" /> : null}</Button>
+                <NotificationBell t={t} locale={preferences.locale} summary={notificationSummary} csrfToken={csrfToken} />
                 <LanguageControl t={t} preferences={preferences} onChange={changePreferences} />
                 <Button variant="ghost" size="icon-sm" aria-label={preferences.theme === 'dark' ? t('console.useLight') : t('console.useDark')} onClick={() => changePreferences({ theme: preferences.theme === 'dark' ? 'light' : 'dark' })}>
                   {preferences.theme === 'dark' ? <Sun /> : <Moon />}

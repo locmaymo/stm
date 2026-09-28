@@ -2448,3 +2448,24 @@ test("a manager that cannot see its Worker usage keeps handing out fixed address
   assert.equal(status.managerTunnel.proxyUrl, 'https://stm.acme.workers.dev');
   assert.equal(status.easePolling, undefined);
 });
+
+test('the bell is behind the sign-in, carried on the console clock, and marked read', async (t) => {
+  const manager = await createServer({ bootstrapPassword: 'correct horse battery staple' });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  assert.equal((await fetch(`${base}/api/v1/notifications`)).status, 401);
+  const auth = await signIn(base);
+  const headers = { cookie: auth.cookie };
+
+  const empty = await (await fetch(`${base}/api/v1/status`, { headers })).json() as ConsoleStatus;
+  assert.deepEqual(empty.notifications, { unread: 0, latestId: null });
+  assert.deepEqual(await (await fetch(`${base}/api/v1/notifications?locale=vi`, { headers })).json(), { items: [], unread: 0 });
+
+  // Marking read, and clearing, change the bell, so they need the CSRF token.
+  const unguarded = await fetch(`${base}/api/v1/notifications/read`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json' }, body: '{}' });
+  assert.equal(unguarded.status, 403);
+  const read = await fetch(`${base}/api/v1/notifications/read`, { method: 'POST', headers: { ...headers, 'content-type': 'application/json', 'x-csrf-token': auth.csrfToken }, body: '{}' });
+  assert.deepEqual(await read.json(), { unread: 0, latestId: null });
+  const cleared = await fetch(`${base}/api/v1/notifications`, { method: 'DELETE', headers: { ...headers, 'x-csrf-token': auth.csrfToken } });
+  assert.equal(cleared.status, 200);
+});

@@ -1166,5 +1166,104 @@
     "previous": "Trang trước",
     "next": "Trang sau",
     "page": "Trang {page} trên {of}"
+  },
+  "notify": {
+    "title": "Thông báo",
+    "open": "Thông báo",
+    "unread": "{count} chưa đọc",
+    "empty": "Chưa có gì mới",
+    "markAllRead": "Đánh dấu đã đọc",
+    "clear": "Xoá hết",
+    "openLink": "Mở",
+    "push": "Thông báo trên thiết bị này",
+    "pushOn": "Đang bật",
+    "pushBlocked": "Đã bị chặn trong cài đặt của trình duyệt",
+    "pushUnsupported": "Trình duyệt này không hiện được thông báo từ đây",
+    "pushNeedsHttps": "Hãy mở bảng điều khiển bằng link https để nhận thông báo",
+    "pushNeedsHomeScreen": "Trên iPhone, hãy thêm bảng điều khiển vào Màn hình chính trước",
+    "pushFailed": "Không bật được thông báo",
+    "pushTest": "Gửi thử",
+    "pushTestSent": "Đã gửi một thông báo thử",
+    "appManaged": "Ứng dụng hiện các thông báo này trên điện thoại",
+    "jobs": {
+      "backup": "Sao lưu",
+      "restore": "Khôi phục",
+      "r2Upload": "Sao lưu lên cloud",
+      "r2Fetch": "Lấy điểm khôi phục",
+      "installation": "Cài đặt"
+    },
+    "quota": {
+      "storage": "dung lượng",
+      "writes": "lượt ghi",
+      "reads": "lượt đọc"
+    },
+    "sillytavernCrashed": {
+      "title": "SillyTavern dừng bất ngờ",
+      "body": "SillyTavern tự thoát ({detail}). Mở trình quản lý để chạy lại hoặc xem nhật ký."
+    },
+    "installFinished": {
+      "title": "Đã cài xong SillyTavern {ref}",
+      "body": "SillyTavern đã sẵn sàng."
+    },
+    "installFailed": {
+      "title": "Cài SillyTavern không thành công",
+      "body": "{reason}"
+    },
+    "backupFailed": {
+      "title": "Sao lưu tự động đang lỗi",
+      "body": "{reason}"
+    },
+    "backupRecovered": {
+      "title": "Sao lưu tự động đã chạy lại",
+      "body": "Bản sao lưu mới nhất đã thành công."
+    },
+    "backupDone": {
+      "title": "Đã sao lưu xong",
+      "body": "Có một bản sao lưu mới trên máy."
+    },
+    "cloudBackupDone": {
+      "title": "Đã sao lưu lên cloud xong",
+      "body": "Dữ liệu của bạn trên cloud đã được cập nhật."
+    },
+    "restoreDone": {
+      "title": "Đã khôi phục xong",
+      "body": "Dữ liệu đã trở lại SillyTavern."
+    },
+    "cloudRestoreDone": {
+      "title": "Đã khôi phục từ cloud",
+      "body": "Dữ liệu từ cloud đã trở lại SillyTavern."
+    },
+    "operationFailed": {
+      "title": "{job} không thành công",
+      "body": "{reason}"
+    },
+    "sillytavernUpdate": {
+      "title": "Đã có SillyTavern {version}",
+      "body": "Mở trình quản lý để cập nhật."
+    },
+    "managerUpdate": {
+      "title": "Đã có SillyTavern Manager {version}",
+      "body": "Tải bản mới để cập nhật."
+    },
+    "tunnelDown": {
+      "title": "Link SillyTavern đang bị rớt",
+      "body": "Link chưa kết nối lại được vài phút nay. Trình quản lý vẫn đang thử."
+    },
+    "diskLow": {
+      "title": "Sắp hết dung lượng",
+      "body": "Chỉ còn {free} trống ở nơi trình quản lý giữ dữ liệu của bạn."
+    },
+    "cloudQuota": {
+      "title": "Sao lưu cloud sắp chạm giới hạn",
+      "body": "Đã dùng {percent}% {what} của tháng này."
+    },
+    "bucketTaken": {
+      "title": "Máy khác đã tiếp quản sao lưu cloud",
+      "body": "Máy này đã dừng sao lưu lên tài khoản Cloudflare của bạn."
+    },
+    "broadcast": {
+      "title": "Tin từ SillyTavern Manager",
+      "body": ""
+    }
   }
 }

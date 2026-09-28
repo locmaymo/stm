@@ -1572,6 +1572,8 @@ export interface ConsoleStatus {
    * whatever pace the screen calls for.
    */
   readonly easePolling?: boolean;
+  /** The bell: how many are unread, and the newest, so the list is fetched only when it moved. */
+  readonly notifications?: NotificationSummary;
 }
 
 /** New log lines and the cursor to ask from next time. */
@@ -1766,4 +1768,110 @@ export interface TelemetryEnvelope {
   readonly nonce: string;
   readonly signature: string;
   readonly batch: TelemetryBatch;
+}
+
+export interface AvailableUpdate {
+  /** The ref the newest release resolves to, which is what gets dismissed. */
+  readonly ref: string;
+  /** What to call it on screen: the tag when there is one, else the ref. */
+  readonly label: string;
+}
+
+/**
+ * The newer release worth mentioning, or null when there is nothing to say.
+ *
+ * Someone who has deliberately stayed on an older version does not want to be
+ * told about it every time they open the page, and someone who has not noticed
+ * a release does want to be told once. Both are served by naming the release
+ * rather than the fact of being behind: the notice carries the ref it is
+ * about, dismissing it remembers that ref, and the next release is a different
+ * ref and so says so again. Nobody is asked twice about the same version, and
+ * nobody misses one.
+ *
+ * Staging is left alone entirely. It is a branch, not a release: it moves
+ * under whoever is following it, and being behind it is its normal state
+ * rather than news.
+ */
+export function availableUpdate(versions: readonly VersionOption[], installation: Installation | null | undefined): AvailableUpdate | null {
+  if (!installation || installation.status !== 'ready') return null;
+  if (installation.selector === 'staging') return null;
+  const installed = installation.resolvedRef;
+  if (!installed) return null;
+  const newest = newestRelease(versions);
+  if (!newest) return null;
+  if (newest.ref === installed) return null;
+  return { ref: newest.ref, label: newest.tag ?? newest.ref };
+}
+
+/**
+ * What the release channel currently points at.
+ *
+ * `latest` is the pointer the server keeps for exactly this, so it is asked
+ * first; the scan for a release-channel option is for a payload that predates
+ * it or omits it.
+ */
+function newestRelease(versions: readonly VersionOption[]): VersionOption | null {
+  const pointer = versions.find((option) => option.selector === 'latest');
+  if (pointer) return pointer;
+  return versions.find((option) => option.channel === 'release') ?? null;
+}
+
+/**
+ * Something the manager tells its owner about, in the bell and, where they
+ * asked for it, as a push notification.
+ *
+ * The kinds are fixed and their words live in the locale files under
+ * `notify.<kind>`, so a notification reads in whichever language it is shown
+ * in rather than the one the manager happened to be in when it was written.
+ * A broadcast carries its own words in both languages instead.
+ */
+export const NOTIFICATION_KINDS = [
+  'sillytavernCrashed',
+  'installFinished',
+  'installFailed',
+  'backupFailed',
+  'backupRecovered',
+  'backupDone',
+  'cloudBackupDone',
+  'restoreDone',
+  'cloudRestoreDone',
+  'operationFailed',
+  'sillytavernUpdate',
+  'managerUpdate',
+  'tunnelDown',
+  'diskLow',
+  'cloudQuota',
+  'bucketTaken',
+  'broadcast',
+] as const;
+export type NotificationKind = (typeof NOTIFICATION_KINDS)[number];
+export type NotificationLevel = 'info' | 'success' | 'warning' | 'error';
+
+/** Words written by a person rather than looked up, in both languages. */
+export interface BroadcastText {
+  readonly en: string;
+  readonly vi: string;
+}
+
+export interface ManagerNotification {
+  readonly id: string;
+  readonly kind: NotificationKind;
+  readonly level: NotificationLevel;
+  readonly createdAt: string;
+  /** Null until somebody has seen it in the bell. */
+  readonly readAt: string | null;
+  readonly params?: MessageParams;
+  /** Only on a broadcast: what it says, and where it points. */
+  readonly broadcast?: { readonly title: BroadcastText; readonly body: BroadcastText; readonly url: string | null };
+}
+
+export interface NotificationList {
+  readonly items: readonly ManagerNotification[];
+  readonly unread: number;
+}
+
+/** What the console's clock carries about the bell: enough to know when to ask for the list. */
+export interface NotificationSummary {
+  readonly unread: number;
+  readonly latestId: string | null;
 }

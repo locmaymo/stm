@@ -1166,5 +1166,104 @@
     "previous": "Previous page",
     "next": "Next page",
     "page": "Page {page} of {of}"
+  },
+  "notify": {
+    "title": "Notifications",
+    "open": "Notifications",
+    "unread": "{count} unread",
+    "empty": "Nothing new",
+    "markAllRead": "Mark all read",
+    "clear": "Clear",
+    "openLink": "Open",
+    "push": "Notifications on this device",
+    "pushOn": "On",
+    "pushBlocked": "Blocked in this browser's settings",
+    "pushUnsupported": "This browser cannot show notifications from here",
+    "pushNeedsHttps": "Open the console through its https link to get notifications",
+    "pushNeedsHomeScreen": "On iPhone, add the console to the Home Screen first",
+    "pushFailed": "Notifications could not be turned on",
+    "pushTest": "Send a test",
+    "pushTestSent": "A test notification was sent",
+    "appManaged": "The app shows these as phone notifications",
+    "jobs": {
+      "backup": "The backup",
+      "restore": "The restore",
+      "r2Upload": "The cloud backup",
+      "r2Fetch": "Bringing back the recovery point",
+      "installation": "The install"
+    },
+    "quota": {
+      "storage": "storage",
+      "writes": "write operations",
+      "reads": "read operations"
+    },
+    "sillytavernCrashed": {
+      "title": "SillyTavern stopped unexpectedly",
+      "body": "It exited on its own ({detail}). Open the manager to start it again or read the log."
+    },
+    "installFinished": {
+      "title": "SillyTavern {ref} is installed",
+      "body": "It is ready to use."
+    },
+    "installFailed": {
+      "title": "SillyTavern could not be installed",
+      "body": "{reason}"
+    },
+    "backupFailed": {
+      "title": "Automatic backups are failing",
+      "body": "{reason}"
+    },
+    "backupRecovered": {
+      "title": "Automatic backups are working again",
+      "body": "The latest backup went through."
+    },
+    "backupDone": {
+      "title": "Backup finished",
+      "body": "A new backup is on this machine."
+    },
+    "cloudBackupDone": {
+      "title": "Cloud backup finished",
+      "body": "Your data is up to date in the cloud."
+    },
+    "restoreDone": {
+      "title": "Restore finished",
+      "body": "SillyTavern has your data back."
+    },
+    "cloudRestoreDone": {
+      "title": "Recovery point restored",
+      "body": "SillyTavern has your data back from the cloud."
+    },
+    "operationFailed": {
+      "title": "{job} did not finish",
+      "body": "{reason}"
+    },
+    "sillytavernUpdate": {
+      "title": "SillyTavern {version} is out",
+      "body": "Open the manager to update."
+    },
+    "managerUpdate": {
+      "title": "SillyTavern Manager {version} is out",
+      "body": "Download the new version to update."
+    },
+    "tunnelDown": {
+      "title": "Your SillyTavern link is down",
+      "body": "It has not come back for a few minutes. The manager keeps trying."
+    },
+    "diskLow": {
+      "title": "Running out of space",
+      "body": "Only {free} is left where the manager keeps your data."
+    },
+    "cloudQuota": {
+      "title": "The cloud backup is near its limit",
+      "body": "{percent}% of this month's {what} is used."
+    },
+    "bucketTaken": {
+      "title": "Another machine took over cloud backups",
+      "body": "This machine has stopped backing up to your Cloudflare account."
+    },
+    "broadcast": {
+      "title": "News from SillyTavern Manager",
+      "body": ""
+    }
   }
 }
