@@ -1474,7 +1474,7 @@ export class R2Manager {
       this.settingsSent = full;
       this.settingsSentAt = now.getTime();
       await this.recordCharges();
-      this.logger(logEvent('r2.settingsSaved', '[r2] the manager’s own settings are in the bucket, so a new machine can pick them up', {}));
+      this.logger(logEvent('r2.settingsSaved', '[r2] manager settings saved to the cloud', {}));
       return true;
     } catch (error: unknown) {
       this.logger(logEvent('r2.settingsSaveSkipped', `[r2] the manager’s own settings could not be saved to the bucket: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));

@@ -113,11 +113,24 @@ export function parseManagerSettings(value: unknown): ManagerSettingsRecord | nu
  * What decides whether a write is worth making: the timestamp and the machine
  * change on every start, and writing for that alone would mean a charged
  * operation every time anybody restarted the manager.
+ *
+ * Compared with the keys in one order. A record read back from the bucket is
+ * built by `parseManagerSettings`, whose keys come in a different order from
+ * the record this machine builds, so comparing the two as written found a
+ * difference every time: the settings were written again, and logged, on
+ * every tick of the slow clock.
  */
 export function settingsUnchanged(left: ManagerSettingsRecord | null, right: ManagerSettingsRecord): boolean {
   if (!left) return false;
-  const strip = (record: ManagerSettingsRecord): string => JSON.stringify({ ...record, label: '', installId: '', writtenAt: '' });
+  const strip = (record: ManagerSettingsRecord): string => canonicalJson({ ...record, label: '', installId: '', writtenAt: '' });
   return strip(left) === strip(right);
+}
+
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(value, (_key, inner: unknown) => {
+    if (typeof inner !== 'object' || inner === null || Array.isArray(inner)) return inner;
+    return Object.fromEntries(Object.entries(inner as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+  });
 }
 
 function text(value: unknown): string | null {

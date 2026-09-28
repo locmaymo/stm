@@ -199,7 +199,7 @@ export function windowPage(locale: WindowLocale, nonce: string): string {
 <html lang="${text.lang}">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover,interactive-widget=resizes-content">
 <meta name="referrer" content="no-referrer">
 <title>${e(text.title)}</title>
 <style>${WINDOW_STYLE}</style>

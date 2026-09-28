@@ -5118,9 +5118,9 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
           */}
         {settingsOffer?.available && !settingsOffer.mine && !displaced ? <Alert>
           <Settings2 />
-          <AlertTitle>{t('console.r2SettingsTitle')}</AlertTitle>
+          <AlertTitle>{t('console.r2SettingsTitle', { name: machineName(settingsOffer.label ?? ''), when: settingsOffer.writtenAt ? new Date(settingsOffer.writtenAt).toLocaleString() : '' })}</AlertTitle>
           <AlertDescription className="grid gap-2">
-            <span>{t('console.r2SettingsBody', { name: machineName(settingsOffer.label ?? ''), when: settingsOffer.writtenAt ? new Date(settingsOffer.writtenAt).toLocaleString() : '' })}</span>
+            <span className="text-xs">{t('console.r2SettingsBody')}</span>
             {settingsOffer.hasAdminPassword ? <span className="text-xs">{t('console.r2SettingsPasswordWarning')}</span> : null}
             <span className="flex flex-wrap gap-2">
               <Button size="sm" variant="outline" onClick={() => restoreManagerSettings()} disabled={r2Busy !== null}>{t('console.r2SettingsRestore')}</Button>
@@ -5220,9 +5220,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
         {signedIn && cloudflare?.restReason ? <Alert><TriangleAlert /><AlertDescription>{t(cloudflare.restReason === 'workers_not_granted' ? 'console.cfSlowNotGranted' : 'console.cfSlowUnavailable')}</AlertDescription></Alert> : null}
         {r2Config?.configured && activeProfile === null && r2Snapshots.length > 0
           ? <Alert><Cloud /><AlertDescription>{t('console.r2AwaitingInstall', { count: r2Snapshots.length })}</AlertDescription></Alert>
-          : r2Config?.configured && r2Config.lastUploadAt === null && r2Snapshots.length > 0
-            ? <Alert><Cloud /><AlertDescription>{t('console.cfNewMachine', { count: r2Snapshots.length })}</AlertDescription></Alert>
-            : null}
+          : null}
         {r2Config?.configured ? <>
           {/* One set of figures, not two: Cloudflare's own when it can be asked,
               because it sees every machine on the bucket, and the manager's

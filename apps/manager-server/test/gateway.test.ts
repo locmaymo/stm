@@ -146,6 +146,9 @@ test('the tools window is behind the door and comes back to it after signing in'
   assert.equal(page.status, 200);
   const html = await page.text();
   assert.match(html, /<iframe[^>]+src="\/"/u, 'SillyTavern is framed from this same origin');
+  // A framed page's own viewport tag is ignored: this page's decides. Without
+  // SillyTavern's maximum-scale, iOS zoomed in on every tap of the chat box.
+  assert.match(html, /<meta name="viewport" content="[^"]*maximum-scale=1[^"]*interactive-widget=resizes-content/u);
   assert.ok(html.includes('Sao lưu cục bộ ngay'), 'in the reader\u2019s language');
   const policy = page.headers.get('content-security-policy') ?? '';
   const nonce = /script-src 'nonce-([^']+)'/u.exec(policy)?.[1];
