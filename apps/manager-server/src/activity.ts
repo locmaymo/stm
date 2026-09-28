@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { appendFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { isR2UsageMode, type AppUsageDay, type AppUsageSummary, type R2UsageMode } from '../../../packages/contracts/src/index.js';
+import { isR2UsageMode, usageBytes, type AppUsageDay, type AppUsageSizes, type AppUsageSummary, type R2UsageMode } from '../../../packages/contracts/src/index.js';
 import type { PlatformPaths } from '../../../packages/platform/src/index.js';
 
 const STATE_FILE = 'app-usage.json';
@@ -40,6 +40,15 @@ export const SAMPLE_INTERVAL_MS = 60_000;
  */
 export const CONSOLE_GAP_MS = 120_000;
 
+/**
+ * How often the sizes are read.
+ *
+ * They move slowly, and the day keeps only the last reading, so twice an hour
+ * is plenty. Reading them costs a directory listing and a look at numbers the
+ * manager already holds; nothing is walked or asked of the bucket for this.
+ */
+export const SIZES_INTERVAL_MS = 30 * 60_000;
+
 interface PersistedUsage {
   readonly schemaVersion: 1;
   readonly days: Readonly<Record<string, DayCounts>>;
@@ -53,6 +62,9 @@ interface DayCounts {
   consoleSeconds: number;
   starts: number;
   r2?: R2UsageMode;
+  dataBytes?: number;
+  backupBytes?: number;
+  cloudBytes?: number;
 }
 
 export interface ActivityMeterOptions {
@@ -68,6 +80,12 @@ export interface ActivityMeterOptions {
    * answer of the day is the one the day keeps.
    */
   readonly r2Mode?: () => Promise<R2UsageMode>;
+  /**
+   * How much there is to keep: SillyTavern's data, the archives on the
+   * machine, and what is in R2. A size that is not known is null and is left
+   * out of the day rather than sent as nothing.
+   */
+  readonly sizes?: () => Promise<AppUsageSizes>;
 }
 
 /**
@@ -90,6 +108,8 @@ export class ActivityMeter {
   private readonly now: () => Date;
   private readonly sillyTavernRunning: () => boolean;
   private readonly r2Mode: (() => Promise<R2UsageMode>) | null;
+  private readonly sizes: (() => Promise<AppUsageSizes>) | null;
+  private sizesReadAt = 0;
   private state: PersistedUsage = { schemaVersion: 1, days: {}, reported: [] };
   private loaded = false;
   private timer: NodeJS.Timeout | null = null;
@@ -102,6 +122,7 @@ export class ActivityMeter {
     this.now = options.now ?? (() => new Date());
     this.sillyTavernRunning = options.sillyTavernRunning ?? (() => false);
     this.r2Mode = options.r2Mode ?? null;
+    this.sizes = options.sizes ?? null;
   }
 
   public async start(): Promise<void> {
@@ -154,6 +175,15 @@ export class ActivityMeter {
     if (this.r2Mode) {
       const mode = await this.r2Mode().catch(() => null);
       if (mode) this.bump(this.day(), (counts) => { counts.r2 = mode; });
+    }
+    if (this.sizes && at - this.sizesReadAt >= SIZES_INTERVAL_MS) {
+      this.sizesReadAt = at;
+      const sizes = await this.sizes().catch(() => null);
+      if (sizes) this.bump(this.day(), (counts) => {
+        if (sizes.dataBytes !== null) counts.dataBytes = sizes.dataBytes;
+        if (sizes.backupBytes !== null) counts.backupBytes = sizes.backupBytes;
+        if (sizes.cloudBytes !== null) counts.cloudBytes = sizes.cloudBytes;
+      });
     }
     await this.reportFinishedDays();
     await this.save();
@@ -258,6 +288,19 @@ export function parseUsageDay(value: unknown): AppUsageDay | null {
     consoleSeconds: seconds(record.consoleSeconds),
     starts: seconds(record.starts),
     ...(isR2UsageMode(record.r2) ? { r2: record.r2 } : {}),
+    ...sizesOf(record),
+  };
+}
+
+/** The sizes a stored day carries, leaving out any it does not. */
+export function sizesOf(record: Record<string, unknown>): Pick<AppUsageDay, 'dataBytes' | 'backupBytes' | 'cloudBytes'> {
+  const data = usageBytes(record.dataBytes);
+  const backups = usageBytes(record.backupBytes);
+  const cloud = usageBytes(record.cloudBytes);
+  return {
+    ...(data === null ? {} : { dataBytes: data }),
+    ...(backups === null ? {} : { backupBytes: backups }),
+    ...(cloud === null ? {} : { cloudBytes: cloud }),
   };
 }
 
@@ -268,7 +311,7 @@ function parseUsage(value: unknown): PersistedUsage {
   const stored = typeof record.days === 'object' && record.days !== null ? record.days as Record<string, unknown> : {};
   for (const [date, counts] of Object.entries(stored)) {
     const day = parseUsageDay({ ...(typeof counts === 'object' && counts !== null ? counts : {}), date });
-    if (day) days[date] = { managerSeconds: day.managerSeconds, sillyTavernSeconds: day.sillyTavernSeconds, consoleSeconds: day.consoleSeconds, starts: day.starts, ...(day.r2 ? { r2: day.r2 } : {}) };
+    if (day) days[date] = { managerSeconds: day.managerSeconds, sillyTavernSeconds: day.sillyTavernSeconds, consoleSeconds: day.consoleSeconds, starts: day.starts, ...(day.r2 ? { r2: day.r2 } : {}), ...sizesOf(day as unknown as Record<string, unknown>) };
   }
   const reported = Array.isArray(record.reported) ? record.reported.filter((value): value is string => typeof value === 'string') : [];
   return { schemaVersion: 1, days, reported };

@@ -770,6 +770,18 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       if (!config.enabled || !config.configured) return 'off';
       return config.mode === 'cloudflare' ? 'cloudflare' : 'keys';
     },
+    // Figures the manager already holds: the last measurement of the profile,
+    // the archives' own sizes, and its count of what went to the bucket.
+    sizes: async () => {
+      const snapshot = await system.snapshot();
+      const archives = await backups.list().catch(() => null);
+      const config = await r2.getConfig().catch(() => null);
+      return {
+        dataBytes: snapshot.storage.dataBytes,
+        backupBytes: archives ? archives.reduce((sum, archive) => sum + archive.sizeBytes, 0) : null,
+        cloudBytes: config && config.configured ? config.usage.storageBytes : null,
+      };
+    },
   });
   await activity.start();
   /*

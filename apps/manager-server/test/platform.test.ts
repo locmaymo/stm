@@ -6,6 +6,9 @@ import { createIoLimiter, detectPlatform, getPlatformPaths, ioConcurrency, runPo
 test('platform paths follow the documented durable roots', () => {
   assert.equal(detectPlatform({ platform: 'win32', env: {} }), 'windows');
   assert.equal(detectPlatform({ platform: 'linux', env: { PREFIX: '/data/data/com.termux/files/usr' } }), 'termux');
+  // The Android app runs Termux's Node, which reports `android` too; the app says which it is.
+  assert.equal(detectPlatform({ platform: 'android', env: {} }), 'termux');
+  assert.equal(detectPlatform({ platform: 'android', env: { STM_ANDROID_APP: '1' } }), 'android');
   assert.equal(detectPlatform({ platform: 'linux', env: { STM_DATA_DIR: '/mnt/workspace/sillytavern-manager' } }), 'hosted');
   assert.equal(detectPlatform({ platform: 'linux', env: { STM_DOCKER: '1' } }), 'docker');
 

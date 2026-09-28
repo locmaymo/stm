@@ -1,7 +1,7 @@
 import { createHmac, randomUUID } from 'node:crypto';
 import { appendFile, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { isR2UsageMode, type AppUsageDay, type PlatformKind, type TelemetryBatch, type TelemetryEnvelope, type UsageEvent } from '../../contracts/src/index.js';
+import { isR2UsageMode, usageBytes, type AppUsageDay, type PlatformKind, type TelemetryBatch, type TelemetryEnvelope, type UsageEvent } from '../../contracts/src/index.js';
 import { isUsageEvent } from '../../instrumentation/src/index.js';
 import type { PlatformPaths } from '../../platform/src/index.js';
 
@@ -406,7 +406,15 @@ function parseUsageDay(value: unknown): AppUsageDay | null {
     consoleSeconds: whole(value.consoleSeconds),
     starts: whole(value.starts),
     ...(isR2UsageMode(value.r2) ? { r2: value.r2 } : {}),
+    ...bytes('dataBytes', value.dataBytes),
+    ...bytes('backupBytes', value.backupBytes),
+    ...bytes('cloudBytes', value.cloudBytes),
   };
+}
+
+function bytes<Key extends 'dataBytes' | 'backupBytes' | 'cloudBytes'>(key: Key, value: unknown): Partial<Record<Key, number>> {
+  const size = usageBytes(value);
+  return size === null ? {} : { [key]: size } as Partial<Record<Key, number>>;
 }
 
 async function pruneOutbox(path: string): Promise<void> {

@@ -5,7 +5,7 @@ import type { R2UsageMode } from '../../../packages/contracts/src/index.js';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getPlatformPaths } from '../../../packages/platform/src/index.js';
-import { ActivityMeter, CONSOLE_GAP_MS, SAMPLE_INTERVAL_MS, parseUsageDay } from '../src/activity.js';
+import { ActivityMeter, CONSOLE_GAP_MS, SAMPLE_INTERVAL_MS, SIZES_INTERVAL_MS, parseUsageDay } from '../src/activity.js';
 
 async function meter(clock: { now: number }, running: () => boolean = () => false): Promise<{ meter: ActivityMeter; root: string }> {
   const root = await mkdtemp(join(tmpdir(), 'stm-activity-'));
@@ -118,4 +118,33 @@ test('a finished day says how backups to R2 were set up when it was last looked 
   assert.equal(parseUsageDay(JSON.parse(line ?? '{}'))?.r2, 'cloudflare');
   // A day written before this was recorded is not known, rather than off.
   assert.equal(parseUsageDay({ date: '2026-09-18', managerSeconds: 60 })?.r2, undefined);
+});
+
+test('a finished day carries how much there was to keep, and leaves out what was not measured', async () => {
+  const clock = { now: Date.parse('2026-09-19T22:00:00.000Z') };
+  const root = await mkdtemp(join(tmpdir(), 'stm-activity-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  let reads = 0;
+  let data = 1_000;
+  const activity = new ActivityMeter({ paths, now: () => new Date(clock.now), sizes: async () => { reads += 1; return { dataBytes: data, backupBytes: 250, cloudBytes: null }; } });
+  await activity.start();
+  clock.now += SAMPLE_INTERVAL_MS;
+  await activity.sample();
+  // Not read again on every sample: the sizes move slowly.
+  data = 2_000;
+  clock.now += SAMPLE_INTERVAL_MS;
+  await activity.sample();
+  assert.equal(reads, 1);
+  clock.now += SIZES_INTERVAL_MS;
+  await activity.sample();
+  assert.equal(reads, 2);
+
+  clock.now = Date.parse('2026-09-20T00:30:00.000Z');
+  await activity.sample();
+  const [line] = (await readFile(activity.logPath, 'utf8')).split('\n').filter(Boolean);
+  const day = parseUsageDay(JSON.parse(line ?? '{}'));
+  assert.equal(day?.dataBytes, 2_000);
+  assert.equal(day?.backupBytes, 250);
+  assert.equal(day && 'cloudBytes' in day, false);
+  assert.equal(parseUsageDay({ date: '2026-09-18', dataBytes: -5 })?.dataBytes, undefined);
 });
