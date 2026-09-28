@@ -18,8 +18,9 @@ Permission is hereby granted, free of charge, to any person obtaining a copy of 
 
 ## Bundled in the Windows download
 
-The Windows download carries three programs, unmodified, under `resources/`,
-so that installing SillyTavern needs nothing else on the machine:
+The Windows download carries four programs, unmodified, under `resources/`,
+so that installing SillyTavern and opening a link need nothing else on the
+machine:
 
 - `resources/runtime/node.exe` is Node.js, licensed under the MIT License
   (<https://github.com/nodejs/node/blob/main/LICENSE>).
@@ -33,6 +34,11 @@ so that installing SillyTavern needs nothing else on the machine:
   <https://github.com/git-for-windows/git/releases/tag/v2.55.0.windows.5>.
   The version is pinned in `scripts/build-windows-release.mjs`, and this link
   changes with it.
+- `resources/bin/cloudflared.exe` is cloudflared from Cloudflare, licensed
+  under the Apache License 2.0
+  (<https://github.com/cloudflare/cloudflared/blob/master/LICENSE>). The
+  version is pinned in the same script. When it grows old the manager fetches
+  the current release from the same project into its data folder.
 
 ## Bundled in the Android app
 
