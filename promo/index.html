@@ -1,6 +1,7 @@
 <!doctype html>
 <!--
   STM promo: one shape that never cuts, on a canvas that floods a new color every section.
+  Light components only: white cards, one idea each, as little text as possible.
   Every style is a pure function of time: seek(t). No CSS transitions, no timers, no state between frames.
   Open directly in a browser to preview (?lang=vi for Vietnamese, ?t=3.2 to freeze a frame);
   scripts/render.mjs drives seek(t) for export. Frame D equals frame 0, so the export loops.
@@ -22,7 +23,7 @@
   #wipe { position: absolute; border-radius: 50%; }
   .deco { position: absolute; }
   /* never add will-change here: the camera scales this subtree and text would rasterize blurry */
-  #world { position: absolute; left: 540px; top: 640px; width: 0; height: 0; transform-origin: 0 0; }
+  #world { position: absolute; left: 540px; top: 620px; width: 0; height: 0; transform-origin: 0 0; }
   #shape { position: absolute; overflow: hidden; }
   .layer, .abs { position: absolute; }
   .nw { white-space: nowrap; }
@@ -30,17 +31,18 @@
   .stroke { fill: none; stroke: currentColor; stroke-width: 2.25; stroke-linecap: round; stroke-linejoin: round; }
   .mono { font-family: 'JBM', monospace; }
   #cursor { position: absolute; left: 0; top: 0; width: 44px; height: 44px; transform-origin: 6px 4px; }
-  .cap { position: absolute; left: 0; right: 0; top: 54px; text-align: center; }
-  .cap .chip { display: inline-block; padding: 0 16px; height: 34px; line-height: 34px; border-radius: 17px; font-size: 17px; font-weight: 700; letter-spacing: 1.5px; background: rgba(255,255,255,0.22); }
-  .cap .tt { margin-top: 14px; font-size: 62px; line-height: 70px; font-weight: 800; letter-spacing: -1.8px; white-space: nowrap; }
-  .cap .st { margin-top: 6px; font-size: 25px; line-height: 32px; font-weight: 500; opacity: 0.86; white-space: nowrap; }
-  .bub { position: absolute; padding: 12px 17px; border-radius: 20px; font-size: 17px; line-height: 23px; font-weight: 500; max-width: 290px; width: max-content; transform-origin: 0 100%; }
+  .cap { position: absolute; left: 0; right: 0; top: 60px; text-align: center; }
+  .cap .chip { display: inline-block; padding: 0 16px; height: 34px; line-height: 34px; border-radius: 17px; font-size: 17px; font-weight: 700; letter-spacing: 1.5px; background: rgba(255,255,255,0.24); }
+  .cap .tt { margin-top: 14px; font-size: 64px; line-height: 72px; font-weight: 800; letter-spacing: -1.8px; white-space: nowrap; }
+  .cap .st { margin-top: 4px; font-size: 26px; line-height: 34px; font-weight: 600; opacity: 0.8; white-space: nowrap; }
+  .bub { position: absolute; padding: 12px 17px; border-radius: 20px; font-size: 18px; line-height: 24px; font-weight: 500; max-width: 270px; width: max-content; transform-origin: 0 100%; }
   .bub.in { background: #F1EEFB; color: #17112B; border-bottom-left-radius: 6px; }
   .bub.out { background: #FF4FA0; color: #fff; border-bottom-right-radius: 6px; transform-origin: 100% 100%; }
-  .row { position: absolute; left: 12px; right: 12px; height: 48px; line-height: 48px; padding-left: 16px; font-size: 19px; font-weight: 500; }
-  .pill { position: absolute; height: 34px; line-height: 34px; padding: 0 14px 0 12px; border-radius: 17px; font-size: 15px; font-weight: 600; white-space: nowrap; display: flex; align-items: center; gap: 7px; }
-  .key { position: absolute; width: 58px; height: 58px; border-radius: 29px; background: rgba(255,255,255,0.12); color: #fff; text-align: center; line-height: 58px; font-size: 24px; font-weight: 500; }
-  .pchip { position: absolute; height: 40px; line-height: 40px; padding: 0 18px; border-radius: 20px; background: #17112B; color: #fff; font-size: 17px; font-weight: 600; white-space: nowrap; }
+  .row { position: absolute; left: 12px; right: 12px; height: 52px; line-height: 52px; padding-left: 22px; font-size: 22px; font-weight: 500; }
+  .pchip { position: absolute; height: 42px; line-height: 42px; padding: 0 18px; border-radius: 21px; background: #fff; color: #17112B; font-size: 17px; font-weight: 700; white-space: nowrap; box-shadow: 0 10px 24px -12px rgba(23,17,43,0.4); }
+  .ic { position: absolute; left: 16px; top: 16px; width: 72px; height: 72px; border-radius: 36px; }
+  .ic svg { position: absolute; left: 20px; top: 20px; }
+  .lbl { position: absolute; left: 104px; top: 0; line-height: 104px; font-size: 23px; font-weight: 750; letter-spacing: -0.4px; white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -55,8 +57,8 @@
 
   <div id="world">
     <!-- behind the shape -->
-    <div class="abs" id="ripple" style="left:-75px;top:-75px;width:150px;height:150px;border-radius:75px;box-sizing:border-box;border:6px solid rgba(255,255,255,0.7)"></div>
-    <div class="abs" id="chips" style="left:0;top:118px"></div>
+    <div class="abs" id="ripple" style="left:-75px;top:-75px;width:150px;height:150px;border-radius:75px;box-sizing:border-box;border:6px solid rgba(255,255,255,0.75)"></div>
+    <div class="abs" id="chips" style="left:0;top:110px"></div>
     <div id="shape">
       <div class="abs" id="shapeWipe" style="border-radius:50%"></div>
 
@@ -72,74 +74,75 @@
         <div class="abs nw" data-t="tagline" style="left:135px;top:72px;font-size:17px;font-weight:500;color:#7A7590"></div>
       </div>
 
-      <!-- quick install: a terminal -->
-      <div class="layer" id="L-install" data-w="520" data-h="260">
-        <div class="abs" style="left:22px;top:20px;width:12px;height:12px;border-radius:6px;background:#FF5F57"></div>
-        <div class="abs" style="left:42px;top:20px;width:12px;height:12px;border-radius:6px;background:#FEBC2E"></div>
-        <div class="abs" style="left:62px;top:20px;width:12px;height:12px;border-radius:6px;background:#28C840"></div>
-        <div class="abs mono" style="left:0;right:0;top:15px;text-align:center;font-size:13px;color:#6E6890">stm</div>
-        <div class="abs mono nw" style="left:28px;top:62px;font-size:22px;color:#fff"><span style="color:#FF4FA0">$</span> <span id="typed"></span><span id="caret" style="display:inline-block;width:12px;height:24px;margin-left:2px;vertical-align:-4px;background:#C6F432"></span></div>
-        <div class="abs" id="instLine" style="left:28px;top:114px;width:464px">
-          <div class="abs nw" data-t="installing" style="left:0;top:0;font-size:17px;font-weight:500;color:#C9C3E6"></div>
-          <div class="abs mono" id="instPct" style="right:0;top:1px;font-size:16px;color:#C9C3E6"></div>
-          <div class="abs" style="left:0;top:34px;width:464px;height:12px;border-radius:6px;background:rgba(255,255,255,0.12)"></div>
-          <div class="abs" id="instBar" style="left:0;top:34px;height:12px;border-radius:6px;background:linear-gradient(90deg,#7C4DFF,#FF4FA0)"></div>
-        </div>
-        <div class="abs nw" id="instReady" style="left:28px;top:186px;font-size:19px;font-weight:600;color:#3DDC97;display:flex;align-items:center;gap:10px">
-          <svg width="22" height="22" viewBox="0 0 24 24"><path class="stroke" style="stroke-width:3" d="M20 6 9 17l-5-5"/></svg>
-          <span data-t="ready"></span><span class="mono" style="color:#8D86B0;font-size:16px;font-weight:500">127.0.0.1:7860</span>
-        </div>
+      <!-- quick install: a button, a bar, a green pill -->
+      <div class="layer" id="L-install" data-w="380" data-h="104">
+        <div class="ic" id="instBtn" style="background:#7C4DFF;color:#fff"><svg width="32" height="32" viewBox="0 0 24 24"><path class="stroke" style="stroke-width:2.6" d="M12 4v11m-5-5 5 5 5-5M5 20h14"/></svg></div>
+        <div class="lbl" data-t="install"></div>
+      </div>
+      <div class="layer" id="L-installing" data-w="440" data-h="104">
+        <div class="abs nw" style="left:34px;top:18px;font-size:20px;font-weight:750;letter-spacing:-0.3px">SillyTavern 1.19.0</div>
+        <div class="abs mono" id="instPct" style="right:34px;top:20px;font-size:18px;color:#7A7590"></div>
+        <div class="abs" style="left:34px;top:60px;width:372px;height:16px;border-radius:8px;background:#EEEAFB"></div>
+        <div class="abs" id="instBar" style="left:34px;top:60px;height:16px;border-radius:8px;background:linear-gradient(90deg,#7C4DFF,#FF4FA0)"></div>
+      </div>
+      <div class="layer" id="L-ready" data-w="270" data-h="104">
+        <svg class="abs" style="left:42px;top:32px;color:#fff" width="40" height="40" viewBox="0 0 24 24"><path id="readyCheck" class="stroke" style="stroke-width:3.2" d="M20 6 9 17l-5-5" pathLength="1" stroke-dasharray="1"/></svg>
+        <div class="abs nw" data-t="ready" style="left:96px;top:0;line-height:104px;font-size:30px;font-weight:800;letter-spacing:-0.6px;color:#fff"></div>
       </div>
 
       <!-- version picker: fills the shape, content hangs from the top so the list can unfold -->
       <div class="layer" id="L-versions" data-fill="1">
-        <div class="abs nw" data-t="verLabel" style="left:28px;top:20px;font-size:15px;font-weight:600;color:#7A7590"></div>
-        <div class="abs" style="left:28px;top:44px;width:280px;height:44px;overflow:hidden">
-          <div class="abs nw" id="verA" style="left:0;top:0;display:flex;align-items:center;gap:12px"><span style="font-size:31px;font-weight:750;letter-spacing:-0.6px;line-height:44px">1.19.0</span><span class="pill" data-t="latest" style="position:static;height:28px;line-height:28px;background:#DDF8EC;color:#0E8F5A"></span></div>
-          <div class="abs nw" id="verB" style="left:0;top:0;display:flex;align-items:center;gap:12px"><span style="font-size:31px;font-weight:750;letter-spacing:-0.6px;line-height:44px">1.17.0</span><span class="pill" id="verOk" style="position:static;height:28px;line-height:28px;background:#E7EEFF;color:#2F5BFF"><svg width="15" height="15" viewBox="0 0 24 24"><path class="stroke" style="stroke-width:3.4" d="M20 6 9 17l-5-5"/></svg><span data-t="installed"></span></span></div>
+        <div class="abs" style="left:34px;top:0;width:220px;height:96px;overflow:hidden">
+          <div class="abs nw" id="verA" style="left:0;top:0;line-height:96px;font-size:36px;font-weight:800;letter-spacing:-0.8px">1.19.0</div>
+          <div class="abs nw" id="verB" style="left:0;top:0;line-height:96px;font-size:36px;font-weight:800;letter-spacing:-0.8px;display:flex;align-items:center;gap:12px">1.17.0
+            <div id="verOk" style="width:34px;height:34px;border-radius:17px;background:#16C47F;color:#fff;position:relative"><svg class="abs" style="left:8px;top:8px" width="18" height="18" viewBox="0 0 24 24"><path class="stroke" style="stroke-width:3.6" d="M20 6 9 17l-5-5"/></svg></div>
+          </div>
         </div>
-        <svg class="abs" id="chev" style="right:30px;top:42px;color:#17112B" width="28" height="28" viewBox="0 0 24 24"><path class="stroke" style="stroke-width:2.6" d="m6 9 6 6 6-6"/></svg>
-        <div class="abs" id="verDiv" style="left:20px;right:20px;top:111px;height:2px;background:#EEEBF6"></div>
-        <div class="abs" id="verHl" style="left:12px;right:12px;height:48px;border-radius:14px;background:#EEF2FF"></div>
+        <svg class="abs" id="chev" style="right:30px;top:32px;color:#17112B" width="32" height="32" viewBox="0 0 24 24"><path class="stroke" style="stroke-width:2.6" d="m6 9 6 6 6-6"/></svg>
+        <div class="abs" id="verDiv" style="left:20px;right:20px;top:95px;height:2px;background:#EEEBF6"></div>
+        <div class="abs" id="verHl" style="left:12px;right:12px;height:52px;border-radius:16px;background:#EEF2FF"></div>
         <div id="verRows"></div>
       </div>
 
       <!-- upload old data -->
-      <div class="layer" id="L-upload" data-w="460" data-h="300">
-        <div class="abs" id="zone" style="left:20px;top:20px;width:420px;height:260px;border-radius:22px;box-sizing:border-box;border:3px dashed #C9C2E8"></div>
-        <div class="abs" id="zoneA" style="left:20px;top:20px;width:420px;height:260px">
-          <div class="abs" style="left:178px;top:42px;width:64px;height:64px;border-radius:32px;background:#FF7A1A;color:#fff">
-            <svg class="abs" style="left:18px;top:17px" width="28" height="28" viewBox="0 0 24 24"><path class="stroke" style="stroke-width:2.6" d="M12 15V3m5 5-5-5-5 5M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/></svg>
+      <div class="layer" id="L-upload" data-w="340" data-h="260">
+        <div class="abs" id="zone" style="left:18px;top:18px;width:304px;height:224px;border-radius:26px;box-sizing:border-box;border:3px dashed #C9C2E8"></div>
+        <div class="abs" id="zoneA" style="left:18px;top:18px;width:304px;height:224px">
+          <div class="abs" style="left:110px;top:36px;width:84px;height:84px;border-radius:42px;background:#FF7A1A;color:#fff">
+            <svg class="abs" style="left:24px;top:23px" width="36" height="36" viewBox="0 0 24 24"><path class="stroke" style="stroke-width:2.6" d="M12 15V3m5 5-5-5-5 5M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/></svg>
           </div>
-          <div class="abs nw" data-t="dropTitle" style="left:0;right:0;top:128px;text-align:center;font-size:21px;font-weight:700;letter-spacing:-0.3px"></div>
-          <div class="abs nw" data-t="dropSub" style="left:0;right:0;top:162px;text-align:center;font-size:15px;font-weight:500;color:#7A7590"></div>
+          <div class="abs nw" data-t="drop" style="left:0;right:0;top:146px;text-align:center;font-size:23px;font-weight:750;letter-spacing:-0.3px"></div>
         </div>
-        <div class="abs" id="zoneB" style="left:20px;top:20px;width:420px;height:260px">
-          <div class="abs zipicon" style="left:30px;top:44px"></div>
-          <div class="abs nw" style="left:110px;top:50px;font-size:20px;font-weight:700;letter-spacing:-0.3px">sillytavern-backup.zip</div>
-          <div class="abs nw" data-t="zipMeta" style="left:110px;top:80px;font-size:15px;font-weight:500;color:#7A7590"></div>
-          <div class="abs" style="left:30px;top:150px;width:360px;height:12px;border-radius:6px;background:#F1EEFB"></div>
-          <div class="abs" id="upBar" style="left:30px;top:150px;height:12px;border-radius:6px;background:linear-gradient(90deg,#FF7A1A,#FF4FA0)"></div>
-          <div class="abs nw" id="upRun" style="left:30px;top:180px;font-size:16px;font-weight:600;color:#7A7590"><span data-t="restoring"></span> <span id="upPct" class="mono"></span></div>
-          <div class="abs nw" id="upDone" style="left:30px;top:178px;font-size:17px;font-weight:700;color:#0E8F5A;display:flex;align-items:center;gap:8px"><svg width="20" height="20" viewBox="0 0 24 24"><path class="stroke" style="stroke-width:3.2" d="M20 6 9 17l-5-5"/></svg><span data-t="restored"></span></div>
+        <div class="abs" id="zoneB" style="left:18px;top:18px;width:304px;height:224px">
+          <div class="abs zipicon" id="zipBig" style="left:122px;top:24px"></div>
+          <div class="abs" id="upCheck" style="left:116px;top:26px;width:72px;height:72px;border-radius:36px;background:#16C47F;color:#fff">
+            <svg class="abs" style="left:18px;top:18px" width="36" height="36" viewBox="0 0 24 24"><path class="stroke" style="stroke-width:3.2" d="M20 6 9 17l-5-5"/></svg>
+          </div>
+          <div class="abs nw" style="left:0;right:0;top:110px;text-align:center;font-size:20px;font-weight:750">backup.zip</div>
+          <div class="abs" style="left:36px;top:152px;width:232px;height:14px;border-radius:7px;background:#F1EEFB"></div>
+          <div class="abs" id="upBar" style="left:36px;top:152px;height:14px;border-radius:7px;background:linear-gradient(90deg,#FF7A1A,#FF4FA0)"></div>
+          <div class="abs nw" id="upStat" style="left:0;right:0;top:180px;text-align:center;font-size:17px;font-weight:700"></div>
         </div>
       </div>
 
-      <!-- cloud backup -->
-      <div class="layer" id="L-cloud" data-w="480" data-h="210">
-        <svg class="abs" style="left:28px;top:30px" width="150" height="150">
-          <circle cx="75" cy="75" r="62" fill="none" stroke="rgba(255,255,255,0.12)" stroke-width="12"/>
-          <circle id="cloudRing" cx="75" cy="75" r="62" fill="none" stroke="#1FCFEA" stroke-width="12" stroke-linecap="round" pathLength="1" stroke-dasharray="1" transform="rotate(-90 75 75)"/>
-        </svg>
-        <svg class="abs" id="cloudIcon" style="left:73px;top:76px;color:#fff" width="60" height="60" viewBox="0 0 24 24"><path class="stroke" style="stroke-width:2" d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/><path id="cloudArrow" class="stroke" style="stroke-width:2" d="M12 17v-5m-2.4 2.2L12 11.8l2.4 2.4"/></svg>
-        <svg class="abs" style="left:68px;top:70px;color:#3DDC97" width="70" height="70" viewBox="0 0 24 24"><path id="cloudCheck" class="stroke" style="stroke-width:2.6" d="M20 6 9 17l-5-5" pathLength="1" stroke-dasharray="1"/></svg>
-        <div class="abs nw" data-t="cloudTitle" style="left:204px;top:30px;font-size:27px;font-weight:750;letter-spacing:-0.6px;color:#fff"></div>
-        <div class="abs nw" data-t="cloudSub" style="left:205px;top:68px;font-size:15px;font-weight:500;color:#A89FD0"></div>
-        <div class="abs nw" id="cloudStat" style="left:205px;top:96px;font-size:16px;font-weight:600;color:#fff"></div>
-        <div class="abs" id="tog" style="left:204px;top:140px;width:64px;height:36px;border-radius:18px">
-          <div class="abs" id="togKnob" style="top:4px;width:28px;height:28px;border-radius:14px;background:#fff;box-shadow:0 2px 6px rgba(0,0,0,0.3)"></div>
+      <!-- cloud backup: a switch, then a ring -->
+      <div class="layer" id="L-cloud" data-w="380" data-h="104">
+        <div class="ic" style="background:#E3F7FD;color:#10B6E0"><svg width="32" height="32" viewBox="0 0 24 24"><path class="stroke" style="stroke-width:2.3" d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg></div>
+        <div class="lbl" data-t="auto" style="font-size:21px"></div>
+        <div class="abs" id="tog" style="left:288px;top:32px;width:72px;height:40px;border-radius:20px">
+          <div class="abs" id="togKnob" style="top:4px;width:32px;height:32px;border-radius:16px;background:#fff;box-shadow:0 2px 6px rgba(23,17,43,0.3)"></div>
         </div>
-        <div class="abs nw" data-t="auto" style="left:282px;top:147px;font-size:16px;font-weight:600;color:#fff"></div>
+      </div>
+      <div class="layer" id="L-ring" data-w="220" data-h="220">
+        <svg class="abs" style="left:0;top:0" width="220" height="220">
+          <circle cx="110" cy="110" r="88" fill="none" stroke="#E7F7FC" stroke-width="16"/>
+          <circle id="ringFill" cx="110" cy="110" r="88" fill="none" stroke="#10B6E0" stroke-width="16" stroke-linecap="round" pathLength="1" stroke-dasharray="1" transform="rotate(-90 110 110)"/>
+        </svg>
+        <div class="abs" id="ringBody" style="inset:0">
+          <svg class="abs" id="ringCloud" style="left:78px;top:56px;color:#10B6E0" width="64" height="64" viewBox="0 0 24 24"><path class="stroke" style="stroke-width:2" d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/><path class="stroke" style="stroke-width:2" d="M12 17v-5m-2.4 2.2L12 11.8l2.4 2.4"/></svg>
+          <div class="abs mono" id="ringPct" style="left:0;right:0;top:128px;text-align:center;font-size:24px;font-weight:500"></div>
+        </div>
+        <svg class="abs" style="left:62px;top:62px;color:#16C47F" width="96" height="96" viewBox="0 0 24 24"><path id="ringCheck" class="stroke" style="stroke-width:2.6" d="M20 6 9 17l-5-5" pathLength="1" stroke-dasharray="1"/></svg>
       </div>
 
       <!-- chat bubble: a character head floating over everything -->
@@ -149,60 +152,45 @@
       </div>
 
       <!-- chat window -->
-      <div class="layer" id="L-chat" data-w="420" data-h="470">
+      <div class="layer" id="L-chat" data-w="380" data-h="320">
         <div class="abs" style="left:20px;top:14px;width:48px;height:48px;border-radius:24px;background:radial-gradient(circle at 30% 25%,#FFD1E8,#FF4FA0 55%,#7C4DFF);text-align:center;font-size:29px;line-height:50px">🧝‍♀️</div>
         <div class="abs nw" style="left:80px;top:15px;font-size:20px;font-weight:750;letter-spacing:-0.3px">Seraphina</div>
         <div class="abs nw" id="chatStat" style="left:80px;top:42px;font-size:14px;font-weight:600;color:#16C47F"></div>
-        <svg class="abs" style="right:22px;top:26px;color:#A09BB5" width="24" height="24" viewBox="0 0 24 24"><path class="stroke" style="stroke-width:2.4" d="M18 6 6 18M6 6l12 12"/></svg>
         <div class="abs" style="left:0;right:0;top:76px;height:2px;background:#F1EEFB"></div>
         <div class="bub in" id="m1" style="left:20px;top:96px" data-t="m1"></div>
-        <div class="bub in" id="dots" style="left:20px;top:160px;height:23px;display:flex;align-items:center;gap:6px"><i></i><i></i><i></i></div>
-        <div class="bub in" id="m2" style="left:20px;top:160px" data-t="m2"></div>
-        <div class="bub out" id="m3" style="right:20px;top:258px" data-t="m3"></div>
-        <div class="abs" style="left:16px;right:16px;top:402px;height:52px;border-radius:26px;background:#F4F2FA">
-          <div class="abs nw" data-t="inputPh" style="left:20px;top:0;line-height:52px;font-size:16px;color:#A09BB5"></div>
-          <div class="abs" style="right:6px;top:6px;width:40px;height:40px;border-radius:20px;background:#FF4FA0;color:#fff">
-            <svg class="abs" style="left:10px;top:10px" width="20" height="20" viewBox="0 0 24 24"><path class="stroke" style="stroke-width:2.6" d="M12 19V5m-6 6 6-6 6 6"/></svg>
-          </div>
-        </div>
+        <div class="bub in" id="dots" style="left:20px;top:158px;height:24px;display:flex;align-items:center;gap:6px"><i></i><i></i><i></i></div>
+        <div class="bub in" id="m2" style="left:20px;top:158px" data-t="m2"></div>
+        <div class="bub out" id="m3" style="right:20px;top:244px" data-t="m3"></div>
       </div>
 
-      <!-- access link: QR card -->
-      <div class="layer" id="L-qr" data-w="480" data-h="240">
-        <div class="abs" style="left:24px;top:24px;width:192px;height:192px;border-radius:18px;background:#F4F2FA"></div>
-        <svg class="abs" id="qrSvg" style="left:32px;top:32px" width="176" height="176" viewBox="0 0 25 25" shape-rendering="crispEdges"></svg>
-        <div class="abs" style="left:101px;top:101px;width:38px;height:38px;border-radius:10px;background:#fff">
-          <img class="abs" src="../apps/manager-panel/public/icon-512.png" style="left:4px;top:4px;width:30px;height:30px" />
+      <!-- access link: just a QR code -->
+      <div class="layer" id="L-qr" data-w="260" data-h="260">
+        <svg class="abs" id="qrSvg" style="left:30px;top:30px" width="200" height="200" viewBox="0 0 25 25" shape-rendering="crispEdges"></svg>
+        <div class="abs" style="left:106px;top:106px;width:48px;height:48px;border-radius:12px;background:#fff">
+          <img class="abs" src="../apps/manager-panel/public/icon-512.png" style="left:5px;top:5px;width:38px;height:38px" />
         </div>
-        <div class="abs" id="scan" style="left:28px;width:184px;height:4px;border-radius:2px;background:#16C47F;box-shadow:0 0 14px 4px rgba(22,196,127,0.55)"></div>
-        <div class="abs nw" data-t="qrTitle" style="left:236px;top:30px;font-size:22px;font-weight:750;letter-spacing:-0.4px"></div>
-        <div class="abs" data-t="qrSub" style="left:237px;top:62px;width:220px;font-size:15px;line-height:20px;font-weight:500;color:#7A7590"></div>
-        <div class="pill" style="left:236px;top:122px;background:#E2F8EE;color:#0E8F5A"><svg width="17" height="17" viewBox="0 0 24 24"><path class="stroke" style="stroke-width:2.6" d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg><span data-t="pill1"></span></div>
-        <div class="pill" style="left:236px;top:166px;background:#EEF2FF;color:#2F5BFF"><svg width="17" height="17" viewBox="0 0 24 24"><rect class="stroke" style="stroke-width:2.6" x="4" y="11" width="16" height="10" rx="2"/><path class="stroke" style="stroke-width:2.6" d="M8 11V7a4 4 0 0 1 8 0v4"/></svg><span data-t="pill2"></span></div>
+        <div class="abs" id="scan" style="left:24px;width:212px;height:5px;border-radius:3px;background:#16C47F;box-shadow:0 0 16px 5px rgba(22,196,127,0.5)"></div>
       </div>
 
-      <!-- phone -->
-      <div class="layer" id="L-phone" data-w="290" data-h="560">
-        <div class="abs" id="screen" style="left:10px;top:10px;width:270px;height:540px;border-radius:40px;overflow:hidden;background:linear-gradient(170deg,#2A1E5C,#130E2A)">
+      <!-- phone, light -->
+      <div class="layer" id="L-phone" data-w="270" data-h="520">
+        <div class="abs" style="left:10px;top:10px;width:250px;height:500px;border-radius:38px;overflow:hidden;background:#F4F2FA">
           <div class="abs" id="pinView" style="inset:0">
-            <div class="abs" style="left:109px;top:62px;width:52px;height:52px;border-radius:26px;background:rgba(255,255,255,0.14);color:#fff">
-              <svg class="abs" style="left:14px;top:13px" width="24" height="24" viewBox="0 0 24 24"><rect class="stroke" x="4" y="11" width="16" height="10" rx="2"/><path class="stroke" d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+            <div class="abs" style="left:93px;top:120px;width:64px;height:64px;border-radius:32px;background:#fff;color:#17112B;box-shadow:0 6px 16px -8px rgba(23,17,43,0.3)">
+              <svg class="abs" style="left:18px;top:17px" width="28" height="28" viewBox="0 0 24 24"><rect class="stroke" x="4" y="11" width="16" height="10" rx="2"/><path class="stroke" id="shackle" d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
             </div>
-            <div class="abs nw" style="left:0;right:0;top:128px;text-align:center;font-size:22px;font-weight:750;color:#fff">SillyTavern</div>
-            <div class="abs nw" data-t="pin" style="left:0;right:0;top:160px;text-align:center;font-size:14px;font-weight:500;color:#A89FD0"></div>
+            <div class="abs nw" data-t="pin" style="left:0;right:0;top:206px;text-align:center;font-size:19px;font-weight:750"></div>
             <div id="pinDots"></div>
-            <div id="keys"></div>
           </div>
-          <div class="abs" id="appView" style="inset:0;background:#15112A">
-            <div class="abs" style="left:0;right:0;top:0;height:96px;background:#211B3D"></div>
-            <div class="abs" style="left:18px;top:48px;width:36px;height:36px;border-radius:18px;background:radial-gradient(circle at 30% 25%,#FFD1E8,#FF4FA0 55%,#7C4DFF);text-align:center;font-size:21px;line-height:38px">🧝‍♀️</div>
-            <div class="abs nw" style="left:64px;top:48px;font-size:16px;font-weight:700;color:#fff">Seraphina</div>
-            <div class="abs nw" style="left:64px;top:68px;font-size:12px;font-weight:500;color:#A89FD0">SillyTavern</div>
-            <div class="bub in" id="p1" data-t="p1" style="left:14px;top:118px;max-width:200px;font-size:15px;line-height:20px;padding:10px 14px;background:#2C2550;color:#fff"></div>
-            <div class="bub out" id="p2" data-t="p2" style="right:14px;top:206px;max-width:200px;font-size:15px;line-height:20px;padding:10px 14px"></div>
-            <div class="abs nw" id="toast" style="left:20px;right:20px;top:470px;height:40px;border-radius:20px;background:#16C47F;color:#fff;font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center;gap:7px"><svg width="15" height="15" viewBox="0 0 24 24"><rect class="stroke" style="stroke-width:2.8" x="4" y="11" width="16" height="10" rx="2"/><path class="stroke" style="stroke-width:2.8" d="M8 11V7a4 4 0 0 1 8 0v4"/></svg><span data-t="toast"></span></div>
+          <div class="abs" id="appView" style="inset:0">
+            <div class="abs" style="left:0;right:0;top:0;height:92px;background:#fff"></div>
+            <div class="abs" style="left:16px;top:46px;width:36px;height:36px;border-radius:18px;background:radial-gradient(circle at 30% 25%,#FFD1E8,#FF4FA0 55%,#7C4DFF);text-align:center;font-size:21px;line-height:38px">🧝‍♀️</div>
+            <div class="abs nw" style="left:62px;top:45px;font-size:16px;font-weight:750">Seraphina</div>
+            <div class="abs nw" style="left:62px;top:66px;font-size:12px;font-weight:500;color:#7A7590">SillyTavern</div>
+            <div class="bub in" id="p1" data-t="p1" style="left:14px;top:114px;max-width:190px;font-size:17px;line-height:22px;padding:11px 15px;background:#fff"></div>
+            <div class="bub out" id="p2" data-t="p2" style="right:14px;top:212px;max-width:190px;font-size:17px;line-height:22px;padding:11px 15px"></div>
           </div>
-          <div class="abs" style="left:85px;top:14px;width:100px;height:28px;border-radius:14px;background:#000"></div>
+          <div class="abs" style="left:75px;top:12px;width:100px;height:26px;border-radius:13px;background:#17112B"></div>
         </div>
       </div>
 
@@ -215,10 +203,9 @@
     </div>
     <!-- above the shape -->
     <div class="abs" id="badge" style="left:30px;top:-78px;width:46px;height:46px;border-radius:23px;background:#FF3B30;color:#fff;box-sizing:border-box;border:4px solid #fff;text-align:center;line-height:38px;font-size:20px;font-weight:800">1</div>
-    <div class="abs" id="file" style="width:236px;height:72px;border-radius:18px;background:#fff;box-shadow:0 18px 40px -14px rgba(23,17,43,0.45)">
-      <div class="abs zipicon small" style="left:14px;top:12px"></div>
-      <div class="abs nw" style="left:66px;top:13px;font-size:17px;font-weight:700">backup.zip</div>
-      <div class="abs nw mono" style="left:66px;top:38px;font-size:13px;color:#7A7590">48.2 MB</div>
+    <div class="abs" id="file" style="width:200px;height:68px;border-radius:18px;background:#fff;box-shadow:0 18px 40px -14px rgba(23,17,43,0.45)">
+      <div class="abs zipicon small" style="left:14px;top:10px"></div>
+      <div class="abs nw" style="left:64px;top:0;line-height:68px;font-size:18px;font-weight:750">backup.zip</div>
     </div>
   </div>
   <svg id="cursor" viewBox="0 0 34 34"><path d="M4 2.5 L4 26.5 L10.2 20.6 L14.3 30 L18.6 28.1 L14.6 19 L23 19 Z" fill="#17112B" stroke="#fff" stroke-width="2" stroke-linejoin="round"/></svg>
@@ -244,45 +231,39 @@ const LANG = new URLSearchParams(location.search).get('lang') === 'vi' ? 'vi' : 
 const TEXT = {
   en: {
     tagline: 'Install · Run · Share · Back up', tagline2: 'Free forever · Open source',
-    installing: 'Installing SillyTavern 1.19.0', ready: 'Ready',
-    verLabel: 'SillyTavern version', latest: 'latest', installed: 'installed', staging: 'Staging branch',
-    dropTitle: 'Drop your old SillyTavern backup', dropSub: 'A ZIP from SillyTavern or STM',
-    zipMeta: '1,604 files · chats, characters, settings', restoring: 'Restoring…', restored: 'Restored · a safety copy was kept',
-    cloudTitle: 'Cloud backup', cloudSub: 'Every 5 minutes · only what changed', cloudOff: 'Auto backup is off', cloudRun: 'Backing up…', cloudDone: 'Last copy · just now', auto: 'Auto backup',
+    install: 'Install SillyTavern', ready: 'Ready', latest: 'latest',
+    drop: 'Drop your old ZIP', restoring: 'Restoring', restored: 'Restored',
+    auto: 'Auto backup',
     online: '● online', typing: 'typing…',
-    m1: 'Welcome back, traveler ✨', m2: 'Shall we pick up where we left off?', m3: "Yes, let's go! 🌙", inputPh: 'Message Seraphina…',
-    qrTitle: 'Open on your phone', qrSub: 'Scan the code, or share your own link', pill1: 'Your own link', pill2: 'PIN protected',
-    pin: 'Enter your PIN', p1: 'Same chats, now on your phone 📱', p2: 'Anywhere, any device ✨', toast: 'Connected through your link',
+    m1: 'Welcome back, traveler ✨', m2: 'Shall we pick up where we left off?', m3: "Yes, let's go! 🌙",
+    pin: 'Enter PIN', p1: 'Same chats, on your phone 📱', p2: 'Anywhere ✨',
     caps: [
-      ['', 'SillyTavern, made easy', 'Everything it needs, in one panel'],
-      ['01 / 06', 'Quick install', 'One command, or one double-click'],
-      ['02 / 06', 'Pick any version', 'Official SillyTavern releases, one click'],
-      ['03 / 06', 'Bring your old data', 'Upload a SillyTavern backup ZIP'],
-      ['04 / 06', 'Cloud backup', 'Automatic, every few minutes'],
-      ['05 / 06', 'Chat bubbles', 'On Android, replies float over any app'],
-      ['06 / 06', 'Open it on any device', 'iPhone, Android, tablet — one link'],
+      ['', 'SillyTavern, made easy'],
+      ['01 / 06', 'Quick install'],
+      ['02 / 06', 'Pick any version'],
+      ['03 / 06', 'Bring your old data'],
+      ['04 / 06', 'Cloud backup'],
+      ['05 / 06 · ANDROID', 'Chat bubbles'],
+      ['06 / 06', 'Open on iPhone & any device'],
       ['', 'Try STM for free', 'stm.locmaymo.top'],
     ],
   },
   vi: {
     tagline: 'Cài đặt · Chạy · Chia sẻ · Sao lưu', tagline2: 'Miễn phí trọn đời · Mã nguồn mở',
-    installing: 'Đang cài SillyTavern 1.19.0', ready: 'Sẵn sàng',
-    verLabel: 'Phiên bản SillyTavern', latest: 'mới nhất', installed: 'đã cài', staging: 'Nhánh staging',
-    dropTitle: 'Thả bản sao lưu SillyTavern cũ', dropSub: 'File ZIP từ SillyTavern hoặc STM',
-    zipMeta: '1.604 tệp · chat, nhân vật, cài đặt', restoring: 'Đang khôi phục…', restored: 'Đã khôi phục · có giữ bản an toàn',
-    cloudTitle: 'Sao lưu đám mây', cloudSub: 'Mỗi 5 phút · chỉ phần thay đổi', cloudOff: 'Tự động sao lưu đang tắt', cloudRun: 'Đang sao lưu…', cloudDone: 'Bản mới nhất · vừa xong', auto: 'Tự động sao lưu',
+    install: 'Cài SillyTavern', ready: 'Sẵn sàng', latest: 'mới nhất',
+    drop: 'Thả file ZIP cũ', restoring: 'Đang khôi phục', restored: 'Đã khôi phục',
+    auto: 'Tự động sao lưu',
     online: '● đang hoạt động', typing: 'đang nhập…',
-    m1: 'Chào mừng trở lại, lữ khách ✨', m2: 'Mình viết tiếp câu chuyện nhé?', m3: 'Đi thôi! 🌙', inputPh: 'Nhắn cho Seraphina…',
-    qrTitle: 'Mở trên điện thoại', qrSub: 'Quét mã, hoặc gửi đường link riêng', pill1: 'Link riêng của bạn', pill2: 'Bảo vệ bằng PIN',
-    pin: 'Nhập mã PIN', p1: 'Vẫn đoạn chat đó, giờ trên điện thoại 📱', p2: 'Ở đâu, máy nào cũng được ✨', toast: 'Đã kết nối qua link của bạn',
+    m1: 'Chào mừng trở lại ✨', m2: 'Mình viết tiếp câu chuyện nhé?', m3: 'Đi thôi! 🌙',
+    pin: 'Nhập mã PIN', p1: 'Vẫn đoạn chat đó, trên điện thoại 📱', p2: 'Ở đâu cũng được ✨',
     caps: [
-      ['', 'SillyTavern thật dễ dàng', 'Mọi thứ cần thiết, trong một bảng điều khiển'],
-      ['01 / 06', 'Cài đặt nhanh', 'Một lệnh, hoặc nhấp đúp là xong'],
-      ['02 / 06', 'Chọn phiên bản', 'SillyTavern chính thức, chỉ một cú nhấp'],
-      ['03 / 06', 'Tải lên dữ liệu cũ', 'Tải file ZIP sao lưu từ SillyTavern'],
-      ['04 / 06', 'Sao lưu đám mây', 'Tự động, mỗi vài phút'],
-      ['05 / 06', 'Bong bóng chat', 'Trên Android, tin nhắn nổi trên mọi ứng dụng'],
-      ['06 / 06', 'Truy cập mọi thiết bị', 'iPhone, Android, máy tính bảng — một link'],
+      ['', 'SillyTavern thật dễ dàng'],
+      ['01 / 06', 'Cài đặt nhanh'],
+      ['02 / 06', 'Chọn phiên bản'],
+      ['03 / 06', 'Tải lên dữ liệu cũ'],
+      ['04 / 06', 'Sao lưu đám mây'],
+      ['05 / 06 · ANDROID', 'Bong bóng chat'],
+      ['06 / 06', 'Mở trên iPhone & mọi thiết bị'],
       ['', 'Dùng thử STM miễn phí', 'stm.locmaymo.top'],
     ],
   },
@@ -351,7 +332,7 @@ function mixColor(a, b, p) {
   const A = hexToRgb(a), Bc = hexToRgb(b)
   return `rgb(${A.map((v, i) => Math.round(lerp(v, Bc[i], clamp(p)))).join(',')})`
 }
-// on/off between two beats; returns the eased visibility
+// on between two beats; returns the eased visibility
 const vis = (a, z, sa = SPR.enter, sz = SPR.exit) => track([[a, 1, sa], [z, 0, sz]])
 
 // ---------- palette ----------
@@ -363,38 +344,40 @@ const C = {
 
 // ---------- structure (beats, 100 BPM, 0.6 s each) ----------
 // 31 logo shrinks back   0 click: red flood, logo bounces   1 brand pill
-// 4 terminal  4.35-5.4 typing  5.6-6.8 install bar  7 ready
-// 8 version select  9 open  9.8-10.1 hover rows  10.5 pick 1.17.0, close  11.1 installed
-// 11.6 grab a file off screen  12 drop zone  12.3-13.4 drag in  13.45 drop  13.6-14.9 restore  15.1 done
-// 16 cloud card  17 toggle on  17.1-18.5 ring  18.6 check
-// 20 card collapses into a chat head  20.6 badge  21.2 click -> chat  21.55 / 22.8 / 23.35 messages
-// 24 QR card  24.4-25.4 scan  25.6 click -> phone  26.05-26.65 PIN  26.95 unlocked  27.15 / 27.5 messages
+// 4 install button  5 click -> progress  6.9 green "ready" pill
+// 8 click -> version pill  9 open  9.8-10.1 hover rows  10.5 pick 1.17.0, close  11.1 check
+// 11.5 grab a file off screen  12 drop zone  12.3-13.4 drag in  13.45 drop  13.6-14.9 restore  15.1 check
+// 16 click -> backup switch  16.9 switch on  17.3 the pill becomes a ring  17.45-18.5 fill  18.6 check
+// 20 the ring collapses into a chat head  20.6 badge  21.2 click -> chat  21.55 / 22.8 / 23.35 messages
+// 24 QR  24.4-25.4 scan  25.6 click -> phone  26.05-26.65 PIN  26.95 unlocked  27.15 / 27.5 messages
 // 28 brand pill + platforms   31 logo
 const STATES = [
-  { id: 'logo', at: 31, w: 150, h: 150, r: 75, bg: PLATE, cam: 2.2 },
-  { id: 'brand', at: 1, w: 500, h: 132, r: 66, bg: WHITE, cam: 1.55 },
-  { id: 'install', at: 4, w: 520, h: 260, r: 28, bg: INK, cam: 1.45 },
-  { id: 'versions', at: 8, w: 440, h: 112, r: 30, bg: WHITE, cam: 1.55 },
-  { id: 'upload', at: 12, w: 460, h: 300, r: 34, bg: WHITE, cam: 1.55 },
-  { id: 'cloud', at: 16, w: 480, h: 210, r: 40, bg: INK, cam: 1.5 },
-  { id: 'bubble', at: 20, w: 150, h: 150, r: 75, bg: '#FF8FC4', cam: 2.0 },
-  { id: 'chat', at: 21.2, w: 420, h: 470, r: 34, bg: WHITE, cam: 1.42 },
-  { id: 'qr', at: 24, w: 480, h: 240, r: 34, bg: WHITE, cam: 1.5 },
-  { id: 'phone', at: 25.6, w: 290, h: 560, r: 48, bg: INK, cam: 1.2 },
-  { id: 'brand2', at: 28, w: 500, h: 132, r: 66, bg: WHITE, cam: 1.55 },
+  { id: 'logo', at: 31, w: 150, h: 150, r: 75, bg: PLATE, cam: 2.3 },
+  { id: 'brand', at: 1, w: 500, h: 132, r: 66, bg: WHITE, cam: 1.6 },
+  { id: 'install', at: 4, w: 380, h: 104, r: 52, bg: WHITE, cam: 2.05 },
+  { id: 'installing', at: 5, w: 440, h: 104, r: 52, bg: WHITE, cam: 1.95 },
+  { id: 'ready', at: 6.9, w: 270, h: 104, r: 52, bg: C.green, cam: 2.15 },
+  { id: 'versions', at: 8, w: 300, h: 96, r: 48, bg: WHITE, cam: 2.0 },
+  { id: 'upload', at: 12, w: 340, h: 260, r: 40, bg: WHITE, cam: 1.95 },
+  { id: 'cloud', at: 16, w: 380, h: 104, r: 52, bg: WHITE, cam: 2.0 },
+  { id: 'ring', at: 17.3, w: 220, h: 220, r: 110, bg: WHITE, cam: 2.3 },
+  { id: 'bubble', at: 20, w: 150, h: 150, r: 75, bg: '#FF8FC4', cam: 2.2 },
+  { id: 'chat', at: 21.2, w: 380, h: 320, r: 36, bg: WHITE, cam: 1.8 },
+  { id: 'qr', at: 24, w: 260, h: 260, r: 40, bg: WHITE, cam: 2.1 },
+  { id: 'phone', at: 25.6, w: 270, h: 520, r: 46, bg: WHITE, cam: 1.35 },
+  { id: 'brand2', at: 28, w: 500, h: 132, r: 66, bg: WHITE, cam: 1.6 },
 ]
-// sections: canvas color, caption, caption ink
 const SECTIONS = [
   { at: 0, canvas: C.red }, { at: 4, canvas: C.violet }, { at: 8, canvas: C.blue }, { at: 12, canvas: C.orange },
   { at: 16, canvas: C.cyan }, { at: 20, canvas: C.pink }, { at: 24, canvas: C.green }, { at: 28, canvas: C.yellow, ink: INK },
 ]
-const CLICKS = [0, 4, 8, 9, 10.5, 16, 17, 21.2, 25.6]
+const CLICKS = [0, 5, 8, 9, 10.5, 16, 16.9, 21.2, 25.6]
 const DRAGS = [[12.2, 13.45]]
 
-const VER_OPEN_H = 112 + 5 * 54 + 16
+const VER_ROW = 60, VER_OPEN_H = 96 + 4 * VER_ROW + 12
 const shapeW = track(STATES.map((s) => [s.at, s.w]))
-const shapeH = track([...STATES.map((s) => [s.at, s.h]), [9, VER_OPEN_H, SPR.lead], [10.5, 112, SPR.lead]])
-const shapeR = track(STATES.map((s) => [s.at, s.r]))
+const shapeH = track([...STATES.map((s) => [s.at, s.h]), [9, VER_OPEN_H, SPR.lead], [10.5, 96, SPR.lead]])
+const shapeR = track([...STATES.map((s) => [s.at, s.r]), [9, 34, SPR.lead], [10.5, 48, SPR.lead]])
 const SHAPE_WIPES = STATES.map((s) => ({ b: s.at, color: s.bg })).sort((a, b) => a.b - b.b)
 function latest(list, tb) {
   let best = 0
@@ -415,31 +398,32 @@ const capVis = SECTIONS.map((s, i) => vis(s.at + CAP_IN, SECTIONS[(i + 1) % SECT
 
 const pressKeys = (bs) => bs.flatMap((b) => [[b - 0.16, 1, SPR.press], [b + 0.02, 0, SPR.enter]])
 const cursorPress = track([...pressKeys(CLICKS), ...DRAGS.flatMap(([a, z]) => [[a - 0.1, 1, SPR.press], [z, 0, SPR.enter]])])
-const shapePress = track(pressKeys([0, 4, 8, 16, 21.2, 25.6]))
+const shapePress = track(pressKeys([0, 5, 8, 16, 21.2, 25.6]))
 
 // ---------- cursor path (world coords, origin = shape center) ----------
 const cursorKeys = [
   [0.45, 210, 125],
-  [3.1, 90, 12], // onto the pill, click 4
-  [4.4, 300, 178],
-  [7.2, 40, 20], // click 8
-  [8.3, 172, 2], // chevron, click 9
-  [9.5, -40, -1], // row 1
-  [10.0, -40, 53], // row 2, click 10.5
-  [10.85, 165, 120],
-  [11.5, 430, 40], // off screen to pick up a file
-  [12.25, 330, 20],
+  [3.3, 120, 95],
+  [4.3, -138, 4], // install button, click 5
+  [5.4, 170, 112],
+  [7.3, 30, 12], // ready pill, click 8
+  [8.3, 102, 2], // chevron, click 9
+  [9.5, -30, 14], // row 1
+  [10.0, -30, 74], // row 2, click 10.5
+  [10.85, 150, 110],
+  [11.5, 400, 40], // off screen to pick up a file
+  [12.25, 300, 20],
   [12.5, 0, 8, SPR.drag], // drag into the zone, drop 13.45
-  [13.75, 205, 178],
+  [13.75, 200, 172],
   [15.3, 30, 30], // click 16
-  [16.35, -4, 59], // toggle, click 17
-  [17.4, 255, 150],
+  [16.3, 134, 4], // switch, click 16.9
+  [17.4, 170, 150],
   [19.4, 110, 100],
   [20.4, 34, 30], // onto the chat head, click 21.2
-  [21.6, 255, 262],
-  [24.3, 255, 150],
-  [25.0, -120, 12], // onto the QR, click 25.6
-  [26.0, 225, 236],
+  [21.6, 230, 205],
+  [24.3, 190, 175],
+  [25.0, -40, 20], // onto the QR, click 25.6
+  [26.0, 200, 232],
   [28.3, 290, -40],
   [30.9, 140, 130],
   [31.75, 26, 22], // onto the logo, click 0
@@ -449,12 +433,11 @@ const curY = track(cursorKeys.map(([b, , y, s]) => [b, y, s]), SPR.cursor)
 
 // ---------- per-section tracks ----------
 // install
-const CMD = 'npx sillytavern-manager'
-const instLineVis = vis(5.55, 8)
-const instP = track([[4, 0, SPR.exit], [5.65, 0.42, SPR.slow], [6.25, 0.8, SPR.slow], [6.8, 1, SPR.trail]])
-const instReadyVis = vis(7.0, 8, SPR.snap)
+const instP = track([[4, 0, SPR.exit], [5.2, 0.42, SPR.slow], [5.8, 0.8, SPR.slow], [6.4, 1, SPR.trail]])
+const instHover = vis(4.6, 5.05)
+const readyCheck = track([[7.0, 1, { f: 2.6, z: 1 }], [8, 0, SPR.exit]])
 // versions
-const VERSIONS = [['1.19.0', 'latest'], ['1.18.0'], ['1.17.0'], ['1.16.0'], ['staging']]
+const VERSIONS = ['1.19.0', '1.18.0', '1.17.0', '1.16.0']
 const verRowsVis = vis(9.05, 10.55, SPR.enter, { f: 6, z: 1 })
 const verHlRow = track([[8, 0, SPR.exit], [9.75, 1, SPR.snap], [10.1, 2, SPR.snap]])
 const verAVis = vis(8.14, 10.6, SPR.enter, SPR.exit)
@@ -467,11 +450,11 @@ const zoneHot = vis(12.9, 13.5)
 const zoneAVis = vis(12.14, 13.5)
 const zoneBVis = vis(13.55, 16)
 const upP = track([[12, 0, SPR.exit], [13.7, 0.55, SPR.slow], [14.35, 0.86, SPR.slow], [14.9, 1, SPR.trail]])
-const upDoneVis = vis(15.1, 16, SPR.snap)
+const upDone = vis(15.1, 16, SPR.snap)
 // cloud
-const tog = track([[17, 1, SPR.snap], [20, 0, SPR.exit]])
-const cloudP = track([[16, 0, SPR.exit], [17.2, 0.5, SPR.slow], [17.85, 0.86, SPR.slow], [18.45, 1, SPR.trail]])
-const cloudCheck = track([[18.6, 1, { f: 2.6, z: 1 }], [20, 0, SPR.exit]])
+const tog = track([[16.9, 1, SPR.snap], [20, 0, SPR.exit]])
+const ringP = track([[16, 0, SPR.exit], [17.45, 0.55, { f: 1.6, z: 1 }], [17.85, 0.88, { f: 1.6, z: 1 }], [18.2, 1, SPR.lead]])
+const ringCheck = track([[18.6, 1, { f: 2.6, z: 1 }], [20, 0, SPR.exit]])
 // bubble + chat
 const badgeVis = vis(20.6, 21.2, SPR.snap)
 const rippleOn = vis(20.3, 21.2)
@@ -482,12 +465,11 @@ const m3Vis = vis(23.35, 24, SPR.snap)
 // QR + phone
 const scanVis = vis(24.35, 25.45)
 const PIN_AT = [26.05, 26.25, 26.45, 26.65]
-const PIN_KEYS = [2, 5, 8, 0]
 const pinViewVis = vis(25.75, 26.95, SPR.enter, { f: 5, z: 1 })
+const unlock = track([[26.75, 1, SPR.snap], [28, 0, SPR.exit]])
 const appViewVis = vis(26.95, 28, { f: 4, z: 1 })
 const p1Vis = vis(27.15, 28, SPR.snap)
 const p2Vis = vis(27.5, 28, SPR.snap)
-const toastVis = vis(27.0, 28, SPR.snap)
 // outro chips
 const PLATFORMS = ['Windows', 'Android', 'macOS', 'Linux', 'Docker']
 const chipVis = PLATFORMS.map((_, i) => vis(28.55 + 0.14 * i, 30.9, SPR.snap))
@@ -516,18 +498,17 @@ const capEls = TEXT.caps.map(([chip, tt, st], i) => {
   const d = document.createElement('div')
   d.className = 'cap'
   d.style.color = SECTIONS[i].ink || WHITE
-  d.innerHTML = `<div class="chip" style="${chip ? '' : 'visibility:hidden'};${SECTIONS[i].ink ? 'background:rgba(23,17,43,0.12)' : ''}">${chip}</div><div class="tt">${tt}</div><div class="st">${st}</div>`
+  d.innerHTML = `<div class="chip" style="${chip ? '' : 'visibility:hidden'};${SECTIONS[i].ink ? 'background:rgba(23,17,43,0.12)' : ''}">${chip}</div><div class="tt">${tt}</div>${st ? `<div class="st">${st}</div>` : ''}`
   $('caps').appendChild(d)
   return d
 })
 
 // version rows
-const rowEls = VERSIONS.map(([v, tag], i) => {
+const rowEls = VERSIONS.map((v, i) => {
   const d = document.createElement('div')
   d.className = 'row nw'
-  d.style.top = 120 + i * 54 + 'px'
-  d.innerHTML = (v === 'staging' ? TEXT.staging : v) + (tag ? ` <span style="color:#7A7590;font-weight:500">(${TEXT.latest})</span>` : '')
-  if (i === 0) d.innerHTML += '<svg style="position:absolute;right:16px;top:13px;color:#2F5BFF" width="22" height="22" viewBox="0 0 24 24"><path class="stroke" style="stroke-width:2.8" d="M20 6 9 17l-5-5"/></svg>'
+  d.style.top = 102 + i * VER_ROW + 'px'
+  d.innerHTML = v + (i === 0 ? ` <span style="color:#7A7590;font-weight:500;font-size:17px">${TEXT.latest}</span>` : '')
   $('verRows').appendChild(d)
   return d
 })
@@ -554,25 +535,14 @@ dotEls.forEach((d) => Object.assign(d.style, { display: 'block', width: '9px', h
   $('qrSvg').innerHTML = rects
 }
 
-// phone PIN dots and keypad
+// phone PIN dots
 const pinDotEls = PIN_AT.map((_, i) => {
   const d = document.createElement('div')
   d.className = 'abs'
-  Object.assign(d.style, { left: 135 - 4 * 14 - 18 + i * 32 + 'px', top: '200px', width: '14px', height: '14px', borderRadius: '7px', boxSizing: 'border-box', border: '2px solid rgba(255,255,255,0.7)' })
+  Object.assign(d.style, { left: 62 + i * 36 + 'px', top: '254px', width: '18px', height: '18px', borderRadius: '9px', boxSizing: 'border-box', border: `2.5px solid ${INK}` })
   $('pinDots').appendChild(d)
   return d
 })
-const keyEls = {}
-for (let n = 0; n <= 9; n++) {
-  const d = document.createElement('div')
-  d.className = 'key'
-  const i = n === 0 ? 10 : n - 1
-  d.style.left = 135 - 29 + ((i % 3) - 1) * 74 + 'px'
-  d.style.top = 244 + Math.floor(i / 3) * 70 + 'px'
-  d.textContent = n
-  $('keys').appendChild(d)
-  keyEls[n] = d
-}
 
 // outro platform chips, centered as a row under the shape
 const chipEls = PLATFORMS.map((p) => {
@@ -608,6 +578,12 @@ function slide(el, v, tb, a, z, dist) {
   el.style.transform = `translateY(${(dir * (1 - clamp(v)) * dist).toFixed(2)}px)`
 }
 const popScale = (v) => lerp(0.5, 1, clamp(v, 0, 1.25))
+function popStyle(el, v) {
+  const p = clamp(v, 0, 1.25)
+  el.style.opacity = clamp(p * 2)
+  el.style.transform = `scale(${popScale(p)})`
+  el.style.visibility = p < 0.002 ? 'hidden' : 'visible'
+}
 
 function seek(tIn) {
   const d = D()
@@ -619,12 +595,12 @@ function seek(tIn) {
   // canvas flood
   const wp = wipeState(t)
   els.stage.style.background = wp.prev
-  const ox = 540 + curX(wp.t0) * cam(wp.t0), oy = 640 + curY(wp.t0) * cam(wp.t0)
+  const ox = 540 + curX(wp.t0) * cam(wp.t0), oy = 620 + curY(wp.t0) * cam(wp.t0)
   const rad = 1800 * S(wp.age, 1.25, 1)
   Object.assign(els.wipe.style, { left: ox - rad + 'px', top: oy - rad + 'px', width: 2 * rad + 'px', height: 2 * rad + 'px', background: wp.cur })
   // decor drifts once per loop so the last frame equals the first
   const ph = (t / d) * Math.PI * 2
-  const ds = 0.85 + 0.07 * c
+  const ds = 0.85 + 0.05 * c
   $('decoRing').style.transform = `translate(${-250 + 34 * Math.sin(ph)}px, ${-200 + 26 * Math.cos(ph)}px) scale(${ds})`
   $('decoSquare').style.transform = `translate(${790 + 26 * Math.cos(ph)}px, ${780 + 34 * Math.sin(ph)}px) rotate(${(t / d) * 90 + 12}deg) scale(${ds})`
   $('decoDot').style.transform = `translate(${930 + 22 * Math.sin(ph * 2)}px, ${330 + 18 * Math.cos(ph)}px) scale(${ds})`
@@ -670,34 +646,26 @@ function seek(tIn) {
     el.style.transform = `scale(${lerp(0.96, 1, clamp(v))})`
   }
 
-  // install: typing, progress, ready
-  const typed = Math.floor(clamp((tb - 4.35) / 1.05) * CMD.length)
-  $('typed').textContent = CMD.slice(0, typed)
-  const typing = tb > 4.3 && tb < 5.5
-  $('caret').style.opacity = typing || Math.floor(tb * 2) % 2 === 0 ? 1 : 0
-  const il = instLineVis(t)
-  visStyle($('instLine'), il, 6); slide($('instLine'), il, tb, 5.55, 8, 14)
+  // install
+  const ih = clamp(instHover(t))
+  $('instBtn').style.transform = `scale(${1 + 0.08 * ih - 0.1 * clamp(cursorPress(t)) * ih})`
   const ip = clamp(instP(t))
-  $('instBar').style.width = 464 * ip + 'px'
+  $('instBar').style.width = 372 * ip + 'px'
   $('instPct').textContent = Math.round(ip * 100) + '%'
-  const ir = instReadyVis(t)
-  visStyle($('instReady'), Math.min(1, ir), 6)
-  $('instReady').style.transform = `translateX(${(-(1 - clamp(ir)) * 16).toFixed(2)}px)`
+  $('readyCheck').style.strokeDashoffset = (1 - clamp(readyCheck(t))).toFixed(4)
 
   // versions
   const rv = clamp(verRowsVis(t))
   $('verRows').style.opacity = rv
   $('verDiv').style.opacity = rv
   const hl = verHlRow(t)
-  Object.assign($('verHl').style, { top: 120 + hl * 54 + 'px', opacity: rv })
-  rowEls.forEach((el, i) => { el.style.color = Math.abs(hl - i) < 0.5 && rv > 0.5 ? '#2F5BFF' : INK; el.style.fontWeight = Math.abs(hl - i) < 0.5 ? 650 : 500 })
+  Object.assign($('verHl').style, { top: 102 + hl * VER_ROW + 'px', opacity: rv })
+  rowEls.forEach((el, i) => { const on = Math.abs(hl - i) < 0.5; el.style.color = on && rv > 0.5 ? '#2F5BFF' : INK; el.style.fontWeight = on ? 700 : 500 })
   $('chev').style.transform = `rotate(${180 * chevRot(t)}deg)`
   const va = verAVis(t), vb = verBVis(t)
-  visStyle($('verA'), va, 6); slide($('verA'), va, tb, 8.14, 10.6, 30)
-  visStyle($('verB'), vb, 6); slide($('verB'), vb, tb, 10.65, 12, 30)
-  const vo = clamp(verOkVis(t), 0, 1.3)
-  $('verOk').style.transform = `scale(${popScale(vo)})`
-  $('verOk').style.opacity = clamp(vo * 2)
+  visStyle($('verA'), va, 6); slide($('verA'), va, tb, 8.14, 10.6, 34)
+  visStyle($('verB'), vb, 6); slide($('verB'), vb, tb, 10.65, 12, 34)
+  popStyle($('verOk'), verOkVis(t))
 
   // upload: the file rides the cursor, the zone lights up, then restores
   const fv = fileVis(t)
@@ -709,80 +677,66 @@ function seek(tIn) {
   })
   const zh = clamp(zoneHot(t))
   Object.assign($('zone').style, { borderColor: mixColor('#C9C2E8', '#FF7A1A', zh), background: mixColor('#F8F6FF', '#FFF1E6', zh) })
-  $('zone').style.transform = `scale(${1 + 0.02 * zh})`
+  $('zone').style.transform = `scale(${1 + 0.03 * zh})`
   const za = zoneAVis(t), zb = zoneBVis(t)
   visStyle($('zoneA'), za, 8); visStyle($('zoneB'), zb, 8)
   $('zoneB').style.transform = `scale(${lerp(0.94, 1, clamp(zb))})`
   const up = clamp(upP(t))
-  $('upBar').style.width = 360 * up + 'px'
-  $('upPct').textContent = Math.round(up * 100) + '%'
-  const ud = clamp(upDoneVis(t), 0, 1.2)
-  visStyle($('upRun'), 1 - clamp(ud * 2), 4)
-  visStyle($('upDone'), Math.min(1, ud), 4)
-  $('upDone').style.transform = `scale(${lerp(0.8, 1, ud)})`
-  $('upDone').style.transformOrigin = '0 50%'
+  $('upBar').style.width = 232 * up + 'px'
+  const ud = upDone(t)
+  popStyle($('upCheck'), ud)
+  $('zipBig').style.opacity = 1 - clamp(ud * 2)
+  const us = $('upStat')
+  if (inSpan(tb, 15.1, 16)) { us.textContent = TEXT.restored; us.style.color = '#0E8F5A' }
+  else { us.textContent = `${TEXT.restoring} ${Math.round(up * 100)}%`; us.style.color = '#7A7590' }
 
-  // cloud
+  // cloud: switch, then ring
   const tg = clamp(tog(t), -0.1, 1.15)
-  $('tog').style.background = mixColor('#3B3163', C.cyan, clamp(tg))
-  $('togKnob').style.left = 4 + 28 * tg + 'px'
-  const cp = clamp(cloudP(t))
-  $('cloudRing').style.strokeDashoffset = (1 - cp).toFixed(4)
-  const ck = clamp(cloudCheck(t))
-  $('cloudCheck').style.strokeDashoffset = (1 - ck).toFixed(4)
-  $('cloudIcon').style.opacity = 1 - clamp(ck * 2)
-  $('cloudIcon').style.transform = `translateY(${(tb > 17.1 && tb < 18.6 ? -3 * Math.sin(tb * Math.PI * 2) : 0).toFixed(2)}px)`
-  const cs = $('cloudStat')
-  if (tb < 17.05 || tb >= 20) { cs.textContent = TEXT.cloudOff; cs.style.color = '#A89FD0' }
-  else if (tb < 18.6) { cs.textContent = `${TEXT.cloudRun} ${Math.round(cp * 100)}%`; cs.style.color = '#fff' }
-  else { cs.textContent = '✓ ' + TEXT.cloudDone; cs.style.color = '#3DDC97' }
+  $('tog').style.background = mixColor('#DCD8EA', C.cyan, clamp(tg))
+  $('togKnob').style.left = 4 + 32 * tg + 'px'
+  const rp = clamp(ringP(t))
+  $('ringFill').style.strokeDashoffset = (1 - rp).toFixed(4)
+  const rc = clamp(ringCheck(t))
+  $('ringFill').style.stroke = mixColor(C.cyan, C.green, rc)
+  $('ringCheck').style.strokeDashoffset = (1 - rc).toFixed(4)
+  $('ringBody').style.opacity = 1 - clamp(rc * 2.5)
+  $('ringPct').textContent = Math.round(rp * 100) + '%'
+  $('ringCloud').style.transform = `translateY(${(-4 * Math.abs(Math.sin(tb * Math.PI))).toFixed(2)}px)`
 
   // chat head: badge, ripple
   const bv = clamp(badgeVis(t), 0, 1.3)
   $('badge').style.transform = `translateY(${-bob}px) scale(${bv})`
   $('badge').style.visibility = bv < 0.002 ? 'hidden' : 'visible'
   const ro = clamp(rippleOn(t))
-  const rp = (since(tb, 20.3) * B / 0.6) % 1
-  $('ripple').style.opacity = (ro * (1 - rp)).toFixed(3)
-  $('ripple').style.transform = `scale(${1 + 0.5 * rp})`
+  const rq = (since(tb, 20.3) * B / 0.6) % 1
+  $('ripple').style.opacity = (ro * (1 - rq)).toFixed(3)
+  $('ripple').style.transform = `scale(${1 + 0.5 * rq})`
   $('ripple').style.visibility = ro < 0.002 ? 'hidden' : 'visible'
 
   // chat
   $('chatStat').textContent = tb > 21.9 && tb < 22.8 ? TEXT.typing : TEXT.online
-  for (const [id, f] of [['m1', m1Vis], ['m2', m2Vis], ['m3', m3Vis], ['dots', dotsVis]]) {
-    const v = clamp(f(t), 0, 1.2)
-    $(id).style.opacity = clamp(v * 2)
-    $(id).style.transform = `scale(${popScale(v)})`
-    $(id).style.visibility = v < 0.002 ? 'hidden' : 'visible'
-  }
+  for (const [id, f] of [['m1', m1Vis], ['m2', m2Vis], ['m3', m3Vis], ['dots', dotsVis]]) popStyle($(id), f(t))
   dotEls.forEach((el, i) => { el.style.transform = `translateY(${(-4 * Math.max(0, Math.sin((tb * 2.4 - i * 0.22) * Math.PI))).toFixed(2)}px)` })
 
   // QR scan line
-  const scv = clamp(scanVis(t))
   const scp = clamp((tb - 24.45) / 0.95)
-  Object.assign($('scan').style, { top: 30 + 176 * (0.5 - 0.5 * Math.cos(scp * Math.PI)) + 'px', opacity: scv })
+  Object.assign($('scan').style, { top: 26 + 204 * (0.5 - 0.5 * Math.cos(scp * Math.PI)) + 'px', opacity: clamp(scanVis(t)) })
 
   // phone: PIN, unlock, messages
   const pv = pinViewVis(t)
   visStyle($('pinView'), pv, 8)
   $('pinView').style.transform = `translateY(${(tb > 26.9 && tb < 28.5 ? -(1 - clamp(pv)) * 60 : 0).toFixed(2)}px)`
+  $('shackle').style.transform = `translateY(${(-3 * clamp(unlock(t), 0, 1.2)).toFixed(2)}px)`
   PIN_AT.forEach((b, i) => {
     const on = inSpan(tb, b, 28)
-    pinDotEls[i].style.background = on ? '#fff' : 'transparent'
+    pinDotEls[i].style.background = on ? INK : 'transparent'
     pinDotEls[i].style.transform = `scale(${1 + (on ? 0.5 * pulse((tb - b) * B, 6) : 0)})`
-    const k = keyEls[PIN_KEYS[i]]
-    const kp = on ? pulse((tb - b) * B, 5) : 0
-    k.style.background = `rgba(255,255,255,${(0.12 + 0.5 * kp).toFixed(3)})`
-    k.style.transform = `scale(${1 - 0.08 * kp})`
   })
   const av = appViewVis(t)
   visStyle($('appView'), av, 8)
   $('appView').style.transform = `scale(${lerp(1.06, 1, clamp(av))})`
-  for (const [id, f] of [['p1', p1Vis], ['p2', p2Vis], ['toast', toastVis]]) {
-    const v = clamp(f(t), 0, 1.2)
-    $(id).style.opacity = clamp(v * 2)
-    $(id).style.transform = id === 'toast' ? `translateY(${(1 - clamp(v)) * 30}px)` : `scale(${popScale(v)})`
-  }
+  popStyle($('p1'), p1Vis(t))
+  popStyle($('p2'), p2Vis(t))
 
   // outro chips
   chipEls.forEach((el, i) => {
@@ -793,7 +747,7 @@ function seek(tIn) {
 
   // cursor (screen space, constant size)
   const cx = curX(t), cy = curY(t)
-  const sx = 540 + cx * c, sy = 640 + cy * c
+  const sx = 540 + cx * c, sy = 620 + cy * c
   els.cursor.style.transform = `translate(${(sx - 6).toFixed(2)}px, ${(sy - 4).toFixed(2)}px) scale(${1 - 0.14 * clamp(cursorPress(t))})`
 }
 
@@ -802,8 +756,7 @@ function cues() {
   const list = [
     ...CLICKS.map((b) => ({ b, kind: 'click' })),
     ...SECTIONS.map((s) => ({ b: s.at, kind: 'swish' })),
-    { b: 21.2, kind: 'swish' }, { b: 25.6, kind: 'swish' }, { b: 9, kind: 'swish', soft: 1 }, { b: 10.5, kind: 'swish', soft: 1 },
-    ...Array.from({ length: CMD.length }, (_, i) => ({ b: 4.35 + (i + 0.5) * (1.05 / CMD.length), kind: 'tick' })),
+    ...[5, 6.9, 17.3, 21.2, 25.6].map((b) => ({ b, kind: 'swish' })), { b: 9, kind: 'swish', soft: 1 }, { b: 10.5, kind: 'swish', soft: 1 },
     { b: 12.2, kind: 'press' }, { b: 13.45, kind: 'drop' },
     { b: 7.0, kind: 'success' }, { b: 11.1, kind: 'pop' }, { b: 15.1, kind: 'success' }, { b: 18.6, kind: 'success' },
     { b: 20.6, kind: 'pop' }, { b: 21.55, kind: 'msg' }, { b: 22.8, kind: 'msg' }, { b: 23.35, kind: 'msg', out: 1 },

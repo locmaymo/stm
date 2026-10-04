@@ -4,15 +4,17 @@ A 19.2-second motion-graphics loop of SillyTavern Manager's main features. It ha
 
 The shape on screen never cuts. It morphs from one UI to the next while each section floods the canvas with a new color from the cursor. The last frame is identical to the first, so the MP4 and the GIF loop seamlessly.
 
+Every component is a light card with one idea and as little text as possible.
+
 | Beats | Section |
 | --- | --- |
 | 0–4 | Intro: the logo is clicked and opens into the brand pill |
-| 4–8 | 01 Quick install: `npx sillytavern-manager`, progress, ready |
+| 4–8 | 01 Quick install: an install button, a progress bar, a green "Ready" pill |
 | 8–12 | 02 Pick any version: the version list opens and 1.17.0 is picked |
 | 12–16 | 03 Bring your old data: a backup ZIP is dragged in and restored |
-| 16–20 | 04 Cloud backup: auto backup is switched on, the ring fills, a check appears |
-| 20–24 | 05 Chat bubbles: a character chat head pops a badge and opens into a chat |
-| 24–28 | 06 Open it on any device: the QR is scanned, the phone takes the PIN and unlocks |
+| 16–20 | 04 Cloud backup: a switch turns on and the pill becomes a progress ring with a check |
+| 20–24 | 05 Chat bubbles (Android): a character chat head pops a badge and opens into a chat |
+| 24–28 | 06 Open on iPhone and any device: a QR code is scanned, the phone takes the PIN and unlocks |
 | 28–32 | Outro: brand pill, platforms, the website, then back to the logo |
 
 ```
