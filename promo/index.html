@@ -1,0 +1,838 @@
+<!doctype html>
+<!--
+  STM promo: one shape that never cuts, on a canvas that floods a new color every section.
+  Every style is a pure function of time: seek(t). No CSS transitions, no timers, no state between frames.
+  Open directly in a browser to preview (?lang=vi for Vietnamese, ?t=3.2 to freeze a frame);
+  scripts/render.mjs drives seek(t) for export. Frame D equals frame 0, so the export loops.
+-->
+<html>
+<head>
+<meta charset="utf-8" />
+<title>STM promo</title>
+<style id="fontfaces"></style>
+<style>
+  html, body { margin: 0; background: #111; }
+  body.preview { display: grid; place-items: center; min-height: 100vh; overflow: hidden; }
+  body.preview #stage { transform: scale(var(--fit, 0.5)); transform-origin: center; flex-shrink: 0; }
+  #stage {
+    position: relative; width: 1080px; height: 1080px; overflow: hidden;
+    font-family: 'BVP', 'Noto Color Emoji', sans-serif; -webkit-font-smoothing: antialiased; color: #17112B;
+    font-feature-settings: 'tnum' 1;
+  }
+  #wipe { position: absolute; border-radius: 50%; }
+  .deco { position: absolute; }
+  /* never add will-change here: the camera scales this subtree and text would rasterize blurry */
+  #world { position: absolute; left: 540px; top: 640px; width: 0; height: 0; transform-origin: 0 0; }
+  #shape { position: absolute; overflow: hidden; }
+  .layer, .abs { position: absolute; }
+  .nw { white-space: nowrap; }
+  svg { display: block; overflow: visible; }
+  .stroke { fill: none; stroke: currentColor; stroke-width: 2.25; stroke-linecap: round; stroke-linejoin: round; }
+  .mono { font-family: 'JBM', monospace; }
+  #cursor { position: absolute; left: 0; top: 0; width: 44px; height: 44px; transform-origin: 6px 4px; }
+  .cap { position: absolute; left: 0; right: 0; top: 54px; text-align: center; }
+  .cap .chip { display: inline-block; padding: 0 16px; height: 34px; line-height: 34px; border-radius: 17px; font-size: 17px; font-weight: 700; letter-spacing: 1.5px; background: rgba(255,255,255,0.22); }
+  .cap .tt { margin-top: 14px; font-size: 62px; line-height: 70px; font-weight: 800; letter-spacing: -1.8px; white-space: nowrap; }
+  .cap .st { margin-top: 6px; font-size: 25px; line-height: 32px; font-weight: 500; opacity: 0.86; white-space: nowrap; }
+  .bub { position: absolute; padding: 12px 17px; border-radius: 20px; font-size: 17px; line-height: 23px; font-weight: 500; max-width: 290px; width: max-content; transform-origin: 0 100%; }
+  .bub.in { background: #F1EEFB; color: #17112B; border-bottom-left-radius: 6px; }
+  .bub.out { background: #FF4FA0; color: #fff; border-bottom-right-radius: 6px; transform-origin: 100% 100%; }
+  .row { position: absolute; left: 12px; right: 12px; height: 48px; line-height: 48px; padding-left: 16px; font-size: 19px; font-weight: 500; }
+  .pill { position: absolute; height: 34px; line-height: 34px; padding: 0 14px 0 12px; border-radius: 17px; font-size: 15px; font-weight: 600; white-space: nowrap; display: flex; align-items: center; gap: 7px; }
+  .key { position: absolute; width: 58px; height: 58px; border-radius: 29px; background: rgba(255,255,255,0.12); color: #fff; text-align: center; line-height: 58px; font-size: 24px; font-weight: 500; }
+  .pchip { position: absolute; height: 40px; line-height: 40px; padding: 0 18px; border-radius: 20px; background: #17112B; color: #fff; font-size: 17px; font-weight: 600; white-space: nowrap; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="wipe"></div>
+  <div class="deco" id="decoRing" style="width:600px;height:600px;border-radius:50%;box-sizing:border-box;border:86px solid rgba(255,255,255,0.13)"></div>
+  <div class="deco" id="decoSquare" style="width:400px;height:400px;border-radius:96px;background:rgba(0,0,0,0.07)"></div>
+  <div class="deco" id="decoDot" style="width:92px;height:92px;border-radius:50%;background:rgba(255,255,255,0.2)"></div>
+  <svg class="deco" id="decoStar" width="70" height="70" viewBox="0 0 24 24"><path fill="rgba(255,255,255,0.28)" d="M12 2.6c.4 0 .7.2.9.6l2.4 4.9 5.4.8c.9.1 1.2 1.2.6 1.8l-3.9 3.8.9 5.4c.2.9-.8 1.6-1.6 1.1L12 18.5 7.2 21c-.8.5-1.8-.2-1.6-1.1l.9-5.4-3.9-3.8c-.6-.6-.3-1.7.6-1.8l5.4-.8 2.4-4.9c.2-.4.6-.6 1-.6z"/></svg>
+
+  <div id="caps"></div>
+
+  <div id="world">
+    <!-- behind the shape -->
+    <div class="abs" id="ripple" style="left:-75px;top:-75px;width:150px;height:150px;border-radius:75px;box-sizing:border-box;border:6px solid rgba(255,255,255,0.7)"></div>
+    <div class="abs" id="chips" style="left:0;top:118px"></div>
+    <div id="shape">
+      <div class="abs" id="shapeWipe" style="border-radius:50%"></div>
+
+      <!-- logo: the brand mark fills a circle -->
+      <div class="layer" id="L-logo" data-w="150" data-h="150">
+        <img class="abs" src="../apps/manager-panel/public/icon-512.png" style="left:0;top:0;width:150px;height:150px" />
+      </div>
+
+      <!-- brand pill, intro -->
+      <div class="layer" id="L-brand" data-w="500" data-h="132">
+        <img class="abs" src="../apps/manager-panel/public/icon-512.png" style="left:16px;top:16px;width:100px;height:100px" />
+        <div class="abs nw" style="left:134px;top:26px;font-size:33px;font-weight:800;letter-spacing:-0.9px">SillyTavern Manager</div>
+        <div class="abs nw" data-t="tagline" style="left:135px;top:72px;font-size:17px;font-weight:500;color:#7A7590"></div>
+      </div>
+
+      <!-- quick install: a terminal -->
+      <div class="layer" id="L-install" data-w="520" data-h="260">
+        <div class="abs" style="left:22px;top:20px;width:12px;height:12px;border-radius:6px;background:#FF5F57"></div>
+        <div class="abs" style="left:42px;top:20px;width:12px;height:12px;border-radius:6px;background:#FEBC2E"></div>
+        <div class="abs" style="left:62px;top:20px;width:12px;height:12px;border-radius:6px;background:#28C840"></div>
+        <div class="abs mono" style="left:0;right:0;top:15px;text-align:center;font-size:13px;color:#6E6890">stm</div>
+        <div class="abs mono nw" style="left:28px;top:62px;font-size:22px;color:#fff"><span style="color:#FF4FA0">$</span> <span id="typed"></span><span id="caret" style="display:inline-block;width:12px;height:24px;margin-left:2px;vertical-align:-4px;background:#C6F432"></span></div>
+        <div class="abs" id="instLine" style="left:28px;top:114px;width:464px">
+          <div class="abs nw" data-t="installing" style="left:0;top:0;font-size:17px;font-weight:500;color:#C9C3E6"></div>
+          <div class="abs mono" id="instPct" style="right:0;top:1px;font-size:16px;color:#C9C3E6"></div>
+          <div class="abs" style="left:0;top:34px;width:464px;height:12px;border-radius:6px;background:rgba(255,255,255,0.12)"></div>
+          <div class="abs" id="instBar" style="left:0;top:34px;height:12px;border-radius:6px;background:linear-gradient(90deg,#7C4DFF,#FF4FA0)"></div>
+        </div>
+        <div class="abs nw" id="instReady" style="left:28px;top:186px;font-size:19px;font-weight:600;color:#3DDC97;display:flex;align-items:center;gap:10px">
+          <svg width="22" height="22" viewBox="0 0 24 24"><path class="stroke" style="stroke-width:3" d="M20 6 9 17l-5-5"/></svg>
+          <span data-t="ready"></span><span class="mono" style="color:#8D86B0;font-size:16px;font-weight:500">127.0.0.1:7860</span>
+        </div>
+      </div>
+
+      <!-- version picker: fills the shape, content hangs from the top so the list can unfold -->
+      <div class="layer" id="L-versions" data-fill="1">
+        <div class="abs nw" data-t="verLabel" style="left:28px;top:20px;font-size:15px;font-weight:600;color:#7A7590"></div>
+        <div class="abs" style="left:28px;top:44px;width:280px;height:44px;overflow:hidden">
+          <div class="abs nw" id="verA" style="left:0;top:0;display:flex;align-items:center;gap:12px"><span style="font-size:31px;font-weight:750;letter-spacing:-0.6px;line-height:44px">1.19.0</span><span class="pill" data-t="latest" style="position:static;height:28px;line-height:28px;background:#DDF8EC;color:#0E8F5A"></span></div>
+          <div class="abs nw" id="verB" style="left:0;top:0;display:flex;align-items:center;gap:12px"><span style="font-size:31px;font-weight:750;letter-spacing:-0.6px;line-height:44px">1.17.0</span><span class="pill" id="verOk" style="position:static;height:28px;line-height:28px;background:#E7EEFF;color:#2F5BFF"><svg width="15" height="15" viewBox="0 0 24 24"><path class="stroke" style="stroke-width:3.4" d="M20 6 9 17l-5-5"/></svg><span data-t="installed"></span></span></div>
+        </div>
+        <svg class="abs" id="chev" style="right:30px;top:42px;color:#17112B" width="28" height="28" viewBox="0 0 24 24"><path class="stroke" style="stroke-width:2.6" d="m6 9 6 6 6-6"/></svg>
+        <div class="abs" id="verDiv" style="left:20px;right:20px;top:111px;height:2px;background:#EEEBF6"></div>
+        <div class="abs" id="verHl" style="left:12px;right:12px;height:48px;border-radius:14px;background:#EEF2FF"></div>
+        <div id="verRows"></div>
+      </div>
+
+      <!-- upload old data -->
+      <div class="layer" id="L-upload" data-w="460" data-h="300">
+        <div class="abs" id="zone" style="left:20px;top:20px;width:420px;height:260px;border-radius:22px;box-sizing:border-box;border:3px dashed #C9C2E8"></div>
+        <div class="abs" id="zoneA" style="left:20px;top:20px;width:420px;height:260px">
+          <div class="abs" style="left:178px;top:42px;width:64px;height:64px;border-radius:32px;background:#FF7A1A;color:#fff">
+            <svg class="abs" style="left:18px;top:17px" width="28" height="28" viewBox="0 0 24 24"><path class="stroke" style="stroke-width:2.6" d="M12 15V3m5 5-5-5-5 5M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/></svg>
+          </div>
+          <div class="abs nw" data-t="dropTitle" style="left:0;right:0;top:128px;text-align:center;font-size:21px;font-weight:700;letter-spacing:-0.3px"></div>
+          <div class="abs nw" data-t="dropSub" style="left:0;right:0;top:162px;text-align:center;font-size:15px;font-weight:500;color:#7A7590"></div>
+        </div>
+        <div class="abs" id="zoneB" style="left:20px;top:20px;width:420px;height:260px">
+          <div class="abs zipicon" style="left:30px;top:44px"></div>
+          <div class="abs nw" style="left:110px;top:50px;font-size:20px;font-weight:700;letter-spacing:-0.3px">sillytavern-backup.zip</div>
+          <div class="abs nw" data-t="zipMeta" style="left:110px;top:80px;font-size:15px;font-weight:500;color:#7A7590"></div>
+          <div class="abs" style="left:30px;top:150px;width:360px;height:12px;border-radius:6px;background:#F1EEFB"></div>
+          <div class="abs" id="upBar" style="left:30px;top:150px;height:12px;border-radius:6px;background:linear-gradient(90deg,#FF7A1A,#FF4FA0)"></div>
+          <div class="abs nw" id="upRun" style="left:30px;top:180px;font-size:16px;font-weight:600;color:#7A7590"><span data-t="restoring"></span> <span id="upPct" class="mono"></span></div>
+          <div class="abs nw" id="upDone" style="left:30px;top:178px;font-size:17px;font-weight:700;color:#0E8F5A;display:flex;align-items:center;gap:8px"><svg width="20" height="20" viewBox="0 0 24 24"><path class="stroke" style="stroke-width:3.2" d="M20 6 9 17l-5-5"/></svg><span data-t="restored"></span></div>
+        </div>
+      </div>
+
+      <!-- cloud backup -->
+      <div class="layer" id="L-cloud" data-w="480" data-h="210">
+        <svg class="abs" style="left:28px;top:30px" width="150" height="150">
+          <circle cx="75" cy="75" r="62" fill="none" stroke="rgba(255,255,255,0.12)" stroke-width="12"/>
+          <circle id="cloudRing" cx="75" cy="75" r="62" fill="none" stroke="#1FCFEA" stroke-width="12" stroke-linecap="round" pathLength="1" stroke-dasharray="1" transform="rotate(-90 75 75)"/>
+        </svg>
+        <svg class="abs" id="cloudIcon" style="left:73px;top:76px;color:#fff" width="60" height="60" viewBox="0 0 24 24"><path class="stroke" style="stroke-width:2" d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/><path id="cloudArrow" class="stroke" style="stroke-width:2" d="M12 17v-5m-2.4 2.2L12 11.8l2.4 2.4"/></svg>
+        <svg class="abs" style="left:68px;top:70px;color:#3DDC97" width="70" height="70" viewBox="0 0 24 24"><path id="cloudCheck" class="stroke" style="stroke-width:2.6" d="M20 6 9 17l-5-5" pathLength="1" stroke-dasharray="1"/></svg>
+        <div class="abs nw" data-t="cloudTitle" style="left:204px;top:30px;font-size:27px;font-weight:750;letter-spacing:-0.6px;color:#fff"></div>
+        <div class="abs nw" data-t="cloudSub" style="left:205px;top:68px;font-size:15px;font-weight:500;color:#A89FD0"></div>
+        <div class="abs nw" id="cloudStat" style="left:205px;top:96px;font-size:16px;font-weight:600;color:#fff"></div>
+        <div class="abs" id="tog" style="left:204px;top:140px;width:64px;height:36px;border-radius:18px">
+          <div class="abs" id="togKnob" style="top:4px;width:28px;height:28px;border-radius:14px;background:#fff;box-shadow:0 2px 6px rgba(0,0,0,0.3)"></div>
+        </div>
+        <div class="abs nw" data-t="auto" style="left:282px;top:147px;font-size:16px;font-weight:600;color:#fff"></div>
+      </div>
+
+      <!-- chat bubble: a character head floating over everything -->
+      <div class="layer" id="L-bubble" data-w="150" data-h="150">
+        <div class="abs" style="inset:0;border-radius:75px;background:radial-gradient(circle at 30% 25%,#FFD1E8,#FF4FA0 55%,#7C4DFF);"></div>
+        <div class="abs" style="left:0;right:0;top:30px;text-align:center;font-size:80px;line-height:90px">🧝‍♀️</div>
+      </div>
+
+      <!-- chat window -->
+      <div class="layer" id="L-chat" data-w="420" data-h="470">
+        <div class="abs" style="left:20px;top:14px;width:48px;height:48px;border-radius:24px;background:radial-gradient(circle at 30% 25%,#FFD1E8,#FF4FA0 55%,#7C4DFF);text-align:center;font-size:29px;line-height:50px">🧝‍♀️</div>
+        <div class="abs nw" style="left:80px;top:15px;font-size:20px;font-weight:750;letter-spacing:-0.3px">Seraphina</div>
+        <div class="abs nw" id="chatStat" style="left:80px;top:42px;font-size:14px;font-weight:600;color:#16C47F"></div>
+        <svg class="abs" style="right:22px;top:26px;color:#A09BB5" width="24" height="24" viewBox="0 0 24 24"><path class="stroke" style="stroke-width:2.4" d="M18 6 6 18M6 6l12 12"/></svg>
+        <div class="abs" style="left:0;right:0;top:76px;height:2px;background:#F1EEFB"></div>
+        <div class="bub in" id="m1" style="left:20px;top:96px" data-t="m1"></div>
+        <div class="bub in" id="dots" style="left:20px;top:160px;height:23px;display:flex;align-items:center;gap:6px"><i></i><i></i><i></i></div>
+        <div class="bub in" id="m2" style="left:20px;top:160px" data-t="m2"></div>
+        <div class="bub out" id="m3" style="right:20px;top:258px" data-t="m3"></div>
+        <div class="abs" style="left:16px;right:16px;top:402px;height:52px;border-radius:26px;background:#F4F2FA">
+          <div class="abs nw" data-t="inputPh" style="left:20px;top:0;line-height:52px;font-size:16px;color:#A09BB5"></div>
+          <div class="abs" style="right:6px;top:6px;width:40px;height:40px;border-radius:20px;background:#FF4FA0;color:#fff">
+            <svg class="abs" style="left:10px;top:10px" width="20" height="20" viewBox="0 0 24 24"><path class="stroke" style="stroke-width:2.6" d="M12 19V5m-6 6 6-6 6 6"/></svg>
+          </div>
+        </div>
+      </div>
+
+      <!-- access link: QR card -->
+      <div class="layer" id="L-qr" data-w="480" data-h="240">
+        <div class="abs" style="left:24px;top:24px;width:192px;height:192px;border-radius:18px;background:#F4F2FA"></div>
+        <svg class="abs" id="qrSvg" style="left:32px;top:32px" width="176" height="176" viewBox="0 0 25 25" shape-rendering="crispEdges"></svg>
+        <div class="abs" style="left:101px;top:101px;width:38px;height:38px;border-radius:10px;background:#fff">
+          <img class="abs" src="../apps/manager-panel/public/icon-512.png" style="left:4px;top:4px;width:30px;height:30px" />
+        </div>
+        <div class="abs" id="scan" style="left:28px;width:184px;height:4px;border-radius:2px;background:#16C47F;box-shadow:0 0 14px 4px rgba(22,196,127,0.55)"></div>
+        <div class="abs nw" data-t="qrTitle" style="left:236px;top:30px;font-size:22px;font-weight:750;letter-spacing:-0.4px"></div>
+        <div class="abs" data-t="qrSub" style="left:237px;top:62px;width:220px;font-size:15px;line-height:20px;font-weight:500;color:#7A7590"></div>
+        <div class="pill" style="left:236px;top:122px;background:#E2F8EE;color:#0E8F5A"><svg width="17" height="17" viewBox="0 0 24 24"><path class="stroke" style="stroke-width:2.6" d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg><span data-t="pill1"></span></div>
+        <div class="pill" style="left:236px;top:166px;background:#EEF2FF;color:#2F5BFF"><svg width="17" height="17" viewBox="0 0 24 24"><rect class="stroke" style="stroke-width:2.6" x="4" y="11" width="16" height="10" rx="2"/><path class="stroke" style="stroke-width:2.6" d="M8 11V7a4 4 0 0 1 8 0v4"/></svg><span data-t="pill2"></span></div>
+      </div>
+
+      <!-- phone -->
+      <div class="layer" id="L-phone" data-w="290" data-h="560">
+        <div class="abs" id="screen" style="left:10px;top:10px;width:270px;height:540px;border-radius:40px;overflow:hidden;background:linear-gradient(170deg,#2A1E5C,#130E2A)">
+          <div class="abs" id="pinView" style="inset:0">
+            <div class="abs" style="left:109px;top:62px;width:52px;height:52px;border-radius:26px;background:rgba(255,255,255,0.14);color:#fff">
+              <svg class="abs" style="left:14px;top:13px" width="24" height="24" viewBox="0 0 24 24"><rect class="stroke" x="4" y="11" width="16" height="10" rx="2"/><path class="stroke" d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+            </div>
+            <div class="abs nw" style="left:0;right:0;top:128px;text-align:center;font-size:22px;font-weight:750;color:#fff">SillyTavern</div>
+            <div class="abs nw" data-t="pin" style="left:0;right:0;top:160px;text-align:center;font-size:14px;font-weight:500;color:#A89FD0"></div>
+            <div id="pinDots"></div>
+            <div id="keys"></div>
+          </div>
+          <div class="abs" id="appView" style="inset:0;background:#15112A">
+            <div class="abs" style="left:0;right:0;top:0;height:96px;background:#211B3D"></div>
+            <div class="abs" style="left:18px;top:48px;width:36px;height:36px;border-radius:18px;background:radial-gradient(circle at 30% 25%,#FFD1E8,#FF4FA0 55%,#7C4DFF);text-align:center;font-size:21px;line-height:38px">🧝‍♀️</div>
+            <div class="abs nw" style="left:64px;top:48px;font-size:16px;font-weight:700;color:#fff">Seraphina</div>
+            <div class="abs nw" style="left:64px;top:68px;font-size:12px;font-weight:500;color:#A89FD0">SillyTavern</div>
+            <div class="bub in" id="p1" data-t="p1" style="left:14px;top:118px;max-width:200px;font-size:15px;line-height:20px;padding:10px 14px;background:#2C2550;color:#fff"></div>
+            <div class="bub out" id="p2" data-t="p2" style="right:14px;top:206px;max-width:200px;font-size:15px;line-height:20px;padding:10px 14px"></div>
+            <div class="abs nw" id="toast" style="left:20px;right:20px;top:470px;height:40px;border-radius:20px;background:#16C47F;color:#fff;font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center;gap:7px"><svg width="15" height="15" viewBox="0 0 24 24"><rect class="stroke" style="stroke-width:2.8" x="4" y="11" width="16" height="10" rx="2"/><path class="stroke" style="stroke-width:2.8" d="M8 11V7a4 4 0 0 1 8 0v4"/></svg><span data-t="toast"></span></div>
+          </div>
+          <div class="abs" style="left:85px;top:14px;width:100px;height:28px;border-radius:14px;background:#000"></div>
+        </div>
+      </div>
+
+      <!-- brand pill, outro -->
+      <div class="layer" id="L-brand2" data-w="500" data-h="132">
+        <img class="abs" src="../apps/manager-panel/public/icon-512.png" style="left:16px;top:16px;width:100px;height:100px" />
+        <div class="abs nw" style="left:134px;top:26px;font-size:33px;font-weight:800;letter-spacing:-0.9px">SillyTavern Manager</div>
+        <div class="abs nw" data-t="tagline2" style="left:135px;top:72px;font-size:17px;font-weight:500;color:#7A7590"></div>
+      </div>
+    </div>
+    <!-- above the shape -->
+    <div class="abs" id="badge" style="left:30px;top:-78px;width:46px;height:46px;border-radius:23px;background:#FF3B30;color:#fff;box-sizing:border-box;border:4px solid #fff;text-align:center;line-height:38px;font-size:20px;font-weight:800">1</div>
+    <div class="abs" id="file" style="width:236px;height:72px;border-radius:18px;background:#fff;box-shadow:0 18px 40px -14px rgba(23,17,43,0.45)">
+      <div class="abs zipicon small" style="left:14px;top:12px"></div>
+      <div class="abs nw" style="left:66px;top:13px;font-size:17px;font-weight:700">backup.zip</div>
+      <div class="abs nw mono" style="left:66px;top:38px;font-size:13px;color:#7A7590">48.2 MB</div>
+    </div>
+  </div>
+  <svg id="cursor" viewBox="0 0 34 34"><path d="M4 2.5 L4 26.5 L10.2 20.6 L14.3 30 L18.6 28.1 L14.6 19 L23 19 Z" fill="#17112B" stroke="#fff" stroke-width="2" stroke-linejoin="round"/></svg>
+</div>
+
+<script>
+// ---------- fonts (Be Vietnam Pro + JetBrains Mono, OFL) ----------
+{
+  const R = {
+    latin: 'U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF',
+    'latin-ext': 'U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF',
+    vietnamese: 'U+0102-0103,U+0110-0111,U+0128-0129,U+0168-0169,U+01A0-01A1,U+01AF-01B0,U+0300-0301,U+0303-0304,U+0308-0309,U+0323,U+0329,U+1EA0-1EF9,U+20AB',
+  }
+  let css = ''
+  for (const w of [400, 500, 600, 700, 800]) for (const s in R)
+    css += `@font-face{font-family:'BVP';src:url(assets/fonts/bvp-${s}-${w}.woff2) format('woff2');font-weight:${w};font-display:block;unicode-range:${R[s]}}`
+  css += `@font-face{font-family:'JBM';src:url(assets/fonts/mono-latin-500.woff2) format('woff2');font-weight:100 900;font-display:block}`
+  document.getElementById('fontfaces').textContent = css
+}
+
+// ---------- copy ----------
+const LANG = new URLSearchParams(location.search).get('lang') === 'vi' ? 'vi' : 'en'
+const TEXT = {
+  en: {
+    tagline: 'Install · Run · Share · Back up', tagline2: 'Free forever · Open source',
+    installing: 'Installing SillyTavern 1.19.0', ready: 'Ready',
+    verLabel: 'SillyTavern version', latest: 'latest', installed: 'installed', staging: 'Staging branch',
+    dropTitle: 'Drop your old SillyTavern backup', dropSub: 'A ZIP from SillyTavern or STM',
+    zipMeta: '1,604 files · chats, characters, settings', restoring: 'Restoring…', restored: 'Restored · a safety copy was kept',
+    cloudTitle: 'Cloud backup', cloudSub: 'Every 5 minutes · only what changed', cloudOff: 'Auto backup is off', cloudRun: 'Backing up…', cloudDone: 'Last copy · just now', auto: 'Auto backup',
+    online: '● online', typing: 'typing…',
+    m1: 'Welcome back, traveler ✨', m2: 'Shall we pick up where we left off?', m3: "Yes, let's go! 🌙", inputPh: 'Message Seraphina…',
+    qrTitle: 'Open on your phone', qrSub: 'Scan the code, or share your own link', pill1: 'Your own link', pill2: 'PIN protected',
+    pin: 'Enter your PIN', p1: 'Same chats, now on your phone 📱', p2: 'Anywhere, any device ✨', toast: 'Connected through your link',
+    caps: [
+      ['', 'SillyTavern, made easy', 'Everything it needs, in one panel'],
+      ['01 / 06', 'Quick install', 'One command, or one double-click'],
+      ['02 / 06', 'Pick any version', 'Official SillyTavern releases, one click'],
+      ['03 / 06', 'Bring your old data', 'Upload a SillyTavern backup ZIP'],
+      ['04 / 06', 'Cloud backup', 'Automatic, every few minutes'],
+      ['05 / 06', 'Chat bubbles', 'On Android, replies float over any app'],
+      ['06 / 06', 'Open it on any device', 'iPhone, Android, tablet — one link'],
+      ['', 'Try STM for free', 'stm.locmaymo.top'],
+    ],
+  },
+  vi: {
+    tagline: 'Cài đặt · Chạy · Chia sẻ · Sao lưu', tagline2: 'Miễn phí trọn đời · Mã nguồn mở',
+    installing: 'Đang cài SillyTavern 1.19.0', ready: 'Sẵn sàng',
+    verLabel: 'Phiên bản SillyTavern', latest: 'mới nhất', installed: 'đã cài', staging: 'Nhánh staging',
+    dropTitle: 'Thả bản sao lưu SillyTavern cũ', dropSub: 'File ZIP từ SillyTavern hoặc STM',
+    zipMeta: '1.604 tệp · chat, nhân vật, cài đặt', restoring: 'Đang khôi phục…', restored: 'Đã khôi phục · có giữ bản an toàn',
+    cloudTitle: 'Sao lưu đám mây', cloudSub: 'Mỗi 5 phút · chỉ phần thay đổi', cloudOff: 'Tự động sao lưu đang tắt', cloudRun: 'Đang sao lưu…', cloudDone: 'Bản mới nhất · vừa xong', auto: 'Tự động sao lưu',
+    online: '● đang hoạt động', typing: 'đang nhập…',
+    m1: 'Chào mừng trở lại, lữ khách ✨', m2: 'Mình viết tiếp câu chuyện nhé?', m3: 'Đi thôi! 🌙', inputPh: 'Nhắn cho Seraphina…',
+    qrTitle: 'Mở trên điện thoại', qrSub: 'Quét mã, hoặc gửi đường link riêng', pill1: 'Link riêng của bạn', pill2: 'Bảo vệ bằng PIN',
+    pin: 'Nhập mã PIN', p1: 'Vẫn đoạn chat đó, giờ trên điện thoại 📱', p2: 'Ở đâu, máy nào cũng được ✨', toast: 'Đã kết nối qua link của bạn',
+    caps: [
+      ['', 'SillyTavern thật dễ dàng', 'Mọi thứ cần thiết, trong một bảng điều khiển'],
+      ['01 / 06', 'Cài đặt nhanh', 'Một lệnh, hoặc nhấp đúp là xong'],
+      ['02 / 06', 'Chọn phiên bản', 'SillyTavern chính thức, chỉ một cú nhấp'],
+      ['03 / 06', 'Tải lên dữ liệu cũ', 'Tải file ZIP sao lưu từ SillyTavern'],
+      ['04 / 06', 'Sao lưu đám mây', 'Tự động, mỗi vài phút'],
+      ['05 / 06', 'Bong bóng chat', 'Trên Android, tin nhắn nổi trên mọi ứng dụng'],
+      ['06 / 06', 'Truy cập mọi thiết bị', 'iPhone, Android, máy tính bảng — một link'],
+      ['', 'Dùng thử STM miễn phí', 'stm.locmaymo.top'],
+    ],
+  },
+}[LANG]
+
+// ---------- time ----------
+const BEATS = 32 // 8 bars of 4/4
+let B = 60 / 100 // seconds per beat
+const D = () => BEATS * B
+
+// ---------- springs ----------
+// closed-form step response of a damped spring, 0 -> 1. f in Hz, z = damping ratio
+function S(t, f, z) {
+  if (t <= 0) return 0
+  const w = 2 * Math.PI * f
+  if (z >= 1) return 1 - Math.exp(-w * t) * (1 + w * t)
+  const wd = w * Math.sqrt(1 - z * z)
+  return 1 - Math.exp(-z * w * t) * (Math.cos(wd * t) + (z * w / wd) * Math.sin(wd * t))
+}
+// one-shot bump peaking at 1 after 1/(2πf) seconds, then decaying to 0
+function pulse(t, f) {
+  if (t <= 0) return 0
+  const x = 2 * Math.PI * f * t
+  return x * Math.exp(1 - x)
+}
+const SPR = {
+  shape: { f: 1.9, z: 0.8 },
+  cam: { f: 1.2, z: 0.95 },
+  enter: { f: 3.6, z: 1 },
+  exit: { f: 8, z: 1 },
+  cursor: { f: 2.3, z: 1 },
+  drag: { f: 1.25, z: 1 },
+  press: { f: 10, z: 1 },
+  lead: { f: 3.4, z: 0.78 },
+  trail: { f: 1.7, z: 0.92 },
+  slow: { f: 0.9, z: 1 },
+  snap: { f: 3, z: 0.62 },
+}
+
+// A value that changes target many times is the sum of one spring per change.
+// Cyclic: keys repeat every D, older cycles are included so frame D equals frame 0.
+function track(keys, def = SPR.shape) {
+  const ks = keys.map(([b, v, s]) => [((b % BEATS) + BEATS) % BEATS, v, s || def]).sort((a, b) => a[0] - b[0])
+  const n = ks.length
+  const deltas = ks.map((k, i) => k[1] - ks[(i - 1 + n) % n][1])
+  const base = ks[n - 1][1]
+  return (t) => {
+    let v = base
+    const d = D()
+    for (let c = -3; c <= 0; c++) {
+      for (let i = 0; i < n; i++) {
+        if (deltas[i] === 0) continue
+        v += deltas[i] * S(t - ks[i][0] * B - c * d, ks[i][2].f, ks[i][2].z)
+      }
+    }
+    return v
+  }
+}
+const hexToRgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16))
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x))
+const lerp = (a, b, p) => a + (b - a) * p
+// beats since key b inside the loop (cyclic, 0..BEATS)
+const since = (tb, b) => (((tb - b) % BEATS) + BEATS) % BEATS
+const inSpan = (tb, a, z) => since(tb, a) < since(z, a)
+function mixColor(a, b, p) {
+  const A = hexToRgb(a), Bc = hexToRgb(b)
+  return `rgb(${A.map((v, i) => Math.round(lerp(v, Bc[i], clamp(p)))).join(',')})`
+}
+// on/off between two beats; returns the eased visibility
+const vis = (a, z, sa = SPR.enter, sz = SPR.exit) => track([[a, 1, sa], [z, 0, sz]])
+
+// ---------- palette ----------
+const INK = '#17112B', WHITE = '#FFFFFF', PLATE = '#E0B0A0'
+const C = {
+  red: '#E8352B', violet: '#7C4DFF', blue: '#2F6BFF', orange: '#FF7A1A',
+  cyan: '#10B6E0', pink: '#FF4FA0', green: '#16C47F', yellow: '#FFCD00',
+}
+
+// ---------- structure (beats, 100 BPM, 0.6 s each) ----------
+// 31 logo shrinks back   0 click: red flood, logo bounces   1 brand pill
+// 4 terminal  4.35-5.4 typing  5.6-6.8 install bar  7 ready
+// 8 version select  9 open  9.8-10.1 hover rows  10.5 pick 1.17.0, close  11.1 installed
+// 11.6 grab a file off screen  12 drop zone  12.3-13.4 drag in  13.45 drop  13.6-14.9 restore  15.1 done
+// 16 cloud card  17 toggle on  17.1-18.5 ring  18.6 check
+// 20 card collapses into a chat head  20.6 badge  21.2 click -> chat  21.55 / 22.8 / 23.35 messages
+// 24 QR card  24.4-25.4 scan  25.6 click -> phone  26.05-26.65 PIN  26.95 unlocked  27.15 / 27.5 messages
+// 28 brand pill + platforms   31 logo
+const STATES = [
+  { id: 'logo', at: 31, w: 150, h: 150, r: 75, bg: PLATE, cam: 2.2 },
+  { id: 'brand', at: 1, w: 500, h: 132, r: 66, bg: WHITE, cam: 1.55 },
+  { id: 'install', at: 4, w: 520, h: 260, r: 28, bg: INK, cam: 1.45 },
+  { id: 'versions', at: 8, w: 440, h: 112, r: 30, bg: WHITE, cam: 1.55 },
+  { id: 'upload', at: 12, w: 460, h: 300, r: 34, bg: WHITE, cam: 1.55 },
+  { id: 'cloud', at: 16, w: 480, h: 210, r: 40, bg: INK, cam: 1.5 },
+  { id: 'bubble', at: 20, w: 150, h: 150, r: 75, bg: '#FF8FC4', cam: 2.0 },
+  { id: 'chat', at: 21.2, w: 420, h: 470, r: 34, bg: WHITE, cam: 1.42 },
+  { id: 'qr', at: 24, w: 480, h: 240, r: 34, bg: WHITE, cam: 1.5 },
+  { id: 'phone', at: 25.6, w: 290, h: 560, r: 48, bg: INK, cam: 1.2 },
+  { id: 'brand2', at: 28, w: 500, h: 132, r: 66, bg: WHITE, cam: 1.55 },
+]
+// sections: canvas color, caption, caption ink
+const SECTIONS = [
+  { at: 0, canvas: C.red }, { at: 4, canvas: C.violet }, { at: 8, canvas: C.blue }, { at: 12, canvas: C.orange },
+  { at: 16, canvas: C.cyan }, { at: 20, canvas: C.pink }, { at: 24, canvas: C.green }, { at: 28, canvas: C.yellow, ink: INK },
+]
+const CLICKS = [0, 4, 8, 9, 10.5, 16, 17, 21.2, 25.6]
+const DRAGS = [[12.2, 13.45]]
+
+const VER_OPEN_H = 112 + 5 * 54 + 16
+const shapeW = track(STATES.map((s) => [s.at, s.w]))
+const shapeH = track([...STATES.map((s) => [s.at, s.h]), [9, VER_OPEN_H, SPR.lead], [10.5, 112, SPR.lead]])
+const shapeR = track(STATES.map((s) => [s.at, s.r]))
+const SHAPE_WIPES = STATES.map((s) => ({ b: s.at, color: s.bg })).sort((a, b) => a.b - b.b)
+function latest(list, tb) {
+  let best = 0
+  for (let i = 0; i < list.length; i++) if (since(tb, list[i].b) < since(tb, list[best].b)) best = i
+  return best
+}
+const cam = track(STATES.map((s) => [s.at, s.cam]), SPR.cam)
+
+// content layers: enter after the morph starts, exit fast so swapped text never overlaps
+const layerVis = {}
+for (let i = 0; i < STATES.length; i++) {
+  const s = STATES[i], next = STATES[(i + 1) % STATES.length]
+  layerVis[s.id] = vis(s.at + 0.14, next.at)
+}
+// captions leave early enough that the outro's is fully gone by the loop point
+const CAP_IN = 0.2, CAP_OUT = 0.35
+const capVis = SECTIONS.map((s, i) => vis(s.at + CAP_IN, SECTIONS[(i + 1) % SECTIONS.length].at - CAP_OUT))
+
+const pressKeys = (bs) => bs.flatMap((b) => [[b - 0.16, 1, SPR.press], [b + 0.02, 0, SPR.enter]])
+const cursorPress = track([...pressKeys(CLICKS), ...DRAGS.flatMap(([a, z]) => [[a - 0.1, 1, SPR.press], [z, 0, SPR.enter]])])
+const shapePress = track(pressKeys([0, 4, 8, 16, 21.2, 25.6]))
+
+// ---------- cursor path (world coords, origin = shape center) ----------
+const cursorKeys = [
+  [0.45, 210, 125],
+  [3.1, 90, 12], // onto the pill, click 4
+  [4.4, 300, 178],
+  [7.2, 40, 20], // click 8
+  [8.3, 172, 2], // chevron, click 9
+  [9.5, -40, -1], // row 1
+  [10.0, -40, 53], // row 2, click 10.5
+  [10.85, 165, 120],
+  [11.5, 430, 40], // off screen to pick up a file
+  [12.25, 330, 20],
+  [12.5, 0, 8, SPR.drag], // drag into the zone, drop 13.45
+  [13.75, 205, 178],
+  [15.3, 30, 30], // click 16
+  [16.35, -4, 59], // toggle, click 17
+  [17.4, 255, 150],
+  [19.4, 110, 100],
+  [20.4, 34, 30], // onto the chat head, click 21.2
+  [21.6, 255, 262],
+  [24.3, 255, 150],
+  [25.0, -120, 12], // onto the QR, click 25.6
+  [26.0, 225, 236],
+  [28.3, 290, -40],
+  [30.9, 140, 130],
+  [31.75, 26, 22], // onto the logo, click 0
+]
+const curX = track(cursorKeys.map(([b, x, , s]) => [b, x, s]), SPR.cursor)
+const curY = track(cursorKeys.map(([b, , y, s]) => [b, y, s]), SPR.cursor)
+
+// ---------- per-section tracks ----------
+// install
+const CMD = 'npx sillytavern-manager'
+const instLineVis = vis(5.55, 8)
+const instP = track([[4, 0, SPR.exit], [5.65, 0.42, SPR.slow], [6.25, 0.8, SPR.slow], [6.8, 1, SPR.trail]])
+const instReadyVis = vis(7.0, 8, SPR.snap)
+// versions
+const VERSIONS = [['1.19.0', 'latest'], ['1.18.0'], ['1.17.0'], ['1.16.0'], ['staging']]
+const verRowsVis = vis(9.05, 10.55, SPR.enter, { f: 6, z: 1 })
+const verHlRow = track([[8, 0, SPR.exit], [9.75, 1, SPR.snap], [10.1, 2, SPR.snap]])
+const verAVis = vis(8.14, 10.6, SPR.enter, SPR.exit)
+const verBVis = vis(10.65, 12, SPR.enter, SPR.exit)
+const verOkVis = vis(11.1, 12, SPR.snap)
+const chevRot = track([[9, 1, SPR.lead], [10.5, 0, SPR.lead]])
+// upload
+const fileVis = vis(11.4, 13.45, SPR.enter, { f: 4, z: 1 })
+const zoneHot = vis(12.9, 13.5)
+const zoneAVis = vis(12.14, 13.5)
+const zoneBVis = vis(13.55, 16)
+const upP = track([[12, 0, SPR.exit], [13.7, 0.55, SPR.slow], [14.35, 0.86, SPR.slow], [14.9, 1, SPR.trail]])
+const upDoneVis = vis(15.1, 16, SPR.snap)
+// cloud
+const tog = track([[17, 1, SPR.snap], [20, 0, SPR.exit]])
+const cloudP = track([[16, 0, SPR.exit], [17.2, 0.5, SPR.slow], [17.85, 0.86, SPR.slow], [18.45, 1, SPR.trail]])
+const cloudCheck = track([[18.6, 1, { f: 2.6, z: 1 }], [20, 0, SPR.exit]])
+// bubble + chat
+const badgeVis = vis(20.6, 21.2, SPR.snap)
+const rippleOn = vis(20.3, 21.2)
+const m1Vis = vis(21.55, 24, SPR.snap)
+const dotsVis = vis(22.0, 22.75)
+const m2Vis = vis(22.8, 24, SPR.snap)
+const m3Vis = vis(23.35, 24, SPR.snap)
+// QR + phone
+const scanVis = vis(24.35, 25.45)
+const PIN_AT = [26.05, 26.25, 26.45, 26.65]
+const PIN_KEYS = [2, 5, 8, 0]
+const pinViewVis = vis(25.75, 26.95, SPR.enter, { f: 5, z: 1 })
+const appViewVis = vis(26.95, 28, { f: 4, z: 1 })
+const p1Vis = vis(27.15, 28, SPR.snap)
+const p2Vis = vis(27.5, 28, SPR.snap)
+const toastVis = vis(27.0, 28, SPR.snap)
+// outro chips
+const PLATFORMS = ['Windows', 'Android', 'macOS', 'Linux', 'Docker']
+const chipVis = PLATFORMS.map((_, i) => vis(28.55 + 0.14 * i, 30.9, SPR.snap))
+
+// ---------- canvas: each section floods its color from the cursor ----------
+const WIPES = SECTIONS.map((s) => ({ b: s.at, color: s.canvas }))
+function wipeState(t) {
+  const tb = t / B
+  const best = latest(WIPES, tb)
+  const prev = (best - 1 + WIPES.length) % WIPES.length
+  const age = since(tb, WIPES[best].b) * B
+  return { prev: WIPES[prev].color, cur: WIPES[best].color, age, t0: t - age }
+}
+
+// ---------- DOM ----------
+const $ = (id) => document.getElementById(id)
+const els = { world: $('world'), shape: $('shape'), cursor: $('cursor'), stage: $('stage'), wipe: $('wipe') }
+const layers = STATES.map((s) => ({ s, el: $('L-' + s.id) }))
+for (const el of document.querySelectorAll('[data-t]')) el.textContent = TEXT[el.dataset.t]
+
+const zipSvg = (w) => `<svg width="${w}" height="${w * 1.2}" viewBox="0 0 40 48"><path d="M6 2h20l12 12v28a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V6a4 4 0 0 1 4-4z" fill="#FFE7D4"/><path d="M26 2v8a4 4 0 0 0 4 4h8" fill="#FFC79E"/><path d="M14 6h4v4h-4zm4 4h4v4h-4zm-4 4h4v4h-4zm4 4h4v4h-4z" fill="#FF7A1A"/><rect x="12" y="24" width="12" height="9" rx="2" fill="#FF7A1A"/><text x="20" y="43" text-anchor="middle" font-size="8" font-weight="800" fill="#C2410C" font-family="BVP">ZIP</text></svg>`
+for (const el of document.querySelectorAll('.zipicon')) el.innerHTML = zipSvg(el.classList.contains('small') ? 40 : 60)
+
+// captions
+const capEls = TEXT.caps.map(([chip, tt, st], i) => {
+  const d = document.createElement('div')
+  d.className = 'cap'
+  d.style.color = SECTIONS[i].ink || WHITE
+  d.innerHTML = `<div class="chip" style="${chip ? '' : 'visibility:hidden'};${SECTIONS[i].ink ? 'background:rgba(23,17,43,0.12)' : ''}">${chip}</div><div class="tt">${tt}</div><div class="st">${st}</div>`
+  $('caps').appendChild(d)
+  return d
+})
+
+// version rows
+const rowEls = VERSIONS.map(([v, tag], i) => {
+  const d = document.createElement('div')
+  d.className = 'row nw'
+  d.style.top = 120 + i * 54 + 'px'
+  d.innerHTML = (v === 'staging' ? TEXT.staging : v) + (tag ? ` <span style="color:#7A7590;font-weight:500">(${TEXT.latest})</span>` : '')
+  if (i === 0) d.innerHTML += '<svg style="position:absolute;right:16px;top:13px;color:#2F5BFF" width="22" height="22" viewBox="0 0 24 24"><path class="stroke" style="stroke-width:2.8" d="M20 6 9 17l-5-5"/></svg>'
+  $('verRows').appendChild(d)
+  return d
+})
+
+// typing dots
+const dotEls = [...$('dots').querySelectorAll('i')]
+dotEls.forEach((d) => Object.assign(d.style, { display: 'block', width: '9px', height: '9px', borderRadius: '5px', background: '#A09BB5' }))
+
+// QR: three finder squares, timing rows, seeded modules, and a quiet middle for the mark
+{
+  let seed = 7
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647)
+  let rects = ''
+  const finder = (x, y) => { rects += `<path d="M${x} ${y}h7v7h-7zM${x + 1} ${y + 1}v5h5v-5z M${x + 2} ${y + 2}h3v3h-3z" fill="${INK}" fill-rule="evenodd"/>` }
+  finder(0, 0); finder(18, 0); finder(0, 18)
+  for (let y = 0; y < 25; y++) for (let x = 0; x < 25; x++) {
+    const inFinder = (x < 8 && y < 8) || (x > 16 && y < 8) || (x < 8 && y > 16)
+    const inMid = x >= 9 && x <= 15 && y >= 9 && y <= 15
+    if (inFinder || inMid) continue
+    const on = y === 6 || x === 6 ? (x + y) % 2 === 0 : rnd() < 0.5
+    if (on) rects += `<rect x="${x}" y="${y}" width="1" height="1" fill="${INK}"/>`
+  }
+  rects += `<path d="M16 16h5v5h-5zM17 17v3h3v-3z M18 18h1v1h-1z" fill="${INK}" fill-rule="evenodd"/>`
+  $('qrSvg').innerHTML = rects
+}
+
+// phone PIN dots and keypad
+const pinDotEls = PIN_AT.map((_, i) => {
+  const d = document.createElement('div')
+  d.className = 'abs'
+  Object.assign(d.style, { left: 135 - 4 * 14 - 18 + i * 32 + 'px', top: '200px', width: '14px', height: '14px', borderRadius: '7px', boxSizing: 'border-box', border: '2px solid rgba(255,255,255,0.7)' })
+  $('pinDots').appendChild(d)
+  return d
+})
+const keyEls = {}
+for (let n = 0; n <= 9; n++) {
+  const d = document.createElement('div')
+  d.className = 'key'
+  const i = n === 0 ? 10 : n - 1
+  d.style.left = 135 - 29 + ((i % 3) - 1) * 74 + 'px'
+  d.style.top = 244 + Math.floor(i / 3) * 70 + 'px'
+  d.textContent = n
+  $('keys').appendChild(d)
+  keyEls[n] = d
+}
+
+// outro platform chips, centered as a row under the shape
+const chipEls = PLATFORMS.map((p) => {
+  const d = document.createElement('div')
+  d.className = 'pchip'
+  d.textContent = p
+  $('chips').appendChild(d)
+  return d
+})
+
+function layoutStatic() {
+  // captions shrink to fit the frame, measured once fonts are in
+  for (const c of capEls) for (const el of c.querySelectorAll('.tt, .st')) {
+    el.style.transform = ''
+    const w = el.scrollWidth
+    if (w > 980) { el.style.transform = `scale(${980 / w})`; el.style.transformOrigin = 'center' }
+  }
+  let x = 0
+  const gap = 10, widths = chipEls.map((c) => c.offsetWidth)
+  const total = widths.reduce((a, b) => a + b, 0) + gap * (widths.length - 1)
+  chipEls.forEach((c, i) => { c.style.left = -total / 2 + x + 'px'; x += widths[i] + gap })
+}
+
+function visStyle(el, v, blurMax = 10) {
+  el.style.opacity = clamp(v).toFixed(4)
+  const b = (1 - clamp(v)) * blurMax
+  el.style.filter = b > 0.05 ? `blur(${b.toFixed(2)}px)` : 'none'
+  el.style.visibility = v < 0.002 ? 'hidden' : 'visible'
+}
+// slide in from below, out upward, based on where the beat sits in [a, z)
+function slide(el, v, tb, a, z, dist) {
+  const dir = inSpan(tb, a - 0.5, z) ? 1 : -1
+  el.style.transform = `translateY(${(dir * (1 - clamp(v)) * dist).toFixed(2)}px)`
+}
+const popScale = (v) => lerp(0.5, 1, clamp(v, 0, 1.25))
+
+function seek(tIn) {
+  const d = D()
+  const t = ((tIn % d) + d) % d
+  const tb = t / B
+  const c = cam(t)
+  els.world.style.transform = `scale(${c.toFixed(5)})`
+
+  // canvas flood
+  const wp = wipeState(t)
+  els.stage.style.background = wp.prev
+  const ox = 540 + curX(wp.t0) * cam(wp.t0), oy = 640 + curY(wp.t0) * cam(wp.t0)
+  const rad = 1800 * S(wp.age, 1.25, 1)
+  Object.assign(els.wipe.style, { left: ox - rad + 'px', top: oy - rad + 'px', width: 2 * rad + 'px', height: 2 * rad + 'px', background: wp.cur })
+  // decor drifts once per loop so the last frame equals the first
+  const ph = (t / d) * Math.PI * 2
+  const ds = 0.85 + 0.07 * c
+  $('decoRing').style.transform = `translate(${-250 + 34 * Math.sin(ph)}px, ${-200 + 26 * Math.cos(ph)}px) scale(${ds})`
+  $('decoSquare').style.transform = `translate(${790 + 26 * Math.cos(ph)}px, ${780 + 34 * Math.sin(ph)}px) rotate(${(t / d) * 90 + 12}deg) scale(${ds})`
+  $('decoDot').style.transform = `translate(${930 + 22 * Math.sin(ph * 2)}px, ${330 + 18 * Math.cos(ph)}px) scale(${ds})`
+  $('decoStar').style.transform = `translate(${70 + 20 * Math.cos(ph * 2)}px, ${880 + 16 * Math.sin(ph)}px) rotate(${(t / d) * 360}deg)`
+
+  // captions
+  capEls.forEach((el, i) => {
+    const s = SECTIONS[i], nx = SECTIONS[(i + 1) % SECTIONS.length]
+    const v = capVis[i](t)
+    visStyle(el, v, 12)
+    if (v < 0.002) return
+    slide(el, v, tb, s.at + CAP_IN, nx.at - CAP_OUT, 30)
+  })
+
+  // shape
+  const w = shapeW(t)
+  const h = shapeH(t)
+  const r = Math.min(shapeR(t), h / 2, w / 2)
+  // the chat head hops twice while it waits for the click
+  const hop = since(tb, 20.2) < 1 ? Math.sin(Math.PI * since(tb, 20.2) * 2) : 0
+  const bob = 9 * hop * hop
+  const sp = 1 - 0.05 * shapePress(t)
+  Object.assign(els.shape.style, {
+    width: w + 'px', height: h + 'px', left: -w / 2 + 'px', top: -h / 2 + 'px', borderRadius: r + 'px',
+    transform: `translateY(${-bob}px) scale(${sp})`,
+    boxShadow: '0 1px 2px rgba(23,17,43,0.14), 0 26px 50px -18px rgba(23,17,43,0.45)',
+  })
+  const sw = SHAPE_WIPES, si = latest(sw, tb)
+  const sAge = since(tb, sw[si].b) * B, sT0 = t - sAge
+  const lx = clamp(curX(sT0) + w / 2, 0, w), ly = clamp(curY(sT0) + h / 2, 0, h)
+  const sRad = Math.hypot(w, h) * S(sAge, 1.7, 1)
+  els.shape.style.background = sw[(si - 1 + sw.length) % sw.length].color
+  Object.assign($('shapeWipe').style, { left: lx - sRad + 'px', top: ly - sRad + 'px', width: 2 * sRad + 'px', height: 2 * sRad + 'px', background: sw[si].color })
+
+  // layers
+  for (const { s, el } of layers) {
+    const v = layerVis[s.id](t)
+    visStyle(el, v)
+    if (v < 0.002) continue
+    const fill = el.dataset.fill
+    const lw = fill ? w : +el.dataset.w, lh = fill ? h : +el.dataset.h
+    Object.assign(el.style, { width: lw + 'px', height: lh + 'px', left: (w - lw) / 2 + 'px', top: (h - lh) / 2 + 'px' })
+    el.style.transform = `scale(${lerp(0.96, 1, clamp(v))})`
+  }
+
+  // install: typing, progress, ready
+  const typed = Math.floor(clamp((tb - 4.35) / 1.05) * CMD.length)
+  $('typed').textContent = CMD.slice(0, typed)
+  const typing = tb > 4.3 && tb < 5.5
+  $('caret').style.opacity = typing || Math.floor(tb * 2) % 2 === 0 ? 1 : 0
+  const il = instLineVis(t)
+  visStyle($('instLine'), il, 6); slide($('instLine'), il, tb, 5.55, 8, 14)
+  const ip = clamp(instP(t))
+  $('instBar').style.width = 464 * ip + 'px'
+  $('instPct').textContent = Math.round(ip * 100) + '%'
+  const ir = instReadyVis(t)
+  visStyle($('instReady'), Math.min(1, ir), 6)
+  $('instReady').style.transform = `translateX(${(-(1 - clamp(ir)) * 16).toFixed(2)}px)`
+
+  // versions
+  const rv = clamp(verRowsVis(t))
+  $('verRows').style.opacity = rv
+  $('verDiv').style.opacity = rv
+  const hl = verHlRow(t)
+  Object.assign($('verHl').style, { top: 120 + hl * 54 + 'px', opacity: rv })
+  rowEls.forEach((el, i) => { el.style.color = Math.abs(hl - i) < 0.5 && rv > 0.5 ? '#2F5BFF' : INK; el.style.fontWeight = Math.abs(hl - i) < 0.5 ? 650 : 500 })
+  $('chev').style.transform = `rotate(${180 * chevRot(t)}deg)`
+  const va = verAVis(t), vb = verBVis(t)
+  visStyle($('verA'), va, 6); slide($('verA'), va, tb, 8.14, 10.6, 30)
+  visStyle($('verB'), vb, 6); slide($('verB'), vb, tb, 10.65, 12, 30)
+  const vo = clamp(verOkVis(t), 0, 1.3)
+  $('verOk').style.transform = `scale(${popScale(vo)})`
+  $('verOk').style.opacity = clamp(vo * 2)
+
+  // upload: the file rides the cursor, the zone lights up, then restores
+  const fv = fileVis(t)
+  const dropped = inSpan(tb, 13.45, 11.4)
+  visStyle($('file'), fv, 4)
+  Object.assign($('file').style, {
+    left: curX(t) - 26 + 'px', top: curY(t) - 22 + 'px',
+    transform: `rotate(${(dropped ? 0 : -6 + 4 * clamp((tb - 12.4) / 1.0)).toFixed(2)}deg) scale(${dropped ? lerp(0.6, 1, clamp(fv)) : 1 + 0.04 * clamp(cursorPress(t))})`,
+  })
+  const zh = clamp(zoneHot(t))
+  Object.assign($('zone').style, { borderColor: mixColor('#C9C2E8', '#FF7A1A', zh), background: mixColor('#F8F6FF', '#FFF1E6', zh) })
+  $('zone').style.transform = `scale(${1 + 0.02 * zh})`
+  const za = zoneAVis(t), zb = zoneBVis(t)
+  visStyle($('zoneA'), za, 8); visStyle($('zoneB'), zb, 8)
+  $('zoneB').style.transform = `scale(${lerp(0.94, 1, clamp(zb))})`
+  const up = clamp(upP(t))
+  $('upBar').style.width = 360 * up + 'px'
+  $('upPct').textContent = Math.round(up * 100) + '%'
+  const ud = clamp(upDoneVis(t), 0, 1.2)
+  visStyle($('upRun'), 1 - clamp(ud * 2), 4)
+  visStyle($('upDone'), Math.min(1, ud), 4)
+  $('upDone').style.transform = `scale(${lerp(0.8, 1, ud)})`
+  $('upDone').style.transformOrigin = '0 50%'
+
+  // cloud
+  const tg = clamp(tog(t), -0.1, 1.15)
+  $('tog').style.background = mixColor('#3B3163', C.cyan, clamp(tg))
+  $('togKnob').style.left = 4 + 28 * tg + 'px'
+  const cp = clamp(cloudP(t))
+  $('cloudRing').style.strokeDashoffset = (1 - cp).toFixed(4)
+  const ck = clamp(cloudCheck(t))
+  $('cloudCheck').style.strokeDashoffset = (1 - ck).toFixed(4)
+  $('cloudIcon').style.opacity = 1 - clamp(ck * 2)
+  $('cloudIcon').style.transform = `translateY(${(tb > 17.1 && tb < 18.6 ? -3 * Math.sin(tb * Math.PI * 2) : 0).toFixed(2)}px)`
+  const cs = $('cloudStat')
+  if (tb < 17.05 || tb >= 20) { cs.textContent = TEXT.cloudOff; cs.style.color = '#A89FD0' }
+  else if (tb < 18.6) { cs.textContent = `${TEXT.cloudRun} ${Math.round(cp * 100)}%`; cs.style.color = '#fff' }
+  else { cs.textContent = '✓ ' + TEXT.cloudDone; cs.style.color = '#3DDC97' }
+
+  // chat head: badge, ripple
+  const bv = clamp(badgeVis(t), 0, 1.3)
+  $('badge').style.transform = `translateY(${-bob}px) scale(${bv})`
+  $('badge').style.visibility = bv < 0.002 ? 'hidden' : 'visible'
+  const ro = clamp(rippleOn(t))
+  const rp = (since(tb, 20.3) * B / 0.6) % 1
+  $('ripple').style.opacity = (ro * (1 - rp)).toFixed(3)
+  $('ripple').style.transform = `scale(${1 + 0.5 * rp})`
+  $('ripple').style.visibility = ro < 0.002 ? 'hidden' : 'visible'
+
+  // chat
+  $('chatStat').textContent = tb > 21.9 && tb < 22.8 ? TEXT.typing : TEXT.online
+  for (const [id, f] of [['m1', m1Vis], ['m2', m2Vis], ['m3', m3Vis], ['dots', dotsVis]]) {
+    const v = clamp(f(t), 0, 1.2)
+    $(id).style.opacity = clamp(v * 2)
+    $(id).style.transform = `scale(${popScale(v)})`
+    $(id).style.visibility = v < 0.002 ? 'hidden' : 'visible'
+  }
+  dotEls.forEach((el, i) => { el.style.transform = `translateY(${(-4 * Math.max(0, Math.sin((tb * 2.4 - i * 0.22) * Math.PI))).toFixed(2)}px)` })
+
+  // QR scan line
+  const scv = clamp(scanVis(t))
+  const scp = clamp((tb - 24.45) / 0.95)
+  Object.assign($('scan').style, { top: 30 + 176 * (0.5 - 0.5 * Math.cos(scp * Math.PI)) + 'px', opacity: scv })
+
+  // phone: PIN, unlock, messages
+  const pv = pinViewVis(t)
+  visStyle($('pinView'), pv, 8)
+  $('pinView').style.transform = `translateY(${(tb > 26.9 && tb < 28.5 ? -(1 - clamp(pv)) * 60 : 0).toFixed(2)}px)`
+  PIN_AT.forEach((b, i) => {
+    const on = inSpan(tb, b, 28)
+    pinDotEls[i].style.background = on ? '#fff' : 'transparent'
+    pinDotEls[i].style.transform = `scale(${1 + (on ? 0.5 * pulse((tb - b) * B, 6) : 0)})`
+    const k = keyEls[PIN_KEYS[i]]
+    const kp = on ? pulse((tb - b) * B, 5) : 0
+    k.style.background = `rgba(255,255,255,${(0.12 + 0.5 * kp).toFixed(3)})`
+    k.style.transform = `scale(${1 - 0.08 * kp})`
+  })
+  const av = appViewVis(t)
+  visStyle($('appView'), av, 8)
+  $('appView').style.transform = `scale(${lerp(1.06, 1, clamp(av))})`
+  for (const [id, f] of [['p1', p1Vis], ['p2', p2Vis], ['toast', toastVis]]) {
+    const v = clamp(f(t), 0, 1.2)
+    $(id).style.opacity = clamp(v * 2)
+    $(id).style.transform = id === 'toast' ? `translateY(${(1 - clamp(v)) * 30}px)` : `scale(${popScale(v)})`
+  }
+
+  // outro chips
+  chipEls.forEach((el, i) => {
+    const v = clamp(chipVis[i](t), 0, 1.3)
+    visStyle(el, Math.min(1, v), 6)
+    el.style.transform = `translateY(${(1 - Math.min(1, v)) * 16}px) scale(${popScale(v)})`
+  })
+
+  // cursor (screen space, constant size)
+  const cx = curX(t), cy = curY(t)
+  const sx = 540 + cx * c, sy = 640 + cy * c
+  els.cursor.style.transform = `translate(${(sx - 6).toFixed(2)}px, ${(sy - 4).toFixed(2)}px) scale(${1 - 0.14 * clamp(cursorPress(t))})`
+}
+
+// ---------- sound cues, exported to the mixer so each sound sits on its event ----------
+function cues() {
+  const list = [
+    ...CLICKS.map((b) => ({ b, kind: 'click' })),
+    ...SECTIONS.map((s) => ({ b: s.at, kind: 'swish' })),
+    { b: 21.2, kind: 'swish' }, { b: 25.6, kind: 'swish' }, { b: 9, kind: 'swish', soft: 1 }, { b: 10.5, kind: 'swish', soft: 1 },
+    ...Array.from({ length: CMD.length }, (_, i) => ({ b: 4.35 + (i + 0.5) * (1.05 / CMD.length), kind: 'tick' })),
+    { b: 12.2, kind: 'press' }, { b: 13.45, kind: 'drop' },
+    { b: 7.0, kind: 'success' }, { b: 11.1, kind: 'pop' }, { b: 15.1, kind: 'success' }, { b: 18.6, kind: 'success' },
+    { b: 20.6, kind: 'pop' }, { b: 21.55, kind: 'msg' }, { b: 22.8, kind: 'msg' }, { b: 23.35, kind: 'msg', out: 1 },
+    ...PIN_AT.map((b) => ({ b, kind: 'tick', key: 1 })), { b: 26.95, kind: 'success' }, { b: 27.15, kind: 'msg' }, { b: 27.5, kind: 'msg', out: 1 },
+    ...chipVis.map((_, i) => ({ b: 28.55 + 0.14 * i, kind: 'pop', soft: 1 })),
+  ]
+  return list.map((c) => ({ ...c, t: (((c.b % BEATS) + BEATS) % BEATS) * B }))
+}
+
+// ---------- api ----------
+window.seek = seek
+window.configure = ({ beat }) => { if (beat) B = beat }
+window.timeline = () => ({ beat: B, beats: BEATS, duration: D(), lang: LANG, cues: cues() })
+window.ready = Promise.all([document.fonts.ready, ...[...document.images].map((i) => i.decode().catch(() => {}))]).then(() => { layoutStatic(); seek(0) })
+
+if (!window.__RENDER__) {
+  document.body.classList.add('preview')
+  const fit = () => document.body.style.setProperty('--fit', Math.min(innerWidth, innerHeight) / 1080)
+  fit(); addEventListener('resize', fit)
+  const params = new URLSearchParams(location.search)
+  window.ready.then(() => {
+    if (params.has('t')) seek(+params.get('t'))
+    else {
+      const t0 = performance.now()
+      const loop = () => { seek((performance.now() - t0) / 1000); requestAnimationFrame(loop) }
+      loop()
+    }
+  })
+}
+</script>
+</body>
+</html>
