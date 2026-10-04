@@ -21,7 +21,7 @@ The SillyTavern screens are a small rebuild of its chat layout: the top bar (res
 
 ```
 index.html              the whole animation: closed-form springs, cyclic tracks, color floods, seek(t)
-scripts/render.mjs      Playwright: seek(t) per subframe -> ffmpeg tmix -> 60fps MP4, then a looping GIF
+scripts/render.mjs      Playwright: seek(t) per subframe -> ffmpeg tmix -> 60fps MP4 and a small GIF, or a smooth 50fps GIF
 scripts/mix_audio.mjs   synthesized groove and UI sounds, placed on the cues index.html exports
 assets/fonts/           Be Vietnam Pro and JetBrains Mono (SIL Open Font License 1.1)
 ```
@@ -40,6 +40,7 @@ You need Node.js 22+, ffmpeg and Playwright with Chromium (`npm i -D playwright`
 node scripts/render.mjs beats en   # out/beats-en.png, one frame per beat, to check the timeline
 node scripts/mix_audio.mjs en      # out/mix-en.wav (reads out/cues-en.json from the step above)
 node scripts/render.mjs full en    # out/stm-promo-en.mp4 (with audio) and out/stm-promo-en.gif
+node scripts/render.mjs gif en     # out/stm-promo-en-hq.gif, a smooth 50fps GIF for hosts that take large uploads
 ```
 
 Use `vi` in place of `en` for Vietnamese. These environment variables tune the output:
@@ -50,5 +51,7 @@ Use `vi` in place of `en` for Vietnamese. These environment variables tune the o
 | `SUB` | 2 | Subframes blended into each output frame (motion blur) |
 | `GIF_SIZE` | 400 | GIF width and height in pixels |
 | `GIF_FPS` | 15 | GIF frame rate |
+| `HQ_SIZE` | 720 | Width and height of the `gif` mode GIF |
+| `HQ_FPS` | 50 | Frame rate of the `gif` mode GIF; keep it a divisor of 100, since GIF delays count hundredths of a second and players slow anything faster than 50 |
 
 The rendered files go to `out/` and the frames go to `tmp/`. Git ignores both folders.

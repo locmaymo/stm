@@ -3,7 +3,9 @@
 //   node scripts/render.mjs beats [en|vi]      -> out/beats-<lang>.png, one frame per beat
 //   node scripts/render.mjs still 3.2 [en|vi]  -> out/still-<lang>.png at t seconds
 //   node scripts/render.mjs full [en|vi]       -> out/stm-promo-<lang>.mp4 (60fps, subframes blended)
-//                                                 and out/stm-promo-<lang>.gif (loops)
+//                                                 and out/stm-promo-<lang>.gif (small, cut from the MP4)
+//   node scripts/render.mjs gif [en|vi]        -> out/stm-promo-<lang>-hq.gif, rendered at its own frame rate
+//                                                 (50fps by default, the fastest GIF delay players honor)
 //
 // Writes out/cues-<lang>.json so scripts/mix_audio.mjs can place every UI sound on its event.
 // Needs Playwright (npm i -D playwright, or a global install on NODE_PATH) and ffmpeg.
@@ -24,6 +26,10 @@ const WORKERS = Number(process.env.WORKERS || 4)
 const SIZE = 1080
 const GIF_SIZE = Number(process.env.GIF_SIZE || 400)
 const GIF_FPS = Number(process.env.GIF_FPS || 15)
+// GIF delays are counted in hundredths of a second and players stretch anything under 2, so 50fps is the ceiling;
+// frame rates that do not divide 100 (like 60) play unevenly
+const HQ_FPS = Number(process.env.HQ_FPS || 50)
+const HQ_SIZE = Number(process.env.HQ_SIZE || 720)
 
 function run(cmd, args) {
   return new Promise((resolve, reject) => {
@@ -50,6 +56,24 @@ async function openPage(browser, lang) {
 async function shot(page, t, file) {
   await page.evaluate((tt) => window.seek(tt), t)
   await page.locator('#stage').screenshot({ path: file, type: 'png', animations: 'disabled' })
+}
+
+// every subframe of the loop at fps * SUB, split across WORKERS pages
+async function renderFrames(browser, first, lang, duration, fps, dir) {
+  const total = Math.round(duration * fps) * SUB
+  const pages = [first, ...(await Promise.all(Array.from({ length: WORKERS - 1 }, () => openPage(browser, lang))))]
+  let done = 0
+  const started = Date.now()
+  await Promise.all(pages.map(async (page, w) => {
+    for (let i = w; i < total; i += WORKERS) {
+      // subframes centered on each output frame: the shutter spans one full frame
+      const t = (i - (SUB - 1) / 2) / (fps * SUB)
+      await shot(page, t, path.join(dir, `${String(i).padStart(6, '0')}.png`))
+      done++
+      if (done % 200 === 0) console.log(`subframe ${done}/${total} (${((Date.now() - started) / 1000).toFixed(0)}s)`)
+    }
+  }))
+  console.log(`rendered ${total} subframes`)
 }
 
 async function main() {
@@ -82,21 +106,7 @@ async function main() {
     const framesDir = path.join(root, 'tmp', `frames-${lang}`)
     fs.rmSync(framesDir, { recursive: true, force: true })
     fs.mkdirSync(framesDir, { recursive: true })
-    const frames = Math.round(tl.duration * FPS)
-    const total = frames * SUB
-    const pages = [first, ...(await Promise.all(Array.from({ length: WORKERS - 1 }, () => openPage(browser, lang))))]
-    let done = 0
-    const started = Date.now()
-    await Promise.all(pages.map(async (page, w) => {
-      for (let i = w; i < total; i += WORKERS) {
-        // subframes centered on each output frame: the shutter spans one full frame
-        const t = (i - (SUB - 1) / 2) / (FPS * SUB)
-        await shot(page, t, path.join(framesDir, `${String(i).padStart(6, '0')}.png`))
-        done++
-        if (done % 200 === 0) console.log(`subframe ${done}/${total} (${((Date.now() - started) / 1000).toFixed(0)}s)`)
-      }
-    }))
-    console.log(`rendered ${total} subframes`)
+    await renderFrames(browser, first, lang, tl.duration, FPS, framesDir)
     const audio = path.join(outDir, `mix-${lang}.wav`)
     const hasAudio = fs.existsSync(audio)
     const mp4 = path.join(outDir, `stm-promo-${lang}.mp4`)
@@ -117,6 +127,20 @@ async function main() {
       '-loop', '0', gif,
     ])
     console.log(`wrote ${path.relative(root, gif)}`)
+  } else if (mode === 'gif') {
+    // a smooth GIF for hosts that take large uploads: its own frames, blended like the MP4,
+    // and a palette per frame so the color floods and gradients do not band
+    const framesDir = path.join(root, 'tmp', `gif-${lang}`)
+    fs.rmSync(framesDir, { recursive: true, force: true })
+    fs.mkdirSync(framesDir, { recursive: true })
+    await renderFrames(browser, first, lang, tl.duration, HQ_FPS, framesDir)
+    const gif = path.join(outDir, `stm-promo-${lang}-hq.gif`)
+    await run('ffmpeg', [
+      '-v', 'error', '-y', '-framerate', String(HQ_FPS * SUB), '-i', path.join(framesDir, '%06d.png'),
+      '-filter_complex', `tmix=frames=${SUB},select='eq(mod(n\\,${SUB})\\,${SUB - 1})',setpts=N/(${HQ_FPS}*TB),scale=${HQ_SIZE}:${HQ_SIZE}:flags=lanczos,split[a][b];[a]palettegen=max_colors=256:stats_mode=single[p];[b][p]paletteuse=new=1:dither=sierra2_4a:diff_mode=rectangle`,
+      '-r', String(HQ_FPS), '-loop', '0', gif,
+    ])
+    console.log(`wrote ${path.relative(root, gif)} (${(fs.statSync(gif).size / 1e6).toFixed(1)} MB)`)
   }
   await browser.close()
 }
