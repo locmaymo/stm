@@ -40,7 +40,7 @@ You need Node.js 22+, ffmpeg and Playwright with Chromium (`npm i -D playwright`
 node scripts/render.mjs beats en   # out/beats-en.png, one frame per beat, to check the timeline
 node scripts/mix_audio.mjs en      # out/mix-en.wav (reads out/cues-en.json from the step above)
 node scripts/render.mjs full en    # out/stm-promo-en.mp4 (with audio) and out/stm-promo-en.gif
-node scripts/render.mjs gif en     # out/stm-promo-en-hq.gif, a smooth 50fps GIF for hosts that take large uploads
+node scripts/render.mjs gif en     # out/stm-promo-en-hq.gif, a smooth 50fps GIF (about 26 MB at 720 px)
 ```
 
 Use `vi` in place of `en` for Vietnamese. These environment variables tune the output:

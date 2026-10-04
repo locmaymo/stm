@@ -128,8 +128,8 @@ async function main() {
     ])
     console.log(`wrote ${path.relative(root, gif)}`)
   } else if (mode === 'gif') {
-    // a smooth GIF for hosts that take large uploads: its own frames, blended like the MP4,
-    // and a palette per frame so the color floods and gradients do not band
+    // a smooth GIF: its own frames, blended like the MP4. One palette weighted to what moves, and an ordered
+    // dither that holds still between frames, so flat areas compress well and do not shimmer
     const framesDir = path.join(root, 'tmp', `gif-${lang}`)
     fs.rmSync(framesDir, { recursive: true, force: true })
     fs.mkdirSync(framesDir, { recursive: true })
@@ -137,7 +137,7 @@ async function main() {
     const gif = path.join(outDir, `stm-promo-${lang}-hq.gif`)
     await run('ffmpeg', [
       '-v', 'error', '-y', '-framerate', String(HQ_FPS * SUB), '-i', path.join(framesDir, '%06d.png'),
-      '-filter_complex', `tmix=frames=${SUB},select='eq(mod(n\\,${SUB})\\,${SUB - 1})',setpts=N/(${HQ_FPS}*TB),scale=${HQ_SIZE}:${HQ_SIZE}:flags=lanczos,split[a][b];[a]palettegen=max_colors=256:stats_mode=single[p];[b][p]paletteuse=new=1:dither=sierra2_4a:diff_mode=rectangle`,
+      '-filter_complex', `tmix=frames=${SUB},select='eq(mod(n\\,${SUB})\\,${SUB - 1})',setpts=N/(${HQ_FPS}*TB),scale=${HQ_SIZE}:${HQ_SIZE}:flags=lanczos,split[a][b];[a]palettegen=max_colors=256:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=5:diff_mode=rectangle`,
       '-r', String(HQ_FPS), '-loop', '0', gif,
     ])
     console.log(`wrote ${path.relative(root, gif)} (${(fs.statSync(gif).size / 1e6).toFixed(1)} MB)`)
