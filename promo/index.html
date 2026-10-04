@@ -42,14 +42,14 @@
   /* Android home screen */
   .app { position: absolute; width: 50px; height: 50px; border-radius: 16px; text-align: center; line-height: 52px; font-size: 26px; }
   .appl { position: absolute; width: 74px; text-align: center; font-size: 11px; font-weight: 600; color: #fff; text-shadow: 0 1px 3px rgba(0,0,0,0.35); white-space: nowrap; }
-  .head { position: absolute; width: 56px; height: 56px; border-radius: 28px; text-align: center; line-height: 58px; font-size: 30px; box-shadow: 0 8px 18px -6px rgba(0,0,0,0.45); }
-  .head .bd { position: absolute; right: -4px; top: -4px; width: 22px; height: 22px; border-radius: 11px; background: #FF3B30; color: #fff; font-size: 12px; font-weight: 800; line-height: 22px; box-sizing: border-box; border: 2px solid #fff; line-height: 18px; }
+  .head { position: absolute; width: 60px; height: 60px; border-radius: 30px; background-size: cover; background-position: center; box-shadow: 0 8px 18px -6px rgba(0,0,0,0.45); }
+  .head .bd { position: absolute; right: -4px; top: -4px; width: 24px; height: 24px; border-radius: 12px; background: #FF3B30; color: #fff; font-size: 13px; font-weight: 800; text-align: center; line-height: 20px; box-sizing: border-box; border: 2px solid #fff; }
   /* SillyTavern, rebuilt small: dark top bar, translucent message blocks over a tavern tint, italics grey, quotes orange */
-  .st { position: absolute; inset: 0; overflow: hidden; color: #DCDCD2; font-size: 12.5px; line-height: 17px; background: radial-gradient(circle at 74% 22%, rgba(255,176,84,0.42), transparent 30%), radial-gradient(circle at 18% 34%, rgba(255,140,60,0.28), transparent 26%), linear-gradient(180deg, #5a3f2b 0%, #2e221b 45%, #161311 100%); }
+  .st { position: absolute; inset: 0; overflow: hidden; color: #DCDCD2; font-size: 12.5px; line-height: 17px; background: #2e221b url(assets/st/tavern-day.jpg) center / cover; }
   .st .bar { position: absolute; left: 0; right: 0; height: 34px; background: rgba(23,23,23,0.94); border-bottom: 1px solid rgba(255,255,255,0.08); display: flex; justify-content: space-evenly; align-items: center; color: #9a9a9a; }
   .st .chat { position: absolute; left: 0; right: 0; bottom: 50px; display: flex; flex-direction: column; justify-content: flex-end; overflow: hidden; padding: 0 6px; }
-  .st .mes { display: flex; gap: 8px; padding: 8px 8px; border-radius: 10px; background: rgba(0,0,0,0.32); margin-top: 6px; transform-origin: 0 100%; }
-  .st .av { width: 32px; height: 32px; border-radius: 16px; flex: none; text-align: center; line-height: 34px; font-size: 19px; }
+  .st .mes { display: flex; gap: 8px; padding: 8px 8px; border-radius: 10px; background: rgba(18,14,12,0.78); margin-top: 6px; transform-origin: 0 100%; }
+  .st .av { width: 32px; height: 32px; border-radius: 16px; flex: none; background-size: cover; background-position: center; }
   .st .nm { font-weight: 700; color: #fff; font-size: 13px; line-height: 16px; white-space: nowrap; }
   .st .ts { color: #8a8a8a; font-weight: 500; font-size: 10px; margin-left: 6px; }
   .st .tx { margin-top: 2px; min-height: 17px; }
@@ -57,7 +57,16 @@
   .st .tx .q { color: #E18A24; }
   .st .send { position: absolute; left: 6px; right: 6px; bottom: 8px; height: 36px; border-radius: 10px; background: rgba(23,23,23,0.95); border: 1px solid rgba(255,255,255,0.1); display: flex; align-items: center; gap: 9px; padding: 0 10px; color: #8a8a8a; font-size: 12px; box-sizing: border-box; }
   /* the bubble keeps an opaque SillyTavern backdrop while chats cross-fade inside it */
-  #panel { background: linear-gradient(180deg, #5a3f2b 0%, #2e221b 45%, #161311 100%); }
+  #panel { background: #2e221b url(assets/st/tavern-day.jpg) center / cover; }
+  /* the chat inside the bubble is set large: it has to read at a glance in a small video embed */
+  .st.big { font-size: 15.5px; line-height: 21px; }
+  .st.big .bar { height: 40px; }
+  .st.big .mes { gap: 10px; padding: 10px; margin-top: 8px; }
+  .st.big .av { width: 42px; height: 42px; border-radius: 21px; }
+  .st.big .nm { font-size: 15.5px; line-height: 19px; }
+  .st.big .ts { font-size: 11px; }
+  .st.big .chat { bottom: 56px; }
+  .st.big .send { height: 42px; font-size: 14px; }
   .dev { position: absolute; }
   .dlbl { position: absolute; height: 40px; line-height: 40px; padding: 0 16px 0 10px; border-radius: 20px; background: #fff; font-size: 17px; font-weight: 750; white-space: nowrap; display: flex; align-items: center; gap: 8px; box-shadow: 0 10px 24px -12px rgba(23,17,43,0.45); }
 </style>
@@ -92,8 +101,8 @@
     <div id="shape">
       <div class="abs" id="shapeWipe" style="border-radius:50%"></div>
 
-      <!-- logo: a plain disc; the mark itself sits above the shape so its badge is never clipped -->
-      <div class="layer" id="L-logo" data-w="150" data-h="150"></div>
+      <!-- logo: the shape shrinks to a small disc hidden behind the mark, so only the mark shows -->
+      <div class="layer" id="L-logo" data-w="96" data-h="96"></div>
 
       <!-- brand pill, intro -->
       <div class="layer" id="L-brand" data-w="500" data-h="132">
@@ -193,10 +202,10 @@
           <div id="apps"></div>
           <div class="abs" style="left:110px;top:566px;width:60px;height:4px;border-radius:2px;background:rgba(255,255,255,0.85)"></div>
           <div class="abs" id="scrim" style="inset:0;background:#0C0918"></div>
-          <div class="abs" id="panel" style="left:10px;top:96px;width:260px;height:472px;border-radius:20px;overflow:hidden;box-shadow:0 20px 40px -16px rgba(0,0,0,0.6)"></div>
+          <div class="abs" id="panel" style="left:10px;top:96px;width:260px;height:404px;border-radius:20px;overflow:hidden;box-shadow:0 20px 40px -16px rgba(0,0,0,0.6)"></div>
           <div id="heads"></div>
           <div class="abs" id="banner" style="left:10px;top:32px;width:260px;height:62px;border-radius:18px;background:#fff;box-shadow:0 12px 26px -12px rgba(0,0,0,0.45)">
-            <div class="abs" style="left:11px;top:11px;width:40px;height:40px;border-radius:20px;text-align:center;line-height:42px;font-size:22px;background:radial-gradient(circle at 30% 25%,#FFD1E8,#FF4FA0 55%,#7C4DFF)">🧝‍♀️</div>
+            <div class="abs" style="left:11px;top:11px;width:40px;height:40px;border-radius:20px;background:url(assets/st/seraphina.jpg) center / cover"></div>
             <div class="abs nw" style="left:60px;top:11px;font-size:13px;font-weight:800">Seraphina <span style="font-weight:600;color:#A09BB5">· STM</span></div>
             <div class="abs nw" data-t="banner" style="left:60px;top:31px;font-size:12.5px;font-weight:500;color:#4A4560"></div>
           </div>
@@ -242,7 +251,7 @@
       </div>
     </div>
     <!-- above the shape -->
-    <img class="abs" id="logoTop" src="../apps/manager-panel/public/icon-512.png" style="left:-75px;top:-75px;width:150px;height:150px" />
+    <img class="abs" id="logoTop" src="../apps/manager-panel/public/icon-512.png" style="left:-75px;top:-75px;width:150px;height:150px;filter:drop-shadow(0 14px 18px rgba(23,17,43,0.4))" />
     <div class="abs" id="file" style="width:236px;height:72px;border-radius:18px;background:#fff;box-shadow:0 18px 40px -14px rgba(23,17,43,0.45)">
       <div class="abs zipicon small" style="left:14px;top:12px"></div>
       <div class="abs nw" style="left:66px;top:13px;font-size:17px;font-weight:700">backup.zip</div>
@@ -296,9 +305,8 @@ const TEXT = {
       ['', 'Use STM for free'],
     ],
     chats: [
-      ['*Seraphina lights a lantern.* "You made it."', 'Sorry I\'m late!', '*She smiles warmly.* "Welcome back, traveler. Shall we continue?"'],
-      ['*He unrolls an old map.* "Look here."', 'Where is the tower?', '"Beyond the river. We ride at dawn."'],
-      ['*Ember yawns, smoke curling up.*', 'I brought snacks 🍖', '*Her eyes light up.* "Best. Human. Ever."'],
+      ['*Seraphina lights a lantern.* "You made it!"', 'Sorry I\'m late!', '*She smiles.* "Welcome back, traveler. Shall we continue?"'],
+      ['"Did you read today\'s featured article?"', 'Not yet!', '*She beams.* "Then let me tell you everything! ✨"'],
     ],
   },
   vi: {
@@ -324,15 +332,14 @@ const TEXT = {
       ['', 'Dùng STM miễn phí'],
     ],
     chats: [
-      ['*Seraphina thắp chiếc đèn lồng.* "Ngươi đến rồi."', 'Xin lỗi, mình đến muộn!', '*Nàng mỉm cười ấm áp.* "Chào mừng trở lại, lữ khách. Ta đi tiếp chứ?"'],
-      ['*Ông trải tấm bản đồ cũ.* "Nhìn đây."', 'Toà tháp ở đâu vậy?', '"Bên kia dòng sông. Bình minh ta lên đường."'],
-      ['*Ember ngáp, khói cuộn lên.*', 'Mình mang đồ ăn vặt nè 🍖', '*Mắt nó sáng rực.* "Con người tuyệt nhất!"'],
+      ['*Seraphina thắp đèn lồng.* "Ngươi đến rồi!"', 'Xin lỗi, mình đến muộn!', '*Nàng mỉm cười.* "Chào mừng trở lại, lữ khách. Ta đi tiếp chứ?"'],
+      ['"Bạn đọc bài viết chọn lọc hôm nay chưa?"', 'Chưa luôn!', '*Cô bé cười rạng rỡ.* "Vậy để mình kể hết cho nghe! ✨"'],
     ],
   },
 }[LANG]
 
 // ---------- time ----------
-const BEATS = 40 // 10 bars of 4/4
+const BEATS = 44 // 11 bars of 4/4
 let B = 60 / 100 // seconds per beat
 const D = () => BEATS * B
 
@@ -405,35 +412,36 @@ const C = {
 }
 
 // ---------- structure (beats, 100 BPM, 0.6 s each) ----------
-// 39 logo shrinks back   0 click: red flood, logo bounces   1 brand pill
+// 43 the pill folds back into the mark   0 click: red flood, the mark bounces   1 brand pill
 // 4 click -> APK installer  5 tap Install  5.1-6.6 progress  6.95 installed  8 tap Open
 // 8 version select  9 open  9.8-10.1 hover rows  10.5 pick 1.17.0, close  11.1 installed
 // 11.5 grab a file off screen  12 drop zone  12.3-13.4 drag in  13.45 drop  13.6-14.9 restore  15.1 done
 // 16 cloud card  17 toggle on  17.1-18.5 ring  18.6 check
-// 20 the card becomes an Android phone  20.6-21.3 chat heads pop, a notification drops  21.6 zoom in
-// 22.2 tap Seraphina: the bubble opens SillyTavern  23.8 tap Aldric  25.4 tap Ember  26.6 zoom out
-// 28 QR card  28.4-29.4 scan  29.6 click -> phone  30.05-30.65 PIN  30.95 unlocked SillyTavern
-// 32 zoom out: a laptop and a tablet open the same chat
-// 36 brand pill + platforms   39 logo
+// 20 the card becomes an Android phone  20.8 / 21.2 chat heads pop  21.0-22.4 a notification drops
+// 22.4 slow push in on the heads  23.6 tap Seraphina: the bubble opens SillyTavern, the camera frames it
+// 24.1-25.5 her reply streams in  26.2 tap Wikipe-tan  26.7-28.1 her reply  30.8 slow pull back
+// 32 QR card  32.4-33.4 scan  33.6 click -> phone  34.05-34.65 PIN  34.95 unlocked SillyTavern
+// 36 pull back: a laptop and a tablet open the same chat
+// 40 brand pill + platforms   43 the mark
 const STATES = [
-  { id: 'logo', at: 39, w: 150, h: 150, r: 75, bg: PLATE, cam: 2.2 },
-  { id: 'brand', at: 1, w: 500, h: 132, r: 66, bg: WHITE, cam: 1.55 },
-  { id: 'apk', at: 4, w: 460, h: 250, r: 32, bg: WHITE, cam: 1.55 },
-  { id: 'versions', at: 8, w: 440, h: 112, r: 30, bg: WHITE, cam: 1.55 },
-  { id: 'upload', at: 12, w: 460, h: 300, r: 34, bg: WHITE, cam: 1.55 },
-  { id: 'cloud', at: 16, w: 480, h: 200, r: 40, bg: INK, cam: 1.5 },
+  { id: 'logo', at: 43, w: 96, h: 96, r: 48, bg: PLATE, cam: 2.4 },
+  { id: 'brand', at: 1, w: 500, h: 132, r: 66, bg: WHITE, cam: 1.7 },
+  { id: 'apk', at: 4, w: 460, h: 250, r: 32, bg: WHITE, cam: 1.85 },
+  { id: 'versions', at: 8, w: 440, h: 112, r: 30, bg: WHITE, cam: 1.8 },
+  { id: 'upload', at: 12, w: 460, h: 300, r: 34, bg: WHITE, cam: 1.8 },
+  { id: 'cloud', at: 16, w: 480, h: 200, r: 40, bg: INK, cam: 1.75 },
   { id: 'droid', at: 20, w: 300, h: 600, r: 50, bg: INK, cam: 1.12 },
-  { id: 'qr', at: 28, w: 480, h: 240, r: 34, bg: WHITE, cam: 1.5 },
-  { id: 'phone', at: 29.6, w: 290, h: 560, r: 48, bg: INK, cam: 1.2 },
-  { id: 'brand2', at: 36, w: 500, h: 132, r: 66, bg: WHITE, cam: 1.3 },
+  { id: 'qr', at: 32, w: 480, h: 240, r: 34, bg: WHITE, cam: 1.75 },
+  { id: 'phone', at: 33.6, w: 290, h: 560, r: 48, bg: INK, cam: 1.25 },
+  { id: 'brand2', at: 40, w: 500, h: 132, r: 66, bg: WHITE, cam: 1.45 },
 ]
 // sections: canvas color, caption, caption ink
 const SECTIONS = [
   { at: 0, canvas: C.red }, { at: 4, canvas: C.green }, { at: 8, canvas: C.blue }, { at: 12, canvas: C.violet },
-  { at: 16, canvas: C.orange }, { at: 20, canvas: C.pink }, { at: 28, canvas: C.sky }, { at: 36, canvas: C.night },
+  { at: 16, canvas: C.orange }, { at: 20, canvas: C.pink }, { at: 32, canvas: C.sky }, { at: 40, canvas: C.night },
 ]
-const OPEN_AT = [22.2, 23.8, 25.4]
-const CLICKS = [0, 4, 5, 8, 9, 10.5, 16, 17, ...OPEN_AT, 29.6]
+const OPEN_AT = [23.6, 26.2]
+const CLICKS = [0, 4, 5, 8, 9, 10.5, 16, 17, ...OPEN_AT, 33.6]
 const DRAGS = [[12.2, 13.45]]
 
 const VER_OPEN_H = 112 + 5 * 54 + 16
@@ -446,10 +454,12 @@ function latest(list, tb) {
   for (let i = 0; i < list.length; i++) if (since(tb, list[i].b) < since(tb, list[best].b)) best = i
   return best
 }
-// camera: zoom plus a focus point in world coords, so it can move in on part of the phone
-const cam = track([...STATES.map((s) => [s.at, s.cam]), [21.6, 1.7], [22.2, 1.2], [26.6, 1.08], [32.0, 0.82]], SPR.cam)
-const camX = track([[20, 0], [21.6, 70], [22.2, 0]], SPR.cam)
-const camY = track([[20, 0], [21.6, -80], [22.2, 30], [26.6, 0]], SPR.cam)
+// camera: zoom plus a focus point in world coords, so it can move in on part of the phone.
+// The phone moves are slow, critically damped dollies: no overshoot, about two beats to settle.
+const DOLLY = { f: 0.62, z: 1 }
+const cam = track([...STATES.map((s) => [s.at, s.cam]), [22.4, 2.05, DOLLY], [23.6, 1.72, DOLLY], [30.8, 1.12, DOLLY], [36.0, 0.82]], SPR.cam)
+const camX = track([[20, 0], [22.4, 70, DOLLY], [23.6, 0, DOLLY]], SPR.cam)
+const camY = track([[20, 0], [22.4, -70, DOLLY], [23.6, -28, DOLLY], [30.8, 0, DOLLY]], SPR.cam)
 
 // content layers: enter after the morph starts, exit fast so swapped text never overlaps
 const layerVis = {}
@@ -460,15 +470,17 @@ for (let i = 0; i < STATES.length; i++) {
 // captions leave early enough that the outro's is fully gone by the loop point
 const CAP_IN = 0.2, CAP_OUT = 0.35
 const capVis = SECTIONS.map((s, i) => vis(s.at + CAP_IN, SECTIONS[(i + 1) % SECTIONS.length].at - CAP_OUT))
+// the chat bubble title steps aside while the camera is in close on the phone, and returns as it pulls back
+capVis[5] = track([[20 + CAP_IN, 1, SPR.enter], [22.3, 0, { f: 3, z: 1 }], [30.9, 1, SPR.enter], [32 - CAP_OUT, 0, SPR.exit]])
 
 const pressKeys = (bs) => bs.flatMap((b) => [[b - 0.16, 1, SPR.press], [b + 0.02, 0, SPR.enter]])
 const cursorPress = track([...pressKeys(CLICKS), ...DRAGS.flatMap(([a, z]) => [[a - 0.1, 1, SPR.press], [z, 0, SPR.enter]])])
-const shapePress = track(pressKeys([0, 4, 8, 16, 29.6]))
+const shapePress = track(pressKeys([0, 4, 8, 16, 33.6]))
 
 // ---------- cursor path (world coords, origin = shape center) ----------
 // chat heads on the phone, in screen coords of its 280x580 display (offset -140, -290 in world)
-const HEAD_EDGE = [[244, 178], [244, 244], [244, 310]]
-const HEAD_ROW = [[124, 58], [184, 58], [244, 58]]
+const HEAD_EDGE = [[240, 196], [240, 270]]
+const HEAD_ROW = [[176, 58], [240, 58]]
 const toWorld = ([x, y]) => [x - 140, y - 290]
 const cursorKeys = [
   [0.45, 210, 125],
@@ -489,17 +501,18 @@ const cursorKeys = [
   [17.4, 255, 150],
   [19.4, 200, 120],
   [20.3, 235, 170],
-  [21.3, ...toWorld(HEAD_EDGE[0])], // Seraphina's head, click 22.2
-  [22.9, ...toWorld(HEAD_ROW[1])], // Aldric, click 23.8
-  [24.5, ...toWorld(HEAD_ROW[2])], // Ember, click 25.4
-  [26.0, 205, 160],
-  [28.3, 255, 150],
-  [29.0, -120, 12], // onto the QR, click 29.6
-  [30.0, 225, 236],
-  [32.1, 168, 248],
-  [36.3, 290, -40],
-  [38.9, 140, 130],
-  [39.75, 26, 22], // onto the logo, click 0
+  [22.6, ...toWorld(HEAD_EDGE[0]), SPR.slow], // drifts onto Seraphina's head, click 23.6
+  [24.2, 185, 170],
+  [25.3, ...toWorld(HEAD_ROW[1])], // Wikipe-tan, click 26.2
+  [26.8, 185, 170],
+  [31.0, 235, 170],
+  [32.3, 255, 150],
+  [33.0, -120, 12], // onto the QR, click 33.6
+  [34.0, 225, 236],
+  [36.1, 168, 248],
+  [40.3, 290, -40],
+  [42.9, 140, 130],
+  [43.75, 26, 22], // onto the mark, click 0
 ]
 const curX = track(cursorKeys.map(([b, x, , s]) => [b, x, s]), SPR.cursor)
 const curY = track(cursorKeys.map(([b, , y, s]) => [b, y, s]), SPR.cursor)
@@ -529,28 +542,30 @@ const upDoneVis = vis(15.1, 16, SPR.snap)
 const tog = track([[17, 1, SPR.snap], [20, 0, SPR.exit]])
 const cloudP = track([[16, 0, SPR.exit], [17.2, 0.5, SPR.slow], [17.85, 0.86, SPR.slow], [18.45, 1, SPR.trail]])
 const cloudCheck = track([[18.6, 1, { f: 2.6, z: 1 }], [20, 0, SPR.exit]])
-// chat bubbles
+// chat bubbles: SillyTavern's own Seraphina, and Wikipe-tan as a second demo character
 const HEADS = [
-  { emoji: '🧝‍♀️', name: 'Seraphina', grad: 'radial-gradient(circle at 30% 25%,#FFD1E8,#FF4FA0 55%,#7C4DFF)', badge: 1, pop: 20.6 },
-  { emoji: '🧙‍♂️', name: 'Aldric', grad: 'radial-gradient(circle at 30% 25%,#D6F1FF,#2F6BFF 55%,#17112B)', badge: 2, pop: 20.95 },
-  { emoji: '🐉', name: 'Ember', grad: 'radial-gradient(circle at 30% 25%,#FFE3B0,#FF7A1A 55%,#C2410C)', badge: 1, pop: 21.3 },
+  { img: 'assets/st/seraphina.jpg', name: 'Seraphina', badge: 1, pop: 20.8 },
+  { img: 'assets/st/wikipe-tan.jpg', name: 'Wikipe-tan', badge: 2, pop: 21.2 },
 ]
-const headVis = HEADS.map((h) => vis(h.pop, 28, SPR.snap))
+const SCENE_END = 32
+const headVis = HEADS.map((h) => vis(h.pop, SCENE_END, SPR.snap))
 const badgeVis = HEADS.map((h, i) => vis(h.pop + 0.2, OPEN_AT[i], SPR.snap))
 const headPress = track(pressKeys(OPEN_AT))
-const bannerVis = vis(20.75, 21.75, SPR.lead, { f: 4, z: 1 })
-const expand = track([[22.2, 1, SPR.lead], [28, 0, SPR.exit]])
-const panelVis = vis(22.3, 28, { f: 3, z: 0.85 })
-const chatVis = OPEN_AT.map((b, i) => vis(b + 0.08, OPEN_AT[i + 1] ?? 28, SPR.enter, { f: 10, z: 1 }))
+const bannerVis = vis(21.0, 22.4, SPR.lead, { f: 3, z: 1 })
+const expand = track([[23.6, 1, SPR.lead], [SCENE_END, 0, SPR.exit]])
+const panelVis = vis(23.7, SCENE_END, { f: 2.2, z: 0.9 })
+const chatVis = OPEN_AT.map((b, i) => vis(b + 0.08, OPEN_AT[i + 1] ?? SCENE_END, SPR.enter, { f: 10, z: 1 }))
+const STREAM = OPEN_AT.map((b) => [b + 0.5, 1.4]) // reply starts, and how many beats it takes to type out
 // QR + phone
-const scanVis = vis(28.35, 29.45)
-const PIN_AT = [30.05, 30.25, 30.45, 30.65]
+const scanVis = vis(32.35, 33.45)
+const PIN_AT = [34.05, 34.25, 34.45, 34.65]
 const PIN_KEYS = [2, 5, 8, 0]
-const pinViewVis = vis(29.75, 30.95, SPR.enter, { f: 5, z: 1 })
-const appViewVis = vis(30.95, 36, { f: 4, z: 1 })
-const lapVis = vis(32.2, 35.9, SPR.lead)
-const tabVis = vis(32.45, 35.9, SPR.lead)
-const lblVis = [vis(32.8, 35.9, SPR.snap), vis(32.65, 35.9, SPR.snap), vis(32.95, 35.9, SPR.snap)]
+const pinViewVis = vis(33.75, 34.95, SPR.enter, { f: 5, z: 1 })
+const appViewVis = vis(34.95, 40, { f: 4, z: 1 })
+const lapVis = vis(36.2, 39.9, SPR.lead)
+const tabVis = vis(36.45, 39.9, SPR.lead)
+const LBL_AT = [36.8, 36.65, 36.95]
+const lblVis = LBL_AT.map((b) => vis(b, 39.9, SPR.snap))
 // outro chips
 const PLATFORMS = [
   { name: 'Windows', icon: 'windows', bg: '#0078D4', fg: '#fff' },
@@ -559,7 +574,8 @@ const PLATFORMS = [
   { name: 'Linux', icon: 'linux', bg: '#FCC624', fg: '#000' },
   { name: 'Docker', icon: 'docker', bg: '#2496ED', fg: '#fff' },
 ]
-const chipVis = PLATFORMS.map((_, i) => vis(36.55 + 0.14 * i, 38.9, SPR.snap))
+const CHIP_AT = PLATFORMS.map((_, i) => 40.55 + 0.14 * i)
+const chipVis = CHIP_AT.map((b) => vis(b, 42.9, SPR.snap))
 
 // ---------- canvas: each section floods its color from the cursor ----------
 const WIPES = SECTIONS.map((s) => ({ b: s.at, color: s.canvas }))
@@ -626,16 +642,19 @@ function emWrap(src, n) {
   return out
 }
 const plainLen = (src) => [...src.replace(/\*/g, '')].length
-const YOU = { emoji: '🙂', name: TEXT.you, grad: '#5B5470' }
-function stBuild(el, chat, { top = 0 } = {}) {
-  const who = HEADS[chat]
+const YOU = { img: 'assets/st/user.png', name: TEXT.you }
+const WAND = 'm21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72M14 7l3 3M5 6v4M19 14v4M10 2v2M7 8H3M21 16h-4M11 3H9'
+const SEND = 'M22 2 11 13M22 2l-7 20-4-9-9-4z'
+// top bar, the chat over the tavern background, and the send form: options, extensions (the wand), text, send
+function stBuild(el, chat, { top = 0, big = false } = {}) {
+  const who = HEADS[chat], bar = big ? 40 : 34, is = big ? 19 : 15
   const msgs = TEXT.chats[chat].map((m, i) => {
     const w = i === 1 ? YOU : who
-    return `<div class="mes"><div class="av" style="background:${w.grad}">${w.emoji}</div><div><div class="nm">${w.name}<span class="ts">#${i + 1}</span></div><div class="tx">${emWrap(m, Infinity)}</div></div></div>`
+    return `<div class="mes"><div class="av" style="background-image:url(${w.img})"></div><div><div class="nm">${w.name}<span class="ts">#${i + 1}</span></div><div class="tx">${emWrap(m, Infinity)}</div></div></div>`
   }).join('')
-  el.innerHTML = `<div class="st"><div class="bar" style="top:${top}px">${ST_ICONS.map((d) => icon(d)).join('')}</div>
-    <div class="chat" style="top:${top + 34}px">${msgs}</div>
-    <div class="send">${icon(ST_ICONS[0], 16)}<span style="flex:1" class="nw">${TEXT.typeMsg}</span>${icon('M22 2 11 13M22 2l-7 20-4-9-9-4z', 16)}</div></div>`
+  el.innerHTML = `<div class="st${big ? ' big' : ''}"><div class="bar" style="top:${top}px">${ST_ICONS.map((d) => icon(d, is)).join('')}</div>
+    <div class="chat" style="top:${top + bar}px">${msgs}</div>
+    <div class="send">${icon(ST_ICONS[0], is)}${icon(WAND, is)}<span style="flex:1" class="nw">${TEXT.typeMsg}</span>${icon(SEND, is)}</div></div>`
   const mes = [...el.querySelectorAll('.mes')]
   return { mes, last: mes[2].querySelector('.tx'), src: TEXT.chats[chat][2] }
 }
@@ -657,8 +676,8 @@ APPS.forEach(([e, bg], i) => {
 const headEls = HEADS.map((h) => {
   const d = document.createElement('div')
   d.className = 'head'
-  d.style.background = h.grad
-  d.innerHTML = `${h.emoji}<div class="bd">${h.badge}</div>`
+  d.style.backgroundImage = `url(${h.img})`
+  d.innerHTML = `<div class="bd">${h.badge}</div>`
   $('heads').appendChild(d)
   return d
 })
@@ -667,7 +686,7 @@ const panelChats = HEADS.map((_, i) => {
   box.className = 'abs'
   box.style.inset = '0'
   $('panel').appendChild(box)
-  return { box, ...stBuild(box, i) }
+  return { box, ...stBuild(box, i, { big: true }) }
 })
 // the same Seraphina chat on the phone, the laptop and the tablet
 const phoneST = stBuild($('appView'), 0, { top: 42 })
@@ -893,14 +912,14 @@ function seek(tIn) {
   // chat bubbles: heads pop on the home screen, a tap opens SillyTavern in the bubble
   const ex = clamp(expand(t), -0.1, 1.1)
   $('scrim').style.opacity = (0.5 * clamp(ex)).toFixed(3)
-  const sel = tb >= OPEN_AT[2] ? 2 : tb >= OPEN_AT[1] ? 1 : 0
+  const sel = tb >= OPEN_AT[1] ? 1 : 0
   headEls.forEach((el, i) => {
     const [x0, y0] = HEAD_EDGE[i], [x1, y1] = HEAD_ROW[i]
     const lag = clamp(ex - i * 0.06, -0.1, 1.1)
     const x = lerp(x0, x1, lag), y = lerp(y0, y1, lag)
     const v = clamp(headVis[i](t), 0, 1.3)
     const pr = sel === i && inSpan(tb, OPEN_AT[i] - 0.3, OPEN_AT[i] + 0.3) ? headPress(t) : 0
-    Object.assign(el.style, { left: x - 28 + 'px', top: y - 28 + 'px', opacity: clamp(v * 2), visibility: v < 0.002 ? 'hidden' : 'visible' })
+    Object.assign(el.style, { left: x - 30 + 'px', top: y - 30 + 'px', opacity: clamp(v * 2), visibility: v < 0.002 ? 'hidden' : 'visible' })
     el.style.transform = `scale(${(popScale(v) * (1 - 0.1 * pr)).toFixed(4)})`
     el.style.boxShadow = `0 8px 18px -6px rgba(0,0,0,0.45), 0 0 0 ${(3 * clamp(ex) * (sel === i ? 1 : 0)).toFixed(2)}px #fff`
     const bv = clamp(badgeVis[i](t), 0, 1.3)
@@ -912,26 +931,26 @@ function seek(tIn) {
   $('banner').style.transform = `translateY(${(-(1 - clamp(bnv, -0.2, 1.2)) * 90).toFixed(2)}px)`
   $('banner').style.visibility = bnv < 0.002 ? 'hidden' : 'visible'
   const pv0 = clamp(panelVis(t), 0, 1.1)
-  Object.assign($('panel').style, { opacity: clamp(pv0 * 2), transform: `scale(${lerp(0.3, 1, pv0).toFixed(4)})`, transformOrigin: '114px -38px', visibility: pv0 < 0.002 ? 'hidden' : 'visible' })
+  Object.assign($('panel').style, { opacity: clamp(pv0 * 2), transform: `scale(${lerp(0.3, 1, pv0).toFixed(4)})`, transformOrigin: '166px -38px', visibility: pv0 < 0.002 ? 'hidden' : 'visible' })
   panelChats.forEach((pc, i) => {
     const v = chatVis[i](t)
     visStyle(pc.box, v, 6)
     if (v < 0.002) return
     pc.mes[0].style.opacity = pc.mes[1].style.opacity = 1
-    streamST(pc, tb, OPEN_AT[i] + 0.35, i === 2 ? 1.0 : 0.85)
+    streamST(pc, tb, ...STREAM[i])
   })
 
   // QR scan line
   const scv = clamp(scanVis(t))
-  const scp = clamp((tb - 28.45) / 0.95)
+  const scp = clamp((tb - 32.45) / 0.95)
   Object.assign($('scan').style, { top: 30 + 176 * (0.5 - 0.5 * Math.cos(scp * Math.PI)) + 'px', opacity: scv })
 
   // phone: PIN, unlock into SillyTavern
   const pv = pinViewVis(t)
   visStyle($('pinView'), pv, 8)
-  $('pinView').style.transform = `translateY(${(tb > 30.9 && tb < 32.5 ? -(1 - clamp(pv)) * 60 : 0).toFixed(2)}px)`
+  $('pinView').style.transform = `translateY(${(tb > 34.9 && tb < 36.5 ? -(1 - clamp(pv)) * 60 : 0).toFixed(2)}px)`
   PIN_AT.forEach((b, i) => {
-    const on = inSpan(tb, b, 36)
+    const on = inSpan(tb, b, 40)
     pinDotEls[i].style.background = on ? '#fff' : 'transparent'
     pinDotEls[i].style.transform = `scale(${1 + (on ? 0.5 * pulse((tb - b) * B, 6) : 0)})`
     const k = keyEls[PIN_KEYS[i]]
@@ -942,7 +961,7 @@ function seek(tIn) {
   const av = appViewVis(t)
   visStyle($('appView'), av, 8)
   $('appView').style.transform = `scale(${lerp(1.06, 1, clamp(av))})`
-  streamST(phoneST, tb, 31.2, 0.8)
+  streamST(phoneST, tb, 35.2, 0.8)
 
   // other devices slide in beside the phone
   const lp = lapVis(t), tv = tabVis(t)
@@ -969,15 +988,15 @@ function cues() {
   const list = [
     ...CLICKS.map((b) => ({ b, kind: 'click' })),
     ...SECTIONS.map((s) => ({ b: s.at, kind: 'swish' })),
-    { b: 29.6, kind: 'swish' }, { b: 9, kind: 'swish', soft: 1 }, { b: 10.5, kind: 'swish', soft: 1 }, { b: 21.6, kind: 'swish', soft: 1 }, { b: 26.6, kind: 'swish', soft: 1 },
-    { b: 32.2, kind: 'swish' }, { b: 32.45, kind: 'swish', soft: 1 },
+    { b: 33.6, kind: 'swish' }, { b: 9, kind: 'swish', soft: 1 }, { b: 10.5, kind: 'swish', soft: 1 },
+    { b: 22.4, kind: 'swish', soft: 1 }, { b: 30.8, kind: 'swish', soft: 1 }, { b: 36.2, kind: 'swish' }, { b: 36.45, kind: 'swish', soft: 1 },
     { b: 12.2, kind: 'press' }, { b: 13.45, kind: 'drop' },
     { b: 6.95, kind: 'success' }, { b: 11.1, kind: 'pop' }, { b: 15.1, kind: 'success' }, { b: 18.6, kind: 'success' },
-    ...HEADS.map((h) => ({ b: h.pop, kind: 'pop' })), { b: 20.75, kind: 'msg' },
-    ...OPEN_AT.map((b) => ({ b: b + 0.35, kind: 'msg' })), { b: 22.3, kind: 'pop', soft: 1 },
-    ...PIN_AT.map((b) => ({ b, kind: 'tick', key: 1 })), { b: 30.95, kind: 'success' }, { b: 31.2, kind: 'msg' },
-    ...lblVis.map((_, i) => ({ b: [32.8, 32.65, 32.95][i], kind: 'pop', soft: 1 })),
-    ...chipVis.map((_, i) => ({ b: 36.55 + 0.14 * i, kind: 'pop', soft: 1 })),
+    ...HEADS.map((h) => ({ b: h.pop, kind: 'pop' })), { b: 21.0, kind: 'msg' }, { b: 23.7, kind: 'pop', soft: 1 },
+    ...STREAM.map(([b]) => ({ b, kind: 'msg' })),
+    ...PIN_AT.map((b) => ({ b, kind: 'tick', key: 1 })), { b: 34.95, kind: 'success' }, { b: 35.2, kind: 'msg' },
+    ...LBL_AT.map((b) => ({ b, kind: 'pop', soft: 1 })),
+    ...CHIP_AT.map((b) => ({ b, kind: 'pop', soft: 1 })),
   ]
   return list.map((c) => ({ ...c, t: (((c.b % BEATS) + BEATS) % BEATS) * B }))
 }
@@ -986,7 +1005,10 @@ function cues() {
 window.seek = seek
 window.configure = ({ beat }) => { if (beat) B = beat }
 window.timeline = () => ({ beat: B, beats: BEATS, duration: D(), lang: LANG, cues: cues() })
-window.ready = Promise.all([document.fonts.ready, ...[...document.images].map((i) => i.decode().catch(() => {}))]).then(() => { layoutStatic(); seek(0) })
+// CSS backgrounds are not in document.images, so load them up front as well
+const preload = (src) => new Promise((done) => { const i = new Image(); i.onload = i.onerror = done; i.src = src })
+const CSS_IMAGES = ['assets/st/tavern-day.jpg', 'assets/st/user.png', ...HEADS.map((h) => h.img)]
+window.ready = Promise.all([document.fonts.ready, ...[...document.images].map((i) => i.decode().catch(() => {})), ...CSS_IMAGES.map(preload)]).then(() => { layoutStatic(); seek(0) })
 
 if (!window.__RENDER__) {
   document.body.classList.add('preview')

@@ -22,8 +22,8 @@ const FPS = 60
 const SUB = Number(process.env.SUB || 2)
 const WORKERS = Number(process.env.WORKERS || 4)
 const SIZE = 1080
-const GIF_SIZE = Number(process.env.GIF_SIZE || 540)
-const GIF_FPS = Number(process.env.GIF_FPS || 25)
+const GIF_SIZE = Number(process.env.GIF_SIZE || 400)
+const GIF_FPS = Number(process.env.GIF_FPS || 15)
 
 function run(cmd, args) {
   return new Promise((resolve, reject) => {
