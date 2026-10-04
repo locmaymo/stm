@@ -29,7 +29,7 @@
   svg { display: block; overflow: visible; }
   .stroke { fill: none; stroke: currentColor; stroke-width: 2.25; stroke-linecap: round; stroke-linejoin: round; }
   .mono { font-family: 'JBM', monospace; }
-  #cursor { position: absolute; left: 0; top: 0; width: 44px; height: 44px; transform-origin: 6px 4px; }
+  #cursor { position: absolute; left: 0; top: 0; width: 48px; height: 48px; transform-origin: 19.5px 2.4px; filter: drop-shadow(0 3px 4px rgba(23,17,43,0.35)); }
   .cap { position: absolute; left: 0; right: 0; top: 64px; text-align: center; }
   .cap .chip { display: inline-block; padding: 0 16px; height: 34px; line-height: 34px; border-radius: 17px; font-size: 17px; font-weight: 700; letter-spacing: 1.5px; background: rgba(255,255,255,0.22); }
   .cap .tt { margin-top: 14px; font-size: 64px; line-height: 72px; font-weight: 800; letter-spacing: -1.8px; white-space: nowrap; }
@@ -51,7 +51,8 @@
   .st .mes { display: flex; gap: 8px; padding: 8px 8px; border-radius: 10px; background: rgba(18,14,12,0.78); margin-top: 6px; transform-origin: 0 100%; }
   .st .av { width: 32px; height: 32px; border-radius: 16px; flex: none; background-size: cover; background-position: center; }
   .st .nm { font-weight: 700; color: #fff; font-size: 13px; line-height: 16px; white-space: nowrap; }
-  .st .ts { color: #8a8a8a; font-weight: 500; font-size: 10px; margin-left: 6px; }
+  .st .avc { flex: none; display: flex; flex-direction: column; align-items: center; gap: 3px; }
+  .st .mid { color: #8a8a8a; font-weight: 600; font-size: 10px; line-height: 12px; }
   .st .tx { margin-top: 2px; min-height: 17px; }
   .st .tx em { color: #A6A6A6; }
   .st .tx .q { color: #E18A24; }
@@ -64,7 +65,7 @@
   .st.big .mes { gap: 10px; padding: 10px; margin-top: 8px; }
   .st.big .av { width: 42px; height: 42px; border-radius: 21px; }
   .st.big .nm { font-size: 15.5px; line-height: 19px; }
-  .st.big .ts { font-size: 11px; }
+  .st.big .mid { font-size: 12px; line-height: 14px; }
   .st.big .chat { bottom: 56px; }
   .st.big .send { height: 42px; font-size: 14px; }
   .dev { position: absolute; }
@@ -258,7 +259,7 @@
       <div class="abs nw mono" style="left:66px;top:38px;font-size:13px;color:#7A7590">48.2 MB</div>
     </div>
   </div>
-  <svg id="cursor" viewBox="0 0 34 34"><path d="M4 2.5 L4 26.5 L10.2 20.6 L14.3 30 L18.6 28.1 L14.6 19 L23 19 Z" fill="#17112B" stroke="#fff" stroke-width="2" stroke-linejoin="round"/></svg>
+  <svg id="cursor" viewBox="0 0 32 32"><path d="M11 3.6a2 2 0 0 1 4 0V13h.4V10.4a2 2 0 0 1 4 0v3.1h.4v-1.7a2 2 0 0 1 4 0v2.5h.3v-.9a2 2 0 0 1 4 0V21c0 4.7-3.7 8.5-8.4 8.5h-2.4c-2.6 0-5-1.3-6.4-3.5L4.4 19a2.1 2.1 0 0 1 3.3-2.6L11 19.6Z" fill="#fff" stroke="#17112B" stroke-width="1.7" stroke-linejoin="round"/><path d="M15.4 13v4.2M19.8 13.5v3.8M24.1 14.3v3.1" stroke="#17112B" stroke-width="1.5" stroke-linecap="round"/></svg>
 </div>
 
 <script>
@@ -298,15 +299,15 @@ const TEXT = {
       ['', 'SillyTavern, made easy'],
       ['01 / 06', 'Quick install'],
       ['02 / 06', 'Pick any version'],
-      ['03 / 06', 'Bring your old data'],
-      ['04 / 06', 'Cloud backup'],
-      ['05 / 06 · ANDROID', 'Chat bubbles'],
+      ['03 / 06 · ANDROID', 'Chat bubbles'],
+      ['04 / 06', 'Bring your old data'],
+      ['05 / 06', 'Cloud backup'],
       ['06 / 06', 'Open on your other devices'],
       ['', 'Use STM for free'],
     ],
     chats: [
       ['*Seraphina lights a lantern.* "You made it!"', 'Sorry I\'m late!', '*She smiles.* "Welcome back, traveler. Shall we continue?"'],
-      ['"Did you read today\'s featured article?"', 'Not yet!', '*She beams.* "Then let me tell you everything! ✨"'],
+      ['"Ready for today\'s lesson?"', 'My code won\'t compile 😭', '*He adjusts his glasses.* "Show me the error. We\'ll fix it together."'],
     ],
   },
   vi: {
@@ -325,15 +326,15 @@ const TEXT = {
       ['', 'SillyTavern thật dễ dàng'],
       ['01 / 06', 'Cài đặt nhanh'],
       ['02 / 06', 'Chọn phiên bản'],
-      ['03 / 06', 'Tải lên dữ liệu cũ'],
-      ['04 / 06', 'Sao lưu đám mây'],
-      ['05 / 06 · ANDROID', 'Bong bóng chat'],
+      ['03 / 06 · ANDROID', 'Bong bóng chat'],
+      ['04 / 06', 'Tải lên dữ liệu cũ'],
+      ['05 / 06', 'Sao lưu đám mây'],
       ['06 / 06', 'Mở trên thiết bị khác'],
       ['', 'Dùng STM miễn phí'],
     ],
     chats: [
       ['*Seraphina thắp đèn lồng.* "Ngươi đến rồi!"', 'Xin lỗi, mình đến muộn!', '*Nàng mỉm cười.* "Chào mừng trở lại, lữ khách. Ta đi tiếp chứ?"'],
-      ['"Bạn đọc bài viết chọn lọc hôm nay chưa?"', 'Chưa luôn!', '*Cô bé cười rạng rỡ.* "Vậy để mình kể hết cho nghe! ✨"'],
+      ['"Sẵn sàng cho bài học hôm nay chưa?"', 'Code mình không chạy 😭', '*Thầy chỉnh lại kính.* "Cho ta xem lỗi. Cùng sửa nào."'],
     ],
   },
 }[LANG]
@@ -412,41 +413,44 @@ const C = {
 }
 
 // ---------- structure (beats, 100 BPM, 0.6 s each) ----------
-// 43 the pill folds back into the mark   0 click: red flood, the mark bounces   1 brand pill
-// 4 click -> APK installer  5 tap Install  5.1-6.6 progress  6.95 installed  8 tap Open
-// 8 version select  9 open  9.8-10.1 hover rows  10.5 pick 1.17.0, close  11.1 installed
-// 11.5 grab a file off screen  12 drop zone  12.3-13.4 drag in  13.45 drop  13.6-14.9 restore  15.1 done
-// 16 cloud card  17 toggle on  17.1-18.5 ring  18.6 check
-// 20 the card becomes an Android phone  20.8 / 21.2 chat heads pop  21.0-22.4 a notification drops
-// 22.4 slow push in on the heads  23.6 tap Seraphina: the bubble opens SillyTavern, the camera frames it
-// 24.1-25.5 her reply streams in  26.2 tap Wikipe-tan  26.7-28.1 her reply  30.8 slow pull back
-// 32 QR card  32.4-33.4 scan  33.6 click -> phone  34.05-34.65 PIN  34.95 unlocked SillyTavern
-// 36 pull back: a laptop and a tablet open the same chat
-// 40 brand pill + platforms   43 the mark
+// Each section starts at AT.<name>; everything inside it is timed from that start, so sections can be reordered here.
+// intro    43 the pill folds back into the mark   0 click: red flood, the mark bounces   1 brand pill
+// apk      +0 click -> installer  +1 tap Install  +1.1-2.6 progress  +2.95 installed  +4 tap Open
+// ver      +1 open  +1.8-2.1 hover rows  +2.5 pick 1.17.0, close  +3.1 installed
+// chat     +0 the card becomes an Android phone  +0.8 / +1.2 chat heads pop  +1.0-2.4 a notification drops
+//          +2.4 slow push in on the heads  +3.6 tap Seraphina: the bubble opens SillyTavern, the camera frames it
+//          +4.1-5.5 her reply streams in  +6.2 tap Coding Sensei  +6.7-8.1 his reply  +10.8 slow pull back
+// up       -0.5 grab a file off screen  +0 drop zone  +0.3-1.4 drag in  +1.45 drop  +1.6-2.9 restore  +3.1 done
+// cloud    +1 toggle on  +1.1-2.5 ring  +2.6 check
+// link     +0 QR card  +0.4-1.4 scan  +1.6 click -> phone  +2.05-2.65 PIN  +2.95 unlocked  +4 pull back: laptop, tablet
+// outro    +0 brand pill + platforms  +3 the mark
+const AT = { intro: 0, apk: 4, ver: 8, chat: 12, up: 24, cloud: 28, link: 32, outro: 40 }
 const STATES = [
-  { id: 'logo', at: 43, w: 96, h: 96, r: 48, bg: PLATE, cam: 2.4 },
-  { id: 'brand', at: 1, w: 500, h: 132, r: 66, bg: WHITE, cam: 1.7 },
-  { id: 'apk', at: 4, w: 460, h: 250, r: 32, bg: WHITE, cam: 1.85 },
-  { id: 'versions', at: 8, w: 440, h: 112, r: 30, bg: WHITE, cam: 1.8 },
-  { id: 'upload', at: 12, w: 460, h: 300, r: 34, bg: WHITE, cam: 1.8 },
-  { id: 'cloud', at: 16, w: 480, h: 200, r: 40, bg: INK, cam: 1.75 },
-  { id: 'droid', at: 20, w: 300, h: 600, r: 50, bg: INK, cam: 1.12 },
-  { id: 'qr', at: 32, w: 480, h: 240, r: 34, bg: WHITE, cam: 1.75 },
-  { id: 'phone', at: 33.6, w: 290, h: 560, r: 48, bg: INK, cam: 1.25 },
-  { id: 'brand2', at: 40, w: 500, h: 132, r: 66, bg: WHITE, cam: 1.45 },
+  { id: 'logo', at: AT.outro + 3, w: 96, h: 96, r: 48, bg: PLATE, cam: 2.4 },
+  { id: 'brand', at: AT.intro + 1, w: 500, h: 132, r: 66, bg: WHITE, cam: 1.7 },
+  { id: 'apk', at: AT.apk, w: 460, h: 250, r: 32, bg: WHITE, cam: 1.85 },
+  { id: 'versions', at: AT.ver, w: 440, h: 112, r: 30, bg: WHITE, cam: 1.8 },
+  { id: 'droid', at: AT.chat, w: 300, h: 600, r: 50, bg: INK, cam: 1.12 },
+  { id: 'upload', at: AT.up, w: 460, h: 300, r: 34, bg: WHITE, cam: 1.8 },
+  { id: 'cloud', at: AT.cloud, w: 480, h: 200, r: 40, bg: INK, cam: 1.75 },
+  { id: 'qr', at: AT.link, w: 480, h: 240, r: 34, bg: WHITE, cam: 1.75 },
+  { id: 'phone', at: AT.link + 1.6, w: 290, h: 560, r: 48, bg: INK, cam: 1.25 },
+  { id: 'brand2', at: AT.outro, w: 500, h: 132, r: 66, bg: WHITE, cam: 1.45 },
 ]
-// sections: canvas color, caption, caption ink
+// sections in screen order: canvas color, caption ink (the captions in TEXT.caps follow this order)
 const SECTIONS = [
-  { at: 0, canvas: C.red }, { at: 4, canvas: C.green }, { at: 8, canvas: C.blue }, { at: 12, canvas: C.violet },
-  { at: 16, canvas: C.orange }, { at: 20, canvas: C.pink }, { at: 32, canvas: C.sky }, { at: 40, canvas: C.night },
+  { at: AT.intro, canvas: C.red }, { at: AT.apk, canvas: C.green }, { at: AT.ver, canvas: C.blue }, { at: AT.chat, canvas: C.pink },
+  { at: AT.up, canvas: C.violet }, { at: AT.cloud, canvas: C.orange }, { at: AT.link, canvas: C.sky }, { at: AT.outro, canvas: C.night },
 ]
-const OPEN_AT = [23.6, 26.2]
-const CLICKS = [0, 4, 5, 8, 9, 10.5, 16, 17, ...OPEN_AT, 33.6]
-const DRAGS = [[12.2, 13.45]]
+const CHAT_SECTION = 3
+const OPEN_AT = [AT.chat + 3.6, AT.chat + 6.2]
+const GRAB = AT.up + 0.2, DROP = AT.up + 1.45
+const CLICKS = [0, AT.apk, AT.apk + 1, AT.ver, AT.ver + 1, AT.ver + 2.5, ...OPEN_AT, AT.cloud, AT.cloud + 1, AT.link + 1.6]
+const DRAGS = [[GRAB, DROP]]
 
 const VER_OPEN_H = 112 + 5 * 54 + 16
 const shapeW = track(STATES.map((s) => [s.at, s.w]))
-const shapeH = track([...STATES.map((s) => [s.at, s.h]), [9, VER_OPEN_H, SPR.lead], [10.5, 112, SPR.lead]])
+const shapeH = track([...STATES.map((s) => [s.at, s.h]), [AT.ver + 1, VER_OPEN_H, SPR.lead], [AT.ver + 2.5, 112, SPR.lead]])
 const shapeR = track(STATES.map((s) => [s.at, s.r]))
 const SHAPE_WIPES = STATES.map((s) => ({ b: s.at, color: s.bg })).sort((a, b) => a.b - b.b)
 function latest(list, tb) {
@@ -457,9 +461,9 @@ function latest(list, tb) {
 // camera: zoom plus a focus point in world coords, so it can move in on part of the phone.
 // The phone moves are slow, critically damped dollies: no overshoot, about two beats to settle.
 const DOLLY = { f: 0.62, z: 1 }
-const cam = track([...STATES.map((s) => [s.at, s.cam]), [22.4, 2.05, DOLLY], [23.6, 1.72, DOLLY], [30.8, 1.12, DOLLY], [36.0, 0.82]], SPR.cam)
-const camX = track([[20, 0], [22.4, 70, DOLLY], [23.6, 0, DOLLY]], SPR.cam)
-const camY = track([[20, 0], [22.4, -70, DOLLY], [23.6, -28, DOLLY], [30.8, 0, DOLLY]], SPR.cam)
+const cam = track([...STATES.map((s) => [s.at, s.cam]), [AT.chat + 2.4, 2.05, DOLLY], [AT.chat + 3.6, 1.72, DOLLY], [AT.chat + 10.8, 1.12, DOLLY], [AT.link + 4, 0.82]], SPR.cam)
+const camX = track([[AT.chat, 0], [AT.chat + 2.4, 70, DOLLY], [AT.chat + 3.6, 0, DOLLY]], SPR.cam)
+const camY = track([[AT.chat, 0], [AT.chat + 2.4, -70, DOLLY], [AT.chat + 3.6, -28, DOLLY], [AT.chat + 10.8, 0, DOLLY]], SPR.cam)
 
 // content layers: enter after the morph starts, exit fast so swapped text never overlaps
 const layerVis = {}
@@ -471,101 +475,105 @@ for (let i = 0; i < STATES.length; i++) {
 const CAP_IN = 0.2, CAP_OUT = 0.35
 const capVis = SECTIONS.map((s, i) => vis(s.at + CAP_IN, SECTIONS[(i + 1) % SECTIONS.length].at - CAP_OUT))
 // the chat bubble title steps aside while the camera is in close on the phone, and returns as it pulls back
-capVis[5] = track([[20 + CAP_IN, 1, SPR.enter], [22.3, 0, { f: 3, z: 1 }], [30.9, 1, SPR.enter], [32 - CAP_OUT, 0, SPR.exit]])
+capVis[CHAT_SECTION] = track([[AT.chat + CAP_IN, 1, SPR.enter], [AT.chat + 2.3, 0, { f: 3, z: 1 }], [AT.chat + 10.9, 1, SPR.enter], [AT.up - CAP_OUT, 0, SPR.exit]])
 
 const pressKeys = (bs) => bs.flatMap((b) => [[b - 0.16, 1, SPR.press], [b + 0.02, 0, SPR.enter]])
 const cursorPress = track([...pressKeys(CLICKS), ...DRAGS.flatMap(([a, z]) => [[a - 0.1, 1, SPR.press], [z, 0, SPR.enter]])])
-const shapePress = track(pressKeys([0, 4, 8, 16, 33.6]))
+const shapePress = track(pressKeys([0, AT.apk, AT.ver, AT.cloud, AT.link + 1.6]))
 
-// ---------- cursor path (world coords, origin = shape center) ----------
+// ---------- pointer path (world coords, origin = shape center) ----------
 // chat heads on the phone, in screen coords of its 280x580 display (offset -140, -290 in world)
 const HEAD_EDGE = [[240, 196], [240, 270]]
 const HEAD_ROW = [[176, 58], [240, 58]]
 const toWorld = ([x, y]) => [x - 140, y - 290]
 const cursorKeys = [
-  [0.45, 210, 125],
-  [3.1, 90, 12], // onto the pill, click 4
-  [4.35, 142, 73], // Install, click 5
-  [5.4, 262, 178],
-  [7.2, 142, 73], // Open, click 8
-  [8.3, 172, 2], // chevron, click 9
-  [9.5, -40, -1], // row 1
-  [10.0, -40, 53], // row 2, click 10.5
-  [10.85, 165, 120],
-  [11.5, 430, 40], // off screen to pick up a file
-  [12.25, 330, 20],
-  [12.5, 0, 8, SPR.drag], // drag into the zone, drop 13.45
-  [13.75, 205, 178],
-  [15.3, 30, 30], // click 16
-  [16.35, -4, 46], // toggle, click 17
-  [17.4, 255, 150],
-  [19.4, 200, 120],
-  [20.3, 235, 170],
-  [22.6, ...toWorld(HEAD_EDGE[0]), SPR.slow], // drifts onto Seraphina's head, click 23.6
-  [24.2, 185, 170],
-  [25.3, ...toWorld(HEAD_ROW[1])], // Wikipe-tan, click 26.2
-  [26.8, 185, 170],
-  [31.0, 235, 170],
-  [32.3, 255, 150],
-  [33.0, -120, 12], // onto the QR, click 33.6
-  [34.0, 225, 236],
-  [36.1, 168, 248],
-  [40.3, 290, -40],
-  [42.9, 140, 130],
-  [43.75, 26, 22], // onto the mark, click 0
+  [AT.intro + 0.45, 210, 125],
+  [AT.apk - 0.9, 90, 12], // onto the pill, click
+  [AT.apk + 0.35, 142, 73], // Install, click
+  [AT.apk + 1.4, 262, 178],
+  [AT.apk + 3.2, 142, 73], // Open, click
+  [AT.ver + 0.3, 172, 2], // chevron, click
+  [AT.ver + 1.5, -40, -1], // row 1
+  [AT.ver + 2.0, -40, 53], // row 2, click
+  [AT.ver + 2.85, 165, 120],
+  [AT.chat + 0.3, 235, 170],
+  [AT.chat + 2.6, ...toWorld(HEAD_EDGE[0]), SPR.slow], // drifts onto Seraphina's head
+  [AT.chat + 4.2, 185, 170],
+  [AT.chat + 5.3, ...toWorld(HEAD_ROW[1])], // Coding Sensei
+  [AT.chat + 6.8, 185, 170],
+  [AT.chat + 11.0, 235, 170],
+  [AT.up - 0.5, 430, 40], // off screen to pick up a file
+  [AT.up + 0.25, 330, 20],
+  [AT.up + 0.5, 0, 8, SPR.drag], // drag into the zone
+  [AT.up + 1.75, 205, 178],
+  [AT.cloud - 0.7, 30, 30], // click
+  [AT.cloud + 0.35, -4, 46], // toggle, click
+  [AT.cloud + 1.4, 255, 150],
+  [AT.cloud + 3.4, 200, 120],
+  [AT.link + 0.3, 255, 150],
+  [AT.link + 1.0, -120, 12], // onto the QR, click
+  [AT.link + 2.0, 225, 236],
+  [AT.link + 4.1, 168, 248],
+  [AT.outro + 0.3, 290, -40],
+  [AT.outro + 2.9, 140, 130],
+  [AT.outro + 3.75, 26, 22], // onto the mark, click 0
 ]
 const curX = track(cursorKeys.map(([b, x, , s]) => [b, x, s]), SPR.cursor)
 const curY = track(cursorKeys.map(([b, , y, s]) => [b, y, s]), SPR.cursor)
 
 // ---------- per-section tracks ----------
 // APK installer
-const apkAVis = vis(4.14, 5.05)
-const apkBVis = vis(5.1, 6.9)
-const apkCVis = vis(6.95, 8, SPR.snap)
-const apkP = track([[4, 0, SPR.exit], [5.25, 0.45, SPR.slow], [5.85, 0.82, SPR.slow], [6.4, 1, SPR.trail]])
+const apkAVis = vis(AT.apk + 0.14, AT.apk + 1.05)
+const apkBVis = vis(AT.apk + 1.1, AT.apk + 2.9)
+const apkCVis = vis(AT.apk + 2.95, AT.ver, SPR.snap)
+const apkP = track([[AT.apk, 0, SPR.exit], [AT.apk + 1.25, 0.45, SPR.slow], [AT.apk + 1.85, 0.82, SPR.slow], [AT.apk + 2.4, 1, SPR.trail]])
 // versions
 const VERSIONS = [['1.19.0', 'latest'], ['1.18.0'], ['1.17.0'], ['1.16.0'], ['staging']]
-const verRowsVis = vis(9.05, 10.55, SPR.enter, { f: 6, z: 1 })
-const verHlRow = track([[8, 0, SPR.exit], [9.75, 1, SPR.snap], [10.1, 2, SPR.snap]])
-const verAVis = vis(8.14, 10.6, SPR.enter, SPR.exit)
-const verBVis = vis(10.65, 12, SPR.enter, SPR.exit)
-const verOkVis = vis(11.1, 12, SPR.snap)
-const chevRot = track([[9, 1, SPR.lead], [10.5, 0, SPR.lead]])
-// upload
-const fileVis = vis(11.4, 13.45, SPR.enter, { f: 4, z: 1 })
-const zoneHot = vis(12.9, 13.5)
-const zoneAVis = vis(12.14, 13.5)
-const zoneBVis = vis(13.55, 16)
-const upP = track([[12, 0, SPR.exit], [13.7, 0.55, SPR.slow], [14.35, 0.86, SPR.slow], [14.9, 1, SPR.trail]])
-const upDoneVis = vis(15.1, 16, SPR.snap)
-// cloud
-const tog = track([[17, 1, SPR.snap], [20, 0, SPR.exit]])
-const cloudP = track([[16, 0, SPR.exit], [17.2, 0.5, SPR.slow], [17.85, 0.86, SPR.slow], [18.45, 1, SPR.trail]])
-const cloudCheck = track([[18.6, 1, { f: 2.6, z: 1 }], [20, 0, SPR.exit]])
-// chat bubbles: SillyTavern's own Seraphina, and Wikipe-tan as a second demo character
+const verRowsVis = vis(AT.ver + 1.05, AT.ver + 2.55, SPR.enter, { f: 6, z: 1 })
+const verHlRow = track([[AT.ver, 0, SPR.exit], [AT.ver + 1.75, 1, SPR.snap], [AT.ver + 2.1, 2, SPR.snap]])
+const verAVis = vis(AT.ver + 0.14, AT.ver + 2.6, SPR.enter, SPR.exit)
+const verBVis = vis(AT.ver + 2.65, AT.ver + 4, SPR.enter, SPR.exit)
+const verOkVis = vis(AT.ver + 3.1, AT.ver + 4, SPR.snap)
+const chevRot = track([[AT.ver + 1, 1, SPR.lead], [AT.ver + 2.5, 0, SPR.lead]])
+// chat bubbles: SillyTavern's own Seraphina and Coding Sensei
 const HEADS = [
-  { img: 'assets/st/seraphina.jpg', name: 'Seraphina', badge: 1, pop: 20.8 },
-  { img: 'assets/st/wikipe-tan.jpg', name: 'Wikipe-tan', badge: 2, pop: 21.2 },
+  { img: 'assets/st/seraphina.jpg', name: 'Seraphina', badge: 1, pop: AT.chat + 0.8 },
+  { img: 'assets/st/coding-sensei.jpg', name: 'Coding Sensei', badge: 2, pop: AT.chat + 1.2 },
 ]
-const SCENE_END = 32
+const SCENE_END = AT.up
 const headVis = HEADS.map((h) => vis(h.pop, SCENE_END, SPR.snap))
 const badgeVis = HEADS.map((h, i) => vis(h.pop + 0.2, OPEN_AT[i], SPR.snap))
 const headPress = track(pressKeys(OPEN_AT))
-const bannerVis = vis(21.0, 22.4, SPR.lead, { f: 3, z: 1 })
-const expand = track([[23.6, 1, SPR.lead], [SCENE_END, 0, SPR.exit]])
-const panelVis = vis(23.7, SCENE_END, { f: 2.2, z: 0.9 })
+const bannerVis = vis(AT.chat + 1.0, AT.chat + 2.4, SPR.lead, { f: 3, z: 1 })
+const expand = track([[OPEN_AT[0], 1, SPR.lead], [SCENE_END, 0, SPR.exit]])
+const panelVis = vis(OPEN_AT[0] + 0.1, SCENE_END, { f: 2.2, z: 0.9 })
 const chatVis = OPEN_AT.map((b, i) => vis(b + 0.08, OPEN_AT[i + 1] ?? SCENE_END, SPR.enter, { f: 10, z: 1 }))
 const STREAM = OPEN_AT.map((b) => [b + 0.5, 1.4]) // reply starts, and how many beats it takes to type out
+// upload
+const fileVis = vis(AT.up - 0.15, DROP, SPR.enter, { f: 4, z: 1 })
+const zoneHot = vis(AT.up + 0.9, AT.up + 1.5)
+const zoneAVis = vis(AT.up + 0.14, AT.up + 1.5)
+const zoneBVis = vis(AT.up + 1.55, AT.cloud)
+const upP = track([[AT.up, 0, SPR.exit], [AT.up + 1.7, 0.55, SPR.slow], [AT.up + 2.35, 0.86, SPR.slow], [AT.up + 2.9, 1, SPR.trail]])
+const UP_DONE = AT.up + 3.1
+const upDoneVis = vis(UP_DONE, AT.cloud, SPR.snap)
+// cloud
+const RING_RUN = AT.cloud + 1.05, RING_DONE = AT.cloud + 2.6
+const tog = track([[AT.cloud + 1, 1, SPR.snap], [AT.cloud + 4, 0, SPR.exit]])
+const cloudP = track([[AT.cloud, 0, SPR.exit], [AT.cloud + 1.2, 0.5, SPR.slow], [AT.cloud + 1.85, 0.86, SPR.slow], [AT.cloud + 2.45, 1, SPR.trail]])
+const cloudCheck = track([[RING_DONE, 1, { f: 2.6, z: 1 }], [AT.cloud + 4, 0, SPR.exit]])
 // QR + phone
-const scanVis = vis(32.35, 33.45)
-const PIN_AT = [34.05, 34.25, 34.45, 34.65]
+const SCAN_AT = AT.link + 0.45
+const scanVis = vis(AT.link + 0.35, AT.link + 1.45)
+const PIN_AT = [2.05, 2.25, 2.45, 2.65].map((d) => AT.link + d)
 const PIN_KEYS = [2, 5, 8, 0]
-const pinViewVis = vis(33.75, 34.95, SPR.enter, { f: 5, z: 1 })
-const appViewVis = vis(34.95, 40, { f: 4, z: 1 })
-const lapVis = vis(36.2, 39.9, SPR.lead)
-const tabVis = vis(36.45, 39.9, SPR.lead)
-const LBL_AT = [36.8, 36.65, 36.95]
-const lblVis = LBL_AT.map((b) => vis(b, 39.9, SPR.snap))
+const UNLOCK = AT.link + 2.95
+const pinViewVis = vis(AT.link + 1.75, UNLOCK, SPR.enter, { f: 5, z: 1 })
+const appViewVis = vis(UNLOCK, AT.outro, { f: 4, z: 1 })
+const lapVis = vis(AT.link + 4.2, AT.outro - 0.1, SPR.lead)
+const tabVis = vis(AT.link + 4.45, AT.outro - 0.1, SPR.lead)
+const LBL_AT = [4.8, 4.65, 4.95].map((d) => AT.link + d)
+const lblVis = LBL_AT.map((b) => vis(b, AT.outro - 0.1, SPR.snap))
 // outro chips
 const PLATFORMS = [
   { name: 'Windows', icon: 'windows', bg: '#0078D4', fg: '#fff' },
@@ -574,8 +582,8 @@ const PLATFORMS = [
   { name: 'Linux', icon: 'linux', bg: '#FCC624', fg: '#000' },
   { name: 'Docker', icon: 'docker', bg: '#2496ED', fg: '#fff' },
 ]
-const CHIP_AT = PLATFORMS.map((_, i) => 40.55 + 0.14 * i)
-const chipVis = CHIP_AT.map((b) => vis(b, 42.9, SPR.snap))
+const CHIP_AT = PLATFORMS.map((_, i) => AT.outro + 0.55 + 0.14 * i)
+const chipVis = CHIP_AT.map((b) => vis(b, AT.outro + 2.9, SPR.snap))
 
 // ---------- canvas: each section floods its color from the cursor ----------
 const WIPES = SECTIONS.map((s) => ({ b: s.at, color: s.canvas }))
@@ -621,11 +629,19 @@ const rowEls = VERSIONS.map(([v, tag], i) => {
 })
 
 // ---------- SillyTavern, rebuilt ----------
+// SillyTavern's top bar, left to right: AI response settings (sliders), API connections (plug), formatting (font),
+// world info (book atlas), user settings (user cog), backgrounds (picture), persona (smile), characters (address card)
 const ST_ICONS = [
-  'M4 6h16M4 12h16M4 18h16', 'M4 8h9m4 0h3M4 16h3m4 0h9M13 6v4M7 14v4', 'M9 3v5m6-5v5M6 8h12v3a6 6 0 0 1-12 0zm6 9v4',
-  'M5 20 12 4l7 16M8 14h8', 'M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5z', 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM8 14s1.5 2 4 2 4-2 4-2M9 9h.01M15 9h.01',
-  'M20 21a8 8 0 0 0-16 0M12 13a4 4 0 1 0 0-8 4 4 0 0 0 0 8z',
+  'M21 4h-7M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3M14 2v4M8 10v4M16 18v4', // sliders
+  'M12 22v-5M9 8V2M15 8V2M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8z', // plug
+  'M4 20 12 4l8 16M7.5 13h9', // font
+  'M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20M12 5.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7zM8.5 9h7M12 5.5c.9 1 1.4 2.2 1.4 3.5s-.5 2.5-1.4 3.5c-.9-1-1.4-2.2-1.4-3.5s.5-2.5 1.4-3.5', // book atlas
+  'M2 21a8 8 0 0 1 10.4-7.6M10 13a5 5 0 1 0 0-10 5 5 0 0 0 0 10zM18 16a2 2 0 1 0 0 4 2 2 0 0 0 0-4zM18 14.5v-1M18 22.5v-1M21.5 18h1M13.5 18h1M20.5 15.5l.7-.7M14.8 21.2l.7-.7M20.5 20.5l.7.7M14.8 14.8l.7.7', // user cog
+  'M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zM21 15l-5-5L5 21M9 7a2 2 0 1 0 0 4 2 2 0 0 0 0-4z', // picture
+  'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM8 14s1.5 2 4 2 4-2 4-2M9 9h.01M15 9h.01', // face smile
+  'M3 5h18a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zM9 9a2 2 0 1 0 0 4 2 2 0 0 0 0-4zM5.5 16.5a3.5 3.5 0 0 1 7 0M15 10h4M15 14h3', // address card
 ]
+const BURGER = 'M4 6h16M4 12h16M4 18h16'
 const icon = (d, s = 15) => `<svg width="${s}" height="${s}" viewBox="0 0 24 24"><path class="stroke" style="stroke-width:2" d="${d}"/></svg>`
 // *narration* in italics, "speech" in quote color; n limits how many characters are shown
 function emWrap(src, n) {
@@ -650,11 +666,11 @@ function stBuild(el, chat, { top = 0, big = false } = {}) {
   const who = HEADS[chat], bar = big ? 40 : 34, is = big ? 19 : 15
   const msgs = TEXT.chats[chat].map((m, i) => {
     const w = i === 1 ? YOU : who
-    return `<div class="mes"><div class="av" style="background-image:url(${w.img})"></div><div><div class="nm">${w.name}<span class="ts">#${i + 1}</span></div><div class="tx">${emWrap(m, Infinity)}</div></div></div>`
+    return `<div class="mes"><div class="avc"><div class="av" style="background-image:url(${w.img})"></div><div class="mid">#${i + 1}</div></div><div><div class="nm">${w.name}</div><div class="tx">${emWrap(m, Infinity)}</div></div></div>`
   }).join('')
   el.innerHTML = `<div class="st${big ? ' big' : ''}"><div class="bar" style="top:${top}px">${ST_ICONS.map((d) => icon(d, is)).join('')}</div>
     <div class="chat" style="top:${top + bar}px">${msgs}</div>
-    <div class="send">${icon(ST_ICONS[0], is)}${icon(WAND, is)}<span style="flex:1" class="nw">${TEXT.typeMsg}</span>${icon(SEND, is)}</div></div>`
+    <div class="send">${icon(BURGER, is)}${icon(WAND, is)}<span style="flex:1" class="nw">${TEXT.typeMsg}</span>${icon(SEND, is)}</div></div>`
   const mes = [...el.querySelectorAll('.mes')]
   return { mes, last: mes[2].querySelector('.tx'), src: TEXT.chats[chat][2] }
 }
@@ -850,8 +866,8 @@ function seek(tIn) {
   const press = clamp(cursorPress(t))
   for (const [id, f] of [['apkA', apkAVis], ['apkB', apkBVis], ['apkC', apkCVis]]) visStyle($(id), Math.min(1, f(t)), 6)
   $('apkC').style.transform = `translateY(${(1 - clamp(apkCVis(t))) * 10}px)`
-  $('apkInstall').style.transform = `scale(${1 - 0.06 * press * (tb < 5.2 ? 1 : 0)})`
-  $('apkOpen').style.transform = `scale(${1 - 0.06 * press * (tb > 7.5 ? 1 : 0)})`
+  $('apkInstall').style.transform = `scale(${1 - 0.06 * press * (tb < AT.apk + 1.2 ? 1 : 0)})`
+  $('apkOpen').style.transform = `scale(${1 - 0.06 * press * (tb > AT.apk + 3.5 ? 1 : 0)})`
   const ap = clamp(apkP(t))
   $('apkBar').style.width = 404 * ap + 'px'
   $('apkPct').textContent = Math.round(ap * 100) + '%'
@@ -873,11 +889,11 @@ function seek(tIn) {
 
   // upload: the file rides the cursor, the zone lights up, then restores
   const fv = fileVis(t)
-  const dropped = inSpan(tb, 13.45, 11.4)
+  const dropped = inSpan(tb, DROP, AT.up - 0.15)
   visStyle($('file'), fv, 4)
   Object.assign($('file').style, {
     left: curX(t) - 26 + 'px', top: curY(t) - 22 + 'px',
-    transform: `rotate(${(dropped ? 0 : -6 + 4 * clamp((tb - 12.4) / 1.0)).toFixed(2)}deg) scale(${dropped ? lerp(0.6, 1, clamp(fv)) : 1 + 0.04 * press})`,
+    transform: `rotate(${(dropped ? 0 : -6 + 4 * clamp((tb - GRAB - 0.2) / 1.0)).toFixed(2)}deg) scale(${dropped ? lerp(0.6, 1, clamp(fv)) : 1 + 0.04 * press})`,
   })
   const zh = clamp(zoneHot(t))
   Object.assign($('zone').style, { borderColor: mixColor('#C9C2E8', '#FF7A1A', zh), background: mixColor('#F8F6FF', '#FFF1E6', zh) })
@@ -903,10 +919,10 @@ function seek(tIn) {
   const ck = clamp(cloudCheck(t))
   $('cloudCheck').style.strokeDashoffset = (1 - ck).toFixed(4)
   $('cloudIcon').style.opacity = 1 - clamp(ck * 2)
-  $('cloudIcon').style.transform = `translateY(${(tb > 17.1 && tb < 18.6 ? -3 * Math.sin(tb * Math.PI * 2) : 0).toFixed(2)}px)`
+  $('cloudIcon').style.transform = `translateY(${(tb > RING_RUN && tb < RING_DONE ? -3 * Math.sin(tb * Math.PI * 2) : 0).toFixed(2)}px)`
   const cs = $('cloudStat')
-  if (tb < 17.05 || tb >= 20) { cs.textContent = TEXT.cloudOff; cs.style.color = '#A89FD0' }
-  else if (tb < 18.6) { cs.textContent = `${TEXT.cloudRun} ${Math.round(cp * 100)}%`; cs.style.color = '#fff' }
+  if (!inSpan(tb, RING_RUN, AT.cloud + 4)) { cs.textContent = TEXT.cloudOff; cs.style.color = '#A89FD0' }
+  else if (tb < RING_DONE) { cs.textContent = `${TEXT.cloudRun} ${Math.round(cp * 100)}%`; cs.style.color = '#fff' }
   else { cs.textContent = '✓ ' + TEXT.cloudDone; cs.style.color = '#3DDC97' }
 
   // chat bubbles: heads pop on the home screen, a tap opens SillyTavern in the bubble
@@ -942,15 +958,15 @@ function seek(tIn) {
 
   // QR scan line
   const scv = clamp(scanVis(t))
-  const scp = clamp((tb - 32.45) / 0.95)
+  const scp = clamp((tb - SCAN_AT) / 0.95)
   Object.assign($('scan').style, { top: 30 + 176 * (0.5 - 0.5 * Math.cos(scp * Math.PI)) + 'px', opacity: scv })
 
   // phone: PIN, unlock into SillyTavern
   const pv = pinViewVis(t)
   visStyle($('pinView'), pv, 8)
-  $('pinView').style.transform = `translateY(${(tb > 34.9 && tb < 36.5 ? -(1 - clamp(pv)) * 60 : 0).toFixed(2)}px)`
+  $('pinView').style.transform = `translateY(${(tb > UNLOCK - 0.05 && tb < UNLOCK + 1.55 ? -(1 - clamp(pv)) * 60 : 0).toFixed(2)}px)`
   PIN_AT.forEach((b, i) => {
-    const on = inSpan(tb, b, 40)
+    const on = inSpan(tb, b, AT.outro)
     pinDotEls[i].style.background = on ? '#fff' : 'transparent'
     pinDotEls[i].style.transform = `scale(${1 + (on ? 0.5 * pulse((tb - b) * B, 6) : 0)})`
     const k = keyEls[PIN_KEYS[i]]
@@ -961,7 +977,7 @@ function seek(tIn) {
   const av = appViewVis(t)
   visStyle($('appView'), av, 8)
   $('appView').style.transform = `scale(${lerp(1.06, 1, clamp(av))})`
-  streamST(phoneST, tb, 35.2, 0.8)
+  streamST(phoneST, tb, UNLOCK + 0.25, 0.8)
 
   // other devices slide in beside the phone
   const lp = lapVis(t), tv = tabVis(t)
@@ -980,7 +996,7 @@ function seek(tIn) {
 
   // cursor (screen space, constant size)
   const [sx, sy] = toScreen(t, curX(t), curY(t))
-  els.cursor.style.transform = `translate(${(sx - 6).toFixed(2)}px, ${(sy - 4).toFixed(2)}px) scale(${1 - 0.14 * press})`
+  els.cursor.style.transform = `translate(${(sx - 19.5).toFixed(2)}px, ${(sy - 2.4).toFixed(2)}px) scale(${1 - 0.14 * press})`
 }
 
 // ---------- sound cues, exported to the mixer so each sound sits on its event ----------
@@ -988,13 +1004,13 @@ function cues() {
   const list = [
     ...CLICKS.map((b) => ({ b, kind: 'click' })),
     ...SECTIONS.map((s) => ({ b: s.at, kind: 'swish' })),
-    { b: 33.6, kind: 'swish' }, { b: 9, kind: 'swish', soft: 1 }, { b: 10.5, kind: 'swish', soft: 1 },
-    { b: 22.4, kind: 'swish', soft: 1 }, { b: 30.8, kind: 'swish', soft: 1 }, { b: 36.2, kind: 'swish' }, { b: 36.45, kind: 'swish', soft: 1 },
-    { b: 12.2, kind: 'press' }, { b: 13.45, kind: 'drop' },
-    { b: 6.95, kind: 'success' }, { b: 11.1, kind: 'pop' }, { b: 15.1, kind: 'success' }, { b: 18.6, kind: 'success' },
-    ...HEADS.map((h) => ({ b: h.pop, kind: 'pop' })), { b: 21.0, kind: 'msg' }, { b: 23.7, kind: 'pop', soft: 1 },
+    { b: AT.link + 1.6, kind: 'swish' }, { b: AT.ver + 1, kind: 'swish', soft: 1 }, { b: AT.ver + 2.5, kind: 'swish', soft: 1 },
+    { b: AT.chat + 2.4, kind: 'swish', soft: 1 }, { b: AT.chat + 10.8, kind: 'swish', soft: 1 }, { b: AT.link + 4.2, kind: 'swish' }, { b: AT.link + 4.45, kind: 'swish', soft: 1 },
+    { b: GRAB, kind: 'press' }, { b: DROP, kind: 'drop' },
+    { b: AT.apk + 2.95, kind: 'success' }, { b: AT.ver + 3.1, kind: 'pop' }, { b: UP_DONE, kind: 'success' }, { b: RING_DONE, kind: 'success' },
+    ...HEADS.map((h) => ({ b: h.pop, kind: 'pop' })), { b: AT.chat + 1.0, kind: 'msg' }, { b: OPEN_AT[0] + 0.1, kind: 'pop', soft: 1 },
     ...STREAM.map(([b]) => ({ b, kind: 'msg' })),
-    ...PIN_AT.map((b) => ({ b, kind: 'tick', key: 1 })), { b: 34.95, kind: 'success' }, { b: 35.2, kind: 'msg' },
+    ...PIN_AT.map((b) => ({ b, kind: 'tick', key: 1 })), { b: UNLOCK, kind: 'success' }, { b: UNLOCK + 0.25, kind: 'msg' },
     ...LBL_AT.map((b) => ({ b, kind: 'pop', soft: 1 })),
     ...CHIP_AT.map((b) => ({ b, kind: 'pop', soft: 1 })),
   ]

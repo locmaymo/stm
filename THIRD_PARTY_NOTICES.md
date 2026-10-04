@@ -89,13 +89,10 @@ The promo animation under `promo/` uses these works:
 - `promo/assets/st/seraphina.jpg`, `promo/assets/st/user.png` and
   `promo/assets/st/tavern-day.jpg` are resized from the default character
   avatar, the default user avatar and the "tavern day" background that ship
-  with SillyTavern (<https://github.com/SillyTavern/SillyTavern>), under the
-  GNU Affero General Public License version 3.0.
-- `promo/assets/st/wikipe-tan.jpg` is cropped from "Wikipe-tan full length"
-  by Kasuga and contributors, from Wikimedia Commons, under the Creative
-  Commons Attribution-ShareAlike 3.0 license
-  (<https://creativecommons.org/licenses/by-sa/3.0/>). The crop is shared
-  under the same license.
+  with SillyTavern (<https://github.com/SillyTavern/SillyTavern>).
+  `promo/assets/st/coding-sensei.jpg` is cropped from the Coding Sensei
+  default character that shipped with SillyTavern 1.10.4. SillyTavern is
+  licensed under the GNU Affero General Public License version 3.0.
 - Be Vietnam Pro and JetBrains Mono in `promo/assets/fonts/` are under the SIL
   Open Font License 1.1; the license texts sit next to the fonts.
 - The operating system marks in `promo/index.html` come from Simple Icons
