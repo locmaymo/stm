@@ -1,21 +1,21 @@
 # STM promo
 
-A 19.2-second motion-graphics loop of SillyTavern Manager's main features. It has 8 bars at 100 BPM, in English and Vietnamese.
+A 24-second motion-graphics loop of SillyTavern Manager's main features. It has 10 bars at 100 BPM, in English and Vietnamese.
 
-The shape on screen never cuts. It morphs from one UI to the next while each section floods the canvas with a new color from the cursor. The last frame is identical to the first, so the MP4 and the GIF loop seamlessly.
-
-Every component is a light card with one idea and as little text as possible.
+The shape on screen never cuts. It morphs from one UI to the next while each section floods the canvas with a new color from the cursor. The last frame is identical to the first, so the MP4 and the GIF loop seamlessly. Each section shows a title only.
 
 | Beats | Section |
 | --- | --- |
 | 0–4 | Intro: the logo is clicked and opens into the brand pill |
-| 4–8 | 01 Quick install: an install button, a progress bar, a green "Ready" pill |
+| 4–8 | 01 Quick install: the Android package installer installs `STM.apk`, then opens it |
 | 8–12 | 02 Pick any version: the version list opens and 1.17.0 is picked |
 | 12–16 | 03 Bring your old data: a backup ZIP is dragged in and restored |
-| 16–20 | 04 Cloud backup: a switch turns on and the pill becomes a progress ring with a check |
-| 20–24 | 05 Chat bubbles (Android): a character chat head pops a badge and opens into a chat |
-| 24–28 | 06 Open on iPhone and any device: a QR code is scanned, the phone takes the PIN and unlocks |
-| 28–32 | Outro: brand pill, platforms, the website, then back to the logo |
+| 16–20 | 04 Cloud backup: auto backup is switched on, the ring fills, a check appears |
+| 20–28 | 05 Chat bubbles (Android): chat heads pop on a phone's home screen, the camera zooms in, and each bubble opens its own SillyTavern chat |
+| 28–36 | 06 Open on your other devices: a QR is scanned, the phone takes the PIN, then a laptop and a tablet show the same chat |
+| 36–40 | Outro: brand pill, the supported systems in their own colors, then back to the logo |
+
+The SillyTavern screens are a small rebuild of its chat layout: a top bar, message blocks with avatars, narration in italics, speech in the quote color, and the send bar.
 
 ```
 index.html              the whole animation: closed-form springs, cyclic tracks, color floods, seek(t)
@@ -23,6 +23,8 @@ scripts/render.mjs      Playwright: seek(t) per subframe -> ffmpeg tmix -> 60fps
 scripts/mix_audio.mjs   synthesized groove and UI sounds, placed on the cues index.html exports
 assets/fonts/           Be Vietnam Pro and JetBrains Mono (SIL Open Font License 1.1)
 ```
+
+The operating system marks in the outro come from Simple Icons (CC0 1.0) and are inlined in `index.html`.
 
 ## Preview
 

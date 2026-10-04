@@ -76,7 +76,7 @@ async function main() {
       await shot(first, (b + offset) * tl.beat, path.join(dir, `${String(b).padStart(2, '0')}.png`))
     }
     await run('ffmpeg', ['-v', 'error', '-y', '-framerate', '1', '-i', path.join(dir, '%02d.png'),
-      '-vf', 'scale=270:270,tile=8x4', '-frames:v', '1', path.join(outDir, `beats-${lang}.png`)])
+      '-vf', `scale=270:270,tile=8x${Math.ceil(tl.beats / 8)}`, '-frames:v', '1', path.join(outDir, `beats-${lang}.png`)])
     console.log(`wrote out/beats-${lang}.png`)
   } else if (mode === 'full') {
     const framesDir = path.join(root, 'tmp', `frames-${lang}`)

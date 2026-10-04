@@ -1,4 +1,5 @@
-// Synthesizes a loopable 8-bar groove and the UI sounds, placed on the cues index.html exports.
+// Synthesizes a loopable groove (one bar per four beats of the timeline) and the UI sounds,
+// placed on the cues index.html exports.
 //
 //   node scripts/mix_audio.mjs [en|vi]   reads out/cues-<lang>.json, writes out/mix-<lang>.wav
 //
@@ -83,17 +84,18 @@ function pluck(t, m, g = 1, pan = 0) {
   }, 0.085 * g, pan)
 }
 
-// F G Am Em | F G C C  (one chord per bar)
+// one chord per bar: F G Am Em, F G C C, then F G back into the top
+const BARS = Math.round(tl.beats / 4)
+const F = { root: 41, pad: [53, 57, 60, 64] }, G = { root: 43, pad: [55, 59, 62, 64] }, G7 = { root: 43, pad: [55, 59, 62, 65] }
 const CHORDS = [
-  { root: 41, pad: [53, 57, 60, 64] }, { root: 43, pad: [55, 59, 62, 64] },
-  { root: 45, pad: [57, 60, 64, 67] }, { root: 40, pad: [52, 55, 59, 62] },
-  { root: 41, pad: [53, 57, 60, 64] }, { root: 43, pad: [55, 59, 62, 65] },
-  { root: 36, pad: [55, 60, 64, 67] }, { root: 36, pad: [55, 60, 64, 71] },
+  F, G, { root: 45, pad: [57, 60, 64, 67] }, { root: 40, pad: [52, 55, 59, 62] },
+  F, G7, { root: 36, pad: [55, 60, 64, 67] }, { root: 36, pad: [55, 60, 64, 71] },
+  F, G7,
 ]
 const ARP = [0, 2, 1, 3, 2, 1, 3, 2]
-for (let bar = 0; bar < 8; bar++) {
-  const t0 = bar * 4 * B, ch = CHORDS[bar]
-  const last = bar === 7
+for (let bar = 0; bar < BARS; bar++) {
+  const t0 = bar * 4 * B, ch = CHORDS[bar % CHORDS.length]
+  const last = bar === BARS - 1
   pad(t0, 4 * B - 0.05, ch.pad)
   for (let b = 0; b < 4; b++) {
     const t = t0 + b * B
@@ -108,7 +110,7 @@ for (let bar = 0; bar < 8; bar++) {
   for (let k = 0; k < 8; k++) pluck(t0 + k * B / 2, ch.pad[ARP[k]] + 12, k % 2 ? 0.7 : 1, k % 2 ? 0.35 : -0.35)
 }
 // turnaround riser into beat 0, and a soft crash on it
-add(30 * B, 2 * B, (i, s) => {
+add((tl.beats - 2) * B, 2 * B, (i, s) => {
   const p = s / (2 * B)
   return noise() * p * p * 0.5
 }, 0.22)
@@ -123,8 +125,8 @@ function duck() {
 }
 duck()
 // kicks were ducked too; put them back on top at full level
-for (let bar = 0; bar < 8; bar++) for (let b = 0; b < 4; b++) {
-  if (bar === 7 && b >= 2) continue
+for (let bar = 0; bar < BARS; bar++) for (let b = 0; b < 4; b++) {
+  if (bar === BARS - 1 && b >= 2) continue
   kick((bar * 4 + b) * B, 0.55)
 }
 
