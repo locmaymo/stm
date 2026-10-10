@@ -5700,10 +5700,16 @@ function RestoreDialog({ t, catalog, name, safety, preview, mode, onModeChange, 
    * of - occasionally what is wanted, usually not.
    */
   /*
+   * The junk any restore may leave out, room or no room. Without saver mode's
+   * measure of the machine it is an offer, never a condition: the archive's
+   * own count of it, from a manager that sends one.
+   */
+  const junk = capacity ? { files: capacity.junkFiles, bytes: capacity.junkBytes } : preview.junk ?? null;
+  /*
    * With the junk left out, the heading says what is actually restored: the
    * archive's count struck through, and what remains of it beside an arrow.
    */
-  const trimmed = trim && capacity && capacity.junkFiles > 0 ? capacity : null;
+  const trimmed = trim && junk && junk.files > 0 ? junk : null;
   /*
    * What a replace takes away, said before it does.
    *
@@ -5724,7 +5730,7 @@ function RestoreDialog({ t, catalog, name, safety, preview, mode, onModeChange, 
           ? <span className="flex flex-wrap items-center gap-x-1.5">
             <span className="line-through">{t('console.restoreCounts', { files: preview.fileCount, size: formatBytes(preview.totalBytes) })}</span>
             <ArrowRight className="size-3.5" aria-hidden />
-            <span className="font-medium text-foreground">{t('console.restoreCounts', { files: preview.fileCount - trimmed.junkFiles, size: formatBytes(preview.totalBytes - trimmed.junkBytes) })}</span>
+            <span className="font-medium text-foreground">{t('console.restoreCounts', { files: preview.fileCount - trimmed.files, size: formatBytes(preview.totalBytes - trimmed.bytes) })}</span>
           </span>
           : t('console.restoreCounts', { files: preview.fileCount, size: formatBytes(preview.totalBytes) })}</DialogDescription>
       </DialogHeader>
@@ -5767,18 +5773,20 @@ function RestoreDialog({ t, catalog, name, safety, preview, mode, onModeChange, 
           : null}
         {capacity && !capacity.fitsTrimmed
           ? <Alert variant="destructive"><AlertDescription>{t('console.restoreTooLarge', { needed: formatBytes(capacity.trimmedNeededBytes), available: formatBytes(capacity.availableBytes) })}</AlertDescription></Alert>
-          : capacity && capacity.junkBytes > 0
-            ? <Alert variant={capacity.fits ? 'default' : 'destructive'}>
-              <AlertDescription className="grid gap-2">
-                <span>{capacity.fits
-                  ? t('console.restoreJunkOptional', { junk: formatBytes(capacity.junkBytes), files: capacity.junkFiles })
-                  : t('console.restoreJunkNeeded', { needed: formatBytes(capacity.neededBytes), available: formatBytes(capacity.availableBytes), junk: formatBytes(capacity.junkBytes), files: capacity.junkFiles })}</span>
-                <Label htmlFor={trimId} className="flex items-start gap-2 font-normal">
-                  <Checkbox id={trimId} checked={trim} onCheckedChange={(checked) => onTrimChange(checked === true)} className="mt-0.5" />
-                  <span>{t('console.restoreTrim')}</span>
-                </Label>
-              </AlertDescription>
-            </Alert>
+          : junk && junk.bytes > 0
+            ? <div className="grid gap-2">
+              {capacity && !capacity.fits
+                ? <Alert variant="destructive"><AlertDescription>{t('console.restoreJunkNeeded', { needed: formatBytes(capacity.neededBytes), available: formatBytes(capacity.availableBytes) })}</AlertDescription></Alert>
+                : null}
+              {/* One line and a hint: an option beside the choice above, not a warning. */}
+              <Label htmlFor={trimId} className="flex items-start gap-2 font-normal">
+                <Checkbox id={trimId} checked={trim} onCheckedChange={(checked) => onTrimChange(checked === true)} className="mt-0.5" />
+                <span className="grid gap-0.5">
+                  <span>{t('console.restoreTrim', { size: formatBytes(junk.bytes) })}</span>
+                  <span className="text-xs text-muted-foreground">{t('console.restoreJunkOptional')}</span>
+                </span>
+              </Label>
+            </div>
             : null}
         {/* What it will use, once what is chosen fits; nothing to say when it
             frees more than it writes. */}

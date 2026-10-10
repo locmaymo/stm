@@ -1470,11 +1470,20 @@ function previewEntries(entries: readonly EntryInfo[], fallbackLayout: ProfileLa
     totalBytes += entry.uncompressedSize;
   }
   const shape = readArchiveShape(entries);
+  // Read the way a restore plans it: inside the profile's folder, by its name there.
+  const junk = { files: 0, bytes: 0 };
+  for (const file of files) {
+    const name = normalizeSeparators(file.name);
+    if (shape.prefix && !name.startsWith(shape.prefix)) continue;
+    if (!isJunk(name.slice(shape.prefix.length))) continue;
+    junk.files += 1;
+    junk.bytes += file.sizeBytes;
+  }
   // An empty archive holds nothing to recognise and nothing to restore; it is
   // refused as the wrong file rather than described as an unusual profile.
   const recognized = shape.recognized && files.length > 0;
   const warnings = recognized ? [] : [logEvent('backup.unknownArchive', 'This archive holds none of the folders a SillyTavern profile usually has.')];
-  return { layout: fallbackLayout, fileCount: files.length, totalBytes, files, warnings, recognized, root: shape.prefix };
+  return { layout: fallbackLayout, fileCount: files.length, totalBytes, files, warnings, recognized, root: shape.prefix, junk };
 }
 
 interface PlannedEntry<T extends EntryInfo = ZipEntry> {

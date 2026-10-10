@@ -198,3 +198,16 @@ function storedZip(files: ReadonlyArray<readonly [string, Buffer]>): Buffer {
   end.writeUInt32LE(offset, 16);
   return Buffer.concat([...locals, directory, end]);
 }
+
+test('every preview counts the junk a restore may leave out, inside the profile only', async () => {
+  const target = await createProfile('junk-count');
+  const archive = storedZip([
+    ['SillyTavern/data/default-user/extensions/ext/.git/HEAD', Buffer.alloc(300, 'g')],
+    ['SillyTavern/data/default-user/thumbnails/bg/a.png', Buffer.alloc(40, 't')],
+    ['SillyTavern/data/default-user/chats/a.jsonl', Buffer.from('kept')],
+    ['SillyTavern/data/default-user/extensions/ext/index.js', Buffer.from('code')],
+  ]);
+  const stream = await target.store.openStream(tailOf(archive), archive.length);
+  assert.deepEqual(stream.preview.junk, { files: 2, bytes: 340 });
+  stream.fail(new Error('done looking'));
+});
