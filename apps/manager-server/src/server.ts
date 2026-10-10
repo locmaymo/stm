@@ -24,7 +24,7 @@ import { ACCESS_GATEWAY_PORT, checkSillyTavernPort, findFreePort, isPortFree, MA
 import { previewImage, previewLogo, previewManifest } from './preview.js';
 import { TunnelManager } from '../../../packages/tunnel/src/index.js';
 import { isWaitingProfile, ProfileError, ProfileStore } from '../../../packages/profiles/src/index.js';
-import { BackupError, BackupStore, type RestoreOptions } from '../../../packages/backup/src/index.js';
+import { BackupError, BackupStore, MAX_ZIP_DIRECTORY_BYTES, type RestoreOptions } from '../../../packages/backup/src/index.js';
 import { CloudflareConnection, R2Error, R2Manager, type R2UpdateInput } from '../../../packages/r2/src/index.js';
 import { CloudflareApiError, CloudflareOAuthError, CloudflareRateLimitError, DEFAULT_SCOPES, PROXY_WORKER_TARGETS, ProxyWorkerManager, type ProxyWorkerTarget } from '../../../packages/cloudflare/src/index.js';
 import { BackupScheduler, syncProfileToR2 } from './r2-scheduler.js';
@@ -2465,7 +2465,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     if (!profile) { sendError(response, 409, 'profile_required', 'Create or activate a profile before importing a backup'); return; }
     const archiveSize = Number(headerValue(request.headers['x-archive-size']) ?? '');
     const tail = await readBody(request, MAX_STREAM_DIRECTORY_BYTES);
-    const stream = backups.openStream(tail, archiveSize, profile.layout);
+    const stream = await backups.openStream(tail, archiveSize, profile.layout);
     sendJson(response, 200, { ...stream.preview, uploadId: stream.id, losses: await backups.losses(profile, { stream }), ...(backups.saving ? { capacity: await capacityFor(backups, profile, { stream }) } : {}) });
     return;
   }
@@ -4738,8 +4738,8 @@ export function publicOriginFromEnvironment(env: NodeJS.ProcessEnv, port: number
   return null;
 }
 
-/** A streamed restore's central directory, with the end record that follows it. */
-const MAX_STREAM_DIRECTORY_BYTES = 64 * 1024 * 1024 + 65_557;
+/** A streamed restore's central directory, with the ZIP64 record, locator and end record that follow it. */
+const MAX_STREAM_DIRECTORY_BYTES = MAX_ZIP_DIRECTORY_BYTES + 65_557 + 76;
 /** One chunk of a streamed upload; the panel sends four mebibytes. */
 const MAX_STREAM_CHUNK_BYTES = 64 * 1024 * 1024;
 /** How long a chunk waits for a restore that is still getting ready. */

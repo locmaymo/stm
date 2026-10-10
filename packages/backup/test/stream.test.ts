@@ -57,7 +57,7 @@ test('a zip is restored as it uploads, large files streamed and small ones gathe
   const target = await createProfile('target');
   target.store.saving = true;
   await writeFile(join(target.dataRoot, 'chats', 'stale.jsonl'), 'not in the backup');
-  const stream = target.store.openStream(tailOf(archive), archive.length, 'data');
+  const stream = await target.store.openStream(tailOf(archive), archive.length, 'data');
   assert.equal(stream.preview.fileCount, 4);
   assert.equal(stream.preview.recognized, true);
   // Nothing is ready for bytes until the restore has planned where they go.
@@ -90,7 +90,7 @@ test('a chunk sent twice is taken once, and one out of order is refused', async 
   const archive = await readFile((await source.store.getArchivePath(manifest.id))!);
 
   const target = await createProfile('retry-target');
-  const stream = target.store.openStream(tailOf(archive), archive.length);
+  const stream = await target.store.openStream(tailOf(archive), archive.length);
   const restoring = target.store.restoreStream(target.profile, stream, { mode: 'merge' });
   await stream.whenReady(5000);
   const size = 1000;
@@ -110,7 +110,7 @@ test('a stored entry and a folder around the profile stream like any other', asy
     ['SillyTavern/data/default-user/settings.json', Buffer.from('{"stored":true}')],
     ['SillyTavern/data/default-user/chats/a.jsonl', Buffer.from('hello')],
   ]);
-  const stream = target.store.openStream(tailOf(archive), archive.length);
+  const stream = await target.store.openStream(tailOf(archive), archive.length);
   assert.equal(stream.preview.root, 'SillyTavern/data/default-user/');
   const restoring = target.store.restoreStream(target.profile, stream, { mode: 'replace' });
   await stream.whenReady(5000);
@@ -127,7 +127,7 @@ test('a streamed restore without its junk passes over the junk bytes', async () 
     ['chats/a.jsonl', Buffer.from('kept')],
     ['extensions/ext/index.js', Buffer.from('code')],
   ]);
-  const stream = target.store.openStream(tailOf(archive), archive.length);
+  const stream = await target.store.openStream(tailOf(archive), archive.length);
   const restoring = target.store.restoreStream(target.profile, stream, { mode: 'replace', trim: true });
   await stream.whenReady(5000);
   await upload(stream, archive, 999);
@@ -140,15 +140,15 @@ test('a streamed restore without its junk passes over the junk bytes', async () 
 test('a directory that does not match the archive size, or an unsafe name, is refused before anything starts', async () => {
   const target = await createProfile('refused');
   const archive = storedZip([['settings.json', Buffer.from('{}')]]);
-  assert.throws(() => target.store.openStream(tailOf(archive), archive.length + 1), (error: unknown) => error instanceof BackupError && error.code === 'invalid_archive');
+  await assert.rejects(() => target.store.openStream(tailOf(archive), archive.length + 1), (error: unknown) => error instanceof BackupError && error.code === 'invalid_archive');
   const unsafe = storedZip([['../escape.txt', Buffer.from('no')]]);
-  assert.throws(() => target.store.openStream(tailOf(unsafe), unsafe.length), (error: unknown) => error instanceof BackupError && error.code === 'unsafe_archive');
+  await assert.rejects(() => target.store.openStream(tailOf(unsafe), unsafe.length), (error: unknown) => error instanceof BackupError && error.code === 'unsafe_archive');
 });
 
 test('bytes that do not match what the directory recorded fail the restore', async () => {
   const target = await createProfile('short');
   const archive = storedZip([['settings.json', Buffer.from('{"a":1}')], ['chats/b.jsonl', Buffer.from('b'.repeat(100))]]);
-  const stream = target.store.openStream(tailOf(archive), archive.length);
+  const stream = await target.store.openStream(tailOf(archive), archive.length);
   // Settled as soon as the damage is found, which is before the push that
   // found it has answered; read as a value so that is not an unhandled one.
   const restoring = target.store.restoreStream(target.profile, stream, { mode: 'merge' }).then(() => null, (error: unknown) => error);

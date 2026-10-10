@@ -22,9 +22,27 @@ const BACKUP_SCHEMA_VERSION = 1 as const;
  */
 const DEFAULT_LOCAL_INTERVAL_MINUTES = 30;
 const MAX_LOCAL_INTERVAL_MINUTES = 7 * 24 * 60;
-const MAX_ZIP_DIRECTORY_BYTES = 64 * 1024 * 1024;
-const MAX_UPLOAD_BYTES = 8 * 1024 * 1024 * 1024;
+/**
+ * The largest central directory read into memory: millions of entries.
+ *
+ * Only a sanity bound on one allocation. An archive's size is not limited -
+ * the manager is somebody's own, and a profile of ten gigabytes is theirs to
+ * bring back - but a directory claiming more than this is damage, not data.
+ */
+export const MAX_ZIP_DIRECTORY_BYTES = 1024 * 1024 * 1024;
 const MAX_UPLOAD_CHUNK_BYTES = 64 * 1024 * 1024;
+/** What a 32-bit zip field holds at most; past it a field says "see ZIP64". */
+const ZIP32_MAX = 0xffffffff;
+/** What a 16-bit entry count holds at most; the same, for counts. */
+const ZIP16_MAX = 0xffff;
+/**
+ * An entry this large is written with ZIP64 sizes from its first byte.
+ *
+ * A zip entry's sizes are written after its data, and whether they need 64
+ * bits has to be said before it. Deflate can grow incompressible data a
+ * little, so the line is drawn well short of four gigabytes.
+ */
+const ZIP64_ENTRY_BYTES = 0xf0000000;
 const DEFAULT_USER_HANDLE = 'default-user';
 /**
  * Names SillyTavern owns inside the user directory rather than the operator.
@@ -91,6 +109,8 @@ export interface ImportEntry {
   /** The archive-relative name, the same one a backup of this profile would use. */
   readonly name: string;
   readonly body: Readable;
+  /** How large it is, when known; an entry of unknown size is written with ZIP64 sizes. */
+  readonly sizeBytes?: number;
 }
 
 export interface ImportEntriesOptions {
@@ -619,7 +639,7 @@ export class BackupStore {
       let completed = 0;
       for await (const entry of options.entries) {
         throwIfStopped(options.signal);
-        await writer.addStream(entry.name, entry.body);
+        await writer.addStream(entry.name, entry.body, entry.sizeBytes);
         completed += 1;
         options.onProgress?.({ completed, total: options.total ?? completed });
       }
@@ -718,9 +738,9 @@ export class BackupStore {
    * `tail` is the archive from its central directory to its end. Everything a
    * preview checks is checked here, before anything is stopped or written.
    */
-  public openStream(tail: Buffer, archiveSize: number, fallbackLayout: ProfileLayout = 'data'): ArchiveStream {
-    if (!Number.isSafeInteger(archiveSize) || archiveSize <= 0 || archiveSize > MAX_UPLOAD_BYTES) throw new BackupError('upload_too_large', 'The uploaded ZIP is too large');
-    const entries = parseStreamDirectory(tail, archiveSize);
+  public async openStream(tail: Buffer, archiveSize: number, fallbackLayout: ProfileLayout = 'data'): Promise<ArchiveStream> {
+    if (!Number.isSafeInteger(archiveSize) || archiveSize <= 0) throw new BackupError('invalid_archive', 'The size of the uploaded ZIP is missing');
+    const entries = await parseStreamDirectory(tail, archiveSize);
     const preview = previewEntries(entries, fallbackLayout);
     for (const entry of entries) {
       if (!entry.directory && entry.compression !== 0 && entry.compression !== 8) throw new BackupError('unsupported_archive', `ZIP compression ${entry.compression} is not supported`);
@@ -955,19 +975,8 @@ export class BackupStore {
   public async saveUpload(stream: AsyncIterable<Uint8Array>): Promise<string> {
     const target = join(this.paths.tmp, `upload-${randomUUID()}.zip`);
     await mkdir(this.paths.tmp, { recursive: true });
-    let total = 0;
-    const limiter = new Transform({
-      transform(chunk: Buffer, _encoding, callback) {
-        total += chunk.length;
-        if (total > MAX_UPLOAD_BYTES) {
-          callback(new BackupError('upload_too_large', 'The uploaded ZIP is too large'));
-          return;
-        }
-        callback(null, chunk);
-      },
-    });
     try {
-      await pipeline(Readable.from(stream), limiter, createWriteStream(target, { mode: 0o600 }));
+      await pipeline(Readable.from(stream), createWriteStream(target, { mode: 0o600 }));
       return target;
     } catch (error) {
       await rm(target, { force: true });
@@ -1015,7 +1024,6 @@ export class BackupStore {
       await mkdir(this.paths.tmp, { recursive: true });
       await pipeline(Readable.from(stream), limiter, createWriteStream(partPath, { flags: index === 0 ? 'w' : 'a', mode: 0o600 }));
       const totalBytes = (await stat(partPath)).size;
-      if (totalBytes > MAX_UPLOAD_BYTES) throw new BackupError('upload_too_large', 'The uploaded ZIP is too large');
       await this.writeUploadState(statePath, { schemaVersion: 1, nextIndex: index + 1, bytes: totalBytes });
       return { index, bytes: chunkBytes, totalBytes };
     } catch (error) {
@@ -1196,13 +1204,25 @@ export class BackupError extends Error {
   }
 }
 
-class ZipWriter {
+/**
+ * Writes a zip one entry at a time, in ZIP64 wherever the archive needs it.
+ *
+ * A profile of a few gigabytes, or of more than 65,535 files - an extension
+ * with its `node_modules` gets there alone - does not fit the original zip
+ * format, whose offsets, sizes and counts stop at four gigabytes and 65,535.
+ * ZIP64 is used only for what passes those: an archive that fits the old
+ * format is still written in it, and opens in anything that opens a zip.
+ *
+ * @internal Exported for tests.
+ */
+export class ZipWriter {
   private readonly output: ReturnType<typeof createWriteStream>;
   private readonly checksum = createHash('sha256');
   private readonly central: Array<{ name: Buffer; crc: number; compressedSize: number; uncompressedSize: number; offset: number }> = [];
   private offset = 0;
 
-  public constructor(private readonly path: string) {
+  /** `forceZip64` writes every entry and the end of the archive in ZIP64, so tests need not write gigabytes. */
+  public constructor(private readonly path: string, private readonly options: { readonly forceZip64?: boolean } = {}) {
     this.output = createWriteStream(path, { mode: 0o600 });
   }
 
@@ -1228,7 +1248,8 @@ class ZipWriter {
       throw error;
     }
     try {
-      await this.writeEntry(nameBuffer, handle.createReadStream({ autoClose: false }));
+      const { size } = await handle.stat();
+      await this.writeEntry(nameBuffer, handle.createReadStream({ autoClose: false }), size);
     } finally {
       await handle.close().catch(() => undefined);
     }
@@ -1242,27 +1263,41 @@ class ZipWriter {
    * them a temporary file each, only to read all of them back, would be a
    * second full pass over gigabytes and a second copy of them on the volume.
    */
-  public async addStream(name: string, source: Readable): Promise<void> {
+  public async addStream(name: string, source: Readable, sizeBytes?: number): Promise<void> {
     const nameBuffer = Buffer.from(name, 'utf8');
     if (nameBuffer.length > 0xffff) throw new BackupError('invalid_filename', `Archive filename is too long: ${name}`);
-    await this.writeEntry(nameBuffer, source);
+    await this.writeEntry(nameBuffer, source, sizeBytes);
   }
 
-  private async writeEntry(nameBuffer: Buffer, source: Readable): Promise<void> {
+  /**
+   * Write one entry: its header, its deflated bytes, and a descriptor with
+   * the sizes and checksum that are only known once the bytes have gone.
+   *
+   * An entry that may pass four gigabytes - or whose size nobody knows - says
+   * so in its header with a ZIP64 field, and its descriptor then carries
+   * 64-bit sizes; every other entry is written as it always was.
+   */
+  private async writeEntry(nameBuffer: Buffer, source: Readable, sizeBytes: number | undefined): Promise<void> {
     const offset = this.offset;
-    const local = Buffer.alloc(30 + nameBuffer.length);
+    const wide = this.options.forceZip64 === true || sizeBytes === undefined || sizeBytes >= ZIP64_ENTRY_BYTES;
+    const local = Buffer.alloc(30 + nameBuffer.length + (wide ? 20 : 0));
     local.writeUInt32LE(0x04034b50, 0);
-    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(wide ? 45 : 20, 4);
     local.writeUInt16LE(0x0808, 6);
     local.writeUInt16LE(8, 8);
     local.writeUInt16LE(0, 10);
     local.writeUInt16LE(0, 12);
     local.writeUInt32LE(0, 14);
-    local.writeUInt32LE(0, 18);
-    local.writeUInt32LE(0, 22);
+    local.writeUInt32LE(wide ? ZIP32_MAX : 0, 18);
+    local.writeUInt32LE(wide ? ZIP32_MAX : 0, 22);
     local.writeUInt16LE(nameBuffer.length, 26);
-    local.writeUInt16LE(0, 28);
+    local.writeUInt16LE(wide ? 20 : 0, 28);
     nameBuffer.copy(local, 30);
+    if (wide) {
+      // The ZIP64 field, its sizes left at zero: they follow the data.
+      local.writeUInt16LE(0x0001, 30 + nameBuffer.length);
+      local.writeUInt16LE(16, 32 + nameBuffer.length);
+    }
     await this.write(local);
     const crcTransform = new Transform({
       transform(chunk: Buffer, _encoding, callback) {
@@ -1286,49 +1321,94 @@ class ZipWriter {
       throw error;
     }
     const compressedSize = this.offset - (offset + local.length);
-    const descriptor = Buffer.alloc(16);
+    const uncompressedSize = crcTransformState.size;
+    // A file that grew past four gigabytes between its size being read and
+    // its bytes: a 32-bit descriptor has no room to say how large it is.
+    if (!wide && (compressedSize >= ZIP32_MAX || uncompressedSize >= ZIP32_MAX)) throw new BackupError('archive_too_large', `A file grew past 4 GB while it was being backed up: ${nameBuffer.toString('utf8')}`);
+    const descriptor = Buffer.alloc(wide ? 24 : 16);
     descriptor.writeUInt32LE(0x08074b50, 0);
     descriptor.writeUInt32LE(crcTransformState.crc >>> 0, 4);
-    descriptor.writeUInt32LE(compressedSize >>> 0, 8);
-    descriptor.writeUInt32LE(crcTransformState.size >>> 0, 12);
+    if (wide) {
+      descriptor.writeBigUInt64LE(BigInt(compressedSize), 8);
+      descriptor.writeBigUInt64LE(BigInt(uncompressedSize), 16);
+    } else {
+      descriptor.writeUInt32LE(compressedSize, 8);
+      descriptor.writeUInt32LE(uncompressedSize, 12);
+    }
     await this.write(descriptor);
-    this.central.push({ name: nameBuffer, crc: crcTransformState.crc >>> 0, compressedSize, uncompressedSize: crcTransformState.size, offset });
+    this.central.push({ name: nameBuffer, crc: crcTransformState.crc >>> 0, compressedSize, uncompressedSize, offset });
   }
 
   public async finish(): Promise<{ sizeBytes: number; checksumSha256: string }> {
+    const force = this.options.forceZip64 === true;
     const centralOffset = this.offset;
     for (const entry of this.central) {
-      const header = Buffer.alloc(46 + entry.name.length);
+      // A value too large for its field is ZIP32_MAX there and follows in the
+      // ZIP64 field, in this order.
+      const wideSize = force || entry.uncompressedSize >= ZIP32_MAX;
+      const wideCompressed = force || entry.compressedSize >= ZIP32_MAX;
+      const wideOffset = force || entry.offset >= ZIP32_MAX;
+      const wide = [...(wideSize ? [entry.uncompressedSize] : []), ...(wideCompressed ? [entry.compressedSize] : []), ...(wideOffset ? [entry.offset] : [])];
+      const extraLength = wide.length > 0 ? 4 + 8 * wide.length : 0;
+      const header = Buffer.alloc(46 + entry.name.length + extraLength);
       header.writeUInt32LE(0x02014b50, 0);
-      header.writeUInt16LE(20, 4);
-      header.writeUInt16LE(20, 6);
+      header.writeUInt16LE(wide.length > 0 ? 45 : 20, 4);
+      header.writeUInt16LE(wide.length > 0 ? 45 : 20, 6);
       header.writeUInt16LE(0x0808, 8);
       header.writeUInt16LE(8, 10);
       header.writeUInt16LE(0, 12);
       header.writeUInt16LE(0, 14);
       header.writeUInt32LE(entry.crc, 16);
-      header.writeUInt32LE(entry.compressedSize >>> 0, 20);
-      header.writeUInt32LE(entry.uncompressedSize >>> 0, 24);
+      header.writeUInt32LE(wideCompressed ? ZIP32_MAX : entry.compressedSize, 20);
+      header.writeUInt32LE(wideSize ? ZIP32_MAX : entry.uncompressedSize, 24);
       header.writeUInt16LE(entry.name.length, 28);
-      header.writeUInt16LE(0, 30);
+      header.writeUInt16LE(extraLength, 30);
       header.writeUInt16LE(0, 32);
       header.writeUInt16LE(0, 34);
       header.writeUInt16LE(0, 36);
       header.writeUInt32LE(0, 38);
-      header.writeUInt32LE(entry.offset >>> 0, 42);
+      header.writeUInt32LE(wideOffset ? ZIP32_MAX : entry.offset, 42);
       entry.name.copy(header, 46);
+      if (wide.length > 0) {
+        const at = 46 + entry.name.length;
+        header.writeUInt16LE(0x0001, at);
+        header.writeUInt16LE(8 * wide.length, at + 2);
+        wide.forEach((value, index) => header.writeBigUInt64LE(BigInt(value), at + 4 + 8 * index));
+      }
       await this.write(header);
     }
     const centralSize = this.offset - centralOffset;
-    if (this.central.length > 0xffff || centralOffset > 0xffffffff || centralSize > 0xffffffff) throw new BackupError('archive_too_large', 'ZIP64 archives are not supported for this backup');
+    const count = this.central.length;
+    const wideEnd = force || count >= ZIP16_MAX || centralOffset >= ZIP32_MAX || centralSize >= ZIP32_MAX;
+    if (wideEnd) {
+      const recordOffset = this.offset;
+      const record = Buffer.alloc(56);
+      record.writeUInt32LE(0x06064b50, 0);
+      record.writeBigUInt64LE(44n, 4);
+      record.writeUInt16LE(45, 12);
+      record.writeUInt16LE(45, 14);
+      record.writeUInt32LE(0, 16);
+      record.writeUInt32LE(0, 20);
+      record.writeBigUInt64LE(BigInt(count), 24);
+      record.writeBigUInt64LE(BigInt(count), 32);
+      record.writeBigUInt64LE(BigInt(centralSize), 40);
+      record.writeBigUInt64LE(BigInt(centralOffset), 48);
+      await this.write(record);
+      const locator = Buffer.alloc(20);
+      locator.writeUInt32LE(0x07064b50, 0);
+      locator.writeUInt32LE(0, 4);
+      locator.writeBigUInt64LE(BigInt(recordOffset), 8);
+      locator.writeUInt32LE(1, 16);
+      await this.write(locator);
+    }
     const end = Buffer.alloc(22);
     end.writeUInt32LE(0x06054b50, 0);
     end.writeUInt16LE(0, 4);
     end.writeUInt16LE(0, 6);
-    end.writeUInt16LE(this.central.length, 8);
-    end.writeUInt16LE(this.central.length, 10);
-    end.writeUInt32LE(centralSize, 12);
-    end.writeUInt32LE(centralOffset, 16);
+    end.writeUInt16LE(wideEnd ? ZIP16_MAX : count, 8);
+    end.writeUInt16LE(wideEnd ? ZIP16_MAX : count, 10);
+    end.writeUInt32LE(wideEnd ? ZIP32_MAX : centralSize, 12);
+    end.writeUInt32LE(wideEnd ? ZIP32_MAX : centralOffset, 16);
     end.writeUInt16LE(0, 20);
     await this.write(end);
     this.output.end();
@@ -1660,23 +1740,80 @@ async function readAt(archive: FileHandle, buffer: Buffer, position: number): Pr
 
 async function readZipDirectory(zipPath: string): Promise<ZipEntry[]> {
   const details = await stat(zipPath);
-  const tailLength = Math.min(details.size, 65_557);
+  const tailLength = Math.min(details.size, ZIP_TAIL_BYTES);
   const handle = await open(zipPath, 'r');
   try {
     const tail = Buffer.alloc(tailLength);
     await handle.read(tail, 0, tail.length, details.size - tail.length);
-    const eocdOffset = findSignature(tail, 0x06054b50);
-    if (eocdOffset < 0) throw new BackupError('invalid_archive', 'The uploaded file is not a ZIP archive');
-    const entryCount = tail.readUInt16LE(eocdOffset + 10);
-    const directorySize = tail.readUInt32LE(eocdOffset + 12);
-    const directoryOffset = tail.readUInt32LE(eocdOffset + 16);
-    if (entryCount === 0xffff || directoryOffset === 0xffffffff || directorySize > MAX_ZIP_DIRECTORY_BYTES) throw new BackupError('archive_too_large', 'ZIP64 archives are not supported for this backup');
-    const directory = Buffer.alloc(directorySize);
-    await handle.read(directory, 0, directory.length, directoryOffset);
-    return parseDirectoryEntries(directory, entryCount);
+    const location = await locateDirectory(tail, details.size - tail.length, async (position, length) => {
+      const record = Buffer.alloc(length);
+      const { bytesRead } = await handle.read(record, 0, length, position);
+      return record.subarray(0, bytesRead);
+    });
+    const directory = Buffer.alloc(location.directorySize);
+    const { bytesRead } = await handle.read(directory, 0, directory.length, location.directoryOffset);
+    if (bytesRead !== directory.length) throw new BackupError('invalid_archive', 'The ZIP central directory is truncated');
+    return parseDirectoryEntries(directory, location.entryCount);
   } finally {
     await handle.close();
   }
+}
+
+/**
+ * How much of a zip's end can hold where its directory is: the end record
+ * with the longest comment allowed after it, and the ZIP64 record and locator
+ * a large archive puts in front of it.
+ */
+const ZIP_TAIL_BYTES = 22 + 0xffff + 20 + 56;
+
+interface DirectoryLocation {
+  readonly entryCount: number;
+  readonly directorySize: number;
+  readonly directoryOffset: number;
+}
+
+/**
+ * Where an archive's central directory is, read from the end of it.
+ *
+ * `tail` is the end of the archive and `tailStart` where in the archive it
+ * begins. An archive past four gigabytes or 65,535 entries says so in its end
+ * record with fields at their largest, and keeps the real values in a ZIP64
+ * record that a locator just in front of the end record points at; `readMore`
+ * fetches that record when it lies before the tail.
+ */
+async function locateDirectory(tail: Buffer, tailStart: number, readMore: (position: number, length: number) => Promise<Buffer>): Promise<DirectoryLocation & { readonly end: number }> {
+  // Only the end can hold the end record; a long tail is not searched whole.
+  const searchFrom = Math.max(0, tail.length - ZIP_TAIL_BYTES);
+  const found = findSignature(tail.subarray(searchFrom), 0x06054b50);
+  const eocd = found < 0 ? -1 : searchFrom + found;
+  if (eocd < 0 || eocd + 22 > tail.length) throw new BackupError('invalid_archive', 'The uploaded file is not a ZIP archive');
+  let entryCount = tail.readUInt16LE(eocd + 10);
+  let directorySize = tail.readUInt32LE(eocd + 12);
+  let directoryOffset = tail.readUInt32LE(eocd + 16);
+  // Where the directory's records end: the end record, or the ZIP64 record before it.
+  let end = eocd;
+  const locator = eocd - 20;
+  if (locator >= 0 && tail.readUInt32LE(locator) === 0x07064b50) {
+    const recordPosition = Number(tail.readBigUInt64LE(locator + 8));
+    if (!Number.isSafeInteger(recordPosition) || recordPosition < 0 || recordPosition + 56 > tailStart + locator) throw new BackupError('invalid_archive', 'The ZIP64 end record is missing');
+    const inTail = recordPosition - tailStart;
+    const record = inTail >= 0 ? tail.subarray(inTail, inTail + 56) : await readMore(recordPosition, 56);
+    if (record.length < 56 || record.readUInt32LE(0) !== 0x06064b50) throw new BackupError('invalid_archive', 'The ZIP64 end record is missing');
+    entryCount = safeNumber(record.readBigUInt64LE(32));
+    directorySize = safeNumber(record.readBigUInt64LE(40));
+    directoryOffset = safeNumber(record.readBigUInt64LE(48));
+    if (inTail >= 0) end = inTail;
+  } else if (directorySize === ZIP32_MAX || directoryOffset === ZIP32_MAX) {
+    throw new BackupError('invalid_archive', 'The ZIP64 end record is missing');
+  }
+  if (directorySize > MAX_ZIP_DIRECTORY_BYTES) throw new BackupError('archive_too_large', 'The ZIP central directory is larger than any backup could need; the file is damaged');
+  return { entryCount, directorySize, directoryOffset, end };
+}
+
+/** A 64-bit zip field as a number, refused where a number cannot hold it exactly. */
+function safeNumber(value: bigint): number {
+  if (value > BigInt(Number.MAX_SAFE_INTEGER)) throw new BackupError('invalid_archive', 'A ZIP64 field is out of range');
+  return Number(value);
 }
 
 function parseDirectoryEntries(directory: Buffer, entryCount: number): ZipEntry[] {
@@ -1687,19 +1824,47 @@ function parseDirectoryEntries(directory: Buffer, entryCount: number): ZipEntry[
     const flags = directory.readUInt16LE(offset + 8);
     const compression = directory.readUInt16LE(offset + 10);
     const crc = directory.readUInt32LE(offset + 16);
-    const compressedSize = directory.readUInt32LE(offset + 20);
-    const uncompressedSize = directory.readUInt32LE(offset + 24);
+    let compressedSize = directory.readUInt32LE(offset + 20);
+    let uncompressedSize = directory.readUInt32LE(offset + 24);
     const nameLength = directory.readUInt16LE(offset + 28);
     const extraLength = directory.readUInt16LE(offset + 30);
     const commentLength = directory.readUInt16LE(offset + 32);
-    const localOffset = directory.readUInt32LE(offset + 42);
+    let localOffset = directory.readUInt32LE(offset + 42);
     if (offset + 46 + nameLength + extraLength + commentLength > directory.length) throw new BackupError('invalid_archive', 'The ZIP central directory is corrupt');
     const name = directory.subarray(offset + 46, offset + 46 + nameLength).toString(flags & 0x800 ? 'utf8' : 'utf8').replaceAll('\\', '/');
+    if (uncompressedSize === ZIP32_MAX || compressedSize === ZIP32_MAX || localOffset === ZIP32_MAX) {
+      // The values too large for their fields, in the ZIP64 field, in order.
+      const wide = zip64Field(directory.subarray(offset + 46 + nameLength, offset + 46 + nameLength + extraLength));
+      const take = (): number => {
+        const value = wide.shift();
+        if (value === undefined) throw new BackupError('invalid_archive', `The ZIP64 sizes of ${name} are missing`);
+        return value;
+      };
+      if (uncompressedSize === ZIP32_MAX) uncompressedSize = take();
+      if (compressedSize === ZIP32_MAX) compressedSize = take();
+      if (localOffset === ZIP32_MAX) localOffset = take();
+    }
     const externalAttributes = directory.readUInt32LE(offset + 38);
     entries.push({ name, crc, compressedSize, uncompressedSize, compression, localOffset, directory: name.endsWith('/') || (externalAttributes & 0x10) !== 0, symlink: ((externalAttributes >>> 16) & 0xf000) === 0xa000 });
     offset += 46 + nameLength + extraLength + commentLength;
   }
   return entries;
+}
+
+/** The 64-bit values of an entry's ZIP64 extra field, or none. */
+function zip64Field(extra: Buffer): number[] {
+  for (let at = 0; at + 4 <= extra.length;) {
+    const id = extra.readUInt16LE(at);
+    const size = extra.readUInt16LE(at + 2);
+    if (at + 4 + size > extra.length) break;
+    if (id === 0x0001) {
+      const values: number[] = [];
+      for (let field = at + 4; field + 8 <= at + 4 + size; field += 8) values.push(safeNumber(extra.readBigUInt64LE(field)));
+      return values;
+    }
+    at += 4 + size;
+  }
+  return [];
 }
 
 /**
@@ -1710,19 +1875,13 @@ function parseDirectoryEntries(directory: Buffer, entryCount: number): ZipEntry[
  * the rest. The directory's own record of where it starts has to agree with
  * the size of the archive, or the tail is not the one it claims to be.
  */
-function parseStreamDirectory(tail: Buffer, archiveSize: number): ZipEntry[] {
-  const searchFrom = Math.max(0, tail.length - 65_557);
-  const found = findSignature(tail.subarray(searchFrom), 0x06054b50);
-  if (found < 0) throw new BackupError('invalid_archive', 'The uploaded file is not a ZIP archive');
-  const eocd = searchFrom + found;
-  const entryCount = tail.readUInt16LE(eocd + 10);
-  const directorySize = tail.readUInt32LE(eocd + 12);
-  const directoryOffset = tail.readUInt32LE(eocd + 16);
-  if (entryCount === 0xffff || directoryOffset === 0xffffffff || directorySize > MAX_ZIP_DIRECTORY_BYTES) throw new BackupError('archive_too_large', 'ZIP64 archives are not supported for this backup');
-  if (directoryOffset + tail.length !== archiveSize || directorySize > eocd) throw new BackupError('invalid_archive', 'The ZIP central directory did not arrive whole');
-  return parseDirectoryEntries(tail.subarray(0, directorySize), entryCount);
+async function parseStreamDirectory(tail: Buffer, archiveSize: number): Promise<ZipEntry[]> {
+  const tailStart = archiveSize - tail.length;
+  if (tailStart < 0) throw new BackupError('invalid_archive', 'The ZIP central directory did not arrive whole');
+  const location = await locateDirectory(tail, tailStart, () => { throw new BackupError('invalid_archive', 'The ZIP central directory did not arrive whole'); });
+  if (location.directoryOffset !== tailStart || location.directorySize > location.end) throw new BackupError('invalid_archive', 'The ZIP central directory did not arrive whole');
+  return parseDirectoryEntries(tail.subarray(0, location.directorySize), location.entryCount);
 }
-
 /** How long a streamed restore waits for the browser before giving up on it. */
 const STREAM_IDLE_MS = 10 * 60 * 1000;
 /**
