@@ -22,4 +22,20 @@
     <string name="bubble_open_first">Hãy mở SillyTavern trong app một lần, sau đó bong bóng sẽ mở được ở đây. Chạm để mở app.</string>
     <string name="bubble_busy">Một nhân vật khác vẫn đang trả lời. Cuộc trò chuyện đó được giữ nguyên cho tới khi trả lời xong.</string>
     <string name="sillytavern_unavailable">SillyTavern chưa phản hồi. Hãy kiểm tra ở bảng điều khiển của app.</string>
+    <string name="status_stopped">STM đã dừng.</string>
+    <string name="permissions_title">Cho STM chạy nền</string>
+    <string name="permissions_body">Một số điện thoại tự tắt app chạy nền, làm SillyTavern dừng giữa lúc đang chat. Hãy cho phép các mục dưới đây để STM vẫn chạy khi bạn chuyển app hoặc tắt màn hình.</string>
+    <string name="permissions_notifications">Thông báo</string>
+    <string name="permissions_notifications_why">Hiện trạng thái STM đang chạy và tin nhắn từ nhân vật.</string>
+    <string name="permissions_battery">Không tối ưu pin</string>
+    <string name="permissions_battery_why">Để Android không tắt STM khi màn hình tắt.</string>
+    <string name="permissions_background">Hoạt động nền</string>
+    <string name="permissions_background_why">STM đang bị chặn chạy nền. Hãy bật lại trong mục Pin của app.</string>
+    <string name="permissions_maker">Tự khởi chạy của %1$s</string>
+    <string name="permissions_maker_why">Tìm STM trong danh sách và cho phép tự khởi chạy, chạy nền.</string>
+    <string name="permissions_allow">Cho phép</string>
+    <string name="permissions_open">Mở</string>
+    <string name="permissions_done">✓ Xong</string>
+    <string name="permissions_start">Bắt đầu</string>
+    <string name="permissions_later">Để sau</string>
 </resources>

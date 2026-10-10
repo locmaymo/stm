@@ -62,10 +62,18 @@ public class ManagerService extends Service {
     static volatile String status = "";
     static volatile boolean failed = false;
     static volatile boolean running = false;
+    /**
+     * Stopped from the notification: the reader asked for it, so the screen
+     * says so rather than that something went wrong, and opening the app
+     * again starts it again.
+     */
+    static volatile boolean stopped = false;
 
     private Thread worker;
     private volatile Process process;
     private volatile boolean stopping;
+    /** Asked to start again while a stop was still putting the manager down. */
+    private volatile boolean restartRequested;
     private PowerManager.WakeLock wakeLock;
 
     @Override
@@ -84,9 +92,12 @@ public class ManagerService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && ACTION_STOP.equals(intent.getAction())) {
+            stopped = true;
+            restartRequested = false;
             new Thread(this::stopManager, "stm-stop").start();
             return START_NOT_STICKY;
         }
+        stopped = false;
         // The app asks for the service every time it opens; a manager that is
         // already running keeps saying so rather than going back to "starting".
         boolean alreadyRunning = process != null;
@@ -97,12 +108,21 @@ public class ManagerService extends Service {
             startForeground(NOTIFICATION, notification);
         }
         if (worker == null || !worker.isAlive()) {
-            stopping = false;
-            failed = false;
-            worker = new Thread(this::runManager, "stm-manager");
-            worker.start();
+            startWorker();
+        } else if (stopping) {
+            // Opened again while the last one is still shutting down: start
+            // once it is down, instead of letting the service end under the
+            // screen that is waiting for it.
+            restartRequested = true;
         }
         return START_STICKY;
+    }
+
+    private void startWorker() {
+        stopping = false;
+        failed = false;
+        worker = new Thread(this::runManager, "stm-manager");
+        worker.start();
     }
 
     @Override
@@ -126,6 +146,8 @@ public class ManagerService extends Service {
             String token = randomToken();
             writeText(new File(getFilesDir(), "shutdown-token"), chosen + "\n" + token);
 
+            // Stopped while unpacking: there is nothing to start.
+            if (stopping) return;
             setStatus(getString(R.string.status_starting));
             ProcessBuilder builder = new ProcessBuilder(Payload.nodeBinary(this).getPath(), Payload.managerEntry(this).getPath());
             builder.environment().putAll(env);
@@ -135,6 +157,8 @@ public class ManagerService extends Service {
             builder.redirectErrorStream(true);
             acquireWakeLock();
             process = builder.start();
+            // Stopped in the moment between the check above and the start.
+            if (stopping) requestShutdown(chosen, token);
             updateNotification(getString(R.string.notification_running));
             pumpOutput(process);
             int code = process.waitFor();
@@ -151,12 +175,22 @@ public class ManagerService extends Service {
             running = false;
             process = null;
             releaseWakeLock();
-            stopForegroundCompat();
-            stopSelf();
+            if (restartRequested) {
+                restartRequested = false;
+                stopped = false;
+                updateNotification(getString(R.string.notification_starting));
+                startWorker();
+            } else {
+                stopForegroundCompat();
+                stopSelf();
+            }
         }
     }
 
-    /** Ask the manager to shut down, and make sure it did. */
+    /**
+     * Ask the manager to shut down, and make sure it did. The worker that
+     * started it ends the service once it has; with no worker, this does.
+     */
     private void stopManager() {
         stopping = true;
         Process current = process;
@@ -164,8 +198,11 @@ public class ManagerService extends Service {
             requestShutdown(port, readToken());
             if (!exited(current, 20_000)) current.destroy();
         }
-        stopForegroundCompat();
-        stopSelf();
+        Thread running = worker;
+        if (running == null || !running.isAlive()) {
+            stopForegroundCompat();
+            stopSelf();
+        }
     }
 
     /**
