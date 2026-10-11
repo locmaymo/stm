@@ -21,7 +21,7 @@
     "release:android": "node scripts/build-android.mjs --apk",
     "site:build": "node apps/site/build.mjs",
     "release:windows": "node scripts/build-windows-release.mjs",
-    "test": "node --import tsx --test",
+    "test": "node --import tsx --import ./scripts/test-tmpdir.mjs --test",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "verify": "npm run encoding:gate && npm run lint && npm run typecheck && npm test"
   },
