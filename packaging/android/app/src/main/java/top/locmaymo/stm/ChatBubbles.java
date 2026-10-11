@@ -273,7 +273,9 @@ final class ChatBubbles {
             publishShortcut(context, shortcut, conversation, icon, character);
             builder.setShortcutId(shortcut);
         }
-        if (bubble) {
+        // bubble is only ever true where bubblesSupported(); the check is spelled
+        // out again here so the build's API check can see it.
+        if (bubble && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             Intent opens = new Intent(context, BubbleActivity.class)
                     .setData(Uri.fromParts("stm-chat", conversation.key, null))
                     .putExtra(EXTRA_KEY, conversation.key)
