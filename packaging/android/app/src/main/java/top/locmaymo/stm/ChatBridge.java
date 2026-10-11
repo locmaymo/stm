@@ -1,5 +1,6 @@
 package top.locmaymo.stm;
 
+import android.annotation.SuppressLint;
 import android.content.Context;
 import android.net.Uri;
 import android.util.Log;
@@ -49,7 +50,12 @@ final class ChatBridge {
      * Give the WebView the channel and the script, before it loads anything.
      * Returns the script when the WebView cannot add it to every page itself,
      * for the caller to run as each page finishes loading; null otherwise.
+     *
+     * The document-start script is marked internal to its library in the
+     * webkit version this app uses, but it is the only way into every frame,
+     * and the feature check keeps it to WebViews that have it.
      */
+    @SuppressLint("RestrictedApi")
     static String attach(Context app, WebView web) {
         if (!supported()) return null;
         WebViewCompat.addWebMessageListener(web, NAME, ANY_ORIGIN, (view, message, origin, mainFrame, reply) -> receive(app, view, message, origin, reply));

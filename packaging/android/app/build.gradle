@@ -60,6 +60,14 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+
+    lint {
+        // Every finding in the build's own output, not only the first, so a
+        // failed check says everything that is wrong in one go.
+        textReport true
+        // Lint's own name for standard output; file('stdout') would be a file.
+        textOutput new File('stdout')
+    }
 }
 
 dependencies {
