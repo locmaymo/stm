@@ -22,4 +22,21 @@
     <string name="bubble_open_first">Open SillyTavern in the app once, then its bubbles open here. Tap to open the app.</string>
     <string name="bubble_busy">A character is still replying in another chat. That chat stays open until the reply is done.</string>
     <string name="sillytavern_unavailable">SillyTavern is not answering. Check it in the app\'s console.</string>
+    <string name="status_stopped">STM has stopped.</string>
+    <string name="permissions_title">Keep STM running</string>
+    <string name="permissions_body">Some phones close apps that are out of sight, which stops SillyTavern in the middle of a chat. Allow these so STM keeps running when you switch apps or the screen turns off.</string>
+    <string name="permissions_notifications">Notifications</string>
+    <string name="permissions_notifications_why">Shows that STM is running, and character replies.</string>
+    <string name="permissions_battery">No battery optimisation</string>
+    <string name="permissions_battery_why">So Android does not stop STM when the screen is off.</string>
+    <string name="permissions_background">Background usage</string>
+    <string name="permissions_background_why">Background usage is off for STM. Turn it on in the app\'s battery settings.</string>
+    <string name="permissions_maker">%1$s auto-start</string>
+    <string name="permissions_maker_why">Find STM in the list and let it start and run on its own.</string>
+    <string name="permissions_allow">Allow</string>
+    <string name="permissions_open">Open</string>
+    <string name="permissions_done">✓ Done</string>
+    <string name="permissions_start">Start</string>
+    <string name="permissions_later">Not now</string>
+    <string name="sillytavern_stopped">SillyTavern stopped. Open it again from the console once it is running.</string>
 </resources>

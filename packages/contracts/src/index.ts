@@ -907,6 +907,14 @@ export interface RestorePreview {
    */
   readonly capacity?: Readonly<Record<RestoreMode, RestoreCapacity>>;
   /**
+   * The part of the archive SillyTavern can do without; see `RestoreCapacity`.
+   *
+   * Counted for every restore, not only one short of room: a large profile is
+   * slow to write whatever the machine, and its junk is the reader's to leave
+   * out. Absent on an older manager's answer.
+   */
+  readonly junk?: RestoreJunk;
+  /**
    * What a replace would delete of the profile as it stands.
    *
    * Absent on an older manager's answer, which is read as nothing to say.
@@ -928,6 +936,12 @@ export interface RestoreLosses {
   readonly bytes: number;
   /** Extensions in the profile now that the backup holds none of, by folder name. */
   readonly extensions: readonly string[];
+}
+
+/** How much of an archive is junk, in files and bytes; see `RestoreCapacity`. */
+export interface RestoreJunk {
+  readonly files: number;
+  readonly bytes: number;
 }
 
 /**

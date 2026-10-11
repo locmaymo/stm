@@ -34,6 +34,36 @@ installs only files named `lib*.so` there. So:
 The manager runs `apps/manager-server/src/main.js` with `STM_DATA_DIR` in the
 app's storage, on 7860 unless something on the phone already holds it.
 
+## Staying alive
+
+Before the first start the app shows a permissions screen (`PermissionsScreen`):
+notifications on Android 13 and later, leave to ignore battery optimisation,
+background usage when the phone has it turned off, and on phones whose maker
+keeps its own auto-start list (Xiaomi, Oppo, Realme, OnePlus, Vivo, Huawei,
+Honor, Asus, Samsung) a button that opens it. Start is ready once all of them
+are done; "Not now" starts anyway and does not ask again.
+
+When the manager stops - the notification's **Stop**, or on its own - the
+console is taken down with it and the screen says so; tapping it, or coming
+back to the app, starts the manager again. Opening the app while a stop is
+still shutting the manager down starts it once it is down.
+
+The app keeps one SillyTavern page alive across its screens. When
+SillyTavern stops - a crash, or anything the manager stops it for - the
+manager prints `STM-EVENT {"type":"sillytavernStopped"}`; the app drops the
+page and goes back to the console, so the next open loads a fresh page rather
+than the old one stuck on a request its server never answered.
+
+## Importing a backup zip
+
+In the app, the console's "upload a zip" buttons hand the job to the app
+(`BackupImport`): the phone's own file picker, then the app reads the file and
+sends it to the manager in 32 MB chunks through the same upload the console
+uses, with the console's session and CSRF token. On the LG V50 an 11 GB zip
+went at about 95 MB/s, against the page's 4 MB chunks read out of the WebView.
+The console finds out whether the app can do this by asking (`features`); an
+older app, or saver mode, keeps the page's own upload.
+
 ## Building
 
 ```sh

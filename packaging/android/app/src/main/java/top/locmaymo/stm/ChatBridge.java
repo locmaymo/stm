@@ -27,7 +27,8 @@ import java.util.Set;
  * Pages get an object named {@code STMApp}. SillyTavern's page, through
  * chat_bridge.js, says when it is up, reports finished replies and switches
  * chats when a bubble asks; the console asks and sets whether replies are
- * notified and whether they bubble, and asks for SillyTavern to be shown.
+ * notified and whether they bubble, asks for SillyTavern to be shown, and
+ * has the app send a backup zip from the phone (see {@link BackupImport}).
  * Only pages served on this phone are listened to: a frame from anywhere else
  * - a picture or a video a character card embeds, say - also gets the object,
  * and everything it sends is dropped.
@@ -84,6 +85,21 @@ final class ChatBridge {
                 // The console's "open SillyTavern", in the app: the one page, not another.
                 Uri target = Uri.parse(data.optString("url", ""));
                 if ("http".equals(target.getScheme()) && Browser.isLocal(target)) MainActivity.showSillyTavern(app, target.toString());
+                break;
+            case "features":
+                // What this app can do for the console; an older app says nothing.
+                try {
+                    reply.postMessage(new JSONObject().put("type", "features").put("importZip", true).toString());
+                } catch (JSONException | IllegalStateException e) {
+                    Log.w(TAG, "the console could not be told what the app can do", e);
+                }
+                break;
+            case "importZip":
+                // The console only: it is the one that asked with its own sign-in.
+                if (!SillyTavernHost.isHost(view) && origin.getPort() == ManagerService.port) MainActivity.importZip(origin, data.optString("csrf", ""), reply);
+                break;
+            case "importCancel":
+                BackupImport.cancel();
                 break;
             case "bubbles":
                 if (data.has("replies")) {

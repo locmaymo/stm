@@ -298,6 +298,14 @@ final class SillyTavernHost {
         void pageLost(String url);
     }
 
+    /**
+     * Forget the page: the manager behind it stopped, and SillyTavern with it.
+     * The next time SillyTavern is shown it is loaded again once it answers.
+     */
+    static void reset() {
+        destroy();
+    }
+
     private static void destroy() {
         if (web == null) return;
         if (web.getParent() != null) ((ViewGroup) web.getParent()).removeView(web);

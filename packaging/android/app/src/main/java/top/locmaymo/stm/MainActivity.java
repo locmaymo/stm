@@ -1,11 +1,9 @@
 package top.locmaymo.stm;
 
-import android.Manifest;
 import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.Intent;
-import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
@@ -30,9 +28,13 @@ import android.widget.Toast;
  * The console, in a WebView, once the manager behind it answers; and
  * SillyTavern over it when the reader opens it.
  *
- * Until the console answers the screen says what the service is doing -
- * unpacking on a first start takes a while - and when the manager stops
- * unexpectedly it says so and starts it again on a tap. Pages the manager
+ * Before the first start it asks for what keeps the app running in the
+ * background; see {@link PermissionsScreen}. Until the console answers the
+ * screen says what the service is doing - unpacking on a first start takes a
+ * while. When the manager stops - from the notification, or on its own - the
+ * console goes with it, because a console with nothing behind it is a page
+ * that answers nothing; the screen says so and starts it on a tap, and coming
+ * back to the app starts it without one. Pages the manager
  * serves stay in here; anything else, a tunnel address or a sign-in, opens in
  * the phone's browser.
  *
@@ -59,6 +61,20 @@ public class MainActivity extends Activity implements SillyTavernHost.Host {
     private boolean resumed;
     private ValueCallback<Uri[]> pendingUpload;
     private boolean polling;
+    /** The permissions screen, while it is up; nothing starts until it is done. */
+    private PermissionsScreen permissions;
+    /** While the app is in front: notice the manager stopping under the console. */
+    private final Runnable watch = new Runnable() {
+        @Override
+        public void run() {
+            if (!resumed) return;
+            if (web != null && managerDown()) {
+                dropConsole();
+                poll();
+            }
+            handler.postDelayed(this, 1500);
+        }
+    };
 
     /** Show SillyTavern from {@code url} in the app, opening the app if it is not open. */
     static void showSillyTavern(Context context, String url) {
@@ -67,6 +83,22 @@ public class MainActivity extends Activity implements SillyTavernHost.Host {
             return;
         }
         context.startActivity(new Intent(context, MainActivity.class).putExtra(EXTRA_URL, url).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+    }
+
+    /** The console asked for a backup zip from the phone; see {@link BackupImport}. */
+    static void importZip(Uri origin, String csrf, androidx.webkit.JavaScriptReplyProxy reply) {
+        if (current != null) BackupImport.pick(current, origin, csrf, reply);
+    }
+
+    /**
+     * SillyTavern stopped under its page: back to the console, saying so, and
+     * the page goes. Opening SillyTavern again loads it fresh once it is up.
+     */
+    static void sillyTavernStopped() {
+        boolean shown = current != null && current.showingSillyTavern;
+        if (shown) current.closeSillyTavern();
+        SillyTavernHost.reset();
+        if (shown) Toast.makeText(current, R.string.sillytavern_stopped, Toast.LENGTH_LONG).show();
     }
 
     /** Back to the console, from a link in SillyTavern that points at it. */
@@ -92,7 +124,7 @@ public class MainActivity extends Activity implements SillyTavernHost.Host {
         statusView.setPadding(0, padding, 0, 0);
         splash.addView(spinner);
         splash.addView(statusView);
-        splash.setOnClickListener((view) -> { if (ManagerService.failed) startManager(); });
+        splash.setOnClickListener((view) -> { if (ManagerService.failed || managerDown()) startManager(); });
         root.addView(splash, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
         sillyTavern = new FrameLayout(this);
         sillyTavern.setBackgroundColor(Color.BLACK);
@@ -101,11 +133,50 @@ public class MainActivity extends Activity implements SillyTavernHost.Host {
         setContentView(root);
         ChatBubbles.createChannel(this);
 
-        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[] { Manifest.permission.POST_NOTIFICATIONS }, 1);
+        // A manager already running was started after this screen was passed.
+        if (!ManagerService.running && Permissions.shouldAsk(this)) {
+            permissions = new PermissionsScreen(this, this::permissionsDone);
+            root.addView(permissions, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+            return;
         }
         startManager();
         handle(getIntent());
+    }
+
+    private void permissionsDone() {
+        root.removeView(permissions);
+        permissions = null;
+        startManager();
+        handle(getIntent());
+        // onResume ran while this screen was up, and left the watch to now.
+        handler.removeCallbacks(watch);
+        if (resumed) handler.postDelayed(watch, 1500);
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] names, int[] results) {
+        super.onRequestPermissionsResult(requestCode, names, results);
+        if (permissions != null) permissions.refresh();
+    }
+
+    /** Not running, or stopped from the notification and on its way down. */
+    private static boolean managerDown() {
+        return !ManagerService.running || ManagerService.stopped;
+    }
+
+    /**
+     * The manager is gone, so the pages it served are too: the console, and
+     * SillyTavern, which it ran. Both are made again once it is back.
+     */
+    private void dropConsole() {
+        if (web != null) {
+            root.removeView(web);
+            web.destroy();
+            web = null;
+        }
+        if (showingSillyTavern) closeSillyTavern();
+        SillyTavernHost.reset();
+        splash.setVisibility(View.VISIBLE);
     }
 
     @Override
@@ -136,15 +207,31 @@ public class MainActivity extends Activity implements SillyTavernHost.Host {
     protected void onResume() {
         super.onResume();
         resumed = true;
+        if (permissions != null) {
+            // Back from one of the settings it opened.
+            permissions.refresh();
+            return;
+        }
+        // Coming back to the app is asking for it: a manager stopped from the
+        // notification, or one that ended on its own, starts again. One still
+        // starting - this screen has just asked for it - is left to start.
+        if (ManagerService.stopped || ManagerService.failed || (web != null && !ManagerService.running)) {
+            dropConsole();
+            startManager();
+        } else if (web == null) {
+            poll();
+        }
         // Back from a bubble that had SillyTavern: it comes back here.
         if (showingSillyTavern) SillyTavernHost.attach(this, sillyTavern);
         updateWatching();
-        if (web == null) poll();
+        handler.removeCallbacks(watch);
+        handler.postDelayed(watch, 1500);
     }
 
     @Override
     protected void onPause() {
         resumed = false;
+        handler.removeCallbacks(watch);
         updateWatching();
         polling = false;
         // The session cookie is what keeps the console signed in the next time
@@ -189,6 +276,7 @@ public class MainActivity extends Activity implements SillyTavernHost.Host {
 
     private void startManager() {
         ManagerService.failed = false;
+        ManagerService.stopped = false;
         Intent intent = new Intent(this, ManagerService.class);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent);
         else startService(intent);
@@ -203,15 +291,18 @@ public class MainActivity extends Activity implements SillyTavernHost.Host {
         new Thread(() -> {
             while (polling) {
                 int port = ManagerService.port;
-                if (ManagerService.running && ManagerService.answers(port)) {
+                // One that was stopped can still answer while it shuts down.
+                if (ManagerService.running && !ManagerService.stopped && ManagerService.answers(port)) {
                     handler.post(() -> { polling = false; showConsole(port); });
                     return;
                 }
-                String text = ManagerService.status.isEmpty() ? getString(R.string.status_waiting) : ManagerService.status;
-                boolean failed = ManagerService.failed;
+                boolean stopped = ManagerService.stopped;
+                String text = stopped ? getString(R.string.status_stopped)
+                    : ManagerService.status.isEmpty() ? getString(R.string.status_waiting) : ManagerService.status;
+                boolean idle = ManagerService.failed || stopped;
                 handler.post(() -> {
-                    statusView.setText(failed ? text + "\n\n" + getString(R.string.status_restart) : text);
-                    spinner.setVisibility(failed ? View.GONE : View.VISIBLE);
+                    statusView.setText(idle ? text + "\n\n" + getString(R.string.status_restart) : text);
+                    spinner.setVisibility(idle ? View.GONE : View.VISIBLE);
                 });
                 try { Thread.sleep(600); } catch (InterruptedException e) { return; }
             }
@@ -229,6 +320,26 @@ public class MainActivity extends Activity implements SillyTavernHost.Host {
             public void onPageFinished(WebView view, String url) {
                 // A WebView too old to add the script to every page gets it here, top frame only.
                 if (bridgeScript != null && Browser.isLocal(Uri.parse(url))) view.evaluateJavascript(bridgeScript, null);
+            }
+
+            /*
+             * The pages' shared process died: most often Android taking its
+             * memory back while the app was out of sight. Left unhandled, a
+             * WebView's renderer dying ends the whole app - and with it the
+             * manager and SillyTavern, its child processes. Only the console
+             * goes; it is made again when the screen is next shown.
+             */
+            @Override
+            public boolean onRenderProcessGone(WebView view, android.webkit.RenderProcessGoneDetail detail) {
+                android.util.Log.w("STM", "the console's page stopped; it will be opened again");
+                if (view == web) {
+                    root.removeView(web);
+                    web.destroy();
+                    web = null;
+                    splash.setVisibility(View.VISIBLE);
+                    if (resumed) poll();
+                }
+                return true;
             }
 
             @Override
@@ -270,6 +381,7 @@ public class MainActivity extends Activity implements SillyTavernHost.Host {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         if (SillyTavernHost.onActivityResult(requestCode, resultCode, data)) return;
+        if (BackupImport.onActivityResult(this, requestCode, resultCode, data)) return;
         if (requestCode == FILE_CHOOSER && pendingUpload != null) {
             pendingUpload.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(resultCode, data));
             pendingUpload = null;

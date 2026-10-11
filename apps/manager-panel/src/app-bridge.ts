@@ -79,3 +79,95 @@ export function openInApp(url: string): boolean {
   app.postMessage(JSON.stringify({ type: 'open', url }));
   return true;
 }
+
+/** What the app can do for the console beyond the channel itself. */
+export interface AppFeatures {
+  /** Whether the app sends a zip from the phone itself; see `importZipFromApp`. */
+  readonly importZip: boolean;
+}
+
+let asked: Promise<AppFeatures> | null = null;
+
+/**
+ * Ask the app what it can do, once per page. An app that does not answer -
+ * one from before the question, or no app at all - can do none of it.
+ */
+export function appFeatures(timeoutMs = 1500): Promise<AppFeatures> {
+  const app = channel();
+  if (!app) return Promise.resolve({ importZip: false });
+  asked ??= new Promise((resolve) => {
+    const done = (features: AppFeatures) => {
+      clearTimeout(timer);
+      app.removeEventListener('message', listener);
+      resolve(features);
+    };
+    const listener = (event: MessageEvent<string>) => {
+      const value = parseMessage(event.data);
+      if (value?.type === 'features') done({ importZip: value.importZip === true });
+    };
+    const timer = setTimeout(() => done({ importZip: false }), timeoutMs);
+    app.addEventListener('message', listener);
+    app.postMessage(JSON.stringify({ type: 'features' }));
+  });
+  return asked;
+}
+
+/** How an import the app runs is going; see `importZipFromApp`. */
+export type ImportEvent =
+  | { readonly state: 'picked'; readonly name: string; readonly size: number }
+  | { readonly state: 'progress'; readonly sent: number; readonly total: number }
+  | { readonly state: 'done'; readonly status: number; readonly body: string }
+  | { readonly state: 'canceled' }
+  | { readonly state: 'failed'; readonly message: string; readonly status?: number; readonly body?: string };
+
+export function parseImportEvent(data: unknown): ImportEvent | null {
+  const value = parseMessage(data);
+  if (value?.type !== 'import') return null;
+  const number = (key: string): number => (typeof value[key] === 'number' ? value[key] as number : -1);
+  const text = (key: string): string => (typeof value[key] === 'string' ? value[key] as string : '');
+  switch (value.state) {
+    case 'picked': return { state: 'picked', name: text('name'), size: number('size') };
+    case 'progress': return { state: 'progress', sent: number('sent'), total: number('total') };
+    case 'done': return { state: 'done', status: number('status'), body: text('body') };
+    case 'canceled': return { state: 'canceled' };
+    case 'failed': return { state: 'failed', message: text('message'), ...(typeof value.status === 'number' ? { status: value.status, body: text('body') } : {}) };
+    default: return null;
+  }
+}
+
+/**
+ * Have the app pick a zip on the phone and send it to the manager.
+ *
+ * The app sends it through the same upload this page uses, with this page's
+ * sign-in, so what comes back is what finishing an upload answers. Resolves
+ * with how it ended - done, canceled or failed; the pick and the progress
+ * before that go to `onEvent`. Aborting `signal` asks the app to stop.
+ */
+export function importZipFromApp(csrfToken: string, onEvent: (event: ImportEvent) => void, signal?: AbortSignal): Promise<ImportEvent | null> {
+  const app = channel();
+  if (!app) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const stop = () => app.postMessage(JSON.stringify({ type: 'importCancel' }));
+    const listener = (event: MessageEvent<string>) => {
+      const update = parseImportEvent(event.data);
+      if (!update) return;
+      if (update.state === 'picked' || update.state === 'progress') { onEvent(update); return; }
+      app.removeEventListener('message', listener);
+      signal?.removeEventListener('abort', stop);
+      resolve(update);
+    };
+    app.addEventListener('message', listener);
+    signal?.addEventListener('abort', stop, { once: true });
+    app.postMessage(JSON.stringify({ type: 'importZip', csrf: csrfToken }));
+  });
+}
+
+function parseMessage(data: unknown): Record<string, unknown> | null {
+  if (typeof data !== 'string') return null;
+  try {
+    const value = JSON.parse(data) as unknown;
+    return typeof value === 'object' && value !== null ? value as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}

@@ -683,6 +683,28 @@ test('local backup endpoints create, preview, download, and restore a profile ar
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 20));
   }
   assert.equal(await readFile(join(profile.dataPath, 'default-user', 'settings.json'), 'utf8'), '{"theme":"dark"}');
+
+  // A zip just uploaded can be let go once it is restored; a backup the
+  // manager took itself is kept whatever the request says.
+  const waitFor = async (jobId: string): Promise<void> => {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const job = await (await fetch(`${base}/api/v1/jobs/${jobId}`, { headers: { cookie } })).json() as { state: string; error?: string };
+      if (job.state === 'succeeded') return;
+      if (job.state === 'failed') throw new Error(job.error ?? 'restore job failed');
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 20));
+    }
+    throw new Error('restore job did not finish');
+  };
+  const again = await fetch(`${base}/api/v1/backups/import/preview`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/zip' }, body: archiveBytes });
+  const uploaded = (await again.json() as { backup: { id: string } }).backup;
+  for (const id of [uploaded.id, manifest.id]) {
+    const discarding = await fetch(`${base}/api/v1/backups/${id}/restore`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'replace', discard: true }) });
+    assert.equal(discarding.status, 202);
+    await waitFor((await discarding.json() as { jobId: string }).jobId);
+  }
+  const left = (await (await fetch(`${base}/api/v1/backups`, { headers: { cookie } })).json() as { backups: Array<{ id: string }> }).backups.map((backup) => backup.id);
+  assert.ok(!left.includes(uploaded.id), 'the restored upload is gone');
+  assert.ok(left.includes(manifest.id), 'a backup the manager took stays');
 });
 
 test('installing a new version rebinds the active data profile and keeps its files', async (t) => {

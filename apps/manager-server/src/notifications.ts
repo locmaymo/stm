@@ -15,6 +15,8 @@ export type NotificationLocale = 'en' | 'vi';
 
 /** How a notification is handed to the Android app: a line of output starting with this. */
 export const APP_NOTIFICATION_PREFIX = 'STM-NOTIFY ';
+/** How anything else the Android app acts on is handed to it, the same way. */
+export const APP_EVENT_PREFIX = 'STM-EVENT ';
 
 /** A notification in words, as a push or the Android app shows it. */
 export interface RenderedNotification {

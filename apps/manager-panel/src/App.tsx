@@ -34,7 +34,7 @@ import { availableUpdate, readDismissedManagerRelease, readDismissedUpdate, save
 import { readDismissedDisplaced, readDismissedRecovery, readDismissedSettings, saveDismissedDisplaced, saveDismissedRecovery, saveDismissedSettings, shouldOfferSettings, shouldShowDisplaced, shouldShowRecovery } from './settings-offer.js';
 import { apiFetch, onSessionExpired, resetSessionWatch, sessionToken, setSessionToken } from './session.js';
 import { NotificationBell, PushToggle } from './notification-bell.js';
-import { openInApp } from './app-bridge.js';
+import { appFeatures, importZipFromApp, openInApp } from './app-bridge.js';
 import { collectCloudflareResult, framed, inPhoneApp, openReturnWindow, popupsBlocked, whenAbandoned, type CollectedResult } from './oauth.js';
 import type { AccessGatewayState, AccessLinkPreference, AccessLinkTarget, BackupManifest, CloudflareAccountProblem, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LegalReview, LogEntry, LogSourceFilter, ManagerRelease, ManagerSettingsOffer, ManagerUpdateStatus, NotificationSummary, OnlineState, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, SaverState, SetupChecklistState, SetupStep, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, isCloudJob, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
@@ -85,6 +85,28 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 const UPLOAD_CHUNK_BYTES = 4 * 1024 * 1024;
 const UPLOAD_RETRIES = 3;
 const UPLOAD_RATE_WINDOW_MS = 10_000;
+
+/**
+ * Whether the Android app sends a backup zip from the phone itself, rather
+ * than this page; saver mode streams its uploads instead, so never there.
+ */
+function usePhoneImport(saving: boolean): boolean {
+  const [available, setAvailable] = useState(false);
+  useEffect(() => {
+    let live = true;
+    void appFeatures().then((features) => { if (live) setAvailable(features.importZip); });
+    return () => { live = false; };
+  }, []);
+  return available && !saving;
+}
+
+/**
+ * A zip picker's click, taken over by the app when it sends the file itself:
+ * the browser's own picker is not opened, and `onPhone` runs instead.
+ */
+function phonePick(enabled: boolean, onPhone: () => void): ((event: { preventDefault: () => void }) => void) | undefined {
+  return enabled ? (event) => { event.preventDefault(); onPhone(); } : undefined;
+}
 
 /**
  * What to say about a reply that was not the JSON this panel expected.
@@ -1757,6 +1779,8 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
   const [dataIntent, setDataIntent] = useState<DataIntent | null>(null);
   const openConnect = () => { setDataIntent({ kind: 'connect' }); navigate('data'); };
   const openUpload = (file: File) => { setDataIntent({ kind: 'upload', file }); navigate('data'); };
+  const phoneImport = usePhoneImport(saver?.enabled === true);
+  const openPhoneUpload = () => { setDataIntent({ kind: 'phoneUpload' }); navigate('data'); };
   const openBackup = () => { setDataIntent({ kind: 'backup' }); navigate('data'); };
   const cloudflareSignedIn = checklistR2?.cloudflare ? checklistR2.cloudflare.state === 'connected' || checklistR2.cloudflare.state === 'choose_account' : false;
   /*
@@ -1853,6 +1877,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     onOpenSettings={() => navigate('config')}
     cloudConnected={stepsSeen.r2}
     onRestoreData={openUpload}
+    onRestoreFromPhone={phoneImport ? openPhoneUpload : undefined}
     onConnectCloud={() => { if (stepsSeen.r2) navigate('data'); else openConnect(); }}
   />;
 
@@ -1996,7 +2021,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
                 }}
               /></div>
               : null}
-            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}{checklist}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} hostAddress={shownHostAddress(online?.hostAddress ?? null)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} onSetAccessLink={setAccessLink} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} canBackUp={activeProfileId !== null && saver?.enabled !== true} onBackup={openBackup} onUpload={openUpload} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} locale={preferences.locale} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} intent={dataIntent} onIntentHandled={() => setDataIntent(null)} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} onSetAccessLink={setAccessLink} startup={startup} saver={saver} online={online} onSetAutoStart={setAutoStartSillyTavern} onSetSaver={setSaverMode} onSetKeepOnline={setKeepOnline} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} onEraseEverything={eraseEverything} /> : <ResourcePanel page={page} t={t} />}
+            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}{checklist}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} hostAddress={shownHostAddress(online?.hostAddress ?? null)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} onSetAccessLink={setAccessLink} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} canBackUp={activeProfileId !== null && saver?.enabled !== true} onBackup={openBackup} onUpload={openUpload} onUploadFromPhone={phoneImport ? openPhoneUpload : undefined} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} locale={preferences.locale} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} intent={dataIntent} onIntentHandled={() => setDataIntent(null)} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} onSetAccessLink={setAccessLink} startup={startup} saver={saver} online={online} onSetAutoStart={setAutoStartSillyTavern} onSetSaver={setSaverMode} onSetKeepOnline={setKeepOnline} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} onEraseEverything={eraseEverything} /> : <ResourcePanel page={page} t={t} />}
           </PageContainer>
           <MobileNav
             items={navigation.map(({ id, icon }) => ({ id, icon, href: `#${id}`, label: t(`nav.${id}`) }))}
@@ -2455,7 +2480,7 @@ function RuntimeCard({
   t, fail, catalog, process, tunnel, security, sillyTavernPort, networkHost, installed, installing, recovering, active, dataBytes, profileName,
   version, onVersionChange, versions, onPendingInstallationId, csrfToken, onInstalling, onInstallJob, onRemove,
   canCancelInstall, onCancelInstall,
-  onStart, onStop, onSetPassword, onPublish, onOpenSettings, cloudConnected, onRestoreData, onConnectCloud,
+  onStart, onStop, onSetPassword, onPublish, onOpenSettings, cloudConnected, onRestoreData, onRestoreFromPhone, onConnectCloud,
 }: {
   t: Translate; fail: Fail; catalog: Record<string, unknown>; process: ProcessState; tunnel: TunnelState;
   security: AccessGatewayState; sillyTavernPort: number; networkHost: string | null; installed: boolean; installing: boolean;
@@ -2484,6 +2509,8 @@ function RuntimeCard({
   /** Whether backups already go to the cloud, which takes the nudge off its button. */
   cloudConnected: boolean;
   onRestoreData: (file: File) => void;
+  /** Given in the Android app, which sends a zip from the phone itself. */
+  onRestoreFromPhone?: (() => void) | undefined;
   onConnectCloud: () => void;
 }) {
   const [stopAsked, setStopAsked] = useState(false);
@@ -2916,7 +2943,7 @@ function RuntimeCard({
           <label className="checklist-item cursor-pointer has-[:disabled]:pointer-events-none has-[:disabled]:opacity-50">
             <span className="checklist-icon" aria-hidden="true"><Upload /></span>
             <span className="checklist-label">{t('console.restoreOldData')}</span>
-            <input type="file" accept=".zip,application/zip" className="sr-only" disabled={installingNow || removing} onChange={pickRestore} />
+            <input type="file" accept=".zip,application/zip" className="sr-only" disabled={installingNow || removing} onChange={pickRestore} onClick={phonePick(onRestoreFromPhone !== undefined, () => onRestoreFromPhone?.())} />
           </label>
           <button type="button" className="checklist-item" onClick={onConnectCloud}>
             <span className="checklist-icon" aria-hidden="true"><Cloud /></span>
@@ -3596,7 +3623,7 @@ function ShareDialog({ t, open, onOpenChange, label, links, description, choice 
  * is advice printed on a page rather than offered where it can be acted on;
  * that belongs next to the setting itself.
  */
-function DataPanel({ t, navigate, latestBackup, snapshot, onRemeasure, canBackUp, onBackup, onUpload }: { t: Translate; navigate: Navigate; latestBackup: BackupManifest | null; snapshot: SystemSnapshot | null; onRemeasure: () => Promise<void>; /** False in saver mode, which keeps no copy on this machine. */ canBackUp: boolean; onBackup: () => void; onUpload: (file: File) => void }) {
+function DataPanel({ t, navigate, latestBackup, snapshot, onRemeasure, canBackUp, onBackup, onUpload, onUploadFromPhone }: { t: Translate; navigate: Navigate; latestBackup: BackupManifest | null; snapshot: SystemSnapshot | null; onRemeasure: () => Promise<void>; /** False in saver mode, which keeps no copy on this machine. */ canBackUp: boolean; onBackup: () => void; onUpload: (file: File) => void; /** Given in the Android app, which sends a zip from the phone itself. */ onUploadFromPhone?: (() => void) | undefined }) {
   /*
    * Two figures, because they answer two different questions.
    *
@@ -3642,7 +3669,7 @@ function DataPanel({ t, navigate, latestBackup, snapshot, onRemeasure, canBackUp
         {canBackUp ? <Button variant="outline" size="sm" onClick={onBackup}><DatabaseBackup />{t('dashboard.backupNow')}</Button> : null}
         <label className={cn(buttonVariants({ variant: 'outline', size: 'sm' }), 'cursor-pointer')}>
           <Upload aria-hidden="true" />{t('console.uploadExisting')}
-          <input type="file" accept=".zip,application/zip" className="sr-only" onChange={(event) => {
+          <input type="file" accept=".zip,application/zip" className="sr-only" onClick={phonePick(onUploadFromPhone !== undefined, () => onUploadFromPhone?.())} onChange={(event) => {
             const file = event.target.files?.[0];
             event.target.value = '';
             if (file) onUpload(file);
@@ -4034,7 +4061,7 @@ function shownHostAddress(address: string | null): string | null {
 }
 
 /** Something another page sends the reader to the data page to do. */
-type DataIntent = { readonly kind: 'connect' } | { readonly kind: 'backup' } | { readonly kind: 'upload'; readonly file: File };
+type DataIntent = { readonly kind: 'connect' } | { readonly kind: 'backup' } | { readonly kind: 'upload'; readonly file: File } | { readonly kind: 'phoneUpload' };
 
 function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfileId, backups, onProfilesChange, onBackupsChange, intent, onIntentHandled }: { t: Translate; locale: string; fail: Fail; catalog: Record<string, unknown>; csrfToken: string; profiles: Profile[]; activeProfileId: string | null; backups: BackupManifest[]; onProfilesChange: (profiles: Profile[], activeProfileId: string | null) => void; onBackupsChange: (backups: BackupManifest[]) => void; /** Something the overview sent the reader here to do. */ intent: DataIntent | null; onIntentHandled: () => void }) {
   const [busyAction, setBusyAction] = useState<string | null>(null);
@@ -4054,6 +4081,13 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   // Leave out what SillyTavern can do without; asked in saver mode, and
   // required when the restore does not fit otherwise.
   const [restoreTrim, setRestoreTrim] = useState(false);
+  /**
+   * The zip just uploaded, while its restore is being asked about: it is a
+   * copy of a file the reader still has, and on a phone a copy that size is
+   * worth giving back once it has been restored.
+   */
+  const [justUploaded, setJustUploaded] = useState<string | null>(null);
+  const [discardUpload, setDiscardUpload] = useState(true);
   const [operationProgress, setOperationProgress] = useState<{ percent: number; step: string } | null>(null);
   const [uploading, setUploading] = useState(false);
   // What the Stop button acts on: a server job by id, or the upload in flight.
@@ -4074,6 +4108,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   // Saver mode takes no local archives, so the buttons that would write one
   // are put away and the card says why.
   const [saving, setSaving] = useState(false);
+  const phoneImport = usePhoneImport(saving);
   // The recovery point whose in-place restore is being asked about.
   const [restorePoint, setRestorePoint] = useState<R2SnapshotSummary | null>(null);
   // A zip still in the browser whose directory the server has read, waiting on
@@ -4163,6 +4198,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
     onIntentHandled();
     if (intent.kind === 'connect') setDestinationOpen(true);
     else if (intent.kind === 'upload') void inspectUpload(intent.file);
+    else if (intent.kind === 'phoneUpload') void importFromPhone();
     else void startBackup('scheduled').then((failure) => { if (failure) failed(failure); });
   }, [intent, loaded, r2Config === null]);
 
@@ -4454,7 +4490,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
     // A zip nobody went on to restore is nothing to the server but its
     // directory in memory; say so rather than leave it to time out.
     if (streaming) void apiFetch(`/api/v1/backups/stream?uploadId=${encodeURIComponent(streaming.uploadId)}`, { method: 'DELETE', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } }).catch(() => undefined);
-    setStreaming(null); setRestorePoint(null); setSelectedBackup(null); setSelectedPreview(null); setRestoreAnyway(false); setRestoreTrim(false);
+    setStreaming(null); setRestorePoint(null); setSelectedBackup(null); setSelectedPreview(null); setRestoreAnyway(false); setRestoreTrim(false); setJustUploaded(null); setDiscardUpload(true);
   };
   /**
    * Saver mode's upload: look inside the zip without sending it.
@@ -4566,12 +4602,13 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
     if (!selectedBackup || !selectedPreview) return;
     const backupId = selectedBackup.id;
     const trim = restoreTrim;
+    const discard = justUploaded === backupId && discardUpload;
     // The question has been answered, so the dialog goes before the work
     // starts: what happens next belongs on the page, where the Stop button is.
     closeRestore();
     setBusyAction(t('console.restore')); setOperationProgress(null); setMixedProfile(null);
     try {
-      const response = await apiFetch(`/api/v1/backups/${backupId}/restore`, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ mode: restoreMode, ...(restoreAnyway ? { force: true } : {}), ...(trim ? { trim: true } : {}) }) });
+      const response = await apiFetch(`/api/v1/backups/${backupId}/restore`, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ mode: restoreMode, ...(restoreAnyway ? { force: true } : {}), ...(trim ? { trim: true } : {}), ...(discard ? { discard: true } : {}) }) });
       const payload = await response.json() as { jobId?: string; error?: { message?: string } };
       if (!response.ok || !payload.jobId) { failed(fail.body(payload, t('console.backupRestoreFailed'))); return; }
       setRunningJobId(payload.jobId);
@@ -4634,13 +4671,62 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       if (!response.ok || !('files' in payload)) { failed(fail.body(payload, t('console.backupPreviewFailed'))); return; }
       if (!payload.backup) { failed(t('console.backupPreviewFailed')); return; }
       setRestoreMode('replace');
-      setSelectedBackup(payload.backup); setSelectedPreview(payload);
+      setSelectedBackup(payload.backup); setSelectedPreview(payload); setJustUploaded(payload.backup.id);
       await refresh();
     } catch (error: unknown) {
       // The part file on the server is worth nothing without the rest of it,
       // whether the upload failed or the operator stopped it.
       await apiFetch(`/api/v1/backups/import/chunk?uploadId=${encodeURIComponent(uploadId)}`, { method: 'DELETE', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } }).catch(() => undefined);
       if (!(error instanceof StoppedError)) failed(error instanceof Error ? error.message : t('console.backupPreviewFailed'));
+    } finally { uploadAbort.current = null; setBusyAction(null); setOperationProgress(null); setUploading(false); }
+  };
+  /**
+   * The Android app's upload: the app reads the zip off the phone and sends it
+   * through the same chunks, many times faster than this page can read it out
+   * of the WebView; see BackupImport in the app. What follows is the same
+   * question as after any upload.
+   */
+  const importFromPhone = async () => {
+    setBusyAction(t('console.importZip')); setOperationProgress(null); setUploading(true);
+    const controller = new AbortController();
+    uploadAbort.current = controller;
+    try {
+      const samples: Array<{ at: number; bytes: number }> = [{ at: Date.now(), bytes: 0 }];
+      const ended = await importZipFromApp(csrfToken, (event) => {
+        if (event.state !== 'progress') return;
+        // Every byte is on the server: what is left is its own work.
+        if (event.total > 0 && event.sent >= event.total) {
+          setUploading(false);
+          setOperationProgress({ percent: 100, step: t('console.importFinishing') });
+          return;
+        }
+        const at = Date.now();
+        samples.push({ at, bytes: event.sent });
+        while (samples.length > 2 && at - (samples[0]?.at ?? at) > UPLOAD_RATE_WINDOW_MS) samples.shift();
+        const oldest = samples[0] ?? { at, bytes: 0 };
+        const bytesPerSecond = at > oldest.at ? ((event.sent - oldest.bytes) / (at - oldest.at)) * 1000 : 0;
+        const total = Math.max(event.total, event.sent);
+        const remaining = bytesPerSecond > 0 ? `${formatDuration((total - event.sent) / bytesPerSecond)} ${t('console.uploadRemaining')}` : t('console.uploadEstimating');
+        setOperationProgress({
+          percent: Math.round((event.sent / Math.max(total, 1)) * 100),
+          step: `${t('console.uploading')} ${formatBytes(event.sent)} / ${formatBytes(total)} · ${formatBytes(Math.round(bytesPerSecond))}/s · ${remaining}`,
+        });
+      }, controller.signal);
+      if (!ended || ended.state === 'canceled' || ended.state === 'picked' || ended.state === 'progress') return;
+      if (ended.state === 'failed') {
+        failed(ended.status !== undefined && ended.body !== undefined ? apiErrorFromText(ended.body, ended.status, t('console.uploadFailed'), fail, t('console.uploadProxyPage')) : t('console.uploadFailed'));
+        return;
+      }
+      let payload: (RestorePreview & { backup?: BackupManifest }) | { error?: { message?: string } };
+      try { payload = JSON.parse(ended.body) as (RestorePreview & { backup?: BackupManifest }) | { error?: { message?: string } }; }
+      catch { throw new Error(apiErrorFromText(ended.body, ended.status, t('console.backupPreviewFailed'), fail, t('console.uploadProxyPage'))); }
+      if (ended.status < 200 || ended.status >= 300 || !('files' in payload)) { failed(fail.body(payload, t('console.backupPreviewFailed'))); return; }
+      if (!payload.backup) { failed(t('console.backupPreviewFailed')); return; }
+      setRestoreMode('replace');
+      setSelectedBackup(payload.backup); setSelectedPreview(payload); setJustUploaded(payload.backup.id);
+      await refresh();
+    } catch (error: unknown) {
+      failed(error instanceof Error ? error.message : t('console.backupPreviewFailed'));
     } finally { uploadAbort.current = null; setBusyAction(null); setOperationProgress(null); setUploading(false); }
   };
   const renameBackup = async (name: string): Promise<string | null> => {
@@ -5137,7 +5223,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
         <div className="grid gap-2 sm:flex sm:flex-wrap">
           <label className={cn(buttonVariants({ size: 'sm' }), 'cursor-pointer has-[:disabled]:pointer-events-none has-[:disabled]:opacity-50')}>
             <Upload aria-hidden="true" />{t('console.importZip')}
-            <input type="file" accept=".zip,application/zip" className="sr-only" disabled={busy} onChange={(event) => void inspectUpload(event.target.files?.[0])} />
+            <input type="file" accept=".zip,application/zip" className="sr-only" disabled={busy} onClick={phonePick(phoneImport, () => void importFromPhone())} onChange={(event) => void inspectUpload(event.target.files?.[0])} />
           </label>
           {saving ? null : <>
             <Button variant="outline" size="sm" onClick={() => startBackup('scheduled').then((failure) => { if (failure) failed(failure); })} disabled={busy || activeProfileId === null}><DatabaseBackup />{t('dashboard.backupNow')}</Button>
@@ -5390,7 +5476,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       cancelLabel={t('common.cancel')}
       onConfirm={deleteBackup}
     />
-    <RestoreDialog t={t} catalog={catalog} name={streaming ? streaming.file.name : restorePoint ? t('console.restorePointName', { when: new Date(restorePoint.createdAt).toLocaleString() }) : selectedBackup ? displayName(selectedBackup) : null} safety={t(saving ? 'console.restoreSafetySaver' : 'console.restoreSafety')} preview={selectedPreview} mode={restoreMode} onModeChange={setRestoreMode} anyway={restoreAnyway} onAnywayChange={setRestoreAnyway} trim={restoreTrim} onTrimChange={setRestoreTrim} onClose={closeRestore} onRestore={restoreSelected} />
+    <RestoreDialog t={t} catalog={catalog} name={streaming ? streaming.file.name : restorePoint ? t('console.restorePointName', { when: new Date(restorePoint.createdAt).toLocaleString() }) : selectedBackup ? displayName(selectedBackup) : null} safety={t(saving ? 'console.restoreSafetySaver' : 'console.restoreSafety')} preview={selectedPreview} mode={restoreMode} onModeChange={setRestoreMode} anyway={restoreAnyway} onAnywayChange={setRestoreAnyway} trim={restoreTrim} onTrimChange={setRestoreTrim} discard={selectedBackup && justUploaded === selectedBackup.id ? { checked: discardUpload, onChange: setDiscardUpload, sizeBytes: selectedBackup.sizeBytes } : null} onClose={closeRestore} onRestore={restoreSelected} />
     <R2DestinationDialog
       t={t}
       open={destinationOpen}
@@ -5664,10 +5750,11 @@ function NameDialog({ t, open, onOpenChange, title, description, label, hint, pl
  * where the choice is made, and the choice is made in a dialog, because one of
  * them deletes everything that is there.
  */
-function RestoreDialog({ t, catalog, name, safety, preview, mode, onModeChange, anyway, onAnywayChange, trim, onTrimChange, onClose, onRestore }: { t: Translate; catalog: Record<string, unknown>; name: string | null; safety: string; preview: RestorePreview | null; mode: RestoreMode; onModeChange: (mode: RestoreMode) => void; anyway: boolean; onAnywayChange: (anyway: boolean) => void; trim: boolean; onTrimChange: (trim: boolean) => void; onClose: () => void; onRestore: () => Promise<void> }) {
+function RestoreDialog({ t, catalog, name, safety, preview, mode, onModeChange, anyway, onAnywayChange, trim, onTrimChange, discard, onClose, onRestore }: { t: Translate; catalog: Record<string, unknown>; name: string | null; safety: string; preview: RestorePreview | null; mode: RestoreMode; onModeChange: (mode: RestoreMode) => void; anyway: boolean; onAnywayChange: (anyway: boolean) => void; trim: boolean; onTrimChange: (trim: boolean) => void; /** Offered for a zip just uploaded: remove it from the library once it is restored. */ discard: { readonly checked: boolean; readonly onChange: (checked: boolean) => void; readonly sizeBytes: number } | null; onClose: () => void; onRestore: () => Promise<void> }) {
   const group = useId();
   const anywayId = useId();
   const trimId = useId();
+  const discardId = useId();
   if (name === null || !preview) return null;
   /*
    * Whether it fits, in saver mode; see RestoreCapacity.
@@ -5700,10 +5787,16 @@ function RestoreDialog({ t, catalog, name, safety, preview, mode, onModeChange, 
    * of - occasionally what is wanted, usually not.
    */
   /*
+   * The junk any restore may leave out, room or no room. Without saver mode's
+   * measure of the machine it is an offer, never a condition: the archive's
+   * own count of it, from a manager that sends one.
+   */
+  const junk = capacity ? { files: capacity.junkFiles, bytes: capacity.junkBytes } : preview.junk ?? null;
+  /*
    * With the junk left out, the heading says what is actually restored: the
    * archive's count struck through, and what remains of it beside an arrow.
    */
-  const trimmed = trim && capacity && capacity.junkFiles > 0 ? capacity : null;
+  const trimmed = trim && junk && junk.files > 0 ? junk : null;
   /*
    * What a replace takes away, said before it does.
    *
@@ -5724,7 +5817,7 @@ function RestoreDialog({ t, catalog, name, safety, preview, mode, onModeChange, 
           ? <span className="flex flex-wrap items-center gap-x-1.5">
             <span className="line-through">{t('console.restoreCounts', { files: preview.fileCount, size: formatBytes(preview.totalBytes) })}</span>
             <ArrowRight className="size-3.5" aria-hidden />
-            <span className="font-medium text-foreground">{t('console.restoreCounts', { files: preview.fileCount - trimmed.junkFiles, size: formatBytes(preview.totalBytes - trimmed.junkBytes) })}</span>
+            <span className="font-medium text-foreground">{t('console.restoreCounts', { files: preview.fileCount - trimmed.files, size: formatBytes(preview.totalBytes - trimmed.bytes) })}</span>
           </span>
           : t('console.restoreCounts', { files: preview.fileCount, size: formatBytes(preview.totalBytes) })}</DialogDescription>
       </DialogHeader>
@@ -5767,19 +5860,30 @@ function RestoreDialog({ t, catalog, name, safety, preview, mode, onModeChange, 
           : null}
         {capacity && !capacity.fitsTrimmed
           ? <Alert variant="destructive"><AlertDescription>{t('console.restoreTooLarge', { needed: formatBytes(capacity.trimmedNeededBytes), available: formatBytes(capacity.availableBytes) })}</AlertDescription></Alert>
-          : capacity && capacity.junkBytes > 0
-            ? <Alert variant={capacity.fits ? 'default' : 'destructive'}>
-              <AlertDescription className="grid gap-2">
-                <span>{capacity.fits
-                  ? t('console.restoreJunkOptional', { junk: formatBytes(capacity.junkBytes), files: capacity.junkFiles })
-                  : t('console.restoreJunkNeeded', { needed: formatBytes(capacity.neededBytes), available: formatBytes(capacity.availableBytes), junk: formatBytes(capacity.junkBytes), files: capacity.junkFiles })}</span>
-                <Label htmlFor={trimId} className="flex items-start gap-2 font-normal">
-                  <Checkbox id={trimId} checked={trim} onCheckedChange={(checked) => onTrimChange(checked === true)} className="mt-0.5" />
-                  <span>{t('console.restoreTrim')}</span>
-                </Label>
-              </AlertDescription>
-            </Alert>
+          : junk && junk.bytes > 0
+            ? <div className="grid gap-2">
+              {capacity && !capacity.fits
+                ? <Alert variant="destructive"><AlertDescription>{t('console.restoreJunkNeeded', { needed: formatBytes(capacity.neededBytes), available: formatBytes(capacity.availableBytes) })}</AlertDescription></Alert>
+                : null}
+              {/* One line and a hint: an option beside the choice above, not a warning. */}
+              <Label htmlFor={trimId} className="flex items-start gap-2 font-normal">
+                <Checkbox id={trimId} checked={trim} onCheckedChange={(checked) => onTrimChange(checked === true)} className="mt-0.5" />
+                <span className="grid gap-0.5">
+                  <span>{t('console.restoreTrim', { size: formatBytes(junk.bytes) })}</span>
+                  <span className="text-xs text-muted-foreground">{t('console.restoreJunkOptional')}</span>
+                </span>
+              </Label>
+            </div>
             : null}
+        {discard
+          ? <Label htmlFor={discardId} className="flex items-start gap-2 font-normal">
+            <Checkbox id={discardId} checked={discard.checked} onCheckedChange={(checked) => discard.onChange(checked === true)} className="mt-0.5" />
+            <span className="grid gap-0.5">
+              <span>{t('console.restoreDiscardUpload', { size: formatBytes(discard.sizeBytes) })}</span>
+              <span className="text-xs text-muted-foreground">{t('console.restoreDiscardUploadHint')}</span>
+            </span>
+          </Label>
+          : null}
         {/* What it will use, once what is chosen fits; nothing to say when it
             frees more than it writes. */}
         {capacity && !blockedBySize && (trim ? capacity.trimmedNeededBytes : capacity.neededBytes) > 0

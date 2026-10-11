@@ -38,6 +38,13 @@ final class Browser {
         // inPhoneApp in the panel's oauth.ts.
         settings.setUserAgentString(settings.getUserAgentString() + " STMAndroid/" + BuildConfig.VERSION_NAME);
         CookieManager.getInstance().setAcceptCookie(true);
+        // Out of the phone's autofill. Its "suggest a strong password" panel
+        // came up on every key typed into the console's new-password field
+        // and took the keyboard away with it, one character at a time. These
+        // pages are the phone's own; there is nothing here to fill in.
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            web.setImportantForAutofill(android.view.View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS);
+        }
         web.setDownloadListener((url, userAgent, contentDisposition, mimeType, length) -> download(web.getContext(), url, userAgent, contentDisposition, mimeType));
     }
 
