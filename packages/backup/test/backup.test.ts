@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chmod, mkdtemp, mkdir, readFile, readdir, stat, utimes, writeFile } from 'node:fs/promises';
-import { Readable } from 'node:stream';
+import { PassThrough, Readable } from 'node:stream';
 import { randomBytes } from 'node:crypto';
 import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -471,6 +471,60 @@ test('assembles chunked uploads in order without buffering the archive', async (
   assert.equal(await readFile(archive, 'utf8'), 'hello world');
   await store.removeTemporary(archive);
   await assert.rejects(() => store.finishUpload(uploadId), (error: unknown) => error instanceof BackupError && error.code === 'upload_incomplete');
+});
+
+test('a chunk that breaks off is rolled back, and the upload carries on from there', async () => {
+  const fixture = await createFixture();
+  const store = new BackupStore({ paths: fixture.paths });
+  const uploadId = 'resumed-upload-1234';
+  const stream = (value: string): AsyncIterable<Uint8Array> => (async function* () { yield Buffer.from(value, 'utf8'); })();
+  const broken = (value: string): AsyncIterable<Uint8Array> => (async function* () { yield Buffer.from(value, 'utf8'); throw new Error('connection reset'); })();
+
+  // A first chunk that breaks off leaves nothing to carry on from.
+  await assert.rejects(() => store.appendUploadChunk(uploadId, 0, broken('hel')), /connection reset/u);
+  assert.equal(await store.uploadProgress(uploadId), null);
+
+  await store.appendUploadChunk(uploadId, 0, stream('hello '));
+  await assert.rejects(() => store.appendUploadChunk(uploadId, 1, broken('wor')), /connection reset/u);
+  assert.deepEqual(await store.uploadProgress(uploadId), { nextIndex: 1, bytes: 6 });
+  await store.appendUploadChunk(uploadId, 1, stream('world'));
+  assert.deepEqual(await store.uploadProgress(uploadId), { nextIndex: 2, bytes: 11 });
+
+  // A write cut off by the manager stopping leaves bytes past the last chunk.
+  await writeFile(join(fixture.paths.tmp, `upload-${uploadId}.zip.part`), 'hello worldGARBAGE');
+  await store.appendUploadChunk(uploadId, 2, stream('!'));
+  const archive = await store.finishUpload(uploadId, 12);
+  assert.equal(await readFile(archive, 'utf8'), 'hello world!');
+  await store.removeTemporary(archive);
+  assert.equal(await store.uploadProgress(uploadId), null);
+});
+
+test('a try at a chunk whose connection never closes is replaced, not waited for', async () => {
+  const fixture = await createFixture();
+  const store = new BackupStore({ paths: fixture.paths });
+  const uploadId = 'overlapping-upload-1';
+  const stream = (value: string): AsyncIterable<Uint8Array> => (async function* () { yield Buffer.from(value, 'utf8'); })();
+  const settle = () => new Promise((resolvePromise) => setTimeout(resolvePromise, 20));
+  await store.appendUploadChunk(uploadId, 0, stream('hello '));
+
+  // Asking where to carry on from stops the try that hangs.
+  const hung = new PassThrough();
+  hung.write('wor');
+  const first = assert.rejects(store.appendUploadChunk(uploadId, 1, hung));
+  await settle();
+  assert.deepEqual(await store.uploadProgress(uploadId), { nextIndex: 1, bytes: 6 });
+  await first;
+
+  // So does sending the same chunk again.
+  const hungAgain = new PassThrough();
+  hungAgain.write('wor');
+  const second = assert.rejects(store.appendUploadChunk(uploadId, 1, hungAgain));
+  await settle();
+  await store.appendUploadChunk(uploadId, 1, stream('world'));
+  await second;
+  const archive = await store.finishUpload(uploadId, 11);
+  assert.equal(await readFile(archive, 'utf8'), 'hello world');
+  await store.removeTemporary(archive);
 });
 
 /** Whether a restore put something where it was expected. */

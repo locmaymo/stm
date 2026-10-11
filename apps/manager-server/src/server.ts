@@ -2432,6 +2432,14 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     sendJson(response, 200, { ok: true, ...chunk });
     return;
   }
+  // Where a broken upload carries on from: the chunk it takes next and the
+  // bytes it already holds.
+  if (pathname === '/api/v1/backups/import/chunk' && method === 'GET') {
+    const progress = await backups.uploadProgress(searchParams.get('uploadId') ?? '');
+    if (!progress) { sendError(response, 404, 'upload_not_found', 'There is no such upload'); return; }
+    sendJson(response, 200, progress);
+    return;
+  }
   if (pathname === '/api/v1/backups/import/chunk' && method === 'DELETE') {
     const uploadId = searchParams.get('uploadId') ?? '';
     await backups.removeUpload(uploadId);

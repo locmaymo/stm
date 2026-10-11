@@ -83,7 +83,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 const UPLOAD_CHUNK_BYTES = 4 * 1024 * 1024;
-const UPLOAD_RETRIES = 3;
+/**
+ * A chunk that breaks off is rolled back on the server and sent again, with
+ * the wait doubling from a second: about half a minute in all, enough for a
+ * tunnel or a phone's connection to come back.
+ */
+const UPLOAD_RETRIES = 5;
+const UPLOAD_RETRY_FIRST_MS = 1000;
 const UPLOAD_RATE_WINDOW_MS = 10_000;
 
 /**
@@ -148,6 +154,11 @@ interface UploadMessages {
 
 async function uploadChunkWithRetry(url: string, body: Blob, headers: HeadersInit, messages: UploadMessages, signal?: AbortSignal): Promise<unknown> {
   let lastError = messages.failed;
+  // A Stop during the wait is answered at once, not after it.
+  const pause = (ms: number) => new Promise<void>((resolvePromise) => {
+    const timer = window.setTimeout(resolvePromise, ms);
+    signal?.addEventListener('abort', () => { window.clearTimeout(timer); resolvePromise(); }, { once: true });
+  });
   for (let attempt = 0; attempt <= UPLOAD_RETRIES; attempt += 1) {
     if (signal?.aborted) throw new StoppedError();
     let response: Response;
@@ -157,7 +168,7 @@ async function uploadChunkWithRetry(url: string, body: Blob, headers: HeadersIni
       if (signal?.aborted) throw new StoppedError();
       lastError = error instanceof Error ? error.message : lastError;
       if (attempt === UPLOAD_RETRIES) throw new Error(lastError);
-      await new Promise((resolvePromise) => window.setTimeout(resolvePromise, 500 * (attempt + 1)));
+      await pause(UPLOAD_RETRY_FIRST_MS * 2 ** attempt);
       continue;
     }
     if (response.ok) return await response.json().catch(() => null) as unknown;
@@ -165,7 +176,7 @@ async function uploadChunkWithRetry(url: string, body: Blob, headers: HeadersIni
     lastError = apiErrorFromText(text, response.status, messages.failed, messages.fail, messages.proxyPage);
     const retryable = response.status === 408 || response.status === 425 || response.status === 429 || response.status >= 500;
     if (!retryable || attempt === UPLOAD_RETRIES) throw new Error(lastError);
-    await new Promise((resolvePromise) => window.setTimeout(resolvePromise, 500 * (attempt + 1)));
+    await pause(UPLOAD_RETRY_FIRST_MS * 2 ** attempt);
   }
   throw new Error(lastError);
 }
@@ -4704,7 +4715,8 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
         samples.push({ at, bytes: event.sent });
         while (samples.length > 2 && at - (samples[0]?.at ?? at) > UPLOAD_RATE_WINDOW_MS) samples.shift();
         const oldest = samples[0] ?? { at, bytes: 0 };
-        const bytesPerSecond = at > oldest.at ? ((event.sent - oldest.bytes) / (at - oldest.at)) * 1000 : 0;
+        // A chunk sent again starts from fewer bytes than were counted; no speed below nothing.
+        const bytesPerSecond = at > oldest.at ? Math.max(0, ((event.sent - oldest.bytes) / (at - oldest.at)) * 1000) : 0;
         const total = Math.max(event.total, event.sent);
         const remaining = bytesPerSecond > 0 ? `${formatDuration((total - event.sent) / bytesPerSecond)} ${t('console.uploadRemaining')}` : t('console.uploadEstimating');
         setOperationProgress({

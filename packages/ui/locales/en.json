@@ -845,6 +845,7 @@
     "upload_already_started": "That upload has already started.",
     "upload_chunk_too_large": "That upload sent too much at once.",
     "upload_incomplete": "The upload did not arrive in full. Send it again.",
+    "upload_not_found": "That upload is no longer on the manager. Send it again.",
     "upload_too_large": "That upload is too large."
   },
   "logs": {
