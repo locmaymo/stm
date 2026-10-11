@@ -38,4 +38,5 @@
     <string name="permissions_done">✓ Done</string>
     <string name="permissions_start">Start</string>
     <string name="permissions_later">Not now</string>
+    <string name="sillytavern_stopped">SillyTavern stopped. Open it again from the console once it is running.</string>
 </resources>

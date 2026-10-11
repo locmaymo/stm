@@ -5,7 +5,7 @@ import { createReadStream } from 'node:fs';
 import { hostname, networkInterfaces } from 'node:os';
 import { createSocket } from 'node:dgram';
 import { extname, join, relative, resolve, sep } from 'node:path';
-import { applyQuery, availableUpdate, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, isConsoleStatusSection, KEEP_ONLINE_DEFAULT_MINUTES, OPERATION_JOB_KINDS, SETUP_STEPS, type AccessGatewayState, type ApiErrorBody, type BackupManifest, type ConfigUpdateInput, type ConsoleStatus, type ConsoleStatusSection, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogPage, type LogSink, type LogSourceFilter, type LegalReview, type ManagerPorts, type ManagerUpdateStatus, type OnlineState, type PortSettings, type Profile, type ProfileLayout, type RestorePreview, type SetupChecklistState, type SetupStatus, type SetupStep, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
+import { applyQuery, isLogEvent, availableUpdate, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, isConsoleStatusSection, KEEP_ONLINE_DEFAULT_MINUTES, OPERATION_JOB_KINDS, SETUP_STEPS, type AccessGatewayState, type ApiErrorBody, type BackupManifest, type ConfigUpdateInput, type ConsoleStatus, type ConsoleStatusSection, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogPage, type LogSink, type LogSourceFilter, type LegalReview, type ManagerPorts, type ManagerUpdateStatus, type OnlineState, type PortSettings, type Profile, type ProfileLayout, type RestorePreview, type SetupChecklistState, type SetupStatus, type SetupStep, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
 import { getPlatformPaths, storageDurability, storageMedium, storageReport, type PlatformPaths } from '../../../packages/platform/src/index.js';
 import { INSTALL_CANCELED, RuntimeError, RuntimeManager, type InstallationProgress } from '../../../packages/sillytavern-runtime/src/index.js';
 import { hashPassword, MIN_PASSWORD_LENGTH, validatePasscode, validatePassword, verifyPassword } from './password.js';
@@ -33,7 +33,7 @@ import { TransferMeter } from './progress.js';
 import { MetricsStore } from './metrics.js';
 import { ActivityMeter } from './activity.js';
 import { ReleaseWatch } from './manager-release.js';
-import { APP_NOTIFICATION_PREFIX, NotificationCenter, NotificationRules, renderNotification, type NotificationLocale } from './notifications.js';
+import { APP_EVENT_PREFIX, APP_NOTIFICATION_PREFIX, NotificationCenter, NotificationRules, renderNotification, type NotificationLocale } from './notifications.js';
 import { validSubscription, WebPush } from './web-push.js';
 import { AnnouncementFeed, DEFAULT_ANNOUNCEMENTS_URL } from './announcements.js';
 import { OnlineKeeper } from './online.js';
@@ -826,6 +826,15 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   if (env.STM_ANDROID_APP === '1') {
     notifications.subscribe((notification) => {
       process.stdout.write(`${APP_NOTIFICATION_PREFIX}${JSON.stringify(renderNotification(notification, notifications.locale))}\n`);
+    });
+    // And when SillyTavern goes away, for whatever reason. The app keeps one
+    // SillyTavern page alive across its screens, and a page whose server died
+    // stays stuck on the request it was waiting for - shown again, stuck,
+    // every time it is opened. Told, the app drops it and loads a fresh one.
+    jobs.onLine((line) => {
+      if (isLogEvent(line) && (line.code === 'sillytavern.exited' || line.code.startsWith('sillytavern.stopped'))) {
+        process.stdout.write(`${APP_EVENT_PREFIX}${JSON.stringify({ type: 'sillytavernStopped' })}\n`);
+      }
     });
   }
   jobs.onLine((line) => notificationRules.onLog(line));
@@ -2593,9 +2602,15 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
         return;
       }
       const trim = isRecord(body) && body.trim === true;
+      // An upload is a copy of a file the reader still has; once restored it
+      // can go, when they asked. Nothing the manager wrote itself is offered.
+      const discard = isRecord(body) && body.discard === true && manifest.source === 'uploaded';
       await checkFits(backups, profile, { archivePath }, mode, trim);
       const { job, signal } = jobs.createOperation('restore', logEvent('job.preparingRestore', 'Preparing restore'));
       void restoreWithProcess({ profile, backups, archivePath, backupId: id, mode, ...(force ? { force: true } : {}), ...(trim ? { trim: true } : {}), supervisor, signal, onProgress: (progress, step) => jobs.updateOperation(job.id, progress, step), safetyNet: saverSafetyNet(profile, backups, r2, (line) => jobs.append('backup', line)) })
+        .then(async () => {
+          if (discard) await backups.remove(id).catch((error: unknown) => { const reason = error instanceof Error ? error.message : 'unknown error'; jobs.append('backup', logEvent('backup.discardFailed', `[backup] the uploaded zip could not be removed after the restore: ${reason}`, { reason })); });
+        })
         .then(() => jobs.finishOperation(job.id, 'succeeded', null))
         .catch((error: unknown) => jobs.finishOperation(job.id, 'failed', error instanceof Error ? error.message : 'Restore failed', { evenIfCanceled: error instanceof RestoreRollbackError, stepCode: error instanceof RestoreRollbackError ? 'job.rollbackFailed' : undefined }));
       sendJson(response, 202, { jobId: job.id, job });

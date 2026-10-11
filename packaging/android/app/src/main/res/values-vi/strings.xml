@@ -38,4 +38,5 @@
     <string name="permissions_done">✓ Xong</string>
     <string name="permissions_start">Bắt đầu</string>
     <string name="permissions_later">Để sau</string>
+    <string name="sillytavern_stopped">SillyTavern đã dừng. Mở lại từ bảng điều khiển khi nó chạy lại.</string>
 </resources>

@@ -53,6 +53,8 @@ public class ManagerService extends Service {
      * this prefix and then the notification in words, as JSON.
      */
     private static final String NOTIFY_PREFIX = "STM-NOTIFY ";
+    /** Anything else the manager tells the app, the same way; see {@link #onEvent}. */
+    private static final String EVENT_PREFIX = "STM-EVENT ";
     private static final int NOTIFICATION = 1;
     private static final int EVENT_NOTIFICATION = 2;
     static final int DEFAULT_PORT = 7860;
@@ -299,6 +301,21 @@ public class ManagerService extends Service {
         }
     }
 
+    /**
+     * SillyTavern went away - it crashed, or something stopped it. The page
+     * the app keeps of it is waiting on a server that is gone, and would be
+     * shown again, stuck, the next time; it is dropped instead.
+     */
+    private void onEvent(String json) {
+        try {
+            if ("sillytavernStopped".equals(new JSONObject(json).optString("type"))) {
+                new android.os.Handler(android.os.Looper.getMainLooper()).post(MainActivity::sillyTavernStopped);
+            }
+        } catch (Exception error) {
+            Log.w(TAG, "an event from the manager could not be read", error);
+        }
+    }
+
     private void pumpOutput(Process child) {
         File log = new File(getFilesDir(), "manager-output.log");
         Thread pump = new Thread(() -> {
@@ -308,6 +325,10 @@ public class ManagerService extends Service {
                 while ((line = reader.readLine()) != null) {
                     if (line.startsWith(NOTIFY_PREFIX)) {
                         postEvent(line.substring(NOTIFY_PREFIX.length()));
+                        continue;
+                    }
+                    if (line.startsWith(EVENT_PREFIX)) {
+                        onEvent(line.substring(EVENT_PREFIX.length()));
                         continue;
                     }
                     Log.i(TAG, line);

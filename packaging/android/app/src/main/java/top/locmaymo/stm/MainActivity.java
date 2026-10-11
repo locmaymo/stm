@@ -85,6 +85,22 @@ public class MainActivity extends Activity implements SillyTavernHost.Host {
         context.startActivity(new Intent(context, MainActivity.class).putExtra(EXTRA_URL, url).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
     }
 
+    /** The console asked for a backup zip from the phone; see {@link BackupImport}. */
+    static void importZip(Uri origin, String csrf, androidx.webkit.JavaScriptReplyProxy reply) {
+        if (current != null) BackupImport.pick(current, origin, csrf, reply);
+    }
+
+    /**
+     * SillyTavern stopped under its page: back to the console, saying so, and
+     * the page goes. Opening SillyTavern again loads it fresh once it is up.
+     */
+    static void sillyTavernStopped() {
+        boolean shown = current != null && current.showingSillyTavern;
+        if (shown) current.closeSillyTavern();
+        SillyTavernHost.reset();
+        if (shown) Toast.makeText(current, R.string.sillytavern_stopped, Toast.LENGTH_LONG).show();
+    }
+
     /** Back to the console, from a link in SillyTavern that points at it. */
     static void showConsole() {
         if (current != null) current.closeSillyTavern();
@@ -306,6 +322,26 @@ public class MainActivity extends Activity implements SillyTavernHost.Host {
                 if (bridgeScript != null && Browser.isLocal(Uri.parse(url))) view.evaluateJavascript(bridgeScript, null);
             }
 
+            /*
+             * The pages' shared process died: most often Android taking its
+             * memory back while the app was out of sight. Left unhandled, a
+             * WebView's renderer dying ends the whole app - and with it the
+             * manager and SillyTavern, its child processes. Only the console
+             * goes; it is made again when the screen is next shown.
+             */
+            @Override
+            public boolean onRenderProcessGone(WebView view, android.webkit.RenderProcessGoneDetail detail) {
+                android.util.Log.w("STM", "the console's page stopped; it will be opened again");
+                if (view == web) {
+                    root.removeView(web);
+                    web.destroy();
+                    web = null;
+                    splash.setVisibility(View.VISIBLE);
+                    if (resumed) poll();
+                }
+                return true;
+            }
+
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 Uri uri = request.getUrl();
@@ -345,6 +381,7 @@ public class MainActivity extends Activity implements SillyTavernHost.Host {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         if (SillyTavernHost.onActivityResult(requestCode, resultCode, data)) return;
+        if (BackupImport.onActivityResult(this, requestCode, resultCode, data)) return;
         if (requestCode == FILE_CHOOSER && pendingUpload != null) {
             pendingUpload.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(resultCode, data));
             pendingUpload = null;
