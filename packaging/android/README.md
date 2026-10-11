@@ -62,7 +62,10 @@ sends it to the manager in 32 MB chunks through the same upload the console
 uses, with the console's session and CSRF token. On the LG V50 an 11 GB zip
 went at about 95 MB/s, against the page's 4 MB chunks read out of the WebView.
 The console finds out whether the app can do this by asking (`features`); an
-older app, or saver mode, keeps the page's own upload.
+older app, or saver mode, keeps the page's own upload. A chunk that breaks off
+is rolled back by the manager; the app asks it how far it got
+(`GET /api/v1/backups/import/chunk?uploadId=`), opens the file again there and
+carries on, up to five times with a doubling wait.
 
 ## Building
 

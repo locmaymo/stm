@@ -36,7 +36,8 @@ import java.util.UUID;
  * sends it to the manager here in large pieces, through the same upload the
  * page uses - its session, its CSRF token, its chunks and its finish - and
  * hands the answer back to the page, which then asks how to restore it as it
- * does for any upload.
+ * does for any upload. A chunk that breaks off is sent again from where the
+ * manager has it, rather than the whole file (see {@link #sendAll}).
  *
  * One import at a time. Everything the page hears arrives as {@code {type:
  * "import", state: ...}}: picked, progress, done with the finish's answer,
@@ -49,6 +50,9 @@ final class BackupImport {
     private static final int CHUNK_BYTES = 32 * 1024 * 1024;
     private static final int BUFFER_BYTES = 1024 * 1024;
     private static final long PROGRESS_EVERY_MS = 250;
+    /** Tries at a chunk that broke off before the import gives up; the wait doubles from a second. */
+    private static final int RETRIES = 5;
+    private static final long RETRY_FIRST_MS = 1000;
 
     private static final Handler main = new Handler(Looper.getMainLooper());
     private static JavaScriptReplyProxy page;
@@ -117,14 +121,69 @@ final class BackupImport {
         }
         tell(page, message("picked", "name", name, "size", size));
         String uploadId = UUID.randomUUID().toString();
-        long sent = 0;
+        try {
+            long sent = sendAll(app, uri, uploadId, size);
+            if (sent == 0) throw new IOException("The file is empty");
+            tell(page, message("progress", "sent", sent, "total", size));
+            HttpURLConnection finish = open("/api/v1/backups/import/finish", "POST");
+            finish.setRequestProperty("content-type", "application/json");
+            byte[] body = new JSONObject().put("uploadId", uploadId).put("name", name).put("expectedBytes", sent).toString().getBytes(StandardCharsets.UTF_8);
+            finish.setFixedLengthStreamingMode(body.length);
+            try (OutputStream out = finish.getOutputStream()) { out.write(body); }
+            int status = finish.getResponseCode();
+            tell(page, message("done", "status", status, "body", read(finish)));
+        } catch (CanceledException e) {
+            discard(uploadId);
+            tell(page, message("canceled"));
+        } catch (IOException | JSONException | SecurityException | UploadException e) {
+            Log.w(TAG, "a backup import failed", e);
+            discard(uploadId);
+            tell(page, e instanceof UploadException
+                ? message("failed", "message", e.getMessage(), "status", ((UploadException) e).status, "body", ((UploadException) e).body)
+                : message("failed", "message", String.valueOf(e.getMessage())));
+        }
+    }
+
+    /**
+     * Send the whole file, in chunks, and say how many bytes that was.
+     *
+     * A chunk that breaks off - the file's provider failing a read, the
+     * manager restarting - is rolled back by the manager. This asks it where
+     * to carry on from, opens the file again at that point and goes on, a few
+     * times, waiting longer each time. A refusal is not retried.
+     */
+    private static long sendAll(Context app, Uri uri, String uploadId, long size) throws IOException, UploadException, CanceledException {
+        int failures = 0;
+        while (true) {
+            try {
+                long from = 0;
+                int index = 0;
+                if (failures > 0) {
+                    long[] at = progress(uploadId);
+                    index = (int) at[0];
+                    from = at[1];
+                }
+                return sendFrom(app, uri, uploadId, from, index, size);
+            } catch (IOException | UploadException e) {
+                if (e instanceof UploadException && ((UploadException) e).status < 500) throw e;
+                if (++failures > RETRIES) throw e;
+                Log.w(TAG, "a backup import broke off; trying again (" + failures + "/" + RETRIES + ")", e);
+                pause(RETRY_FIRST_MS << (failures - 1));
+            }
+        }
+    }
+
+    /** Send the file from byte {@code from} on, as chunks numbered from {@code first}. */
+    private static long sendFrom(Context app, Uri uri, String uploadId, long from, int first, long size) throws IOException, UploadException, CanceledException {
+        long sent = from;
         try (InputStream in = app.getContentResolver().openInputStream(uri)) {
             if (in == null) throw new IOException("The file could not be opened");
+            skipFully(in, from);
             byte[] buffer = new byte[BUFFER_BYTES];
             // Read a buffer ahead, so the end of the file is known before its last chunk goes.
             int pending = readFully(in, buffer);
             long lastTold = 0;
-            for (int index = 0; pending > 0; index++) {
+            for (int index = first; pending > 0; index++) {
                 if (canceled) throw new CanceledException();
                 HttpURLConnection connection = open("/api/v1/backups/import/chunk?uploadId=" + uploadId + "&index=" + index, "POST");
                 connection.setRequestProperty("content-type", "application/octet-stream");
@@ -146,24 +205,53 @@ final class BackupImport {
                 }
                 expectOk(connection);
             }
-            if (sent == 0) throw new IOException("The file is empty");
-            tell(page, message("progress", "sent", sent, "total", size));
-            HttpURLConnection finish = open("/api/v1/backups/import/finish", "POST");
-            finish.setRequestProperty("content-type", "application/json");
-            byte[] body = new JSONObject().put("uploadId", uploadId).put("name", name).put("expectedBytes", sent).toString().getBytes(StandardCharsets.UTF_8);
-            finish.setFixedLengthStreamingMode(body.length);
-            try (OutputStream out = finish.getOutputStream()) { out.write(body); }
-            int status = finish.getResponseCode();
-            tell(page, message("done", "status", status, "body", read(finish)));
-        } catch (CanceledException e) {
-            discard(uploadId);
-            tell(page, message("canceled"));
-        } catch (IOException | JSONException | SecurityException | UploadException e) {
-            Log.w(TAG, "a backup import failed", e);
-            discard(uploadId);
-            tell(page, e instanceof UploadException
-                ? message("failed", "message", e.getMessage(), "status", ((UploadException) e).status, "body", ((UploadException) e).body)
-                : message("failed", "message", String.valueOf(e.getMessage())));
+        }
+        return sent;
+    }
+
+    /** Where the manager has the upload up to: {next chunk, bytes held}; {0, 0} when it holds none of it. */
+    private static long[] progress(String uploadId) throws IOException, UploadException {
+        HttpURLConnection connection = open("/api/v1/backups/import/chunk?uploadId=" + uploadId, "GET");
+        int status = connection.getResponseCode();
+        String body = read(connection);
+        if (status == 404) return new long[] { 0, 0 };
+        if (status < 200 || status >= 300) throw new UploadException(status, body);
+        try {
+            JSONObject answer = new JSONObject(body);
+            return new long[] { answer.getLong("nextIndex"), answer.getLong("bytes") };
+        } catch (JSONException e) {
+            throw new IOException("The manager's answer about the upload could not be read", e);
+        }
+    }
+
+    /** Wait before trying again, as long as nobody stops the import meanwhile. */
+    private static void pause(long ms) throws CanceledException {
+        long until = System.currentTimeMillis() + ms;
+        while (System.currentTimeMillis() < until) {
+            if (canceled) throw new CanceledException();
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new CanceledException();
+            }
+        }
+    }
+
+    /** Move {@code in} on by {@code bytes}, reading through it where it will not skip. */
+    private static void skipFully(InputStream in, long bytes) throws IOException {
+        long left = bytes;
+        byte[] scratch = null;
+        while (left > 0) {
+            long skipped = in.skip(left);
+            if (skipped > 0) {
+                left -= skipped;
+                continue;
+            }
+            if (scratch == null) scratch = new byte[BUFFER_BYTES];
+            int read = in.read(scratch, 0, (int) Math.min(scratch.length, left));
+            if (read < 0) throw new IOException("The file is shorter than what was already sent");
+            left -= read;
         }
     }
 
@@ -188,7 +276,8 @@ final class BackupImport {
         if (cookie != null) connection.setRequestProperty("cookie", cookie);
         if (csrf != null) connection.setRequestProperty("x-csrf-token", csrf);
         connection.setRequestProperty("accept", "application/json");
-        connection.setDoOutput(!"DELETE".equals(method));
+        // Only a POST has a body; a GET given one is sent as a POST.
+        connection.setDoOutput("POST".equals(method));
         return connection;
     }
 

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getPlatformPaths } from '../../../packages/platform/src/index.js';
@@ -655,14 +656,38 @@ test('local backup endpoints create, preview, download, and restore a profile ar
   const chunkUploadId = 'server-chunk-upload-1';
   const bytes = new Uint8Array(archiveBytes);
   const split = Math.max(1, Math.ceil(bytes.length / 2));
+  // Nothing received yet is no upload; after each chunk, where the next goes.
+  assert.equal((await fetch(`${base}/api/v1/backups/import/chunk?uploadId=${chunkUploadId}`, { headers: { cookie } })).status, 404);
   for (let index = 0; index < 2; index += 1) {
     const chunk = await fetch(`${base}/api/v1/backups/import/chunk?uploadId=${chunkUploadId}&index=${index}`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/octet-stream' }, body: bytes.slice(index * split, Math.min(bytes.length, (index + 1) * split)) });
     assert.equal(chunk.status, 200);
+    const progress = await fetch(`${base}/api/v1/backups/import/chunk?uploadId=${chunkUploadId}`, { headers: { cookie } });
+    assert.deepEqual(await progress.json(), { nextIndex: index + 1, bytes: Math.min(bytes.length, (index + 1) * split) });
   }
   const finishedUpload = await fetch(`${base}/api/v1/backups/import/finish`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ uploadId: chunkUploadId, name: 'chunked-upload.zip', expectedBytes: bytes.length }) });
   assert.equal(finishedUpload.status, 200);
   const chunkedBody = await finishedUpload.json() as { backup: { id: string; source: string } };
   assert.equal(chunkedBody.backup.source, 'uploaded');
+
+  // A chunk whose connection is cut part way through is rolled back, not
+  // kept as though it were whole, and the same chunk sent again finishes it.
+  const cutUploadId = 'server-cut-upload-1';
+  const chunkUrl = (index: number) => `${base}/api/v1/backups/import/chunk?uploadId=${cutUploadId}&index=${index}`;
+  const chunkHeaders = { cookie, 'x-csrf-token': csrf, 'content-type': 'application/octet-stream' };
+  assert.equal((await fetch(chunkUrl(0), { method: 'POST', headers: chunkHeaders, body: bytes.slice(0, split) })).status, 200);
+  await new Promise<void>((resolvePromise) => {
+    const cut = httpRequest(chunkUrl(1), { method: 'POST', headers: { ...chunkHeaders, 'transfer-encoding': 'chunked' } });
+    cut.on('error', () => undefined);
+    cut.on('close', () => resolvePromise());
+    cut.write(Buffer.from(bytes.slice(split, split + Math.max(1, Math.floor((bytes.length - split) / 2)))), () => setTimeout(() => cut.destroy(), 50));
+  });
+  const afterCut = await fetch(`${base}/api/v1/backups/import/chunk?uploadId=${cutUploadId}`, { headers: { cookie } });
+  assert.deepEqual(await afterCut.json(), { nextIndex: 1, bytes: split });
+  assert.equal((await fetch(chunkUrl(1), { method: 'POST', headers: chunkHeaders, body: bytes.slice(split) })).status, 200);
+  const finishedCut = await fetch(`${base}/api/v1/backups/import/finish`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ uploadId: cutUploadId, name: 'cut-upload.zip', expectedBytes: bytes.length }) });
+  assert.equal(finishedCut.status, 200);
+  const cutBody = await finishedCut.json() as { backup: { id: string } };
+  assert.equal((await fetch(`${base}/api/v1/backups/${cutBody.backup.id}`, { method: 'DELETE', headers: { cookie, 'x-csrf-token': csrf } })).status, 200);
   const removedChunked = await fetch(`${base}/api/v1/backups/${chunkedBody.backup.id}`, { method: 'DELETE', headers: { cookie, 'x-csrf-token': csrf } });
   assert.equal(removedChunked.status, 200);
   const renamed = await fetch(`${base}/api/v1/backups/${importedBody.backup.id}`, { method: 'PUT', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ name: 'Uploaded copy' }) });

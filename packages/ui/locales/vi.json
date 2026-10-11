@@ -845,6 +845,7 @@
     "upload_already_started": "Lần tải lên đó đã bắt đầu rồi.",
     "upload_chunk_too_large": "Lần tải lên này gửi quá nhiều một lúc.",
     "upload_incomplete": "Tệp tải lên chưa về đủ. Hãy gửi lại.",
+    "upload_not_found": "Bản tải lên này không còn trên trình quản lý. Hãy gửi lại.",
     "upload_too_large": "Tệp tải lên quá lớn."
   },
   "logs": {

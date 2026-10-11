@@ -5,7 +5,7 @@ import { once } from 'node:events';
 import { PassThrough, Transform, Readable } from 'node:stream';
 import { finished } from 'node:stream/promises';
 import { pipeline } from 'node:stream/promises';
-import { chmod, lstat, mkdir, open, readFile, readdir, rename, rm, rmdir, stat, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, open, readFile, readdir, rename, rm, rmdir, stat, truncate, writeFile } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
 import { BACKUP_KINDS, backupKind, defaultBackupName, logEvent, logLineText, type BackupFilePreview, type BackupKind, type BackupManifest, type BackupSource, type LogEvent, type LogSink, type Profile, type ProfileLayout, type RestoreLosses, type RestoreMode, type RestorePreview, type LocalBackupSchedule } from '../../contracts/src/index.js';
@@ -284,6 +284,8 @@ export class BackupStore {
   public saving = false;
   /** Zips being restored as they upload, by id; see `ArchiveStream`. */
   private readonly streams = new Map<string, ArchiveStream>();
+  /** The chunk of each upload being written now, and how to stop it; see `appendUploadChunk`. */
+  private readonly appending = new Map<string, { readonly done: Promise<unknown>; readonly stop: AbortController }>();
 
   public constructor(options: BackupStoreOptions) {
     this.paths = options.paths;
@@ -990,10 +992,51 @@ export class BackupStore {
    * request bodies, so the panel sends a ZIP as a sequence of chunks. State is
    * persisted beside the part file so a manager restart cannot silently join
    * chunks in the wrong order.
+   *
+   * A chunk that breaks off part way - a dropped connection, a stopped proxy -
+   * is rolled back to the chunks before it rather than taking the upload with
+   * it, so the sender can send that chunk again, or ask `uploadProgress` where
+   * to carry on from.
+   *
+   * One chunk of an upload is written at a time, and a new one replaces any
+   * still being written: the sender only tries again once it has given up on
+   * the last try, whose connection may have died without closing and would
+   * otherwise hold the upload for as long as the server waits on a request.
+   * That try is stopped and rolled back before the new one starts.
    */
   public async appendUploadChunk(uploadId: string, index: number, stream: AsyncIterable<Uint8Array>): Promise<{ index: number; bytes: number; totalBytes: number }> {
     validateUploadId(uploadId);
     if (!Number.isSafeInteger(index) || index < 0) throw new BackupError('invalid_upload_chunk', 'The upload chunk index is invalid');
+    const previous = this.appending.get(uploadId);
+    previous?.stop.abort();
+    const stop = new AbortController();
+    const done = (previous?.done ?? Promise.resolve()).catch(() => undefined).then(() => this.appendChunk(uploadId, index, stream, stop.signal));
+    const entry = { done, stop };
+    this.appending.set(uploadId, entry);
+    try {
+      return await done;
+    } finally {
+      if (this.appending.get(uploadId) === entry) this.appending.delete(uploadId);
+    }
+  }
+
+  /**
+   * How far a chunked upload has got: the index of the chunk it takes next and
+   * the bytes it holds. Null when there is no such upload, or nothing of it
+   * was kept. Asked by a sender that has given up on the chunk it was
+   * sending, so a chunk still being written is stopped and rolled back first.
+   */
+  public async uploadProgress(uploadId: string): Promise<{ nextIndex: number; bytes: number } | null> {
+    validateUploadId(uploadId);
+    const writing = this.appending.get(uploadId);
+    writing?.stop.abort();
+    await writing?.done.catch(() => undefined);
+    const state = await this.readUploadState(this.uploadStatePath(uploadId));
+    return state ? { nextIndex: state.nextIndex, bytes: state.bytes } : null;
+  }
+
+  private async appendChunk(uploadId: string, index: number, stream: AsyncIterable<Uint8Array>, signal: AbortSignal): Promise<{ index: number; bytes: number; totalBytes: number }> {
+    if (signal.aborted) throw new BackupError('operation_canceled', 'A newer try of this upload chunk took over');
     const partPath = this.uploadPartPath(uploadId);
     const statePath = this.uploadStatePath(uploadId);
     const current = await this.readUploadState(statePath);
@@ -1007,6 +1050,15 @@ export class BackupStore {
       await rm(partPath, { force: true });
     } else if (!current || current.nextIndex !== index) {
       throw new BackupError('invalid_upload_chunk', `Expected upload chunk ${current?.nextIndex ?? 0}`);
+    } else {
+      // Bytes past the last committed chunk are what a write cut off by the
+      // manager stopping left behind; they go before this chunk is added.
+      const size = (await stat(partPath).catch(() => null))?.size ?? -1;
+      if (size < current.bytes) {
+        await this.removeUpload(uploadId);
+        throw new BackupError('upload_incomplete', 'The upload lost what it had received; start it again');
+      }
+      if (size > current.bytes) await truncate(partPath, current.bytes);
     }
 
     let chunkBytes = 0;
@@ -1022,12 +1074,17 @@ export class BackupStore {
     });
     try {
       await mkdir(this.paths.tmp, { recursive: true });
-      await pipeline(Readable.from(stream), limiter, createWriteStream(partPath, { flags: index === 0 ? 'w' : 'a', mode: 0o600 }));
+      // A request is given to the pipeline as it is, so a stop destroys it at
+      // once; wrapped, it would wait on a read that a dead connection never ends.
+      const source = stream instanceof Readable ? stream : Readable.from(stream);
+      await pipeline(source, limiter, createWriteStream(partPath, { flags: index === 0 ? 'w' : 'a', mode: 0o600 }), { signal });
       const totalBytes = (await stat(partPath)).size;
       await this.writeUploadState(statePath, { schemaVersion: 1, nextIndex: index + 1, bytes: totalBytes });
       return { index, bytes: chunkBytes, totalBytes };
     } catch (error) {
-      await this.removeUpload(uploadId);
+      // Back to the chunks before this one, so it can be sent again.
+      if (current) await truncate(partPath, current.bytes).catch(() => this.removeUpload(uploadId));
+      else await this.removeUpload(uploadId);
       throw error;
     }
   }
