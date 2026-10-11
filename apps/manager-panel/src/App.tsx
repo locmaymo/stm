@@ -1788,6 +1788,9 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
   const [checklistPasswordOpen, setChecklistPasswordOpen] = useState(false);
   // The data page opens its connection form once it has read the settings.
   const [dataIntent, setDataIntent] = useState<DataIntent | null>(null);
+  // What the data page has under way; while it holds anything, the page is
+  // kept, hidden, when the reader goes elsewhere. See `DataActivity`.
+  const [dataActivity, setDataActivity] = useState<DataActivity | null>(null);
   const openConnect = () => { setDataIntent({ kind: 'connect' }); navigate('data'); };
   const openUpload = (file: File) => { setDataIntent({ kind: 'upload', file }); navigate('data'); };
   const phoneImport = usePhoneImport(saver?.enabled === true);
@@ -2032,7 +2035,16 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
                 }}
               /></div>
               : null}
-            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}{checklist}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} hostAddress={shownHostAddress(online?.hostAddress ?? null)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} onSetAccessLink={setAccessLink} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} canBackUp={activeProfileId !== null && saver?.enabled !== true} onBackup={openBackup} onUpload={openUpload} onUploadFromPhone={phoneImport ? openPhoneUpload : undefined} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? <DataPage t={t} locale={preferences.locale} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} intent={dataIntent} onIntentHandled={() => setDataIntent(null)} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} onSetAccessLink={setAccessLink} startup={startup} saver={saver} online={online} onSetAutoStart={setAutoStartSillyTavern} onSetSaver={setSaverMode} onSetKeepOnline={setKeepOnline} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} onEraseEverything={eraseEverything} /> : <ResourcePanel page={page} t={t} />}
+            {page !== 'data' && dataActivity?.label
+              ? <DataActivityStrip t={t} label={dataActivity.label} step={dataActivity.step} percent={dataActivity.percent} onOpen={() => navigate('data')} />
+              : null}
+            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}{checklist}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} hostAddress={shownHostAddress(online?.hostAddress ?? null)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} onSetAccessLink={setAccessLink} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} canBackUp={activeProfileId !== null && saver?.enabled !== true} onBackup={openBackup} onUpload={openUpload} onUploadFromPhone={phoneImport ? openPhoneUpload : undefined} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? null : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} onSetAccessLink={setAccessLink} startup={startup} saver={saver} online={online} onSetAutoStart={setAutoStartSillyTavern} onSetSaver={setSaverMode} onSetKeepOnline={setKeepOnline} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} onEraseEverything={eraseEverything} /> : <ResourcePanel page={page} t={t} />}
+            {/* Kept, hidden, while it has work under way, so leaving for another
+                page does not take the work's progress and its last question
+                with it; the strip above stands in for it meanwhile. */}
+            {page === 'data' || dataActivity?.holding
+              ? <div className={page === 'data' ? 'contents' : 'hidden'}><DataPage t={t} locale={preferences.locale} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} intent={dataIntent} onIntentHandled={() => setDataIntent(null)} onActivity={setDataActivity} /></div>
+              : null}
           </PageContainer>
           <MobileNav
             items={navigation.map(({ id, icon }) => ({ id, icon, href: `#${id}`, label: t(`nav.${id}`) }))}
@@ -4074,7 +4086,22 @@ function shownHostAddress(address: string | null): string | null {
 /** Something another page sends the reader to the data page to do. */
 type DataIntent = { readonly kind: 'connect' } | { readonly kind: 'backup' } | { readonly kind: 'upload'; readonly file: File } | { readonly kind: 'phoneUpload' };
 
-function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfileId, backups, onProfilesChange, onBackupsChange, intent, onIntentHandled }: { t: Translate; locale: string; fail: Fail; catalog: Record<string, unknown>; csrfToken: string; profiles: Profile[]; activeProfileId: string | null; backups: BackupManifest[]; onProfilesChange: (profiles: Profile[], activeProfileId: string | null) => void; onBackupsChange: (backups: BackupManifest[]) => void; /** Something the overview sent the reader here to do. */ intent: DataIntent | null; onIntentHandled: () => void }) {
+/**
+ * What the data page has under way, for the rest of the console to know.
+ *
+ * `label` and the rest describe work that is running - an upload, a backup,
+ * a restore - and are null when nothing runs. `holding` is true while the
+ * page has anything that would be lost if it went away: that work, or a
+ * question about it still open.
+ */
+interface DataActivity {
+  readonly label: string | null;
+  readonly step: string | null;
+  readonly percent: number | null;
+  readonly holding: boolean;
+}
+
+function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfileId, backups, onProfilesChange, onBackupsChange, intent, onIntentHandled, onActivity }: { t: Translate; locale: string; fail: Fail; catalog: Record<string, unknown>; csrfToken: string; profiles: Profile[]; activeProfileId: string | null; backups: BackupManifest[]; onProfilesChange: (profiles: Profile[], activeProfileId: string | null) => void; onBackupsChange: (backups: BackupManifest[]) => void; /** Something the overview sent the reader here to do. */ intent: DataIntent | null; onIntentHandled: () => void; /** Told whenever what the page has under way changes; see `DataActivity`. */ onActivity: (activity: DataActivity | null) => void }) {
   const [busyAction, setBusyAction] = useState<string | null>(null);
   /*
    * The one thing on this page that is state rather than a result.
@@ -4101,6 +4128,8 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   const [discardUpload, setDiscardUpload] = useState(true);
   const [operationProgress, setOperationProgress] = useState<{ percent: number; step: string } | null>(null);
   const [uploading, setUploading] = useState(false);
+  // The Android app is the one sending, so this page can come and go.
+  const [uploadingFromApp, setUploadingFromApp] = useState(false);
   // What the Stop button acts on: a server job by id, or the upload in flight.
   const [runningJobId, setRunningJobId] = useState<string | null>(null);
   const [stopping, setStopping] = useState(false);
@@ -4207,6 +4236,9 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
     if (intent === null || !loaded) return;
     if (intent.kind === 'connect' && r2Config === null) return;
     onIntentHandled();
+    // Sent here while something else is running: what is running is what
+    // the reader now sees, and the new work waits for them to ask again.
+    if (intent.kind !== 'connect' && (busyAction !== null || r2Busy !== null)) { failed(t('console.dataBusy')); return; }
     if (intent.kind === 'connect') setDestinationOpen(true);
     else if (intent.kind === 'upload') void inspectUpload(intent.file);
     else if (intent.kind === 'phoneUpload') void importFromPhone();
@@ -4398,6 +4430,22 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
     window.addEventListener('beforeunload', warn);
     return () => window.removeEventListener('beforeunload', warn);
   }, [uploading]);
+
+  /*
+   * What is under way here, told to the console, which keeps this page alive
+   * while there is any and shows it on the other pages. The work runs in this
+   * page; leaving for the overview used to drop the page and its progress
+   * while the upload went on unseen, and the question at its end was never
+   * asked.
+   */
+  const activityLabel = busyAction ?? r2Busy;
+  const activityPercent = operationProgress ? Math.round(operationProgress.percent) : null;
+  const activityStep = operationProgress?.step ?? null;
+  const holding = activityLabel !== null || selectedPreview !== null || streaming !== null || restorePoint !== null;
+  useEffect(() => {
+    onActivity(holding ? { label: activityLabel, step: activityStep, percent: activityPercent, holding } : null);
+  }, [activityLabel, activityStep, activityPercent, holding]);
+  useEffect(() => () => onActivity(null), []);
 
   const createProfile = async (name: string): Promise<string | null> => {
     setBusyAction(t('console.newProfile'));
@@ -4698,7 +4746,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
    * question as after any upload.
    */
   const importFromPhone = async () => {
-    setBusyAction(t('console.importZip')); setOperationProgress(null); setUploading(true);
+    setBusyAction(t('console.importZip')); setOperationProgress(null); setUploading(true); setUploadingFromApp(true);
     const controller = new AbortController();
     uploadAbort.current = controller;
     try {
@@ -4739,7 +4787,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       await refresh();
     } catch (error: unknown) {
       failed(error instanceof Error ? error.message : t('console.backupPreviewFailed'));
-    } finally { uploadAbort.current = null; setBusyAction(null); setOperationProgress(null); setUploading(false); }
+    } finally { uploadAbort.current = null; setBusyAction(null); setOperationProgress(null); setUploading(false); setUploadingFromApp(false); }
   };
   const renameBackup = async (name: string): Promise<string | null> => {
     if (!renameTarget) return null;
@@ -5242,7 +5290,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
             <Button variant="outline" size="sm" onClick={() => setBackupOpen(true)} disabled={busy || activeProfileId === null}><BookmarkPlus />{t('console.manualBackup')}</Button>
           </>}
         </div>
-        {busyAction ? <OperationProgress t={t} label={busyAction} progress={operationProgress} canStop={uploading || runningJobId !== null} stopping={stopping} onStop={() => void stopOperation()} warning={uploading ? t('console.uploadKeepTabOpen') : null} /> : null}
+        {busyAction ? <OperationProgress t={t} label={busyAction} progress={operationProgress} canStop={uploading || runningJobId !== null} stopping={stopping} onStop={() => void stopOperation()} warning={uploading && !uploadingFromApp ? t('console.uploadKeepTabOpen') : null} note={uploading && uploadingFromApp ? t('console.uploadFromApp') : null} /> : null}
         <DataTable
           rows={kindFilter === 'all' ? backups : backups.filter((backup) => backupKind(backup) === kindFilter)}
           columns={backupColumns}
@@ -5635,7 +5683,7 @@ function R2CheckLine({ t, check }: { t: Translate; check: R2CheckResult }) {
  * one block says it rather than each card writing out its own bar, its own
  * percentage and its own Stop button in its own place.
  */
-function OperationProgress({ t, label, progress, canStop, stopping, onStop, warning }: { t: Translate; label: string; progress: { percent: number; step: string } | null; canStop: boolean; stopping: boolean; onStop: () => void; warning: string | null }) {
+function OperationProgress({ t, label, progress, canStop, stopping, onStop, warning, note }: { t: Translate; label: string; progress: { percent: number; step: string } | null; canStop: boolean; stopping: boolean; onStop: () => void; warning: string | null; /** Something to know, not to worry about. */ note?: string | null }) {
   return <div className="grid gap-2 rounded-lg border bg-muted/40 p-3" role="status">
     <div className="flex flex-wrap items-center justify-between gap-2">
       <TaskLine task={label} step={progress?.step ?? t('console.taskPreparing')} {...(progress ? { percent: progress.percent } : {})} />
@@ -5643,6 +5691,23 @@ function OperationProgress({ t, label, progress, canStop, stopping, onStop, warn
     </div>
     <TaskBar {...(progress ? { percent: Math.max(2, progress.percent) } : {})} />
     {warning ? <span className="text-xs text-destructive">{warning}</span> : null}
+    {note ? <span className="text-xs text-muted-foreground">{note}</span> : null}
+  </div>;
+}
+
+/**
+ * The data page's work, on the other pages while it goes on.
+ *
+ * An upload or a restore runs in the data page, which stays alive while it
+ * does; this says so wherever the reader is, and takes them back to it.
+ */
+function DataActivityStrip({ t, label, step, percent, onOpen }: { t: Translate; label: string; step: string | null; percent: number | null; onOpen: () => void }) {
+  return <div className="mb-(--section-gap) grid gap-2 rounded-lg border bg-muted/40 p-3" role="status">
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <TaskLine task={label} step={step ?? t('console.taskPreparing')} {...(percent === null ? {} : { percent })} />
+      <Button variant="outline" size="sm" onClick={onOpen}><Database />{t('console.viewProgress')}</Button>
+    </div>
+    <TaskBar {...(percent === null ? {} : { percent: Math.max(2, percent) })} />
   </div>;
 }
 
