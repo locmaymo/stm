@@ -1,5 +1,5 @@
 /* global performance, URL */
-import { appendFile, mkdir } from 'node:fs/promises';
+import { appendFile, mkdir, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { Transform } from 'node:stream';
 
@@ -8,13 +8,25 @@ const wrappedMarker = Symbol.for('sillytavern-manager.instrumented-fetch');
 export function installFetchObserver(fetchFunction, options = {}) {
   if (typeof fetchFunction !== 'function' || fetchFunction[wrappedMarker]) return fetchFunction;
   const persist = typeof options.persist === 'function' ? options.persist : createPersistFromEnvironment();
+  const reply = typeof options.reply === 'function' ? options.reply : options.persist ? null : createReplyFromEnvironment();
   const wrapped = function managerInstrumentedFetch(input, init) {
     const startedAt = performance.now();
     const details = inspectRequest(input, init);
+    details.wantsText = reply !== null;
     // SillyTavern fetches far more than model replies: extension manifests
     // and updates from GitHub, package metadata, fonts, model lists. Every one
     // of those used to land in the usage log as a request to an unknown model.
-    const record = (event) => { if (isModelRequest(details, event)) persist(event); };
+    /*
+     * The start of a finished reply goes to the reply file before the line
+     * goes to the usage log, so whoever reads the line finds the words already
+     * there. Never into the log itself: that file is read for telemetry and
+     * copied to the owner's bucket, and words have no place in either.
+     */
+    const record = (event, text = '') => {
+      if (!isModelRequest(details, event)) return;
+      if (!reply || !text || event.cut) { persist(event); return; }
+      Promise.resolve().then(() => reply(event.timestamp, text)).catch(() => undefined).finally(() => persist(event));
+    };
     let pending;
     try { pending = fetchFunction.call(this, input, init); }
     catch (error) { record(failedEvent(details, startedAt)); throw error; }
@@ -61,7 +73,20 @@ function observeResponse(response, details, startedAt, persist) {
     persist(eventFrom(details, startedAt, response?.status ?? null, new Usage()));
     return response;
   }
-  const usage = new Usage();
+  const usage = new Usage(details.wantsText === true);
+  /*
+   * Said once, however the body ends. A reply that stopped before its end -
+   * SillyTavern let go of it because the page that asked went away, or the
+   * provider dropped the connection - is marked `cut`, so whoever tells the
+   * reader about it does not call half a reply a finished one.
+   */
+  let settled = false;
+  const settle = (cut) => {
+    if (settled) return;
+    settled = true;
+    usage.finish();
+    persist(eventFrom(details, startedAt, response.status, usage, cut), usage.text());
+  };
   try {
     details.stream ||= String(response.headers?.get?.('content-type') ?? '').toLowerCase().includes('text/event-stream');
     if (typeof response.body.getReader === 'function' && typeof globalThis.ReadableStream === 'function') {
@@ -70,20 +95,20 @@ function observeResponse(response, details, startedAt, persist) {
         async pull(controller) {
           try {
             const result = await reader.read();
-            if (result.done) { usage.finish(); persist(eventFrom(details, startedAt, response.status, usage)); controller.close(); return; }
+            if (result.done) { settle(false); controller.close(); return; }
             usage.feed(result.value, details.stream || response.headers?.get?.('content-type')?.includes('text/event-stream'));
             controller.enqueue(result.value);
-          } catch (error) { usage.finish(); persist(eventFrom(details, startedAt, response.status, usage)); controller.error(error); }
+          } catch (error) { settle(true); controller.error(error); }
         },
-        async cancel(reason) { usage.finish(); persist(eventFrom(details, startedAt, response.status, usage)); await reader.cancel(reason); },
+        async cancel(reason) { settle(true); await reader.cancel(reason); },
       });
       return copyWebResponse(response, stream);
     }
     if (typeof response.body.on === 'function' && typeof response.body.pipe === 'function') {
-      return copyNodeResponse(response, details, startedAt, usage, persist);
+      return copyNodeResponse(response, details, usage, settle);
     }
   } catch { /* instrumentation must never alter a provider response */ }
-  persist(eventFrom(details, startedAt, response.status ?? null, usage));
+  persist(eventFrom(details, startedAt, response.status ?? null, usage), usage.text());
   return response;
 }
 
@@ -96,11 +121,14 @@ function copyWebResponse(response, body) {
   return wrapped;
 }
 
-function copyNodeResponse(response, details, startedAt, usage, persist) {
+function copyNodeResponse(response, details, usage, settle) {
   const tap = new Transform({
     transform(chunk, encoding, callback) { usage.feed(chunk, details.stream || String(response.headers?.get?.('content-type') ?? '').includes('text/event-stream')); callback(null, chunk); },
-    flush(callback) { usage.finish(); persist(eventFrom(details, startedAt, response.status, usage)); callback(); },
+    flush(callback) { settle(false); callback(); },
   });
+  // Torn down before the end - aborted, or the body failed - is never flushed,
+  // and used to go unrecorded altogether.
+  tap.once('close', () => settle(true));
   response.body.once('error', (error) => tap.destroy(error));
   response.body.pipe(tap);
   const WrappedResponse = response.constructor;
@@ -108,9 +136,14 @@ function copyNodeResponse(response, details, startedAt, usage, persist) {
 }
 
 function failedEvent(details, startedAt) { return eventFrom(details, startedAt, null, new Usage()); }
-function eventFrom(details, startedAt, status, usage) {
-  return { schemaVersion: 1, timestamp: new Date().toISOString(), provider: details.provider, completionSource: details.completionSource, model: details.model ?? usage.model, endpointHost: details.endpointHost, stream: details.stream, maxTokens: details.maxTokens, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, totalTokens: usage.totalTokens, cacheReadTokens: usage.cacheReadTokens, cacheWriteTokens: usage.cacheWriteTokens, reasoningTokens: usage.reasoningTokens, status, durationMs: Math.max(0, Math.round(performance.now() - startedAt)) };
+function eventFrom(details, startedAt, status, usage, cut = false) {
+  return { schemaVersion: 1, timestamp: new Date().toISOString(), provider: details.provider, completionSource: details.completionSource, model: details.model ?? usage.model, endpointHost: details.endpointHost, stream: details.stream, maxTokens: details.maxTokens, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, totalTokens: usage.totalTokens, cacheReadTokens: usage.cacheReadTokens, cacheWriteTokens: usage.cacheWriteTokens, reasoningTokens: usage.reasoningTokens, status, durationMs: Math.max(0, Math.round(performance.now() - startedAt)), ...(cut ? { cut: true } : {}) };
 }
+
+/** As much of a reply as is ever kept: the start of it, for a notification. */
+const REPLY_TEXT_CHARACTERS = 600;
+/** A whole answer that is not a stream is read at its end, up to this size. */
+const MAX_WHOLE_ANSWER = 512 * 1024;
 
 class Usage {
   inputTokens = null;
@@ -121,8 +154,15 @@ class Usage {
   reasoningTokens = null;
   model = null;
   #pending = '';
+  #wantsText;
+  #text = '';
+  #whole = '';
+  #streamed = false;
+  constructor(wantsText = false) { this.#wantsText = wantsText; }
   feed(chunk, stream = false) {
     const text = typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk, { stream: true });
+    if (stream) this.#streamed = true;
+    else if (this.#wantsText && this.#whole.length < MAX_WHOLE_ANSWER) this.#whole += text;
     this.#pending = `${this.#pending}${text}`.slice(-131072);
     const lines = this.#pending.split(/\r?\n/u);
     this.#pending = lines.pop() ?? '';
@@ -133,10 +173,23 @@ class Usage {
     if (this.inputTokens === 0 && this.totalTokens !== null && this.outputTokens !== null && this.totalTokens >= this.outputTokens) {
       this.inputTokens = this.totalTokens - this.outputTokens;
     }
+    // An answer that is one JSON document over many lines - Gemini's is - was
+    // never readable a line at a time.
+    if (this.#wantsText && !this.#text && !this.#streamed && this.#whole) {
+      try { this.#text = replyText(JSON.parse(this.#whole)).slice(0, REPLY_TEXT_CHARACTERS); } catch { /* not JSON: no words */ }
+    }
     this.#pending = '';
+    this.#whole = '';
+  }
+  /** The start of what the model said, without what it thought first; '' when nobody asked. */
+  text() {
+    return this.#text.replace(/<think(?:ing)?>[\s\S]*?(?:<\/think(?:ing)?>|$)/giu, '').trim();
   }
   scan(text) {
     if (!text || text.includes('[DONE]')) return;
+    if (this.#wantsText && this.#text.length < REPLY_TEXT_CHARACTERS && text.trimStart().startsWith('{')) {
+      try { this.#text = `${this.#text}${replyText(JSON.parse(text))}`.slice(0, REPLY_TEXT_CHARACTERS); } catch { /* a line that is not one JSON value */ }
+    }
     this.inputTokens = lastNumber(text, ['prompt_tokens', 'input_tokens', 'promptTokenCount', 'inputTokenCount']) ?? this.inputTokens;
     this.outputTokens = lastNumber(text, ['completion_tokens', 'output_tokens', 'candidatesTokenCount', 'outputTokenCount']) ?? this.outputTokens;
     this.totalTokens = lastNumber(text, ['total_tokens', 'totalTokenCount']) ?? this.totalTokens;
@@ -145,6 +198,29 @@ class Usage {
     this.reasoningTokens = lastNumber(text, ['reasoning_tokens', 'reasoningTokenCount', 'thoughtsTokenCount']) ?? this.reasoningTokens;
     this.model ??= firstString(text, 'model');
   }
+}
+
+/**
+ * The words in one piece of an answer, across the APIs SillyTavern talks to.
+ * Only what is said: reasoning, tool calls and anything marked as a thought
+ * are left out.
+ */
+function replyText(value) {
+  if (!value || typeof value !== 'object') return '';
+  const string = (item) => (typeof item === 'string' ? item : '');
+  const choice = Array.isArray(value.choices) ? value.choices[0] : null;
+  if (choice) return string(choice.delta?.content) || string(choice.message?.content) || string(choice.text); // OpenAI and compatible
+  if (value.type === 'response.output_text.delta') return string(value.delta); // OpenAI Responses, streamed
+  if (value.type === 'content_block_delta') return value.delta?.type === 'text_delta' ? string(value.delta.text) : ''; // Anthropic, streamed
+  if (Array.isArray(value.output)) return value.output.flatMap((item) => (Array.isArray(item?.content) ? item.content : [])).filter((part) => part?.type === 'output_text').map((part) => string(part.text)).join(''); // OpenAI Responses
+  if (Array.isArray(value.content)) return value.content.filter((part) => part?.type === 'text').map((part) => string(part.text)).join(''); // Anthropic
+  const candidate = Array.isArray(value.candidates) ? value.candidates[0] : null;
+  if (Array.isArray(candidate?.content?.parts)) return candidate.content.parts.filter((part) => !part?.thought).map((part) => string(part?.text)).join(''); // Gemini
+  if (Array.isArray(value.results)) return string(value.results[0]?.text); // KoboldAI
+  if (value.token && typeof value.token === 'object') return value.token.special ? '' : string(value.token.text); // Text Generation Inference
+  if (typeof value.content === 'string') return value.content; // llama.cpp
+  if (value.message && typeof value.message === 'object') return string(value.message.content); // Ollama chat
+  return string(value.response); // Ollama generate
 }
 
 /**
@@ -237,6 +313,20 @@ function modelFromUrl(url) {
 }
 function firstString(text, key) { const match = new RegExp(`"${key}"\\s*:\\s*"([^"\\\\]{1,256})"`, 'u').exec(text); return match?.[1] ?? null; }
 function lastString(text, key) { const matches = [...text.matchAll(new RegExp(`"${key}"\\s*:\\s*"([^"\\\\]{1,256})"`, 'gu'))]; return matches.at(-1)?.[1] ?? null; }
+
+/**
+ * Where the start of the last finished reply is put, when the manager asked:
+ * one small file, written over each time, read by the manager to tell a phone
+ * what the character said.
+ */
+export function createReplyFromEnvironment() {
+  const file = typeof process.env.STM_REPLY_FILE === 'string' && process.env.STM_REPLY_FILE.length > 0 ? process.env.STM_REPLY_FILE : null;
+  if (!file) return null;
+  return async (timestamp, text) => {
+    await mkdir(dirname(file), { recursive: true });
+    await writeFile(file, `${JSON.stringify({ timestamp, text })}\n`, { encoding: 'utf8', mode: 0o600 });
+  };
+}
 
 function createPersistFromEnvironment() {
   const file = typeof process.env.STM_METRICS_FILE === 'string' && process.env.STM_METRICS_FILE.length > 0 ? process.env.STM_METRICS_FILE : null;

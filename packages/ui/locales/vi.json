@@ -169,6 +169,11 @@
     "termuxOfferBody": "Chuyển chat, nhân vật và cài đặt từ đó sang đây. Termux vẫn giữ nguyên.",
     "termuxOfferStart": "Chuyển dữ liệu",
     "termuxOfferDismiss": "Không cần",
+    "bubbleOfferTitle": "Nhận tin trả lời dạng bong bóng chat?",
+    "bubbleOfferBody": "Khi nhân vật trả lời lúc bạn đang ở app khác, tin nhắn sẽ nổi lên thành bong bóng như Messenger. Chạm vào để trả lời ngay tại đó.",
+    "bubbleOfferOn": "Bật",
+    "bubbleOfferLater": "Để sau",
+    "bubbleOfferDone": "Đã bật bong bóng chat. Bạn có thể tắt ở biểu tượng chuông phía trên.",
     "termuxStepsTitle": "Chuyển từ Termux",
     "termuxStepsBody": "Sao chép dữ liệu SillyTavern trong Termux sang SillyTavern trên STM.",
     "termuxGuideAlt": "Trong màn hình chọn: mở menu, chọn Termux, bấm Sử dụng thư mục này, rồi Cho phép.",
@@ -1138,6 +1143,7 @@
       "rejected": "Đã từ chối một lần đăng nhập từ {address}",
       "upstreamFailed": "Yêu cầu tới {path} không đến được SillyTavern: {reason}",
       "signedOutAll": "Đã đăng xuất mọi thiết bị khỏi SillyTavern ({count})",
+      "repliesRevoked": "Đã ngừng gửi thông báo trả lời tới {count} thiết bị đã đăng xuất",
       "consoleSession": "Đã mở SillyTavern cho bảng điều khiển đang đăng nhập",
       "portMoved": "Cổng {from} đang bị chiếm; cổng truy cập chạy ở {to} thay thế",
       "portTaken": "Cổng {port} được yêu cầu nhưng đang bị chiếm",
@@ -1208,6 +1214,10 @@
     "pushNeedsHttps": "Hãy mở bảng điều khiển bằng link https để nhận thông báo",
     "pushNeedsHomeScreen": "Trên iPhone, hãy thêm bảng điều khiển vào Màn hình chính trước",
     "pushFailed": "Không bật được thông báo",
+    "pushOfferTitle": "Bật thông báo cho SillyTavern Manager?",
+    "pushOfferBody": "Thiết bị này sẽ được báo khi SillyTavern dừng bất ngờ, sao lưu bị lỗi hoặc có phiên bản mới. Bấm Bật rồi chọn Cho phép.",
+    "pushOfferOn": "Bật",
+    "pushOfferLater": "Để sau",
     "replies": "Thông báo tin nhắn từ character",
     "bubbles": "Bong bóng chat",
     "bubblesBlocked": "Bong bóng đang bị tắt cho app này trong cài đặt Android, nên câu trả lời chỉ hiện thành thông báo.",
@@ -1291,6 +1301,21 @@
     "broadcast": {
       "title": "Tin từ SillyTavern Manager",
       "body": ""
+    },
+    "reply": {
+      "named": "{name} đã trả lời.",
+      "ready": {
+        "title": "SillyTavern",
+        "body": "Đã có câu trả lời."
+      },
+      "cut": {
+        "title": "SillyTavern",
+        "body": "Câu trả lời bị dừng giữa chừng. Mở SillyTavern để xem phần đã nhận được."
+      },
+      "failed": {
+        "title": "SillyTavern",
+        "body": "Câu trả lời không đến được. Mở SillyTavern để thử lại."
+      }
     }
   }
 }

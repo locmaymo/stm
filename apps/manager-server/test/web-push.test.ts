@@ -103,3 +103,44 @@ test('only a subscription that looks like one is taken', () => {
   assert.equal(validSubscription({ ...good, keys: { ...good.keys, auth: 'short' } }), false);
   assert.equal(validSubscription(null), false);
 });
+
+test('a browser that subscribed in SillyTavern hears only replies, and the console only the bell', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-push-scope-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const desk = browser();
+  const phone = browser();
+  const sent: Array<{ url: string; urgency: string; body: Buffer }> = [];
+  const push = new WebPush({
+    paths,
+    fetch: (async (url: string, init: RequestInit) => {
+      sent.push({ url, urgency: (init.headers as Record<string, string>).urgency ?? '', body: Buffer.from(init.body as Uint8Array) });
+      return new Response(null, { status: 201 });
+    }) as unknown as typeof globalThis.fetch,
+  });
+  await push.subscribe({ endpoint: 'https://push.example/desk', p256dh: desk.publicKey.toString('base64url'), auth: desk.auth.toString('base64url'), locale: 'en' });
+  assert.equal(await push.hasScope('sillytavern'), false);
+  await push.subscribe({ endpoint: 'https://push.example/phone', p256dh: phone.publicKey.toString('base64url'), auth: phone.auth.toString('base64url'), locale: 'vi', scope: 'sillytavern' });
+  assert.equal(await push.hasScope('sillytavern'), true);
+
+  await push.deliver({ id: 'n1', kind: 'installFinished', level: 'success', createdAt: '2026-10-12T10:00:00.000Z', readAt: null, params: { ref: '1.19.0' } });
+  assert.deepEqual(sent.map((item) => item.url), ['https://push.example/desk'], 'the bell is the console’s');
+
+  sent.length = 0;
+  assert.equal(await push.preview('https://push.example/phone'), true, 'shown what was said unless it asks otherwise');
+  assert.equal(await push.setPreview('https://push.example/nobody', false), false);
+  assert.equal(await push.setPreview('https://push.example/phone', false), true);
+  assert.equal(await new WebPush({ paths }).preview('https://push.example/phone'), false, 'and that is remembered');
+  const told = await push.deliverReply((locale, preview) => ({ title: 'Seraphina', body: preview ? 'what she said' : locale === 'vi' ? 'xin chào' : 'hello', url: '/', tag: 'reply:c:seraphina.png', level: 'info', icon: '/thumbnail?type=avatar&file=seraphina.png' }));
+  assert.equal(told, 1);
+  assert.deepEqual(sent.map((item) => item.url), ['https://push.example/phone'], 'a reply is SillyTavern’s');
+  assert.equal(sent[0]?.urgency, 'high', 'somebody is waiting for it');
+  const message = JSON.parse(phone.decrypt(sent[0]!.body)) as { body: string; icon: string };
+  assert.equal(message.body, 'xin chào', 'in the language it subscribed in');
+  assert.equal(message.icon, '/thumbnail?type=avatar&file=seraphina.png');
+
+  // The PIN changed: SillyTavern's browsers go, the console's stay.
+  assert.equal(await push.forgetScope('sillytavern'), 1);
+  assert.equal(await push.has('https://push.example/phone'), false);
+  assert.equal(await push.has('https://push.example/desk'), true);
+  assert.equal(await new WebPush({ paths }).hasScope('sillytavern'), false, 'and that is remembered');
+});

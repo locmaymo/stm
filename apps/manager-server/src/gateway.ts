@@ -4,6 +4,9 @@ import { readFile } from 'node:fs/promises';
 import type { Duplex } from 'node:stream';
 import { logEvent, logLineText, type AccessGatewayState, type Job, type LogPage, type LogSink } from '../../../packages/contracts/src/index.js';
 import { windowJob, windowLogs, windowPage, type WindowLocale } from './gateway-window.js';
+import { NOTIFY_PREFIX, NOTIFY_SCRIPT, NOTIFY_SCRIPT_PATH, NOTIFY_WORKER, NOTIFY_WORKER_PATH, withNotifyScript, type GatewayReplies } from './gateway-notify.js';
+import { isPageState, parseReplyReport } from './replies.js';
+import { validSubscription } from './web-push.js';
 import { verifyPassword } from './password.js';
 import { ACCESS_GATEWAY_PORT, SILLYTAVERN_PORT } from './ports.js';
 import { RateLimiter } from './rate-limit.js';
@@ -37,6 +40,10 @@ const LOGO_TTL_MS = 60_000;
 const MAX_LOGO_BYTES = 512 * 1024;
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const MAX_LOGIN_BODY_BYTES = 4 * 1024;
+/** A reply a page reports, with up to a thousand characters of it; or a push subscription. */
+const MAX_NOTIFY_BODY_BYTES = 16 * 1024;
+/** A SillyTavern page larger than this is passed through as it is, without the reply script. */
+const MAX_INJECTED_PAGE_BYTES = 4 * 1024 * 1024;
 /**
  * How long the door stays shut after consecutive failures, whoever they came
  * from. Five wrong tries is a person who has forgotten it; twenty is not.
@@ -146,6 +153,8 @@ export interface AccessGatewayOptions {
   readonly frameAncestors?: readonly string[];
   /** Backups and the log, for the tools window. Without them it has none of those. */
   readonly tools?: GatewayTools;
+  /** Reply notifications; see gateway-notify.ts. Without them SillyTavern's pages are passed through untouched. */
+  readonly replies?: GatewayReplies;
 }
 
 /**
@@ -176,6 +185,7 @@ export class AccessGateway {
   private readonly brandLogo: (() => Promise<string | null>) | null;
   private readonly framePolicy: string;
   private readonly tools: GatewayTools | null;
+  private readonly replies: GatewayReplies | null;
   /** Whether the access link has ever been turned on; see `AccessGatewayState.opened`. */
   private opened = false;
   private readonly attempts: RateLimiter;
@@ -235,6 +245,7 @@ export class AccessGateway {
     this.sessionTtlMs = options.sessionTtlMs ?? SESSION_TTL_MS;
     this.brandLogo = options.brandLogo ?? null;
     this.tools = options.tools ?? null;
+    this.replies = options.replies ?? null;
     // `'self'` so the sign-in page can still be reached inside whatever frame
     // the console put the gateway in; without it, signing in from the embedded
     // view would blank the frame at the one moment it has something to say.
@@ -270,6 +281,9 @@ export class AccessGateway {
 
   /** Adopts a new password, and ends every session opened with the old one. */
   public setPassword(passwordHash: string | null, passcode = false): void {
+    // A PIN that changed - not the one read back at start, nor the same one
+    // restored - puts every device out, and their reply notifications with them.
+    if (this.passwordHash !== null && this.passwordHash !== passwordHash) this.replies?.revoked();
     this.passwordHash = passwordHash;
     this.passcode = passcode;
     // A credential that has just been changed is a fresh start for whoever is
@@ -359,6 +373,7 @@ export class AccessGateway {
   public signOutEveryone(): number {
     const count = this.sessionCount();
     this.sessions.clear();
+    this.replies?.revoked();
     if (count > 0) this.logger(logEvent('gateway.signedOutAll', `[gateway] signed every device out of SillyTavern (${count})`, { count }));
     return count;
   }
@@ -378,6 +393,7 @@ export class AccessGateway {
       if (pathname === LOGIN_PATH) { redirect(response, '/'); return; }
       if (pathname === WINDOW_PATH) { this.sendWindow(request, response); return; }
       if (pathname.startsWith(TOOLS_PREFIX)) { void this.handleTools(request, response, pathname); return; }
+      if (this.replies && (pathname === NOTIFY_SCRIPT_PATH || pathname === NOTIFY_WORKER_PATH || pathname.startsWith(NOTIFY_PREFIX))) { void this.handleNotify(request, response, pathname, this.replies); return; }
       this.proxy(request, response, text);
       return;
     }
@@ -461,14 +477,21 @@ export class AccessGateway {
   private proxy(request: IncomingMessage, response: ServerResponse, text: GatewayText, attempt = 0): void {
     const method = (request.method ?? 'GET').toUpperCase();
     const bodyless = method === 'GET' || method === 'HEAD';
+    // A page opened in the browser gets the reply script, so it is asked for
+    // whole and unzipped: there is nothing to add to a compressed one, and an
+    // answer that it has not changed would keep a copy without the script.
+    const page = this.replies !== null && method === 'GET' && opensDocument(request);
+    const headers = forwardedHeaders(request);
+    if (page) for (const name of ['accept-encoding', 'if-none-match', 'if-modified-since']) delete headers[name];
     const upstream = httpRequest({
       host: this.targetHost,
       port: this.targetPort,
       method,
       path: request.url ?? '/',
-      headers: forwardedHeaders(request),
+      headers,
       agent: this.upstreamAgent,
     }, (upstreamResponse) => {
+      if (page && (upstreamResponse.statusCode ?? 0) === 200 && isPlainHtml(upstreamResponse)) { this.injectNotify(upstreamResponse, response); return; }
       response.writeHead(upstreamResponse.statusCode ?? 502, this.framed(responseHeaders(upstreamResponse)));
       // No compression, no buffering: a token stream has to arrive as it is
       // produced or generation looks frozen until it finishes.
@@ -489,6 +512,132 @@ export class AccessGateway {
     response.on('close', () => { if (!response.writableEnded) upstream.destroy(); });
     if (bodyless) upstream.end();
     else request.pipe(upstream);
+  }
+
+  /**
+   * SillyTavern's page with the reply script in it.
+   *
+   * The page is a hundred-odd kilobytes and is read whole before it is sent,
+   * which it can be: nothing in it streams. One that is not a whole document,
+   * or is far larger than any SillyTavern page, is sent on as it came.
+   */
+  private injectNotify(upstreamResponse: IncomingMessage, response: ServerResponse): void {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    const headers = this.framed(responseHeaders(upstreamResponse));
+    const collect = (chunk: Buffer): void => {
+      chunks.push(chunk);
+      size += chunk.length;
+      if (size <= MAX_INJECTED_PAGE_BYTES) return;
+      upstreamResponse.off('data', collect);
+      upstreamResponse.off('end', finish);
+      response.writeHead(200, headers);
+      for (const held of chunks) response.write(held);
+      chunks.length = 0;
+      upstreamResponse.pipe(response);
+    };
+    const finish = (): void => {
+      const original = Buffer.concat(chunks);
+      const changed = withNotifyScript(original.toString('utf8'));
+      const body = changed === null ? original : Buffer.from(changed, 'utf8');
+      for (const name of Object.keys(headers)) {
+        if (['content-length', 'etag', 'last-modified'].includes(name.toLowerCase())) delete headers[name];
+      }
+      headers['content-length'] = String(body.length);
+      // Asked for again each time, so a copy kept from before the script was
+      // added, or after it changed, is never the one shown.
+      headers['cache-control'] = 'no-cache';
+      response.writeHead(200, headers);
+      response.end(body);
+    };
+    upstreamResponse.on('data', collect);
+    upstreamResponse.on('end', finish);
+    upstreamResponse.on('error', () => response.destroy());
+  }
+
+  /** The reply script, its service worker, and the requests the script makes. */
+  private async handleNotify(request: IncomingMessage, response: ServerResponse, pathname: string, replies: GatewayReplies): Promise<void> {
+    const method = (request.method ?? 'GET').toUpperCase();
+    if (pathname === NOTIFY_SCRIPT_PATH || pathname === NOTIFY_WORKER_PATH) {
+      if (method !== 'GET') { sendJson(response, 405, { error: { code: 'method_not_allowed', message: 'Only GET' } }); return; }
+      const body = pathname === NOTIFY_SCRIPT_PATH ? NOTIFY_SCRIPT : NOTIFY_WORKER;
+      response.writeHead(200, {
+        'content-type': 'text/javascript; charset=utf-8',
+        'content-length': Buffer.byteLength(body),
+        'cache-control': 'no-cache',
+        'x-content-type-options': 'nosniff',
+        // The worker lives under /__stm/ and looks after SillyTavern's pages at /.
+        ...(pathname === NOTIFY_WORKER_PATH ? { 'service-worker-allowed': '/' } : {}),
+      });
+      response.end(body);
+      return;
+    }
+    // The same rule as the tools: a header a form cannot set, so only a
+    // script on this origin can act with somebody's session cookie.
+    if (request.headers[TOOLS_HEADER] !== '1') { sendJson(response, 403, { error: { code: 'forbidden', message: 'Only for SillyTavern pages served here' } }); return; }
+    const url = new URL(request.url ?? '/', 'http://gateway.invalid');
+    const read = async (): Promise<Record<string, unknown> | null> => {
+      try {
+        const parsed: unknown = JSON.parse(await readBody(request, MAX_NOTIFY_BODY_BYTES) || '{}');
+        return typeof parsed === 'object' && parsed !== null ? parsed as Record<string, unknown> : null;
+      } catch { return null; }
+    };
+    try {
+      if (pathname === `${NOTIFY_PREFIX}presence` && method === 'POST') {
+        const body = await read();
+        const page = typeof body?.page === 'string' ? body.page.slice(0, 64) : '';
+        const state = body?.state;
+        if (!page || !isPageState(state)) { sendJson(response, 400, { error: { code: 'invalid_input', message: 'A page and its state are required' } }); return; }
+        replies.presence(page, state);
+        sendJson(response, 200, { anyone: await replies.anyone() });
+        return;
+      }
+      if (pathname === `${NOTIFY_PREFIX}reply` && method === 'POST') {
+        const report = parseReplyReport(await read());
+        if (!report) { sendJson(response, 400, { error: { code: 'invalid_input', message: 'That is not a reply' } }); return; }
+        void replies.reply(report).catch(() => undefined);
+        sendJson(response, 202, { told: true });
+        return;
+      }
+      if (pathname === `${NOTIFY_PREFIX}expect` && method === 'POST') {
+        const report = parseReplyReport(await read());
+        if (!report) { sendJson(response, 400, { error: { code: 'invalid_input', message: 'That is not a conversation' } }); return; }
+        replies.expect(report);
+        sendJson(response, 202, { expected: true });
+        return;
+      }
+      if (pathname === `${NOTIFY_PREFIX}push` && method === 'GET') {
+        const endpoint = url.searchParams.get('endpoint');
+        const preview = endpoint ? await replies.preview(endpoint) : null;
+        sendJson(response, 200, { publicKey: await replies.publicKey(), subscribed: preview !== null, preview: preview ?? true });
+        return;
+      }
+      if (pathname === `${NOTIFY_PREFIX}push` && method === 'PUT') {
+        const body = await read();
+        if (typeof body?.endpoint !== 'string' || typeof body.preview !== 'boolean') { sendJson(response, 400, { error: { code: 'invalid_input', message: 'An endpoint and whether to show what was said are required' } }); return; }
+        if (!await replies.setPreview(body.endpoint, body.preview)) { sendJson(response, 404, { error: { code: 'not_subscribed', message: 'This browser is not subscribed' } }); return; }
+        sendJson(response, 200, { subscribed: true, preview: body.preview });
+        return;
+      }
+      if (pathname === `${NOTIFY_PREFIX}push` && method === 'POST') {
+        const body = await read();
+        const subscription = body?.subscription;
+        if (!validSubscription(subscription)) { sendJson(response, 400, { error: { code: 'invalid_input', message: 'That is not a push subscription' } }); return; }
+        await replies.subscribe({ endpoint: subscription.endpoint, p256dh: subscription.keys.p256dh, auth: subscription.keys.auth, locale: body?.locale === 'vi' ? 'vi' : 'en' });
+        sendJson(response, 201, { subscribed: true });
+        return;
+      }
+      if (pathname === `${NOTIFY_PREFIX}push` && method === 'DELETE') {
+        const body = await read();
+        if (typeof body?.endpoint !== 'string') { sendJson(response, 400, { error: { code: 'invalid_input', message: 'An endpoint is required' } }); return; }
+        await replies.unsubscribe(body.endpoint);
+        sendJson(response, 200, { subscribed: false });
+        return;
+      }
+      sendJson(response, 404, { error: { code: 'not_found', message: 'Nothing here' } });
+    } catch (error: unknown) {
+      sendJson(response, 500, { error: { code: 'notify_failed', message: error instanceof Error ? error.message : 'That did not work' } });
+    }
   }
 
   private handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void {
@@ -717,6 +866,23 @@ function requestPath(request: IncomingMessage): string {
 
 function localeOf(request: IncomingMessage): 'en' | 'vi' {
   return (request.headers['accept-language'] ?? '').toString().toLowerCase().includes('vi') ? 'vi' : 'en';
+}
+
+/**
+ * A page being opened, in a tab or a frame, as opposed to a file a page asks
+ * for. A browser that does not say which is believed when it asks for HTML
+ * before anything else, the way a navigation does.
+ */
+function opensDocument(request: IncomingMessage): boolean {
+  const destination = request.headers['sec-fetch-dest'];
+  if (typeof destination === 'string') return destination === 'document' || destination === 'iframe';
+  return (request.headers.accept ?? '').toString().startsWith('text/html');
+}
+
+/** HTML that arrived as it is, not compressed. */
+function isPlainHtml(response: IncomingMessage): boolean {
+  const encoding = (response.headers['content-encoding'] ?? '').toString().toLowerCase();
+  return (response.headers['content-type'] ?? '').toString().toLowerCase().includes('text/html') && (encoding === '' || encoding === 'identity');
 }
 
 function wantsDocument(request: IncomingMessage): boolean {

@@ -169,6 +169,11 @@
     "termuxOfferBody": "Bring your chats, characters and settings over from it. Termux stays as it is.",
     "termuxOfferStart": "Move my data",
     "termuxOfferDismiss": "No thanks",
+    "bubbleOfferTitle": "Get replies as chat bubbles?",
+    "bubbleOfferBody": "When a character replies while you are in another app, their message floats over it as a bubble, the way a messenger shows one. Tap it to answer right there.",
+    "bubbleOfferOn": "Turn on",
+    "bubbleOfferLater": "Not now",
+    "bubbleOfferDone": "Chat bubbles are on. You can turn them off in the bell at the top.",
     "termuxStepsTitle": "Move from Termux",
     "termuxStepsBody": "Copies your SillyTavern data from Termux to SillyTavern in STM.",
     "termuxGuideAlt": "In the picker: open the menu, choose Termux, tap Use this folder, then Allow.",
@@ -1138,6 +1143,7 @@
       "rejected": "Refused a sign-in from {address}",
       "upstreamFailed": "The request for {path} did not reach SillyTavern: {reason}",
       "signedOutAll": "Signed every device out of SillyTavern ({count})",
+      "repliesRevoked": "Stopped reply notifications to {count} signed-out device(s)",
       "consoleSession": "Opened SillyTavern for the signed-in console",
       "portMoved": "Port {from} is already in use; the access gateway is on {to} instead",
       "portTaken": "Port {port} was asked for and is already in use",
@@ -1208,6 +1214,10 @@
     "pushNeedsHttps": "Open the console through its https link to get notifications",
     "pushNeedsHomeScreen": "On iPhone, add the console to the Home Screen first",
     "pushFailed": "Notifications could not be turned on",
+    "pushOfferTitle": "Turn on notifications for SillyTavern Manager?",
+    "pushOfferBody": "This device will be told when SillyTavern stops unexpectedly, a backup fails or a new version is out. Tap Turn on, then Allow.",
+    "pushOfferOn": "Turn on",
+    "pushOfferLater": "Not now",
     "replies": "Message notifications from characters",
     "bubbles": "Chat bubbles",
     "bubblesBlocked": "Bubbles are turned off for this app in Android's settings, so replies only show as notifications.",
@@ -1291,6 +1301,21 @@
     "broadcast": {
       "title": "News from SillyTavern Manager",
       "body": ""
+    },
+    "reply": {
+      "named": "{name} replied.",
+      "ready": {
+        "title": "SillyTavern",
+        "body": "A reply is ready."
+      },
+      "cut": {
+        "title": "SillyTavern",
+        "body": "The reply stopped before it finished. Open SillyTavern to see what arrived."
+      },
+      "failed": {
+        "title": "SillyTavern",
+        "body": "The reply did not come through. Open SillyTavern to try again."
+      }
     }
   }
 }

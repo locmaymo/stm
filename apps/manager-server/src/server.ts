@@ -34,6 +34,7 @@ import { MetricsStore } from './metrics.js';
 import { ActivityMeter } from './activity.js';
 import { ReleaseWatch } from './manager-release.js';
 import { APP_EVENT_PREFIX, APP_NOTIFICATION_PREFIX, NotificationCenter, NotificationRules, renderNotification, type NotificationLocale } from './notifications.js';
+import { ReplyNotifier } from './replies.js';
 import { validSubscription, WebPush } from './web-push.js';
 import { AnnouncementFeed, DEFAULT_ANNOUNCEMENTS_URL } from './announcements.js';
 import { OnlineKeeper } from './online.js';
@@ -484,6 +485,24 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       job: (id) => jobs.get(id),
       logs: (after) => jobs.logs(after, null),
     },
+    // A character's reply, told to whoever subscribed from SillyTavern's own
+    // page; see replies.ts. Called once requests arrive, like the tools.
+    replies: {
+      presence: (page, state) => replyNotifier.presence(page, state),
+      reply: (report) => replyNotifier.reply(report),
+      expect: (report) => replyNotifier.expect(report),
+      publicKey: () => push.publicKey(),
+      preview: (endpoint) => push.preview(endpoint),
+      setPreview: (endpoint, preview) => push.setPreview(endpoint, preview),
+      anyone: () => push.hasScope('sillytavern'),
+      subscribe: (input) => push.subscribe({ ...input, scope: 'sillytavern' }),
+      unsubscribe: (endpoint) => push.unsubscribe(endpoint),
+      revoked: () => {
+        void push.forgetScope('sillytavern').then((count) => {
+          if (count > 0) logger(logEvent('gateway.repliesRevoked', `[gateway] stopped reply notifications to ${count} signed-out device(s)`, { count }));
+        }).catch(() => undefined);
+      },
+    },
   });
   const supervisor = options.supervisor ?? new ProcessSupervisor({
     runtime,
@@ -514,6 +533,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     },
     instrumentationPath: instrumentationLoaderPath,
     metricsFile: metrics.filePath,
+    replyFile: replyFile(paths),
     logger: (line) => { jobs.append('sillytavern', line); baseLogger(line); },
   });
   const tunnel = options.tunnel ?? new TunnelManager({
@@ -821,6 +841,9 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   // Every browser that asked to be told is told, in the language it asked in.
   const push = new WebPush({ paths });
   notifications.subscribe((notification) => { void push.deliver(notification); });
+  // Replies are not in the bell - there would be one for every message - and
+  // go only to browsers that subscribed from SillyTavern's page.
+  const replyNotifier = new ReplyNotifier({ metricsFile: metrics.filePath, replyFile: replyFile(paths), deliver: (message) => push.deliverReply(message) });
   // Inside the Android app, the app shows them: one line of output each,
   // which it reads instead of printing. See ManagerService.
   if (env.STM_ANDROID_APP === '1') {
@@ -1102,7 +1125,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     online,
     // The meter closes first, so the part of today that has just been spent is
     // written down before the transport looks for finished days.
-    close: async () => { online.close(); notificationRules.close(); announcements?.close(); await activity.close(); await telemetry.close(); await scheduler.close(); await tunnel.close(); await managerTunnel.close(); await gateway.close(); await supervisor.close(); await backups.settle(); await profiles.settle(); await closeServer(server); },
+    close: async () => { online.close(); notificationRules.close(); replyNotifier.close(); announcements?.close(); await activity.close(); await telemetry.close(); await scheduler.close(); await tunnel.close(); await managerTunnel.close(); await gateway.close(); await supervisor.close(); await backups.settle(); await profiles.settle(); await closeServer(server); },
   };
 }
 
@@ -5048,6 +5071,14 @@ function listen(server: Server, host: string, port: number): Promise<void> {
     server.once('listening', onListening);
     server.listen(port, host);
   });
+}
+
+/**
+ * Where SillyTavern's fetch observer puts the start of the last finished
+ * reply: scratch space, never backed up or sent anywhere.
+ */
+function replyFile(paths: PlatformPaths): string {
+  return join(paths.tmp, 'reply.json');
 }
 
 function closeServer(server: Server): Promise<void> {

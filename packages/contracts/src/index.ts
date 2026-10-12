@@ -1650,6 +1650,12 @@ export interface UsageEvent {
   readonly reasoningTokens?: number | null;
   readonly status: number | null;
   readonly durationMs: number;
+  /**
+   * The answer stopped before its end: SillyTavern let go of it, or the
+   * provider dropped it. Absent on one that arrived whole. Kept on this
+   * machine for telling the reader about a reply; never sent as telemetry.
+   */
+  readonly cut?: boolean;
 }
 
 export interface MetricsTotals {

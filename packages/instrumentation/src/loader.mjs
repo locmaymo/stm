@@ -2,7 +2,7 @@
 import { appendFile, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { Module, register } from 'node:module';
-import { installFetchObserver } from './observer.mjs';
+import { createReplyFromEnvironment, installFetchObserver } from './observer.mjs';
 
 const marker = Symbol.for('sillytavern-manager.instrumentation');
 const metricsFile = typeof process.env.STM_METRICS_FILE === 'string' && process.env.STM_METRICS_FILE.length > 0
@@ -12,7 +12,9 @@ const metricsFile = typeof process.env.STM_METRICS_FILE === 'string' && process.
 if (!globalThis[marker]) {
   globalThis[marker] = true;
   const persist = createPersist(metricsFile);
-  globalThis.fetch = installFetchObserver(globalThis.fetch, { persist });
+  // The start of a finished reply, for a phone the reader left; see observer.mjs.
+  const reply = createReplyFromEnvironment();
+  globalThis.fetch = installFetchObserver(globalThis.fetch, { persist, reply });
   /*
    * The one queue every path writes the usage log through.
    *
@@ -25,7 +27,7 @@ if (!globalThis[marker]) {
    * as a test failing on Windows about once in a while, which is what a race
    * looks like from the outside.
    */
-  globalThis.__stmInstrumentationOptions = { persist };
+  globalThis.__stmInstrumentationOptions = { persist, reply };
 
   // SillyTavern imports node-fetch directly. The ESM hook covers node-fetch v3;
   // this CJS bridge keeps older releases observable too.
@@ -33,7 +35,7 @@ if (!globalThis[marker]) {
   Module._load = function managerInstrumentedLoad(request, parent, isMain) {
     const loaded = originalLoad.call(this, request, parent, isMain);
     if (request !== 'node-fetch' || typeof loaded !== 'function') return loaded;
-    return installFetchObserver(loaded, { persist });
+    return installFetchObserver(loaded, { persist, reply });
   };
   register(new URL('./node-fetch-hook.mjs', import.meta.url), { parentURL: import.meta.url });
 }
