@@ -368,6 +368,39 @@ test('each kind of backup is kept by its own rule', async () => {
 });
 
 /*
+ * The copy taken before a SillyTavern moved in from elsewhere is the way back
+ * to what was there, however late somebody wants it: kept as a backup of
+ * theirs, not swept with the next restore or after a week.
+ */
+test('a safety copy that is kept becomes a backup nobody sweeps', async () => {
+  const fixture = await createFixture();
+  let clock = new Date(2026, 9, 12, 9, 0).getTime();
+  const store = new BackupStore({ paths: fixture.paths, now: () => new Date(clock) });
+  const change = async (label: string) => { clock += 60_000; await writeFile(join(fixture.profile.dataPath, 'chats', `${label}.json`), `{"message":"${label}"}`, 'utf8'); };
+  const before = await store.create(fixture.profile, { kind: 'before-restore' });
+  const kept = await store.keep(before.id, 'before-termux');
+  assert.equal(kept?.kind, 'manual');
+  // The manager's name, which the panel says in the reader's language.
+  assert.equal(kept?.purpose, 'before-termux');
+  assert.equal(kept?.autoNamed, true);
+  assert.match(kept?.name ?? '', /_before-termux_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}\.zip$/u);
+  assert.equal((await store.list(fixture.profile.id)).find((manifest) => manifest.id === before.id)?.purpose, 'before-termux');
+
+  // The next restore's safety copy, and a week and more of automatic backups.
+  await change('a');
+  await store.create(fixture.profile, { kind: 'before-restore' });
+  await change('b');
+  await store.create(fixture.profile, { kind: 'scheduled' });
+  clock += 8 * 24 * 60 * 60 * 1000;
+  await store.pruneCreated(fixture.profile.id);
+  assert.ok(await store.getArchivePath(before.id), 'the kept copy is still there');
+
+  // A copy that already was somebody's own backup keeps its name.
+  const manual = await store.create(fixture.profile, { name: 'mine' });
+  assert.equal((await store.keep(manual.id, 'before-termux'))?.name, manual.name);
+});
+
+/*
  * The archive a restore is reading outlives the sweep that restore triggers.
  *
  * Restoring the safety copy from before the last restore is the one case

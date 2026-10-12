@@ -452,12 +452,22 @@ const KIND_SLUG: Record<Exclude<BackupKind, 'uploaded'>, string> = {
  * names on every system a download might land on. The older names ended in a
  * UTC timestamp or an opaque R2 id, which read as noise and sorted by neither.
  */
-export function defaultBackupName(profileName: string, kind: Exclude<BackupKind, 'uploaded'>, at: Date): string {
+export function defaultBackupName(profileName: string, kind: Exclude<BackupKind, 'uploaded'>, at: Date, slug: string = KIND_SLUG[kind]): string {
   const pad = (value: number) => String(value).padStart(2, '0');
   const date = `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`;
   const time = `${pad(at.getHours())}-${pad(at.getMinutes())}`;
-  return `${profileName}_${KIND_SLUG[kind]}_${date}_${time}.zip`;
+  return `${profileName}_${slug}_${date}_${time}.zip`;
 }
+
+/**
+ * Why a backup of the manager's own was kept for good, beyond its kind.
+ *
+ * `before-termux`: the profile as it was before a SillyTavern moved in from
+ * Termux, the way back to it. The panel names it for what it is, in the
+ * reader's language, for as long as nobody renames it.
+ */
+export type BackupPurpose = 'before-termux';
+export const BACKUP_PURPOSES: readonly BackupPurpose[] = ['before-termux'];
 
 export interface BackupManifest {
   readonly schemaVersion: 1;
@@ -478,6 +488,8 @@ export interface BackupManifest {
    * language instead. Gone once somebody renames it.
    */
   readonly autoNamed?: boolean;
+  /** Why it was kept, when that is more than its kind says; see `BackupPurpose`. */
+  readonly purpose?: BackupPurpose;
   readonly fingerprint?: string;
   /** What the reader wrote down about a restore point when they made it. */
   readonly note?: string;

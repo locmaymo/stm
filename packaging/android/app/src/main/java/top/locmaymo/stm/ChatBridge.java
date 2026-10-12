@@ -29,7 +29,8 @@ import java.util.Set;
  * chat_bridge.js, says when it is up, reports finished replies and switches
  * chats when a bubble asks; the console asks and sets whether replies are
  * notified and whether they bubble, asks for SillyTavern to be shown, and
- * has the app send a backup zip from the phone (see {@link BackupImport}).
+ * has the app send a backup zip from the phone (see {@link BackupImport}) or
+ * move a SillyTavern over from Termux (see {@link TermuxImport}).
  * Only pages served on this phone are listened to: a frame from anywhere else
  * - a picture or a video a character card embeds, say - also gets the object,
  * and everything it sends is dropped.
@@ -95,7 +96,8 @@ final class ChatBridge {
             case "features":
                 // What this app can do for the console; an older app says nothing.
                 try {
-                    reply.postMessage(new JSONObject().put("type", "features").put("importZip", true).toString());
+                    reply.postMessage(new JSONObject().put("type", "features").put("importZip", true)
+                        .put("termux", TermuxImport.present(app)).put("termuxOffer", TermuxImport.offer(app)).toString());
                 } catch (JSONException | IllegalStateException e) {
                     Log.w(TAG, "the console could not be told what the app can do", e);
                 }
@@ -103,6 +105,13 @@ final class ChatBridge {
             case "importZip":
                 // The console only: it is the one that asked with its own sign-in.
                 if (!SillyTavernHost.isHost(view) && origin.getPort() == ManagerService.port) MainActivity.importZip(origin, data.optString("csrf", ""), reply);
+                break;
+            case "importTermux":
+                // As importZip: the console, with its own sign-in.
+                if (!SillyTavernHost.isHost(view) && origin.getPort() == ManagerService.port) MainActivity.importTermux(origin, data.optString("csrf", ""), reply);
+                break;
+            case "termuxOffer":
+                if (data.optBoolean("dismiss")) TermuxImport.answerOffer(app);
                 break;
             case "importCancel":
                 BackupImport.cancel();

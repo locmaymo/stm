@@ -90,6 +90,11 @@ public class MainActivity extends Activity implements SillyTavernHost.Host {
         if (current != null) BackupImport.pick(current, origin, csrf, reply);
     }
 
+    /** The console asked to move a SillyTavern over from Termux; see {@link TermuxImport}. */
+    static void importTermux(Uri origin, String csrf, androidx.webkit.JavaScriptReplyProxy reply) {
+        if (current != null) BackupImport.pickTermux(current, origin, csrf, reply);
+    }
+
     /**
      * SillyTavern stopped under its page: back to the console, saying so, and
      * the page goes. Opening SillyTavern again loads it fresh once it is up.
