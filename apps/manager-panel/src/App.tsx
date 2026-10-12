@@ -6,6 +6,7 @@ import {
   LogOut, RotateCcw, ScrollText, Search, Sun, Trash2, Upload, X, Rows3,
   BrainCircuit, CircleStop, Clock3, Cpu, Ellipsis, Play, QrCode as QrCodeIcon, RefreshCw, Scale, Settings2, ShieldCheck, Square,
   Blocks, BookmarkPlus, Bug, FileCode2, LoaderCircle, Gauge, HardDrive, History, KeyRound, Leaf, MemoryStick, Monitor, CircleArrowUp, Star, Terminal, TriangleAlert,
+  MessageCircle,
 } from 'lucide-react';
 import {
   Alert, AlertDescription, AlertTitle, AuthLayout, Badge, BrandMark, Button, ButtonGroup, ButtonGroupSeparator, buttonVariants, Card, CardAction,
@@ -34,7 +35,8 @@ import { availableUpdate, readDismissedManagerRelease, readDismissedUpdate, save
 import { readDismissedDisplaced, readDismissedRecovery, readDismissedSettings, saveDismissedDisplaced, saveDismissedRecovery, saveDismissedSettings, shouldOfferSettings, shouldShowDisplaced, shouldShowRecovery } from './settings-offer.js';
 import { apiFetch, onSessionExpired, resetSessionWatch, sessionToken, setSessionToken } from './session.js';
 import { NotificationBell, PushToggle } from './notification-bell.js';
-import { answerTermuxOffer, appFeatures, importZipFromApp, openInApp, type AppFeatures, type ImportSource } from './app-bridge.js';
+import { answerTermuxOffer, appFeatures, bubbleRequest, hasAppChannel, importZipFromApp, openInApp, type AppFeatures, type BubbleState, type ImportSource } from './app-bridge.js';
+import { BUBBLE_OFFER_KEY, bubbleOfferAccepted, bubbleOfferDue, bubbleOfferSnoozed, bubbleOfferWanted } from './bubble-offer.js';
 import { collectCloudflareResult, framed, inPhoneApp, openReturnWindow, popupsBlocked, whenAbandoned, type CollectedResult } from './oauth.js';
 import type { AccessGatewayState, AccessLinkPreference, AccessLinkTarget, BackupManifest, CloudflareAccountProblem, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LegalReview, LogEntry, LogSourceFilter, ManagerRelease, ManagerSettingsOffer, ManagerUpdateStatus, NotificationSummary, OnlineState, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, SaverState, SetupChecklistState, SetupStep, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, isCloudJob, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
@@ -2064,7 +2066,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
             {page !== 'data' && dataActivity?.label
               ? <DataActivityStrip t={t} label={dataActivity.label} step={dataActivity.step} percent={dataActivity.percent} onOpen={() => navigate('data')} />
               : null}
-            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{termuxOffer ? <TermuxOfferCard t={t} onStart={openTermuxImport} onDismiss={() => { answerTermuxOffer(true); setTermuxOfferAnswered(true); }} /> : null}{hero}{checklist}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} hostAddress={shownHostAddress(online?.hostAddress ?? null)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} onSetAccessLink={setAccessLink} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} canBackUp={activeProfileId !== null && saver?.enabled !== true} onBackup={openBackup} onUpload={openUpload} onUploadFromPhone={phoneImport ? openPhoneUpload : undefined} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? null : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} onSetAccessLink={setAccessLink} startup={startup} saver={saver} online={online} onSetAutoStart={setAutoStartSillyTavern} onSetSaver={setSaverMode} onSetKeepOnline={setKeepOnline} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} onEraseEverything={eraseEverything} /> : <ResourcePanel page={page} t={t} />}
+            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{termuxOffer ? <TermuxOfferCard t={t} onStart={openTermuxImport} onDismiss={() => { answerTermuxOffer(true); setTermuxOfferAnswered(true); }} /> : activeInstallation?.status === 'ready' ? <BubbleOfferCard t={t} /> : null}{hero}{checklist}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} hostAddress={shownHostAddress(online?.hostAddress ?? null)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} onSetAccessLink={setAccessLink} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} canBackUp={activeProfileId !== null && saver?.enabled !== true} onBackup={openBackup} onUpload={openUpload} onUploadFromPhone={phoneImport ? openPhoneUpload : undefined} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? null : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} onSetAccessLink={setAccessLink} startup={startup} saver={saver} online={online} onSetAutoStart={setAutoStartSillyTavern} onSetSaver={setSaverMode} onSetKeepOnline={setKeepOnline} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} onEraseEverything={eraseEverything} /> : <ResourcePanel page={page} t={t} />}
             {/* Kept, hidden, while it has work under way, so leaving for another
                 page does not take the work's progress and its last question
                 with it; the strip above stands in for it meanwhile. */}
@@ -2132,6 +2134,71 @@ function TermuxOfferCard({ t, onStart, onDismiss }: { t: Translate; onStart: () 
       </div>
     </CardContent>
   </Card>;
+}
+
+/**
+ * Chat bubbles, offered on the overview in the Android app; see bubble-offer.ts
+ * for when. Not alongside the Termux offer: one question at a time.
+ *
+ * Turning them on switches the reply notifications on as well, since a bubble
+ * is a way of showing one. Android may still refuse to float them for this
+ * app, and then the card says so and opens the setting, and is asked again
+ * when the reader comes back from it.
+ */
+function BubbleOfferCard({ t }: { t: Translate }) {
+  const [state, setState] = useState<BubbleState | null>(null);
+  const [due, setDue] = useState(() => hasAppChannel() && bubbleOfferDue(readStored(BUBBLE_OFFER_KEY), Date.now()));
+  const [turnedOn, setTurnedOn] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!due) return;
+    let cancelled = false;
+    const refresh = () => { if (document.visibilityState === 'visible') void bubbleRequest().then((next) => { if (!cancelled && next) setState(next); }); };
+    refresh();
+    document.addEventListener('visibilitychange', refresh);
+    return () => { cancelled = true; document.removeEventListener('visibilitychange', refresh); };
+  }, [due]);
+
+  if (!due || !state) return null;
+  const blocked = turnedOn && state.replies && state.enabled && !state.allowed;
+  if (!turnedOn && !bubbleOfferWanted(state)) return null;
+  const change = async (request: { replies?: boolean; enabled?: boolean; settings?: boolean }) => {
+    setBusy(true);
+    try {
+      const next = await bubbleRequest(request);
+      if (next) setState(next);
+    } finally { setBusy(false); }
+  };
+  const later = () => { writeStored(BUBBLE_OFFER_KEY, bubbleOfferSnoozed(readStored(BUBBLE_OFFER_KEY), Date.now())); setDue(false); };
+
+  return <Card>
+    <PanelHeading icon={<MessageCircle />}>{t('console.bubbleOfferTitle')}</PanelHeading>
+    <CardContent className="grid gap-3">
+      {turnedOn
+        ? <p className={cn('text-sm', blocked ? 'text-(--attention)' : 'text-muted-foreground')} role="status">{t(blocked ? 'notify.bubblesBlocked' : 'console.bubbleOfferDone')}</p>
+        : <p className="text-sm text-muted-foreground">{t('console.bubbleOfferBody')}</p>}
+      <div className="flex flex-wrap gap-2">
+        {turnedOn
+          ? <>
+            {blocked ? <Button size="sm" disabled={busy} onClick={() => void change({ settings: true })}>{t('notify.bubblesSettings')}</Button> : null}
+            <Button size="sm" variant="ghost" onClick={() => setDue(false)}>{t('common.close')}</Button>
+          </>
+          : <>
+            <Button size="sm" disabled={busy} onClick={() => { writeStored(BUBBLE_OFFER_KEY, bubbleOfferAccepted(Date.now())); setTurnedOn(true); void change({ replies: true, enabled: true }); }}><MessageCircle />{t('console.bubbleOfferOn')}</Button>
+            <Button size="sm" variant="ghost" disabled={busy} onClick={later}>{t('console.bubbleOfferLater')}</Button>
+          </>}
+      </div>
+    </CardContent>
+  </Card>;
+}
+
+function readStored(key: string): string | null {
+  try { return browserStorage()?.getItem(key) ?? null; } catch { return null; }
+}
+
+function writeStored(key: string, value: string): void {
+  try { browserStorage()?.setItem(key, value); } catch { /* a phone that keeps nothing is asked again next time */ }
 }
 
 /**
