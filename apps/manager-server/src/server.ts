@@ -490,6 +490,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     replies: {
       presence: (page, state) => replyNotifier.presence(page, state),
       reply: (report) => replyNotifier.reply(report),
+      expect: (report) => replyNotifier.expect(report),
       publicKey: () => push.publicKey(),
       preview: (endpoint) => push.preview(endpoint),
       setPreview: (endpoint, preview) => push.setPreview(endpoint, preview),
@@ -532,6 +533,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     },
     instrumentationPath: instrumentationLoaderPath,
     metricsFile: metrics.filePath,
+    replyFile: replyFile(paths),
     logger: (line) => { jobs.append('sillytavern', line); baseLogger(line); },
   });
   const tunnel = options.tunnel ?? new TunnelManager({
@@ -841,7 +843,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   notifications.subscribe((notification) => { void push.deliver(notification); });
   // Replies are not in the bell - there would be one for every message - and
   // go only to browsers that subscribed from SillyTavern's page.
-  const replyNotifier = new ReplyNotifier({ metricsFile: metrics.filePath, deliver: (message) => push.deliverReply(message) });
+  const replyNotifier = new ReplyNotifier({ metricsFile: metrics.filePath, replyFile: replyFile(paths), deliver: (message) => push.deliverReply(message) });
   // Inside the Android app, the app shows them: one line of output each,
   // which it reads instead of printing. See ManagerService.
   if (env.STM_ANDROID_APP === '1') {
@@ -5069,6 +5071,14 @@ function listen(server: Server, host: string, port: number): Promise<void> {
     server.once('listening', onListening);
     server.listen(port, host);
   });
+}
+
+/**
+ * Where SillyTavern's fetch observer puts the start of the last finished
+ * reply: scratch space, never backed up or sent anywhere.
+ */
+function replyFile(paths: PlatformPaths): string {
+  return join(paths.tmp, 'reply.json');
 }
 
 function closeServer(server: Server): Promise<void> {

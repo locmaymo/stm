@@ -599,6 +599,13 @@ export class AccessGateway {
         sendJson(response, 202, { told: true });
         return;
       }
+      if (pathname === `${NOTIFY_PREFIX}expect` && method === 'POST') {
+        const report = parseReplyReport(await read());
+        if (!report) { sendJson(response, 400, { error: { code: 'invalid_input', message: 'That is not a conversation' } }); return; }
+        replies.expect(report);
+        sendJson(response, 202, { expected: true });
+        return;
+      }
       if (pathname === `${NOTIFY_PREFIX}push` && method === 'GET') {
         const endpoint = url.searchParams.get('endpoint');
         const preview = endpoint ? await replies.preview(endpoint) : null;

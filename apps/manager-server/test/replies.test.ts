@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { appendFile, mkdtemp, writeFile } from 'node:fs/promises';
+import { appendFile, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { UsageEvent } from '../../../packages/contracts/src/index.js';
@@ -152,6 +152,55 @@ test('the usage log is read from where it ended when the reader left', async (t)
   await wait(120);
   assert.equal(told.length, 1);
   assert.equal(told[0]!.en.body, 'The reply stopped before it finished. Open SillyTavern to see what arrived.');
+});
+
+test('a page stopped before the reply ended is still told who replied, and what they said', async (t) => {
+  // What an iPhone does: the page says who it waits for while it is looked at,
+  // is left, and is stopped before the reply comes - so only the log speaks.
+  const root = await mkdtemp(join(tmpdir(), 'stm-replies-said-'));
+  const replyFile = join(root, 'reply.json');
+  const told: Array<Record<'en' | 'vi' | 'hidden', PushMessage>> = [];
+  const replies = new ReplyNotifier({
+    metricsFile: join(root, 'usage-events.jsonl'),
+    replyFile,
+    graceMs: 30,
+    deliver: async (message) => { told.push({ en: message('en', true), vi: message('vi', true), hidden: message('en', false) }); },
+  });
+  t.after(() => replies.close());
+  replies.presence('phone', 'visible');
+  replies.expect({ ...REPORT, text: '' });
+  replies.presence('phone', 'hidden');
+  await writeFile(replyFile, JSON.stringify({ timestamp: ANSWER.timestamp, text: '*She smiles.* You came back, traveller.' }));
+  replies.answer(ANSWER);
+  await wait(80);
+  assert.equal(told.length, 1);
+  assert.equal(told[0]!.en.title, 'Seraphina');
+  assert.equal(told[0]!.en.body, 'She smiles. You came back, traveller.', 'without the roleplay asterisks');
+  assert.equal(told[0]!.en.tag, 'reply:c:Seraphina.png');
+  assert.equal(told[0]!.en.url, '/#stm-open=c%3ASeraphina.png&chat=Seraphina%20-%202026-10-12');
+  assert.equal(told[0]!.hidden.body, 'Seraphina replied.', 'a phone that asked not to be shown what was said');
+  await assert.rejects(readFile(replyFile), 'the words are not left lying about once told');
+
+  // Another reply, past the cooldown: words written for a different answer are not this one's.
+  const later = new ReplyNotifier({ metricsFile: join(root, 'none.jsonl'), replyFile, graceMs: 20, deliver: async (message) => { told.push({ en: message('en', true), vi: message('vi', true), hidden: message('en', false) }); } });
+  t.after(() => later.close());
+  await writeFile(replyFile, JSON.stringify({ timestamp: '2026-10-12T09:00:00.000Z', text: 'Something else.' }));
+  later.expect({ ...REPORT, text: '' });
+  later.presence('phone', 'hidden');
+  later.answer(ANSWER);
+  await wait(60);
+  assert.equal(told[1]!.en.title, 'Seraphina');
+  assert.equal(told[1]!.en.body, 'Seraphina replied.');
+
+  // And one cut short is said so, by name.
+  const cut = new ReplyNotifier({ metricsFile: join(root, 'none.jsonl'), replyFile, graceMs: 20, deliver: async (message) => { told.push({ en: message('en', true), vi: message('vi', true), hidden: message('en', false) }); } });
+  t.after(() => cut.close());
+  cut.expect({ ...REPORT, text: '' });
+  cut.presence('phone', 'hidden');
+  cut.answer({ ...ANSWER, cut: true });
+  await wait(60);
+  assert.equal(told[2]!.en.title, 'Seraphina');
+  assert.equal(told[2]!.vi.body, 'Câu trả lời bị dừng giữa chừng. Mở SillyTavern để xem phần đã nhận được.');
 });
 
 test('a page report is taken only in the shape of one, and only so large', () => {

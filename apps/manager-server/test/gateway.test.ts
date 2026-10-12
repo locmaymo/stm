@@ -637,6 +637,7 @@ async function startNotifyingGateway(upstream: Upstream): Promise<{ gateway: Acc
   const replies: GatewayReplies = {
     presence: (page, state) => { asked.push(`presence ${page} ${state}`); },
     reply: async (report) => { asked.push(`reply ${report.title} ${report.key}`); },
+    expect: (report) => { asked.push(`expect ${report.title} ${report.chat}`); },
     publicKey: async () => 'BPUBLICKEY',
     preview: async (endpoint) => subscribed.get(endpoint) ?? null,
     setPreview: async (endpoint, preview) => { if (!subscribed.has(endpoint)) return false; subscribed.set(endpoint, preview); return true; },
@@ -749,11 +750,13 @@ test('a page says where it is and what it saw, and subscribes, only with the hea
   assert.equal(subscribed.get(phone.endpoint), false, 'this phone is told who replied, not what they said');
   assert.deepEqual(await (await send('/__stm/notify/presence', cookie, { page: 'p1', state: 'visible' })).json(), { anyone: true });
 
+  assert.equal((await send('/__stm/notify/expect', cookie, { page: 'p1', title: 'Seraphina', key: 'nonsense' })).status, 400);
+  assert.equal((await send('/__stm/notify/expect', cookie, { page: 'p1', title: 'Seraphina', name: 'Seraphina', avatar: 'Seraphina.png', key: 'c:Seraphina.png', chat: 'c1' })).status, 202);
   assert.equal((await send('/__stm/notify/reply', cookie, { page: 'p1', title: 'Seraphina', key: 'nonsense' })).status, 400);
   assert.equal((await send('/__stm/notify/reply', cookie, { page: 'p1', title: 'Seraphina', name: 'Seraphina', text: 'Hi', avatar: 'Seraphina.png', key: 'c:Seraphina.png', chat: 'c1' })).status, 202);
   assert.equal((await send('/__stm/notify/push', cookie, { endpoint: phone.endpoint }, 'DELETE')).status, 200);
   assert.equal(subscribed.size, 0);
-  assert.deepEqual(asked, ['presence p1 hidden', 'subscribe vi', 'presence p1 visible', 'reply Seraphina c:Seraphina.png']);
+  assert.deepEqual(asked, ['presence p1 hidden', 'subscribe vi', 'presence p1 visible', 'expect Seraphina c1', 'reply Seraphina c:Seraphina.png']);
   assert.equal(upstream.seen.length, 0);
 });
 

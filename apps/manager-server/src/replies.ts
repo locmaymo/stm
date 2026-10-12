@@ -1,4 +1,4 @@
-import { open, stat } from 'node:fs/promises';
+import { open, readFile, stat, unlink } from 'node:fs/promises';
 import en from '../../../packages/ui/locales/en.json' with { type: 'json' };
 import vi from '../../../packages/ui/locales/vi.json' with { type: 'json' };
 import { interpolate, type UsageEvent } from '../../../packages/contracts/src/index.js';
@@ -28,6 +28,14 @@ import type { PushMessage } from './web-push.js';
  * Nobody looking, and no page that ever said otherwise - SillyTavern opened on
  * its own port, past the door - is told nothing: there is no way to know
  * whether somebody is looking at it.
+ *
+ * On an iPhone the page is stopped before the reply ends nearly every time,
+ * so the usage log is what speaks, and plain words were too little. Two
+ * things make it say more. The page says who it is waiting for when the
+ * message is sent - it is still being looked at then - and the fetch observer
+ * puts the start of the finished reply in a file of its own beside the log
+ * line, with the same timestamp. Together they are the same notification the
+ * page would have sent.
  */
 
 /** How long a page that said it is looked at is believed without hearing from it again. */
@@ -69,6 +77,8 @@ export interface ReplyReport {
 export interface ReplyNotifierOptions {
   /** The usage log SillyTavern's fetch observer writes. */
   readonly metricsFile: string;
+  /** Where the observer puts the start of the last finished reply; see observer.mjs. */
+  readonly replyFile?: string;
   /** Hand a message to every subscribed browser; `preview` is whether that one is shown what was said. */
   readonly deliver: (message: (locale: NotificationLocale, preview: boolean) => PushMessage) => Promise<unknown>;
   readonly now?: () => number;
@@ -87,6 +97,7 @@ const CATALOGS: Readonly<Record<NotificationLocale, unknown>> = { en, vi };
 
 export class ReplyNotifier {
   private readonly metricsFile: string;
+  private readonly replyFile: string | null;
   private readonly deliver: ReplyNotifierOptions['deliver'];
   private readonly now: () => number;
   private readonly graceMs: number;
@@ -100,10 +111,13 @@ export class ReplyNotifier {
   private reading = false;
   private toldAt = Number.NEGATIVE_INFINITY;
   private plainAt = Number.NEGATIVE_INFINITY;
+  /** Who a page said it is waiting for, and when. */
+  private expected: { readonly report: ReplyReport; readonly at: number } | null = null;
   private closed = false;
 
   public constructor(options: ReplyNotifierOptions) {
     this.metricsFile = options.metricsFile;
+    this.replyFile = options.replyFile ?? null;
     this.deliver = options.deliver;
     this.now = options.now ?? Date.now;
     this.graceMs = options.graceMs ?? GRACE_MS;
@@ -132,21 +146,16 @@ export class ReplyNotifier {
     if (this.lookedAt()) return;
     if (this.pending) { clearTimeout(this.pending); this.pending = null; }
     this.toldAt = this.now();
-    const text = preview(report.text);
-    const key = report.key;
-    const url = `/#stm-open=${encodeURIComponent(key)}&chat=${encodeURIComponent(report.chat)}`;
-    const icon = report.avatar ? `/thumbnail?type=avatar&file=${encodeURIComponent(report.avatar)}` : undefined;
-    await this.deliver((locale, shown) => {
-      const said = shown && text ? text : words(locale, 'notify.reply.named', { name: report.name || report.title });
-      return {
-        title: report.title,
-        body: report.group && shown && text && report.name ? `${report.name}: ${said}` : said,
-        url,
-        tag: `reply:${key}`,
-        level: 'info',
-        ...(icon ? { icon } : {}),
-      };
-    });
+    await this.deliver(about(report, 'ready', preview(report.text)));
+  }
+
+  /**
+   * A message was sent, and this is who the page is waiting for a reply from.
+   * Kept for the usage log to name, should the page be stopped before it can.
+   */
+  public expect(report: ReplyReport): void {
+    if (this.closed) return;
+    this.expected = { report, at: this.now() };
   }
 
   /** One answer from the usage log. Public so a test can hand one over. */
@@ -157,18 +166,42 @@ export class ReplyNotifier {
     if (this.pending) clearTimeout(this.pending);
     this.pending = setTimeout(() => {
       this.pending = null;
-      if (this.lookedAt() || this.now() - this.toldAt < COVERED_MS) return;
-      if (this.now() - this.plainAt < PLAIN_COOLDOWN_MS) return;
-      this.plainAt = this.now();
-      void this.deliver((locale) => ({
-        title: words(locale, `notify.reply.${outcome}.title`),
-        body: words(locale, `notify.reply.${outcome}.body`),
-        url: '/',
-        tag: 'reply',
-        level: outcome === 'ready' ? 'info' : 'warning',
-      })).catch(() => undefined);
+      void this.tellFromLog(event, outcome).catch(() => undefined);
     }, this.graceMs);
     this.pending.unref?.();
+  }
+
+  private async tellFromLog(event: UsageEvent, outcome: Outcome): Promise<void> {
+    if (this.lookedAt() || this.now() - this.toldAt < COVERED_MS) return;
+    if (this.now() - this.plainAt < PLAIN_COOLDOWN_MS) return;
+    this.plainAt = this.now();
+    const expected = this.expected && this.now() - this.expected.at < AWAY_MS ? this.expected.report : null;
+    const said = outcome === 'ready' ? await this.readReply(event.timestamp) : '';
+    if (expected) { await this.deliver(about(expected, outcome, preview(said))); return; }
+    await this.deliver((locale, shown) => ({
+      title: words(locale, `notify.reply.${outcome}.title`),
+      body: shown && said ? preview(said) : words(locale, `notify.reply.${outcome}.body`),
+      url: '/',
+      tag: 'reply',
+      level: outcome === 'ready' ? 'info' : 'warning',
+    }));
+  }
+
+  /**
+   * The start of the reply the observer wrote for this answer, and only this
+   * one: the timestamp has to be the log line's own. Read once and removed,
+   * so the words are not left lying about longer than they are needed.
+   */
+  private async readReply(timestamp: string): Promise<string> {
+    if (!this.replyFile) return '';
+    try {
+      const parsed = JSON.parse(await readFile(this.replyFile, 'utf8')) as { timestamp?: unknown; text?: unknown };
+      if (parsed.timestamp !== timestamp || typeof parsed.text !== 'string') return '';
+      await unlink(this.replyFile).catch(() => undefined);
+      return parsed.text;
+    } catch {
+      return '';
+    }
   }
 
   public close(): void {
@@ -279,8 +312,25 @@ export function parseReplyReport(value: unknown): ReplyReport | null {
   return report.page && report.title && (report.key.startsWith('c:') || report.key.startsWith('g:')) ? report : null;
 }
 
+/**
+ * A notification about one conversation: who, what - when this browser is
+ * shown what was said and there are words to show - and the chat to open.
+ */
+function about(report: ReplyReport, outcome: Outcome, text: string): (locale: NotificationLocale, shown: boolean) => PushMessage {
+  const url = `/#stm-open=${encodeURIComponent(report.key)}&chat=${encodeURIComponent(report.chat)}`;
+  const icon = report.avatar ? `/thumbnail?type=avatar&file=${encodeURIComponent(report.avatar)}` : undefined;
+  return (locale, shown) => {
+    const named = words(locale, 'notify.reply.named', { name: report.name || report.title });
+    const body = outcome !== 'ready' ? words(locale, `notify.reply.${outcome}.body`)
+      : shown && text ? (report.group && report.name ? `${report.name}: ${text}` : text)
+        : named;
+    return { title: report.title, body, url, tag: `reply:${report.key}`, level: outcome === 'ready' ? 'info' : 'warning', ...(icon ? { icon } : {}) };
+  };
+}
+
 function preview(text: string): string {
-  const flat = text.replace(/\s+/gu, ' ').trim();
+  // Asterisks are how a roleplay marks an action; on a lock screen they are noise.
+  const flat = text.replace(/\*+/gu, '').replace(/\s+/gu, ' ').trim();
   return flat.length <= PREVIEW_CHARACTERS ? flat : `${flat.slice(0, PREVIEW_CHARACTERS - 1).trimEnd()}…`;
 }
 

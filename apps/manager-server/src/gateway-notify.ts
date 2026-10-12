@@ -28,6 +28,8 @@ export const NOTIFY_PREFIX = '/__stm/notify/';
 export interface GatewayReplies {
   presence(page: string, state: PageState): void;
   reply(report: ReplyReport): Promise<void>;
+  /** A message was sent; this is who the page is waiting for a reply from. */
+  expect(report: ReplyReport): void;
   publicKey(): Promise<string>;
   /** Whether this browser is shown what was said; null when it is not subscribed. */
   preview(endpoint: string): Promise<boolean | null>;
@@ -163,13 +165,17 @@ function rendered(index){if(!waiting)return;var ctx=context();var m=ctx&&ctx.cha
 if(shown()){ask(String(m.name||who.title));return}
 if(!anyone)return;
 call('POST','/__stm/notify/reply',{page:PAGE,title:who.title,name:String(m.name||''),group:!!who.group,text:wordsOf(index,m),avatar:who.avatar,key:who.key,chat:chatId(ctx)},true).catch(function(){})}
+/* Who a reply is coming from, said while the page is still looked at: a phone
+   stops the page before the reply ends, and then this is all the manager has. */
+function expect(options){if(!anyone)return;var ctx=context();if(!ctx)return;var forced=options&&options.force_chid!==undefined&&ctx.characters?ctx.characters[options.force_chid]:null;var who=speakerOf(ctx,{name:forced?forced.name:'',original_avatar:forced?forced.avatar:''});if(!who)return;
+call('POST','/__stm/notify/expect',{page:PAGE,title:who.title,name:forced?String(forced.name):who.group?'':who.title,group:!!who.group,text:'',avatar:who.avatar,key:who.key,chat:chatId(ctx)},true).catch(function(){})}
 function busy(){return document.body&&document.body.dataset.generating==='true'}
 function openChat(key,chat){var ctx=context();if(!ctx||!key)return Promise.resolve();var group=key.indexOf('g:')===0?key.slice(2):null,avatar=key.indexOf('c:')===0?key.slice(2):null;var here=group?ctx.groupId===group:!ctx.groupId&&ctx.characters&&ctx.characters[ctx.characterId]&&ctx.characters[ctx.characterId].avatar===avatar;if(here&&(!chat||chatId(ctx)===chat))return Promise.resolve();if(busy())return Promise.resolve();
 if(group){return(ctx.groupId!==group?import('/scripts/group-chats.js').then(function(g){return g.openGroupById(group)}):Promise.resolve()).then(function(){var c=context();if(chat&&chatId(c)!==chat)return c.openGroupChat(group,chat)})}
 var index=(ctx.characters||[]).map(function(c){return c.avatar}).indexOf(avatar);if(index<0)return Promise.resolve();return(here?Promise.resolve():ctx.selectCharacterById(index,{switchMenu:false})).then(function(){var c=context();if(chat&&chatId(c)!==chat)return c.openCharacterChat(chat)})}
 function openFrom(hash){var m=/stm-open=([^&]*)(?:&chat=([^&]*))?/.exec(hash||'');if(!m)return false;var key=decodeURIComponent(m[1]||''),chat=decodeURIComponent(m[2]||'');openChat(key,chat).catch(function(){});return true}
 function hook(){var ctx=context();var ev=ctx&&ctx.eventTypes;if(!ctx||!ctx.eventSource||!ev||!ev.CHARACTER_MESSAGE_RENDERED)return false;
-if(ev.GENERATION_STARTED)ctx.eventSource.on(ev.GENERATION_STARTED,function(type,options,dryRun){if(!dryRun&&!(options&&options.quiet_prompt))waiting=true});else waiting=true;
+if(ev.GENERATION_STARTED)ctx.eventSource.on(ev.GENERATION_STARTED,function(type,options,dryRun){if(dryRun||(options&&options.quiet_prompt))return;waiting=true;expect(options)});else waiting=true;
 if(ev.CHAT_CHANGED)ctx.eventSource.on(ev.CHAT_CHANGED,function(){waiting=false});
 ctx.eventSource.on(ev.CHARACTER_MESSAGE_RENDERED,function(i){rendered(Number(i))});
 var ready=function(){if(openFrom(location.hash))try{history.replaceState(null,'',location.pathname+location.search)}catch(e){}addMenu()};if(ev.APP_READY)ctx.eventSource.on(ev.APP_READY,ready);else ready();return true}

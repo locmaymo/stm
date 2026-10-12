@@ -141,6 +141,55 @@ test('an answer let go of before its end is marked cut, and one that ends whole 
   assert.equal(events[2]?.outputTokens, 3);
 });
 
+test('the start of a finished reply goes to its own file, and never into the usage log', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-instrumentation-reply-'));
+  const eventsPath = join(root, 'metrics', 'usage-events.jsonl');
+  const replyPath = join(root, 'tmp', 'reply.json');
+  const server = createServer((request, response) => {
+    if (request.url === '/v1/chat/completions') {
+      // A reasoning model that thinks out loud first, streamed.
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      for (const piece of ['<think>plan the', ' scene</think>', '*She smiles.*', ' Welcome back.']) response.write(`data: ${JSON.stringify({ choices: [{ delta: { content: piece } }] })}\n\n`);
+      response.end(`data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 5, completion_tokens: 4, total_tokens: 9 } })}\n\ndata: [DONE]\n\n`);
+      return;
+    }
+    if (request.url === '/v1/messages') {
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.write(`event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: 'hidden' } })}\n\n`);
+      response.end(`event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', delta: { type: 'text_delta', text: 'Claude says hi.' } })}\n\n`);
+      return;
+    }
+    // Gemini answers in one JSON document spread over many lines.
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ candidates: [{ content: { parts: [{ text: 'hmm', thought: true }, { text: 'Gemini says hi.' }] } }], usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 2, totalTokenCount: 3 } }, null, 2));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const base = `http://127.0.0.1:${address.port}`;
+  const read = async () => JSON.parse(await readFile(replyPath, 'utf8')) as { timestamp: string; text: string };
+  const run = async (path: string, body: object) => {
+    const script = `const nodeFetch = (await import('node-fetch')).default; await (await nodeFetch(${JSON.stringify(`${base}${path}`)}, { method: 'POST', body: ${JSON.stringify(JSON.stringify(body))} })).text();`;
+    await runNode(['--import', instrumentationLoaderPath, '--input-type=module', '-e', script], { STM_METRICS_FILE: eventsPath, STM_REPLY_FILE: replyPath });
+  };
+  try {
+    await run('/v1/chat/completions', { model: 'think-test', stream: true });
+    const openai = await read();
+    assert.equal(openai.text, '*She smiles.* Welcome back.', 'what it said, not what it thought');
+    await run('/v1/messages', { model: 'claude-test', stream: true });
+    assert.equal((await read()).text, 'Claude says hi.');
+    await run('/v1beta/models/gemini-test:generateContent', {});
+    assert.equal((await read()).text, 'Gemini says hi.');
+    const log = await readFile(eventsPath, 'utf8');
+    const events = log.trim().split('\n').map((line) => JSON.parse(line) as { timestamp: string });
+    assert.equal(events.length, 3);
+    assert.equal(events[2]?.timestamp, (await read()).timestamp, 'matched to its log line by timestamp');
+    for (const words of ['Welcome back', 'Claude says', 'Gemini says', 'plan the']) assert.equal(log.includes(words), false, 'the usage log carries no words');
+  } finally {
+    server.close();
+  }
+});
+
 test('usage logged before the observer knew better leaves out downloads it recorded', () => {
   const now = new Date('2026-09-11T12:00:00.000Z');
   const download: UsageEvent = { schemaVersion: 1, timestamp: now.toISOString(), provider: 'raw.githubusercontent.com', completionSource: null, model: null, endpointHost: 'raw.githubusercontent.com', stream: false, maxTokens: null, inputTokens: null, outputTokens: null, totalTokens: null, status: 200, durationMs: 80 };

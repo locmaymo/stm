@@ -28,6 +28,8 @@ export interface ProcessSupervisorOptions {
   /** Runtime loader and JSONL destination for privacy-safe usage metrics. */
   readonly instrumentationPath?: string;
   readonly metricsFile?: string;
+  /** Where the observer puts the start of the last finished reply, for reply notifications. */
+  readonly replyFile?: string;
 }
 
 export class ProcessSupervisor {
@@ -42,6 +44,7 @@ export class ProcessSupervisor {
   private readonly readinessCheck: (child: ChildProcess, port: number) => Promise<void>;
   private readonly instrumentationPath: string | undefined;
   private readonly metricsFile: string | undefined;
+  private readonly replyFile: string | undefined;
   private child: ChildProcess | null = null;
   private buffer = '';
   private current: ProcessState = { status: 'stopped', installationId: null, profileId: null, pid: null, startedAt: null, error: null };
@@ -64,6 +67,7 @@ export class ProcessSupervisor {
     this.readinessCheck = options.readinessCheck ?? ((child, port) => waitForHttpReady(`http://127.0.0.1:${port}/`, child, this.startupTimeoutMs));
     this.instrumentationPath = options.instrumentationPath;
     this.metricsFile = options.metricsFile;
+    this.replyFile = options.replyFile;
   }
 
   public getState(): ProcessState { return { ...this.current }; }
@@ -109,6 +113,7 @@ export class ProcessSupervisor {
       env: {
         ...process.env,
         ...(this.metricsFile ? { STM_METRICS_FILE: this.metricsFile } : {}),
+        ...(this.replyFile ? { STM_REPLY_FILE: this.replyFile } : {}),
       },
     });
     this.child = child;
