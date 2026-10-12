@@ -631,16 +631,17 @@ test('the door carries what the manager remembers about the access link', async 
 });
 
 /** A gateway that does reply notifications, with what it was asked written down. */
-async function startNotifyingGateway(upstream: Upstream): Promise<{ gateway: AccessGateway; base: string; asked: string[]; subscribed: Set<string> }> {
+async function startNotifyingGateway(upstream: Upstream): Promise<{ gateway: AccessGateway; base: string; asked: string[]; subscribed: Map<string, boolean> }> {
   const asked: string[] = [];
-  const subscribed = new Set<string>();
+  const subscribed = new Map<string, boolean>();
   const replies: GatewayReplies = {
     presence: (page, state) => { asked.push(`presence ${page} ${state}`); },
     reply: async (report) => { asked.push(`reply ${report.title} ${report.key}`); },
     publicKey: async () => 'BPUBLICKEY',
-    subscribed: async (endpoint) => subscribed.has(endpoint),
+    preview: async (endpoint) => subscribed.get(endpoint) ?? null,
+    setPreview: async (endpoint, preview) => { if (!subscribed.has(endpoint)) return false; subscribed.set(endpoint, preview); return true; },
     anyone: async () => subscribed.size > 0,
-    subscribe: async (input) => { asked.push(`subscribe ${input.locale}`); subscribed.add(input.endpoint); },
+    subscribe: async (input) => { asked.push(`subscribe ${input.locale}`); subscribed.set(input.endpoint, true); },
     unsubscribe: async (endpoint) => { subscribed.delete(endpoint); },
     revoked: () => { asked.push('revoked'); },
   };
@@ -708,7 +709,11 @@ test('the reply script and its worker are behind the door, and the worker may lo
   const script = await fetch(`${base}/__stm/notify.js`, { headers: { cookie } });
   assert.equal(script.status, 200);
   assert.match(script.headers.get('content-type') ?? '', /javascript/u);
-  assert.match(await script.text(), /STMApp/u, 'it stays quiet inside the Android app');
+  const source = await script.text();
+  assert.match(source, /STMApp/u, 'it stays quiet inside the Android app');
+  assert.doesNotThrow(() => new Function(source), 'it is a script a browser can run');
+  assert.ok(source.includes('Nhận thông báo khi {name} trả lời?') && source.includes('Get a notification when {name} replies?'), 'it asks in either language');
+  assert.match(source, /extensionsMenu/u, 'and keeps its switches in SillyTavern’s wand menu');
   const worker = await fetch(`${base}/__stm/notify-sw.js`, { headers: { cookie } });
   assert.equal(worker.headers.get('service-worker-allowed'), '/');
   assert.match(await worker.text(), /showNotification/u);
@@ -737,7 +742,11 @@ test('a page says where it is and what it saw, and subscribes, only with the hea
   assert.equal((await send('/__stm/notify/push', cookie, { subscription: phone, locale: 'vi' })).status, 201);
   assert.ok(subscribed.has(phone.endpoint));
   const status = await fetch(`${base}/__stm/notify/push?endpoint=${encodeURIComponent(phone.endpoint)}`, { headers: { cookie, 'x-stm-tools': '1' } });
-  assert.deepEqual(await status.json(), { publicKey: 'BPUBLICKEY', subscribed: true });
+  assert.deepEqual(await status.json(), { publicKey: 'BPUBLICKEY', subscribed: true, preview: true });
+  assert.equal((await send('/__stm/notify/push', cookie, { endpoint: 'https://push.example/other', preview: false }, 'PUT')).status, 404);
+  assert.equal((await send('/__stm/notify/push', cookie, { endpoint: phone.endpoint, preview: 'no' }, 'PUT')).status, 400);
+  assert.equal((await send('/__stm/notify/push', cookie, { endpoint: phone.endpoint, preview: false }, 'PUT')).status, 200);
+  assert.equal(subscribed.get(phone.endpoint), false, 'this phone is told who replied, not what they said');
   assert.deepEqual(await (await send('/__stm/notify/presence', cookie, { page: 'p1', state: 'visible' })).json(), { anyone: true });
 
   assert.equal((await send('/__stm/notify/reply', cookie, { page: 'p1', title: 'Seraphina', key: 'nonsense' })).status, 400);

@@ -601,7 +601,15 @@ export class AccessGateway {
       }
       if (pathname === `${NOTIFY_PREFIX}push` && method === 'GET') {
         const endpoint = url.searchParams.get('endpoint');
-        sendJson(response, 200, { publicKey: await replies.publicKey(), subscribed: endpoint ? await replies.subscribed(endpoint) : false });
+        const preview = endpoint ? await replies.preview(endpoint) : null;
+        sendJson(response, 200, { publicKey: await replies.publicKey(), subscribed: preview !== null, preview: preview ?? true });
+        return;
+      }
+      if (pathname === `${NOTIFY_PREFIX}push` && method === 'PUT') {
+        const body = await read();
+        if (typeof body?.endpoint !== 'string' || typeof body.preview !== 'boolean') { sendJson(response, 400, { error: { code: 'invalid_input', message: 'An endpoint and whether to show what was said are required' } }); return; }
+        if (!await replies.setPreview(body.endpoint, body.preview)) { sendJson(response, 404, { error: { code: 'not_subscribed', message: 'This browser is not subscribed' } }); return; }
+        sendJson(response, 200, { subscribed: true, preview: body.preview });
         return;
       }
       if (pathname === `${NOTIFY_PREFIX}push` && method === 'POST') {

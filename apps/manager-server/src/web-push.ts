@@ -46,6 +46,8 @@ export interface PushSubscriptionRecord {
   readonly failures: number;
   /** Absent on a subscription from before there was more than one: the console's. */
   readonly scope?: PushScope;
+  /** False when this browser asked for replies without what was said; absent is shown. */
+  readonly preview?: boolean;
 }
 
 interface VapidKeys {
@@ -168,6 +170,27 @@ export class WebPush {
     return (await this.loadSubscriptions()).some((item) => item.endpoint === endpoint);
   }
 
+  /** Whether a reply to this browser shows what was said; null when it is not subscribed. */
+  public async preview(endpoint: string): Promise<boolean | null> {
+    const found = (await this.loadSubscriptions()).find((item) => item.endpoint === endpoint);
+    return found ? found.preview !== false : null;
+  }
+
+  /** Show what was said to this browser, or only who said it. False when it is not subscribed. */
+  public async setPreview(endpoint: string, preview: boolean): Promise<boolean> {
+    const list = await this.loadSubscriptions();
+    if (!list.some((item) => item.endpoint === endpoint)) return false;
+    this.subscriptions = list.map((item) => {
+      if (item.endpoint !== endpoint) return item;
+      const changed: { -readonly [Key in keyof PushSubscriptionRecord]: PushSubscriptionRecord[Key] } = { ...item, preview: false };
+      // Shown is the default, and the default is written by leaving it out.
+      if (preview) delete changed.preview;
+      return changed;
+    });
+    await this.saveSubscriptions();
+    return true;
+  }
+
   /**
    * Forget every browser of one scope. SillyTavern's are let go when the PIN
    * changes or every device is signed out: a phone that was put out of the
@@ -200,10 +223,11 @@ export class WebPush {
    * Tell every browser that subscribed in SillyTavern that a character
    * replied, each in its own language. Urgent, because somebody is waiting
    * for it - a push service holds a normal one back for a sleeping phone.
+   * `preview` is whether that browser is shown what was said.
    */
-  public async deliverReply(message: (locale: NotificationLocale) => PushMessage): Promise<number> {
+  public async deliverReply(message: (locale: NotificationLocale, preview: boolean) => PushMessage): Promise<number> {
     const list = (await this.loadSubscriptions().catch(() => [])).filter((item) => scopeOf(item) === 'sillytavern');
-    const sent = await Promise.all(list.map((subscription) => this.send(subscription, message(subscription.locale), 'high')));
+    const sent = await Promise.all(list.map((subscription) => this.send(subscription, message(subscription.locale, subscription.preview !== false), 'high')));
     return sent.filter(Boolean).length;
   }
 
@@ -313,7 +337,8 @@ function isSubscription(value: unknown): value is PushSubscriptionRecord {
   const record = value as Record<string, unknown>;
   return typeof record.endpoint === 'string' && typeof record.p256dh === 'string' && typeof record.auth === 'string'
     && (record.locale === 'en' || record.locale === 'vi') && typeof record.createdAt === 'string' && typeof record.failures === 'number'
-    && (record.scope === undefined || record.scope === 'console' || record.scope === 'sillytavern');
+    && (record.scope === undefined || record.scope === 'console' || record.scope === 'sillytavern')
+    && (record.preview === undefined || typeof record.preview === 'boolean');
 }
 
 function scopeOf(record: PushSubscriptionRecord): PushScope {

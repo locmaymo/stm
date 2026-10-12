@@ -69,7 +69,8 @@ export interface ReplyReport {
 export interface ReplyNotifierOptions {
   /** The usage log SillyTavern's fetch observer writes. */
   readonly metricsFile: string;
-  readonly deliver: (message: (locale: NotificationLocale) => PushMessage) => Promise<unknown>;
+  /** Hand a message to every subscribed browser; `preview` is whether that one is shown what was said. */
+  readonly deliver: (message: (locale: NotificationLocale, preview: boolean) => PushMessage) => Promise<unknown>;
   readonly now?: () => number;
   readonly graceMs?: number;
   readonly pollMs?: number;
@@ -135,11 +136,11 @@ export class ReplyNotifier {
     const key = report.key;
     const url = `/#stm-open=${encodeURIComponent(key)}&chat=${encodeURIComponent(report.chat)}`;
     const icon = report.avatar ? `/thumbnail?type=avatar&file=${encodeURIComponent(report.avatar)}` : undefined;
-    await this.deliver((locale) => {
-      const said = text || words(locale, 'notify.reply.named', { name: report.name || report.title });
+    await this.deliver((locale, shown) => {
+      const said = shown && text ? text : words(locale, 'notify.reply.named', { name: report.name || report.title });
       return {
         title: report.title,
-        body: report.group && text && report.name ? `${report.name}: ${said}` : said,
+        body: report.group && shown && text && report.name ? `${report.name}: ${said}` : said,
         url,
         tag: `reply:${key}`,
         level: 'info',

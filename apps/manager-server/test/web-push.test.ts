@@ -126,7 +126,11 @@ test('a browser that subscribed in SillyTavern hears only replies, and the conso
   assert.deepEqual(sent.map((item) => item.url), ['https://push.example/desk'], 'the bell is the console’s');
 
   sent.length = 0;
-  const told = await push.deliverReply((locale) => ({ title: 'Seraphina', body: locale === 'vi' ? 'xin chào' : 'hello', url: '/', tag: 'reply:c:seraphina.png', level: 'info', icon: '/thumbnail?type=avatar&file=seraphina.png' }));
+  assert.equal(await push.preview('https://push.example/phone'), true, 'shown what was said unless it asks otherwise');
+  assert.equal(await push.setPreview('https://push.example/nobody', false), false);
+  assert.equal(await push.setPreview('https://push.example/phone', false), true);
+  assert.equal(await new WebPush({ paths }).preview('https://push.example/phone'), false, 'and that is remembered');
+  const told = await push.deliverReply((locale, preview) => ({ title: 'Seraphina', body: preview ? 'what she said' : locale === 'vi' ? 'xin chào' : 'hello', url: '/', tag: 'reply:c:seraphina.png', level: 'info', icon: '/thumbnail?type=avatar&file=seraphina.png' }));
   assert.equal(told, 1);
   assert.deepEqual(sent.map((item) => item.url), ['https://push.example/phone'], 'a reply is SillyTavern’s');
   assert.equal(sent[0]?.urgency, 'high', 'somebody is waiting for it');

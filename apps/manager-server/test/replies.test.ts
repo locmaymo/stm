@@ -16,12 +16,13 @@ const REPORT: ReplyReport = { page: 'phone', title: 'Seraphina', name: 'Seraphin
 
 /** A notifier whose pushes are written down in English and Vietnamese, as two phones would read them. */
 function notifier(metricsFile = join(tmpdir(), 'stm-replies-none.jsonl'), options: { pollMs?: number } = {}) {
-  const told: Array<Record<NotificationLocale, PushMessage>> = [];
+  const told: Array<Record<NotificationLocale | 'hidden', PushMessage>> = [];
   const replies = new ReplyNotifier({
     metricsFile,
     graceMs: 30,
     ...(options.pollMs ? { pollMs: options.pollMs } : {}),
-    deliver: async (message) => { told.push({ en: message('en'), vi: message('vi') }); },
+    // A third phone asked not to be shown what was said.
+    deliver: async (message) => { told.push({ en: message('en', true), vi: message('vi', true), hidden: message('en', false) }); },
   });
   return { replies, told };
 }
@@ -38,12 +39,15 @@ test('a reply the page saw is told at once, with who said what and where to open
   assert.equal(message.tag, 'reply:c:Seraphina.png', 'one conversation, one notification');
   assert.equal(message.url, '/#stm-open=c%3ASeraphina.png&chat=Seraphina%20-%202026-10-12');
   assert.equal(message.icon, '/thumbnail?type=avatar&file=Seraphina.png');
+  assert.equal(told[0]!.hidden.body, 'Seraphina replied.', 'a phone that asked not to be shown what was said is told only who');
+  assert.equal(told[0]!.hidden.title, 'Seraphina');
 
   await replies.reply({ ...REPORT, text: 'a'.repeat(400), group: true, title: 'The tavern', name: 'Seraphina', key: 'g:1700' });
   const group = told[1]!.vi;
   assert.equal(group.title, 'The tavern');
   assert.ok(group.body.startsWith('Seraphina: aaa'), 'in a group, who spoke');
   assert.ok(group.body.length < 140 && group.body.endsWith('…'), 'and only the start of it');
+  assert.equal(told[1]!.hidden.body, 'Seraphina replied.');
 
   await replies.reply({ ...REPORT, text: '' });
   assert.equal(told[2]!.vi.body, 'Seraphina đã trả lời.', 'a reply with nothing to show still says who');
