@@ -37,6 +37,8 @@ final class Payload {
     static Map<String, String> prepare(Context context, Progress progress) throws IOException, ErrnoException, org.json.JSONException {
         File files = context.getFilesDir();
         File nativeDir = new File(context.getApplicationInfo().nativeLibraryDir);
+        // Before the stamp below is written: whether it is there yet says whether an earlier build ran.
+        TermuxImport.settleOffer(context, new File(files, "bundle.json").exists());
         JSONObject bundle = new JSONObject(readAsset(context, "bundle.json"));
         File stampFile = new File(files, "bundle.json");
         JSONObject stamp = stampFile.exists() ? new JSONObject(readFile(stampFile)) : new JSONObject();

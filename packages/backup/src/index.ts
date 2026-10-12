@@ -8,7 +8,7 @@ import { pipeline } from 'node:stream/promises';
 import { chmod, lstat, mkdir, open, readFile, readdir, rename, rm, rmdir, stat, truncate, writeFile } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
-import { BACKUP_KINDS, backupKind, defaultBackupName, logEvent, logLineText, type BackupFilePreview, type BackupKind, type BackupManifest, type BackupSource, type LogEvent, type LogSink, type Profile, type ProfileLayout, type RestoreLosses, type RestoreMode, type RestorePreview, type LocalBackupSchedule } from '../../contracts/src/index.js';
+import { BACKUP_KINDS, BACKUP_PURPOSES, backupKind, defaultBackupName, type BackupPurpose, logEvent, logLineText, type BackupFilePreview, type BackupKind, type BackupManifest, type BackupSource, type LogEvent, type LogSink, type Profile, type ProfileLayout, type RestoreLosses, type RestoreMode, type RestorePreview, type LocalBackupSchedule } from '../../contracts/src/index.js';
 import { createIoLimiter, ioConcurrency, runPooled } from '../../platform/src/index.js';
 import type { PlatformPaths } from '../../platform/src/index.js';
 
@@ -673,6 +673,28 @@ export class BackupStore {
     const next: BackupManifest = { ...current, kind: 'scheduled', ...(current.autoNamed ? { name: normalizeBackupName(undefined, current.profileName, current.createdAt, 'scheduled') } : {}) };
     await this.save(manifests.map((manifest) => manifest.id === id ? next : manifest));
     await this.pruneCreated(current.profileId);
+  }
+
+  /**
+   * Keep the safety copy of a restore for good, for `purpose`.
+   *
+   * A safety copy is the undo for the last restore only, and goes with the
+   * next one or after a week. The copy taken before a SillyTavern moved in
+   * from elsewhere is the reader's way back to what they had, however long
+   * they take to notice they wanted it, so it becomes a backup of theirs:
+   * kept until they remove it. Its name is the manager's, so the panel says
+   * what it is in the reader's language. A copy somebody already named - an
+   * unchanged profile reuses its newest backup - keeps that name.
+   */
+  public async keep(id: string, purpose: BackupPurpose): Promise<BackupManifest | null> {
+    const manifests = await this.load();
+    const current = manifests.find((manifest) => manifest.id === id);
+    if (!current || current.source !== 'created') return null;
+    if (backupKind(current) === 'manual' && !current.autoNamed) return { ...current };
+    const next: BackupManifest = { ...current, kind: 'manual', autoNamed: true, purpose, name: normalizeBackupName(defaultBackupName(current.profileName, 'manual', new Date(current.createdAt), purpose), current.profileName, current.createdAt, 'manual') };
+    await this.save(manifests.map((manifest) => manifest.id === id ? next : manifest));
+    this.logger(logEvent('backup.kept', `[backup] kept ${current.name} as ${next.name}`, { from: current.name, to: next.name }));
+    return { ...next };
   }
 
   public async rename(id: string, name: string): Promise<BackupManifest> {
@@ -2472,9 +2494,10 @@ function parseManifest(value: unknown): BackupManifest {
   if (!isRecord(value) || value.schemaVersion !== BACKUP_SCHEMA_VERSION || typeof value.id !== 'string' || typeof value.name !== 'string' || typeof value.createdAt !== 'string' || typeof value.profileId !== 'string' || typeof value.profileName !== 'string' || (value.layout !== 'data' && value.layout !== 'public') || typeof value.sizeBytes !== 'number' || typeof value.checksumSha256 !== 'string' || typeof value.fileCount !== 'number') throw new Error('Invalid backup manifest');
   const source: BackupSource = value.source === 'uploaded' ? 'uploaded' : 'created';
   const kind = typeof value.kind === 'string' && (BACKUP_KINDS as readonly string[]).includes(value.kind) ? value.kind : undefined;
-  const { kind: _stored, autoNamed, note, ...rest } = value;
+  const { kind: _stored, autoNamed, note, purpose, ...rest } = value;
   const kept = typeof note === 'string' ? normalizeBackupNote(note) : '';
-  return { ...rest, source, ...(kind ? { kind } : {}), ...(autoNamed === true ? { autoNamed: true } : {}), ...(kept ? { note: kept } : {}) } as unknown as BackupManifest;
+  const why = typeof purpose === 'string' && (BACKUP_PURPOSES as readonly string[]).includes(purpose) ? purpose : undefined;
+  return { ...rest, source, ...(kind ? { kind } : {}), ...(autoNamed === true ? { autoNamed: true } : {}), ...(why ? { purpose: why } : {}), ...(kept ? { note: kept } : {}) } as unknown as BackupManifest;
 }
 
 function parseSchedule(value: unknown): LocalBackupSchedule | null {

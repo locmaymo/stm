@@ -5,7 +5,7 @@ import {
   Globe2, LayoutDashboard, Maximize2, Minimize2, Moon, Package, Pencil, Plus,
   LogOut, RotateCcw, ScrollText, Search, Sun, Trash2, Upload, X, Rows3,
   BrainCircuit, CircleStop, Clock3, Cpu, Ellipsis, Play, QrCode as QrCodeIcon, RefreshCw, Scale, Settings2, ShieldCheck, Square,
-  Blocks, BookmarkPlus, Bug, FileCode2, LoaderCircle, Gauge, HardDrive, History, KeyRound, Leaf, MemoryStick, Monitor, CircleArrowUp, Star, TriangleAlert,
+  Blocks, BookmarkPlus, Bug, FileCode2, LoaderCircle, Gauge, HardDrive, History, KeyRound, Leaf, MemoryStick, Monitor, CircleArrowUp, Star, Terminal, TriangleAlert,
 } from 'lucide-react';
 import {
   Alert, AlertDescription, AlertTitle, AuthLayout, Badge, BrandMark, Button, ButtonGroup, ButtonGroupSeparator, buttonVariants, Card, CardAction,
@@ -34,11 +34,13 @@ import { availableUpdate, readDismissedManagerRelease, readDismissedUpdate, save
 import { readDismissedDisplaced, readDismissedRecovery, readDismissedSettings, saveDismissedDisplaced, saveDismissedRecovery, saveDismissedSettings, shouldOfferSettings, shouldShowDisplaced, shouldShowRecovery } from './settings-offer.js';
 import { apiFetch, onSessionExpired, resetSessionWatch, sessionToken, setSessionToken } from './session.js';
 import { NotificationBell, PushToggle } from './notification-bell.js';
-import { appFeatures, importZipFromApp, openInApp } from './app-bridge.js';
+import { answerTermuxOffer, appFeatures, importZipFromApp, openInApp, type AppFeatures, type ImportSource } from './app-bridge.js';
 import { collectCloudflareResult, framed, inPhoneApp, openReturnWindow, popupsBlocked, whenAbandoned, type CollectedResult } from './oauth.js';
 import type { AccessGatewayState, AccessLinkPreference, AccessLinkTarget, BackupManifest, CloudflareAccountProblem, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LegalReview, LogEntry, LogSourceFilter, ManagerRelease, ManagerSettingsOffer, ManagerUpdateStatus, NotificationSummary, OnlineState, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, SaverState, SetupChecklistState, SetupStep, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, isCloudJob, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
+import termuxGuideEn from './assets/termux-guide-en.webp';
+import termuxGuideVi from './assets/termux-guide-vi.webp';
 import { usePoll } from './use-poll.js';
 import { POLL_BACKGROUND_MS, POLL_RELEASE_MS, statusIntervalMs } from './polling.js';
 import { foldForSearch, translateLogEntry, translateStep } from '../../../packages/contracts/src/index.js';
@@ -90,6 +92,13 @@ const UPLOAD_CHUNK_BYTES = 4 * 1024 * 1024;
  */
 const UPLOAD_RETRIES = 5;
 const UPLOAD_RETRY_FIRST_MS = 1000;
+
+/** What a move out of Termux that went wrong says, by the app's code for it. */
+const TERMUX_IMPORT_FAILURES: Partial<Record<string, MessageKey>> = {
+  termux_not_found: 'console.termuxNotFound',
+  termux_too_old: 'console.termuxTooOld',
+  termux_missing: 'console.termuxMissing',
+};
 const UPLOAD_RATE_WINDOW_MS = 10_000;
 
 /**
@@ -97,13 +106,19 @@ const UPLOAD_RATE_WINDOW_MS = 10_000;
  * than this page; saver mode streams its uploads instead, so never there.
  */
 function usePhoneImport(saving: boolean): boolean {
-  const [available, setAvailable] = useState(false);
+  const features = useAppFeatures();
+  return features?.importZip === true && !saving;
+}
+
+/** What the Android app can do for the console; null until it has answered, or there is no app. */
+function useAppFeatures(): AppFeatures | null {
+  const [features, setFeatures] = useState<AppFeatures | null>(null);
   useEffect(() => {
     let live = true;
-    void appFeatures().then((features) => { if (live) setAvailable(features.importZip); });
+    void appFeatures().then((answer) => { if (live) setFeatures(answer); });
     return () => { live = false; };
   }, []);
-  return available && !saving;
+  return features;
 }
 
 /**
@@ -1795,6 +1810,17 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
   const openUpload = (file: File) => { setDataIntent({ kind: 'upload', file }); navigate('data'); };
   const phoneImport = usePhoneImport(saver?.enabled === true);
   const openPhoneUpload = () => { setDataIntent({ kind: 'phoneUpload' }); navigate('data'); };
+  /*
+   * Moving a SillyTavern out of Termux, offered once on a phone that has
+   * Termux. The app keeps the answer, since it is about this phone; until the
+   * app has said, there is no card, so it never shows and then goes. Nor
+   * while SillyTavern is still being installed: the move ends in a restore,
+   * and there is nothing to restore into until it is.
+   */
+  const appCan = useAppFeatures();
+  const [termuxOfferAnswered, setTermuxOfferAnswered] = useState(false);
+  const termuxOffer = appCan?.termuxOffer === true && !termuxOfferAnswered && saver?.enabled !== true && activeInstallation?.status === 'ready';
+  const openTermuxImport = () => { setDataIntent({ kind: 'termuxImport' }); navigate('data'); };
   const openBackup = () => { setDataIntent({ kind: 'backup' }); navigate('data'); };
   const cloudflareSignedIn = checklistR2?.cloudflare ? checklistR2.cloudflare.state === 'connected' || checklistR2.cloudflare.state === 'choose_account' : false;
   /*
@@ -2038,12 +2064,12 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
             {page !== 'data' && dataActivity?.label
               ? <DataActivityStrip t={t} label={dataActivity.label} step={dataActivity.step} percent={dataActivity.percent} onOpen={() => navigate('data')} />
               : null}
-            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{hero}{checklist}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} hostAddress={shownHostAddress(online?.hostAddress ?? null)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} onSetAccessLink={setAccessLink} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} canBackUp={activeProfileId !== null && saver?.enabled !== true} onBackup={openBackup} onUpload={openUpload} onUploadFromPhone={phoneImport ? openPhoneUpload : undefined} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? null : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} onSetAccessLink={setAccessLink} startup={startup} saver={saver} online={online} onSetAutoStart={setAutoStartSillyTavern} onSetSaver={setSaverMode} onSetKeepOnline={setKeepOnline} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} onEraseEverything={eraseEverything} /> : <ResourcePanel page={page} t={t} />}
+            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{termuxOffer ? <TermuxOfferCard t={t} onStart={openTermuxImport} onDismiss={() => { answerTermuxOffer(true); setTermuxOfferAnswered(true); }} /> : null}{hero}{checklist}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} hostAddress={shownHostAddress(online?.hostAddress ?? null)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} onSetAccessLink={setAccessLink} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} canBackUp={activeProfileId !== null && saver?.enabled !== true} onBackup={openBackup} onUpload={openUpload} onUploadFromPhone={phoneImport ? openPhoneUpload : undefined} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? null : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} onSetAccessLink={setAccessLink} startup={startup} saver={saver} online={online} onSetAutoStart={setAutoStartSillyTavern} onSetSaver={setSaverMode} onSetKeepOnline={setKeepOnline} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} onEraseEverything={eraseEverything} /> : <ResourcePanel page={page} t={t} />}
             {/* Kept, hidden, while it has work under way, so leaving for another
                 page does not take the work's progress and its last question
                 with it; the strip above stands in for it meanwhile. */}
             {page === 'data' || dataActivity?.holding
-              ? <div className={page === 'data' ? 'contents' : 'hidden'}><DataPage t={t} locale={preferences.locale} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} intent={dataIntent} onIntentHandled={() => setDataIntent(null)} onActivity={setDataActivity} /></div>
+              ? <div className={page === 'data' ? 'contents' : 'hidden'}><DataPage t={t} locale={preferences.locale} fail={fail} catalog={catalog} csrfToken={csrfToken} profiles={profiles} activeProfileId={activeProfileId} backups={backups} onProfilesChange={(next, active) => { setProfiles(next); setActiveProfileId(active); }} onBackupsChange={setBackups} intent={dataIntent} onIntentHandled={() => setDataIntent(null)} onActivity={setDataActivity} onTermuxMoved={() => setTermuxOfferAnswered(true)} /></div>
               : null}
           </PageContainer>
           <MobileNav
@@ -2086,6 +2112,56 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
  * let a machine be replaced by the memory of another one, and the console's
  * password is in that memory.
  */
+/**
+ * The offer, on a phone with Termux, to move the SillyTavern in it here.
+ *
+ * First on the overview: it is a question to answer before anything else on
+ * a phone just set up, either way.
+ *
+ * Asked once: "No thanks" is an answer the app keeps, and so is a move that
+ * went through. The Data page keeps a button for it after that.
+ */
+function TermuxOfferCard({ t, onStart, onDismiss }: { t: Translate; onStart: () => void; onDismiss: () => void }) {
+  return <Card>
+    <PanelHeading icon={<Terminal />}>{t('console.termuxOfferTitle')}</PanelHeading>
+    <CardContent className="grid gap-3">
+      <p className="text-sm text-muted-foreground">{t('console.termuxOfferBody')}</p>
+      <div className="flex flex-wrap gap-2">
+        <Button size="sm" onClick={onStart}><Terminal />{t('console.termuxOfferStart')}</Button>
+        <Button size="sm" variant="ghost" onClick={onDismiss}>{t('console.termuxOfferDismiss')}</Button>
+      </div>
+    </CardContent>
+  </Card>;
+}
+
+/**
+ * What to do in Android's folder picker, shown before it opens.
+ *
+ * The picker is Android's and opens where Android likes, often on the
+ * phone's shared storage, where Termux is one entry in a menu, and nothing on
+ * it says that Termux is what to choose. Four steps written out were a wall
+ * of words on a phone, so they are shown instead: a short loop of the picker
+ * itself, in the reader's language, a hand tapping each step. Square, so the
+ * dialog stays short.
+ */
+function TermuxStepsDialog({ t, locale, open, onOpenChange, onPick }: { t: Translate; locale: string; open: boolean; onOpenChange: (open: boolean) => void; onPick: () => void }) {
+  return <Dialog open={open} onOpenChange={onOpenChange}>
+    <DialogContent className="sm:max-w-md">
+      <DialogHeader>
+        <DialogTitle>{t('console.termuxStepsTitle')}</DialogTitle>
+        <DialogDescription>{t('console.termuxStepsBody')}</DialogDescription>
+      </DialogHeader>
+      <DialogBody>
+        <img src={locale === 'vi' ? termuxGuideVi : termuxGuideEn} width={360} height={360} alt={t('console.termuxGuideAlt')} className="mx-auto aspect-square w-full max-w-72 rounded-xl border" />
+      </DialogBody>
+      <DialogFooter>
+        <Button variant="outline" onClick={() => onOpenChange(false)}>{t('common.cancel')}</Button>
+        <Button onClick={onPick}><Terminal />{t('console.termuxPick')}</Button>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>;
+}
+
 function RestoreEverythingCard({ t, offer, busy, onRestore, onDismiss }: {
   t: Translate;
   offer: ManagerSettingsOffer;
@@ -3921,6 +3997,7 @@ function isManagerName(backup: BackupManifest): boolean {
 export function backupDisplayName(t: Translate, locale: string, backup: BackupManifest): string {
   if (!isManagerName(backup)) return backup.name;
   const when = new Date(backup.createdAt).toLocaleString(locale, { dateStyle: 'short', timeStyle: 'short' });
+  if (backup.purpose === 'before-termux') return `${t('console.termuxKeptName')} · ${when}`;
   return `${t(BACKUP_KIND_LABEL[backupKind(backup)])} · ${when}`;
 }
 
@@ -4084,7 +4161,7 @@ function shownHostAddress(address: string | null): string | null {
 }
 
 /** Something another page sends the reader to the data page to do. */
-type DataIntent = { readonly kind: 'connect' } | { readonly kind: 'backup' } | { readonly kind: 'upload'; readonly file: File } | { readonly kind: 'phoneUpload' };
+type DataIntent = { readonly kind: 'connect' } | { readonly kind: 'backup' } | { readonly kind: 'upload'; readonly file: File } | { readonly kind: 'phoneUpload' } | { readonly kind: 'termuxImport' };
 
 /**
  * What the data page has under way, for the rest of the console to know.
@@ -4101,7 +4178,7 @@ interface DataActivity {
   readonly holding: boolean;
 }
 
-function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfileId, backups, onProfilesChange, onBackupsChange, intent, onIntentHandled, onActivity }: { t: Translate; locale: string; fail: Fail; catalog: Record<string, unknown>; csrfToken: string; profiles: Profile[]; activeProfileId: string | null; backups: BackupManifest[]; onProfilesChange: (profiles: Profile[], activeProfileId: string | null) => void; onBackupsChange: (backups: BackupManifest[]) => void; /** Something the overview sent the reader here to do. */ intent: DataIntent | null; onIntentHandled: () => void; /** Told whenever what the page has under way changes; see `DataActivity`. */ onActivity: (activity: DataActivity | null) => void }) {
+function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfileId, backups, onProfilesChange, onBackupsChange, intent, onIntentHandled, onActivity, onTermuxMoved }: { t: Translate; locale: string; fail: Fail; catalog: Record<string, unknown>; csrfToken: string; profiles: Profile[]; activeProfileId: string | null; backups: BackupManifest[]; onProfilesChange: (profiles: Profile[], activeProfileId: string | null) => void; onBackupsChange: (backups: BackupManifest[]) => void; /** Something the overview sent the reader here to do. */ intent: DataIntent | null; onIntentHandled: () => void; /** Told whenever what the page has under way changes; see `DataActivity`. */ onActivity: (activity: DataActivity | null) => void; /** A SillyTavern came over from Termux, which answers the overview's offer. */ onTermuxMoved: () => void }) {
   const [busyAction, setBusyAction] = useState<string | null>(null);
   /*
    * The one thing on this page that is state rather than a result.
@@ -4149,6 +4226,14 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   // are put away and the card says why.
   const [saving, setSaving] = useState(false);
   const phoneImport = usePhoneImport(saving);
+  const termuxImport = useAppFeatures()?.termux === true && !saving;
+  const [termuxStepsOpen, setTermuxStepsOpen] = useState(false);
+  /*
+   * The zip a move out of Termux just made. Restoring it keeps the copy
+   * taken first for good, under a name that says what it is, so the data
+   * this phone had before is always there to go back to.
+   */
+  const [termuxUpload, setTermuxUpload] = useState<string | null>(null);
   // The recovery point whose in-place restore is being asked about.
   const [restorePoint, setRestorePoint] = useState<R2SnapshotSummary | null>(null);
   // A zip still in the browser whose directory the server has read, waiting on
@@ -4242,6 +4327,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
     if (intent.kind === 'connect') setDestinationOpen(true);
     else if (intent.kind === 'upload') void inspectUpload(intent.file);
     else if (intent.kind === 'phoneUpload') void importFromPhone();
+    else if (intent.kind === 'termuxImport') setTermuxStepsOpen(true);
     else void startBackup('scheduled').then((failure) => { if (failure) failed(failure); });
   }, [intent, loaded, r2Config === null]);
 
@@ -4662,18 +4748,20 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
     const backupId = selectedBackup.id;
     const trim = restoreTrim;
     const discard = justUploaded === backupId && discardUpload;
+    const fromTermux = termuxUpload === backupId;
     // The question has been answered, so the dialog goes before the work
     // starts: what happens next belongs on the page, where the Stop button is.
     closeRestore();
     setBusyAction(t('console.restore')); setOperationProgress(null); setMixedProfile(null);
     try {
-      const response = await apiFetch(`/api/v1/backups/${backupId}/restore`, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ mode: restoreMode, ...(restoreAnyway ? { force: true } : {}), ...(trim ? { trim: true } : {}), ...(discard ? { discard: true } : {}) }) });
+      const response = await apiFetch(`/api/v1/backups/${backupId}/restore`, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ mode: restoreMode, ...(restoreAnyway ? { force: true } : {}), ...(trim ? { trim: true } : {}), ...(discard ? { discard: true } : {}), ...(fromTermux ? { keepSafetyFor: 'before-termux' } : {}) }) });
       const payload = await response.json() as { jobId?: string; error?: { message?: string } };
       if (!response.ok || !payload.jobId) { failed(fail.body(payload, t('console.backupRestoreFailed'))); return; }
       setRunningJobId(payload.jobId);
       await waitForOperation(payload.jobId, (job) => setOperationProgress({ percent: job.progress, step: jobStep(job) }));
       await refresh();
-      done(t('console.restoreDone'));
+      if (fromTermux) { setTermuxUpload(null); done(t('console.termuxRestored', { name: t('console.termuxKeptName') })); }
+      else done(t('console.restoreDone'));
     } catch (error: unknown) {
       // A stopped restore is put back by the server before it reports, so a
       // stop is a result to glance at. Only a stop that could not be put back
@@ -4744,9 +4832,12 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
    * through the same chunks, many times faster than this page can read it out
    * of the WebView; see BackupImport in the app. What follows is the same
    * question as after any upload.
+   *
+   * The same road moves a SillyTavern out of Termux: the app zips its data
+   * as it reads it (see TermuxImport in the app).
    */
-  const importFromPhone = async () => {
-    setBusyAction(t('console.importZip')); setOperationProgress(null); setUploading(true); setUploadingFromApp(true);
+  const importFromPhone = async (source: ImportSource = 'zip') => {
+    setBusyAction(t(source === 'termux' ? 'console.termuxImport' : 'console.importZip')); setOperationProgress(null); setUploading(true); setUploadingFromApp(true);
     const controller = new AbortController();
     uploadAbort.current = controller;
     try {
@@ -4771,10 +4862,11 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
           percent: Math.round((event.sent / Math.max(total, 1)) * 100),
           step: `${t('console.uploading')} ${formatBytes(event.sent)} / ${formatBytes(total)} · ${formatBytes(Math.round(bytesPerSecond))}/s · ${remaining}`,
         });
-      }, controller.signal);
+      }, controller.signal, source);
       if (!ended || ended.state === 'canceled' || ended.state === 'picked' || ended.state === 'progress') return;
       if (ended.state === 'failed') {
-        failed(ended.status !== undefined && ended.body !== undefined ? apiErrorFromText(ended.body, ended.status, t('console.uploadFailed'), fail, t('console.uploadProxyPage')) : t('console.uploadFailed'));
+        const known = ended.code ? TERMUX_IMPORT_FAILURES[ended.code] : undefined;
+        failed(known ? t(known) : ended.status !== undefined && ended.body !== undefined ? apiErrorFromText(ended.body, ended.status, t('console.uploadFailed'), fail, t('console.uploadProxyPage')) : t('console.uploadFailed'));
         return;
       }
       let payload: (RestorePreview & { backup?: BackupManifest }) | { error?: { message?: string } };
@@ -4782,6 +4874,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       catch { throw new Error(apiErrorFromText(ended.body, ended.status, t('console.backupPreviewFailed'), fail, t('console.uploadProxyPage'))); }
       if (ended.status < 200 || ended.status >= 300 || !('files' in payload)) { failed(fail.body(payload, t('console.backupPreviewFailed'))); return; }
       if (!payload.backup) { failed(t('console.backupPreviewFailed')); return; }
+      if (source === 'termux') { answerTermuxOffer(false); onTermuxMoved(); setTermuxUpload(payload.backup.id); }
       setRestoreMode('replace');
       setSelectedBackup(payload.backup); setSelectedPreview(payload); setJustUploaded(payload.backup.id);
       await refresh();
@@ -5285,6 +5378,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
             <Upload aria-hidden="true" />{t('console.importZip')}
             <input type="file" accept=".zip,application/zip" className="sr-only" disabled={busy} onClick={phonePick(phoneImport, () => void importFromPhone())} onChange={(event) => void inspectUpload(event.target.files?.[0])} />
           </label>
+          {termuxImport ? <Button variant="outline" size="sm" onClick={() => setTermuxStepsOpen(true)} disabled={busy}><Terminal />{t('console.termuxImport')}</Button> : null}
           {saving ? null : <>
             <Button variant="outline" size="sm" onClick={() => startBackup('scheduled').then((failure) => { if (failure) failed(failure); })} disabled={busy || activeProfileId === null}><DatabaseBackup />{t('dashboard.backupNow')}</Button>
             <Button variant="outline" size="sm" onClick={() => setBackupOpen(true)} disabled={busy || activeProfileId === null}><BookmarkPlus />{t('console.manualBackup')}</Button>
@@ -5536,7 +5630,8 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       cancelLabel={t('common.cancel')}
       onConfirm={deleteBackup}
     />
-    <RestoreDialog t={t} catalog={catalog} name={streaming ? streaming.file.name : restorePoint ? t('console.restorePointName', { when: new Date(restorePoint.createdAt).toLocaleString() }) : selectedBackup ? displayName(selectedBackup) : null} safety={t(saving ? 'console.restoreSafetySaver' : 'console.restoreSafety')} preview={selectedPreview} mode={restoreMode} onModeChange={setRestoreMode} anyway={restoreAnyway} onAnywayChange={setRestoreAnyway} trim={restoreTrim} onTrimChange={setRestoreTrim} discard={selectedBackup && justUploaded === selectedBackup.id ? { checked: discardUpload, onChange: setDiscardUpload, sizeBytes: selectedBackup.sizeBytes } : null} onClose={closeRestore} onRestore={restoreSelected} />
+    <TermuxStepsDialog t={t} locale={locale} open={termuxStepsOpen} onOpenChange={setTermuxStepsOpen} onPick={() => { setTermuxStepsOpen(false); void importFromPhone('termux'); }} />
+    <RestoreDialog t={t} catalog={catalog} name={streaming ? streaming.file.name : restorePoint ? t('console.restorePointName', { when: new Date(restorePoint.createdAt).toLocaleString() }) : selectedBackup ? displayName(selectedBackup) : null} safety={saving ? t('console.restoreSafetySaver') : null} preview={selectedPreview} mode={restoreMode} onModeChange={setRestoreMode} anyway={restoreAnyway} onAnywayChange={setRestoreAnyway} trim={restoreTrim} onTrimChange={setRestoreTrim} discard={selectedBackup && justUploaded === selectedBackup.id ? { checked: discardUpload, onChange: setDiscardUpload, sizeBytes: selectedBackup.sizeBytes } : null} onClose={closeRestore} onRestore={restoreSelected} />
     <R2DestinationDialog
       t={t}
       open={destinationOpen}
@@ -5827,7 +5922,7 @@ function NameDialog({ t, open, onOpenChange, title, description, label, hint, pl
  * where the choice is made, and the choice is made in a dialog, because one of
  * them deletes everything that is there.
  */
-function RestoreDialog({ t, catalog, name, safety, preview, mode, onModeChange, anyway, onAnywayChange, trim, onTrimChange, discard, onClose, onRestore }: { t: Translate; catalog: Record<string, unknown>; name: string | null; safety: string; preview: RestorePreview | null; mode: RestoreMode; onModeChange: (mode: RestoreMode) => void; anyway: boolean; onAnywayChange: (anyway: boolean) => void; trim: boolean; onTrimChange: (trim: boolean) => void; /** Offered for a zip just uploaded: remove it from the library once it is restored. */ discard: { readonly checked: boolean; readonly onChange: (checked: boolean) => void; readonly sizeBytes: number } | null; onClose: () => void; onRestore: () => Promise<void> }) {
+function RestoreDialog({ t, catalog, name, safety, preview, mode, onModeChange, anyway, onAnywayChange, trim, onTrimChange, discard, onClose, onRestore }: { t: Translate; catalog: Record<string, unknown>; name: string | null; /** What the reader has to know about how this restore runs; only saver mode has anything to say. */ safety: string | null; preview: RestorePreview | null; mode: RestoreMode; onModeChange: (mode: RestoreMode) => void; anyway: boolean; onAnywayChange: (anyway: boolean) => void; trim: boolean; onTrimChange: (trim: boolean) => void; /** Offered for a zip just uploaded: remove it from the library once it is restored. */ discard: { readonly checked: boolean; readonly onChange: (checked: boolean) => void; readonly sizeBytes: number } | null; onClose: () => void; onRestore: () => Promise<void> }) {
   const group = useId();
   const anywayId = useId();
   const trimId = useId();
@@ -5882,14 +5977,29 @@ function RestoreDialog({ t, catalog, name, safety, preview, mode, onModeChange, 
    * named: a missing chat is noticed, a missing extension looks like a bug.
    */
   const losses = mode === 'replace' && preview.losses && preview.losses.files > 0 ? preview.losses : null;
-  const options: Array<{ value: RestoreMode; label: string; body: string; recommended: boolean }> = [
-    { value: 'replace', label: t('console.replaceRestore'), body: t('console.restoreReplaceBody'), recommended: true },
-    { value: 'merge', label: t('console.mergeRestore'), body: t('console.restoreMergeBody'), recommended: false },
+  // The archive's name stands out, in the title and in each choice: it is
+  // what the whole question is about.
+  const naming = (key: 'console.restoreTitle' | 'console.restoreReplaceBody' | 'console.restoreMergeBody', rest?: string): ReactNode => {
+    const slot = '\uE000';
+    const [before = '', after = ''] = t(key, { name: slot }).split(slot);
+    return <><span className={rest}>{before}</span><strong className="font-semibold text-foreground [overflow-wrap:anywhere]">{name}</strong><span className={rest}>{after}</span></>;
+  };
+  const options: Array<{ value: RestoreMode; label: string; body: ReactNode; recommended: boolean }> = [
+    { value: 'replace', label: t('console.replaceRestore'), body: naming('console.restoreReplaceBody'), recommended: true },
+    { value: 'merge', label: t('console.mergeRestore'), body: naming('console.restoreMergeBody'), recommended: false },
   ];
+  /*
+   * Leaving the junk out and letting the uploaded zip go are options few
+   * people need to think about, so they sit folded under "Advanced". Open
+   * from the start only when the restore cannot go ahead without the first:
+   * saver mode, with too little room for the junk.
+   */
+  const junkNeeded = capacity !== null && capacity.fitsTrimmed && !capacity.fits;
+  const junkOffered = !(capacity && !capacity.fitsTrimmed) && junk !== null && junk.bytes > 0;
   return <Dialog open onOpenChange={(next) => { if (!next) onClose(); }}>
     <DialogContent className="sm:max-w-lg">
       <DialogHeader>
-        <DialogTitle>{t('console.restoreTitle', { name })}</DialogTitle>
+        <DialogTitle>{naming('console.restoreTitle', 'font-normal')}</DialogTitle>
         <DialogDescription>{trimmed
           ? <span className="flex flex-wrap items-center gap-x-1.5">
             <span className="line-through">{t('console.restoreCounts', { files: preview.fileCount, size: formatBytes(preview.totalBytes) })}</span>
@@ -5937,40 +6047,47 @@ function RestoreDialog({ t, catalog, name, safety, preview, mode, onModeChange, 
           : null}
         {capacity && !capacity.fitsTrimmed
           ? <Alert variant="destructive"><AlertDescription>{t('console.restoreTooLarge', { needed: formatBytes(capacity.trimmedNeededBytes), available: formatBytes(capacity.availableBytes) })}</AlertDescription></Alert>
-          : junk && junk.bytes > 0
-            ? <div className="grid gap-2">
-              {capacity && !capacity.fits
-                ? <Alert variant="destructive"><AlertDescription>{t('console.restoreJunkNeeded', { needed: formatBytes(capacity.neededBytes), available: formatBytes(capacity.availableBytes) })}</AlertDescription></Alert>
-                : null}
-              {/* One line and a hint: an option beside the choice above, not a warning. */}
-              <Label htmlFor={trimId} className="flex items-start gap-2 font-normal">
-                <Checkbox id={trimId} checked={trim} onCheckedChange={(checked) => onTrimChange(checked === true)} className="mt-0.5" />
-                <span className="grid gap-0.5">
-                  <span>{t('console.restoreTrim', { size: formatBytes(junk.bytes) })}</span>
-                  <span className="text-xs text-muted-foreground">{t('console.restoreJunkOptional')}</span>
-                </span>
-              </Label>
-            </div>
+          : junkNeeded
+            ? <Alert variant="destructive"><AlertDescription>{t('console.restoreJunkNeeded', { needed: formatBytes(capacity.neededBytes), available: formatBytes(capacity.availableBytes) })}</AlertDescription></Alert>
             : null}
-        {discard
-          ? <Label htmlFor={discardId} className="flex items-start gap-2 font-normal">
-            <Checkbox id={discardId} checked={discard.checked} onCheckedChange={(checked) => discard.onChange(checked === true)} className="mt-0.5" />
-            <span className="grid gap-0.5">
-              <span>{t('console.restoreDiscardUpload', { size: formatBytes(discard.sizeBytes) })}</span>
-              <span className="text-xs text-muted-foreground">{t('console.restoreDiscardUploadHint')}</span>
-            </span>
-          </Label>
+        {junkOffered || discard
+          ? <details className="group rounded-lg border" open={junkNeeded || undefined}>
+            <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-sm font-medium select-none [&::-webkit-details-marker]:hidden">
+              <ChevronDown className="size-4 -rotate-90 text-muted-foreground transition-transform group-open:rotate-0" aria-hidden="true" />
+              {t('console.restoreAdvanced')}
+            </summary>
+            <div className="grid gap-3 border-t px-3 py-3">
+              {junkOffered && junk
+                ? <Label htmlFor={trimId} className="flex items-start gap-2 font-normal">
+                  <Checkbox id={trimId} checked={trim} onCheckedChange={(checked) => onTrimChange(checked === true)} className="mt-0.5" />
+                  <span className="grid gap-0.5">
+                    <span>{t('console.restoreTrim', { size: formatBytes(junk.bytes) })}</span>
+                    <span className="text-xs text-muted-foreground">{t('console.restoreJunkOptional')}</span>
+                  </span>
+                </Label>
+                : null}
+              {discard
+                ? <Label htmlFor={discardId} className="flex items-start gap-2 font-normal">
+                  <Checkbox id={discardId} checked={discard.checked} onCheckedChange={(checked) => discard.onChange(checked === true)} className="mt-0.5" />
+                  <span className="grid gap-0.5">
+                    <span>{t('console.restoreDiscardUpload', { size: formatBytes(discard.sizeBytes) })}</span>
+                    <span className="text-xs text-muted-foreground">{t('console.restoreDiscardUploadHint')}</span>
+                  </span>
+                </Label>
+                : null}
+            </div>
+          </details>
           : null}
         {/* What it will use, once what is chosen fits; nothing to say when it
             frees more than it writes. */}
         {capacity && !blockedBySize && (trim ? capacity.trimmedNeededBytes : capacity.neededBytes) > 0
           ? <p className="text-xs text-muted-foreground">{t('console.restoreRoom', { needed: formatBytes(trim ? capacity.trimmedNeededBytes : capacity.neededBytes), available: formatBytes(capacity.availableBytes) })}</p>
           : null}
-        <p className="text-xs text-muted-foreground">{safety}</p>
+        {safety ? <p className="text-xs text-muted-foreground">{safety}</p> : null}
       </DialogBody>
       <DialogFooter>
         <Button variant="ghost" onClick={onClose}>{t('common.cancel')}</Button>
-        <Button variant={mode === 'replace' ? 'destructive' : 'default'} disabled={(unrecognized && !anyway) || blockedBySize} onClick={() => onRestore()}>{t('console.restoreStart')}</Button>
+        <Button disabled={(unrecognized && !anyway) || blockedBySize} onClick={() => onRestore()}>{t('console.restoreStart')}</Button>
       </DialogFooter>
     </DialogContent>
   </Dialog>;

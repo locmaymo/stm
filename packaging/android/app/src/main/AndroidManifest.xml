@@ -10,6 +10,11 @@
     <!-- Asked for on the permissions screen; see Permissions. -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
+    <!-- Whether Termux is here, to offer moving a SillyTavern out of it; see TermuxImport. -->
+    <queries>
+        <package android:name="com.termux" />
+    </queries>
+
     <!--
       extractNativeLibs: node, git and cloudflared ship as lib*.so and have to
       exist as files to be started. usesCleartextTraffic: the console and

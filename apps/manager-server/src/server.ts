@@ -5,7 +5,7 @@ import { createReadStream } from 'node:fs';
 import { hostname, networkInterfaces } from 'node:os';
 import { createSocket } from 'node:dgram';
 import { extname, join, relative, resolve, sep } from 'node:path';
-import { applyQuery, isLogEvent, availableUpdate, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, isConsoleStatusSection, KEEP_ONLINE_DEFAULT_MINUTES, OPERATION_JOB_KINDS, SETUP_STEPS, type AccessGatewayState, type ApiErrorBody, type BackupManifest, type ConfigUpdateInput, type ConsoleStatus, type ConsoleStatusSection, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogPage, type LogSink, type LogSourceFilter, type LegalReview, type ManagerPorts, type ManagerUpdateStatus, type OnlineState, type PortSettings, type Profile, type ProfileLayout, type RestorePreview, type SetupChecklistState, type SetupStatus, type SetupStep, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
+import { applyQuery, BACKUP_PURPOSES, isLogEvent, availableUpdate, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, isConsoleStatusSection, KEEP_ONLINE_DEFAULT_MINUTES, OPERATION_JOB_KINDS, SETUP_STEPS, type AccessGatewayState, type ApiErrorBody, type BackupManifest, type BackupPurpose, type ConfigUpdateInput, type ConsoleStatus, type ConsoleStatusSection, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogPage, type LogSink, type LogSourceFilter, type LegalReview, type ManagerPorts, type ManagerUpdateStatus, type OnlineState, type PortSettings, type Profile, type ProfileLayout, type RestorePreview, type SetupChecklistState, type SetupStatus, type SetupStep, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
 import { getPlatformPaths, storageDurability, storageMedium, storageReport, type PlatformPaths } from '../../../packages/platform/src/index.js';
 import { INSTALL_CANCELED, RuntimeError, RuntimeManager, type InstallationProgress } from '../../../packages/sillytavern-runtime/src/index.js';
 import { hashPassword, MIN_PASSWORD_LENGTH, validatePasscode, validatePassword, verifyPassword } from './password.js';
@@ -2613,10 +2613,15 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       // An upload is a copy of a file the reader still has; once restored it
       // can go, when they asked. Nothing the manager wrote itself is offered.
       const discard = isRecord(body) && body.discard === true && manifest.source === 'uploaded';
+      // The copy taken before this restore, kept for good rather than swept
+      // with the next restore, because of what this restore is; see
+      // `BackupStore.keep`.
+      const keepSafetyFor = isRecord(body) && typeof body.keepSafetyFor === 'string' && (BACKUP_PURPOSES as readonly string[]).includes(body.keepSafetyFor) ? body.keepSafetyFor as BackupPurpose : null;
       await checkFits(backups, profile, { archivePath }, mode, trim);
       const { job, signal } = jobs.createOperation('restore', logEvent('job.preparingRestore', 'Preparing restore'));
       void restoreWithProcess({ profile, backups, archivePath, backupId: id, mode, ...(force ? { force: true } : {}), ...(trim ? { trim: true } : {}), supervisor, signal, onProgress: (progress, step) => jobs.updateOperation(job.id, progress, step), safetyNet: saverSafetyNet(profile, backups, r2, (line) => jobs.append('backup', line)) })
-        .then(async () => {
+        .then(async ({ safetySnapshot }) => {
+          if (keepSafetyFor && safetySnapshot) await backups.keep(safetySnapshot.id, keepSafetyFor).catch((error: unknown) => { const reason = error instanceof Error ? error.message : 'unknown error'; jobs.append('backup', logEvent('backup.keepFailed', `[backup] the copy from before the restore could not be kept: ${reason}`, { reason })); });
           if (discard) await backups.remove(id).catch((error: unknown) => { const reason = error instanceof Error ? error.message : 'unknown error'; jobs.append('backup', logEvent('backup.discardFailed', `[backup] the uploaded zip could not be removed after the restore: ${reason}`, { reason })); });
         })
         .then(() => jobs.finishOperation(job.id, 'succeeded', null))

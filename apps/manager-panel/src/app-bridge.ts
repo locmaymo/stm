@@ -84,6 +84,19 @@ export function openInApp(url: string): boolean {
 export interface AppFeatures {
   /** Whether the app sends a zip from the phone itself; see `importZipFromApp`. */
   readonly importZip: boolean;
+  /** Whether Termux is on the phone, so a SillyTavern in it can be moved here. */
+  readonly termux: boolean;
+  /** Whether to offer that move: Termux is there and the offer was never answered. */
+  readonly termuxOffer: boolean;
+}
+
+const NO_FEATURES: AppFeatures = { importZip: false, termux: false, termuxOffer: false };
+
+/** What the app said it can do; anything it did not say, it cannot. */
+export function parseFeatures(data: unknown): AppFeatures | null {
+  const value = parseMessage(data);
+  if (value?.type !== 'features') return null;
+  return { importZip: value.importZip === true, termux: value.termux === true, termuxOffer: value.termuxOffer === true };
 }
 
 let asked: Promise<AppFeatures> | null = null;
@@ -94,7 +107,7 @@ let asked: Promise<AppFeatures> | null = null;
  */
 export function appFeatures(timeoutMs = 1500): Promise<AppFeatures> {
   const app = channel();
-  if (!app) return Promise.resolve({ importZip: false });
+  if (!app) return Promise.resolve(NO_FEATURES);
   asked ??= new Promise((resolve) => {
     const done = (features: AppFeatures) => {
       clearTimeout(timer);
@@ -102,10 +115,10 @@ export function appFeatures(timeoutMs = 1500): Promise<AppFeatures> {
       resolve(features);
     };
     const listener = (event: MessageEvent<string>) => {
-      const value = parseMessage(event.data);
-      if (value?.type === 'features') done({ importZip: value.importZip === true });
+      const features = parseFeatures(event.data);
+      if (features) done(features);
     };
-    const timer = setTimeout(() => done({ importZip: false }), timeoutMs);
+    const timer = setTimeout(() => done(NO_FEATURES), timeoutMs);
     app.addEventListener('message', listener);
     app.postMessage(JSON.stringify({ type: 'features' }));
   });
@@ -118,7 +131,7 @@ export type ImportEvent =
   | { readonly state: 'progress'; readonly sent: number; readonly total: number }
   | { readonly state: 'done'; readonly status: number; readonly body: string }
   | { readonly state: 'canceled' }
-  | { readonly state: 'failed'; readonly message: string; readonly status?: number; readonly body?: string };
+  | { readonly state: 'failed'; readonly message: string; readonly code?: string; readonly status?: number; readonly body?: string };
 
 export function parseImportEvent(data: unknown): ImportEvent | null {
   const value = parseMessage(data);
@@ -130,20 +143,32 @@ export function parseImportEvent(data: unknown): ImportEvent | null {
     case 'progress': return { state: 'progress', sent: number('sent'), total: number('total') };
     case 'done': return { state: 'done', status: number('status'), body: text('body') };
     case 'canceled': return { state: 'canceled' };
-    case 'failed': return { state: 'failed', message: text('message'), ...(typeof value.status === 'number' ? { status: value.status, body: text('body') } : {}) };
+    case 'failed': return {
+      state: 'failed',
+      message: text('message'),
+      ...(typeof value.code === 'string' ? { code: value.code } : {}),
+      ...(typeof value.status === 'number' ? { status: value.status, body: text('body') } : {}),
+    };
     default: return null;
   }
 }
 
 /**
- * Have the app pick a zip on the phone and send it to the manager.
+ * Where the app gets what it sends: a zip the reader picks on the phone, or
+ * the SillyTavern in Termux, zipped as it is read.
+ */
+export type ImportSource = 'zip' | 'termux';
+
+/**
+ * Have the app pick a zip on the phone, or Termux's folder, and send it to
+ * the manager.
  *
  * The app sends it through the same upload this page uses, with this page's
  * sign-in, so what comes back is what finishing an upload answers. Resolves
  * with how it ended - done, canceled or failed; the pick and the progress
  * before that go to `onEvent`. Aborting `signal` asks the app to stop.
  */
-export function importZipFromApp(csrfToken: string, onEvent: (event: ImportEvent) => void, signal?: AbortSignal): Promise<ImportEvent | null> {
+export function importZipFromApp(csrfToken: string, onEvent: (event: ImportEvent) => void, signal?: AbortSignal, source: ImportSource = 'zip'): Promise<ImportEvent | null> {
   const app = channel();
   if (!app) return Promise.resolve(null);
   return new Promise((resolve) => {
@@ -158,8 +183,19 @@ export function importZipFromApp(csrfToken: string, onEvent: (event: ImportEvent
     };
     app.addEventListener('message', listener);
     signal?.addEventListener('abort', stop, { once: true });
-    app.postMessage(JSON.stringify({ type: 'importZip', csrf: csrfToken }));
+    app.postMessage(JSON.stringify({ type: source === 'termux' ? 'importTermux' : 'importZip', csrf: csrfToken }));
   });
+}
+
+/**
+ * The offer to move a SillyTavern over from Termux is answered: "No thanks"
+ * (`declined`), which the app is told and remembers, or a move that went
+ * through, which the app already wrote down itself. Either way this page
+ * stops offering it too, without asking the app again.
+ */
+export function answerTermuxOffer(declined: boolean): void {
+  if (declined) channel()?.postMessage(JSON.stringify({ type: 'termuxOffer', dismiss: true }));
+  asked = asked?.then((features) => ({ ...features, termuxOffer: false })) ?? null;
 }
 
 function parseMessage(data: unknown): Record<string, unknown> | null {

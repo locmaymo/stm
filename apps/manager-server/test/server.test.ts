@@ -730,6 +730,14 @@ test('local backup endpoints create, preview, download, and restore a profile ar
   const left = (await (await fetch(`${base}/api/v1/backups`, { headers: { cookie } })).json() as { backups: Array<{ id: string }> }).backups.map((backup) => backup.id);
   assert.ok(!left.includes(uploaded.id), 'the restored upload is gone');
   assert.ok(left.includes(manifest.id), 'a backup the manager took stays');
+
+  // Asked to, the copy taken before the restore is kept for good, for why.
+  await writeFile(join(profile.dataPath, 'default-user', 'settings.json'), '{"theme":"light"}', 'utf8');
+  const keeping = await fetch(`${base}/api/v1/backups/${manifest.id}/restore`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'replace', keepSafetyFor: 'before-termux' }) });
+  assert.equal(keeping.status, 202);
+  await waitFor((await keeping.json() as { jobId: string }).jobId);
+  const named = (await (await fetch(`${base}/api/v1/backups`, { headers: { cookie } })).json() as { backups: Array<{ name: string; kind?: string; purpose?: string }> }).backups.find((backup) => backup.purpose === 'before-termux');
+  assert.equal(named?.kind, 'manual');
 });
 
 test('installing a new version rebinds the active data profile and keeps its files', async (t) => {

@@ -6,3 +6,9 @@
  * has to be readable on the first-run screen before anything is signed in.
  */
 declare const __STM_VERSION__: string;
+
+/** An image the build copies into the bundle; importing it gives its address. */
+declare module '*.webp' {
+  const url: string;
+  export default url;
+}
