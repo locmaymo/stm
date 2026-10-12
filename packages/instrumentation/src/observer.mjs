@@ -62,6 +62,19 @@ function observeResponse(response, details, startedAt, persist) {
     return response;
   }
   const usage = new Usage();
+  /*
+   * Said once, however the body ends. A reply that stopped before its end -
+   * SillyTavern let go of it because the page that asked went away, or the
+   * provider dropped the connection - is marked `cut`, so whoever tells the
+   * reader about it does not call half a reply a finished one.
+   */
+  let settled = false;
+  const settle = (cut) => {
+    if (settled) return;
+    settled = true;
+    usage.finish();
+    persist(eventFrom(details, startedAt, response.status, usage, cut));
+  };
   try {
     details.stream ||= String(response.headers?.get?.('content-type') ?? '').toLowerCase().includes('text/event-stream');
     if (typeof response.body.getReader === 'function' && typeof globalThis.ReadableStream === 'function') {
@@ -70,17 +83,17 @@ function observeResponse(response, details, startedAt, persist) {
         async pull(controller) {
           try {
             const result = await reader.read();
-            if (result.done) { usage.finish(); persist(eventFrom(details, startedAt, response.status, usage)); controller.close(); return; }
+            if (result.done) { settle(false); controller.close(); return; }
             usage.feed(result.value, details.stream || response.headers?.get?.('content-type')?.includes('text/event-stream'));
             controller.enqueue(result.value);
-          } catch (error) { usage.finish(); persist(eventFrom(details, startedAt, response.status, usage)); controller.error(error); }
+          } catch (error) { settle(true); controller.error(error); }
         },
-        async cancel(reason) { usage.finish(); persist(eventFrom(details, startedAt, response.status, usage)); await reader.cancel(reason); },
+        async cancel(reason) { settle(true); await reader.cancel(reason); },
       });
       return copyWebResponse(response, stream);
     }
     if (typeof response.body.on === 'function' && typeof response.body.pipe === 'function') {
-      return copyNodeResponse(response, details, startedAt, usage, persist);
+      return copyNodeResponse(response, details, usage, settle);
     }
   } catch { /* instrumentation must never alter a provider response */ }
   persist(eventFrom(details, startedAt, response.status ?? null, usage));
@@ -96,11 +109,14 @@ function copyWebResponse(response, body) {
   return wrapped;
 }
 
-function copyNodeResponse(response, details, startedAt, usage, persist) {
+function copyNodeResponse(response, details, usage, settle) {
   const tap = new Transform({
     transform(chunk, encoding, callback) { usage.feed(chunk, details.stream || String(response.headers?.get?.('content-type') ?? '').includes('text/event-stream')); callback(null, chunk); },
-    flush(callback) { usage.finish(); persist(eventFrom(details, startedAt, response.status, usage)); callback(); },
+    flush(callback) { settle(false); callback(); },
   });
+  // Torn down before the end - aborted, or the body failed - is never flushed,
+  // and used to go unrecorded altogether.
+  tap.once('close', () => settle(true));
   response.body.once('error', (error) => tap.destroy(error));
   response.body.pipe(tap);
   const WrappedResponse = response.constructor;
@@ -108,8 +124,8 @@ function copyNodeResponse(response, details, startedAt, usage, persist) {
 }
 
 function failedEvent(details, startedAt) { return eventFrom(details, startedAt, null, new Usage()); }
-function eventFrom(details, startedAt, status, usage) {
-  return { schemaVersion: 1, timestamp: new Date().toISOString(), provider: details.provider, completionSource: details.completionSource, model: details.model ?? usage.model, endpointHost: details.endpointHost, stream: details.stream, maxTokens: details.maxTokens, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, totalTokens: usage.totalTokens, cacheReadTokens: usage.cacheReadTokens, cacheWriteTokens: usage.cacheWriteTokens, reasoningTokens: usage.reasoningTokens, status, durationMs: Math.max(0, Math.round(performance.now() - startedAt)) };
+function eventFrom(details, startedAt, status, usage, cut = false) {
+  return { schemaVersion: 1, timestamp: new Date().toISOString(), provider: details.provider, completionSource: details.completionSource, model: details.model ?? usage.model, endpointHost: details.endpointHost, stream: details.stream, maxTokens: details.maxTokens, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens, totalTokens: usage.totalTokens, cacheReadTokens: usage.cacheReadTokens, cacheWriteTokens: usage.cacheWriteTokens, reasoningTokens: usage.reasoningTokens, status, durationMs: Math.max(0, Math.round(performance.now() - startedAt)), ...(cut ? { cut: true } : {}) };
 }
 
 class Usage {

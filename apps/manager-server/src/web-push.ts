@@ -25,6 +25,16 @@ const VAPID_SUBJECT = 'https://stm.locmaymo.top';
 /** How long a push service keeps a message for a browser that is offline. */
 const TTL_SECONDS = 24 * 60 * 60;
 
+/**
+ * Where a browser subscribed, which is what it is told about.
+ *
+ * `console`: the manager's own page, told what the bell says. `sillytavern`:
+ * SillyTavern's page through the door, told only that a character replied -
+ * it may be a phone somebody was given the PIN for, and the manager's own
+ * news is the administrator's.
+ */
+export type PushScope = 'console' | 'sillytavern';
+
 export interface PushSubscriptionRecord {
   readonly endpoint: string;
   /** The browser's public key, base64url, uncompressed P-256. */
@@ -34,6 +44,8 @@ export interface PushSubscriptionRecord {
   readonly locale: NotificationLocale;
   readonly createdAt: string;
   readonly failures: number;
+  /** Absent on a subscription from before there was more than one: the console's. */
+  readonly scope?: PushScope;
 }
 
 interface VapidKeys {
@@ -48,6 +60,8 @@ export interface PushMessage {
   readonly url: string | null;
   readonly tag: string;
   readonly level: string;
+  /** A picture for the notification, on the subscriber's own origin. */
+  readonly icon?: string;
 }
 
 function base64url(bytes: Buffer): string { return bytes.toString('base64url'); }
@@ -134,9 +148,10 @@ export class WebPush {
     return (await this.loadKeys()).publicKey;
   }
 
-  public async subscribe(input: { readonly endpoint: string; readonly p256dh: string; readonly auth: string; readonly locale: NotificationLocale }): Promise<void> {
+  public async subscribe(input: { readonly endpoint: string; readonly p256dh: string; readonly auth: string; readonly locale: NotificationLocale; readonly scope?: PushScope }): Promise<void> {
     const list = (await this.loadSubscriptions()).filter((item) => item.endpoint !== input.endpoint);
-    list.unshift({ ...input, createdAt: this.now().toISOString(), failures: 0 });
+    const { scope, ...rest } = input;
+    list.unshift({ ...rest, createdAt: this.now().toISOString(), failures: 0, ...(scope === 'sillytavern' ? { scope } : {}) });
     this.subscriptions = list.slice(0, MAX_SUBSCRIPTIONS);
     await this.saveSubscriptions();
   }
@@ -153,13 +168,43 @@ export class WebPush {
     return (await this.loadSubscriptions()).some((item) => item.endpoint === endpoint);
   }
 
-  /** Tell every subscribed browser. Never throws: a push that fails is a push not seen. */
+  /**
+   * Forget every browser of one scope. SillyTavern's are let go when the PIN
+   * changes or every device is signed out: a phone that was put out of the
+   * door must not go on reading replies on its lock screen.
+   */
+  public async forgetScope(scope: PushScope): Promise<number> {
+    const list = await this.loadSubscriptions();
+    const kept = list.filter((item) => scopeOf(item) !== scope);
+    if (kept.length === list.length) return 0;
+    this.subscriptions = kept;
+    await this.saveSubscriptions();
+    return list.length - kept.length;
+  }
+
+  /** Whether any browser of this scope is there to be told. */
+  public async hasScope(scope: PushScope): Promise<boolean> {
+    return (await this.loadSubscriptions().catch(() => [])).some((item) => scopeOf(item) === scope);
+  }
+
+  /** Tell every browser that subscribed in the console. Never throws: a push that fails is a push not seen. */
   public async deliver(notification: ManagerNotification): Promise<void> {
-    const list = await this.loadSubscriptions().catch(() => []);
+    const list = (await this.loadSubscriptions().catch(() => [])).filter((item) => scopeOf(item) === 'console');
     await Promise.all(list.map(async (subscription) => {
       const words = renderNotification(notification, subscription.locale);
       await this.send(subscription, { title: words.title, body: words.body, url: words.url, tag: words.tag, level: words.level }, notification.level === 'error' ? 'high' : 'normal');
     }));
+  }
+
+  /**
+   * Tell every browser that subscribed in SillyTavern that a character
+   * replied, each in its own language. Urgent, because somebody is waiting
+   * for it - a push service holds a normal one back for a sleeping phone.
+   */
+  public async deliverReply(message: (locale: NotificationLocale) => PushMessage): Promise<number> {
+    const list = (await this.loadSubscriptions().catch(() => [])).filter((item) => scopeOf(item) === 'sillytavern');
+    const sent = await Promise.all(list.map((subscription) => this.send(subscription, message(subscription.locale), 'high')));
+    return sent.filter(Boolean).length;
   }
 
   /** One message to one browser; true when the push service took it. */
@@ -267,7 +312,12 @@ function isSubscription(value: unknown): value is PushSubscriptionRecord {
   if (typeof value !== 'object' || value === null) return false;
   const record = value as Record<string, unknown>;
   return typeof record.endpoint === 'string' && typeof record.p256dh === 'string' && typeof record.auth === 'string'
-    && (record.locale === 'en' || record.locale === 'vi') && typeof record.createdAt === 'string' && typeof record.failures === 'number';
+    && (record.locale === 'en' || record.locale === 'vi') && typeof record.createdAt === 'string' && typeof record.failures === 'number'
+    && (record.scope === undefined || record.scope === 'console' || record.scope === 'sillytavern');
+}
+
+function scopeOf(record: PushSubscriptionRecord): PushScope {
+  return record.scope ?? 'console';
 }
 
 async function writeAtomic(path: string, text: string): Promise<void> {

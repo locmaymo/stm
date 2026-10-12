@@ -1138,6 +1138,7 @@
       "rejected": "Đã từ chối một lần đăng nhập từ {address}",
       "upstreamFailed": "Yêu cầu tới {path} không đến được SillyTavern: {reason}",
       "signedOutAll": "Đã đăng xuất mọi thiết bị khỏi SillyTavern ({count})",
+      "repliesRevoked": "Đã ngừng gửi thông báo trả lời tới {count} thiết bị đã đăng xuất",
       "consoleSession": "Đã mở SillyTavern cho bảng điều khiển đang đăng nhập",
       "portMoved": "Cổng {from} đang bị chiếm; cổng truy cập chạy ở {to} thay thế",
       "portTaken": "Cổng {port} được yêu cầu nhưng đang bị chiếm",
@@ -1291,6 +1292,21 @@
     "broadcast": {
       "title": "Tin từ SillyTavern Manager",
       "body": ""
+    },
+    "reply": {
+      "named": "{name} đã trả lời.",
+      "ready": {
+        "title": "SillyTavern",
+        "body": "Đã có câu trả lời."
+      },
+      "cut": {
+        "title": "SillyTavern",
+        "body": "Câu trả lời bị dừng giữa chừng. Mở SillyTavern để xem phần đã nhận được."
+      },
+      "failed": {
+        "title": "SillyTavern",
+        "body": "Câu trả lời không đến được. Mở SillyTavern để thử lại."
+      }
     }
   }
 }

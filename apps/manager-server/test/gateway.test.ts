@@ -4,6 +4,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { createConnection } from 'node:net';
 import type { Duplex } from 'node:stream';
 import { AccessGateway, ACCESS_COOKIE_NAME, clientAddress } from '../src/gateway.js';
+import type { GatewayReplies } from '../src/gateway-notify.js';
 import { rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -627,4 +628,136 @@ test('the door carries what the manager remembers about the access link', async 
   assert.equal(gateway.getState().opened, false);
   gateway.setOpened(true);
   assert.equal(gateway.getState().opened, true);
+});
+
+/** A gateway that does reply notifications, with what it was asked written down. */
+async function startNotifyingGateway(upstream: Upstream): Promise<{ gateway: AccessGateway; base: string; asked: string[]; subscribed: Set<string> }> {
+  const asked: string[] = [];
+  const subscribed = new Set<string>();
+  const replies: GatewayReplies = {
+    presence: (page, state) => { asked.push(`presence ${page} ${state}`); },
+    reply: async (report) => { asked.push(`reply ${report.title} ${report.key}`); },
+    publicKey: async () => 'BPUBLICKEY',
+    subscribed: async (endpoint) => subscribed.has(endpoint),
+    anyone: async () => subscribed.size > 0,
+    subscribe: async (input) => { asked.push(`subscribe ${input.locale}`); subscribed.add(input.endpoint); },
+    unsubscribe: async (endpoint) => { subscribed.delete(endpoint); },
+    revoked: () => { asked.push('revoked'); },
+  };
+  const gateway = new AccessGateway({ port: 0, targetPort: upstream.port, logger: () => undefined, replies });
+  gateway.setPassword(hashPassword(PASSWORD));
+  const state = await gateway.start(false);
+  return { gateway, base: `http://127.0.0.1:${state.port}`, asked, subscribed };
+}
+
+test('a SillyTavern page opened through the door carries the reply script, and nothing else is touched', async (t) => {
+  const page = '<!doctype html><html><head><title>SillyTavern</title></head><body>chat</body></html>';
+  const upstream = await startUpstream((request, response) => {
+    if (request.url === '/scripts/templates/welcome.html') {
+      response.writeHead(200, { 'content-type': 'text/html' });
+      response.end('<div>{{welcome}}</div>');
+      return;
+    }
+    // SillyTavern compresses whatever the browser says it can take.
+    const zipped = (request.headers['accept-encoding'] ?? '').includes('gzip');
+    response.writeHead(200, { 'content-type': 'text/html; charset=utf-8', etag: 'W/"abc"', 'content-length': Buffer.byteLength(page), ...(zipped ? { 'content-encoding': 'identity-but-pretend' } : {}) });
+    response.end(page);
+  });
+  const { gateway, base } = await startNotifyingGateway(upstream);
+  t.after(async () => { await gateway.close(); await upstream.close(); });
+  const cookie = await signIn(base);
+
+  const opened = await fetch(`${base}/`, { headers: { cookie, accept: 'text/html', 'sec-fetch-dest': 'document', 'accept-encoding': 'gzip', 'if-none-match': 'W/"abc"' } });
+  assert.equal(opened.status, 200);
+  const html = await opened.text();
+  assert.ok(html.includes('<script src="/__stm/notify.js" defer></script></head>'), 'just before the end of the head');
+  assert.equal(opened.headers.get('etag'), null, 'no copy without the script is kept as if it were this one');
+  assert.equal(opened.headers.get('cache-control'), 'no-cache');
+  assert.equal(Number(opened.headers.get('content-length')), Buffer.byteLength(html));
+  const reached = upstream.seen.at(-1)!;
+  assert.equal(reached.headers['accept-encoding'], undefined, 'asked for unzipped, so there is something to add it to');
+  assert.equal(reached.headers['if-none-match'], undefined);
+
+  const framed = await fetch(`${base}/`, { headers: { cookie, accept: 'text/html', 'sec-fetch-dest': 'iframe' } });
+  assert.ok((await framed.text()).includes('/__stm/notify.js'), 'the tools window and the console frame it too');
+
+  const template = await fetch(`${base}/scripts/templates/welcome.html`, { headers: { cookie, accept: '*/*', 'sec-fetch-dest': 'empty' } });
+  assert.equal(await template.text(), '<div>{{welcome}}</div>', 'a template SillyTavern fetches is not a page');
+  const asset = await fetch(`${base}/`, { headers: { cookie, accept: '*/*', 'sec-fetch-dest': 'empty', 'accept-encoding': 'gzip' } });
+  assert.equal(await asset.text(), page);
+  assert.equal(upstream.seen.at(-1)!.headers['accept-encoding'], 'gzip', 'and is asked for exactly as the browser asked');
+});
+
+test('a door without reply notifications passes SillyTavern pages through untouched', async (t) => {
+  const upstream = await startUpstream();
+  const { gateway, base } = await startGateway(upstream);
+  t.after(async () => { await gateway.close(); await upstream.close(); });
+  const cookie = await signIn(base);
+  const opened = await fetch(`${base}/`, { headers: { cookie, accept: 'text/html', 'sec-fetch-dest': 'document' } });
+  assert.equal(await opened.text(), '<!doctype html><title>SillyTavern</title>');
+  assert.equal((await fetch(`${base}/__stm/notify.js`, { headers: { cookie } })).status, 200, 'and its own paths are SillyTavern’s to answer');
+});
+
+test('the reply script and its worker are behind the door, and the worker may look after every page', async (t) => {
+  const upstream = await startUpstream();
+  const { gateway, base } = await startNotifyingGateway(upstream);
+  t.after(async () => { await gateway.close(); await upstream.close(); });
+
+  assert.equal((await fetch(`${base}/__stm/notify.js`)).status, 401);
+  const cookie = await signIn(base);
+  const script = await fetch(`${base}/__stm/notify.js`, { headers: { cookie } });
+  assert.equal(script.status, 200);
+  assert.match(script.headers.get('content-type') ?? '', /javascript/u);
+  assert.match(await script.text(), /STMApp/u, 'it stays quiet inside the Android app');
+  const worker = await fetch(`${base}/__stm/notify-sw.js`, { headers: { cookie } });
+  assert.equal(worker.headers.get('service-worker-allowed'), '/');
+  assert.match(await worker.text(), /showNotification/u);
+  assert.equal(upstream.seen.length, 0, 'none of it is SillyTavern’s');
+});
+
+test('a page says where it is and what it saw, and subscribes, only with the header and a session', async (t) => {
+  const upstream = await startUpstream();
+  const { gateway, base, asked, subscribed } = await startNotifyingGateway(upstream);
+  t.after(async () => { await gateway.close(); await upstream.close(); });
+  const send = (path: string, cookie: string | null, body: unknown, method = 'POST', header = true) => fetch(`${base}${path}`, {
+    method,
+    headers: { ...(cookie ? { cookie } : {}), ...(header ? { 'x-stm-tools': '1' } : {}), 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+  assert.equal((await send('/__stm/notify/presence', null, { page: 'p1', state: 'hidden' })).status, 401);
+  const cookie = await signIn(base);
+  assert.equal((await send('/__stm/notify/presence', cookie, { page: 'p1', state: 'hidden' }, 'POST', false)).status, 403, 'a cross-site form cannot');
+  assert.equal((await send('/__stm/notify/presence', cookie, { page: 'p1', state: 'asleep' })).status, 400);
+  const presence = await send('/__stm/notify/presence', cookie, { page: 'p1', state: 'hidden' });
+  assert.deepEqual(await presence.json(), { anyone: false }, 'nobody subscribed yet, so no heartbeat is needed');
+
+  const phone = { endpoint: 'https://push.example/phone', keys: { p256dh: Buffer.alloc(65, 4).toString('base64url'), auth: Buffer.alloc(16, 1).toString('base64url') } };
+  assert.equal((await send('/__stm/notify/push', cookie, { subscription: { ...phone, endpoint: 'http://push.example/x' } })).status, 400);
+  assert.equal((await send('/__stm/notify/push', cookie, { subscription: phone, locale: 'vi' })).status, 201);
+  assert.ok(subscribed.has(phone.endpoint));
+  const status = await fetch(`${base}/__stm/notify/push?endpoint=${encodeURIComponent(phone.endpoint)}`, { headers: { cookie, 'x-stm-tools': '1' } });
+  assert.deepEqual(await status.json(), { publicKey: 'BPUBLICKEY', subscribed: true });
+  assert.deepEqual(await (await send('/__stm/notify/presence', cookie, { page: 'p1', state: 'visible' })).json(), { anyone: true });
+
+  assert.equal((await send('/__stm/notify/reply', cookie, { page: 'p1', title: 'Seraphina', key: 'nonsense' })).status, 400);
+  assert.equal((await send('/__stm/notify/reply', cookie, { page: 'p1', title: 'Seraphina', name: 'Seraphina', text: 'Hi', avatar: 'Seraphina.png', key: 'c:Seraphina.png', chat: 'c1' })).status, 202);
+  assert.equal((await send('/__stm/notify/push', cookie, { endpoint: phone.endpoint }, 'DELETE')).status, 200);
+  assert.equal(subscribed.size, 0);
+  assert.deepEqual(asked, ['presence p1 hidden', 'subscribe vi', 'presence p1 visible', 'reply Seraphina c:Seraphina.png']);
+  assert.equal(upstream.seen.length, 0);
+});
+
+test('every device put out of the door stops hearing replies; the PIN read at start does not', async (t) => {
+  const upstream = await startUpstream();
+  const { gateway, asked } = await startNotifyingGateway(upstream);
+  t.after(async () => { await gateway.close(); await upstream.close(); });
+  assert.deepEqual(asked, [], 'setting the PIN a manager starts with is not a change');
+  const current = hashPassword('417203');
+  gateway.setPassword(current, true);
+  assert.deepEqual(asked, ['revoked'], 'a new PIN is');
+  gateway.setPassword(current, true);
+  assert.deepEqual(asked, ['revoked'], 'the same one restored is not');
+  gateway.signOutEveryone();
+  assert.deepEqual(asked, ['revoked', 'revoked']);
 });

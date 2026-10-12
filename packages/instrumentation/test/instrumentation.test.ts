@@ -94,6 +94,53 @@ test('requests that are not model calls are left out of the usage log', async ()
   assert.deepEqual(events.map((event) => event.model), ['proxied', 'quiet']);
 });
 
+test('an answer let go of before its end is marked cut, and one that ends whole is not', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-instrumentation-cut-'));
+  const eventsPath = join(root, 'metrics', 'usage-events.jsonl');
+  const server = createServer((request, response) => {
+    response.writeHead(200, { 'content-type': 'text/event-stream' });
+    if (request.url === '/whole/chat/completions') {
+      response.end('data: {"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}\n\ndata: [DONE]\n\n');
+      return;
+    }
+    // A reply still being written when whoever asked goes away.
+    response.write('data: {"choices":[{"delta":{"content":"Once"}}]}\n\n');
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  const base = `http://127.0.0.1:${address.port}`;
+  const body = JSON.stringify({ model: 'cut-test', stream: true });
+  const script = `
+    const nodeFetch = (await import('node-fetch')).default;
+    // The fetch SillyTavern's newer code uses: read a little, then the page that asked is gone.
+    const web = new AbortController();
+    const one = await fetch(${JSON.stringify(`${base}/web/chat/completions`)}, { method: 'POST', body: ${JSON.stringify(body)}, signal: web.signal });
+    const reader = one.body.getReader();
+    await reader.read();
+    web.abort();
+    await reader.read().catch(() => undefined);
+    // node-fetch, which most of SillyTavern uses: the same, as a Node stream.
+    const node = new AbortController();
+    const two = await nodeFetch(${JSON.stringify(`${base}/node/chat/completions`)}, { method: 'POST', body: ${JSON.stringify(body)}, signal: node.signal });
+    two.body.once('data', () => node.abort());
+    await two.text().catch(() => undefined);
+    await (await fetch(${JSON.stringify(`${base}/whole/chat/completions`)}, { method: 'POST', body: ${JSON.stringify(body)} })).text();
+  `;
+  try {
+    await runNode(['--import', instrumentationLoaderPath, '--input-type=module', '-e', script], { STM_METRICS_FILE: eventsPath });
+  } finally {
+    server.closeAllConnections();
+    server.close();
+  }
+  const events = (await readFile(eventsPath, 'utf8')).trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
+  assert.equal(events.length, 3, 'each answer is recorded once, however it ended');
+  assert.equal(events[0]?.cut, true);
+  assert.equal(events[1]?.cut, true);
+  assert.equal('cut' in (events[2] ?? {}), false, 'an answer that ended whole says nothing about it');
+  assert.equal(events[2]?.outputTokens, 3);
+});
+
 test('usage logged before the observer knew better leaves out downloads it recorded', () => {
   const now = new Date('2026-09-11T12:00:00.000Z');
   const download: UsageEvent = { schemaVersion: 1, timestamp: now.toISOString(), provider: 'raw.githubusercontent.com', completionSource: null, model: null, endpointHost: 'raw.githubusercontent.com', stream: false, maxTokens: null, inputTokens: null, outputTokens: null, totalTokens: null, status: 200, durationMs: 80 };

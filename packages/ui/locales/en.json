@@ -1138,6 +1138,7 @@
       "rejected": "Refused a sign-in from {address}",
       "upstreamFailed": "The request for {path} did not reach SillyTavern: {reason}",
       "signedOutAll": "Signed every device out of SillyTavern ({count})",
+      "repliesRevoked": "Stopped reply notifications to {count} signed-out device(s)",
       "consoleSession": "Opened SillyTavern for the signed-in console",
       "portMoved": "Port {from} is already in use; the access gateway is on {to} instead",
       "portTaken": "Port {port} was asked for and is already in use",
@@ -1291,6 +1292,21 @@
     "broadcast": {
       "title": "News from SillyTavern Manager",
       "body": ""
+    },
+    "reply": {
+      "named": "{name} replied.",
+      "ready": {
+        "title": "SillyTavern",
+        "body": "A reply is ready."
+      },
+      "cut": {
+        "title": "SillyTavern",
+        "body": "The reply stopped before it finished. Open SillyTavern to see what arrived."
+      },
+      "failed": {
+        "title": "SillyTavern",
+        "body": "The reply did not come through. Open SillyTavern to try again."
+      }
     }
   }
 }

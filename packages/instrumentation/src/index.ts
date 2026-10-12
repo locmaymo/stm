@@ -23,6 +23,7 @@ export function isUsageEvent(value: unknown): value is UsageEvent {
     && (typeof event.cacheWriteTokens === 'number' || event.cacheWriteTokens === null || event.cacheWriteTokens === undefined)
     && (typeof event.reasoningTokens === 'number' || event.reasoningTokens === null || event.reasoningTokens === undefined)
     && (typeof event.status === 'number' || event.status === null)
+    && (event.cut === undefined || typeof event.cut === 'boolean')
     && typeof event.durationMs === 'number'
     && Number.isFinite(event.durationMs);
 }
