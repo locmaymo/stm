@@ -12,9 +12,10 @@ import type { NotificationLocale } from './notifications.js';
  * pressed. See replies.ts for what is told when.
  *
  * It also asks. A switch nobody finds is a switch nobody turns on, so the
- * first time a character replies on a device that could be told, a card asks
- * whether it should be - or, on an iPhone outside the Home Screen, says what
- * to do first. The same switches stay in SillyTavern's wand menu afterwards.
+ * first time a character replies on a device that could be told - or the
+ * first time SillyTavern is opened from the Home Screen - a card asks whether
+ * it should be; on an iPhone outside the Home Screen it says what to do first.
+ * The same switches stay in SillyTavern's wand menu afterwards.
  *
  * Both scripts are plain ES5-ish JavaScript with no template literals so they
  * can sit inside this file's own template strings, like the tools window's.
@@ -178,7 +179,7 @@ function hook(){var ctx=context();var ev=ctx&&ctx.eventTypes;if(!ctx||!ctx.event
 if(ev.GENERATION_STARTED)ctx.eventSource.on(ev.GENERATION_STARTED,function(type,options,dryRun){if(dryRun||(options&&options.quiet_prompt))return;waiting=true;expect(options)});else waiting=true;
 if(ev.CHAT_CHANGED)ctx.eventSource.on(ev.CHAT_CHANGED,function(){waiting=false});
 ctx.eventSource.on(ev.CHARACTER_MESSAGE_RENDERED,function(i){rendered(Number(i))});
-var ready=function(){if(openFrom(location.hash))try{history.replaceState(null,'',location.pathname+location.search)}catch(e){}addMenu()};if(ev.APP_READY)ctx.eventSource.on(ev.APP_READY,ready);else ready();return true}
+var ready=function(){if(openFrom(location.hash))try{history.replaceState(null,'',location.pathname+location.search)}catch(e){}addMenu();if(standalone())setTimeout(function(){ask('')},1500)};if(ev.APP_READY)ctx.eventSource.on(ev.APP_READY,ready);else ready();return true}
 var tries=0,timer=setInterval(function(){if(hook()||++tries>=120)clearInterval(timer)},1000);
 if('serviceWorker' in navigator){navigator.serviceWorker.addEventListener('message',function(e){var d=e.data||{};if(d.type==='stm-open')openFrom(d.hash)});try{navigator.serviceWorker.startMessages()}catch(e){}}
 tick();
@@ -206,8 +207,11 @@ function buttons(c,list){var row=el('div','stm-n-row');list.forEach(function(b){
 function toast(text){var c=card(text,'');setTimeout(function(){if(open===c)close()},5000)}
 function reason(s){return s==='needs-home-screen'?T.homeBody:s==='needs-https'?T.needsHttps:s==='blocked'?T.blocked:s==='unsupported'?T.unsupported:''}
 function turnOn(button){button.disabled=true;enable().then(function(r){toast(r==='on'?T.on:r==='blocked'?T.blocked:T.failed)})}
-/* Asked once, the first time a character replies while somebody looks; again
-   a fortnight after "not now", and never once it is on. */
+/* Asked once, the first time a character replies while somebody looks - or as
+   soon as SillyTavern is opened from the Home Screen, which is what the reader
+   was told to do so it could ask; again a fortnight after "not now", and never
+   once it is on. The system's own question can only follow a tap, so "Turn on"
+   is that tap. */
 function ask(name){if(asking||open)return;var last=Number(load(ASKED)||0);if(last&&Date.now()-last<ASK_AGAIN)return;asking=true;status().then(function(s){asking=false;if(s!=='off'&&s!=='needs-home-screen')return;var snooze=function(){store(ASKED,String(Date.now()));close()};
 if(s==='needs-home-screen'){buttons(card(T.homeTitle,T.homeBody),[{label:T.gotIt,go:true,act:snooze}]);return}
 buttons(card(name?T.askTitle.replace('{name}',name):T.askTitleAny,T.askBody),[{label:T.notNow,act:snooze},{label:T.turnOn,go:true,act:function(b){store(ASKED,String(Date.now()));turnOn(b)}}])},function(){asking=false})}

@@ -34,9 +34,9 @@ import { isLocalHostname, isThisMachine, readAddressOfferAnswered, readOwnLinkWa
 import { availableUpdate, readDismissedManagerRelease, readDismissedUpdate, saveDismissedManagerRelease, saveDismissedUpdate, shouldShowManagerRelease } from './updates.js';
 import { readDismissedDisplaced, readDismissedRecovery, readDismissedSettings, saveDismissedDisplaced, saveDismissedRecovery, saveDismissedSettings, shouldOfferSettings, shouldShowDisplaced, shouldShowRecovery } from './settings-offer.js';
 import { apiFetch, onSessionExpired, resetSessionWatch, sessionToken, setSessionToken } from './session.js';
-import { NotificationBell, PushToggle } from './notification-bell.js';
+import { NotificationBell, PushOfferDialog, PushToggle } from './notification-bell.js';
 import { answerTermuxOffer, appFeatures, bubbleRequest, hasAppChannel, importZipFromApp, openInApp, type AppFeatures, type BubbleState, type ImportSource } from './app-bridge.js';
-import { BUBBLE_OFFER_KEY, bubbleOfferAccepted, bubbleOfferDue, bubbleOfferSnoozed, bubbleOfferWanted } from './bubble-offer.js';
+import { BUBBLE_OFFER_KEY, bubbleOfferWanted, offerAccepted, offerDue, offerSnoozed, readOffer, writeOffer } from './offers.js';
 import { collectCloudflareResult, framed, inPhoneApp, openReturnWindow, popupsBlocked, whenAbandoned, type CollectedResult } from './oauth.js';
 import type { AccessGatewayState, AccessLinkPreference, AccessLinkTarget, BackupManifest, CloudflareAccountProblem, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LegalReview, LogEntry, LogSourceFilter, ManagerRelease, ManagerSettingsOffer, ManagerUpdateStatus, NotificationSummary, OnlineState, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, SaverState, SetupChecklistState, SetupStep, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, isCloudJob, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
@@ -1944,6 +1944,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
                   onClick={() => setLogsExpanded(true)}
                 ><ScrollText />{t('console.openLogs')}{hasNewLogs ? <span className="log-new-dot" aria-hidden="true" /> : null}</Button>
                 <NotificationBell t={t} locale={preferences.locale} summary={notificationSummary} csrfToken={csrfToken} footer={<PushToggle t={t} locale={preferences.locale} csrfToken={csrfToken} />} />
+                <PushOfferDialog t={t} locale={preferences.locale} csrfToken={csrfToken} />
                 <LanguageControl t={t} preferences={preferences} onChange={changePreferences} />
                 <Button variant="ghost" size="icon-sm" aria-label={preferences.theme === 'dark' ? t('console.useLight') : t('console.useDark')} onClick={() => changePreferences({ theme: preferences.theme === 'dark' ? 'light' : 'dark' })}>
                   {preferences.theme === 'dark' ? <Sun /> : <Moon />}
@@ -2137,7 +2138,7 @@ function TermuxOfferCard({ t, onStart, onDismiss }: { t: Translate; onStart: () 
 }
 
 /**
- * Chat bubbles, offered on the overview in the Android app; see bubble-offer.ts
+ * Chat bubbles, offered on the overview in the Android app; see offers.ts
  * for when. Not alongside the Termux offer: one question at a time.
  *
  * Turning them on switches the reply notifications on as well, since a bubble
@@ -2147,7 +2148,7 @@ function TermuxOfferCard({ t, onStart, onDismiss }: { t: Translate; onStart: () 
  */
 function BubbleOfferCard({ t }: { t: Translate }) {
   const [state, setState] = useState<BubbleState | null>(null);
-  const [due, setDue] = useState(() => hasAppChannel() && bubbleOfferDue(readStored(BUBBLE_OFFER_KEY), Date.now()));
+  const [due, setDue] = useState(() => hasAppChannel() && offerDue(readOffer(BUBBLE_OFFER_KEY), Date.now()));
   const [turnedOn, setTurnedOn] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -2170,7 +2171,7 @@ function BubbleOfferCard({ t }: { t: Translate }) {
       if (next) setState(next);
     } finally { setBusy(false); }
   };
-  const later = () => { writeStored(BUBBLE_OFFER_KEY, bubbleOfferSnoozed(readStored(BUBBLE_OFFER_KEY), Date.now())); setDue(false); };
+  const later = () => { writeOffer(BUBBLE_OFFER_KEY, offerSnoozed(readOffer(BUBBLE_OFFER_KEY), Date.now())); setDue(false); };
 
   return <Card>
     <PanelHeading icon={<MessageCircle />}>{t('console.bubbleOfferTitle')}</PanelHeading>
@@ -2185,20 +2186,12 @@ function BubbleOfferCard({ t }: { t: Translate }) {
             <Button size="sm" variant="ghost" onClick={() => setDue(false)}>{t('common.close')}</Button>
           </>
           : <>
-            <Button size="sm" disabled={busy} onClick={() => { writeStored(BUBBLE_OFFER_KEY, bubbleOfferAccepted(Date.now())); setTurnedOn(true); void change({ replies: true, enabled: true }); }}><MessageCircle />{t('console.bubbleOfferOn')}</Button>
+            <Button size="sm" disabled={busy} onClick={() => { writeOffer(BUBBLE_OFFER_KEY, offerAccepted(Date.now())); setTurnedOn(true); void change({ replies: true, enabled: true }); }}><MessageCircle />{t('console.bubbleOfferOn')}</Button>
             <Button size="sm" variant="ghost" disabled={busy} onClick={later}>{t('console.bubbleOfferLater')}</Button>
           </>}
       </div>
     </CardContent>
   </Card>;
-}
-
-function readStored(key: string): string | null {
-  try { return browserStorage()?.getItem(key) ?? null; } catch { return null; }
-}
-
-function writeStored(key: string, value: string): void {
-  try { browserStorage()?.setItem(key, value); } catch { /* a phone that keeps nothing is asked again next time */ }
 }
 
 /**

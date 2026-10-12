@@ -16,7 +16,8 @@ function onAppleMobile(): boolean {
   return /iPhone|iPad|iPod/iu.test(agent) || (/Macintosh/iu.test(agent) && navigator.maxTouchPoints > 1);
 }
 
-function standalone(): boolean {
+/** Opened from the Home Screen, or installed as an app, rather than in a browser tab. */
+export function standalone(): boolean {
   return (navigator as Navigator & { standalone?: boolean }).standalone === true || window.matchMedia?.('(display-mode: standalone)').matches === true;
 }
 

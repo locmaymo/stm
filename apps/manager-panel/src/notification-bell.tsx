@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Bell, CircleAlert, CircleCheck, Info, Megaphone, TriangleAlert } from 'lucide-react';
-import { Button, cn, Popover, PopoverContent, PopoverTrigger, Switch } from '../../../packages/ui/src/index.js';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, Button, cn, Popover, PopoverContent, PopoverTrigger, Switch } from '../../../packages/ui/src/index.js';
 import type { ManagerNotification, MessageParams, NotificationList, NotificationSummary } from '../../../packages/contracts/src/index.js';
 import type { MessageKey, Translate } from './i18n.js';
 import type { LocaleCode } from './preferences.js';
-import { currentPush, disablePush, enablePush, pushSupport, type PushSupport } from './push.js';
+import { currentPush, disablePush, enablePush, pushSupport, standalone, type PushSupport } from './push.js';
+import { offerAccepted, offerDue, offerSnoozed, PUSH_OFFER_KEY, readOffer, writeOffer } from './offers.js';
 import { bubbleRequest, hasAppChannel, type BubbleState } from './app-bridge.js';
 import { apiFetch } from './session.js';
 
@@ -94,6 +95,55 @@ export function PushToggle({ t, locale, csrfToken }: { t: Translate; locale: Loc
     {reason ? <p className="text-xs text-muted-foreground">{reason}</p> : null}
     {note ? <p className="text-xs text-muted-foreground" role="status">{note}</p> : null}
   </div>;
+}
+
+/**
+ * The question, asked the first time the console is opened from the Home
+ * Screen - which is the moment somebody has just done the one thing iOS asks
+ * of a page before it may be told anything.
+ *
+ * It cannot be the system's own question straight away: iOS shows that only
+ * in answer to a tap, and a page that asks without one is refused, which can
+ * count as the reader having said no. So this asks first, and "Turn on" is the
+ * tap: the permission request is the first thing its press does, before
+ * anything is awaited, so the system's dialog comes up at once.
+ *
+ * Only while the browser has never been asked: once allowed or refused, the
+ * switch in the bell is where it is changed, and a subscription the reader
+ * turned off there stays off.
+ */
+export function PushOfferDialog({ t, locale, csrfToken }: { t: Translate; locale: LocaleCode; csrfToken: string }) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!standalone() || pushSupport() !== 'ready' || Notification.permission !== 'default') return;
+    if (!offerDue(readOffer(PUSH_OFFER_KEY), Date.now())) return;
+    let cancelled = false;
+    void currentPush().then((found) => { if (!cancelled && !found) setOpen(true); }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
+
+  const later = () => { writeOffer(PUSH_OFFER_KEY, offerSnoozed(readOffer(PUSH_OFFER_KEY), Date.now())); setOpen(false); };
+  const turnOn = () => {
+    writeOffer(PUSH_OFFER_KEY, offerAccepted(Date.now()));
+    setBusy(true);
+    // Called in the press itself: enablePush asks for permission before it awaits anything.
+    void enablePush(csrfToken, locale).finally(() => { setBusy(false); setOpen(false); });
+  };
+
+  return <AlertDialog open={open} onOpenChange={(next) => { if (!next && !busy) later(); }}>
+    <AlertDialogContent>
+      <AlertDialogHeader>
+        <AlertDialogTitle className="flex items-start gap-2.5"><Bell aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-(--primary)" /><span>{t('notify.pushOfferTitle')}</span></AlertDialogTitle>
+        <AlertDialogDescription>{t('notify.pushOfferBody')}</AlertDialogDescription>
+      </AlertDialogHeader>
+      <AlertDialogFooter>
+        <AlertDialogCancel disabled={busy}>{t('notify.pushOfferLater')}</AlertDialogCancel>
+        <AlertDialogAction disabled={busy} onClick={(event) => { event.preventDefault(); turnOn(); }}>{t('notify.pushOfferOn')}</AlertDialogAction>
+      </AlertDialogFooter>
+    </AlertDialogContent>
+  </AlertDialog>;
 }
 
 /**
