@@ -65,6 +65,8 @@ interface PersistedManagerState {
    * do not want a second process on.
    */
   readonly autoStartSillyTavern: boolean;
+  /** Update SillyTavern by itself at night; off unless somebody turned it on. */
+  readonly nightlyUpdate: boolean;
   /**
    * When the manager installed SillyTavern by itself, if it ever did.
    *
@@ -204,6 +206,7 @@ export class StateStore {
         telemetryNoticeVersion: TELEMETRY_NOTICE_VERSION,
         noticeAcknowledgedAt: null,
         autoStartSillyTavern: true,
+        nightlyUpdate: false,
         firstInstallStartedAt: null,
         keepOnline: true,
         keepOnlineMinutes: KEEP_ONLINE_DEFAULT_MINUTES,
@@ -436,6 +439,20 @@ export class StateStore {
   public async setAccessLinks(links: AccessLinkPreferences): Promise<void> {
     await this.setAccessLink('sillyTavern', links.sillyTavern);
     await this.setAccessLink('manager', links.manager);
+  }
+
+  /** Whether SillyTavern is updated by itself at night. */
+  public async setNightlyUpdate(enabled: boolean): Promise<void> {
+    const operation = async (): Promise<void> => {
+      const state = await this.load();
+      if (state.nightlyUpdate === enabled) return;
+      const updated: PersistedManagerState = { ...state, nightlyUpdate: enabled, updatedAt: this.now().toISOString() };
+      await this.write(updated);
+      this.state = updated;
+    };
+    const previous = this.adminWriteQueue;
+    this.adminWriteQueue = previous.then(operation, operation);
+    await this.adminWriteQueue;
   }
 
   /** Whether SillyTavern comes up with the manager. */
@@ -729,6 +746,8 @@ export class StateStore {
     // automatic install has not happened, which for an existing installation
     // is settled a moment later by there already being one.
     const autoStartSillyTavern = input.autoStartSillyTavern !== false;
+    // Off unless it was turned on, so a file from before it existed reads as off.
+    const nightlyUpdate = input.nightlyUpdate === true;
     const firstInstallStartedAt = isNullableString(input.firstInstallStartedAt) ? input.firstInstallStartedAt : null;
     // Absent in a file written before the manager kept itself online, which is
     // on by default, so only an explicit `false` turns it off. The interval is
@@ -757,7 +776,7 @@ export class StateStore {
     // Absent in a file written before either address could be preferred: the
     // fixed one first, and shown, which is what the console always did.
     const accessLinks = parseAccessLinks(input.accessLinks);
-    return { ...input, accessPasswordHash, accessPasscode, accessLanEnabled, sillyTavernPort, autoStartSillyTavern, firstInstallStartedAt, keepOnline, keepOnlineMinutes, keepOnlineOrigin, ownerAccountId, ownerAccountName, noticeAcknowledgedAt, saverMode, accessLinkOpened, firstRunDeferred, setupStepsDone, accessLinks } as unknown as PersistedManagerState;
+    return { ...input, accessPasswordHash, accessPasscode, accessLanEnabled, sillyTavernPort, autoStartSillyTavern, nightlyUpdate, firstInstallStartedAt, keepOnline, keepOnlineMinutes, keepOnlineOrigin, ownerAccountId, ownerAccountName, noticeAcknowledgedAt, saverMode, accessLinkOpened, firstRunDeferred, setupStepsDone, accessLinks } as unknown as PersistedManagerState;
   }
 }
 

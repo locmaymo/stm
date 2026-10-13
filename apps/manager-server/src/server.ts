@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
-import { readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
+import { readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { hostname, networkInterfaces } from 'node:os';
 import { createSocket } from 'node:dgram';
@@ -22,6 +22,12 @@ import { ProcessSupervisor } from './supervisor.js';
 import { AccessGateway } from './gateway.js';
 import { ACCESS_GATEWAY_PORT, checkSillyTavernPort, findFreePort, isPortFree, MANAGER_PORT, PortError, portWasDemanded, resolveAccessPort, resolveConsolePort, SILLYTAVERN_PORT, type ResolvedPort } from './ports.js';
 import { previewImage, previewLogo, previewManifest } from './preview.js';
+import { canRunGit, findExtensions, type FoundExtension } from './extensions.js';
+import { ExtensionError, ExtensionUpdater } from './extension-updates.js';
+import { PROBATION_MS, VersionSwitchStore, watchProbation } from './version-probation.js';
+import { NightlyUpdater } from './nightly-update.js';
+import { BrokenAnnouncer, ExtensionErrorStore, isExtensionName, lastVersionChange, pluginFailure, type ExtensionErrorReport } from './extension-errors.js';
+import { cloneExtension, compareFolders, ExtensionTrash, move, parseBranch, parseInstallUrl, placeExtension, setExtensionEnabled, TRASH_DAYS } from './extension-changes.js';
 import { TunnelManager } from '../../../packages/tunnel/src/index.js';
 import { isWaitingProfile, ProfileError, ProfileStore } from '../../../packages/profiles/src/index.js';
 import { BackupError, BackupStore, MAX_ZIP_DIRECTORY_BYTES, type RestoreOptions } from '../../../packages/backup/src/index.js';
@@ -41,7 +47,7 @@ import { OnlineKeeper } from './online.js';
 import { formatGibibytes, SaverMode } from './saver.js';
 import { capacityFor, checkFits, decideTrim, diskSpace, memoryGuard, roomCheck } from './headroom.js';
 import { applyManagerSettings, foreignManagerSettings, managerSettingsOffer, restoreFromBucketIfBlank, saveManagerSettings, SettingsOfferWatch, settingsOfferKey, type ManagerSettingsDeps } from './manager-settings.js';
-import type { AccessLinkKind, AccessLinkPreference, AccessLinkTarget, ManagerSettingsOffer, ManagerSettingsRecord } from '../../../packages/contracts/src/index.js';
+import type { AccessLinkKind, AccessLinkPreference, AccessLinkTarget, ExtensionErrorKind, ExtensionList, ExtensionReconnectPreview, PluginErrors, VersionSwitch, VersionSwitchStatus, ManagerSettingsOffer, ManagerSettingsRecord } from '../../../packages/contracts/src/index.js';
 import { instrumentationLoaderPath } from '../../../packages/instrumentation/src/index.js';
 import { ConfigError, ConfigStore } from '../../../packages/config/src/index.js';
 import { DEFAULT_TELEMETRY_ENDPOINT, DEFAULT_TELEMETRY_ENROLLMENT_ENDPOINT, TelemetryTransport } from '../../../packages/telemetry/src/index.js';
@@ -96,6 +102,7 @@ const PROTECTED_PATHS = new Set([
   '/api/v1/access/links',
   '/api/v1/preview',
   '/api/v1/preview/image',
+  '/api/v1/extensions',
   '/api/v1/auth/password',
   '/api/v1/metrics',
   '/api/v1/system',
@@ -192,6 +199,13 @@ export interface ManagerServerOptions {
    * rather than against four real minutes.
    */
   readonly online?: OnlineKeeper;
+  /**
+   * How long a new SillyTavern version is watched after it first starts.
+   *
+   * Overridable so a test can see a version taken back without waiting five
+   * minutes for one that did come up.
+   */
+  readonly probationMs?: number;
   /**
    * How much of the day's Cloudflare Worker allowance is left.
    *
@@ -487,6 +501,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     },
     // A character's reply, told to whoever subscribed from SillyTavern's own
     // page; see replies.ts. Called once requests arrive, like the tools.
+    extensionErrors: { report: (report) => recordExtensionError('extension', report) },
     replies: {
       presence: (page, state) => replyNotifier.presence(page, state),
       reply: (report) => replyNotifier.reply(report),
@@ -840,6 +855,39 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   });
   // Every browser that asked to be told is told, in the language it asked in.
   const push = new WebPush({ paths });
+  const extensions = extensionServices(paths, options.probationMs, (version, names) => {
+    void notifications.emit('extensionsBroke', 'warning', { params: { version, names: names.join(', ') }, dedupeKey: `extensionsBroke:${version}`, dedupeMs: 30 * 24 * 60 * 60 * 1000 }).catch(() => undefined);
+  });
+  /*
+   * An error an extension raised in the browser, or a server plugin in
+   * SillyTavern's output, kept with the version it was seen on; one that
+   * started within a day of a version change is that change's doing.
+   */
+  const recordExtensionError = (kind: ExtensionErrorKind, report: ExtensionErrorReport): void => {
+    void (async () => {
+      const [installations, active] = await Promise.all([runtime.listInstallations(), runtime.getActiveInstallation()]);
+      if (!await extensions.errors.record(kind, report, active?.resolvedRef ?? null)) return;
+      const summary = await extensions.errors.summary(kind, report.name, lastVersionChange(installations, active));
+      if (summary?.brokeAfter) extensions.broken.add(summary.brokeAfter, report.name);
+    })().catch(() => undefined);
+  };
+  jobs.onLine((line) => {
+    const failure = typeof line === 'string' ? pluginFailure(line) : null;
+    if (failure) recordExtensionError('plugin', failure);
+  });
+  // A new release installed by itself at night, for whoever turned it on.
+  const nightly = new NightlyUpdater({
+    enabled: async () => (await store.getPersisted()).nightlyUpdate,
+    update: async () => availableUpdate(await runtime.listVersions(), await runtime.getActiveInstallation()),
+    lastUseAt: () => gateway.lastRequestAt(),
+    busy: () => Boolean(jobs.activeInstallation() ?? jobs.activeOperation() ?? jobs.active('extensions') ?? jobs.active('versionRollback')),
+    lastSwitch: () => extensions.switches.get(),
+    install: async (update) => {
+      jobs.append('installer', logEvent('versions.nightlyStarting', `[installer] updating SillyTavern to ${update.label} by itself, as asked`, { version: update.label }));
+      await beginInstallation({ runtime, jobs, supervisor, profiles, backups, r2, system, metrics, gateway, notifications, extensions }, 'latest');
+    },
+  });
+  if (!testRuntime) nightly.start();
   notifications.subscribe((notification) => { void push.deliver(notification); });
   // Replies are not in the bell - there would be one for every message - and
   // go only to browsers that subscribed from SillyTavern's page.
@@ -985,6 +1033,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       online,
       notifications,
       push,
+      extensions,
       proxy,
       publishProxies,
       budget,
@@ -1125,7 +1174,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     online,
     // The meter closes first, so the part of today that has just been spent is
     // written down before the transport looks for finished days.
-    close: async () => { online.close(); notificationRules.close(); replyNotifier.close(); announcements?.close(); await activity.close(); await telemetry.close(); await scheduler.close(); await tunnel.close(); await managerTunnel.close(); await gateway.close(); await supervisor.close(); await backups.settle(); await profiles.settle(); await closeServer(server); },
+    close: async () => { extensions.closing.abort(); nightly.close(); online.close(); notificationRules.close(); replyNotifier.close(); announcements?.close(); await activity.close(); await telemetry.close(); await scheduler.close(); await tunnel.close(); await managerTunnel.close(); await gateway.close(); await supervisor.close(); await backups.settle(); await profiles.settle(); await closeServer(server); },
   };
 }
 
@@ -1175,6 +1224,7 @@ async function handleRequest(options: {
   readonly notifications: NotificationCenter;
   /** Browsers that asked for push notifications; see `web-push.ts`. */
   readonly push: WebPush;
+  readonly extensions: ExtensionServices;
   readonly proxy: ProxyWorkerManager | null;
   /** Put the fixed addresses in place, for a Cloudflare account just connected. */
   readonly publishProxies: () => void;
@@ -1193,7 +1243,7 @@ async function handleRequest(options: {
   readonly autoInstall: boolean;
   readonly onShutdownRequest: (() => void) | undefined;
 }): Promise<void> {
-  const { request, response, store, sessions, rateLimiter, handoffs, startedAt, publicOrigins, proxiedOrigin, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, releases, online, notifications, push, proxy, publishProxies, budget, saver, shutdownToken, autoInstall, onShutdownRequest } = options;
+  const { request, response, store, sessions, rateLimiter, handoffs, startedAt, publicOrigins, proxiedOrigin, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, releases, online, notifications, push, extensions, proxy, publishProxies, budget, saver, shutdownToken, autoInstall, onShutdownRequest } = options;
   // Whether the browser's side of this connection is HTTPS, which is not the
   // same question as whether ours is: a hosted console is reached over HTTPS
   // that a proxy terminates before us, and only the proxy's own header says so.
@@ -1239,7 +1289,7 @@ async function handleRequest(options: {
     // The release this machine was running, where the bucket remembers one.
     const selector = releaseToInstall(wanted);
     try {
-      await beginInstallation({ runtime, jobs, supervisor, profiles, backups, r2, system, metrics }, selector);
+      await beginInstallation({ runtime, jobs, supervisor, profiles, backups, r2, system, metrics, gateway, notifications, extensions }, selector);
       logger(selector === 'latest'
         ? logEvent('installer.firstRun', '[installer] installing SillyTavern, because this manager has just been set up and has none')
         : logEvent('installer.firstRunPinned', `[installer] installing SillyTavern ${selector}, the release this machine was running before it was lost`, { version: selector }));
@@ -1495,7 +1545,7 @@ async function handleRequest(options: {
     if (method !== 'GET' && !requireCsrf(context, session.csrfToken)) {
       return;
     }
-    await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, online, proxy, publishProxies, budget, logger, handoffs, saver, sessions, notifications, push);
+    await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, online, proxy, publishProxies, budget, logger, handoffs, saver, sessions, notifications, push, extensions);
     return;
   }
 
@@ -1748,7 +1798,7 @@ async function adoptRestoredPort(deps: PortAdoptionDeps, port: number): Promise<
   }
 }
 
-async function handleRuntimeRequest(context: RequestContext, store: StateStore, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, managerTunnel: TunnelManager, gateway: AccessGateway, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, cloudflare: CloudflareConnection | null, metrics: MetricsStore, activity: ActivityMeter, config: ConfigStore, system: SystemStore, online: OnlineKeeper, proxy: ProxyWorkerManager | null, publishProxies: () => void, budget: WorkerBudget, logger: LogSink, handoffs: HandoffStore, saver: SaverMode, sessions: SessionStore, notifications: NotificationCenter, push: WebPush): Promise<void> {
+async function handleRuntimeRequest(context: RequestContext, store: StateStore, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, managerTunnel: TunnelManager, gateway: AccessGateway, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, cloudflare: CloudflareConnection | null, metrics: MetricsStore, activity: ActivityMeter, config: ConfigStore, system: SystemStore, online: OnlineKeeper, proxy: ProxyWorkerManager | null, publishProxies: () => void, budget: WorkerBudget, logger: LogSink, handoffs: HandoffStore, saver: SaverMode, sessions: SessionStore, notifications: NotificationCenter, push: WebPush, extensions: ExtensionServices): Promise<void> {
   const { pathname, ports, request, response, searchParams } = context;
   const method = request.method ?? 'GET';
   const adoptSillyTavernPort = (port: number): Promise<void> =>
@@ -1911,6 +1961,10 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     const profile = await profiles.getActive();
     if (!profile) { sendJson(response, 200, { background: null, theme: null, recent: [] }); return; }
     sendJson(response, 200, await previewManifest(userDataRoot(profile)));
+    return;
+  }
+  if (pathname === '/api/v1/extensions' || pathname.startsWith('/api/v1/extensions/')) {
+    await handleExtensionRequest({ pathname, method, request, response, jobs, profiles, runtime, supervisor, backups, extensions });
     return;
   }
   if (pathname === '/api/v1/preview/image' && method === 'GET') {
@@ -2081,7 +2135,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
      * what a press means when the machine is on the wrong release.
      */
     const installRelease = async (wanted?: string | null): Promise<void> => {
-      await beginInstallation({ runtime, jobs, supervisor, profiles, backups, r2, system, metrics }, releaseToInstall(wanted));
+      await beginInstallation({ runtime, jobs, supervisor, profiles, backups, r2, system, metrics, gateway, notifications, extensions }, releaseToInstall(wanted));
     };
     // Detached: this is minutes of installing and downloading, and the console
     // follows it as the ordinary background job it is.
@@ -2338,7 +2392,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       return;
     }
     try {
-      const started = await beginInstallation({ runtime, jobs, supervisor, profiles, backups, r2, system, metrics }, selector as VersionSelector);
+      const started = await beginInstallation({ runtime, jobs, supervisor, profiles, backups, r2, system, metrics, gateway, notifications, extensions }, selector as VersionSelector);
       sendJson(response, 202, { installationId: started.installationId, job: started.job });
     } catch (error: unknown) {
       if (error instanceof RuntimeError) { sendError(response, 409, error.code, error.message); return; }
@@ -2361,12 +2415,50 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     const selector = moving ? current.selector : current.resolvedRef;
     if (!isVersionSelector(selector)) { sendError(response, 409, 'invalid_version', 'The installed version cannot be installed again'); return; }
     try {
-      const started = await beginInstallation({ runtime, jobs, supervisor, profiles, backups, r2, system, metrics }, selector as VersionSelector, { fresh: true });
+      const started = await beginInstallation({ runtime, jobs, supervisor, profiles, backups, r2, system, metrics, gateway, notifications, extensions }, selector as VersionSelector, { fresh: true });
       sendJson(response, 202, { installationId: started.installationId, job: started.job });
     } catch (error: unknown) {
       if (error instanceof RuntimeError) { sendError(response, 409, error.code, error.message); return; }
       throw error;
     }
+    return;
+  }
+  /*
+   * The last switch of version and the way back from it, for the overview.
+   *
+   * Going back is offered while the switched-to version is the one running;
+   * it puts the previous version back and keeps the data as it is now,
+   * unless the reader also asks for the copy taken before the switch.
+   */
+  if (pathname === '/api/v1/installations/switch' && method === 'GET') {
+    sendJson(response, 200, await versionSwitchStatus({ runtime, backups, jobs, profiles, extensions }));
+    return;
+  }
+  if (pathname === '/api/v1/installations/switch/dismiss' && method === 'POST') {
+    await extensions.switches.update({ dismissed: true });
+    sendJson(response, 200, await versionSwitchStatus({ runtime, backups, jobs, profiles, extensions }));
+    return;
+  }
+  if (pathname === '/api/v1/installations/switch/back' && method === 'POST') {
+    const body = await readJson(request);
+    const restoreData = isRecord(body) && body.restoreData === true;
+    const record = await extensions.switches.get();
+    const active = await runtime.getActiveInstallation();
+    if (!record || record.outcome === 'rolledBack' || active?.id !== record.installationId) { sendError(response, 409, 'version_switch_none', 'There is no version switch to go back from'); return; }
+    if (jobs.active('versionRollback') || jobs.activeInstallation()) { sendError(response, 409, 'installation_busy', 'An installation is already in progress'); return; }
+    if (restoreData && !(await versionSwitchStatus({ runtime, backups, jobs, profiles, extensions })).canRestoreData) { sendError(response, 409, 'version_restore_unavailable', 'The copy taken before the switch is not there to put back'); return; }
+    const { job } = jobs.createOperation('versionRollback', logEvent('versions.goingBack', `Going back to SillyTavern ${record.previousRef}`, { previous: record.previousRef }));
+    void returnToPrevious({ runtime, supervisor, profiles, backups, jobs }, record, { restoreData })
+      .then(async () => {
+        await extensions.switches.update({ outcome: 'rolledBack', reason: null, dismissed: true });
+        jobs.append('installer', logEvent('versions.wentBack', `[installer] back on SillyTavern ${record.previousRef}`, { previous: record.previousRef }));
+        jobs.finishOperation(job.id, 'succeeded', null);
+      })
+      .catch(async (error: unknown) => {
+        jobs.finishOperation(job.id, 'failed', error instanceof Error ? error.message : 'Going back failed', { evenIfCanceled: true });
+        await supervisor.start().catch(() => supervisor.getState());
+      });
+    sendJson(response, 202, { job: jobs.get(job.id) ?? job });
     return;
   }
   if (pathname === '/api/v1/profiles' && method === 'GET') {
@@ -2800,17 +2892,22 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
   }
   if (pathname === '/api/v1/startup' && method === 'GET') {
     const state = await store.getPersisted();
-    sendJson(response, 200, { startup: { autoStartSillyTavern: state.autoStartSillyTavern } satisfies StartupSettings });
+    sendJson(response, 200, { startup: { autoStartSillyTavern: state.autoStartSillyTavern, nightlyUpdate: state.nightlyUpdate } satisfies StartupSettings });
     return;
   }
+  // Either switch, or both; a switch left out stays where it is.
   if (pathname === '/api/v1/startup' && method === 'PUT') {
     const body = await readJson(request);
-    if (!isRecord(body) || typeof body.autoStartSillyTavern !== 'boolean') {
-      sendError(response, 400, 'invalid_input', 'autoStartSillyTavern must be true or false');
+    const autoStart = isRecord(body) ? body.autoStartSillyTavern : undefined;
+    const nightly = isRecord(body) ? body.nightlyUpdate : undefined;
+    if (!isRecord(body) || (autoStart === undefined && nightly === undefined) || (autoStart !== undefined && typeof autoStart !== 'boolean') || (nightly !== undefined && typeof nightly !== 'boolean')) {
+      sendError(response, 400, 'invalid_input', 'autoStartSillyTavern and nightlyUpdate must be true or false');
       return;
     }
-    await store.setAutoStartSillyTavern(body.autoStartSillyTavern);
-    sendJson(response, 200, { startup: { autoStartSillyTavern: body.autoStartSillyTavern } satisfies StartupSettings });
+    if (typeof autoStart === 'boolean') await store.setAutoStartSillyTavern(autoStart);
+    if (typeof nightly === 'boolean') await store.setNightlyUpdate(nightly);
+    const state = await store.getPersisted();
+    sendJson(response, 200, { startup: { autoStartSillyTavern: state.autoStartSillyTavern, nightlyUpdate: state.nightlyUpdate } satisfies StartupSettings });
     return;
   }
   /*
@@ -3199,6 +3296,10 @@ interface InstallationDeps {
   readonly backups: BackupStore;
   readonly r2: R2Manager;
   readonly system: SystemStore;
+  /** Whether SillyTavern was sent anything that changes data, for the way back from a version. */
+  readonly gateway: Pick<AccessGateway, 'servedSince'>;
+  readonly notifications: NotificationCenter;
+  readonly extensions: Pick<ExtensionServices, 'switches' | 'probationMs' | 'closing'>;
 }
 
 /**
@@ -3218,6 +3319,7 @@ async function beginInstallation(deps: InstallationDeps, selector: VersionSelect
   const { runtime, jobs, supervisor, profiles, backups, r2, system } = deps;
   const previousProfile = await profiles.getActive();
   const previousInstallation = await runtime.getActiveInstallation();
+  let safetyCopyId: string | null = null;
   let queuedId = '';
   let queued: { id: string; promise: Promise<Installation> };
   // Made here rather than by the job registry, because the work has to be
@@ -3245,7 +3347,7 @@ async function beginInstallation(deps: InstallationDeps, selector: VersionSelect
         // change does not write into it anyway.
         if (!previousProfile || backups.saving) return;
         await report(4, logEvent('install.safetyCopy', 'Copying your data before switching version'));
-        await backups.createSafetyCopy(previousProfile, { kind: 'before-switch' });
+        safetyCopyId = (await backups.createSafetyCopy(previousProfile, { kind: 'before-switch' })).id;
       },
       stopping.signal,
       options,
@@ -3288,7 +3390,21 @@ async function beginInstallation(deps: InstallationDeps, selector: VersionSelect
       // watching. Walked now rather than on whatever poll next falls due.
       system.remeasure();
     }
-    await supervisor.start();
+    const switched = installation.status === 'ready' && previousInstallation?.status === 'ready'
+      && previousInstallation.id !== installation.id && previousInstallation.resolvedRef !== installation.resolvedRef;
+    if (!switched || !previousInstallation) { await supervisor.start(); return; }
+    await probeNewVersion(deps, await deps.extensions.switches.set({
+      previousInstallationId: previousInstallation.id,
+      previousRef: previousInstallation.resolvedRef,
+      installationId: installation.id,
+      ref: installation.resolvedRef,
+      at: new Date().toISOString(),
+      safetyCopyId,
+      profileId: previousProfile && !isWaitingProfile(previousProfile) ? previousProfile.id : null,
+      outcome: 'probation',
+      reason: null,
+      dismissed: false,
+    }));
   }).catch(async (error: unknown) => {
     jobs.finish(queued.id, 'failed', error instanceof Error ? error.message : 'Installation failed');
     // Putting SillyTavern back is best effort: this path only runs because
@@ -3298,6 +3414,66 @@ async function beginInstallation(deps: InstallationDeps, selector: VersionSelect
     await supervisor.start().catch(() => supervisor.getState());
   });
   return { installationId: queued.id, job };
+}
+
+/**
+ * Start a version SillyTavern has just switched to, and take it back if it
+ * will not run.
+ *
+ * See version-probation.ts for what is watched. Taking it back puts the
+ * previous version's code back, binds the profile to it again, puts the data
+ * back from the copy taken before the switch when nothing can have been
+ * written since, and starts SillyTavern on it. The bell says what happened
+ * either way, because nobody may be watching the console when it does.
+ */
+async function probeNewVersion(deps: InstallationDeps, record: VersionSwitch): Promise<void> {
+  const { supervisor, jobs, notifications, gateway, extensions } = deps;
+  const result = await watchProbation({
+    start: () => supervisor.start(),
+    state: () => supervisor.getState(),
+    servedSince: (at) => gateway.servedSince(at),
+    windowMs: extensions.probationMs,
+    signal: extensions.closing.signal,
+  });
+  // A manager going away stops watching; it has not seen the version prove itself.
+  if (extensions.closing.signal.aborted) return;
+  if (result.outcome === 'healthy') { await extensions.switches.update({ outcome: 'kept' }); return; }
+  jobs.append('installer', logEvent('versions.probationFailed', `[installer] SillyTavern ${record.ref} did not run with this data (${result.reason ?? 'unknown'}); going back to ${record.previousRef}`, { version: record.ref, previous: record.previousRef, reason: result.reason ?? '' }), 'error');
+  try {
+    await returnToPrevious(deps, record, { restoreData: !result.served });
+    await extensions.switches.update({ outcome: 'rolledBack', reason: result.reason });
+    jobs.append('installer', logEvent('versions.wentBack', `[installer] back on SillyTavern ${record.previousRef}`, { previous: record.previousRef }));
+    void notifications.emit('sillytavernRolledBack', 'error', { params: { version: record.ref, previous: record.previousRef } }).catch(() => undefined);
+  } catch (error: unknown) {
+    const reason = error instanceof Error ? error.message : 'unknown error';
+    await extensions.switches.update({ outcome: 'rollbackFailed', reason });
+    jobs.append('installer', logEvent('versions.wentBackFailed', `[installer] could not go back to SillyTavern ${record.previousRef}: ${reason}`, { previous: record.previousRef, reason }), 'error');
+    void notifications.emit('sillytavernRollbackFailed', 'error', { params: { version: record.ref, previous: record.previousRef, reason } }).catch(() => undefined);
+    await supervisor.start().catch(() => supervisor.getState());
+  }
+}
+
+/**
+ * Put the version before a switch back, with the data or without it.
+ *
+ * Throws when the previous version will not start either, which leaves
+ * nothing to do automatically: the reader is told, and the console still
+ * offers every version to install.
+ */
+async function returnToPrevious(deps: Pick<InstallationDeps, 'runtime' | 'supervisor' | 'profiles' | 'backups' | 'jobs'>, record: VersionSwitch, options: { readonly restoreData: boolean }): Promise<void> {
+  const { runtime, supervisor, profiles, backups, jobs } = deps;
+  await supervisor.stop('install');
+  const previous = await runtime.activateInstallation(record.previousInstallationId);
+  const profile = record.profileId ? await profiles.rebind(record.profileId, previous.id, previous.runtimePath) : null;
+  if (options.restoreData && record.safetyCopyId && profile && !backups.saving) {
+    const archive = await backups.getArchivePath(record.safetyCopyId);
+    if (archive) {
+      jobs.append('installer', logEvent('versions.restoringSafetyCopy', '[installer] putting the data back as it was before the switch'));
+      await backups.restore(profile, archive, { mode: 'replace', force: true });
+    }
+  }
+  const state = await supervisor.start();
+  if (state.status !== 'running') throw new Error(state.error ?? 'The previous version did not start either');
 }
 
 /** Each apply-phase step gets its own percentage so a slow phase still shows the bar moving. */
@@ -3514,6 +3690,395 @@ function sendImage(response: ServerResponse, image: { bytes: Buffer; contentType
 
 function userDataRoot(profile: Profile): string {
   return profile.layout === 'data' ? join(profile.dataPath, 'default-user') : profile.dataPath;
+}
+
+/**
+ * The last switch of version, what it broke, and whether its data copy is
+ * still there.
+ *
+ * An extension counts as broken by it while its first error came within a day
+ * of the switch and it is still switched on; turning it off is dealing with
+ * it. Server plugins cannot be switched off from here and always count.
+ */
+async function versionSwitchStatus(deps: { readonly runtime: RuntimeManager; readonly backups: BackupStore; readonly jobs: JobStore; readonly profiles: ProfileStore; readonly extensions: ExtensionServices }): Promise<VersionSwitchStatus> {
+  const { runtime, backups, jobs, profiles, extensions } = deps;
+  const record = await extensions.switches.get();
+  const broken: Array<{ kind: ExtensionErrorKind; name: string; displayName: string }> = [];
+  if (record) {
+    const [installations, active] = await Promise.all([runtime.listInstallations(), runtime.getActiveInstallation()]);
+    const change = lastVersionChange(installations, active);
+    if (change?.version === record.ref && active?.id === record.installationId) {
+      const enabled = new Map((await findExtensions(await extensionRoots(profiles, runtime))).extensions.filter((entry) => entry.info.enabled).map((entry) => [entry.info.name, entry.info.displayName]));
+      for (const kind of ['extension', 'plugin'] as const) {
+        for (const name of await extensions.errors.names(kind)) {
+          if (kind === 'extension' && !enabled.has(name)) continue;
+          if ((await extensions.errors.summary(kind, name, change))?.brokeAfter === record.ref) broken.push({ kind, name, displayName: enabled.get(name) ?? name });
+        }
+      }
+    }
+  }
+  const canRestoreData = record?.safetyCopyId !== null && record?.safetyCopyId !== undefined && !backups.saving && await backups.getArchivePath(record.safetyCopyId) !== null;
+  return { switch: record, broken, canRestoreData, saving: backups.saving, job: jobs.active('versionRollback') };
+}
+
+/** Where the active profile and the installed copy keep their extensions. */
+async function extensionRoots(profiles: ProfileStore, runtime: RuntimeManager): Promise<{ userRoot: string | null; runtimeRoot: string | null }> {
+  const [profile, installation] = await Promise.all([profiles.getActive(), runtime.getActiveInstallation()]);
+  return {
+    userRoot: profile ? userDataRoot(profile) : null,
+    runtimeRoot: installation?.status === 'ready' ? installation.runtimePath : null,
+  };
+}
+
+/**
+ * The extension a request names, looked up among those on disk.
+ *
+ * Never a path built from the request: a name is only ever matched against
+ * the folders that are there, so `..` or a separator names nothing.
+ */
+function findExtensionTarget(found: readonly FoundExtension[], body: unknown): FoundExtension | null {
+  if (!isRecord(body) || (body.scope !== 'user' && body.scope !== 'global') || typeof body.name !== 'string') return null;
+  return found.find((entry) => entry.info.scope === body.scope && entry.info.name === body.name) ?? null;
+}
+
+/**
+ * Run an extension task as a job the panel can follow.
+ *
+ * A refusal the manager made keeps its code on the job, so the panel says it
+ * in the reader's language; anything else is git's or the system's own words.
+ */
+/** A clone made to reconnect an extension, waiting for the reader to agree to it. */
+interface PendingReconnect {
+  readonly preview: ExtensionReconnectPreview;
+  readonly clone: string;
+  readonly target: FoundExtension;
+  readonly createdAt: number;
+}
+
+/** How long a reconnect preview waits for an answer before its clone is thrown away. */
+const RECONNECT_WAIT_MS = 30 * 60 * 1000;
+
+interface ExtensionServices {
+  /** The last switch of SillyTavern's version; see version-probation.ts. */
+  readonly switches: VersionSwitchStore;
+  /** How long a new version is watched after it first starts. */
+  readonly probationMs: number;
+  /** Aborted when the manager closes, so a watch does not outlive it. */
+  readonly closing: AbortController;
+  readonly updater: ExtensionUpdater;
+  readonly errors: ExtensionErrorStore;
+  readonly broken: BrokenAnnouncer;
+  readonly trash: ExtensionTrash;
+  /** Where clones are made before they are moved into place. */
+  readonly scratch: string;
+  readonly pending: Map<string, PendingReconnect>;
+}
+
+/**
+ * What the extension routes keep between requests.
+ *
+ * Clones left in the scratch folder by a manager that stopped mid-install
+ * are nobody's, and the trash's week is counted here as well as on every
+ * look at the list.
+ */
+function extensionServices(paths: PlatformPaths, probationMs: number | undefined, announceBroken: (version: string, names: readonly string[]) => void): ExtensionServices {
+  const services: ExtensionServices = {
+    switches: new VersionSwitchStore(paths.state),
+    probationMs: probationMs ?? PROBATION_MS,
+    closing: new AbortController(),
+    updater: new ExtensionUpdater({ stateDir: paths.state }),
+    errors: new ExtensionErrorStore({ stateDir: paths.state }),
+    broken: new BrokenAnnouncer(announceBroken),
+    trash: new ExtensionTrash(join(paths.state, 'extension-trash')),
+    scratch: join(paths.tmp, 'extension-clones'),
+    pending: new Map(),
+  };
+  void rm(services.scratch, { recursive: true, force: true }).catch(() => undefined);
+  void services.trash.purge().catch(() => undefined);
+  return services;
+}
+
+/**
+ * Everything under `/api/v1/extensions`.
+ *
+ * Reading is free. Every change runs one at a time: as a job when it can take
+ * a while (git, a restart of SillyTavern), straight away when it is a move on
+ * the disk. An extension is only ever named by scope and folder name, looked
+ * up among those on disk; the request never supplies a path.
+ */
+async function handleExtensionRequest(deps: {
+  readonly pathname: string;
+  readonly method: string;
+  readonly request: IncomingMessage;
+  readonly response: ServerResponse;
+  readonly jobs: JobStore;
+  readonly profiles: ProfileStore;
+  readonly runtime: RuntimeManager;
+  readonly supervisor: ProcessSupervisor;
+  readonly backups: BackupStore;
+  readonly extensions: ExtensionServices;
+}): Promise<void> {
+  const { pathname, method, request, response, jobs, profiles, runtime, supervisor, extensions } = deps;
+  const { updater, trash, pending } = extensions;
+  for (const [id, waiting] of pending) {
+    if (Date.now() - waiting.createdAt < RECONNECT_WAIT_MS) continue;
+    pending.delete(id);
+    void rm(waiting.clone, { recursive: true, force: true }).catch(() => undefined);
+  }
+  const roots = await extensionRoots(profiles, runtime);
+  if (pathname === '/api/v1/extensions' && method === 'GET') {
+    const found = await findExtensions(roots);
+    await trash.purge().catch(() => undefined);
+    const [installations, active] = await Promise.all([runtime.listInstallations(), runtime.getActiveInstallation()]);
+    const change = lastVersionChange(installations, active);
+    const described = await updater.describe(found.extensions);
+    const plugins: PluginErrors[] = [];
+    for (const name of await extensions.errors.names('plugin')) {
+      const summary = await extensions.errors.summary('plugin', name, change);
+      if (summary) plugins.push({ name, errors: summary });
+    }
+    sendJson(response, 200, {
+      extensions: await Promise.all(described.map(async (item) => ({ ...item, errors: await extensions.errors.summary('extension', item.name, change) }))),
+      gitAvailable: found.gitAvailable,
+      checkedAt: updater.checkedAt,
+      job: jobs.active('extensions'),
+      trash: await trash.list(),
+      plugins,
+    } satisfies ExtensionList);
+    return;
+  }
+  /*
+   * One extension's or plugin's errors, newest first, and forgetting them.
+   *
+   * Named by folder, as the browser reported them: SillyTavern serves the
+   * profile's and the shared copy of a name at the same address, and only one
+   * of them ever runs.
+   */
+  if (pathname === '/api/v1/extensions/errors' && (method === 'GET' || method === 'DELETE')) {
+    const params = new URL(request.url ?? '/', 'http://manager.invalid').searchParams;
+    const kind = params.get('kind') === 'plugin' ? 'plugin' : 'extension';
+    const name = params.get('name') ?? '';
+    if (!isExtensionName(name)) { sendError(response, 400, 'invalid_input', 'An extension name is required'); return; }
+    if (method === 'DELETE') { await extensions.errors.clear(kind, name); sendJson(response, 200, { ok: true }); return; }
+    sendJson(response, 200, { errors: await extensions.errors.errors(kind, name) });
+    return;
+  }
+  const previewMatch = /^\/api\/v1\/extensions\/reconnect\/([^/]+)$/u.exec(pathname);
+  if (previewMatch && method === 'GET') {
+    const waiting = pending.get(previewMatch[1] ?? '');
+    if (!waiting) { sendError(response, 404, 'extension_reconnect_expired', 'That comparison is no longer waiting; start it again'); return; }
+    sendJson(response, 200, waiting.preview);
+    return;
+  }
+  if (previewMatch && method === 'DELETE') {
+    const waiting = pending.get(previewMatch[1] ?? '');
+    pending.delete(previewMatch[1] ?? '');
+    if (waiting) await rm(waiting.clone, { recursive: true, force: true }).catch(() => undefined);
+    sendJson(response, 200, { ok: true });
+    return;
+  }
+  const action = /^\/api\/v1\/extensions\/(check|update|rollback|install|remove|restore|enable|reconnect|disable-broken)$/u.exec(pathname)?.[1]
+    ?? (/^\/api\/v1\/extensions\/reconnect\/[^/]+\/apply$/u.test(pathname) ? 'apply' : null);
+  if (!action || method !== 'POST') { sendError(response, 404, 'not_found', 'Route not found'); return; }
+  const body = await readJson(request);
+  if (jobs.active('extensions')) { sendError(response, 409, 'extension_busy', 'Another extension task is still running'); return; }
+  const refuse = (error: unknown): void => {
+    if (error instanceof ExtensionError) { sendError(response, error.code === 'extension_not_found' || error.code === 'extension_trash_not_found' ? 404 : 409, error.code, error.message); return; }
+    throw error;
+  };
+  const needsGit = action === 'check' || action === 'update' || action === 'rollback' || action === 'install' || action === 'reconnect';
+  if (needsGit && !await canRunGit('git')) { sendError(response, 409, 'git_unavailable', 'Git is not available on this machine'); return; }
+  const found = (await findExtensions(roots)).extensions;
+
+  if (action === 'check') {
+    if (!(isRecord(body) && body.force === true) && !updater.isStale()) { sendJson(response, 200, { job: null }); return; }
+    const job = runExtensionJob(jobs, logEvent('extensions.checking', 'Checking extensions for updates', { done: 0, total: found.length }), async (id) => {
+      await updater.check(found, (done, total) => jobs.updateOperation(id, total > 0 ? (done / total) * 100 : 100, logEvent('extensions.checking', `Checking extensions for updates (${done}/${total})`, { done, total })));
+      const available = (await updater.describe(found)).filter((item) => (item.update?.behind ?? 0) > 0).length;
+      jobs.append('manager', logEvent('extensions.checked', `[extensions] ${available} of ${found.length} extensions have an update`, { available, total: found.length }));
+    });
+    sendJson(response, 202, { job });
+    return;
+  }
+
+  if (action === 'install') {
+    try {
+      const { url, folder } = parseInstallUrl(isRecord(body) ? body.url : undefined);
+      const branch = parseBranch(isRecord(body) ? body.branch : undefined);
+      const scope = isRecord(body) && body.scope === 'global' ? 'global' : 'user';
+      const root = scope === 'user'
+        ? roots.userRoot && join(roots.userRoot, 'extensions')
+        : roots.runtimeRoot && join(roots.runtimeRoot, 'public', 'scripts', 'extensions', 'third-party');
+      if (!root) throw new ExtensionError('installation_required', 'Install SillyTavern before adding extensions');
+      if (found.some((entry) => entry.info.scope === scope && entry.info.name === folder)) throw new ExtensionError('extension_exists', 'An extension with that name is already installed there');
+      const job = runExtensionJob(jobs, logEvent('extensions.installing', `Installing ${folder}`, { name: folder }), async () => {
+        const clone = await cloneExtension({ gitCommand: 'git', scratch: extensions.scratch }, url, branch);
+        await placeExtension(clone, root, folder);
+        jobs.append('manager', logEvent('extensions.installed', `[extensions] installed ${folder} from ${url}`, { name: folder, url }));
+      });
+      sendJson(response, 202, { job });
+    } catch (error: unknown) {
+      if (error instanceof ExtensionError && error.code.startsWith('extension_url') || error instanceof ExtensionError && error.code === 'extension_branch_invalid') { sendError(response, 400, error.code, error.message); return; }
+      refuse(error);
+    }
+    return;
+  }
+
+  /*
+   * Every extension the last version change broke, switched off at once.
+   *
+   * The same stop, edit and start as switching one, done once for all of
+   * them so SillyTavern restarts once.
+   */
+  if (action === 'disable-broken') {
+    if (!roots.userRoot) { sendError(response, 409, 'profile_required', 'There is no profile to switch extensions in'); return; }
+    const settingsPath = join(roots.userRoot, 'settings.json');
+    const status = await versionSwitchStatus({ runtime, backups: deps.backups, jobs, profiles, extensions });
+    const names = new Set(status.broken.filter((item) => item.kind === 'extension').map((item) => item.name));
+    const keys = [...new Set(found.filter((entry) => names.has(entry.info.name)).map((entry) => entry.info.key))];
+    if (keys.length === 0) { sendError(response, 409, 'extension_none_broken', 'No extension is marked as broken by the last update'); return; }
+    const job = runExtensionJob(jobs, logEvent('extensions.disablingBroken', `Turning off ${keys.length} extensions`, { count: keys.length }), async () => {
+      const state = supervisor.getState().status;
+      const wasRunning = state === 'running' || state === 'starting';
+      if (wasRunning) await supervisor.stop('extensionChange');
+      try {
+        for (const key of keys) await setExtensionEnabled(settingsPath, key, false);
+        jobs.append('manager', logEvent('extensions.disabledBroken', `[extensions] turned off ${[...names].join(', ')}`, { names: [...names].join(', ') }));
+      } finally {
+        if (wasRunning) await supervisor.start();
+      }
+    });
+    sendJson(response, 202, { job });
+    return;
+  }
+
+  if (action === 'restore') {
+    try {
+      const item = await trash.restore(isRecord(body) && typeof body.id === 'string' ? body.id : '');
+      jobs.append('manager', logEvent('extensions.restored', `[extensions] put ${item.name} back`, { name: item.displayName }));
+      sendJson(response, 200, { item });
+    } catch (error: unknown) { refuse(error); }
+    return;
+  }
+
+  if (action === 'apply') {
+    const id = pathname.split('/').at(-2) ?? '';
+    const waiting = pending.get(id);
+    if (!waiting) { sendError(response, 404, 'extension_reconnect_expired', 'That comparison is no longer waiting; start it again'); return; }
+    pending.delete(id);
+    try {
+      const current = found.find((entry) => entry.path === waiting.target.path);
+      if (!current || current.info.hasGit) throw new ExtensionError('extension_not_found', 'That extension changed while it was being compared; start again');
+      const item = await trash.put(current);
+      await move(waiting.clone, current.path);
+      jobs.append('manager', logEvent('extensions.reconnected', `[extensions] reconnected ${current.info.name} to ${waiting.preview.url}`, { name: current.info.displayName, url: waiting.preview.url }));
+      sendJson(response, 200, { trashed: item });
+    } catch (error: unknown) {
+      await rm(waiting.clone, { recursive: true, force: true }).catch(() => undefined);
+      refuse(error);
+    }
+    return;
+  }
+
+  const all = action === 'update' && isRecord(body) && body.all === true;
+  const target = all ? null : findExtensionTarget(found, body);
+  if (!all && !target) { sendError(response, 404, 'extension_not_found', 'That extension is not installed'); return; }
+
+  if (action === 'remove') {
+    try {
+      const item = await trash.put(target!);
+      jobs.append('manager', logEvent('extensions.removed', `[extensions] moved ${item.name} to the trash`, { name: item.displayName, days: TRASH_DAYS }));
+      sendJson(response, 200, { item });
+    } catch (error: unknown) { refuse(error); }
+    return;
+  }
+
+  if (action === 'enable') {
+    const entry = target!;
+    const enabled = isRecord(body) && body.enabled === true;
+    if (!roots.userRoot) { sendError(response, 409, 'profile_required', 'There is no profile to switch extensions in'); return; }
+    const settingsPath = join(roots.userRoot, 'settings.json');
+    // SillyTavern saves this file from the browser and would write its own
+    // copy over the change, so it is stopped for the edit and started again.
+    const job = runExtensionJob(jobs, logEvent(enabled ? 'extensions.enabling' : 'extensions.disabling', `${enabled ? 'Turning on' : 'Turning off'} ${entry.info.name}`, { name: entry.info.displayName }), async () => {
+      const status = supervisor.getState().status;
+      const wasRunning = status === 'running' || status === 'starting';
+      if (wasRunning) await supervisor.stop('extensionChange');
+      try {
+        await setExtensionEnabled(settingsPath, entry.info.key, enabled);
+        jobs.append('manager', logEvent(enabled ? 'extensions.enabled' : 'extensions.disabled', `[extensions] turned ${entry.info.name} ${enabled ? 'on' : 'off'}`, { name: entry.info.displayName }));
+      } finally {
+        if (wasRunning) await supervisor.start();
+      }
+    });
+    sendJson(response, 202, { job });
+    return;
+  }
+
+  if (action === 'reconnect') {
+    const entry = target!;
+    try {
+      if (entry.info.hasGit) throw new ExtensionError('extension_has_git', 'This extension already has its git history');
+      if (!entry.info.homePage) throw new ExtensionError('extension_no_home_page', 'This extension does not name where it comes from');
+      const { url } = parseInstallUrl(entry.info.homePage);
+      const job = runExtensionJob(jobs, logEvent('extensions.comparing', `Comparing ${entry.info.name} with its source`, { name: entry.info.displayName }), async (id) => {
+        const clone = await cloneExtension({ gitCommand: 'git', scratch: extensions.scratch }, url, null);
+        const difference = await compareFolders(entry.path, clone);
+        pending.set(id, { clone, target: entry, createdAt: Date.now(), preview: { id, scope: entry.info.scope, name: entry.info.name, displayName: entry.info.displayName, url, ...difference } });
+      });
+      sendJson(response, 202, { job });
+    } catch (error: unknown) {
+      if (error instanceof ExtensionError && error.code.startsWith('extension_url')) { sendError(response, 409, 'extension_no_home_page', 'This extension’s home page is not a repository address that can be cloned'); return; }
+      refuse(error);
+    }
+    return;
+  }
+
+  if (action === 'rollback') {
+    const entry = target!;
+    const job = runExtensionJob(jobs, logEvent('extensions.rollingBack', `Rolling ${entry.info.name} back`, { name: entry.info.displayName }), async () => {
+      const result = await updater.rollBack(entry);
+      jobs.append('manager', logEvent('extensions.rolledBack', `[extensions] rolled ${entry.info.name} back to ${result.to.slice(0, 7)}`, { name: entry.info.displayName, commit: result.to.slice(0, 7) }));
+    });
+    sendJson(response, 202, { job });
+    return;
+  }
+
+  const described = await updater.describe(found);
+  const targets = target ? [target] : found.filter((_entry, index) => (described[index]?.update?.behind ?? 0) > 0);
+  const job = runExtensionJob(jobs, target ? logEvent('extensions.updating', `Updating ${target.info.name}`, { name: target.info.displayName }) : logEvent('extensions.updatingAll', 'Updating extensions'), async (id) => {
+    const failures: string[] = [];
+    let lastError: ExtensionError | null = null;
+    for (const [index, entry] of targets.entries()) {
+      jobs.updateOperation(id, (index / Math.max(targets.length, 1)) * 100, logEvent('extensions.updating', `Updating ${entry.info.name}`, { name: entry.info.displayName }));
+      try {
+        const result = await updater.update(entry);
+        jobs.append('manager', result.outcome === 'updated'
+          ? logEvent('extensions.updated', `[extensions] updated ${entry.info.name} from ${result.from.slice(0, 7)} to ${result.to.slice(0, 7)}`, { name: entry.info.displayName, from: result.from.slice(0, 7), to: result.to.slice(0, 7) })
+          : logEvent('extensions.upToDate', `[extensions] ${entry.info.name} is already up to date`, { name: entry.info.displayName }));
+      } catch (error: unknown) {
+        if (!(error instanceof ExtensionError)) throw error;
+        lastError = error;
+        failures.push(entry.info.displayName);
+        jobs.append('manager', logEvent('extensions.updateFailed', `[extensions] could not update ${entry.info.name}: ${error.message}`, { name: entry.info.displayName, reason: error.message }), 'warn');
+      }
+    }
+    // One extension refusing is that extension's answer; the job failed only
+    // if it was all there was to do, and then it says why in its own words.
+    if (lastError && failures.length === targets.length) throw lastError;
+  });
+  sendJson(response, 202, { job });
+}
+
+function runExtensionJob(jobs: JobStore, step: LogEvent, work: (id: string) => Promise<void>): Job {
+  const { job } = jobs.createOperation('extensions', step);
+  void work(job.id)
+    .then(() => jobs.finishOperation(job.id, 'succeeded', null))
+    .catch((error: unknown) => jobs.finishOperation(job.id, 'failed', error instanceof Error ? error.message : 'The extension task failed', {
+      evenIfCanceled: true,
+      ...(error instanceof ExtensionError ? { errorCode: error.code } : {}),
+    }));
+  return jobs.get(job.id) ?? job;
 }
 
 function cloudflareConnectionFromEnvironment(paths: PlatformPaths, env: NodeJS.ProcessEnv): CloudflareConnection | null {
@@ -4194,7 +4759,8 @@ function isProtectedPath(pathname: string): boolean {
     || pathname.startsWith('/api/v1/profiles/')
     || pathname.startsWith('/api/v1/backups/')
     || pathname.startsWith('/api/v1/r2/')
-    || pathname.startsWith('/api/v1/config/');
+    || pathname.startsWith('/api/v1/config/')
+    || pathname.startsWith('/api/v1/extensions/');
 }
 
 function parseConfigUpdateInput(value: unknown): ConfigUpdateInput {
@@ -5297,6 +5863,12 @@ class JobStore {
     return null;
   }
 
+  /** The running job of one kind, for kinds that run one at a time. */
+  public active(kind: JobKind): Job | null {
+    for (const job of this.jobs.values()) if (job.state === 'running' && job.kind === kind) return job;
+    return null;
+  }
+
   public activeOperation(): Job | null {
     let newest: Job | null = null;
     for (const job of this.jobs.values()) {
@@ -5342,14 +5914,14 @@ class JobStore {
    * `evenIfCanceled` keeps a failure that happened after a stop reported as one.
    * `backupId` names an archive the job produced, for a panel that has to act on it.
    */
-  public finishOperation(id: string, state: 'succeeded' | 'failed', error: string | null, options: { readonly evenIfCanceled?: boolean; readonly stepCode?: string | undefined; readonly backupId?: string | undefined } = {}): void {
+  public finishOperation(id: string, state: 'succeeded' | 'failed', error: string | null, options: { readonly evenIfCanceled?: boolean; readonly stepCode?: string | undefined; readonly backupId?: string | undefined; readonly errorCode?: string | undefined } = {}): void {
     const current = this.jobs.get(id);
     if (!current) return;
     const settled: JobState = state === 'failed' && this.wasCanceled(id) && !options.evenIfCanceled ? 'canceled' : state;
     const step = settled === 'succeeded' ? 'Completed' : settled === 'canceled' ? 'Stopped' : 'Failed';
     const stepCode = options.stepCode ?? (settled === 'succeeded' ? 'job.completed' : settled === 'canceled' ? 'job.stopped' : 'job.failed');
     this.controllers.delete(id);
-    this.jobs.set(id, { ...current, state: settled, progress: settled === 'succeeded' ? 100 : current.progress, step, stepCode, ...(options.backupId ? { resultBackupId: options.backupId } : {}), error: settled === 'canceled' ? null : error, updatedAt: new Date().toISOString() });
+    this.jobs.set(id, { ...current, state: settled, progress: settled === 'succeeded' ? 100 : current.progress, step, stepCode, ...(options.backupId ? { resultBackupId: options.backupId } : {}), ...(options.errorCode && settled === 'failed' ? { errorCode: options.errorCode } : {}), error: settled === 'canceled' ? null : error, updatedAt: new Date().toISOString() });
     this.finished(id);
   }
 }

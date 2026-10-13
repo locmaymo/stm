@@ -5,6 +5,7 @@ import { createConnection } from 'node:net';
 import type { Duplex } from 'node:stream';
 import { AccessGateway, ACCESS_COOKIE_NAME, clientAddress } from '../src/gateway.js';
 import type { GatewayReplies } from '../src/gateway-notify.js';
+import type { ExtensionErrorReport } from '../src/extension-errors.js';
 import { rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -772,4 +773,34 @@ test('every device put out of the door stops hearing replies; the PIN read at st
   assert.deepEqual(asked, ['revoked'], 'the same one restored is not');
   gateway.signOutEveryone();
   assert.deepEqual(asked, ['revoked', 'revoked']);
+});
+
+test('a page carries the extension error script, and the door keeps only well-formed reports from its own pages', async (t) => {
+  const upstream = await startUpstream((_request, response) => {
+    response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    response.end('<!doctype html><html><head><title>SillyTavern</title></head><body></body></html>');
+  });
+  const reports: ExtensionErrorReport[] = [];
+  const gateway = new AccessGateway({ port: 0, targetPort: upstream.port, logger: () => undefined, extensionErrors: { report: (report) => reports.push(report) } });
+  gateway.setPassword(hashPassword(PASSWORD));
+  const state = await gateway.start(false);
+  const base = `http://127.0.0.1:${state.port}`;
+  t.after(async () => { await gateway.close(); await upstream.close(); });
+
+  assert.equal((await fetch(`${base}/__stm/extension-errors.js`)).status, 401, 'behind the door like the rest');
+  const cookie = await signIn(base);
+  const html = await (await fetch(`${base}/`, { headers: { cookie, accept: 'text/html', 'sec-fetch-dest': 'document' } })).text();
+  assert.ok(html.includes('<script src="/__stm/extension-errors.js"></script></head>'));
+  assert.ok(!html.includes('/__stm/notify.js'), 'without reply notifications only the error script is added');
+  const script = await fetch(`${base}/__stm/extension-errors.js`, { headers: { cookie } });
+  assert.match(script.headers.get('content-type') ?? '', /javascript/u);
+
+  const report = (body: string, headers: Record<string, string> = { 'x-stm-tools': '1' }) => fetch(`${base}/__stm/extension-errors`, { method: 'POST', headers: { cookie, 'content-type': 'application/json', ...headers }, body });
+  assert.equal((await report(JSON.stringify({ name: 'Notes', message: 'boom' }), {})).status, 403, 'a form on another site cannot send one');
+  assert.equal((await report(JSON.stringify({ name: 'Notes', message: 'boom', line: 3 }))).status, 204);
+  assert.equal((await report(JSON.stringify({ name: '../x', message: 'boom' }))).status, 204, 'a bad report is dropped without a word');
+  assert.equal((await report('not json')).status, 204);
+  // A body larger than any report is cut off, as the door does with every one of its own forms.
+  assert.equal(await report(JSON.stringify({ name: 'Notes', message: 'x'.repeat(10_000) })).then((response) => response.status, () => 'cut off'), 'cut off');
+  assert.deepEqual(reports, [{ name: 'Notes', message: 'boom', file: null, line: 3 }]);
 });
