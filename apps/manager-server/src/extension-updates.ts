@@ -78,7 +78,7 @@ export class ExtensionUpdater {
   }
 
   /** The list as the panel sees it: what is on disk, with what is known about updates. */
-  public async describe(found: readonly FoundExtension[]): Promise<ExtensionInfo[]> {
+  public async describe(found: readonly FoundExtension[]): Promise<Array<Omit<ExtensionInfo, 'errors'>>> {
     const history = await this.loadHistory();
     return found.map((entry) => {
       const key = keyOf(entry);

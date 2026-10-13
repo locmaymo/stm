@@ -24,6 +24,7 @@ import { ACCESS_GATEWAY_PORT, checkSillyTavernPort, findFreePort, isPortFree, MA
 import { previewImage, previewLogo, previewManifest } from './preview.js';
 import { canRunGit, findExtensions, type FoundExtension } from './extensions.js';
 import { ExtensionError, ExtensionUpdater } from './extension-updates.js';
+import { BrokenAnnouncer, ExtensionErrorStore, isExtensionName, lastVersionChange, pluginFailure, type ExtensionErrorReport } from './extension-errors.js';
 import { cloneExtension, compareFolders, ExtensionTrash, move, parseBranch, parseInstallUrl, placeExtension, setExtensionEnabled, TRASH_DAYS } from './extension-changes.js';
 import { TunnelManager } from '../../../packages/tunnel/src/index.js';
 import { isWaitingProfile, ProfileError, ProfileStore } from '../../../packages/profiles/src/index.js';
@@ -44,7 +45,7 @@ import { OnlineKeeper } from './online.js';
 import { formatGibibytes, SaverMode } from './saver.js';
 import { capacityFor, checkFits, decideTrim, diskSpace, memoryGuard, roomCheck } from './headroom.js';
 import { applyManagerSettings, foreignManagerSettings, managerSettingsOffer, restoreFromBucketIfBlank, saveManagerSettings, SettingsOfferWatch, settingsOfferKey, type ManagerSettingsDeps } from './manager-settings.js';
-import type { AccessLinkKind, AccessLinkPreference, AccessLinkTarget, ExtensionList, ExtensionReconnectPreview, ManagerSettingsOffer, ManagerSettingsRecord } from '../../../packages/contracts/src/index.js';
+import type { AccessLinkKind, AccessLinkPreference, AccessLinkTarget, ExtensionErrorKind, ExtensionList, ExtensionReconnectPreview, PluginErrors, ManagerSettingsOffer, ManagerSettingsRecord } from '../../../packages/contracts/src/index.js';
 import { instrumentationLoaderPath } from '../../../packages/instrumentation/src/index.js';
 import { ConfigError, ConfigStore } from '../../../packages/config/src/index.js';
 import { DEFAULT_TELEMETRY_ENDPOINT, DEFAULT_TELEMETRY_ENROLLMENT_ENDPOINT, TelemetryTransport } from '../../../packages/telemetry/src/index.js';
@@ -491,6 +492,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     },
     // A character's reply, told to whoever subscribed from SillyTavern's own
     // page; see replies.ts. Called once requests arrive, like the tools.
+    extensionErrors: { report: (report) => recordExtensionError('extension', report) },
     replies: {
       presence: (page, state) => replyNotifier.presence(page, state),
       reply: (report) => replyNotifier.reply(report),
@@ -844,7 +846,26 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   });
   // Every browser that asked to be told is told, in the language it asked in.
   const push = new WebPush({ paths });
-  const extensions = extensionServices(paths);
+  const extensions = extensionServices(paths, (version, names) => {
+    void notifications.emit('extensionsBroke', 'warning', { params: { version, names: names.join(', ') }, dedupeKey: `extensionsBroke:${version}`, dedupeMs: 30 * 24 * 60 * 60 * 1000 }).catch(() => undefined);
+  });
+  /*
+   * An error an extension raised in the browser, or a server plugin in
+   * SillyTavern's output, kept with the version it was seen on; one that
+   * started within a day of a version change is that change's doing.
+   */
+  const recordExtensionError = (kind: ExtensionErrorKind, report: ExtensionErrorReport): void => {
+    void (async () => {
+      const [installations, active] = await Promise.all([runtime.listInstallations(), runtime.getActiveInstallation()]);
+      if (!await extensions.errors.record(kind, report, active?.resolvedRef ?? null)) return;
+      const summary = await extensions.errors.summary(kind, report.name, lastVersionChange(installations, active));
+      if (summary?.brokeAfter) extensions.broken.add(summary.brokeAfter, report.name);
+    })().catch(() => undefined);
+  };
+  jobs.onLine((line) => {
+    const failure = typeof line === 'string' ? pluginFailure(line) : null;
+    if (failure) recordExtensionError('plugin', failure);
+  });
   notifications.subscribe((notification) => { void push.deliver(notification); });
   // Replies are not in the bell - there would be one for every message - and
   // go only to browsers that subscribed from SillyTavern's page.
@@ -3566,6 +3587,8 @@ const RECONNECT_WAIT_MS = 30 * 60 * 1000;
 
 interface ExtensionServices {
   readonly updater: ExtensionUpdater;
+  readonly errors: ExtensionErrorStore;
+  readonly broken: BrokenAnnouncer;
   readonly trash: ExtensionTrash;
   /** Where clones are made before they are moved into place. */
   readonly scratch: string;
@@ -3579,9 +3602,11 @@ interface ExtensionServices {
  * are nobody's, and the trash's week is counted here as well as on every
  * look at the list.
  */
-function extensionServices(paths: PlatformPaths): ExtensionServices {
+function extensionServices(paths: PlatformPaths, announceBroken: (version: string, names: readonly string[]) => void): ExtensionServices {
   const services: ExtensionServices = {
     updater: new ExtensionUpdater({ stateDir: paths.state }),
+    errors: new ExtensionErrorStore({ stateDir: paths.state }),
+    broken: new BrokenAnnouncer(announceBroken),
     trash: new ExtensionTrash(join(paths.state, 'extension-trash')),
     scratch: join(paths.tmp, 'extension-clones'),
     pending: new Map(),
@@ -3621,13 +3646,38 @@ async function handleExtensionRequest(deps: {
   if (pathname === '/api/v1/extensions' && method === 'GET') {
     const found = await findExtensions(roots);
     await trash.purge().catch(() => undefined);
+    const [installations, active] = await Promise.all([runtime.listInstallations(), runtime.getActiveInstallation()]);
+    const change = lastVersionChange(installations, active);
+    const described = await updater.describe(found.extensions);
+    const plugins: PluginErrors[] = [];
+    for (const name of await extensions.errors.names('plugin')) {
+      const summary = await extensions.errors.summary('plugin', name, change);
+      if (summary) plugins.push({ name, errors: summary });
+    }
     sendJson(response, 200, {
-      extensions: await updater.describe(found.extensions),
+      extensions: await Promise.all(described.map(async (item) => ({ ...item, errors: await extensions.errors.summary('extension', item.name, change) }))),
       gitAvailable: found.gitAvailable,
       checkedAt: updater.checkedAt,
       job: jobs.active('extensions'),
       trash: await trash.list(),
+      plugins,
     } satisfies ExtensionList);
+    return;
+  }
+  /*
+   * One extension's or plugin's errors, newest first, and forgetting them.
+   *
+   * Named by folder, as the browser reported them: SillyTavern serves the
+   * profile's and the shared copy of a name at the same address, and only one
+   * of them ever runs.
+   */
+  if (pathname === '/api/v1/extensions/errors' && (method === 'GET' || method === 'DELETE')) {
+    const params = new URL(request.url ?? '/', 'http://manager.invalid').searchParams;
+    const kind = params.get('kind') === 'plugin' ? 'plugin' : 'extension';
+    const name = params.get('name') ?? '';
+    if (!isExtensionName(name)) { sendError(response, 400, 'invalid_input', 'An extension name is required'); return; }
+    if (method === 'DELETE') { await extensions.errors.clear(kind, name); sendJson(response, 200, { ok: true }); return; }
+    sendJson(response, 200, { errors: await extensions.errors.errors(kind, name) });
     return;
   }
   const previewMatch = /^\/api\/v1\/extensions\/reconnect\/([^/]+)$/u.exec(pathname);

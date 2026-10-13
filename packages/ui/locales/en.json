@@ -95,7 +95,20 @@
     "trashTitle": "Removed extensions",
     "trashExpires": "Deleted for good on {date}",
     "trashRestore": "Put back",
-    "trashRestored": "Put back. Reload SillyTavern in your browser to load it."
+    "trashRestored": "Put back. Reload SillyTavern in your browser to load it.",
+    "errorsChip": "Errors: {count}",
+    "brokeAfter": "Broke after {version}",
+    "brokeAfterHint": "Its first error came within a day of switching to SillyTavern {version}.",
+    "errorsTitle": "Errors from {name}",
+    "errorsDescription": "What it reported in your browser, newest first. Only the error text is kept, on this machine.",
+    "errorsEmpty": "No errors kept.",
+    "errorsSeen": "Seen {count} times, last {when}",
+    "errorsOnVersion": "SillyTavern {version}",
+    "errorsClear": "Forget these errors",
+    "errorsCleared": "The errors are forgotten.",
+    "errorsShow": "Show errors",
+    "pluginsTitle": "Server plugins with errors",
+    "pluginsNote": "Server plugins run inside SillyTavern itself. One that fails to load can stop it from starting."
   },
   "setup": {
     "title": "Set up your manager",
@@ -1319,6 +1332,10 @@
     "page": "Page {page} of {of}"
   },
   "notify": {
+    "extensionsBroke": {
+      "title": "Extensions broke after updating to SillyTavern {version}",
+      "body": "These started failing after the update: {names}. Open Extensions in the manager to turn them off or roll back."
+    },
     "title": "Notifications",
     "open": "Notifications",
     "unread": "{count} unread",

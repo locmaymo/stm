@@ -1,19 +1,25 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { CircleArrowUp, Ellipsis, ExternalLink, Link2, LoaderCircle, Plus, Power, PowerOff, Puzzle, RefreshCw, RotateCcw, Trash2, Undo2 } from 'lucide-react';
+import { Bug, CircleArrowUp, Ellipsis, ExternalLink, Link2, LoaderCircle, Plus, Power, PowerOff, Puzzle, RefreshCw, RotateCcw, Server, Trash2, Undo2 } from 'lucide-react';
 import {
   Alert, AlertDescription, Badge, Button, Card, CardAction, CardContent, CardHeader, ConfirmDialog, DataTable,
   Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger, EmptyState, Field, initialQuery, Input,
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue, useToast,
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, useToast,
   type DataTableColumn, type DataTableLabels, type TableQuery,
 } from '../../../packages/ui/src/index.js';
-import { formatBytes, translateStep, type ExtensionInfo, type ExtensionList, type ExtensionReconnectPreview, type ExtensionScope, type ExtensionTarget, type Job } from '../../../packages/contracts/src/index.js';
+import { formatBytes, translateStep, type ExtensionErrorEntry, type ExtensionErrorKind, type ExtensionInfo, type ExtensionList, type ExtensionReconnectPreview, type ExtensionScope, type ExtensionTarget, type Job } from '../../../packages/contracts/src/index.js';
 import { logCatalog, type Fail, type MessageKey, type Translate } from './i18n.js';
 import type { LocaleCode } from './preferences.js';
 import { apiFetch } from './session.js';
 
 /** How long a removed extension waits in the trash; the server's `TRASH_DAYS`. */
 const TRASH_DAYS = 7;
+
+interface ErrorsTarget {
+  readonly kind: ExtensionErrorKind;
+  readonly name: string;
+  readonly title: string;
+}
 
 type Confirmation =
   | { readonly kind: 'rollback'; readonly item: ExtensionInfo }
@@ -39,6 +45,7 @@ export function ExtensionsPage({ t, locale, labels, fail, csrfToken }: { t: Tran
   const [confirming, setConfirming] = useState<Confirmation | null>(null);
   const [installOpen, setInstallOpen] = useState(false);
   const [preview, setPreview] = useState<ExtensionReconnectPreview | null>(null);
+  const [errorsOf, setErrorsOf] = useState<ErrorsTarget | null>(null);
   const [query, setQuery] = useState<TableQuery>(() => initialQuery({ pageSize: 25, sort: 'name', direction: 'asc' }));
   const alive = useRef(true);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
@@ -154,7 +161,7 @@ export function ExtensionsPage({ t, locale, labels, fail, csrfToken }: { t: Tran
           {item.homePage ? <a href={item.homePage} target="_blank" rel="noreferrer noopener" className="text-muted-foreground hover:text-foreground" aria-label={`${t('extensions.homePage')}: ${item.displayName}`}><ExternalLink className="size-3.5" /></a> : null}
         </span>
         <span className="text-xs text-muted-foreground md:hidden">{[scopeLabel(item.scope), item.version].filter(Boolean).join(' · ')}</span>
-        <StatusChips t={t} fail={fail} item={item} />
+        <StatusChips t={t} fail={fail} item={item} onErrors={() => setErrorsOf({ kind: 'extension', name: item.name, title: item.displayName })} />
       </span>,
     },
     { id: 'scope', header: t('extensions.columnScope'), sortable: true, showFrom: 'md', cell: (item) => <span className="whitespace-nowrap text-muted-foreground">{scopeLabel(item.scope)}</span> },
@@ -185,6 +192,7 @@ export function ExtensionsPage({ t, locale, labels, fail, csrfToken }: { t: Tran
             {canUpdate ? <DropdownMenuItem onSelect={() => void ask('update', target, 'extensions.updateDone')}><CircleArrowUp />{t('extensions.update')}</DropdownMenuItem> : null}
             {item.canRollBack ? <DropdownMenuItem onSelect={() => setConfirming({ kind: 'rollback', item })}><RotateCcw />{t('extensions.rollBack')}</DropdownMenuItem> : null}
             {canReconnect ? <DropdownMenuItem onSelect={() => reconnect(item)}><Link2 />{t('extensions.reconnect')}</DropdownMenuItem> : null}
+            {item.errors ? <DropdownMenuItem onSelect={() => setErrorsOf({ kind: 'extension', name: item.name, title: item.displayName })}><Bug />{t('extensions.errorsShow')}</DropdownMenuItem> : null}
             <DropdownMenuItem onSelect={() => setConfirming({ kind: 'toggle', item, enabled: !item.enabled })}>{item.enabled ? <PowerOff /> : <Power />}{t(item.enabled ? 'extensions.turnOff' : 'extensions.turnOn')}</DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem variant="destructive" onSelect={() => setConfirming({ kind: 'remove', item })}><Trash2 />{t('extensions.remove')}</DropdownMenuItem>
@@ -237,6 +245,22 @@ export function ExtensionsPage({ t, locale, labels, fail, csrfToken }: { t: Tran
       </CardContent>
     </Card>
 
+    {list && list.plugins.length > 0 ? <Card>
+      <CardHeader className="grid-rows-[auto] items-center"><h2 className="panel-title"><Server />{t('extensions.pluginsTitle')}</h2></CardHeader>
+      <CardContent className="grid gap-3">
+        <p className="text-sm text-muted-foreground">{t('extensions.pluginsNote')}</p>
+        <ul className="grid divide-y">
+          {list.plugins.map((plugin) => <li key={plugin.name} className="flex flex-wrap items-center justify-between gap-2 py-2.5 first:pt-0 last:pb-0">
+            <span className="grid min-w-0 gap-0.5">
+              <span className="flex flex-wrap items-center gap-1.5"><span className="font-medium break-all">{plugin.name}</span>{plugin.errors.brokeAfter ? <Badge variant="destructive">{t('extensions.brokeAfter', { version: plugin.errors.brokeAfter })}</Badge> : null}</span>
+              <span className="text-xs break-all text-muted-foreground">{plugin.errors.lastMessage}</span>
+            </span>
+            <Button variant="outline" size="sm" onClick={() => setErrorsOf({ kind: 'plugin', name: plugin.name, title: plugin.name })}><Bug />{t('extensions.errorsShow')}</Button>
+          </li>)}
+        </ul>
+      </CardContent>
+    </Card> : null}
+
     {trash.length > 0 ? <Card>
       <CardHeader className="grid-rows-[auto] items-center"><h2 className="panel-title"><Trash2 />{t('extensions.trashTitle')}</h2></CardHeader>
       <CardContent>
@@ -270,6 +294,7 @@ export function ExtensionsPage({ t, locale, labels, fail, csrfToken }: { t: Tran
     />
     <InstallDialog t={t} open={installOpen} onOpenChange={setInstallOpen} hasProfile={list !== null} onInstall={(body) => ask('install', body, 'extensions.installDone')} />
     <ReconnectDialog t={t} preview={preview} onClose={closePreview} />
+    <ErrorsSheet t={t} locale={locale} target={errorsOf} csrfToken={csrfToken} onClose={() => setErrorsOf(null)} onCleared={() => { toast({ title: t('extensions.errorsCleared'), tone: 'success' }); void load(); }} />
   </div>;
 }
 
@@ -353,10 +378,12 @@ function ReconnectDialog({ t, preview, onClose }: { t: Translate; preview: Exten
   </Dialog>;
 }
 
-function StatusChips({ t, fail, item }: { t: Translate; fail: Fail; item: ExtensionInfo }) {
+function StatusChips({ t, fail, item, onErrors }: { t: Translate; fail: Fail; item: ExtensionInfo; onErrors: () => void }) {
   const behind = item.update?.behind ?? 0;
   const problem = item.update?.problem ?? null;
   const chips = [
+    item.errors?.brokeAfter ? <Badge key="broke" variant="destructive" title={t('extensions.brokeAfterHint', { version: item.errors.brokeAfter })}>{t('extensions.brokeAfter', { version: item.errors.brokeAfter })}</Badge> : null,
+    item.errors ? <button key="errors" type="button" onClick={onErrors} title={item.errors.lastMessage} className="rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring"><Badge variant="outline" className="cursor-pointer"><Bug />{t('extensions.errorsChip', { count: item.errors.count })}</Badge></button> : null,
     behind > 0 ? <Badge key="update" variant="secondary" className="bg-(--success-background) text-(--success)" title={t('extensions.updateAvailableHint', { count: behind })}>{t('extensions.updateAvailable')}</Badge> : null,
     problem ? <Badge key="problem" variant="outline" title={fail.of(problem, null, t('extensions.checkProblem'))}>{t('extensions.checkProblem')}</Badge> : null,
     item.shadowed ? <Badge key="shadowed" variant="outline" title={t('extensions.shadowedHint')}>{t('extensions.shadowed')}</Badge> : null,
@@ -364,4 +391,45 @@ function StatusChips({ t, fail, item }: { t: Translate; fail: Fail; item: Extens
     !item.hasGit ? <Badge key="git" variant="outline" title={t('extensions.noGitHint')}>{t('extensions.noGit')}</Badge> : null,
   ].filter(Boolean);
   return chips.length > 0 ? <span className="flex flex-wrap gap-1">{chips}</span> : null;
+}
+
+/** One extension's or plugin's errors, newest first, read when opened. */
+function ErrorsSheet({ t, locale, target, csrfToken, onClose, onCleared }: { t: Translate; locale: LocaleCode; target: ErrorsTarget | null; csrfToken: string | null; onClose: () => void; onCleared: () => void }) {
+  const [entries, setEntries] = useState<readonly ExtensionErrorEntry[] | null>(null);
+  useEffect(() => {
+    setEntries(null);
+    if (!target) return;
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const response = await apiFetch(`/api/v1/extensions/errors?kind=${target.kind}&name=${encodeURIComponent(target.name)}`, { credentials: 'same-origin', signal: controller.signal });
+        if (response.ok) setEntries((await response.json() as { errors: ExtensionErrorEntry[] }).errors);
+      } catch { /* the sheet stays empty; closing and opening asks again */ }
+    })();
+    return () => controller.abort();
+  }, [target]);
+  const when = new Intl.DateTimeFormat(locale === 'vi' ? 'vi-VN' : 'en-GB', { dateStyle: 'short', timeStyle: 'short' });
+  const clear = async () => {
+    if (!target || !csrfToken) return;
+    const response = await apiFetch(`/api/v1/extensions/errors?kind=${target.kind}&name=${encodeURIComponent(target.name)}`, { method: 'DELETE', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+    if (response.ok) { onClose(); onCleared(); }
+  };
+  return <Sheet open={target !== null} onOpenChange={(open) => { if (!open) onClose(); }}>
+    <SheetContent side="right" className="w-full gap-0 sm:max-w-lg">
+      <SheetHeader>
+        <SheetTitle>{t('extensions.errorsTitle', { name: target?.title ?? '' })}</SheetTitle>
+        <SheetDescription>{t('extensions.errorsDescription')}</SheetDescription>
+      </SheetHeader>
+      <div className="grid min-h-0 flex-1 content-start gap-3 overflow-y-auto px-4 pb-4">
+        {entries === null ? <LoaderCircle className="size-4 animate-spin text-muted-foreground" />
+          : entries.length === 0 ? <p className="text-sm text-muted-foreground">{t('extensions.errorsEmpty')}</p>
+            : entries.map((entry, index) => <div key={`${entry.firstSeen}-${index}`} className="grid gap-1 rounded-lg border p-3 text-sm">
+              <span className="font-mono text-xs break-all">{entry.message}</span>
+              {entry.file ? <span className="font-mono text-xs break-all text-muted-foreground">{entry.line !== null ? `${entry.file}:${entry.line}` : entry.file}</span> : null}
+              <span className="text-xs text-muted-foreground">{[t('extensions.errorsSeen', { count: entry.count, when: when.format(new Date(entry.lastSeen)) }), entry.version ? t('extensions.errorsOnVersion', { version: entry.version }) : null].filter(Boolean).join(' · ')}</span>
+            </div>)}
+        {entries && entries.length > 0 ? <Button variant="outline" size="sm" className="justify-self-start" disabled={!csrfToken} onClick={() => void clear()}><Trash2 />{t('extensions.errorsClear')}</Button> : null}
+      </div>
+    </SheetContent>
+  </Sheet>;
 }

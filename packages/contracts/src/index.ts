@@ -456,6 +456,38 @@ export interface ExtensionInfo {
    * undone. Updates made by SillyTavern itself record nothing.
    */
   readonly canRollBack: boolean;
+  /** What its errors in the browser come to; null when it has reported none. */
+  readonly errors: ExtensionErrorSummary | null;
+}
+
+/** Where an error came from: an extension in the browser, or a server plugin in SillyTavern's log. */
+export type ExtensionErrorKind = 'extension' | 'plugin';
+
+export interface ExtensionErrorSummary {
+  /** Every time any of its kept errors was seen. */
+  readonly count: number;
+  readonly lastAt: string;
+  readonly lastMessage: string;
+  /** The SillyTavern version it started failing on, when that was within a day of switching to it. */
+  readonly brokeAfter: string | null;
+}
+
+export interface ExtensionErrorEntry {
+  /** The error's own first few hundred characters, and nothing else from the page. */
+  readonly message: string;
+  readonly file: string | null;
+  readonly line: number | null;
+  /** The SillyTavern version it was seen on. */
+  readonly version: string | null;
+  readonly firstSeen: string;
+  readonly lastSeen: string;
+  readonly count: number;
+}
+
+/** A server plugin with errors, which the extension list does not otherwise show. */
+export interface PluginErrors {
+  readonly name: string;
+  readonly errors: ExtensionErrorSummary;
 }
 
 export interface ExtensionUpdate {
@@ -476,6 +508,7 @@ export interface ExtensionList {
   readonly job: Job | null;
   /** Extensions removed in the last week, newest first, which can still be put back. */
   readonly trash: readonly ExtensionTrashItem[];
+  readonly plugins: readonly PluginErrors[];
 }
 
 export interface ExtensionTrashItem {
@@ -2007,6 +2040,7 @@ function newestRelease(versions: readonly VersionOption[]): VersionOption | null
  */
 export const NOTIFICATION_KINDS = [
   'sillytavernCrashed',
+  'extensionsBroke',
   'installFinished',
   'installFailed',
   'backupFailed',

@@ -42,7 +42,7 @@ interface Candidate {
 }
 
 /** What the list says about an extension, before anything is known about updates. */
-export type ExtensionFacts = Omit<ExtensionInfo, 'update' | 'canRollBack'>;
+export type ExtensionFacts = Omit<ExtensionInfo, 'update' | 'canRollBack' | 'errors'>;
 
 /** An extension as found, with the folder it is in; the folder never leaves the server. */
 export interface FoundExtension {
