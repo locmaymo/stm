@@ -1269,6 +1269,9 @@
       "canceled": "Đã dừng cài đặt",
       "safetyCopy": "Đang sao chép dữ liệu trước khi đổi phiên bản"
     },
+    "chats": {
+      "searched": "Đã tìm trong {scanned} / {total} chat, mất {ms} ms: {hits} kết quả"
+    },
     "profiles": {
       "created": "Đã tạo {name} ({layout})",
       "activated": "Đã chuyển sang {name}",

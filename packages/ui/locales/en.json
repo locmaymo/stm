@@ -1269,6 +1269,9 @@
       "canceled": "Installation stopped",
       "safetyCopy": "Copying your data before switching version"
     },
+    "chats": {
+      "searched": "Searched {scanned} of {total} chats in {ms} ms: {hits} found"
+    },
     "profiles": {
       "created": "Created {name} ({layout})",
       "activated": "Switched to {name}",

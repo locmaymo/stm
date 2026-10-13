@@ -10,7 +10,7 @@ import { promisify } from 'node:util';
 import { getPlatformPaths } from '../../../packages/platform/src/index.js';
 import { StateStore } from '../src/state.js';
 import { preferredNetworkHost, startManagerServer, type ManagerServer } from '../src/server.js';
-import type { AccessGatewayState, ApiErrorBody, BridgeCommandStatus, ConnectionModelList, ConnectionsOverview, ConsoleStatus, ExtensionList, Installation, Job, LegalReview, ManagerUpdateStatus, OnlineState, ProcessState, SystemSnapshot, TunnelState, VersionOption, VersionSwitchStatus } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, ApiErrorBody, BridgeCommandStatus, ChatSearchEvent, ChatSearchHit, ChatSearchScope, ConnectionModelList, ConnectionsOverview, ConsoleStatus, ExtensionList, Installation, Job, LegalReview, ManagerUpdateStatus, OnlineState, ProcessState, SystemSnapshot, TunnelState, VersionOption, VersionSwitchStatus } from '../../../packages/contracts/src/index.js';
 import { LEGAL_META } from '../../../packages/legal/src/index.js';
 import type { WorkerBudget, WorkerBudgetLevel } from '../src/worker-budget.js';
 import { hashPassword } from '../src/password.js';
@@ -868,6 +868,40 @@ test('the connections overview reads the active profile, masked, and needs a ses
   assert.equal(text.includes(key), false);
   const overview = JSON.parse(text) as ConnectionsOverview;
   assert.deepEqual(overview.keys.map((item) => [item.provider, item.label, item.masked]), [['openrouter', 'main', 'sk-o…0001']]);
+});
+
+test('chats are searched as a stream of hits, behind a session, and the log keeps no query', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-chat-search-api-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const logged: string[] = [];
+  const manager = await startManagerServer({ host: '127.0.0.1', port: 0, paths, env: { STM_ADMIN_PASSWORD: 'correct horse battery staple' }, secureCookies: false, accessPort: 0, logger: (line) => { logged.push(JSON.stringify(line)); } });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const search = (headers: Record<string, string>, body: unknown): Promise<Response> => fetch(`${base}/api/v1/chats/search`, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
+  assert.equal((await fetch(`${base}/api/v1/chats`)).status, 401);
+  assert.equal((await search({}, { q: 'secretword' })).status, 401);
+  const { cookie, csrfToken } = await signIn(base);
+  assert.equal((await search({ cookie }, { q: 'secretword' })).status, 403);
+  assert.equal((await search({ cookie, 'x-csrf-token': csrfToken }, { q: '  ' })).status, 400);
+  const profile = (await (await fetch(`${base}/api/v1/profiles`, { headers: { cookie } })).json() as { profiles: Array<{ dataPath: string }> }).profiles[0];
+  assert.ok(profile);
+  const chats = join(profile.dataPath, 'default-user', 'chats', 'Seraphina');
+  await mkdir(chats, { recursive: true });
+  await writeFile(join(chats, 'first.jsonl'), [
+    JSON.stringify({ user_name: 'You', character_name: 'Seraphina', create_date: '2024-01-01@00h00m00s', chat_metadata: {} }),
+    JSON.stringify({ name: 'You', is_user: true, send_date: '2024-01-01T00:00:00.000Z', mes: 'Không có secretword đâu', extra: {} }),
+  ].join('\n'));
+  const scope = await (await fetch(`${base}/api/v1/chats`, { headers: { cookie } })).json() as ChatSearchScope;
+  assert.deepEqual(scope.characters.map((entry) => [entry.id, entry.chats]), [['Seraphina', 1]]);
+  const response = await search({ cookie, 'x-csrf-token': csrfToken }, { q: 'SECRETWORD khong' });
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get('content-type') ?? '', /application\/x-ndjson/);
+  const events = (await response.text()).trim().split('\n').map((line) => JSON.parse(line) as ChatSearchEvent);
+  const hits = events.filter((event): event is ChatSearchHit => event.type === 'hit');
+  assert.deepEqual(hits.map((hit) => [hit.character, hit.chat, hit.index, hit.snippet]), [['Seraphina', 'first', 0, 'Không có secretword đâu']]);
+  assert.equal(events.at(-1)?.type, 'done');
+  assert.ok(logged.some((line) => line.includes('chats.searched')));
+  assert.equal(logged.some((line) => /secretword|khong/i.test(line)), false);
 });
 
 test('connections are tested one at a time or all together, and remembered', async (t) => {
