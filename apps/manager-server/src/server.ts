@@ -4,8 +4,9 @@ import { readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises
 import { createReadStream } from 'node:fs';
 import { hostname, networkInterfaces } from 'node:os';
 import { createSocket } from 'node:dgram';
+import { once } from 'node:events';
 import { extname, join, relative, resolve, sep } from 'node:path';
-import { applyQuery, BACKUP_PURPOSES, isLogEvent, availableUpdate, parseBridgeCommand, connectionProviderName, connectionTargetKey, parseConnectionTarget, providerOfSecret, type BridgeCommandStatus, type ConnectionModelList, type ConnectionTarget, type ConnectionTestResult, type ConnectionWatchSettings, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, isConsoleStatusSection, KEEP_ONLINE_DEFAULT_MINUTES, OPERATION_JOB_KINDS, SETUP_STEPS, type AccessGatewayState, type ApiErrorBody, type BackupManifest, type BackupPurpose, type ConfigUpdateInput, type ConsoleStatus, type ConsoleStatusSection, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogPage, type LogSink, type LogSourceFilter, type LegalReview, type ManagerPorts, type ManagerUpdateStatus, type OnlineState, type PortSettings, type Profile, type ProfileLayout, type RestorePreview, type SetupChecklistState, type SetupStatus, type SetupStep, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
+import { applyQuery, BACKUP_PURPOSES, isLogEvent, availableUpdate, parseBridgeCommand, connectionProviderName, connectionTargetKey, parseConnectionTarget, providerOfSecret, type BridgeCommandStatus, type ChatSearchScope, type ConnectionModelList, type ConnectionTarget, type ConnectionTestResult, type ConnectionWatchSettings, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, isConsoleStatusSection, KEEP_ONLINE_DEFAULT_MINUTES, OPERATION_JOB_KINDS, SETUP_STEPS, type AccessGatewayState, type ApiErrorBody, type BackupManifest, type BackupPurpose, type ConfigUpdateInput, type ConsoleStatus, type ConsoleStatusSection, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogPage, type LogSink, type LogSourceFilter, type LegalReview, type ManagerPorts, type ManagerUpdateStatus, type OnlineState, type PortSettings, type Profile, type ProfileLayout, type RestorePreview, type SetupChecklistState, type SetupStatus, type SetupStep, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
 import { getPlatformPaths, storageDurability, storageMedium, storageReport, type PlatformPaths } from '../../../packages/platform/src/index.js';
 import { INSTALL_CANCELED, RuntimeError, RuntimeManager, type InstallationProgress } from '../../../packages/sillytavern-runtime/src/index.js';
 import { hashPassword, MIN_PASSWORD_LENGTH, validatePasscode, validatePassword, verifyPassword } from './password.js';
@@ -22,6 +23,9 @@ import { ProcessSupervisor } from './supervisor.js';
 import { SillyTavernClient, SillyTavernError } from './st-client.js';
 import { BridgeBusyError, SillyTavernBridge } from './st-bridge.js';
 import { readConnections, readStoredConnections, selectProxyOnDisk, SettingsEditError } from './connections.js';
+import { ChatSearches, parseSearchRequest, searchChats, searchScope } from './chat-search.js';
+import { chatExists, ChatOpenTokens, OPEN_PARAMETER, parseOpenRequest } from './chat-open.js';
+import { listChats } from '../../../packages/chats/src/index.js';
 import { ConnectionTargetMissing, ConnectionTester, ConnectionTestStore, everyTarget, ModelCache, testTargets, type SillyTavernStatusCall } from './connection-tests.js';
 import { ConnectionWatcher, ConnectionWatchStore, MetricsTail, parseWatchSettings } from './connection-watch.js';
 import { AccessGateway } from './gateway.js';
@@ -109,6 +113,7 @@ const PROTECTED_PATHS = new Set([
   '/api/v1/preview/image',
   '/api/v1/extensions',
   '/api/v1/connections',
+  '/api/v1/chats',
   '/api/v1/auth/password',
   '/api/v1/metrics',
   '/api/v1/system',
@@ -482,9 +487,12 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   let boundPort: number = consolePort;
   // What the manager asks of an open SillyTavern tab; see st-bridge.ts.
   const bridge = new SillyTavernBridge();
+  // Chats the console asked to open in SillyTavern; see chat-open.ts.
+  const chatOpens = new ChatOpenTokens();
   const gateway = options.gateway ?? new AccessGateway({
     port: accessPort,
     bridge,
+    opener: chatOpens,
     targetPort: sillyTavernPort,
     frameAncestors: [`http://127.0.0.1:${consolePort}`, `http://localhost:${consolePort}`],
     // The sign-in page shows SillyTavern's own mark, read from whatever
@@ -566,6 +574,8 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   const sillyTavern = new SillyTavernClient({ port: () => sillyTavernPort, status: () => supervisor.getState().status });
   // Testing keys, proxies and profiles; see connection-tests.ts.
   const connections = connectionServices(paths, sillyTavern);
+  // The chat search running now, if any; see chat-search.ts.
+  const chatSearches = new ChatSearches();
   const tunnel = options.tunnel ?? new TunnelManager({
     paths,
     env,
@@ -1075,6 +1085,8 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       extensions,
       bridge,
       connections,
+      chatSearches,
+      chatOpens,
       proxy,
       publishProxies,
       budget,
@@ -1216,7 +1228,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     online,
     // The meter closes first, so the part of today that has just been spent is
     // written down before the transport looks for finished days.
-    close: async () => { extensions.closing.abort(); bridge.close(); connectionWatcher.close(); nightly.close(); online.close(); notificationRules.close(); replyNotifier.close(); announcements?.close(); await activity.close(); await telemetry.close(); await scheduler.close(); await tunnel.close(); await managerTunnel.close(); await gateway.close(); await supervisor.close(); await backups.settle(); await profiles.settle(); await closeServer(server); },
+    close: async () => { extensions.closing.abort(); chatSearches.close(); bridge.close(); connectionWatcher.close(); nightly.close(); online.close(); notificationRules.close(); replyNotifier.close(); announcements?.close(); await activity.close(); await telemetry.close(); await scheduler.close(); await tunnel.close(); await managerTunnel.close(); await gateway.close(); await supervisor.close(); await backups.settle(); await profiles.settle(); await closeServer(server); },
   };
 }
 
@@ -1270,6 +1282,8 @@ async function handleRequest(options: {
   /** Commands for an open SillyTavern tab; see st-bridge.ts. */
   readonly bridge: SillyTavernBridge;
   readonly connections: ConnectionServices;
+  readonly chatSearches: ChatSearches;
+  readonly chatOpens: ChatOpenTokens;
   readonly proxy: ProxyWorkerManager | null;
   /** Put the fixed addresses in place, for a Cloudflare account just connected. */
   readonly publishProxies: () => void;
@@ -1288,7 +1302,7 @@ async function handleRequest(options: {
   readonly autoInstall: boolean;
   readonly onShutdownRequest: (() => void) | undefined;
 }): Promise<void> {
-  const { request, response, store, sessions, rateLimiter, handoffs, startedAt, publicOrigins, proxiedOrigin, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, releases, online, notifications, push, extensions, bridge, connections, proxy, publishProxies, budget, saver, shutdownToken, autoInstall, onShutdownRequest } = options;
+  const { request, response, store, sessions, rateLimiter, handoffs, startedAt, publicOrigins, proxiedOrigin, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, releases, online, notifications, push, extensions, bridge, connections, chatSearches, chatOpens, proxy, publishProxies, budget, saver, shutdownToken, autoInstall, onShutdownRequest } = options;
   // Whether the browser's side of this connection is HTTPS, which is not the
   // same question as whether ours is: a hosted console is reached over HTTPS
   // that a proxy terminates before us, and only the proxy's own header says so.
@@ -1598,10 +1612,82 @@ async function handleRequest(options: {
       await handleConnectionsRequest(context, { profiles, supervisor, bridge, connections });
       return;
     }
+    if (pathname === CHATS_API || pathname.startsWith(`${CHATS_API}/`)) {
+      await handleChatsRequest(context, { profiles, chatSearches, chatOpens, logger });
+      return;
+    }
     await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, online, proxy, publishProxies, budget, logger, handoffs, saver, sessions, notifications, push, extensions);
     return;
   }
 
+  sendError(response, 404, 'not_found', 'Route not found');
+}
+
+const CHATS_API = '/api/v1/chats';
+
+/*
+ * Searching every chat of the active profile; see chat-search.ts.
+ *
+ * The search answers as newline-delimited JSON, a line per hit as it is
+ * found, so the first hits show while the rest of the chats are read. A
+ * console that goes away, or asks again, stops it. The log says how much was
+ * read and how long it took, never what was looked for.
+ */
+async function handleChatsRequest(context: RequestContext, deps: { readonly profiles: ProfileStore; readonly chatSearches: ChatSearches; readonly chatOpens: ChatOpenTokens; readonly logger: LogSink }): Promise<void> {
+  const { pathname, request, response } = context;
+  const { profiles, chatSearches, chatOpens, logger } = deps;
+  const method = request.method ?? 'GET';
+  const profile = await profiles.getActive();
+  if (pathname === CHATS_API && method === 'GET') {
+    if (!profile) { sendError(response, 409, 'no_profile', 'There is no SillyTavern data yet'); return; }
+    sendJson(response, 200, searchScope(await listChats(userDataRoot(profile))) satisfies ChatSearchScope);
+    return;
+  }
+  if (pathname === `${CHATS_API}/search` && method === 'POST') {
+    const parsed = parseSearchRequest(await readJson(request));
+    if ('error' in parsed) { sendError(response, 400, 'invalid_input', parsed.error); return; }
+    if (!profile) { sendError(response, 409, 'no_profile', 'There is no SillyTavern data yet'); return; }
+    const controller = chatSearches.begin(context.sessionToken ?? '');
+    if (!controller) { sendError(response, 409, 'search_busy', 'Another search is running'); return; }
+    const gone = (): void => controller.abort();
+    response.on('close', gone);
+    try {
+      response.writeHead(200, {
+        'Content-Type': 'application/x-ndjson; charset=utf-8',
+        'Cache-Control': 'no-store',
+        'X-Content-Type-Options': 'nosniff',
+      });
+      const done = await searchChats(userDataRoot(profile), parsed.request, {
+        signal: controller.signal,
+        emit: async (event) => {
+          if (controller.signal.aborted || response.destroyed) return;
+          if (!response.write(`${JSON.stringify(event)}\n`)) await once(response, 'drain', { signal: controller.signal }).catch(() => undefined);
+        },
+      });
+      logger(logEvent('chats.searched', `[chats] searched ${done.scannedChats} of ${done.totalChats} chats (${done.scannedBytes} bytes) in ${done.ms} ms, ${done.hits} hits`, { scanned: done.scannedChats, total: done.totalChats, bytes: done.scannedBytes, ms: done.ms, hits: done.hits }));
+    } catch {
+      // The console went away mid-search, or a chat could not be listed; what was sent stands.
+    } finally {
+      response.off('close', gone);
+      chatSearches.end(controller);
+      if (!response.writableEnded) response.end();
+    }
+    return;
+  }
+  /*
+   * A token for one message, for the console to open SillyTavern with; see
+   * chat-open.ts. Only for a chat that is there, so the door is never asked
+   * to look for one that is not.
+   */
+  if (pathname === `${CHATS_API}/open` && method === 'POST') {
+    const parsed = parseOpenRequest(await readJson(request));
+    if ('error' in parsed) { sendError(response, 400, 'invalid_input', parsed.error); return; }
+    if (!profile) { sendError(response, 409, 'no_profile', 'There is no SillyTavern data yet'); return; }
+    if (!await chatExists(userDataRoot(profile), parsed.target)) { sendError(response, 404, 'chat_not_found', 'That chat is not there any more'); return; }
+    const token = chatOpens.issue(parsed.target);
+    sendJson(response, 200, { token, path: `/?${OPEN_PARAMETER}=${token}` });
+    return;
+  }
   sendError(response, 404, 'not_found', 'Route not found');
 }
 
@@ -5081,6 +5167,7 @@ function isProtectedPath(pathname: string): boolean {
     || pathname.startsWith('/api/v1/config/')
     || pathname.startsWith('/api/v1/extensions/')
     || pathname.startsWith('/api/v1/connections/')
+    || pathname.startsWith('/api/v1/chats/')
     || pathname.startsWith('/api/v1/sillytavern/');
 }
 
