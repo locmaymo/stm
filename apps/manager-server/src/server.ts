@@ -5,7 +5,7 @@ import { createReadStream } from 'node:fs';
 import { hostname, networkInterfaces } from 'node:os';
 import { createSocket } from 'node:dgram';
 import { extname, join, relative, resolve, sep } from 'node:path';
-import { applyQuery, BACKUP_PURPOSES, isLogEvent, availableUpdate, parseBridgeCommand, type BridgeCommandStatus, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, isConsoleStatusSection, KEEP_ONLINE_DEFAULT_MINUTES, OPERATION_JOB_KINDS, SETUP_STEPS, type AccessGatewayState, type ApiErrorBody, type BackupManifest, type BackupPurpose, type ConfigUpdateInput, type ConsoleStatus, type ConsoleStatusSection, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogPage, type LogSink, type LogSourceFilter, type LegalReview, type ManagerPorts, type ManagerUpdateStatus, type OnlineState, type PortSettings, type Profile, type ProfileLayout, type RestorePreview, type SetupChecklistState, type SetupStatus, type SetupStep, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
+import { applyQuery, BACKUP_PURPOSES, isLogEvent, availableUpdate, parseBridgeCommand, connectionTargetKey, parseConnectionTarget, type BridgeCommandStatus, type ConnectionModelList, type ConnectionTarget, type ConnectionTestResult, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, isConsoleStatusSection, KEEP_ONLINE_DEFAULT_MINUTES, OPERATION_JOB_KINDS, SETUP_STEPS, type AccessGatewayState, type ApiErrorBody, type BackupManifest, type BackupPurpose, type ConfigUpdateInput, type ConsoleStatus, type ConsoleStatusSection, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogPage, type LogSink, type LogSourceFilter, type LegalReview, type ManagerPorts, type ManagerUpdateStatus, type OnlineState, type PortSettings, type Profile, type ProfileLayout, type RestorePreview, type SetupChecklistState, type SetupStatus, type SetupStep, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
 import { getPlatformPaths, storageDurability, storageMedium, storageReport, type PlatformPaths } from '../../../packages/platform/src/index.js';
 import { INSTALL_CANCELED, RuntimeError, RuntimeManager, type InstallationProgress } from '../../../packages/sillytavern-runtime/src/index.js';
 import { hashPassword, MIN_PASSWORD_LENGTH, validatePasscode, validatePassword, verifyPassword } from './password.js';
@@ -19,9 +19,10 @@ import { SystemStore } from './system.js';
 import { easesPolling, withholdsAddress, WorkerBudget } from './worker-budget.js';
 import { panelStaticRoot } from './bootstrap.js';
 import { ProcessSupervisor } from './supervisor.js';
-import { SillyTavernClient } from './st-client.js';
+import { SillyTavernClient, SillyTavernError } from './st-client.js';
 import { BridgeBusyError, SillyTavernBridge } from './st-bridge.js';
-import { readConnections } from './connections.js';
+import { readConnections, readStoredConnections } from './connections.js';
+import { ConnectionTargetMissing, ConnectionTester, ConnectionTestStore, ModelCache, type SillyTavernStatusCall } from './connection-tests.js';
 import { AccessGateway } from './gateway.js';
 import { ACCESS_GATEWAY_PORT, checkSillyTavernPort, findFreePort, isPortFree, MANAGER_PORT, PortError, portWasDemanded, resolveAccessPort, resolveConsolePort, SILLYTAVERN_PORT, type ResolvedPort } from './ports.js';
 import { previewImage, previewLogo, previewManifest } from './preview.js';
@@ -562,6 +563,8 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   });
   // SillyTavern's own API, for what its server owns; see st-client.ts.
   const sillyTavern = new SillyTavernClient({ port: () => sillyTavernPort, status: () => supervisor.getState().status });
+  // Testing keys, proxies and profiles; see connection-tests.ts.
+  const connections = connectionServices(paths, sillyTavern);
   const tunnel = options.tunnel ?? new TunnelManager({
     paths,
     env,
@@ -1046,6 +1049,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       push,
       extensions,
       bridge,
+      connections,
       proxy,
       publishProxies,
       budget,
@@ -1240,6 +1244,7 @@ async function handleRequest(options: {
   readonly extensions: ExtensionServices;
   /** Commands for an open SillyTavern tab; see st-bridge.ts. */
   readonly bridge: SillyTavernBridge;
+  readonly connections: ConnectionServices;
   readonly proxy: ProxyWorkerManager | null;
   /** Put the fixed addresses in place, for a Cloudflare account just connected. */
   readonly publishProxies: () => void;
@@ -1258,7 +1263,7 @@ async function handleRequest(options: {
   readonly autoInstall: boolean;
   readonly onShutdownRequest: (() => void) | undefined;
 }): Promise<void> {
-  const { request, response, store, sessions, rateLimiter, handoffs, startedAt, publicOrigins, proxiedOrigin, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, releases, online, notifications, push, extensions, bridge, proxy, publishProxies, budget, saver, shutdownToken, autoInstall, onShutdownRequest } = options;
+  const { request, response, store, sessions, rateLimiter, handoffs, startedAt, publicOrigins, proxiedOrigin, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, releases, online, notifications, push, extensions, bridge, connections, proxy, publishProxies, budget, saver, shutdownToken, autoInstall, onShutdownRequest } = options;
   // Whether the browser's side of this connection is HTTPS, which is not the
   // same question as whether ours is: a hosted console is reached over HTTPS
   // that a proxy terminates before us, and only the proxy's own header says so.
@@ -1565,7 +1570,7 @@ async function handleRequest(options: {
       return;
     }
     if (pathname === CONNECTIONS_API || pathname.startsWith(`${CONNECTIONS_API}/`)) {
-      await handleConnectionsRequest(context, { profiles });
+      await handleConnectionsRequest(context, { profiles, supervisor, connections });
       return;
     }
     await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, online, proxy, publishProxies, budget, logger, handoffs, saver, sessions, notifications, push, extensions);
@@ -1582,15 +1587,124 @@ const CONNECTIONS_API = '/api/v1/connections';
  * connections.ts. Read off the active profile's files, so it answers the
  * same with SillyTavern stopped.
  */
-async function handleConnectionsRequest(context: RequestContext, deps: { readonly profiles: ProfileStore }): Promise<void> {
-  const { pathname, request, response } = context;
+async function handleConnectionsRequest(context: RequestContext, deps: { readonly profiles: ProfileStore; readonly supervisor: ProcessSupervisor; readonly connections: ConnectionServices }): Promise<void> {
+  const { pathname, request, response, searchParams } = context;
+  const { profiles, supervisor, connections } = deps;
   const method = request.method ?? 'GET';
+  const userRoot = async (): Promise<string | null> => {
+    const profile = await profiles.getActive();
+    return profile ? userDataRoot(profile) : null;
+  };
   if (pathname === CONNECTIONS_API && method === 'GET') {
-    const profile = await deps.profiles.getActive();
-    sendJson(response, 200, await readConnections(profile ? userDataRoot(profile) : null) satisfies ConnectionsOverview);
+    sendJson(response, 200, {
+      ...await readConnections(await userRoot()),
+      tests: await connections.results.all(),
+      sillyTavernRunning: supervisor.getState().status === 'running',
+    } satisfies ConnectionsOverview);
+    return;
+  }
+  /*
+   * Test one key, proxy or profile, or all of them.
+   *
+   * The files are read again for every test, so a key added in SillyTavern a
+   * second ago is the one tested. A one-token message goes out only when the
+   * request names the model to send it to.
+   */
+  if ((pathname === `${CONNECTIONS_API}/test` || pathname === `${CONNECTIONS_API}/test-all`) && method === 'POST') {
+    const root = await userRoot();
+    if (!root) { sendError(response, 409, 'no_profile', 'There is no SillyTavern data to test yet'); return; }
+    const body = await readJson(request);
+    const all = pathname.endsWith('/test-all');
+    const target = all ? null : parseConnectionTarget(isRecord(body) ? body.target : null);
+    if (!all && !target) { sendError(response, 400, 'invalid_input', 'Name a key, proxy or profile to test'); return; }
+    const send = isRecord(body) && isRecord(body.send) ? body.send.model : undefined;
+    const sendModel = typeof send === 'string' && send.trim() !== '' && send.length <= 300 ? send.trim() : null;
+    if (connections.running) { sendError(response, 409, 'connection_tests_running', 'A test of every connection is already running'); return; }
+    const stored = await readStoredConnections(root);
+    const secrets = 'value' in stored.secrets ? stored.secrets.value : { secrets: [], legacy: false };
+    const settings = 'value' in stored.settings ? stored.settings.value : { proxies: [], selectedProxy: null, profiles: [], selectedProfile: null, oai: {} };
+    const run = async (item: ConnectionTarget, model: string | null): Promise<ConnectionTestResult> => {
+      const outcome = await connections.tester.test(item, secrets, settings, model ? { send: { model } } : {});
+      await connections.results.set(item, outcome.result);
+      if (outcome.models) connections.models.set(item, outcome.result.provider, outcome.models);
+      return outcome.result;
+    };
+    if (target) {
+      try {
+        sendJson(response, 200, { result: await run(target, sendModel) });
+      } catch (error: unknown) {
+        if (error instanceof ConnectionTargetMissing) { sendError(response, 404, error.code, error.message); return; }
+        throw error;
+      }
+      return;
+    }
+    const targets: ConnectionTarget[] = [
+      ...secrets.secrets.map((secret): ConnectionTarget => ({ kind: 'key', secretKey: secret.secretKey, id: secret.id })),
+      ...settings.proxies.filter((proxy) => proxy.name !== 'None').map((proxy): ConnectionTarget => ({ kind: 'proxy', name: proxy.name })),
+      ...settings.profiles.map((profile): ConnectionTarget => ({ kind: 'profile', id: profile.id })),
+    ];
+    connections.running = true;
+    try {
+      const tests: Record<string, ConnectionTestResult> = {};
+      let next = 0;
+      // A few at a time: enough to finish a long list quickly, few enough
+      // that one provider is not asked about ten keys in the same second.
+      await Promise.all(Array.from({ length: Math.min(CONNECTION_TEST_CONCURRENCY, targets.length) }, async () => {
+        while (next < targets.length) {
+          const item = targets[next++];
+          if (item) tests[connectionTargetKey(item)] = await run(item, null);
+        }
+      }));
+      sendJson(response, 200, { tests });
+    } finally {
+      connections.running = false;
+    }
+    return;
+  }
+  // The models a target's last test brought back, while they are kept.
+  if (pathname === `${CONNECTIONS_API}/models` && method === 'GET') {
+    const target = parseConnectionTarget({ kind: searchParams.get('kind'), secretKey: searchParams.get('secretKey'), id: searchParams.get('id'), name: searchParams.get('name') });
+    if (!target) { sendError(response, 400, 'invalid_input', 'Name a key, proxy or profile'); return; }
+    const list = connections.models.get(target);
+    if (!list) { sendError(response, 404, 'models_not_cached', 'Test it to see its models'); return; }
+    sendJson(response, 200, list satisfies ConnectionModelList);
     return;
   }
   sendError(response, 404, 'not_found', 'Route not found');
+}
+
+/** How many targets "test all" asks about at once. */
+const CONNECTION_TEST_CONCURRENCY = 3;
+
+interface ConnectionServices {
+  readonly tester: ConnectionTester;
+  readonly results: ConnectionTestStore;
+  readonly models: ModelCache;
+  /** A test of every connection is under way. */
+  running: boolean;
+}
+
+function connectionServices(paths: PlatformPaths, sillyTavern: SillyTavernClient): ConnectionServices {
+  // SillyTavern's own check, asked only when it is already up: a test is not
+  // a reason to wait for one that is starting.
+  const status: SillyTavernStatusCall = async (path, body) => {
+    try {
+      const answer = await sillyTavern.request('POST', path, { body, readyTimeoutMs: 0 });
+      return { status: answer.status, body: await answer.json().catch(() => null) as unknown };
+    } catch (error: unknown) {
+      if (error instanceof SillyTavernError) {
+        if (error.code === 'st_not_running') return 'not_running';
+        if (error.status !== null) return { status: error.status, body: null };
+      }
+      throw error;
+    }
+  };
+  return {
+    tester: new ConnectionTester({ sillyTavern: status }),
+    results: new ConnectionTestStore(paths),
+    models: new ModelCache(),
+    running: false,
+  };
 }
 
 const BRIDGE_API_PREFIX = '/api/v1/sillytavern/bridge';

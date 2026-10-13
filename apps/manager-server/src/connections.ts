@@ -85,7 +85,7 @@ export async function readStoredConnections(userRoot: string): Promise<{ secrets
  * JSON is named in `unreadable`, so the page can say so rather than claim
  * there are no keys.
  */
-export async function readConnections(userRoot: string | null): Promise<ConnectionsOverview> {
+export async function readConnections(userRoot: string | null): Promise<Omit<ConnectionsOverview, 'tests' | 'sillyTavernRunning'>> {
   if (!userRoot) return { profile: false, keys: [], proxies: [], profiles: [], legacySecrets: false, unreadable: [] };
   const { secrets, settings } = await readStoredConnections(userRoot);
   const unreadable: Array<'secrets' | 'settings'> = [];

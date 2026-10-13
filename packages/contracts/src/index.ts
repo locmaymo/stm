@@ -2238,6 +2238,10 @@ export interface ConnectionsOverview {
   readonly legacySecrets: boolean;
   /** Files that are there and could not be read as JSON; their section is empty. */
   readonly unreadable: readonly ('secrets' | 'settings')[];
+  /** The last test of each key, proxy and profile, by `connectionTargetKey`. */
+  readonly tests: Readonly<Record<string, ConnectionTestResult>>;
+  /** Whether SillyTavern is up, which the providers tested through it need. */
+  readonly sillyTavernRunning: boolean;
 }
 
 /** One key SillyTavern keeps for a provider. */
@@ -2354,4 +2358,82 @@ export function connectionApiProvider(api: string): string {
 /** The name a provider is shown by. */
 export function connectionProviderName(provider: string): string {
   return CONNECTION_PROVIDER_NAMES[provider] ?? provider;
+}
+
+/** What can be tested on the Connections page. */
+export type ConnectionTarget =
+  | { readonly kind: 'key'; readonly secretKey: string; readonly id: string | null }
+  | { readonly kind: 'proxy'; readonly name: string }
+  | { readonly kind: 'profile'; readonly id: string };
+
+/** The name a target's results are kept under. */
+export function connectionTargetKey(target: ConnectionTarget): string {
+  if (target.kind === 'key') return `key:${target.secretKey}:${target.id ?? ''}`;
+  if (target.kind === 'proxy') return `proxy:${target.name}`;
+  return `profile:${target.id}`;
+}
+
+/** The target a request names, if it names one. */
+export function parseConnectionTarget(value: unknown): ConnectionTarget | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const record = value as Record<string, unknown>;
+  const name = (field: unknown): field is string => typeof field === 'string' && field !== '' && field.length <= 500;
+  if (record.kind === 'key' && name(record.secretKey) && (record.id === null || name(record.id))) return { kind: 'key', secretKey: record.secretKey, id: record.id };
+  if (record.kind === 'proxy' && name(record.name)) return { kind: 'proxy', name: record.name };
+  if (record.kind === 'profile' && name(record.id)) return { kind: 'profile', id: record.id };
+  return null;
+}
+
+/**
+ * How a test went.
+ *
+ * `invalid_key` the provider refused the key; `no_credit` it has run out of
+ * credit or quota; `rate_limited` it is asked too often right now;
+ * `unreachable` nothing answered; `bad_url` something answered that is not
+ * the API; `proxy_auth` the proxy refused its password; `no_key` there is no
+ * key to test with; `needs_sillytavern` this one can only be tested through
+ * SillyTavern, which is not running; `unsupported` there is no way to test
+ * it; `unknown` anything else.
+ */
+export const CONNECTION_TEST_CODES = ['ok', 'invalid_key', 'no_credit', 'rate_limited', 'unreachable', 'bad_url', 'proxy_auth', 'no_key', 'needs_sillytavern', 'unsupported', 'unknown'] as const;
+export type ConnectionTestCode = (typeof CONNECTION_TEST_CODES)[number];
+
+export interface ConnectionTestResult {
+  readonly code: ConnectionTestCode;
+  /** `direct` from the manager to the provider; `sillytavern` through SillyTavern's own check. */
+  readonly via: 'direct' | 'sillytavern' | null;
+  /** The provider it went to, by the name its keys are filed under. */
+  readonly provider: string | null;
+  /** The provider's HTTP status, when it answered. */
+  readonly httpStatus: number | null;
+  readonly latencyMs: number | null;
+  readonly modelCount: number | null;
+  /** What is left, when the provider says. */
+  readonly balance: ConnectionBalance | null;
+  /** True when a one-token message was sent, not only the model list asked for. */
+  readonly sent: boolean;
+  readonly testedAt: string;
+}
+
+export interface ConnectionBalance {
+  readonly amount: number;
+  /** An ISO currency code, such as `USD` or `CNY`. */
+  readonly currency: string;
+}
+
+/** A model a provider lists, with what OpenRouter says about its size and price. */
+export interface ConnectionModel {
+  readonly id: string;
+  readonly name: string | null;
+  readonly contextLength: number | null;
+  /** US dollars per million prompt tokens. */
+  readonly promptPrice: number | null;
+  /** US dollars per million completion tokens. */
+  readonly completionPrice: number | null;
+}
+
+export interface ConnectionModelList {
+  readonly provider: string;
+  readonly models: readonly ConnectionModel[];
+  readonly fetchedAt: string;
 }

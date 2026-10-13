@@ -2,14 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
-import { request as httpRequest } from 'node:http';
+import { createServer as createHttpServer, request as httpRequest } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { getPlatformPaths } from '../../../packages/platform/src/index.js';
 import { StateStore } from '../src/state.js';
 import { preferredNetworkHost, startManagerServer, type ManagerServer } from '../src/server.js';
-import type { AccessGatewayState, ApiErrorBody, BridgeCommandStatus, ConnectionsOverview, ConsoleStatus, ExtensionList, Installation, Job, LegalReview, ManagerUpdateStatus, OnlineState, ProcessState, SystemSnapshot, TunnelState, VersionOption, VersionSwitchStatus } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, ApiErrorBody, BridgeCommandStatus, ConnectionModelList, ConnectionsOverview, ConsoleStatus, ExtensionList, Installation, Job, LegalReview, ManagerUpdateStatus, OnlineState, ProcessState, SystemSnapshot, TunnelState, VersionOption, VersionSwitchStatus } from '../../../packages/contracts/src/index.js';
 import { LEGAL_META } from '../../../packages/legal/src/index.js';
 import type { WorkerBudget, WorkerBudgetLevel } from '../src/worker-budget.js';
 import { hashPassword } from '../src/password.js';
@@ -867,6 +868,46 @@ test('the connections overview reads the active profile, masked, and needs a ses
   assert.equal(text.includes(key), false);
   const overview = JSON.parse(text) as ConnectionsOverview;
   assert.deepEqual(overview.keys.map((item) => [item.provider, item.label, item.masked]), [['openrouter', 'main', 'sk-o…0001']]);
+});
+
+test('connections are tested one at a time or all together, and remembered', async (t) => {
+  // An OpenAI-compatible server of the user's own, which the custom key points at.
+  const provider = createHttpServer((request, response) => {
+    const ok = request.headers.authorization === 'Bearer good-custom-key-000000';
+    response.writeHead(ok ? 200 : 401, { 'content-type': 'application/json' });
+    response.end(JSON.stringify(ok ? { data: [{ id: 'local-a' }, { id: 'local-b' }] } : { error: 'no' }));
+  });
+  await new Promise<void>((resolvePromise) => provider.listen(0, '127.0.0.1', resolvePromise));
+  t.after(() => new Promise<void>((resolvePromise) => { provider.closeAllConnections(); provider.close(() => resolvePromise()); }));
+  const providerUrl = `http://127.0.0.1:${(provider.address() as AddressInfo).port}/v1`;
+  const root = await mkdtemp(join(tmpdir(), 'stm-connection-tests-api-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const manager = await startManagerServer({ host: '127.0.0.1', port: 0, paths, env: { STM_ADMIN_PASSWORD: 'correct horse battery staple' }, secureCookies: false, accessPort: 0, logger: () => undefined });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const { cookie, csrfToken } = await signIn(base);
+  const profile = (await (await fetch(`${base}/api/v1/profiles`, { headers: { cookie } })).json() as { profiles: Array<{ dataPath: string }> }).profiles[0];
+  assert.ok(profile);
+  const userRoot = join(profile.dataPath, 'default-user');
+  await mkdir(userRoot, { recursive: true });
+  await writeFile(join(userRoot, 'secrets.json'), JSON.stringify({ api_key_custom: [{ id: 'good', value: 'good-custom-key-000000', label: 'mine', active: true }, { id: 'bad', value: 'bad-custom-key-0000000', label: 'old', active: false }] }));
+  await writeFile(join(userRoot, 'settings.json'), JSON.stringify({ oai_settings: { custom_url: providerUrl }, proxies: [{ name: 'None', url: '', password: '' }] }));
+  const post = (path: string, body: unknown) => fetch(`${base}/api/v1/connections/${path}`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrfToken, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const one = await post('test', { target: { kind: 'key', secretKey: 'api_key_custom', id: 'good' } });
+  assert.equal(one.status, 200);
+  assert.deepEqual(((await one.json()) as { result: { code: string; modelCount: number } }).result.code, 'ok');
+  assert.equal((await post('test', { target: { kind: 'key', secretKey: 'api_key_custom', id: 'gone' } })).status, 404);
+  assert.equal((await post('test', { target: { kind: 'nothing' } })).status, 400);
+  const models = await fetch(`${base}/api/v1/connections/models?kind=key&secretKey=api_key_custom&id=good`, { headers: { cookie } });
+  assert.deepEqual(((await models.json()) as ConnectionModelList).models.map((model) => model.id), ['local-a', 'local-b']);
+  assert.equal((await fetch(`${base}/api/v1/connections/models?kind=key&secretKey=api_key_custom&id=bad`, { headers: { cookie } })).status, 404);
+  const all = await post('test-all', {});
+  const tests = ((await all.json()) as { tests: Record<string, { code: string }> }).tests;
+  assert.deepEqual(Object.fromEntries(Object.entries(tests).map(([name, result]) => [name, result.code])), { 'key:api_key_custom:good': 'ok', 'key:api_key_custom:bad': 'invalid_key' });
+  const overview = await (await fetch(`${base}/api/v1/connections`, { headers: { cookie } })).json() as ConnectionsOverview;
+  assert.equal(overview.tests['key:api_key_custom:bad']?.code, 'invalid_key');
+  assert.equal(overview.sillyTavernRunning, false);
+  assert.equal(JSON.stringify(overview).includes('custom-key'), false);
 });
 
 test('extensions are checked, updated and rolled back as jobs, one at a time', { skip: await gitMissing() }, async (t) => {
