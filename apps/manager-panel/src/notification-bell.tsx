@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Bell, CircleAlert, CircleCheck, Info, Megaphone, TriangleAlert } from 'lucide-react';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, Button, cn, Popover, PopoverContent, PopoverTrigger, Switch } from '../../../packages/ui/src/index.js';
-import type { ManagerNotification, MessageParams, NotificationList, NotificationSummary } from '../../../packages/contracts/src/index.js';
+import { CONNECTION_NOTIFICATION_KINDS, type ManagerNotification, type MessageParams, type NotificationList, type NotificationSummary } from '../../../packages/contracts/src/index.js';
 import type { MessageKey, Translate } from './i18n.js';
 import type { LocaleCode } from './preferences.js';
 import { currentPush, disablePush, enablePush, pushSupport, standalone, type PushSupport } from './push.js';
@@ -13,7 +13,7 @@ import { apiFetch } from './session.js';
  * Parameters that are codes rather than words, turned into words first - the
  * same rule the manager applies to a push, so both say the same sentence.
  */
-const WORD_PARAMS: Readonly<Record<string, string>> = { job: 'notify.jobs', what: 'notify.quota' };
+const WORD_PARAMS: Readonly<Record<string, string>> = { job: 'notify.jobs', what: 'notify.quota', problem: 'connections.codes' };
 
 export function notificationText(t: Translate, locale: LocaleCode, item: ManagerNotification): { title: string; body: string } {
   if (item.broadcast) {
@@ -275,6 +275,7 @@ export function NotificationBell({ t, locale, summary, csrfToken, footer }: {
                   <span className="bell-when">
                     {when(item.createdAt, locale)}
                     {item.broadcast?.url ? <> · <a href={item.broadcast.url} target="_blank" rel="noopener noreferrer">{t('notify.openLink')}</a></> : null}
+                    {CONNECTION_NOTIFICATION_KINDS.includes(item.kind) ? <> · <a href="#connections" onClick={() => setOpen(false)}>{t('notify.checkNow')}</a></> : null}
                   </span>
                 </div>
               </div>;

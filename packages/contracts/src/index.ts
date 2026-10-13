@@ -2100,6 +2100,12 @@ export const NOTIFICATION_KINDS = [
   'diskLow',
   'cloudQuota',
   'bucketTaken',
+  'connectionKeyInvalid',
+  'connectionNoCredit',
+  'connectionLowCredit',
+  'connectionProxyDown',
+  'connectionRefused',
+  'connectionRateLimited',
   'broadcast',
 ] as const;
 export type NotificationKind = (typeof NOTIFICATION_KINDS)[number];
@@ -2150,10 +2156,11 @@ export type BridgeCommand =
 
 /**
  * The slash commands a tab will run for the manager, checked on SillyTavern
- * 1.19.0: `/profile` (connection manager), `/api`, `/model`, `/secret-id` and
- * `/theme`. Each takes one value and changes one setting the tab owns.
+ * 1.19.0: `/profile` (connection manager), `/api`, `/model`, `/secret-id`,
+ * `/proxy` (reverse proxy preset, by name) and `/theme`. Each takes one value
+ * and changes one setting the tab owns.
  */
-export const BRIDGE_SLASH_COMMANDS = ['profile', 'api', 'model', 'secret-id', 'theme'] as const;
+export const BRIDGE_SLASH_COMMANDS = ['profile', 'api', 'model', 'secret-id', 'proxy', 'theme'] as const;
 
 /**
  * Lists the page can reload from SillyTavern's server with its own functions:
@@ -2195,7 +2202,7 @@ export interface BridgeResult {
   readonly ok: boolean;
   /** What the command returned, such as the profile now selected; at most a thousand characters. */
   readonly value?: string;
-  /** Why it did not run: `not_ready`, `not_allowed`, `unsupported`, `expired`, or SillyTavern's own words. */
+  /** Why it did not run: `not_ready`, `not_allowed`, `unsupported`, `expired`, `cancelled`, or SillyTavern's own words. */
   readonly error?: string;
 }
 
@@ -2215,3 +2222,247 @@ export interface BridgeCommandStatus {
   /** How many SillyTavern tabs are connected now, so a waiting command can say why. */
   readonly tabs: number;
 }
+
+/**
+ * The keys, proxies and connection profiles SillyTavern keeps, as the
+ * Connections page shows them; see connections.ts.
+ *
+ * Read off the disk, so the page answers the same with SillyTavern stopped.
+ * A key leaves the manager only masked, a proxy's password not at all, and a
+ * proxy's or server's address without its query or credentials.
+ */
+export interface ConnectionsOverview {
+  /** False when there is no profile to read: nothing installed or restored yet. */
+  readonly profile: boolean;
+  readonly keys: readonly ConnectionKey[];
+  readonly proxies: readonly ConnectionProxy[];
+  readonly profiles: readonly ConnectionProfile[];
+  /**
+   * `secrets.json` still holds one bare key per provider, the way versions
+   * before 1.13.1 kept it. SillyTavern turns it into the list form on its
+   * next start; until then a key has no id and no label of its own.
+   */
+  readonly legacySecrets: boolean;
+  /** Files that are there and could not be read as JSON; their section is empty. */
+  readonly unreadable: readonly ('secrets' | 'settings')[];
+  /** The last test of each key, proxy and profile, by `connectionTargetKey`. */
+  readonly tests: Readonly<Record<string, ConnectionTestResult>>;
+  /** Whether SillyTavern is up, which the providers tested through it need. */
+  readonly sillyTavernRunning: boolean;
+}
+
+/** One key SillyTavern keeps for a provider. */
+export interface ConnectionKey {
+  /** The name it is filed under in `secrets.json`, such as `api_key_openrouter`. */
+  readonly secretKey: string;
+  /** The provider, which is the name without `api_key_`: `openrouter`, `claude`, `custom`. */
+  readonly provider: string;
+  /** SillyTavern's id for it; null for a key kept the old way. */
+  readonly id: string | null;
+  readonly label: string;
+  /** The first and last four characters, or only dots for a short one. */
+  readonly masked: string;
+  /** The one of its provider's keys SillyTavern uses when nothing names another. */
+  readonly active: boolean;
+  /** Ids of the connection profiles that name this key. */
+  readonly profiles: readonly string[];
+}
+
+/** A reverse proxy preset. */
+export interface ConnectionProxy {
+  readonly name: string;
+  /** Where it points, without query or credentials; null when that is not an address. */
+  readonly url: string | null;
+  readonly hasPassword: boolean;
+  /** The preset chat completion uses now. */
+  readonly selected: boolean;
+  /** Ids of the connection profiles that name this preset. */
+  readonly profiles: readonly string[];
+}
+
+/** A connection profile from SillyTavern's connection manager. */
+export interface ConnectionProfile {
+  readonly id: string;
+  readonly name: string;
+  /** `cc` for chat completion, `tc` for text completion. */
+  readonly mode: 'cc' | 'tc';
+  /** What `/api` was set to, such as `openrouter` or `koboldcpp`. */
+  readonly api: string | null;
+  readonly model: string | null;
+  /** The server address it names, shown like a proxy's. */
+  readonly apiUrl: string | null;
+  /** The proxy preset it names, when one other than None. */
+  readonly proxy: string | null;
+  readonly preset: string | null;
+  /** The key it names; null when it uses whichever key of its provider is active. */
+  readonly secretId: string | null;
+  /** That key's label, or null when it names a key that is no longer there. */
+  readonly secretLabel: string | null;
+  /** The name its provider's keys are filed under, such as `api_key_openrouter`. */
+  readonly secretKey: string | null;
+  /** The profile SillyTavern has selected. */
+  readonly selected: boolean;
+}
+
+/**
+ * Names people know providers by, for the secret names SillyTavern files keys
+ * under (without `api_key_`). One missing here is shown by its own name.
+ */
+export const CONNECTION_PROVIDER_NAMES: Readonly<Record<string, string>> = {
+  openai: 'OpenAI',
+  claude: 'Anthropic Claude',
+  openrouter: 'OpenRouter',
+  makersuite: 'Google AI Studio',
+  vertexai: 'Google Vertex AI',
+  mistralai: 'Mistral AI',
+  custom: 'Custom (OpenAI-compatible)',
+  cohere: 'Cohere',
+  deepseek: 'DeepSeek',
+  groq: 'Groq',
+  xai: 'xAI',
+  perplexity: 'Perplexity',
+  ai21: 'AI21',
+  togetherai: 'Together AI',
+  infermaticai: 'InfermaticAI',
+  dreamgen: 'DreamGen',
+  featherless: 'Featherless',
+  chutes: 'Chutes',
+  electronhub: 'Electron Hub',
+  nanogpt: 'NanoGPT',
+  aimlapi: 'AI/ML API',
+  moonshot: 'Moonshot AI',
+  fireworks: 'Fireworks AI',
+  cometapi: 'CometAPI',
+  azure_openai: 'Azure OpenAI',
+  zai: 'Z.AI',
+  siliconflow: 'SiliconFlow',
+  pollinations: 'Pollinations',
+  minimax: 'MiniMax',
+  novel: 'NovelAI',
+  horde: 'AI Horde',
+  mancer: 'Mancer',
+  ooba: 'Text Generation WebUI',
+  koboldcpp: 'KoboldCpp',
+  llamacpp: 'llama.cpp',
+  vllm: 'vLLM',
+  aphrodite: 'Aphrodite',
+  tabby: 'TabbyAPI',
+  generic: 'Generic',
+};
+
+/**
+ * The provider `/api <value>` reaches, by the name its keys are filed under.
+ *
+ * SillyTavern names each key after the source it is for, so this is the
+ * value with its aliases undone: `oai` is OpenAI, `google` is Google AI
+ * Studio, `kcpp` is KoboldCpp and `openrouter-text` is still OpenRouter.
+ */
+export function connectionApiProvider(api: string): string {
+  const aliases: Readonly<Record<string, string>> = { oai: 'openai', google: 'makersuite', kcpp: 'koboldcpp', 'openrouter-text': 'openrouter' };
+  return aliases[api] ?? api;
+}
+
+/** The provider a secret name is for: `api_key_openrouter` is `openrouter`. */
+export function providerOfSecret(secretKey: string): string {
+  return secretKey.replace(/^api_key_/u, '');
+}
+
+/** The name a provider is shown by. */
+export function connectionProviderName(provider: string): string {
+  return CONNECTION_PROVIDER_NAMES[provider] ?? provider;
+}
+
+/** What can be tested on the Connections page. */
+export type ConnectionTarget =
+  | { readonly kind: 'key'; readonly secretKey: string; readonly id: string | null }
+  | { readonly kind: 'proxy'; readonly name: string }
+  | { readonly kind: 'profile'; readonly id: string };
+
+/** The name a target's results are kept under. */
+export function connectionTargetKey(target: ConnectionTarget): string {
+  if (target.kind === 'key') return `key:${target.secretKey}:${target.id ?? ''}`;
+  if (target.kind === 'proxy') return `proxy:${target.name}`;
+  return `profile:${target.id}`;
+}
+
+/** The target a request names, if it names one. */
+export function parseConnectionTarget(value: unknown): ConnectionTarget | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const record = value as Record<string, unknown>;
+  const name = (field: unknown): field is string => typeof field === 'string' && field !== '' && field.length <= 500;
+  if (record.kind === 'key' && name(record.secretKey) && (record.id === null || name(record.id))) return { kind: 'key', secretKey: record.secretKey, id: record.id };
+  if (record.kind === 'proxy' && name(record.name)) return { kind: 'proxy', name: record.name };
+  if (record.kind === 'profile' && name(record.id)) return { kind: 'profile', id: record.id };
+  return null;
+}
+
+/**
+ * How a test went.
+ *
+ * `invalid_key` the provider refused the key; `no_credit` it has run out of
+ * credit or quota; `rate_limited` it is asked too often right now;
+ * `unreachable` nothing answered; `bad_url` something answered that is not
+ * the API; `proxy_auth` the proxy refused its password; `no_key` there is no
+ * key to test with; `needs_sillytavern` this one can only be tested through
+ * SillyTavern, which is not running; `unsupported` there is no way to test
+ * it; `unknown` anything else.
+ */
+export const CONNECTION_TEST_CODES = ['ok', 'invalid_key', 'no_credit', 'rate_limited', 'unreachable', 'bad_url', 'proxy_auth', 'no_key', 'needs_sillytavern', 'unsupported', 'unknown'] as const;
+export type ConnectionTestCode = (typeof CONNECTION_TEST_CODES)[number];
+
+export interface ConnectionTestResult {
+  readonly code: ConnectionTestCode;
+  /** `direct` from the manager to the provider; `sillytavern` through SillyTavern's own check. */
+  readonly via: 'direct' | 'sillytavern' | null;
+  /** The provider it went to, by the name its keys are filed under. */
+  readonly provider: string | null;
+  /** The provider's HTTP status, when it answered. */
+  readonly httpStatus: number | null;
+  readonly latencyMs: number | null;
+  readonly modelCount: number | null;
+  /** What is left, when the provider says. */
+  readonly balance: ConnectionBalance | null;
+  /** True when a one-token message was sent, not only the model list asked for. */
+  readonly sent: boolean;
+  readonly testedAt: string;
+}
+
+export interface ConnectionBalance {
+  readonly amount: number;
+  /** An ISO currency code, such as `USD` or `CNY`. */
+  readonly currency: string;
+}
+
+/** A model a provider lists, with what OpenRouter says about its size and price. */
+export interface ConnectionModel {
+  readonly id: string;
+  readonly name: string | null;
+  readonly contextLength: number | null;
+  /** US dollars per million prompt tokens. */
+  readonly promptPrice: number | null;
+  /** US dollars per million completion tokens. */
+  readonly completionPrice: number | null;
+}
+
+export interface ConnectionModelList {
+  readonly provider: string;
+  readonly models: readonly ConnectionModel[];
+  readonly fetchedAt: string;
+}
+
+/**
+ * The Connections page's watch; see connection-watch.ts. The daily test
+ * calls every provider with the user's keys, so it is off until turned on.
+ */
+export interface ConnectionWatchSettings {
+  readonly daily: boolean;
+  /** Below this balance, in the provider's own currency, the bell says so; null for never. */
+  readonly creditThreshold: number | null;
+  /** Hints from SillyTavern's own traffic: runs of 401 or 429 from one provider. */
+  readonly errorHints: boolean;
+  /** When the daily test last ran. */
+  readonly lastRunAt: string | null;
+}
+
+/** Notifications about connections, which the bell links to the Connections page. */
+export const CONNECTION_NOTIFICATION_KINDS: readonly NotificationKind[] = ['connectionKeyInvalid', 'connectionNoCredit', 'connectionLowCredit', 'connectionProxyDown', 'connectionRefused', 'connectionRateLimited'];

@@ -51,6 +51,7 @@ import { CLOUDFLARE_ORANGE, CloudflareMark } from './cloudflare-mark.js';
 import { bareHost, localDoorUrl, localHost, machineName, publicAddress, publicLinks, reachableAddresses, shortenHost, type PublicLink, type ReachableAddress } from './addresses.js';
 import { EmbedStage } from './embed-stage.js';
 import { ExtensionsPage } from './extensions-page.js';
+import { ConnectionsPage } from './connections-page.js';
 import { VersionSwitchCard } from './version-switch-card.js';
 import { SetupChecklist, type ChecklistItem } from './setup-checklist.js';
 import { LegalCredit, LegalDialog, LEGAL_REVISION } from './legal-dialog.js';
@@ -58,7 +59,7 @@ import { legalBundle, legalRevision, type LegalDocumentId } from '../../../packa
 
 const navigation = [
   { id: 'overview', icon: LayoutDashboard },
-  { id: 'data', icon: Database }, { id: 'extensions', icon: Puzzle }, { id: 'metrics', icon: BarChart3 },
+  { id: 'data', icon: Database }, { id: 'extensions', icon: Puzzle }, { id: 'connections', icon: KeyRound }, { id: 'metrics', icon: BarChart3 },
   { id: 'config', icon: Settings2 },
 ] as const;
 type PageId = typeof navigation[number]['id'];
@@ -2078,7 +2079,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
             {page !== 'data' && dataActivity?.label
               ? <DataActivityStrip t={t} label={dataActivity.label} step={dataActivity.step} percent={dataActivity.percent} onOpen={() => navigate('data')} />
               : null}
-            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{termuxOffer ? <TermuxOfferCard t={t} onStart={openTermuxImport} onDismiss={() => { answerTermuxOffer(true); setTermuxOfferAnswered(true); }} /> : activeInstallation?.status === 'ready' ? <BubbleOfferCard t={t} /> : null}<VersionSwitchCard t={t} fail={fail} locale={preferences.locale} csrfToken={csrfToken} onOpenExtensions={() => navigate('extensions')} />{hero}{checklist}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} hostAddress={shownHostAddress(online?.hostAddress ?? null)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} onSetAccessLink={setAccessLink} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} canBackUp={activeProfileId !== null && saver?.enabled !== true} onBackup={openBackup} onUpload={openUpload} onUploadFromPhone={phoneImport ? openPhoneUpload : undefined} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? null : page === 'extensions' ? <ExtensionsPage t={t} locale={preferences.locale} labels={tableLabels(t)} fail={fail} csrfToken={csrfToken} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} onSetAccessLink={setAccessLink} startup={startup} saver={saver} online={online} onSetAutoStart={setAutoStartSillyTavern} onSetNightlyUpdate={setNightlyUpdate} onSetSaver={setSaverMode} onSetKeepOnline={setKeepOnline} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} onEraseEverything={eraseEverything} /> : <ResourcePanel page={page} t={t} />}
+            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{termuxOffer ? <TermuxOfferCard t={t} onStart={openTermuxImport} onDismiss={() => { answerTermuxOffer(true); setTermuxOfferAnswered(true); }} /> : activeInstallation?.status === 'ready' ? <BubbleOfferCard t={t} /> : null}<VersionSwitchCard t={t} fail={fail} locale={preferences.locale} csrfToken={csrfToken} onOpenExtensions={() => navigate('extensions')} />{hero}{checklist}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} hostAddress={shownHostAddress(online?.hostAddress ?? null)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} onSetAccessLink={setAccessLink} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} canBackUp={activeProfileId !== null && saver?.enabled !== true} onBackup={openBackup} onUpload={openUpload} onUploadFromPhone={phoneImport ? openPhoneUpload : undefined} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? null : page === 'extensions' ? <ExtensionsPage t={t} locale={preferences.locale} labels={tableLabels(t)} fail={fail} csrfToken={csrfToken} /> : page === 'connections' ? <ConnectionsPage t={t} locale={preferences.locale} fail={fail} csrfToken={csrfToken} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} onSetAccessLink={setAccessLink} startup={startup} saver={saver} online={online} onSetAutoStart={setAutoStartSillyTavern} onSetNightlyUpdate={setNightlyUpdate} onSetSaver={setSaverMode} onSetKeepOnline={setKeepOnline} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} onEraseEverything={eraseEverything} /> : <ResourcePanel page={page} t={t} />}
             {/* Kept, hidden, while it has work under way, so leaving for another
                 page does not take the work's progress and its last question
                 with it; the strip above stands in for it meanwhile. */}
@@ -7946,7 +7947,7 @@ function YamlDialog({ t, open, onOpenChange, initial, busy, onApply }: { t: Tran
   </Dialog>;
 }
 
-function ResourcePanel({ page, t }: { page: Exclude<PageId, 'overview' | 'data' | 'extensions'>; t: Translate }) {
+function ResourcePanel({ page, t }: { page: Exclude<PageId, 'overview' | 'data' | 'extensions' | 'connections'>; t: Translate }) {
   const emptyMessage = { metrics: 'console.noMetrics', config: 'console.noConfiguration' } as const;
   return <Card className="resource-panel"><CardContent className="resource-empty"><p>{t(emptyMessage[page])}</p></CardContent></Card>;
 }

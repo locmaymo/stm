@@ -31,7 +31,8 @@ const MAX_MISSES = 3;
  *
  * Resolves with the tab's answer, or with `{ ok: false, error }` when the
  * manager refused the command or it expired. Rejects only when `signal` is
- * aborted or the manager cannot be reached at all.
+ * aborted or the manager cannot be reached at all; aborting also withdraws a
+ * command no tab has taken yet.
  */
 export async function runInSillyTavern(command: BridgeCommand, options: RunInSillyTavernOptions): Promise<BridgeResult> {
   const call = options.fetch ?? apiFetch;
@@ -56,8 +57,14 @@ export async function runInSillyTavern(command: BridgeCommand, options: RunInSil
     try {
       next = await call(`${COMMANDS}/${encodeURIComponent(status.id)}?wait=${WAIT_SECONDS}`, options.signal ? { signal: options.signal } : {});
     } catch (error: unknown) {
+      // Whoever asked stopped waiting: a command no tab has taken yet is
+      // withdrawn, so it does not run when a tab opens later.
+      if (options.signal?.aborted) {
+        void call(`${COMMANDS}/${encodeURIComponent(status.id)}`, { method: 'DELETE', headers: { 'x-csrf-token': options.csrfToken } }).catch(() => undefined);
+        throw error;
+      }
       // A dropped connection on a ten-minute wait is not the end of it.
-      if (options.signal?.aborted || ++misses >= MAX_MISSES) throw error;
+      if (++misses >= MAX_MISSES) throw error;
       await new Promise((resolve) => setTimeout(resolve, options.retryMs ?? 2_000));
       continue;
     }

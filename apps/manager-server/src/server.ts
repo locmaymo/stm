@@ -5,7 +5,7 @@ import { createReadStream } from 'node:fs';
 import { hostname, networkInterfaces } from 'node:os';
 import { createSocket } from 'node:dgram';
 import { extname, join, relative, resolve, sep } from 'node:path';
-import { applyQuery, BACKUP_PURPOSES, isLogEvent, availableUpdate, parseBridgeCommand, type BridgeCommandStatus, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, isConsoleStatusSection, KEEP_ONLINE_DEFAULT_MINUTES, OPERATION_JOB_KINDS, SETUP_STEPS, type AccessGatewayState, type ApiErrorBody, type BackupManifest, type BackupPurpose, type ConfigUpdateInput, type ConsoleStatus, type ConsoleStatusSection, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogPage, type LogSink, type LogSourceFilter, type LegalReview, type ManagerPorts, type ManagerUpdateStatus, type OnlineState, type PortSettings, type Profile, type ProfileLayout, type RestorePreview, type SetupChecklistState, type SetupStatus, type SetupStep, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
+import { applyQuery, BACKUP_PURPOSES, isLogEvent, availableUpdate, parseBridgeCommand, connectionProviderName, connectionTargetKey, parseConnectionTarget, providerOfSecret, type BridgeCommandStatus, type ConnectionModelList, type ConnectionTarget, type ConnectionTestResult, type ConnectionWatchSettings, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, isConsoleStatusSection, KEEP_ONLINE_DEFAULT_MINUTES, OPERATION_JOB_KINDS, SETUP_STEPS, type AccessGatewayState, type ApiErrorBody, type BackupManifest, type BackupPurpose, type ConfigUpdateInput, type ConsoleStatus, type ConsoleStatusSection, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogPage, type LogSink, type LogSourceFilter, type LegalReview, type ManagerPorts, type ManagerUpdateStatus, type OnlineState, type PortSettings, type Profile, type ProfileLayout, type RestorePreview, type SetupChecklistState, type SetupStatus, type SetupStep, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
 import { getPlatformPaths, storageDurability, storageMedium, storageReport, type PlatformPaths } from '../../../packages/platform/src/index.js';
 import { INSTALL_CANCELED, RuntimeError, RuntimeManager, type InstallationProgress } from '../../../packages/sillytavern-runtime/src/index.js';
 import { hashPassword, MIN_PASSWORD_LENGTH, validatePasscode, validatePassword, verifyPassword } from './password.js';
@@ -19,8 +19,11 @@ import { SystemStore } from './system.js';
 import { easesPolling, withholdsAddress, WorkerBudget } from './worker-budget.js';
 import { panelStaticRoot } from './bootstrap.js';
 import { ProcessSupervisor } from './supervisor.js';
-import { SillyTavernClient } from './st-client.js';
+import { SillyTavernClient, SillyTavernError } from './st-client.js';
 import { BridgeBusyError, SillyTavernBridge } from './st-bridge.js';
+import { readConnections, readStoredConnections, selectProxyOnDisk, SettingsEditError } from './connections.js';
+import { ConnectionTargetMissing, ConnectionTester, ConnectionTestStore, everyTarget, ModelCache, testTargets, type SillyTavernStatusCall } from './connection-tests.js';
+import { ConnectionWatcher, ConnectionWatchStore, MetricsTail, parseWatchSettings } from './connection-watch.js';
 import { AccessGateway } from './gateway.js';
 import { ACCESS_GATEWAY_PORT, checkSillyTavernPort, findFreePort, isPortFree, MANAGER_PORT, PortError, portWasDemanded, resolveAccessPort, resolveConsolePort, SILLYTAVERN_PORT, type ResolvedPort } from './ports.js';
 import { previewImage, previewLogo, previewManifest } from './preview.js';
@@ -49,7 +52,7 @@ import { OnlineKeeper } from './online.js';
 import { formatGibibytes, SaverMode } from './saver.js';
 import { capacityFor, checkFits, decideTrim, diskSpace, memoryGuard, roomCheck } from './headroom.js';
 import { applyManagerSettings, foreignManagerSettings, managerSettingsOffer, restoreFromBucketIfBlank, saveManagerSettings, SettingsOfferWatch, settingsOfferKey, type ManagerSettingsDeps } from './manager-settings.js';
-import type { AccessLinkKind, AccessLinkPreference, AccessLinkTarget, ExtensionErrorKind, ExtensionList, ExtensionReconnectPreview, PluginErrors, VersionSwitch, VersionSwitchStatus, ManagerSettingsOffer, ManagerSettingsRecord } from '../../../packages/contracts/src/index.js';
+import type { AccessLinkKind, AccessLinkPreference, AccessLinkTarget, ConnectionsOverview, ExtensionErrorKind, ExtensionList, ExtensionReconnectPreview, PluginErrors, VersionSwitch, VersionSwitchStatus, ManagerSettingsOffer, ManagerSettingsRecord } from '../../../packages/contracts/src/index.js';
 import { instrumentationLoaderPath } from '../../../packages/instrumentation/src/index.js';
 import { ConfigError, ConfigStore } from '../../../packages/config/src/index.js';
 import { DEFAULT_TELEMETRY_ENDPOINT, DEFAULT_TELEMETRY_ENROLLMENT_ENDPOINT, TelemetryTransport } from '../../../packages/telemetry/src/index.js';
@@ -105,6 +108,7 @@ const PROTECTED_PATHS = new Set([
   '/api/v1/preview',
   '/api/v1/preview/image',
   '/api/v1/extensions',
+  '/api/v1/connections',
   '/api/v1/auth/password',
   '/api/v1/metrics',
   '/api/v1/system',
@@ -560,6 +564,8 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   });
   // SillyTavern's own API, for what its server owns; see st-client.ts.
   const sillyTavern = new SillyTavernClient({ port: () => sillyTavernPort, status: () => supervisor.getState().status });
+  // Testing keys, proxies and profiles; see connection-tests.ts.
+  const connections = connectionServices(paths, sillyTavern);
   const tunnel = options.tunnel ?? new TunnelManager({
     paths,
     env,
@@ -862,6 +868,30 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       return releases.status().update?.version ?? null;
     },
   });
+  /*
+   * Keys and proxies watched: a daily test when it is turned on, and runs of
+   * refusals in SillyTavern's own traffic; see connection-watch.ts.
+   */
+  const connectionWatcher = new ConnectionWatcher({
+    store: connections.watch,
+    tail: new MetricsTail(metrics.filePath),
+    notify: async (finding) => { await notifications.emit(finding.kind, finding.level, { params: finding.params, dedupeKey: finding.dedupeKey, dedupeMs: finding.dedupeMs }).catch(() => undefined); },
+    testAll: async () => {
+      const profile = await profiles.getActive();
+      if (!profile) return null;
+      const stored = await readStoredConnections(userDataRoot(profile));
+      if (!('value' in stored.secrets) && !('value' in stored.settings)) return null;
+      const secrets = 'value' in stored.secrets ? stored.secrets.value : { secrets: [], legacy: false };
+      const settings = 'value' in stored.settings ? stored.settings.value : { proxies: [], selectedProxy: null, profiles: [], selectedProfile: null, oai: {} };
+      const labels = new Map(secrets.secrets.map((secret) => [`${secret.secretKey}:${secret.id ?? ''}`, secret]));
+      return (await testTargets(connections, everyTarget(secrets, settings, false), secrets, settings)).map((item) => {
+        const secret = item.target.kind === 'key' ? labels.get(`${item.target.secretKey}:${item.target.id ?? ''}`) : undefined;
+        const name = item.target.kind === 'proxy' ? item.target.name
+          : secret ? `${secret.label} (${connectionProviderName(providerOfSecret(secret.secretKey))})` : '';
+        return { ...item, name };
+      });
+    },
+  });
   // Every browser that asked to be told is told, in the language it asked in.
   const push = new WebPush({ paths });
   const extensions = extensionServices(paths, options.probationMs, (version, names) => {
@@ -1044,6 +1074,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       push,
       extensions,
       bridge,
+      connections,
       proxy,
       publishProxies,
       budget,
@@ -1185,7 +1216,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     online,
     // The meter closes first, so the part of today that has just been spent is
     // written down before the transport looks for finished days.
-    close: async () => { extensions.closing.abort(); bridge.close(); nightly.close(); online.close(); notificationRules.close(); replyNotifier.close(); announcements?.close(); await activity.close(); await telemetry.close(); await scheduler.close(); await tunnel.close(); await managerTunnel.close(); await gateway.close(); await supervisor.close(); await backups.settle(); await profiles.settle(); await closeServer(server); },
+    close: async () => { extensions.closing.abort(); bridge.close(); connectionWatcher.close(); nightly.close(); online.close(); notificationRules.close(); replyNotifier.close(); announcements?.close(); await activity.close(); await telemetry.close(); await scheduler.close(); await tunnel.close(); await managerTunnel.close(); await gateway.close(); await supervisor.close(); await backups.settle(); await profiles.settle(); await closeServer(server); },
   };
 }
 
@@ -1238,6 +1269,7 @@ async function handleRequest(options: {
   readonly extensions: ExtensionServices;
   /** Commands for an open SillyTavern tab; see st-bridge.ts. */
   readonly bridge: SillyTavernBridge;
+  readonly connections: ConnectionServices;
   readonly proxy: ProxyWorkerManager | null;
   /** Put the fixed addresses in place, for a Cloudflare account just connected. */
   readonly publishProxies: () => void;
@@ -1256,7 +1288,7 @@ async function handleRequest(options: {
   readonly autoInstall: boolean;
   readonly onShutdownRequest: (() => void) | undefined;
 }): Promise<void> {
-  const { request, response, store, sessions, rateLimiter, handoffs, startedAt, publicOrigins, proxiedOrigin, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, releases, online, notifications, push, extensions, bridge, proxy, publishProxies, budget, saver, shutdownToken, autoInstall, onShutdownRequest } = options;
+  const { request, response, store, sessions, rateLimiter, handoffs, startedAt, publicOrigins, proxiedOrigin, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, releases, online, notifications, push, extensions, bridge, connections, proxy, publishProxies, budget, saver, shutdownToken, autoInstall, onShutdownRequest } = options;
   // Whether the browser's side of this connection is HTTPS, which is not the
   // same question as whether ours is: a hosted console is reached over HTTPS
   // that a proxy terminates before us, and only the proxy's own header says so.
@@ -1562,11 +1594,233 @@ async function handleRequest(options: {
       await handleBridgeRequest(context, bridge);
       return;
     }
+    if (pathname === CONNECTIONS_API || pathname.startsWith(`${CONNECTIONS_API}/`)) {
+      await handleConnectionsRequest(context, { profiles, supervisor, bridge, connections });
+      return;
+    }
     await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, online, proxy, publishProxies, budget, logger, handoffs, saver, sessions, notifications, push, extensions);
     return;
   }
 
   sendError(response, 404, 'not_found', 'Route not found');
+}
+
+const CONNECTIONS_API = '/api/v1/connections';
+
+/*
+ * The keys, proxies and connection profiles SillyTavern keeps; see
+ * connections.ts. Read off the active profile's files, so it answers the
+ * same with SillyTavern stopped.
+ */
+async function handleConnectionsRequest(context: RequestContext, deps: { readonly profiles: ProfileStore; readonly supervisor: ProcessSupervisor; readonly bridge: SillyTavernBridge; readonly connections: ConnectionServices }): Promise<void> {
+  const { pathname, request, response, searchParams } = context;
+  const { profiles, supervisor, bridge, connections } = deps;
+  const method = request.method ?? 'GET';
+  const userRoot = async (): Promise<string | null> => {
+    const profile = await profiles.getActive();
+    return profile ? userDataRoot(profile) : null;
+  };
+  if (pathname === CONNECTIONS_API && method === 'GET') {
+    sendJson(response, 200, {
+      ...await readConnections(await userRoot()),
+      tests: await connections.results.all(),
+      sillyTavernRunning: supervisor.getState().status === 'running',
+    } satisfies ConnectionsOverview);
+    return;
+  }
+  /*
+   * Test one key, proxy or profile, or all of them.
+   *
+   * The files are read again for every test, so a key added in SillyTavern a
+   * second ago is the one tested. A one-token message goes out only when the
+   * request names the model to send it to.
+   */
+  if ((pathname === `${CONNECTIONS_API}/test` || pathname === `${CONNECTIONS_API}/test-all`) && method === 'POST') {
+    const root = await userRoot();
+    if (!root) { sendError(response, 409, 'no_profile', 'There is no SillyTavern data to test yet'); return; }
+    const body = await readJson(request);
+    const all = pathname.endsWith('/test-all');
+    const target = all ? null : parseConnectionTarget(isRecord(body) ? body.target : null);
+    if (!all && !target) { sendError(response, 400, 'invalid_input', 'Name a key, proxy or profile to test'); return; }
+    const send = isRecord(body) && isRecord(body.send) ? body.send.model : undefined;
+    const sendModel = typeof send === 'string' && send.trim() !== '' && send.length <= 300 ? send.trim() : null;
+    if (connections.running) { sendError(response, 409, 'connection_tests_running', 'A test of every connection is already running'); return; }
+    const stored = await readStoredConnections(root);
+    const secrets = 'value' in stored.secrets ? stored.secrets.value : { secrets: [], legacy: false };
+    const settings = 'value' in stored.settings ? stored.settings.value : { proxies: [], selectedProxy: null, profiles: [], selectedProfile: null, oai: {} };
+    const run = async (item: ConnectionTarget, model: string | null): Promise<ConnectionTestResult> => {
+      const outcome = await connections.tester.test(item, secrets, settings, model ? { send: { model } } : {});
+      await connections.results.set(item, outcome.result);
+      if (outcome.models) connections.models.set(item, outcome.result.provider, outcome.models);
+      return outcome.result;
+    };
+    if (target) {
+      try {
+        sendJson(response, 200, { result: await run(target, sendModel) });
+      } catch (error: unknown) {
+        if (error instanceof ConnectionTargetMissing) { sendError(response, 404, error.code, error.message); return; }
+        throw error;
+      }
+      return;
+    }
+    connections.running = true;
+    try {
+      const tested = await testTargets(connections, everyTarget(secrets, settings, true), secrets, settings);
+      sendJson(response, 200, { tests: Object.fromEntries(tested.map((item) => [connectionTargetKey(item.target), item.result])) });
+    } finally {
+      connections.running = false;
+    }
+    return;
+  }
+  /*
+   * Adding, renaming, removing and choosing keys, through SillyTavern's own
+   * secrets API: `secrets.json` is its server's file, and that API is what
+   * the page's own key manager calls. So SillyTavern has to be running.
+   *
+   * A key's value comes in only to be added and goes straight on to
+   * SillyTavern; it is never logged, kept or sent back.
+   */
+  const keyAction = /^\/api\/v1\/connections\/keys(?:\/(rename|delete|activate))?$/u.exec(pathname);
+  if (keyAction && method === 'POST') {
+    const root = await userRoot();
+    if (!root) { sendError(response, 409, 'no_profile', 'There is no SillyTavern data yet'); return; }
+    const body = await readJson(request);
+    const field = (name: string, max: number): string | null => {
+      const value = isRecord(body) ? body[name] : undefined;
+      return typeof value === 'string' && value.trim() !== '' && value.length <= max ? value.trim() : null;
+    };
+    const secretKey = field('secretKey', 100);
+    if (!secretKey || !/^[a-z0-9_]+$/iu.test(secretKey)) { sendError(response, 400, 'invalid_input', 'Name the key name, such as api_key_openrouter'); return; }
+    const action = keyAction[1] ?? 'add';
+    try {
+      if (action === 'add') {
+        const value = field('value', 20_000);
+        const label = field('label', 100);
+        if (!secretKey.startsWith('api_key_') || !value || !label) { sendError(response, 400, 'invalid_input', 'A provider, a label and the key are needed'); return; }
+        sendJson(response, 200, { id: await connections.sillyTavern.writeSecret(secretKey, value, label) });
+        return;
+      }
+      const id = field('id', 200);
+      const stored = await readStoredConnections(root);
+      const exists = id !== null && 'value' in stored.secrets && stored.secrets.value.secrets.some((secret) => secret.secretKey === secretKey && secret.id === id);
+      if (!id || !exists) { sendError(response, 404, 'connection_target_missing', 'That key is no longer in SillyTavern'); return; }
+      if (action === 'rename') {
+        const label = field('label', 100);
+        if (!label) { sendError(response, 400, 'invalid_input', 'A label is needed'); return; }
+        await connections.sillyTavern.renameSecret(secretKey, id, label);
+      } else if (action === 'activate') {
+        await connections.sillyTavern.rotateSecret(secretKey, id);
+      } else {
+        await connections.sillyTavern.deleteSecret(secretKey, id);
+        await connections.results.forget({ kind: 'key', secretKey, id });
+      }
+      sendJson(response, 200, { ok: true });
+    } catch (error: unknown) {
+      if (error instanceof SillyTavernError) { sendSillyTavernError(response, error); return; }
+      throw error;
+    }
+    return;
+  }
+  /*
+   * Choosing a proxy preset with SillyTavern stopped.
+   *
+   * With it running the open tab owns `settings.json` and is asked instead,
+   * through the bridge; see selectProxyOnDisk. A tab can stay open while
+   * SillyTavern is stopped, and would save its own idea of the settings when
+   * it comes back, so the answer says whether one is, for the page to ask
+   * for it to be reloaded.
+   */
+  if (pathname === `${CONNECTIONS_API}/proxies/select` && method === 'POST') {
+    const root = await userRoot();
+    if (!root) { sendError(response, 409, 'no_profile', 'There is no SillyTavern data yet'); return; }
+    const body = await readJson(request);
+    const name = isRecord(body) && typeof body.name === 'string' && body.name !== '' && body.name.length <= 500 ? body.name : null;
+    if (!name) { sendError(response, 400, 'invalid_input', 'Name the proxy preset'); return; }
+    const status = supervisor.getState().status;
+    if (status !== 'stopped' && status !== 'error') { sendError(response, 409, 'st_running', 'SillyTavern is running; the open tab chooses the proxy'); return; }
+    try {
+      await selectProxyOnDisk(root, name);
+    } catch (error: unknown) {
+      if (error instanceof SettingsEditError) { sendError(response, error.code === 'proxy_missing' ? 404 : 409, error.code, error.message); return; }
+      throw error;
+    }
+    sendJson(response, 200, { ok: true, tabsOpen: bridge.summary().tabs > 0 });
+    return;
+  }
+  // The watch's switches; see connection-watch.ts.
+  if (pathname === `${CONNECTIONS_API}/watch` && (method === 'GET' || method === 'PUT')) {
+    if (method === 'GET') { sendJson(response, 200, await connections.watch.get() satisfies ConnectionWatchSettings); return; }
+    const body = await readJson(request);
+    const current = await connections.watch.get();
+    const wanted = isRecord(body) ? parseWatchSettings({ ...current, ...body, lastRunAt: current.lastRunAt }) : null;
+    const wrong = !isRecord(body)
+      || (body.daily !== undefined && typeof body.daily !== 'boolean')
+      || (body.errorHints !== undefined && typeof body.errorHints !== 'boolean')
+      || (body.creditThreshold !== undefined && body.creditThreshold !== null && wanted?.creditThreshold === null);
+    if (!wanted || wrong) {
+      sendError(response, 400, 'invalid_input', 'daily and errorHints are true or false; creditThreshold is a number from 0, or null');
+      return;
+    }
+    sendJson(response, 200, await connections.watch.update(wanted) satisfies ConnectionWatchSettings);
+    return;
+  }
+  // The models a target's last test brought back, while they are kept.
+  if (pathname === `${CONNECTIONS_API}/models` && method === 'GET') {
+    const target = parseConnectionTarget({ kind: searchParams.get('kind'), secretKey: searchParams.get('secretKey'), id: searchParams.get('id'), name: searchParams.get('name') });
+    if (!target) { sendError(response, 400, 'invalid_input', 'Name a key, proxy or profile'); return; }
+    const list = connections.models.get(target);
+    if (!list) { sendError(response, 404, 'models_not_cached', 'Test it to see its models'); return; }
+    sendJson(response, 200, list satisfies ConnectionModelList);
+    return;
+  }
+  sendError(response, 404, 'not_found', 'Route not found');
+}
+
+/** A refusal from SillyTavern's own API, as the console reads it. */
+function sendSillyTavernError(response: ServerResponse, error: SillyTavernError): void {
+  if (error.code === 'st_not_running') { sendError(response, 409, error.code, 'SillyTavern is not running; start it and try again'); return; }
+  if (error.code === 'st_accounts_enabled') { sendError(response, 409, error.code, error.message); return; }
+  sendError(response, 502, error.code, error.message);
+}
+
+/** How many targets "test all" asks about at once. */
+const CONNECTION_TEST_CONCURRENCY = 3;
+
+interface ConnectionServices {
+  readonly tester: ConnectionTester;
+  readonly results: ConnectionTestStore;
+  readonly models: ModelCache;
+  /** The daily test's and the error hints' switches. */
+  readonly watch: ConnectionWatchStore;
+  /** SillyTavern's own API, for changing keys. */
+  readonly sillyTavern: SillyTavernClient;
+  /** A test of every connection is under way. */
+  running: boolean;
+}
+
+function connectionServices(paths: PlatformPaths, sillyTavern: SillyTavernClient): ConnectionServices {
+  // SillyTavern's own check, asked only when it is already up: a test is not
+  // a reason to wait for one that is starting.
+  const status: SillyTavernStatusCall = async (path, body) => {
+    try {
+      const answer = await sillyTavern.request('POST', path, { body, readyTimeoutMs: 0 });
+      return { status: answer.status, body: await answer.json().catch(() => null) as unknown };
+    } catch (error: unknown) {
+      if (error instanceof SillyTavernError) {
+        if (error.code === 'st_not_running') return 'not_running';
+        if (error.status !== null) return { status: error.status, body: null };
+      }
+      throw error;
+    }
+  };
+  return {
+    tester: new ConnectionTester({ sillyTavern: status }),
+    results: new ConnectionTestStore(paths),
+    models: new ModelCache(),
+    watch: new ConnectionWatchStore(paths),
+    sillyTavern,
+    running: false,
+  };
 }
 
 const BRIDGE_API_PREFIX = '/api/v1/sillytavern/bridge';
@@ -1608,6 +1862,10 @@ async function handleBridgeRequest(context: RequestContext, bridge: SillyTavernB
     const status = await bridge.wait(match[1] ?? '', wait, gone.signal);
     if (!status) { sendError(response, 404, 'command_not_found', 'No such command'); return; }
     if (!response.destroyed) sendJson(response, 200, status satisfies BridgeCommandStatus);
+    return;
+  }
+  if (match && method === 'DELETE') {
+    sendJson(response, 200, { cancelled: bridge.cancel(match[1] ?? '') });
     return;
   }
   sendError(response, 404, 'not_found', 'Route not found');
@@ -4822,6 +5080,7 @@ function isProtectedPath(pathname: string): boolean {
     || pathname.startsWith('/api/v1/r2/')
     || pathname.startsWith('/api/v1/config/')
     || pathname.startsWith('/api/v1/extensions/')
+    || pathname.startsWith('/api/v1/connections/')
     || pathname.startsWith('/api/v1/sillytavern/');
 }
 
