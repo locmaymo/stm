@@ -48,7 +48,7 @@ import { POLL_BACKGROUND_MS, POLL_RELEASE_MS, statusIntervalMs } from './polling
 import { foldForSearch, translateLogEntry, translateStep } from '../../../packages/contracts/src/index.js';
 import { QrCode } from './qr-code.js';
 import { CLOUDFLARE_ORANGE, CloudflareMark } from './cloudflare-mark.js';
-import { bareHost, localHost, machineName, publicAddress, publicLinks, reachableAddresses, shortenHost, type PublicLink, type ReachableAddress } from './addresses.js';
+import { bareHost, localDoorUrl, localHost, machineName, publicAddress, publicLinks, reachableAddresses, shortenHost, type PublicLink, type ReachableAddress } from './addresses.js';
 import { EmbedStage } from './embed-stage.js';
 import { ExtensionsPage } from './extensions-page.js';
 import { VersionSwitchCard } from './version-switch-card.js';
@@ -2867,7 +2867,39 @@ function RuntimeCard({
    */
   const primary = addresses[0] ?? null;
   const otherCount = Math.max(0, addresses.length - 1);
-  const openPrimary = () => { if (primary) window.open(primary.url, '_blank', 'noopener,noreferrer'); };
+  /*
+   * A tab on the door's port of this machine, signed in by the console.
+   *
+   * The tab is opened before anything is awaited, while the press still counts
+   * as one, and pointed at its address once the door has given a session; a
+   * browser that will not open one gets this page sent there instead. With a
+   * `fallback`, a door that gives no session sends it there rather than to a
+   * sign-in page asking for a PIN that may not exist.
+   */
+  const openThroughDoor = async (path: string, fallback: string | null) => {
+    const target = localDoorUrl(window.location.hostname, security.port, path);
+    const tab = window.open('about:blank', '_blank');
+    if (tab) tab.opener = null;
+    let signedIn = false;
+    if (csrfToken) {
+      try { signedIn = (await apiFetch('/api/v1/access/embed-session', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } })).ok; } catch { /* the fallback, or the door's own sign-in */ }
+    }
+    const destination = signedIn || fallback === null ? target : fallback;
+    if (tab) tab.location.href = destination;
+    else window.location.assign(destination);
+  };
+  /*
+   * On this machine the best address is SillyTavern's own port, and a page
+   * opened there never sees the door - so it gets none of the manager's
+   * scripts, and the console cannot ask it to switch a profile. The button
+   * opens it through the door instead; the address shown stays SillyTavern's
+   * own, which is where it can still be reached without the console.
+   */
+  const openPrimary = () => {
+    if (!primary) return;
+    if (primary.kind === 'local') { void openThroughDoor('/', primary.url); return; }
+    window.open(primary.url, '_blank', 'noopener,noreferrer');
+  };
   /*
    * SillyTavern in a tab of its own, with the tools window around it.
    *
@@ -2875,24 +2907,17 @@ function RuntimeCard({
    * it goes wherever the best address goes - except on this machine, where
    * that address is SillyTavern's own port and the window is on the door's.
    * There the console signs the tab in first, the way the embedded view is
-   * signed in: the cookie is host-scoped, and cookies ignore ports.
-   *
-   * The tab is opened before anything is awaited, while the press still
-   * counts as one, and pointed at the window once it is ready.
+   * signed in: the cookie is host-scoped, and cookies ignore ports. Without a
+   * session the door asks for the PIN, which is why one is set first.
    */
   const openTools = async () => {
     if (!primary) return;
     if (!security.passwordConfigured) { setAfterPasscode('tools'); setPasscodeAsked(true); return; }
-    const local = primary.kind === 'local';
-    const target = local
-      ? `http://${window.location.hostname}:${security.port}/__stm/window`
-      : `${primary.url.replace(/\/$/u, '')}/__stm/window`;
+    if (primary.kind === 'local') { await openThroughDoor('/__stm/window', null); return; }
+    const target = `${primary.url.replace(/\/$/u, '')}/__stm/window`;
     const tab = window.open('about:blank', '_blank');
     if (!tab) { window.location.assign(target); return; }
     tab.opener = null;
-    if (local && csrfToken) {
-      try { await apiFetch('/api/v1/access/embed-session', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } }); } catch { /* the door asks for the PIN instead */ }
-    }
     tab.location.href = target;
   };
   // A phone cannot open this machine's loopback address, so the code is only

@@ -2133,3 +2133,85 @@ export interface NotificationSummary {
   readonly unread: number;
   readonly latestId: string | null;
 }
+
+/**
+ * What the manager may ask an open SillyTavern tab to do; see st-bridge.ts.
+ *
+ * State the tab owns - the active connection profile, API, model, key, theme -
+ * is held in the page's memory and saved whole, so it is changed through the
+ * page or not at all while a tab is open. These are the only things the
+ * manager can ask of one: a slash command from the list below, or a reload of
+ * a list whose files changed on disk. Never arbitrary JavaScript, never a
+ * script of several commands.
+ */
+export type BridgeCommand =
+  | { readonly kind: 'slash'; readonly command: string }
+  | { readonly kind: 'refresh'; readonly what: BridgeRefresh };
+
+/**
+ * The slash commands a tab will run for the manager, checked on SillyTavern
+ * 1.19.0: `/profile` (connection manager), `/api`, `/model`, `/secret-id` and
+ * `/theme`. Each takes one value and changes one setting the tab owns.
+ */
+export const BRIDGE_SLASH_COMMANDS = ['profile', 'api', 'model', 'secret-id', 'theme'] as const;
+
+/**
+ * Lists the page can reload from SillyTavern's server with its own functions:
+ * `getCharacters()` and `updateWorldInfoList()` on 1.19.0. Presets and themes
+ * have no such function in the page's context there; the scope that needs
+ * them adds them once it has found a way that version supports.
+ */
+export const BRIDGE_REFRESH = ['characters', 'worlds'] as const;
+export type BridgeRefresh = (typeof BRIDGE_REFRESH)[number];
+
+/** Longest slash command accepted: one setting's name, not a script. */
+export const BRIDGE_SLASH_MAX = 500;
+
+/**
+ * The command, if it is one a tab may be asked to run; null otherwise.
+ *
+ * A slash command is one command from the list with its value, and nothing
+ * that would make it more than that: no pipe to a second command, no line
+ * break, no macro and no closure.
+ */
+export function parseBridgeCommand(value: unknown): BridgeCommand | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const record = value as Record<string, unknown>;
+  if (record.kind === 'refresh') {
+    return typeof record.what === 'string' && (BRIDGE_REFRESH as readonly string[]).includes(record.what)
+      ? { kind: 'refresh', what: record.what as BridgeRefresh }
+      : null;
+  }
+  if (record.kind !== 'slash' || typeof record.command !== 'string') return null;
+  const command = record.command.trim();
+  if (command.length > BRIDGE_SLASH_MAX || /[|\r\n]|\{\{|\{:|:\}/u.test(command)) return null;
+  const name = /^\/([a-z][a-z0-9-]*)(?=\s|$)/iu.exec(command)?.[1]?.toLowerCase();
+  if (!name || !(BRIDGE_SLASH_COMMANDS as readonly string[]).includes(name)) return null;
+  return { kind: 'slash', command };
+}
+
+/** What a tab said when it had run a command. */
+export interface BridgeResult {
+  readonly ok: boolean;
+  /** What the command returned, such as the profile now selected; at most a thousand characters. */
+  readonly value?: string;
+  /** Why it did not run: `not_ready`, `not_allowed`, `unsupported`, `expired`, or SillyTavern's own words. */
+  readonly error?: string;
+}
+
+/**
+ * Where a command is.
+ *
+ * `waiting` is for a tab to take it: none is open, or none has asked yet.
+ * `delivered` is with a tab. `done` has a result. `expired` waited ten
+ * minutes for a tab that never came, or for an answer that never did.
+ */
+export type BridgeCommandState = 'waiting' | 'delivered' | 'done' | 'expired';
+
+export interface BridgeCommandStatus {
+  readonly id: string;
+  readonly state: BridgeCommandState;
+  readonly result: BridgeResult | null;
+  /** How many SillyTavern tabs are connected now, so a waiting command can say why. */
+  readonly tabs: number;
+}
