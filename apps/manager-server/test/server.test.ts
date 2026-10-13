@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { getPlatformPaths } from '../../../packages/platform/src/index.js';
 import { StateStore } from '../src/state.js';
 import { preferredNetworkHost, startManagerServer, type ManagerServer } from '../src/server.js';
-import type { AccessGatewayState, ApiErrorBody, ConsoleStatus, Installation, LegalReview, ManagerUpdateStatus, OnlineState, ProcessState, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, ApiErrorBody, ConsoleStatus, ExtensionList, Installation, LegalReview, ManagerUpdateStatus, OnlineState, ProcessState, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { LEGAL_META } from '../../../packages/legal/src/index.js';
 import type { WorkerBudget, WorkerBudgetLevel } from '../src/worker-budget.js';
 import { hashPassword } from '../src/password.js';
@@ -787,6 +787,35 @@ test('installing a new version rebinds the active data profile and keeps its fil
   assert.equal(after?.installationId, newInstallation.id);
   assert.equal(after?.dataPath, profile.dataPath);
   assert.equal(await readFile(join(profile.dataPath, 'chat.json'), 'utf8'), '{"message":"keep"}');
+});
+
+test('the extension list reads the active profile and the installed copy, and needs a session', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-extensions-api-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const runtimePath = join(root, 'runtime');
+  const globalRoot = join(runtimePath, 'public', 'scripts', 'extensions', 'third-party');
+  await mkdir(join(globalRoot, 'Shared'), { recursive: true });
+  await writeFile(join(globalRoot, 'Shared', 'manifest.json'), JSON.stringify({ display_name: 'Shared One' }));
+  const now = new Date().toISOString();
+  const installation: Installation = { id: 'install-one', selector: 'latest', resolvedRef: '1.0.0', channel: 'release', runtimePath, markerPath: join(runtimePath, '.stm-installation.json'), status: 'ready', progress: 100, step: 'Installation ready', error: null, createdAt: now, updatedAt: now, activatedAt: now };
+  const fakeRuntime = {
+    listVersions: async () => [], listInstallations: async () => [installation], getActiveInstallation: async () => installation,
+    getInstallation: async (id: string) => id === installation.id ? installation : null,
+  } as unknown as RuntimeManager;
+  const manager = await startManagerServer({ host: '127.0.0.1', port: 0, paths, env: { STM_ADMIN_PASSWORD: 'correct horse battery staple' }, secureCookies: false,
+    accessPort: 0, runtime: fakeRuntime, logger: () => undefined });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  assert.equal((await fetch(`${base}/api/v1/extensions`)).status, 401);
+  const { cookie } = await signIn(base);
+  const profile = (await (await fetch(`${base}/api/v1/profiles`, { headers: { cookie } })).json() as { profiles: Array<{ dataPath: string }> }).profiles[0];
+  assert.ok(profile);
+  await mkdir(join(profile.dataPath, 'default-user', 'extensions', 'Mine'), { recursive: true });
+  await writeFile(join(profile.dataPath, 'default-user', 'extensions', 'Mine', 'manifest.json'), JSON.stringify({ display_name: 'Mine' }));
+  const response = await fetch(`${base}/api/v1/extensions`, { headers: { cookie } });
+  assert.equal(response.status, 200);
+  const list = await response.json() as ExtensionList;
+  assert.deepEqual(list.extensions.map((item) => [item.scope, item.displayName]), [['user', 'Mine'], ['global', 'Shared One']]);
 });
 
 test('a reinstall installs the same release again, from scratch', async (t) => {

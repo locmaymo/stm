@@ -22,6 +22,7 @@ import { ProcessSupervisor } from './supervisor.js';
 import { AccessGateway } from './gateway.js';
 import { ACCESS_GATEWAY_PORT, checkSillyTavernPort, findFreePort, isPortFree, MANAGER_PORT, PortError, portWasDemanded, resolveAccessPort, resolveConsolePort, SILLYTAVERN_PORT, type ResolvedPort } from './ports.js';
 import { previewImage, previewLogo, previewManifest } from './preview.js';
+import { listExtensions } from './extensions.js';
 import { TunnelManager } from '../../../packages/tunnel/src/index.js';
 import { isWaitingProfile, ProfileError, ProfileStore } from '../../../packages/profiles/src/index.js';
 import { BackupError, BackupStore, MAX_ZIP_DIRECTORY_BYTES, type RestoreOptions } from '../../../packages/backup/src/index.js';
@@ -41,7 +42,7 @@ import { OnlineKeeper } from './online.js';
 import { formatGibibytes, SaverMode } from './saver.js';
 import { capacityFor, checkFits, decideTrim, diskSpace, memoryGuard, roomCheck } from './headroom.js';
 import { applyManagerSettings, foreignManagerSettings, managerSettingsOffer, restoreFromBucketIfBlank, saveManagerSettings, SettingsOfferWatch, settingsOfferKey, type ManagerSettingsDeps } from './manager-settings.js';
-import type { AccessLinkKind, AccessLinkPreference, AccessLinkTarget, ManagerSettingsOffer, ManagerSettingsRecord } from '../../../packages/contracts/src/index.js';
+import type { AccessLinkKind, AccessLinkPreference, AccessLinkTarget, ExtensionList, ManagerSettingsOffer, ManagerSettingsRecord } from '../../../packages/contracts/src/index.js';
 import { instrumentationLoaderPath } from '../../../packages/instrumentation/src/index.js';
 import { ConfigError, ConfigStore } from '../../../packages/config/src/index.js';
 import { DEFAULT_TELEMETRY_ENDPOINT, DEFAULT_TELEMETRY_ENROLLMENT_ENDPOINT, TelemetryTransport } from '../../../packages/telemetry/src/index.js';
@@ -96,6 +97,7 @@ const PROTECTED_PATHS = new Set([
   '/api/v1/access/links',
   '/api/v1/preview',
   '/api/v1/preview/image',
+  '/api/v1/extensions',
   '/api/v1/auth/password',
   '/api/v1/metrics',
   '/api/v1/system',
@@ -1911,6 +1913,20 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     const profile = await profiles.getActive();
     if (!profile) { sendJson(response, 200, { background: null, theme: null, recent: [] }); return; }
     sendJson(response, 200, await previewManifest(userDataRoot(profile)));
+    return;
+  }
+  /*
+   * The third-party extensions the active profile runs, read off the disk.
+   *
+   * Read-only, and SillyTavern is never asked, so this answers the same
+   * whether it is running or not.
+   */
+  if (pathname === '/api/v1/extensions' && method === 'GET') {
+    const [profile, installation] = await Promise.all([profiles.getActive(), runtime.getActiveInstallation()]);
+    sendJson(response, 200, await listExtensions({
+      userRoot: profile ? userDataRoot(profile) : null,
+      runtimeRoot: installation?.status === 'ready' ? installation.runtimePath : null,
+    }) satisfies ExtensionList);
     return;
   }
   if (pathname === '/api/v1/preview/image' && method === 'GET') {

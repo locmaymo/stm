@@ -403,6 +403,60 @@ export interface Profile {
   readonly activatedAt: string | null;
 }
 
+/**
+ * Where a third-party extension lives.
+ *
+ * `user` is inside the profile, so it travels with backups; `global` is inside
+ * the installed copy of SillyTavern, shared by every profile and in no backup.
+ */
+export type ExtensionScope = 'user' | 'global';
+
+/** What git says about an extension that was cloned rather than copied. */
+export interface ExtensionGit {
+  /** Where updates come from, with any user name or token taken out. */
+  readonly remote: string | null;
+  /** Null when the checkout is not on a branch. */
+  readonly branch: string | null;
+  readonly commit: string;
+  readonly committedAt: string | null;
+}
+
+export interface ExtensionInfo {
+  /** The folder name, which is what SillyTavern calls it. */
+  readonly name: string;
+  /** As SillyTavern writes it in its list of disabled extensions: `third-party/<name>`. */
+  readonly key: string;
+  readonly scope: ExtensionScope;
+  /** The manifest's `display_name`, or the folder name when it has none. */
+  readonly displayName: string;
+  readonly version: string | null;
+  readonly author: string | null;
+  /** Only ever an http or https address. */
+  readonly homePage: string | null;
+  readonly enabled: boolean;
+  /**
+   * A global extension with a user one of the same name beside it.
+   *
+   * SillyTavern loads the user one and never this, so its version and its
+   * switch say nothing about what runs.
+   */
+  readonly shadowed: boolean;
+  /** Bytes of the extension itself, its git history included. */
+  readonly bytes: number;
+  /** Bytes under `node_modules`, which some extensions bring and none need backed up. */
+  readonly dependencyBytes: number;
+  /** Whether the folder is a git checkout of its own, which is what an update needs. */
+  readonly hasGit: boolean;
+  /** Null without a checkout, or when git could not read it. */
+  readonly git: ExtensionGit | null;
+}
+
+export interface ExtensionList {
+  readonly extensions: readonly ExtensionInfo[];
+  /** False when git could not be run here; then no extension has git details. */
+  readonly gitAvailable: boolean;
+}
+
 export type RestoreMode = 'merge' | 'replace';
 
 export type BackupSource = 'created' | 'uploaded';
