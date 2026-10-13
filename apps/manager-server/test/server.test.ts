@@ -893,6 +893,76 @@ test('extensions are checked, updated and rolled back as jobs, one at a time', {
   assert.equal(refused.errorCode, 'extension_no_rollback', 'a refusal keeps its code for the panel to translate');
 });
 
+test('an extension is removed to the trash, put back, and switched off with SillyTavern stopped for the edit', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-extension-changes-api-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const runtimePath = join(root, 'runtime');
+  await mkdir(runtimePath, { recursive: true });
+  const now = new Date().toISOString();
+  const installation: Installation = { id: 'install-one', selector: 'latest', resolvedRef: '1.0.0', channel: 'release', runtimePath, markerPath: join(runtimePath, '.stm-installation.json'), status: 'ready', progress: 100, step: 'Installation ready', error: null, createdAt: now, updatedAt: now, activatedAt: now };
+  const fakeRuntime = { listVersions: async () => [], listInstallations: async () => [installation], getActiveInstallation: async () => installation, getInstallation: async () => installation } as unknown as RuntimeManager;
+  const calls: string[] = [];
+  let processState: ProcessState = { status: 'running', installationId: installation.id, profileId: null, pid: 1, startedAt: now, error: null };
+  const fakeSupervisor = {
+    getState: () => processState,
+    start: async () => { calls.push('start'); processState = { ...processState, status: 'running' }; return processState; },
+    stop: async (reason: string) => { calls.push(`stop:${reason}`); processState = { ...processState, status: 'stopped' }; return processState; },
+    restart: async () => processState,
+    close: async () => undefined,
+  } as unknown as ProcessSupervisor;
+  const manager = await startManagerServer({ host: '127.0.0.1', port: 0, paths, env: { STM_ADMIN_PASSWORD: 'correct horse battery staple' }, secureCookies: false, accessPort: 0, runtime: fakeRuntime, supervisor: fakeSupervisor, logger: () => undefined });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const { cookie, csrfToken } = await signIn(base);
+  const profile = (await (await fetch(`${base}/api/v1/profiles`, { headers: { cookie } })).json() as { profiles: Array<{ dataPath: string }> }).profiles[0];
+  assert.ok(profile);
+  const userRoot = join(profile.dataPath, 'default-user');
+  await mkdir(join(userRoot, 'extensions', 'Notes'), { recursive: true });
+  await writeFile(join(userRoot, 'extensions', 'Notes', 'manifest.json'), JSON.stringify({ display_name: 'Notes', homePage: 'https://example.com/owner/notes' }));
+  const settings = JSON.stringify({ firstRun: false, extension_settings: { disabledExtensions: [] } }, null, 4);
+  await writeFile(join(userRoot, 'settings.json'), settings);
+  const post = (action: string, body: unknown) => fetch(`${base}/api/v1/extensions/${action}`, { method: 'POST', headers: { cookie, 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify(body) });
+  const list = async () => await (await fetch(`${base}/api/v1/extensions`, { headers: { cookie } })).json() as ExtensionList;
+  const settle = async (response: Response): Promise<Job> => {
+    assert.equal(response.status, 202);
+    const { job } = await response.json() as { job: Job };
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      const current = await (await fetch(`${base}/api/v1/jobs/${job.id}`, { headers: { cookie } })).json() as Job;
+      if (current.state !== 'running') return current;
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+    }
+    throw new Error('the job did not finish');
+  };
+
+  // Off: stopped for the edit, started again, and only the list changed.
+  calls.length = 0;
+  assert.equal((await settle(await post('enable', { scope: 'user', name: 'Notes', enabled: false }))).state, 'succeeded');
+  assert.deepEqual(calls, ['stop:extensionChange', 'start']);
+  const expected = JSON.parse(settings) as { extension_settings: { disabledExtensions: string[] } };
+  expected.extension_settings.disabledExtensions.push('third-party/Notes');
+  assert.equal(await readFile(join(userRoot, 'settings.json'), 'utf8'), JSON.stringify(expected, null, 4));
+  assert.equal((await list()).extensions[0]?.enabled, false);
+
+  // Install refuses what it cannot safely clone, before anything starts.
+  const insecure = await post('install', { url: 'http://example.com/owner/other' });
+  assert.equal(insecure.status, 400);
+  assert.equal((await insecure.json() as ApiErrorBody).error.code, 'extension_url_scheme');
+  const taken = await post('install', { url: 'https://example.com/owner/Notes.git' });
+  assert.equal((await taken.json() as ApiErrorBody).error.code, 'extension_exists');
+
+  // Removed is moved, not deleted, and goes back on request.
+  const removed = await post('remove', { scope: 'user', name: 'Notes' });
+  assert.equal(removed.status, 200);
+  const afterRemove = await list();
+  assert.deepEqual(afterRemove.extensions, []);
+  assert.equal(afterRemove.trash[0]?.name, 'Notes');
+  assert.equal((await post('restore', { id: '../../settings' })).status, 404);
+  assert.equal((await post('restore', { id: afterRemove.trash[0]!.id })).status, 200);
+  const afterRestore = await list();
+  assert.equal(afterRestore.extensions[0]?.name, 'Notes');
+  assert.deepEqual(afterRestore.trash, []);
+});
+
 test('a reinstall installs the same release again, from scratch', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'stm-reinstall-'));
   const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });

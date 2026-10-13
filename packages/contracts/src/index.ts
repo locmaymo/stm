@@ -474,6 +474,40 @@ export interface ExtensionList {
   readonly checkedAt: string | null;
   /** The extension job that is running, for a page that did not start it. */
   readonly job: Job | null;
+  /** Extensions removed in the last week, newest first, which can still be put back. */
+  readonly trash: readonly ExtensionTrashItem[];
+}
+
+export interface ExtensionTrashItem {
+  readonly id: string;
+  readonly name: string;
+  readonly displayName: string;
+  readonly scope: ExtensionScope;
+  readonly removedAt: string;
+  /** When the trash deletes it for good. */
+  readonly expiresAt: string;
+  readonly bytes: number;
+}
+
+/**
+ * What reconnecting an extension to its source would change, before it does.
+ *
+ * An extension restored from a backup has its files and no git history. A
+ * fresh clone of its home page is compared with what is there, and only
+ * replaces it when the reader has seen this and agreed.
+ */
+export interface ExtensionReconnectPreview {
+  readonly id: string;
+  readonly scope: ExtensionScope;
+  readonly name: string;
+  readonly displayName: string;
+  readonly url: string;
+  readonly added: number;
+  /** Files only the current folder has: these go to the trash with it. */
+  readonly removed: number;
+  readonly changed: number;
+  readonly unchanged: number;
+  readonly samples: { readonly added: readonly string[]; readonly removed: readonly string[]; readonly changed: readonly string[] };
 }
 
 /** Which extension a request is about; the name alone is not enough, since both places can hold it. */
@@ -1191,6 +1225,7 @@ export type StopReason =
   | 'restore'
   | 'profileSwitch'
   | 'configChange'
+  | 'extensionChange'
   | 'passwordChange'
   | 'shutdown'
   | 'startupFailed';
@@ -1203,6 +1238,7 @@ export const STOP_REASON_TEXT: Readonly<Record<StopReason, string>> = {
   restore: 'restoring a backup',
   profileSwitch: 'switching profile',
   configChange: 'applying a configuration change',
+  extensionChange: 'switching an extension on or off',
   passwordChange: 'applying the new SillyTavern password',
   shutdown: 'the manager is shutting down',
   startupFailed: 'it did not finish starting',

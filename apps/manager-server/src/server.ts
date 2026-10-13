@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
-import { readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
+import { readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { hostname, networkInterfaces } from 'node:os';
 import { createSocket } from 'node:dgram';
@@ -24,6 +24,7 @@ import { ACCESS_GATEWAY_PORT, checkSillyTavernPort, findFreePort, isPortFree, MA
 import { previewImage, previewLogo, previewManifest } from './preview.js';
 import { canRunGit, findExtensions, type FoundExtension } from './extensions.js';
 import { ExtensionError, ExtensionUpdater } from './extension-updates.js';
+import { cloneExtension, compareFolders, ExtensionTrash, move, parseBranch, parseInstallUrl, placeExtension, setExtensionEnabled, TRASH_DAYS } from './extension-changes.js';
 import { TunnelManager } from '../../../packages/tunnel/src/index.js';
 import { isWaitingProfile, ProfileError, ProfileStore } from '../../../packages/profiles/src/index.js';
 import { BackupError, BackupStore, MAX_ZIP_DIRECTORY_BYTES, type RestoreOptions } from '../../../packages/backup/src/index.js';
@@ -43,7 +44,7 @@ import { OnlineKeeper } from './online.js';
 import { formatGibibytes, SaverMode } from './saver.js';
 import { capacityFor, checkFits, decideTrim, diskSpace, memoryGuard, roomCheck } from './headroom.js';
 import { applyManagerSettings, foreignManagerSettings, managerSettingsOffer, restoreFromBucketIfBlank, saveManagerSettings, SettingsOfferWatch, settingsOfferKey, type ManagerSettingsDeps } from './manager-settings.js';
-import type { AccessLinkKind, AccessLinkPreference, AccessLinkTarget, ExtensionList, ManagerSettingsOffer, ManagerSettingsRecord } from '../../../packages/contracts/src/index.js';
+import type { AccessLinkKind, AccessLinkPreference, AccessLinkTarget, ExtensionList, ExtensionReconnectPreview, ManagerSettingsOffer, ManagerSettingsRecord } from '../../../packages/contracts/src/index.js';
 import { instrumentationLoaderPath } from '../../../packages/instrumentation/src/index.js';
 import { ConfigError, ConfigStore } from '../../../packages/config/src/index.js';
 import { DEFAULT_TELEMETRY_ENDPOINT, DEFAULT_TELEMETRY_ENROLLMENT_ENDPOINT, TelemetryTransport } from '../../../packages/telemetry/src/index.js';
@@ -843,7 +844,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   });
   // Every browser that asked to be told is told, in the language it asked in.
   const push = new WebPush({ paths });
-  const extensionUpdater = new ExtensionUpdater({ stateDir: paths.state });
+  const extensions = extensionServices(paths);
   notifications.subscribe((notification) => { void push.deliver(notification); });
   // Replies are not in the bell - there would be one for every message - and
   // go only to browsers that subscribed from SillyTavern's page.
@@ -989,7 +990,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       online,
       notifications,
       push,
-      extensionUpdater,
+      extensions,
       proxy,
       publishProxies,
       budget,
@@ -1180,7 +1181,7 @@ async function handleRequest(options: {
   readonly notifications: NotificationCenter;
   /** Browsers that asked for push notifications; see `web-push.ts`. */
   readonly push: WebPush;
-  readonly extensionUpdater: ExtensionUpdater;
+  readonly extensions: ExtensionServices;
   readonly proxy: ProxyWorkerManager | null;
   /** Put the fixed addresses in place, for a Cloudflare account just connected. */
   readonly publishProxies: () => void;
@@ -1199,7 +1200,7 @@ async function handleRequest(options: {
   readonly autoInstall: boolean;
   readonly onShutdownRequest: (() => void) | undefined;
 }): Promise<void> {
-  const { request, response, store, sessions, rateLimiter, handoffs, startedAt, publicOrigins, proxiedOrigin, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, releases, online, notifications, push, extensionUpdater, proxy, publishProxies, budget, saver, shutdownToken, autoInstall, onShutdownRequest } = options;
+  const { request, response, store, sessions, rateLimiter, handoffs, startedAt, publicOrigins, proxiedOrigin, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, releases, online, notifications, push, extensions, proxy, publishProxies, budget, saver, shutdownToken, autoInstall, onShutdownRequest } = options;
   // Whether the browser's side of this connection is HTTPS, which is not the
   // same question as whether ours is: a hosted console is reached over HTTPS
   // that a proxy terminates before us, and only the proxy's own header says so.
@@ -1501,7 +1502,7 @@ async function handleRequest(options: {
     if (method !== 'GET' && !requireCsrf(context, session.csrfToken)) {
       return;
     }
-    await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, online, proxy, publishProxies, budget, logger, handoffs, saver, sessions, notifications, push, extensionUpdater);
+    await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, online, proxy, publishProxies, budget, logger, handoffs, saver, sessions, notifications, push, extensions);
     return;
   }
 
@@ -1754,7 +1755,7 @@ async function adoptRestoredPort(deps: PortAdoptionDeps, port: number): Promise<
   }
 }
 
-async function handleRuntimeRequest(context: RequestContext, store: StateStore, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, managerTunnel: TunnelManager, gateway: AccessGateway, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, cloudflare: CloudflareConnection | null, metrics: MetricsStore, activity: ActivityMeter, config: ConfigStore, system: SystemStore, online: OnlineKeeper, proxy: ProxyWorkerManager | null, publishProxies: () => void, budget: WorkerBudget, logger: LogSink, handoffs: HandoffStore, saver: SaverMode, sessions: SessionStore, notifications: NotificationCenter, push: WebPush, extensionUpdater: ExtensionUpdater): Promise<void> {
+async function handleRuntimeRequest(context: RequestContext, store: StateStore, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, managerTunnel: TunnelManager, gateway: AccessGateway, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, cloudflare: CloudflareConnection | null, metrics: MetricsStore, activity: ActivityMeter, config: ConfigStore, system: SystemStore, online: OnlineKeeper, proxy: ProxyWorkerManager | null, publishProxies: () => void, budget: WorkerBudget, logger: LogSink, handoffs: HandoffStore, saver: SaverMode, sessions: SessionStore, notifications: NotificationCenter, push: WebPush, extensions: ExtensionServices): Promise<void> {
   const { pathname, ports, request, response, searchParams } = context;
   const method = request.method ?? 'GET';
   const adoptSillyTavernPort = (port: number): Promise<void> =>
@@ -1919,80 +1920,8 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     sendJson(response, 200, await previewManifest(userDataRoot(profile)));
     return;
   }
-  /*
-   * The third-party extensions the active profile runs, read off the disk.
-   *
-   * Read-only, and SillyTavern is never asked, so this answers the same
-   * whether it is running or not.
-   */
-  if (pathname === '/api/v1/extensions' && method === 'GET') {
-    const found = await findExtensions(await extensionRoots(profiles, runtime));
-    sendJson(response, 200, {
-      extensions: await extensionUpdater.describe(found.extensions),
-      gitAvailable: found.gitAvailable,
-      checkedAt: extensionUpdater.checkedAt,
-      job: jobs.active('extensions'),
-    } satisfies ExtensionList);
-    return;
-  }
-  /*
-   * Look for updates, update, and roll back: each a job, one at a time.
-   *
-   * A check is asked for by the page whenever the last one is over an hour
-   * old, and answered with no job when it is not; `force` is the button.
-   */
-  const extensionAction = /^\/api\/v1\/extensions\/(check|update|rollback)$/u.exec(pathname)?.[1];
-  if (extensionAction && method === 'POST') {
-    const body = await readJson(request);
-    if (jobs.active('extensions')) { sendError(response, 409, 'extension_busy', 'Another extension task is still running'); return; }
-    if (!await canRunGit('git')) { sendError(response, 409, 'git_unavailable', 'Git is not available on this machine'); return; }
-    const found = (await findExtensions(await extensionRoots(profiles, runtime))).extensions;
-    if (extensionAction === 'check') {
-      if (!(isRecord(body) && body.force === true) && !extensionUpdater.isStale()) { sendJson(response, 200, { job: null }); return; }
-      const job = runExtensionJob(jobs, logEvent('extensions.checking', 'Checking extensions for updates', { done: 0, total: found.length }), async (id) => {
-        await extensionUpdater.check(found, (done, total) => jobs.updateOperation(id, total > 0 ? (done / total) * 100 : 100, logEvent('extensions.checking', `Checking extensions for updates (${done}/${total})`, { done, total })));
-        const available = (await extensionUpdater.describe(found)).filter((item) => (item.update?.behind ?? 0) > 0).length;
-        jobs.append('manager', logEvent('extensions.checked', `[extensions] ${available} of ${found.length} extensions have an update`, { available, total: found.length }));
-      });
-      sendJson(response, 202, { job });
-      return;
-    }
-    const all = extensionAction === 'update' && isRecord(body) && body.all === true;
-    const target = all ? null : findExtensionTarget(found, body);
-    if (!all && !target) { sendError(response, 404, 'extension_not_found', 'That extension is not installed'); return; }
-    if (extensionAction === 'rollback') {
-      const entry = target!;
-      const job = runExtensionJob(jobs, logEvent('extensions.rollingBack', `Rolling ${entry.info.name} back`, { name: entry.info.displayName }), async () => {
-        const result = await extensionUpdater.rollBack(entry);
-        jobs.append('manager', logEvent('extensions.rolledBack', `[extensions] rolled ${entry.info.name} back to ${result.to.slice(0, 7)}`, { name: entry.info.displayName, commit: result.to.slice(0, 7) }));
-      });
-      sendJson(response, 202, { job });
-      return;
-    }
-    const described = await extensionUpdater.describe(found);
-    const targets = target ? [target] : found.filter((entry, index) => (described[index]?.update?.behind ?? 0) > 0);
-    const job = runExtensionJob(jobs, target ? logEvent('extensions.updating', `Updating ${target.info.name}`, { name: target.info.displayName }) : logEvent('extensions.updatingAll', 'Updating extensions'), async (id) => {
-      const failures: string[] = [];
-      let lastError: ExtensionError | null = null;
-      for (const [index, entry] of targets.entries()) {
-        jobs.updateOperation(id, (index / Math.max(targets.length, 1)) * 100, logEvent('extensions.updating', `Updating ${entry.info.name}`, { name: entry.info.displayName }));
-        try {
-          const result = await extensionUpdater.update(entry);
-          jobs.append('manager', result.outcome === 'updated'
-            ? logEvent('extensions.updated', `[extensions] updated ${entry.info.name} from ${result.from.slice(0, 7)} to ${result.to.slice(0, 7)}`, { name: entry.info.displayName, from: result.from.slice(0, 7), to: result.to.slice(0, 7) })
-            : logEvent('extensions.upToDate', `[extensions] ${entry.info.name} is already up to date`, { name: entry.info.displayName }));
-        } catch (error: unknown) {
-          if (!(error instanceof ExtensionError)) throw error;
-          lastError = error;
-          failures.push(entry.info.displayName);
-          jobs.append('manager', logEvent('extensions.updateFailed', `[extensions] could not update ${entry.info.name}: ${error.message}`, { name: entry.info.displayName, reason: error.message }), 'warn');
-        }
-      }
-      // One extension refusing is that extension's answer; the job failed only
-      // if it was all there was to do, and then it says why in its own words.
-      if (lastError && failures.length === targets.length) throw lastError;
-    });
-    sendJson(response, 202, { job });
+  if (pathname === '/api/v1/extensions' || pathname.startsWith('/api/v1/extensions/')) {
+    await handleExtensionRequest({ pathname, method, request, response, jobs, profiles, runtime, supervisor, extensions });
     return;
   }
   if (pathname === '/api/v1/preview/image' && method === 'GET') {
@@ -3624,6 +3553,262 @@ function findExtensionTarget(found: readonly FoundExtension[], body: unknown): F
  * A refusal the manager made keeps its code on the job, so the panel says it
  * in the reader's language; anything else is git's or the system's own words.
  */
+/** A clone made to reconnect an extension, waiting for the reader to agree to it. */
+interface PendingReconnect {
+  readonly preview: ExtensionReconnectPreview;
+  readonly clone: string;
+  readonly target: FoundExtension;
+  readonly createdAt: number;
+}
+
+/** How long a reconnect preview waits for an answer before its clone is thrown away. */
+const RECONNECT_WAIT_MS = 30 * 60 * 1000;
+
+interface ExtensionServices {
+  readonly updater: ExtensionUpdater;
+  readonly trash: ExtensionTrash;
+  /** Where clones are made before they are moved into place. */
+  readonly scratch: string;
+  readonly pending: Map<string, PendingReconnect>;
+}
+
+/**
+ * What the extension routes keep between requests.
+ *
+ * Clones left in the scratch folder by a manager that stopped mid-install
+ * are nobody's, and the trash's week is counted here as well as on every
+ * look at the list.
+ */
+function extensionServices(paths: PlatformPaths): ExtensionServices {
+  const services: ExtensionServices = {
+    updater: new ExtensionUpdater({ stateDir: paths.state }),
+    trash: new ExtensionTrash(join(paths.state, 'extension-trash')),
+    scratch: join(paths.tmp, 'extension-clones'),
+    pending: new Map(),
+  };
+  void rm(services.scratch, { recursive: true, force: true }).catch(() => undefined);
+  void services.trash.purge().catch(() => undefined);
+  return services;
+}
+
+/**
+ * Everything under `/api/v1/extensions`.
+ *
+ * Reading is free. Every change runs one at a time: as a job when it can take
+ * a while (git, a restart of SillyTavern), straight away when it is a move on
+ * the disk. An extension is only ever named by scope and folder name, looked
+ * up among those on disk; the request never supplies a path.
+ */
+async function handleExtensionRequest(deps: {
+  readonly pathname: string;
+  readonly method: string;
+  readonly request: IncomingMessage;
+  readonly response: ServerResponse;
+  readonly jobs: JobStore;
+  readonly profiles: ProfileStore;
+  readonly runtime: RuntimeManager;
+  readonly supervisor: ProcessSupervisor;
+  readonly extensions: ExtensionServices;
+}): Promise<void> {
+  const { pathname, method, request, response, jobs, profiles, runtime, supervisor, extensions } = deps;
+  const { updater, trash, pending } = extensions;
+  for (const [id, waiting] of pending) {
+    if (Date.now() - waiting.createdAt < RECONNECT_WAIT_MS) continue;
+    pending.delete(id);
+    void rm(waiting.clone, { recursive: true, force: true }).catch(() => undefined);
+  }
+  const roots = await extensionRoots(profiles, runtime);
+  if (pathname === '/api/v1/extensions' && method === 'GET') {
+    const found = await findExtensions(roots);
+    await trash.purge().catch(() => undefined);
+    sendJson(response, 200, {
+      extensions: await updater.describe(found.extensions),
+      gitAvailable: found.gitAvailable,
+      checkedAt: updater.checkedAt,
+      job: jobs.active('extensions'),
+      trash: await trash.list(),
+    } satisfies ExtensionList);
+    return;
+  }
+  const previewMatch = /^\/api\/v1\/extensions\/reconnect\/([^/]+)$/u.exec(pathname);
+  if (previewMatch && method === 'GET') {
+    const waiting = pending.get(previewMatch[1] ?? '');
+    if (!waiting) { sendError(response, 404, 'extension_reconnect_expired', 'That comparison is no longer waiting; start it again'); return; }
+    sendJson(response, 200, waiting.preview);
+    return;
+  }
+  if (previewMatch && method === 'DELETE') {
+    const waiting = pending.get(previewMatch[1] ?? '');
+    pending.delete(previewMatch[1] ?? '');
+    if (waiting) await rm(waiting.clone, { recursive: true, force: true }).catch(() => undefined);
+    sendJson(response, 200, { ok: true });
+    return;
+  }
+  const action = /^\/api\/v1\/extensions\/(check|update|rollback|install|remove|restore|enable|reconnect)$/u.exec(pathname)?.[1]
+    ?? (/^\/api\/v1\/extensions\/reconnect\/[^/]+\/apply$/u.test(pathname) ? 'apply' : null);
+  if (!action || method !== 'POST') { sendError(response, 404, 'not_found', 'Route not found'); return; }
+  const body = await readJson(request);
+  if (jobs.active('extensions')) { sendError(response, 409, 'extension_busy', 'Another extension task is still running'); return; }
+  const refuse = (error: unknown): void => {
+    if (error instanceof ExtensionError) { sendError(response, error.code === 'extension_not_found' || error.code === 'extension_trash_not_found' ? 404 : 409, error.code, error.message); return; }
+    throw error;
+  };
+  const needsGit = action === 'check' || action === 'update' || action === 'rollback' || action === 'install' || action === 'reconnect';
+  if (needsGit && !await canRunGit('git')) { sendError(response, 409, 'git_unavailable', 'Git is not available on this machine'); return; }
+  const found = (await findExtensions(roots)).extensions;
+
+  if (action === 'check') {
+    if (!(isRecord(body) && body.force === true) && !updater.isStale()) { sendJson(response, 200, { job: null }); return; }
+    const job = runExtensionJob(jobs, logEvent('extensions.checking', 'Checking extensions for updates', { done: 0, total: found.length }), async (id) => {
+      await updater.check(found, (done, total) => jobs.updateOperation(id, total > 0 ? (done / total) * 100 : 100, logEvent('extensions.checking', `Checking extensions for updates (${done}/${total})`, { done, total })));
+      const available = (await updater.describe(found)).filter((item) => (item.update?.behind ?? 0) > 0).length;
+      jobs.append('manager', logEvent('extensions.checked', `[extensions] ${available} of ${found.length} extensions have an update`, { available, total: found.length }));
+    });
+    sendJson(response, 202, { job });
+    return;
+  }
+
+  if (action === 'install') {
+    try {
+      const { url, folder } = parseInstallUrl(isRecord(body) ? body.url : undefined);
+      const branch = parseBranch(isRecord(body) ? body.branch : undefined);
+      const scope = isRecord(body) && body.scope === 'global' ? 'global' : 'user';
+      const root = scope === 'user'
+        ? roots.userRoot && join(roots.userRoot, 'extensions')
+        : roots.runtimeRoot && join(roots.runtimeRoot, 'public', 'scripts', 'extensions', 'third-party');
+      if (!root) throw new ExtensionError('installation_required', 'Install SillyTavern before adding extensions');
+      if (found.some((entry) => entry.info.scope === scope && entry.info.name === folder)) throw new ExtensionError('extension_exists', 'An extension with that name is already installed there');
+      const job = runExtensionJob(jobs, logEvent('extensions.installing', `Installing ${folder}`, { name: folder }), async () => {
+        const clone = await cloneExtension({ gitCommand: 'git', scratch: extensions.scratch }, url, branch);
+        await placeExtension(clone, root, folder);
+        jobs.append('manager', logEvent('extensions.installed', `[extensions] installed ${folder} from ${url}`, { name: folder, url }));
+      });
+      sendJson(response, 202, { job });
+    } catch (error: unknown) {
+      if (error instanceof ExtensionError && error.code.startsWith('extension_url') || error instanceof ExtensionError && error.code === 'extension_branch_invalid') { sendError(response, 400, error.code, error.message); return; }
+      refuse(error);
+    }
+    return;
+  }
+
+  if (action === 'restore') {
+    try {
+      const item = await trash.restore(isRecord(body) && typeof body.id === 'string' ? body.id : '');
+      jobs.append('manager', logEvent('extensions.restored', `[extensions] put ${item.name} back`, { name: item.displayName }));
+      sendJson(response, 200, { item });
+    } catch (error: unknown) { refuse(error); }
+    return;
+  }
+
+  if (action === 'apply') {
+    const id = pathname.split('/').at(-2) ?? '';
+    const waiting = pending.get(id);
+    if (!waiting) { sendError(response, 404, 'extension_reconnect_expired', 'That comparison is no longer waiting; start it again'); return; }
+    pending.delete(id);
+    try {
+      const current = found.find((entry) => entry.path === waiting.target.path);
+      if (!current || current.info.hasGit) throw new ExtensionError('extension_not_found', 'That extension changed while it was being compared; start again');
+      const item = await trash.put(current);
+      await move(waiting.clone, current.path);
+      jobs.append('manager', logEvent('extensions.reconnected', `[extensions] reconnected ${current.info.name} to ${waiting.preview.url}`, { name: current.info.displayName, url: waiting.preview.url }));
+      sendJson(response, 200, { trashed: item });
+    } catch (error: unknown) {
+      await rm(waiting.clone, { recursive: true, force: true }).catch(() => undefined);
+      refuse(error);
+    }
+    return;
+  }
+
+  const all = action === 'update' && isRecord(body) && body.all === true;
+  const target = all ? null : findExtensionTarget(found, body);
+  if (!all && !target) { sendError(response, 404, 'extension_not_found', 'That extension is not installed'); return; }
+
+  if (action === 'remove') {
+    try {
+      const item = await trash.put(target!);
+      jobs.append('manager', logEvent('extensions.removed', `[extensions] moved ${item.name} to the trash`, { name: item.displayName, days: TRASH_DAYS }));
+      sendJson(response, 200, { item });
+    } catch (error: unknown) { refuse(error); }
+    return;
+  }
+
+  if (action === 'enable') {
+    const entry = target!;
+    const enabled = isRecord(body) && body.enabled === true;
+    if (!roots.userRoot) { sendError(response, 409, 'profile_required', 'There is no profile to switch extensions in'); return; }
+    const settingsPath = join(roots.userRoot, 'settings.json');
+    // SillyTavern saves this file from the browser and would write its own
+    // copy over the change, so it is stopped for the edit and started again.
+    const job = runExtensionJob(jobs, logEvent(enabled ? 'extensions.enabling' : 'extensions.disabling', `${enabled ? 'Turning on' : 'Turning off'} ${entry.info.name}`, { name: entry.info.displayName }), async () => {
+      const status = supervisor.getState().status;
+      const wasRunning = status === 'running' || status === 'starting';
+      if (wasRunning) await supervisor.stop('extensionChange');
+      try {
+        await setExtensionEnabled(settingsPath, entry.info.key, enabled);
+        jobs.append('manager', logEvent(enabled ? 'extensions.enabled' : 'extensions.disabled', `[extensions] turned ${entry.info.name} ${enabled ? 'on' : 'off'}`, { name: entry.info.displayName }));
+      } finally {
+        if (wasRunning) await supervisor.start();
+      }
+    });
+    sendJson(response, 202, { job });
+    return;
+  }
+
+  if (action === 'reconnect') {
+    const entry = target!;
+    try {
+      if (entry.info.hasGit) throw new ExtensionError('extension_has_git', 'This extension already has its git history');
+      if (!entry.info.homePage) throw new ExtensionError('extension_no_home_page', 'This extension does not name where it comes from');
+      const { url } = parseInstallUrl(entry.info.homePage);
+      const job = runExtensionJob(jobs, logEvent('extensions.comparing', `Comparing ${entry.info.name} with its source`, { name: entry.info.displayName }), async (id) => {
+        const clone = await cloneExtension({ gitCommand: 'git', scratch: extensions.scratch }, url, null);
+        const difference = await compareFolders(entry.path, clone);
+        pending.set(id, { clone, target: entry, createdAt: Date.now(), preview: { id, scope: entry.info.scope, name: entry.info.name, displayName: entry.info.displayName, url, ...difference } });
+      });
+      sendJson(response, 202, { job });
+    } catch (error: unknown) {
+      if (error instanceof ExtensionError && error.code.startsWith('extension_url')) { sendError(response, 409, 'extension_no_home_page', 'This extension’s home page is not a repository address that can be cloned'); return; }
+      refuse(error);
+    }
+    return;
+  }
+
+  if (action === 'rollback') {
+    const entry = target!;
+    const job = runExtensionJob(jobs, logEvent('extensions.rollingBack', `Rolling ${entry.info.name} back`, { name: entry.info.displayName }), async () => {
+      const result = await updater.rollBack(entry);
+      jobs.append('manager', logEvent('extensions.rolledBack', `[extensions] rolled ${entry.info.name} back to ${result.to.slice(0, 7)}`, { name: entry.info.displayName, commit: result.to.slice(0, 7) }));
+    });
+    sendJson(response, 202, { job });
+    return;
+  }
+
+  const described = await updater.describe(found);
+  const targets = target ? [target] : found.filter((_entry, index) => (described[index]?.update?.behind ?? 0) > 0);
+  const job = runExtensionJob(jobs, target ? logEvent('extensions.updating', `Updating ${target.info.name}`, { name: target.info.displayName }) : logEvent('extensions.updatingAll', 'Updating extensions'), async (id) => {
+    const failures: string[] = [];
+    let lastError: ExtensionError | null = null;
+    for (const [index, entry] of targets.entries()) {
+      jobs.updateOperation(id, (index / Math.max(targets.length, 1)) * 100, logEvent('extensions.updating', `Updating ${entry.info.name}`, { name: entry.info.displayName }));
+      try {
+        const result = await updater.update(entry);
+        jobs.append('manager', result.outcome === 'updated'
+          ? logEvent('extensions.updated', `[extensions] updated ${entry.info.name} from ${result.from.slice(0, 7)} to ${result.to.slice(0, 7)}`, { name: entry.info.displayName, from: result.from.slice(0, 7), to: result.to.slice(0, 7) })
+          : logEvent('extensions.upToDate', `[extensions] ${entry.info.name} is already up to date`, { name: entry.info.displayName }));
+      } catch (error: unknown) {
+        if (!(error instanceof ExtensionError)) throw error;
+        lastError = error;
+        failures.push(entry.info.displayName);
+        jobs.append('manager', logEvent('extensions.updateFailed', `[extensions] could not update ${entry.info.name}: ${error.message}`, { name: entry.info.displayName, reason: error.message }), 'warn');
+      }
+    }
+    // One extension refusing is that extension's answer; the job failed only
+    // if it was all there was to do, and then it says why in its own words.
+    if (lastError && failures.length === targets.length) throw lastError;
+  });
+  sendJson(response, 202, { job });
+}
+
 function runExtensionJob(jobs: JobStore, step: LogEvent, work: (id: string) => Promise<void>): Job {
   const { job } = jobs.createOperation('extensions', step);
   void work(job.id)
