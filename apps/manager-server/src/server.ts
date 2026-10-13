@@ -21,7 +21,7 @@ import { panelStaticRoot } from './bootstrap.js';
 import { ProcessSupervisor } from './supervisor.js';
 import { SillyTavernClient, SillyTavernError } from './st-client.js';
 import { BridgeBusyError, SillyTavernBridge } from './st-bridge.js';
-import { readConnections, readStoredConnections } from './connections.js';
+import { readConnections, readStoredConnections, selectProxyOnDisk, SettingsEditError } from './connections.js';
 import { ConnectionTargetMissing, ConnectionTester, ConnectionTestStore, ModelCache, type SillyTavernStatusCall } from './connection-tests.js';
 import { AccessGateway } from './gateway.js';
 import { ACCESS_GATEWAY_PORT, checkSillyTavernPort, findFreePort, isPortFree, MANAGER_PORT, PortError, portWasDemanded, resolveAccessPort, resolveConsolePort, SILLYTAVERN_PORT, type ResolvedPort } from './ports.js';
@@ -1570,7 +1570,7 @@ async function handleRequest(options: {
       return;
     }
     if (pathname === CONNECTIONS_API || pathname.startsWith(`${CONNECTIONS_API}/`)) {
-      await handleConnectionsRequest(context, { profiles, supervisor, connections });
+      await handleConnectionsRequest(context, { profiles, supervisor, bridge, connections });
       return;
     }
     await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, online, proxy, publishProxies, budget, logger, handoffs, saver, sessions, notifications, push, extensions);
@@ -1587,9 +1587,9 @@ const CONNECTIONS_API = '/api/v1/connections';
  * connections.ts. Read off the active profile's files, so it answers the
  * same with SillyTavern stopped.
  */
-async function handleConnectionsRequest(context: RequestContext, deps: { readonly profiles: ProfileStore; readonly supervisor: ProcessSupervisor; readonly connections: ConnectionServices }): Promise<void> {
+async function handleConnectionsRequest(context: RequestContext, deps: { readonly profiles: ProfileStore; readonly supervisor: ProcessSupervisor; readonly bridge: SillyTavernBridge; readonly connections: ConnectionServices }): Promise<void> {
   const { pathname, request, response, searchParams } = context;
-  const { profiles, supervisor, connections } = deps;
+  const { profiles, supervisor, bridge, connections } = deps;
   const method = request.method ?? 'GET';
   const userRoot = async (): Promise<string | null> => {
     const profile = await profiles.getActive();
@@ -1710,6 +1710,32 @@ async function handleConnectionsRequest(context: RequestContext, deps: { readonl
     }
     return;
   }
+  /*
+   * Choosing a proxy preset with SillyTavern stopped.
+   *
+   * With it running the open tab owns `settings.json` and is asked instead,
+   * through the bridge; see selectProxyOnDisk. A tab can stay open while
+   * SillyTavern is stopped, and would save its own idea of the settings when
+   * it comes back, so the answer says whether one is, for the page to ask
+   * for it to be reloaded.
+   */
+  if (pathname === `${CONNECTIONS_API}/proxies/select` && method === 'POST') {
+    const root = await userRoot();
+    if (!root) { sendError(response, 409, 'no_profile', 'There is no SillyTavern data yet'); return; }
+    const body = await readJson(request);
+    const name = isRecord(body) && typeof body.name === 'string' && body.name !== '' && body.name.length <= 500 ? body.name : null;
+    if (!name) { sendError(response, 400, 'invalid_input', 'Name the proxy preset'); return; }
+    const status = supervisor.getState().status;
+    if (status !== 'stopped' && status !== 'error') { sendError(response, 409, 'st_running', 'SillyTavern is running; the open tab chooses the proxy'); return; }
+    try {
+      await selectProxyOnDisk(root, name);
+    } catch (error: unknown) {
+      if (error instanceof SettingsEditError) { sendError(response, error.code === 'proxy_missing' ? 404 : 409, error.code, error.message); return; }
+      throw error;
+    }
+    sendJson(response, 200, { ok: true, tabsOpen: bridge.summary().tabs > 0 });
+    return;
+  }
   // The models a target's last test brought back, while they are kept.
   if (pathname === `${CONNECTIONS_API}/models` && method === 'GET') {
     const target = parseConnectionTarget({ kind: searchParams.get('kind'), secretKey: searchParams.get('secretKey'), id: searchParams.get('id'), name: searchParams.get('name') });
@@ -1805,6 +1831,10 @@ async function handleBridgeRequest(context: RequestContext, bridge: SillyTavernB
     const status = await bridge.wait(match[1] ?? '', wait, gone.signal);
     if (!status) { sendError(response, 404, 'command_not_found', 'No such command'); return; }
     if (!response.destroyed) sendJson(response, 200, status satisfies BridgeCommandStatus);
+    return;
+  }
+  if (match && method === 'DELETE') {
+    sendJson(response, 200, { cancelled: bridge.cancel(match[1] ?? '') });
     return;
   }
   sendError(response, 404, 'not_found', 'Route not found');

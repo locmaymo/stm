@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { connectionApiProvider, type ConnectionKey, type ConnectionProfile, type ConnectionProxy, type ConnectionsOverview } from '../../../packages/contracts/src/index.js';
 
@@ -16,10 +16,11 @@ import { connectionApiProvider, type ConnectionKey, type ConnectionProfile, type
  *   for the reverse proxy presets, and the connection manager's
  *   `extension_settings.connectionManager.{ profiles, selectedProfile }`.
  *
- * Nothing here writes, and nothing here needs SillyTavern running. What it
- * returns is what the Connections page shows, so a key leaves only masked and
- * a proxy's password not at all. An address is shown without its query and
- * credentials: some proxies are reached with a token in the address.
+ * Reading needs nothing running. What it returns is what the Connections
+ * page shows, so a key leaves only masked and a proxy's password not at all.
+ * An address is shown without its query and credentials: some proxies are
+ * reached with a token in the address. The one write here,
+ * `selectProxyOnDisk`, is for when SillyTavern is stopped.
  */
 
 export const SECRETS_FILE = 'secrets.json';
@@ -195,6 +196,54 @@ export function parseSettings(value: unknown): StoredSettings {
     selectedProfile: typeof manager.selectedProfile === 'string' && manager.selectedProfile !== '' ? manager.selectedProfile : null,
     oai: isRecord(settings.oai_settings) ? settings.oai_settings : {},
   };
+}
+
+export class SettingsEditError extends Error {
+  public constructor(public readonly code: 'settings_missing' | 'settings_not_round_trip' | 'proxy_missing', message: string) {
+    super(message);
+  }
+}
+
+/**
+ * Choose a reverse proxy preset in `settings.json`, with SillyTavern stopped.
+ *
+ * `settings.json` belongs to the open tab, which saves it whole, so this is
+ * only for when no SillyTavern is running to have a tab; with one running,
+ * the tab is asked instead (`/proxy`). The edit touches what choosing a
+ * preset in the page touches: `selected_proxy`, which the page reads back on
+ * load as the preset to apply, and `oai_settings.reverse_proxy` and
+ * `proxy_password`, which it then sets from it. `None` turns the proxy off.
+ *
+ * SillyTavern writes the file as `JSON.stringify(settings, null, 4)`. The
+ * file is changed only when reading and writing it again that way gives back
+ * exactly what is there, so nothing else in it moves; a file that was edited
+ * by hand is refused rather than reformatted.
+ */
+export async function selectProxyOnDisk(userRoot: string, name: string): Promise<void> {
+  const path = join(userRoot, SETTINGS_FILE);
+  let raw: string;
+  try {
+    raw = await readFile(path, 'utf8');
+  } catch {
+    throw new SettingsEditError('settings_missing', 'SillyTavern has not written its settings yet');
+  }
+  let settings: unknown;
+  try { settings = JSON.parse(raw); } catch { settings = null; }
+  if (!isRecord(settings) || JSON.stringify(settings, null, 4) !== raw) {
+    throw new SettingsEditError('settings_not_round_trip', 'settings.json is not as SillyTavern writes it, so it is left alone');
+  }
+  const proxy = name === NO_PROXY
+    ? { name: NO_PROXY, url: '', password: '' }
+    : parseSettings(settings).proxies.find((item) => item.name === name);
+  if (!proxy) throw new SettingsEditError('proxy_missing', 'That proxy is no longer in SillyTavern');
+  settings.selected_proxy = { name: proxy.name, url: proxy.url, password: proxy.password };
+  if (isRecord(settings.oai_settings)) {
+    settings.oai_settings.reverse_proxy = proxy.url;
+    settings.oai_settings.proxy_password = proxy.password;
+  }
+  const temporary = `${path}.stm-${process.pid}.tmp`;
+  await writeFile(temporary, JSON.stringify(settings, null, 4), 'utf8');
+  await rename(temporary, path);
 }
 
 /** The provider a secret name is for: `api_key_openrouter` is `openrouter`. */

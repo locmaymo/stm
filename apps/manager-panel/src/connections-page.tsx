@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Activity, CircleCheck, Ellipsis, KeyRound, List, LoaderCircle, Network, Pencil, Plus, RefreshCw, Route, Send, Trash2 } from 'lucide-react';
+import { Activity, CircleCheck, CircleOff, Ellipsis, KeyRound, List, LoaderCircle, Network, Pencil, Play, Plus, RefreshCw, Route, Send, Trash2 } from 'lucide-react';
 import {
   Alert, AlertDescription, Badge, Button, Card, CardAction, CardContent, CardHeader, ConfirmDialog,
   Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
@@ -14,6 +14,7 @@ import {
 import type { Fail, MessageKey, Translate } from './i18n.js';
 import type { LocaleCode } from './preferences.js';
 import { apiFetch } from './session.js';
+import { runInSillyTavern } from './st-bridge.js';
 
 /** A target with the words it is shown by, for titles and toasts. */
 interface Named {
@@ -28,6 +29,18 @@ interface Sending extends Named {
 
 /** How many models the list shows before asking for a narrower search. */
 const MODELS_SHOWN = 200;
+/** What SillyTavern calls the proxy preset that is no proxy. */
+const NO_PROXY = 'None';
+/** How long the open tab is given to save its settings before the page reads them again. */
+const SAVE_SETTLE_MS = 2_500;
+
+/** A switch asked of the open SillyTavern tab, while it is under way. */
+interface Switching {
+  readonly label: string;
+  readonly controller: AbortController;
+  /** No tab is open, so it waits for one. */
+  readonly waiting: boolean;
+}
 
 /**
  * The keys, proxies and connection profiles SillyTavern keeps, and whether
@@ -51,8 +64,13 @@ export function ConnectionsPage({ t, locale, fail, csrfToken }: { t: Translate; 
   const [adding, setAdding] = useState(false);
   const [renaming, setRenaming] = useState<ConnectionKey | null>(null);
   const [deleting, setDeleting] = useState<ConnectionKey | null>(null);
+  const [switching, setSwitching] = useState<Switching | null>(null);
   const alive = useRef(true);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  // Leaving the page stops waiting, which withdraws a switch no tab has taken.
+  const switchingRef = useRef<Switching | null>(null);
+  switchingRef.current = switching;
+  useEffect(() => () => switchingRef.current?.controller.abort(), []);
 
   const load = useCallback(async () => {
     try {
@@ -101,6 +119,63 @@ export function ConnectionsPage({ t, locale, fail, csrfToken }: { t: Translate; 
     toast({ title: t(done), tone: 'success' });
     return true;
   }, [csrfToken, fail, load, t, toast]);
+
+  /**
+   * Ask the open SillyTavern tab to switch: the profile and the proxy belong
+   * to the tab, which saves its settings whole. With no tab open the switch
+   * waits on the manager for one, which the page says, with a way to stop.
+   * SillyTavern answers with what it chose, matched loosely by name, so the
+   * answer is checked against what was asked for.
+   */
+  const switchInTab = useCallback(async (command: 'profile' | 'proxy', name: string, label: string, done: MessageKey) => {
+    if (!csrfToken || switchingRef.current) return;
+    if (/[|\r\n]|\{\{|\{:|:\}/u.test(name)) { toast({ title: t('connections.nameUnsupported'), tone: 'destructive' }); return; }
+    const controller = new AbortController();
+    setSwitching({ label, controller, waiting: false });
+    try {
+      const result = await runInSillyTavern({ kind: 'slash', command: `/${command} ${name}` }, {
+        csrfToken,
+        signal: controller.signal,
+        onWaiting: (waiting) => { if (alive.current) setSwitching((current) => current ? { ...current, waiting } : current); },
+      });
+      if (!alive.current) return;
+      if (result.ok && result.value === name) {
+        toast({ title: t(done, { name }), tone: 'success' });
+        window.setTimeout(() => { if (alive.current) void load(); }, SAVE_SETTLE_MS);
+      } else if (result.ok) {
+        toast({ title: t('connections.switchMismatch', { name }), tone: 'destructive' });
+      } else {
+        // A command no tab took in ten minutes says so; anything else is SillyTavern's own words.
+        toast({ title: t('connections.switchFailed', { reason: result.error === 'expired' ? t('connections.switchExpired') : result.error ?? '' }), tone: 'destructive' });
+      }
+    } catch {
+      if (alive.current && !controller.signal.aborted) toast({ title: t('connections.switchFailed', { reason: '' }), tone: 'destructive' });
+    } finally {
+      if (alive.current) setSwitching(null);
+    }
+  }, [csrfToken, load, t, toast]);
+
+  /**
+   * Choose a proxy preset: through the tab while SillyTavern runs, in the
+   * file while it is stopped. A tab left open meanwhile would save its own
+   * idea of the settings over the change, so it is asked to be reloaded.
+   */
+  const chooseProxy = useCallback(async (name: string) => {
+    const label = name === NO_PROXY ? t('connections.proxyOff') : name;
+    const done: MessageKey = name === NO_PROXY ? 'connections.proxyTurnedOff' : 'connections.proxyChosen';
+    if (overview?.sillyTavernRunning !== false) { await switchInTab('proxy', name, label, done); return; }
+    const payload = await post('proxies/select', { name }) as { tabsOpen?: boolean } | null;
+    if (!payload) return;
+    await load();
+    toast(payload.tabsOpen
+      ? { title: t('connections.proxyChosenReloadTab', { name: label }), tone: 'destructive' }
+      : { title: t(done, { name }), tone: 'success' });
+  }, [load, overview?.sillyTavernRunning, post, switchInTab, t, toast]);
+
+  const applyProfile = useCallback(async (profile: ConnectionProfile) => {
+    if (overview?.sillyTavernRunning === false) { toast({ title: t('connections.profileNeedsRunning'), tone: 'destructive' }); return; }
+    await switchInTab('profile', profile.name, profile.name, 'connections.profileUsed');
+  }, [overview?.sillyTavernRunning, switchInTab, t, toast]);
 
   /** Put one result in place without reading the whole page again. */
   const remember = useCallback((target: ConnectionTarget, result: ConnectionTestResult) => {
@@ -162,6 +237,12 @@ export function ConnectionsPage({ t, locale, fail, csrfToken }: { t: Translate; 
     {overview?.legacySecrets ? <Alert><AlertDescription>{t('connections.legacySecrets')}</AlertDescription></Alert> : null}
     {overview?.unreadable.map((file) => <Alert key={file} variant="destructive"><AlertDescription>{t('connections.unreadable', { file: file === 'secrets' ? 'secrets.json' : 'settings.json' })}</AlertDescription></Alert>)}
     {needsSillyTavern ? <Alert><AlertDescription>{t('connections.needsSillyTavern')}</AlertDescription></Alert> : null}
+    {switching ? <Alert aria-live="polite">
+      <AlertDescription className="flex flex-wrap items-center justify-between gap-2">
+        <span className="flex items-center gap-2"><LoaderCircle className="size-4 shrink-0 animate-spin" />{t(switching.waiting ? 'connections.switchWaiting' : 'connections.switchRunning', { name: switching.label })}</span>
+        <Button variant="outline" size="sm" onClick={() => switching.controller.abort()}>{t('common.cancel')}</Button>
+      </AlertDescription>
+    </Alert> : null}
 
     {overview?.profile && !empty ? <div className="flex flex-wrap items-center justify-between gap-2">
       <p className="text-sm text-muted-foreground">{t('connections.testsNote')}</p>
@@ -184,7 +265,10 @@ export function ConnectionsPage({ t, locale, fail, csrfToken }: { t: Translate; 
       empty={<p className="text-sm text-muted-foreground">{t('connections.proxiesEmpty')}</p>}>
       {overview && overview.proxies.length > 0 ? <ul className="grid divide-y">{overview.proxies.map((proxy) => {
         const target: ConnectionTarget = { kind: 'proxy', name: proxy.name };
-        return <ProxyRow key={proxy.name} t={t} proxy={proxy} profileNames={profileNames} status={status(target)} controls={controls({ target, name: proxy.name })} />;
+        const menu = proxy.selected
+          ? <DropdownMenuItem disabled={!csrfToken || switching !== null} onSelect={() => void chooseProxy(NO_PROXY)}><CircleOff />{t('connections.proxyTurnOff')}</DropdownMenuItem>
+          : <DropdownMenuItem disabled={!csrfToken || switching !== null} onSelect={() => void chooseProxy(proxy.name)}><Play />{t('connections.proxyChoose')}</DropdownMenuItem>;
+        return <ProxyRow key={proxy.name} t={t} proxy={proxy} profileNames={profileNames} status={status(target)} controls={controls({ target, name: proxy.name }, { menu })} />;
       })}</ul> : null}
     </Section>
 
@@ -192,7 +276,8 @@ export function ConnectionsPage({ t, locale, fail, csrfToken }: { t: Translate; 
       empty={<p className="text-sm text-muted-foreground">{t('connections.profilesEmpty')}</p>}>
       {overview && overview.profiles.length > 0 ? <ul className="grid divide-y">{overview.profiles.map((profile) => {
         const target: ConnectionTarget = { kind: 'profile', id: profile.id };
-        return <ProfileRow key={profile.id} t={t} profile={profile} status={status(target)} controls={controls({ target, name: profile.name }, { model: profile.mode === 'cc' ? profile.model : null })} />;
+        const menu = <DropdownMenuItem disabled={!csrfToken || switching !== null} onSelect={() => void applyProfile(profile)}><Play />{t('connections.profileUse')}</DropdownMenuItem>;
+        return <ProfileRow key={profile.id} t={t} profile={profile} status={status(target)} controls={controls({ target, name: profile.name }, { model: profile.mode === 'cc' ? profile.model : null, menu })} />;
       })}</ul> : null}
     </Section>
 

@@ -2150,10 +2150,11 @@ export type BridgeCommand =
 
 /**
  * The slash commands a tab will run for the manager, checked on SillyTavern
- * 1.19.0: `/profile` (connection manager), `/api`, `/model`, `/secret-id` and
- * `/theme`. Each takes one value and changes one setting the tab owns.
+ * 1.19.0: `/profile` (connection manager), `/api`, `/model`, `/secret-id`,
+ * `/proxy` (reverse proxy preset, by name) and `/theme`. Each takes one value
+ * and changes one setting the tab owns.
  */
-export const BRIDGE_SLASH_COMMANDS = ['profile', 'api', 'model', 'secret-id', 'theme'] as const;
+export const BRIDGE_SLASH_COMMANDS = ['profile', 'api', 'model', 'secret-id', 'proxy', 'theme'] as const;
 
 /**
  * Lists the page can reload from SillyTavern's server with its own functions:
@@ -2195,7 +2196,7 @@ export interface BridgeResult {
   readonly ok: boolean;
   /** What the command returned, such as the profile now selected; at most a thousand characters. */
   readonly value?: string;
-  /** Why it did not run: `not_ready`, `not_allowed`, `unsupported`, `expired`, or SillyTavern's own words. */
+  /** Why it did not run: `not_ready`, `not_allowed`, `unsupported`, `expired`, `cancelled`, or SillyTavern's own words. */
   readonly error?: string;
 }
 

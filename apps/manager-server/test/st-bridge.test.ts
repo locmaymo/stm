@@ -13,6 +13,7 @@ function clock(start = 1_000_000): { now: () => number; advance: (ms: number) =>
 test('only one allowlisted slash command, with nothing chained on, is a command', () => {
   assert.deepEqual(parseBridgeCommand({ kind: 'slash', command: '  /profile My Profile  ' }), { kind: 'slash', command: '/profile My Profile' });
   assert.deepEqual(parseBridgeCommand({ kind: 'slash', command: '/secret-id quiet=true abc' }), { kind: 'slash', command: '/secret-id quiet=true abc' });
+  assert.deepEqual(parseBridgeCommand({ kind: 'slash', command: '/proxy Home proxy' }), { kind: 'slash', command: '/proxy Home proxy' });
   assert.deepEqual(parseBridgeCommand({ kind: 'slash', command: '/THEME Cappuccino' }), { kind: 'slash', command: '/THEME Cappuccino' });
   for (const command of [
     '/profile Work | /echo hi',
@@ -37,7 +38,7 @@ test('a refresh names a list the page knows how to reload', () => {
 });
 
 test('the page checks the same list again before running anything', () => {
-  assert.match(BRIDGE_SCRIPT, /\["profile","api","model","secret-id","theme"\]/u);
+  assert.match(BRIDGE_SCRIPT, /\["profile","api","model","secret-id","proxy","theme"\]/u);
   assert.match(BRIDGE_SCRIPT, /\["characters","worlds"\]/u);
   // The checks survive being put in a template string: real escapes, not doubled ones.
   assert.ok(BRIDGE_SCRIPT.includes('/[|\\r\\n]|\\{\\{|\\{:|:\\}/'), 'the chaining check');
@@ -176,4 +177,19 @@ test('a result is cut down to size, and anything else is not a result', () => {
   assert.equal(parseBridgeResult({ tab: 'short', id: 'x', ok: true }), null);
   assert.equal(parseBridgeResult({ tab: 'tabaaaaaaaa1', id: 'x' }), null);
   assert.equal(parseBridgeResult('nope'), null);
+});
+
+test('a waiting command can be withdrawn; one a tab has taken cannot', () => {
+  const bridge = new SillyTavernBridge();
+  const waiting = bridge.send(profile);
+  assert.equal(bridge.cancel(waiting.id), true);
+  assert.deepEqual(bridge.status(waiting.id), { id: waiting.id, state: 'expired', result: { ok: false, error: 'cancelled' }, tabs: 0 });
+  const got: BridgeDelivery[] = [];
+  bridge.connect('tabaaaaaaaa1', { visible: true, stVersion: '1.19.0' }, (delivery) => got.push(delivery));
+  assert.deepEqual(got, [], 'the withdrawn command never reaches the tab');
+  const taken = bridge.send(profile);
+  assert.equal(bridge.cancel(taken.id), false);
+  assert.equal(bridge.status(taken.id)?.state, 'delivered');
+  assert.equal(bridge.cancel('no-such-command'), false);
+  bridge.close();
 });

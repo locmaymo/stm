@@ -27,6 +27,21 @@
     "config": "Settings"
   },
   "connections": {
+    "switchExpired": "No SillyTavern tab took it within 10 minutes.",
+    "profileUse": "Use this profile",
+    "profileUsed": "SillyTavern now uses the profile {name}.",
+    "profileNeedsRunning": "Switching profiles happens in the open SillyTavern tab. Start SillyTavern and open it, then try again.",
+    "proxyChoose": "Use this proxy",
+    "proxyTurnOff": "Stop using a proxy",
+    "proxyOff": "no proxy",
+    "proxyChosen": "Chat completion now goes through {name}.",
+    "proxyTurnedOff": "Chat completion no longer goes through a proxy.",
+    "proxyChosenReloadTab": "Saved: {name}. A SillyTavern tab is still open; reload it after starting SillyTavern, or it may save its old choice over this one.",
+    "switchRunning": "Asking SillyTavern to switch to {name}…",
+    "switchWaiting": "Waiting for a SillyTavern tab to open to switch to {name}. Open SillyTavern; this waits up to 10 minutes.",
+    "switchMismatch": "SillyTavern did not find {name}. It may have been renamed; refresh the page.",
+    "switchFailed": "SillyTavern did not switch. {reason}",
+    "nameUnsupported": "This name has characters that cannot be sent to SillyTavern. Rename it in SillyTavern first.",
     "keyAdd": "Add key",
     "keyAddTitle": "Add an API key",
     "keyAddDescription": "SillyTavern stores it with its other keys and makes it the one in use for that provider.",
@@ -982,6 +997,10 @@
     "publicAddress": "Remote (any device)"
   },
   "errors": {
+    "st_running": "SillyTavern is running, so the change goes through its open tab.",
+    "settings_missing": "SillyTavern has not saved its settings yet. Start it once first.",
+    "settings_not_round_trip": "settings.json has been edited by hand, so it is left alone. Change the proxy in SillyTavern instead.",
+    "proxy_missing": "That proxy is no longer in SillyTavern. Refresh the page.",
     "st_not_running": "SillyTavern is not running. Start it and try again.",
     "st_accounts_enabled": "SillyTavern has user accounts turned on. The manager only looks after the default user.",
     "st_unreachable": "SillyTavern did not answer. Try again in a moment.",

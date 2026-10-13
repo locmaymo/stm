@@ -27,6 +27,21 @@
     "config": "Thiết lập"
   },
   "connections": {
+    "switchExpired": "Không có tab SillyTavern nào nhận lệnh trong 10 phút.",
+    "profileUse": "Dùng profile này",
+    "profileUsed": "SillyTavern đang dùng profile {name}.",
+    "profileNeedsRunning": "Việc đổi profile diễn ra trong tab SillyTavern đang mở. Hãy bật SillyTavern và mở nó, rồi thử lại.",
+    "proxyChoose": "Dùng proxy này",
+    "proxyTurnOff": "Không dùng proxy",
+    "proxyOff": "không dùng proxy",
+    "proxyChosen": "Chat completion giờ đi qua {name}.",
+    "proxyTurnedOff": "Chat completion không còn đi qua proxy.",
+    "proxyChosenReloadTab": "Đã lưu: {name}. Vẫn còn một tab SillyTavern đang mở; hãy tải lại tab đó sau khi bật SillyTavern, nếu không nó có thể ghi đè lựa chọn cũ lên.",
+    "switchRunning": "Đang nhờ SillyTavern chuyển sang {name}…",
+    "switchWaiting": "Đang chờ một tab SillyTavern mở để chuyển sang {name}. Hãy mở SillyTavern; sẽ chờ tối đa 10 phút.",
+    "switchMismatch": "SillyTavern không tìm thấy {name}. Có thể nó đã được đổi tên; hãy tải lại trang.",
+    "switchFailed": "SillyTavern chưa chuyển được. {reason}",
+    "nameUnsupported": "Tên này có ký tự không gửi được cho SillyTavern. Hãy đổi tên trong SillyTavern trước.",
     "keyAdd": "Thêm key",
     "keyAddTitle": "Thêm API key",
     "keyAddDescription": "SillyTavern lưu key cùng các key khác và chọn nó làm key đang dùng cho nhà cung cấp đó.",
@@ -982,6 +997,10 @@
     "publicAddress": "Từ xa (mọi thiết bị)"
   },
   "errors": {
+    "st_running": "SillyTavern đang chạy nên thay đổi phải đi qua tab đang mở của nó.",
+    "settings_missing": "SillyTavern chưa lưu thiết lập lần nào. Hãy bật nó một lần trước.",
+    "settings_not_round_trip": "settings.json đã bị sửa tay nên được giữ nguyên. Hãy đổi proxy trong SillyTavern.",
+    "proxy_missing": "Proxy đó không còn trong SillyTavern. Hãy tải lại trang.",
     "st_not_running": "SillyTavern đang tắt. Hãy bật rồi thử lại.",
     "st_accounts_enabled": "SillyTavern đang bật tài khoản người dùng. Trình quản lý chỉ lo cho người dùng mặc định.",
     "st_unreachable": "SillyTavern không trả lời. Thử lại sau giây lát.",

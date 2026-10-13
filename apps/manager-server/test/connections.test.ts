@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { maskSecret, parseSecrets, readConnections, secretKeyForApi, shownAddress } from '../src/connections.js';
+import { maskSecret, parseSecrets, readConnections, secretKeyForApi, selectProxyOnDisk, SettingsEditError, shownAddress } from '../src/connections.js';
 
 async function userRoot(files: { secrets?: string; settings?: string }): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), 'stm-connections-'));
@@ -117,4 +117,32 @@ test('masking, addresses and secret names', () => {
   assert.equal(secretKeyForApi('openrouter-text'), 'api_key_openrouter');
   assert.equal(secretKeyForApi('mistralai'), 'api_key_mistralai');
   assert.deepEqual(parseSecrets(['not', 'an', 'object']), { secrets: [], legacy: false });
+});
+
+test('a proxy is chosen on disk by touching only what choosing it in the page touches', async () => {
+  const settings = {
+    power_user: { theme: 'Dark Lite', custom_css: '.mes { color: red; }' },
+    proxies: [{ name: 'None', url: '', password: '' }, { name: 'Home', url: 'https://proxy.example/v1', password: 'pw' }],
+    selected_proxy: { name: 'None', url: '', password: '' },
+    oai_settings: { reverse_proxy: '', proxy_password: '', temp_openai: 1.1, custom_url: 'http://127.0.0.1:5000/v1' },
+    extension_settings: { connectionManager: { selectedProfile: null, profiles: [] } },
+  };
+  const written = JSON.stringify(settings, null, 4);
+  const root = await userRoot({ settings: written });
+  await selectProxyOnDisk(root, 'Home');
+  const after = await readFile(join(root, 'settings.json'), 'utf8');
+  // The same file, with those three values changed and nothing else.
+  assert.equal(after, JSON.stringify({ ...settings, selected_proxy: { name: 'Home', url: 'https://proxy.example/v1', password: 'pw' }, oai_settings: { ...settings.oai_settings, reverse_proxy: 'https://proxy.example/v1', proxy_password: 'pw' } }, null, 4));
+  assert.equal((await readConnections(root)).proxies.find((proxy) => proxy.name === 'Home')?.selected, true);
+  await selectProxyOnDisk(root, 'None');
+  assert.equal(await readFile(join(root, 'settings.json'), 'utf8'), written);
+  await assert.rejects(selectProxyOnDisk(root, 'Gone'), (error: unknown) => error instanceof SettingsEditError && error.code === 'proxy_missing');
+});
+
+test('a settings file SillyTavern did not write is left alone', async () => {
+  const handEdited = JSON.stringify({ proxies: [{ name: 'Home', url: 'https://proxy.example', password: '' }] }, null, 2);
+  const root = await userRoot({ settings: handEdited });
+  await assert.rejects(selectProxyOnDisk(root, 'Home'), (error: unknown) => error instanceof SettingsEditError && error.code === 'settings_not_round_trip');
+  assert.equal(await readFile(join(root, 'settings.json'), 'utf8'), handEdited);
+  await assert.rejects(selectProxyOnDisk(await userRoot({}), 'Home'), (error: unknown) => error instanceof SettingsEditError && error.code === 'settings_missing');
 });
