@@ -26,6 +26,23 @@
     "config": "Settings"
   },
   "extensions": {
+    "switchBrokenTitle": "Errors since updating to SillyTavern {version}",
+    "switchBrokenBody": "These started failing after the update: {names}.",
+    "switchDisableBroken": "Turn off the failing extensions",
+    "switchGoBack": "Go back to {previous}",
+    "switchIgnore": "Ignore",
+    "switchShowExtensions": "Open Extensions",
+    "switchGoBackTitle": "Go back to SillyTavern {previous}?",
+    "switchGoBackBody": "The previous version is put back. Your chats and settings stay as they are now.",
+    "switchRestoreData": "Also put my data back as it was before the update",
+    "switchRestoreDataWarning": "Chats and changes made since {when} will be lost.",
+    "switchSaverNoCopy": "Saver mode keeps no copy from before the update, so only the version goes back.",
+    "switchNoCopy": "The copy from before the update is no longer there, so only the version goes back.",
+    "switchGoBackDone": "Back on SillyTavern {previous}.",
+    "switchDisableDone": "Turned off. Reload SillyTavern in your browser.",
+    "switchRolledBackTitle": "SillyTavern {version} did not run with your data, so {previous} is back",
+    "switchRolledBackReason": "What happened: {reason}",
+    "switchRollbackFailedTitle": "SillyTavern {version} did not run, and going back to {previous} failed",
     "title": "Third-party extensions",
     "loadFailed": "The extension list could not be read.",
     "emptyTitle": "No extensions installed",
@@ -876,6 +893,9 @@
     "extension_has_git": "This extension already has its git history.",
     "extension_no_home_page": "This extension does not name a repository it comes from.",
     "extension_reconnect_expired": "That comparison is no longer waiting. Start it again.",
+    "extension_none_broken": "No extension is marked as broken by the last update.",
+    "version_switch_none": "There is no version switch to go back from.",
+    "version_restore_unavailable": "The copy from before the update is not there to put back.",
     "archive_too_large": "That file is too large.",
     "cloudflare_authorization_denied": "Access was not granted on Cloudflare.",
     "cloudflare_conflict": "Cloudflare refused that because something with the same name is already there.",
@@ -980,6 +1000,13 @@
     "upload_too_large": "That upload is too large."
   },
   "logs": {
+    "versions": {
+      "probationFailed": "SillyTavern {version} did not run with this data ({reason}); going back to {previous}",
+      "wentBack": "Back on SillyTavern {previous}",
+      "wentBackFailed": "Could not go back to SillyTavern {previous}: {reason}",
+      "restoringSafetyCopy": "Putting the data back as it was before the switch",
+      "goingBack": "Going back to SillyTavern {previous}"
+    },
     "extensions": {
       "checking": "Checking extensions for updates ({done}/{total})",
       "checked": "{available} of {total} extensions have an update",
@@ -999,7 +1026,9 @@
       "enabled": "Turned {name} on",
       "disabled": "Turned {name} off",
       "comparing": "Comparing {name} with its source",
-      "reconnected": "Reconnected {name} to {url}"
+      "reconnected": "Reconnected {name} to {url}",
+      "disablingBroken": "Turning off {count} extensions",
+      "disabledBroken": "Turned off {names}"
     },
     "panel": {
       "building": "The panel has not been built yet; building it now",
@@ -1332,6 +1361,14 @@
     "page": "Page {page} of {of}"
   },
   "notify": {
+    "sillytavernRolledBack": {
+      "title": "SillyTavern {version} did not run, so {previous} is back",
+      "body": "SillyTavern {version} would not run with your data, so the manager went back to {previous}. Open the manager for details."
+    },
+    "sillytavernRollbackFailed": {
+      "title": "SillyTavern {version} did not run, and going back failed",
+      "body": "Going back to {previous} failed: {reason}. Open the manager to install a version."
+    },
     "extensionsBroke": {
       "title": "Extensions broke after updating to SillyTavern {version}",
       "body": "These started failing after the update: {names}. Open Extensions in the manager to turn them off or roll back."
@@ -1364,7 +1401,8 @@
       "r2Upload": "The cloud backup",
       "r2Fetch": "Bringing back the recovery point",
       "installation": "The install",
-      "extensions": "Updating extensions"
+      "extensions": "Updating extensions",
+      "versionRollback": "Going back to the previous version"
     },
     "quota": {
       "storage": "storage",

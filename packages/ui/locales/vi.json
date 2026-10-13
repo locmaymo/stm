@@ -26,6 +26,23 @@
     "config": "Thiết lập"
   },
   "extensions": {
+    "switchBrokenTitle": "Có lỗi từ khi lên SillyTavern {version}",
+    "switchBrokenBody": "Những thứ này bắt đầu lỗi sau bản cập nhật: {names}.",
+    "switchDisableBroken": "Tắt các extension lỗi",
+    "switchGoBack": "Quay lại bản {previous}",
+    "switchIgnore": "Bỏ qua",
+    "switchShowExtensions": "Mở mục Extension",
+    "switchGoBackTitle": "Quay lại SillyTavern {previous}?",
+    "switchGoBackBody": "Phiên bản trước sẽ được đưa về. Chat và cài đặt của bạn giữ nguyên như hiện tại.",
+    "switchRestoreData": "Đưa cả dữ liệu về như trước khi cập nhật",
+    "switchRestoreDataWarning": "Chat và thay đổi từ {when} đến giờ sẽ mất.",
+    "switchSaverNoCopy": "Chế độ tiết kiệm không giữ bản sao từ trước khi cập nhật, nên chỉ phiên bản được đưa về.",
+    "switchNoCopy": "Bản sao từ trước khi cập nhật không còn nữa, nên chỉ phiên bản được đưa về.",
+    "switchGoBackDone": "Đã quay lại SillyTavern {previous}.",
+    "switchDisableDone": "Đã tắt. Hãy tải lại SillyTavern trong trình duyệt.",
+    "switchRolledBackTitle": "SillyTavern {version} không chạy được với dữ liệu của bạn, đã quay lại {previous}",
+    "switchRolledBackReason": "Chuyện gì đã xảy ra: {reason}",
+    "switchRollbackFailedTitle": "SillyTavern {version} không chạy được và không quay lại {previous} được",
     "title": "Extension bên thứ ba",
     "loadFailed": "Không đọc được danh sách extension.",
     "emptyTitle": "Chưa cài extension nào",
@@ -876,6 +893,9 @@
     "extension_has_git": "Extension này đã có lịch sử git.",
     "extension_no_home_page": "Extension này không ghi kho mã nguồn của nó.",
     "extension_reconnect_expired": "Bản so sánh đó đã hết hạn. Hãy làm lại.",
+    "extension_none_broken": "Không có extension nào bị đánh dấu hỏng sau lần cập nhật gần nhất.",
+    "version_switch_none": "Không có lần đổi phiên bản nào để quay lại.",
+    "version_restore_unavailable": "Bản sao từ trước khi cập nhật không còn để đưa về.",
     "archive_too_large": "Tệp đó quá lớn.",
     "cloudflare_authorization_denied": "Quyền truy cập chưa được cấp trên Cloudflare.",
     "cloudflare_conflict": "Cloudflare từ chối vì đã có thứ trùng tên ở đó.",
@@ -980,6 +1000,13 @@
     "upload_too_large": "Tệp tải lên quá lớn."
   },
   "logs": {
+    "versions": {
+      "probationFailed": "SillyTavern {version} không chạy được với dữ liệu này ({reason}); đang quay lại {previous}",
+      "wentBack": "Đã quay lại SillyTavern {previous}",
+      "wentBackFailed": "Không quay lại được SillyTavern {previous}: {reason}",
+      "restoringSafetyCopy": "Đang đưa dữ liệu về như trước khi đổi phiên bản",
+      "goingBack": "Đang quay lại SillyTavern {previous}"
+    },
     "extensions": {
       "checking": "Đang kiểm tra cập nhật extension ({done}/{total})",
       "checked": "{available} trên {total} extension có bản mới",
@@ -999,7 +1026,9 @@
       "enabled": "Đã bật {name}",
       "disabled": "Đã tắt {name}",
       "comparing": "Đang so {name} với nguồn của nó",
-      "reconnected": "Đã nối lại {name} với {url}"
+      "reconnected": "Đã nối lại {name} với {url}",
+      "disablingBroken": "Đang tắt {count} extension",
+      "disabledBroken": "Đã tắt {names}"
     },
     "panel": {
       "building": "Giao diện chưa được dựng; đang dựng ngay bây giờ",
@@ -1332,6 +1361,14 @@
     "page": "Trang {page} trên {of}"
   },
   "notify": {
+    "sillytavernRolledBack": {
+      "title": "SillyTavern {version} không chạy được, đã quay lại {previous}",
+      "body": "SillyTavern {version} không chạy được với dữ liệu của bạn, nên trình quản lý đã quay lại {previous}. Mở trình quản lý để xem chi tiết."
+    },
+    "sillytavernRollbackFailed": {
+      "title": "SillyTavern {version} không chạy được và không quay lại được",
+      "body": "Quay lại {previous} không thành công: {reason}. Mở trình quản lý để cài một phiên bản."
+    },
     "extensionsBroke": {
       "title": "Có extension hỏng sau khi lên SillyTavern {version}",
       "body": "Những extension này bắt đầu lỗi sau bản cập nhật: {names}. Mở mục Extension trong trình quản lý để tắt chúng hoặc quay lại bản trước."
@@ -1364,7 +1401,8 @@
       "r2Upload": "Sao lưu lên cloud",
       "r2Fetch": "Lấy điểm khôi phục",
       "installation": "Cài đặt",
-      "extensions": "Cập nhật extension"
+      "extensions": "Cập nhật extension",
+      "versionRollback": "Quay lại bản trước"
     },
     "quota": {
       "storage": "dung lượng",

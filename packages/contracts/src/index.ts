@@ -549,6 +549,42 @@ export interface ExtensionTarget {
   readonly name: string;
 }
 
+/**
+ * The last switch of SillyTavern's version, as the manager kept it.
+ *
+ * Written when a new version is first started on the reader's data, and
+ * updated when it has proved itself or been taken back.
+ */
+export interface VersionSwitch {
+  readonly previousInstallationId: string;
+  readonly previousRef: string;
+  readonly installationId: string;
+  readonly ref: string;
+  readonly at: string;
+  /** The copy of the profile taken just before the switch; null in saver mode, which takes none. */
+  readonly safetyCopyId: string | null;
+  readonly profileId: string | null;
+  /** `probation` while it is being watched, `kept` after, `rolledBack` when the previous version went back. */
+  readonly outcome: 'probation' | 'kept' | 'rolledBack' | 'rollbackFailed';
+  /** Why it was taken back, or why taking it back failed. */
+  readonly reason?: string | null;
+  /** The reader said not to show it on the overview any more. */
+  readonly dismissed: boolean;
+}
+
+/** What the overview needs to offer the way back from a version. */
+export interface VersionSwitchStatus {
+  readonly switch: VersionSwitch | null;
+  /** Extensions and server plugins whose trouble started with this version. */
+  readonly broken: readonly { readonly kind: ExtensionErrorKind; readonly name: string; readonly displayName: string }[];
+  /** Whether the copy taken before the switch is still there to put back. */
+  readonly canRestoreData: boolean;
+  /** Saver mode, which keeps no copy to put back. */
+  readonly saving: boolean;
+  /** A way back that is running, for a page that did not start it. */
+  readonly job: Job | null;
+}
+
 export type RestoreMode = 'merge' | 'replace';
 
 export type BackupSource = 'created' | 'uploaded';
@@ -1135,7 +1171,7 @@ export type JobState = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled
  * announced itself as "Back up now" in the local backup card while the cloud
  * card, which had started it, showed nothing.
  */
-export type JobKind = 'installation' | 'backup' | 'restore' | 'r2Upload' | 'r2Fetch' | 'extensions';
+export type JobKind = 'installation' | 'backup' | 'restore' | 'r2Upload' | 'r2Fetch' | 'extensions' | 'versionRollback';
 
 /** The jobs a panel reattaches to and shows progress for; an install is its own screen. */
 export const OPERATION_JOB_KINDS: readonly JobKind[] = ['backup', 'restore', 'r2Upload', 'r2Fetch'];
@@ -2041,6 +2077,8 @@ function newestRelease(versions: readonly VersionOption[]): VersionOption | null
 export const NOTIFICATION_KINDS = [
   'sillytavernCrashed',
   'extensionsBroke',
+  'sillytavernRolledBack',
+  'sillytavernRollbackFailed',
   'installFinished',
   'installFailed',
   'backupFailed',

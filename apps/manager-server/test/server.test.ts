@@ -9,7 +9,7 @@ import { promisify } from 'node:util';
 import { getPlatformPaths } from '../../../packages/platform/src/index.js';
 import { StateStore } from '../src/state.js';
 import { preferredNetworkHost, startManagerServer, type ManagerServer } from '../src/server.js';
-import type { AccessGatewayState, ApiErrorBody, ConsoleStatus, ExtensionList, Installation, Job, LegalReview, ManagerUpdateStatus, OnlineState, ProcessState, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, ApiErrorBody, ConsoleStatus, ExtensionList, Installation, Job, LegalReview, ManagerUpdateStatus, OnlineState, ProcessState, SystemSnapshot, TunnelState, VersionOption, VersionSwitchStatus } from '../../../packages/contracts/src/index.js';
 import { LEGAL_META } from '../../../packages/legal/src/index.js';
 import type { WorkerBudget, WorkerBudgetLevel } from '../src/worker-budget.js';
 import { hashPassword } from '../src/password.js';
@@ -961,6 +961,110 @@ test('an extension is removed to the trash, put back, and switched off with Sill
   const afterRestore = await list();
   assert.equal(afterRestore.extensions[0]?.name, 'Notes');
   assert.deepEqual(afterRestore.trash, []);
+});
+
+/**
+ * A manager on 1.0.0 with a profile, a runtime that can switch to 2.0.0 and
+ * back, and a SillyTavern whose 2.0.0 does what `newStarts` says: comes up,
+ * or writes to the profile (the way a data migration would) and dies.
+ */
+async function versionSwitchManager(t: { after: (fn: () => Promise<void>) => void }, newStarts: boolean) {
+  const root = await mkdtemp(join(tmpdir(), 'stm-version-switch-api-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const oldRuntime = join(root, 'old-runtime'); const newRuntime = join(root, 'new-runtime');
+  await mkdir(oldRuntime, { recursive: true }); await mkdir(newRuntime, { recursive: true });
+  const now = new Date(Date.now() - 60_000).toISOString();
+  const oldInstallation: Installation = { id: 'install-old', selector: 'latest', resolvedRef: '1.0.0', channel: 'release', runtimePath: oldRuntime, markerPath: join(oldRuntime, '.stm-installation.json'), status: 'ready', progress: 100, step: 'Installation ready', error: null, createdAt: now, updatedAt: now, activatedAt: now };
+  const newInstallation: Installation = { ...oldInstallation, id: 'install-new', resolvedRef: '2.0.0', runtimePath: newRuntime, markerPath: join(newRuntime, '.stm-installation.json'), activatedAt: null };
+  let active = oldInstallation;
+  const activated: string[] = [];
+  let profileData = '';
+  const fakeRuntime = {
+    listVersions: async () => [], listInstallations: async () => [oldInstallation, newInstallation].map((item) => item.id === active.id ? active : item),
+    getActiveInstallation: async () => active,
+    getInstallation: async (id: string) => id === oldInstallation.id ? oldInstallation : id === newInstallation.id ? newInstallation : null,
+    queueInstall: (_selector: unknown, _progress: unknown, beforeInstall?: (report: (progress: number, step: unknown) => Promise<void>) => Promise<void>) => ({
+      id: newInstallation.id,
+      promise: (async () => {
+        await beforeInstall?.(async () => undefined);
+        active = { ...newInstallation, activatedAt: new Date().toISOString() };
+        return active;
+      })(),
+    }),
+    activateInstallation: async (id: string) => { activated.push(id); active = id === oldInstallation.id ? oldInstallation : newInstallation; return active; },
+  } as unknown as RuntimeManager;
+  let processState: ProcessState = { status: 'stopped', installationId: null, profileId: null, pid: null, startedAt: null, error: null };
+  const fakeSupervisor = {
+    getState: () => processState,
+    start: async () => {
+      if (active.id === newInstallation.id && !newStarts) {
+        await writeFile(join(profileData, 'chat.json'), '{"message":"migrated by 2.0.0"}', 'utf8');
+        processState = { ...processState, status: 'error', error: 'SillyTavern exited on its own (exit code 1)' };
+      } else processState = { ...processState, status: 'running', installationId: active.id, error: null };
+      return processState;
+    },
+    stop: async () => { processState = { ...processState, status: 'stopped' }; return processState; },
+    restart: async () => processState,
+    close: async () => undefined,
+  } as unknown as ProcessSupervisor;
+  const manager = await startManagerServer({ host: '127.0.0.1', port: 0, paths, env: { STM_ADMIN_PASSWORD: 'correct horse battery staple' }, secureCookies: false,
+    accessPort: 0, runtime: fakeRuntime, supervisor: fakeSupervisor, logger: () => undefined, probationMs: 200 });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const { cookie, csrfToken } = await signIn(base);
+  const profile = (await (await fetch(`${base}/api/v1/profiles`, { headers: { cookie } })).json() as { profiles: Array<{ id: string; dataPath: string }> }).profiles[0];
+  assert.ok(profile);
+  profileData = join(profile.dataPath, 'default-user');
+  await mkdir(profileData, { recursive: true });
+  await writeFile(join(profileData, 'chat.json'), '{"message":"keep"}', 'utf8');
+  const status = async () => await (await fetch(`${base}/api/v1/installations/switch`, { headers: { cookie } })).json() as VersionSwitchStatus;
+  const until = async (done: (current: VersionSwitchStatus) => boolean): Promise<VersionSwitchStatus> => {
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      const current = await status();
+      if (done(current)) return current;
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+    }
+    throw new Error('the switch did not settle');
+  };
+  const install = await fetch(`${base}/api/v1/installations`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrfToken, 'content-type': 'application/json' }, body: JSON.stringify({ version: 'latest' }) });
+  assert.equal(install.status, 202);
+  return { base, cookie, csrfToken, profile, profileData, activated, status, until, active: () => active, processState: () => processState };
+}
+
+test('a new version that will not start with the reader’s data is taken back, data and all', async (t) => {
+  const manager = await versionSwitchManager(t, false);
+  const settled = await manager.until((current) => current.switch?.outcome === 'rolledBack');
+  assert.equal(settled.switch?.ref, '2.0.0');
+  assert.equal(settled.switch?.previousRef, '1.0.0');
+  assert.ok(settled.switch?.safetyCopyId, 'a copy was taken before the switch');
+  assert.match(settled.switch?.reason ?? '', /exited on its own/u);
+  assert.deepEqual(manager.activated, ['install-old']);
+  assert.equal(manager.active().id, 'install-old');
+  assert.equal(manager.processState().status, 'running', 'and SillyTavern is up again on the version that worked');
+  // Nothing was ever served by 2.0.0, so what it wrote on its way down is undone.
+  assert.equal(await readFile(join(manager.profileData, 'chat.json'), 'utf8'), '{"message":"keep"}');
+  const profiles = await (await fetch(`${manager.base}/api/v1/profiles`, { headers: { cookie: manager.cookie } })).json() as { profiles: Array<{ installationId: string }> };
+  assert.equal(profiles.profiles[0]?.installationId, 'install-old');
+  const bell = await (await fetch(`${manager.base}/api/v1/notifications`, { headers: { cookie: manager.cookie } })).json() as { items: Array<{ kind: string; params?: Record<string, unknown> }> };
+  assert.deepEqual(bell.items.find((item) => item.kind === 'sillytavernRolledBack')?.params, { version: '2.0.0', previous: '1.0.0' });
+});
+
+test('a new version that runs is kept, and can still be taken back by hand without its data', async (t) => {
+  const manager = await versionSwitchManager(t, true);
+  const kept = await manager.until((current) => current.switch?.outcome === 'kept');
+  assert.equal(kept.canRestoreData, true);
+  assert.deepEqual(kept.broken, []);
+  assert.equal(manager.active().id, 'install-new');
+  await writeFile(join(manager.profileData, 'chat.json'), '{"message":"written on 2.0.0"}', 'utf8');
+
+  const back = await fetch(`${manager.base}/api/v1/installations/switch/back`, { method: 'POST', headers: { cookie: manager.cookie, 'x-csrf-token': manager.csrfToken, 'content-type': 'application/json' }, body: JSON.stringify({ restoreData: false }) });
+  assert.equal(back.status, 202);
+  const after = await manager.until((current) => current.switch?.outcome === 'rolledBack' && current.job === null);
+  assert.equal(after.switch?.dismissed, true, 'asked for, so there is nothing to tell the overview');
+  assert.equal(manager.active().id, 'install-old');
+  assert.equal(await readFile(join(manager.profileData, 'chat.json'), 'utf8'), '{"message":"written on 2.0.0"}', 'the data stays as it is now');
+  const again = await fetch(`${manager.base}/api/v1/installations/switch/back`, { method: 'POST', headers: { cookie: manager.cookie, 'x-csrf-token': manager.csrfToken, 'content-type': 'application/json' }, body: JSON.stringify({}) });
+  assert.equal((await again.json() as ApiErrorBody).error.code, 'version_switch_none', 'and there is no second way back from the same switch');
 });
 
 test('a reinstall installs the same release again, from scratch', async (t) => {

@@ -200,6 +200,8 @@ export class AccessGateway {
   private readonly extensionErrors: GatewayExtensionErrors | null;
   /** Whether the access link has ever been turned on; see `AccessGatewayState.opened`. */
   private opened = false;
+  /** When SillyTavern last answered a request that can change data; 0 for never. */
+  private lastWriteAt = 0;
   private readonly attempts: RateLimiter;
   private readonly sessions = new Map<string, number>();
   /**
@@ -391,6 +393,15 @@ export class AccessGateway {
     return count;
   }
 
+  /**
+   * Whether SillyTavern answered anything that can change data at or after
+   * this time, for a version change deciding whether the copy taken before
+   * it can still be put back without losing anything.
+   */
+  public servedSince(at: number): boolean {
+    return this.lastWriteAt >= at;
+  }
+
   private handle(request: IncomingMessage, response: ServerResponse): void {
     const pathname = requestPath(request);
     const text = TEXT[localeOf(request)];
@@ -505,6 +516,9 @@ export class AccessGateway {
       headers,
       agent: this.upstreamAgent,
     }, (upstreamResponse) => {
+      // SillyTavern reads and writes with POST alike, so any of them that it
+      // answered counts: the data may have changed since.
+      if (!bodyless) this.lastWriteAt = this.now();
       if (page && (upstreamResponse.statusCode ?? 0) === 200 && isPlainHtml(upstreamResponse)) { this.injectNotify(upstreamResponse, response); return; }
       response.writeHead(upstreamResponse.statusCode ?? 502, this.framed(responseHeaders(upstreamResponse)));
       // No compression, no buffering: a token stream has to arrive as it is
