@@ -1,6 +1,6 @@
 import { readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { connectionApiProvider, type ConnectionKey, type ConnectionProfile, type ConnectionProxy, type ConnectionsOverview } from '../../../packages/contracts/src/index.js';
+import { connectionApiProvider, providerOfSecret, type ConnectionKey, type ConnectionProfile, type ConnectionProxy, type ConnectionsOverview } from '../../../packages/contracts/src/index.js';
 
 /**
  * The keys, proxies and connection profiles SillyTavern keeps, read off the
@@ -122,7 +122,7 @@ export function describeConnections(stored: StoredSecrets, config: StoredSetting
   });
   const keys: ConnectionKey[] = stored.secrets.map((secret) => ({
     secretKey: secret.secretKey,
-    provider: providerOf(secret.secretKey),
+    provider: providerOfSecret(secret.secretKey),
     id: secret.id,
     label: secret.label,
     masked: maskSecret(secret.value),
@@ -244,11 +244,6 @@ export async function selectProxyOnDisk(userRoot: string, name: string): Promise
   const temporary = `${path}.stm-${process.pid}.tmp`;
   await writeFile(temporary, JSON.stringify(settings, null, 4), 'utf8');
   await rename(temporary, path);
-}
-
-/** The provider a secret name is for: `api_key_openrouter` is `openrouter`. */
-export function providerOf(secretKey: string): string {
-  return secretKey.replace(/^api_key_/u, '');
 }
 
 /** The secret name `/api <value>` reads its key from. */

@@ -27,6 +27,17 @@
     "config": "Settings"
   },
   "connections": {
+    "watchTitle": "Watch",
+    "watchDaily": "Test every key and proxy once a day",
+    "watchDailyHint": "Calls each provider with your keys, from this machine, and tells the bell when a key is refused, runs out of credit or a proxy stops answering.",
+    "watchThreshold": "Tell me when a balance falls below",
+    "watchThresholdHint": "In the provider's own currency, for providers that report a balance (OpenRouter, DeepSeek). Leave empty for never.",
+    "watchErrors": "Tell me about runs of refused requests",
+    "watchErrorsHint": "Reads SillyTavern's own traffic on this machine: 5 or more 401 or 429 answers from one provider within 10 minutes.",
+    "watchLastRun": "Last daily test: {when}",
+    "watchNeverRun": "The daily test has not run yet.",
+    "watchSaved": "Saved.",
+    "watchSaveFailed": "The setting could not be saved.",
     "switchExpired": "No SillyTavern tab took it within 10 minutes.",
     "profileUse": "Use this profile",
     "profileUsed": "SillyTavern now uses the profile {name}.",
@@ -1501,6 +1512,31 @@
     "page": "Page {page} of {of}"
   },
   "notify": {
+    "checkNow": "Check now",
+    "connectionKeyInvalid": {
+      "title": "{name} was refused",
+      "body": "In the daily check the provider refused this key. It may have been revoked or have expired."
+    },
+    "connectionNoCredit": {
+      "title": "{name} is out of credit",
+      "body": "In the daily check the provider said this account has no credit or quota left. Replies through it will fail."
+    },
+    "connectionLowCredit": {
+      "title": "{name} is down to {amount}",
+      "body": "That is below the {threshold} you asked to be told about."
+    },
+    "connectionProxyDown": {
+      "title": "Proxy {name} stopped working",
+      "body": "In the daily check: {problem}."
+    },
+    "connectionRefused": {
+      "title": "{provider} refused {count} requests in {minutes} minutes",
+      "body": "The key may have expired or been revoked."
+    },
+    "connectionRateLimited": {
+      "title": "{provider} limited {count} requests in {minutes} minutes",
+      "body": "Requests are going out too fast, or the account is out of quota."
+    },
     "sillytavernRolledBack": {
       "title": "SillyTavern {version} did not run, so {previous} is back",
       "body": "SillyTavern {version} would not run with your data, so the manager went back to {previous}. Open the manager for details."

@@ -2100,6 +2100,12 @@ export const NOTIFICATION_KINDS = [
   'diskLow',
   'cloudQuota',
   'bucketTaken',
+  'connectionKeyInvalid',
+  'connectionNoCredit',
+  'connectionLowCredit',
+  'connectionProxyDown',
+  'connectionRefused',
+  'connectionRateLimited',
   'broadcast',
 ] as const;
 export type NotificationKind = (typeof NOTIFICATION_KINDS)[number];
@@ -2356,6 +2362,11 @@ export function connectionApiProvider(api: string): string {
   return aliases[api] ?? api;
 }
 
+/** The provider a secret name is for: `api_key_openrouter` is `openrouter`. */
+export function providerOfSecret(secretKey: string): string {
+  return secretKey.replace(/^api_key_/u, '');
+}
+
 /** The name a provider is shown by. */
 export function connectionProviderName(provider: string): string {
   return CONNECTION_PROVIDER_NAMES[provider] ?? provider;
@@ -2438,3 +2449,20 @@ export interface ConnectionModelList {
   readonly models: readonly ConnectionModel[];
   readonly fetchedAt: string;
 }
+
+/**
+ * The Connections page's watch; see connection-watch.ts. The daily test
+ * calls every provider with the user's keys, so it is off until turned on.
+ */
+export interface ConnectionWatchSettings {
+  readonly daily: boolean;
+  /** Below this balance, in the provider's own currency, the bell says so; null for never. */
+  readonly creditThreshold: number | null;
+  /** Hints from SillyTavern's own traffic: runs of 401 or 429 from one provider. */
+  readonly errorHints: boolean;
+  /** When the daily test last ran. */
+  readonly lastRunAt: string | null;
+}
+
+/** Notifications about connections, which the bell links to the Connections page. */
+export const CONNECTION_NOTIFICATION_KINDS: readonly NotificationKind[] = ['connectionKeyInvalid', 'connectionNoCredit', 'connectionLowCredit', 'connectionProxyDown', 'connectionRefused', 'connectionRateLimited'];

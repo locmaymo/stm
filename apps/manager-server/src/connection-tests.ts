@@ -1,8 +1,8 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { connectionApiProvider, connectionTargetKey, type ConnectionBalance, type ConnectionModel, type ConnectionModelList, type ConnectionTarget, type ConnectionTestCode, type ConnectionTestResult } from '../../../packages/contracts/src/index.js';
+import { connectionApiProvider, connectionTargetKey, providerOfSecret, type ConnectionBalance, type ConnectionModel, type ConnectionModelList, type ConnectionTarget, type ConnectionTestCode, type ConnectionTestResult } from '../../../packages/contracts/src/index.js';
 import type { PlatformPaths } from '../../../packages/platform/src/index.js';
-import { providerOf, type StoredSecret, type StoredSecrets, type StoredSettings } from './connections.js';
+import type { StoredSecret, StoredSecrets, StoredSettings } from './connections.js';
 
 /**
  * Testing a key, a proxy or a connection profile: does it still work, and how
@@ -142,7 +142,7 @@ export class ConnectionTester {
     if (target.kind === 'key') {
       const secret = secrets.secrets.find((item) => item.secretKey === target.secretKey && item.id === target.id);
       if (!secret) throw new ConnectionTargetMissing('That key is no longer in SillyTavern');
-      const provider = providerOf(secret.secretKey);
+      const provider = providerOfSecret(secret.secretKey);
       return this.keyProbe(provider, secret, provider === 'custom' ? text(settings.oai.custom_url) : null);
     }
     if (target.kind === 'proxy') {
@@ -307,6 +307,52 @@ export class ConnectionTester {
   private result(code: ConnectionTestCode, via: ConnectionTestResult['via'], provider: string | null, httpStatus: number | null, latencyMs: number | null, modelCount: number | null, balance: ConnectionBalance | null, sent: boolean): ConnectionTestResult {
     return { code, via, provider, httpStatus, latencyMs, modelCount, balance, sent, testedAt: this.now().toISOString() };
   }
+}
+
+/** A target that was tested, with its last result from before. */
+export interface TargetTested {
+  readonly target: ConnectionTarget;
+  readonly previous: ConnectionTestResult | null;
+  readonly result: ConnectionTestResult;
+}
+
+/**
+ * Test several targets, a few at a time, keeping each result and model list.
+ *
+ * A few at once is enough to finish a long list quickly, and few enough that
+ * one provider is not asked about ten keys in the same second. A target that
+ * went missing between reading the files and testing it is passed over.
+ */
+export async function testTargets(deps: { readonly tester: ConnectionTester; readonly results: ConnectionTestStore; readonly models: ModelCache }, targets: readonly ConnectionTarget[], secrets: StoredSecrets, settings: StoredSettings, concurrency = 3): Promise<TargetTested[]> {
+  const before = { ...await deps.results.all() };
+  const tested: TargetTested[] = [];
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(concurrency, targets.length) }, async () => {
+    while (next < targets.length) {
+      const target = targets[next++];
+      if (!target) continue;
+      let outcome: TestOutcome;
+      try {
+        outcome = await deps.tester.test(target, secrets, settings);
+      } catch (error: unknown) {
+        if (error instanceof ConnectionTargetMissing) continue;
+        throw error;
+      }
+      await deps.results.set(target, outcome.result);
+      if (outcome.models) deps.models.set(target, outcome.result.provider, outcome.models);
+      tested.push({ target, previous: before[connectionTargetKey(target)] ?? null, result: outcome.result });
+    }
+  }));
+  return tested;
+}
+
+/** Every key and proxy in the files, and the profiles too when asked. */
+export function everyTarget(secrets: StoredSecrets, settings: StoredSettings, withProfiles: boolean): ConnectionTarget[] {
+  return [
+    ...secrets.secrets.map((secret): ConnectionTarget => ({ kind: 'key', secretKey: secret.secretKey, id: secret.id })),
+    ...settings.proxies.filter((proxy) => proxy.name !== NO_PROXY).map((proxy): ConnectionTarget => ({ kind: 'proxy', name: proxy.name })),
+    ...withProfiles ? settings.profiles.map((profile): ConnectionTarget => ({ kind: 'profile', id: profile.id })) : [],
+  ];
 }
 
 /** An OpenAI-compatible endpoint, for a proxy whose format is not known. */

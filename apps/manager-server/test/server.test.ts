@@ -915,6 +915,14 @@ test('connections are tested one at a time or all together, and remembered', asy
   assert.equal((await post('keys/rename', { secretKey: '../secrets', id: 'bad', label: 'x' })).status, 400);
   assert.equal((await post('keys', { secretKey: 'deepl', value: 'x', label: 'x' })).status, 400);
   assert.equal((await post('keys', { secretKey: 'api_key_openai', value: '   ', label: 'x' })).status, 400);
+  // The watch: off until turned on, and only well-formed changes are kept.
+  const watch = (body?: unknown) => fetch(`${base}/api/v1/connections/watch`, body === undefined ? { headers: { cookie } } : { method: 'PUT', headers: { cookie, 'x-csrf-token': csrfToken, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  assert.deepEqual(await (await watch()).json(), { daily: false, creditThreshold: null, errorHints: true, lastRunAt: null });
+  assert.deepEqual(await (await watch({ daily: true, creditThreshold: 1.5 })).json(), { daily: true, creditThreshold: 1.5, errorHints: true, lastRunAt: null });
+  assert.equal((await watch({ creditThreshold: -2 })).status, 400);
+  assert.equal((await watch({ creditThreshold: 'lots' })).status, 400);
+  assert.equal((await watch({ daily: 'yes' })).status, 400);
+  assert.deepEqual(await (await watch({ errorHints: false, creditThreshold: null, lastRunAt: '2026-01-01T00:00:00.000Z' })).json(), { daily: true, creditThreshold: null, errorHints: false, lastRunAt: null });
 });
 
 test('extensions are checked, updated and rolled back as jobs, one at a time', { skip: await gitMissing() }, async (t) => {

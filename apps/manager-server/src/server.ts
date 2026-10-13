@@ -5,7 +5,7 @@ import { createReadStream } from 'node:fs';
 import { hostname, networkInterfaces } from 'node:os';
 import { createSocket } from 'node:dgram';
 import { extname, join, relative, resolve, sep } from 'node:path';
-import { applyQuery, BACKUP_PURPOSES, isLogEvent, availableUpdate, parseBridgeCommand, connectionTargetKey, parseConnectionTarget, type BridgeCommandStatus, type ConnectionModelList, type ConnectionTarget, type ConnectionTestResult, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, isConsoleStatusSection, KEEP_ONLINE_DEFAULT_MINUTES, OPERATION_JOB_KINDS, SETUP_STEPS, type AccessGatewayState, type ApiErrorBody, type BackupManifest, type BackupPurpose, type ConfigUpdateInput, type ConsoleStatus, type ConsoleStatusSection, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogPage, type LogSink, type LogSourceFilter, type LegalReview, type ManagerPorts, type ManagerUpdateStatus, type OnlineState, type PortSettings, type Profile, type ProfileLayout, type RestorePreview, type SetupChecklistState, type SetupStatus, type SetupStep, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
+import { applyQuery, BACKUP_PURPOSES, isLogEvent, availableUpdate, parseBridgeCommand, connectionProviderName, connectionTargetKey, parseConnectionTarget, providerOfSecret, type BridgeCommandStatus, type ConnectionModelList, type ConnectionTarget, type ConnectionTestResult, type ConnectionWatchSettings, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, isConsoleStatusSection, KEEP_ONLINE_DEFAULT_MINUTES, OPERATION_JOB_KINDS, SETUP_STEPS, type AccessGatewayState, type ApiErrorBody, type BackupManifest, type BackupPurpose, type ConfigUpdateInput, type ConsoleStatus, type ConsoleStatusSection, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogPage, type LogSink, type LogSourceFilter, type LegalReview, type ManagerPorts, type ManagerUpdateStatus, type OnlineState, type PortSettings, type Profile, type ProfileLayout, type RestorePreview, type SetupChecklistState, type SetupStatus, type SetupStep, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
 import { getPlatformPaths, storageDurability, storageMedium, storageReport, type PlatformPaths } from '../../../packages/platform/src/index.js';
 import { INSTALL_CANCELED, RuntimeError, RuntimeManager, type InstallationProgress } from '../../../packages/sillytavern-runtime/src/index.js';
 import { hashPassword, MIN_PASSWORD_LENGTH, validatePasscode, validatePassword, verifyPassword } from './password.js';
@@ -22,7 +22,8 @@ import { ProcessSupervisor } from './supervisor.js';
 import { SillyTavernClient, SillyTavernError } from './st-client.js';
 import { BridgeBusyError, SillyTavernBridge } from './st-bridge.js';
 import { readConnections, readStoredConnections, selectProxyOnDisk, SettingsEditError } from './connections.js';
-import { ConnectionTargetMissing, ConnectionTester, ConnectionTestStore, ModelCache, type SillyTavernStatusCall } from './connection-tests.js';
+import { ConnectionTargetMissing, ConnectionTester, ConnectionTestStore, everyTarget, ModelCache, testTargets, type SillyTavernStatusCall } from './connection-tests.js';
+import { ConnectionWatcher, ConnectionWatchStore, MetricsTail, parseWatchSettings } from './connection-watch.js';
 import { AccessGateway } from './gateway.js';
 import { ACCESS_GATEWAY_PORT, checkSillyTavernPort, findFreePort, isPortFree, MANAGER_PORT, PortError, portWasDemanded, resolveAccessPort, resolveConsolePort, SILLYTAVERN_PORT, type ResolvedPort } from './ports.js';
 import { previewImage, previewLogo, previewManifest } from './preview.js';
@@ -867,6 +868,30 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       return releases.status().update?.version ?? null;
     },
   });
+  /*
+   * Keys and proxies watched: a daily test when it is turned on, and runs of
+   * refusals in SillyTavern's own traffic; see connection-watch.ts.
+   */
+  const connectionWatcher = new ConnectionWatcher({
+    store: connections.watch,
+    tail: new MetricsTail(metrics.filePath),
+    notify: async (finding) => { await notifications.emit(finding.kind, finding.level, { params: finding.params, dedupeKey: finding.dedupeKey, dedupeMs: finding.dedupeMs }).catch(() => undefined); },
+    testAll: async () => {
+      const profile = await profiles.getActive();
+      if (!profile) return null;
+      const stored = await readStoredConnections(userDataRoot(profile));
+      if (!('value' in stored.secrets) && !('value' in stored.settings)) return null;
+      const secrets = 'value' in stored.secrets ? stored.secrets.value : { secrets: [], legacy: false };
+      const settings = 'value' in stored.settings ? stored.settings.value : { proxies: [], selectedProxy: null, profiles: [], selectedProfile: null, oai: {} };
+      const labels = new Map(secrets.secrets.map((secret) => [`${secret.secretKey}:${secret.id ?? ''}`, secret]));
+      return (await testTargets(connections, everyTarget(secrets, settings, false), secrets, settings)).map((item) => {
+        const secret = item.target.kind === 'key' ? labels.get(`${item.target.secretKey}:${item.target.id ?? ''}`) : undefined;
+        const name = item.target.kind === 'proxy' ? item.target.name
+          : secret ? `${secret.label} (${connectionProviderName(providerOfSecret(secret.secretKey))})` : '';
+        return { ...item, name };
+      });
+    },
+  });
   // Every browser that asked to be told is told, in the language it asked in.
   const push = new WebPush({ paths });
   const extensions = extensionServices(paths, options.probationMs, (version, names) => {
@@ -1191,7 +1216,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     online,
     // The meter closes first, so the part of today that has just been spent is
     // written down before the transport looks for finished days.
-    close: async () => { extensions.closing.abort(); bridge.close(); nightly.close(); online.close(); notificationRules.close(); replyNotifier.close(); announcements?.close(); await activity.close(); await telemetry.close(); await scheduler.close(); await tunnel.close(); await managerTunnel.close(); await gateway.close(); await supervisor.close(); await backups.settle(); await profiles.settle(); await closeServer(server); },
+    close: async () => { extensions.closing.abort(); bridge.close(); connectionWatcher.close(); nightly.close(); online.close(); notificationRules.close(); replyNotifier.close(); announcements?.close(); await activity.close(); await telemetry.close(); await scheduler.close(); await tunnel.close(); await managerTunnel.close(); await gateway.close(); await supervisor.close(); await backups.settle(); await profiles.settle(); await closeServer(server); },
   };
 }
 
@@ -1638,24 +1663,10 @@ async function handleConnectionsRequest(context: RequestContext, deps: { readonl
       }
       return;
     }
-    const targets: ConnectionTarget[] = [
-      ...secrets.secrets.map((secret): ConnectionTarget => ({ kind: 'key', secretKey: secret.secretKey, id: secret.id })),
-      ...settings.proxies.filter((proxy) => proxy.name !== 'None').map((proxy): ConnectionTarget => ({ kind: 'proxy', name: proxy.name })),
-      ...settings.profiles.map((profile): ConnectionTarget => ({ kind: 'profile', id: profile.id })),
-    ];
     connections.running = true;
     try {
-      const tests: Record<string, ConnectionTestResult> = {};
-      let next = 0;
-      // A few at a time: enough to finish a long list quickly, few enough
-      // that one provider is not asked about ten keys in the same second.
-      await Promise.all(Array.from({ length: Math.min(CONNECTION_TEST_CONCURRENCY, targets.length) }, async () => {
-        while (next < targets.length) {
-          const item = targets[next++];
-          if (item) tests[connectionTargetKey(item)] = await run(item, null);
-        }
-      }));
-      sendJson(response, 200, { tests });
+      const tested = await testTargets(connections, everyTarget(secrets, settings, true), secrets, settings);
+      sendJson(response, 200, { tests: Object.fromEntries(tested.map((item) => [connectionTargetKey(item.target), item.result])) });
     } finally {
       connections.running = false;
     }
@@ -1736,6 +1747,23 @@ async function handleConnectionsRequest(context: RequestContext, deps: { readonl
     sendJson(response, 200, { ok: true, tabsOpen: bridge.summary().tabs > 0 });
     return;
   }
+  // The watch's switches; see connection-watch.ts.
+  if (pathname === `${CONNECTIONS_API}/watch` && (method === 'GET' || method === 'PUT')) {
+    if (method === 'GET') { sendJson(response, 200, await connections.watch.get() satisfies ConnectionWatchSettings); return; }
+    const body = await readJson(request);
+    const current = await connections.watch.get();
+    const wanted = isRecord(body) ? parseWatchSettings({ ...current, ...body, lastRunAt: current.lastRunAt }) : null;
+    const wrong = !isRecord(body)
+      || (body.daily !== undefined && typeof body.daily !== 'boolean')
+      || (body.errorHints !== undefined && typeof body.errorHints !== 'boolean')
+      || (body.creditThreshold !== undefined && body.creditThreshold !== null && wanted?.creditThreshold === null);
+    if (!wanted || wrong) {
+      sendError(response, 400, 'invalid_input', 'daily and errorHints are true or false; creditThreshold is a number from 0, or null');
+      return;
+    }
+    sendJson(response, 200, await connections.watch.update(wanted) satisfies ConnectionWatchSettings);
+    return;
+  }
   // The models a target's last test brought back, while they are kept.
   if (pathname === `${CONNECTIONS_API}/models` && method === 'GET') {
     const target = parseConnectionTarget({ kind: searchParams.get('kind'), secretKey: searchParams.get('secretKey'), id: searchParams.get('id'), name: searchParams.get('name') });
@@ -1762,6 +1790,8 @@ interface ConnectionServices {
   readonly tester: ConnectionTester;
   readonly results: ConnectionTestStore;
   readonly models: ModelCache;
+  /** The daily test's and the error hints' switches. */
+  readonly watch: ConnectionWatchStore;
   /** SillyTavern's own API, for changing keys. */
   readonly sillyTavern: SillyTavernClient;
   /** A test of every connection is under way. */
@@ -1787,6 +1817,7 @@ function connectionServices(paths: PlatformPaths, sillyTavern: SillyTavernClient
     tester: new ConnectionTester({ sillyTavern: status }),
     results: new ConnectionTestStore(paths),
     models: new ModelCache(),
+    watch: new ConnectionWatchStore(paths),
     sillyTavern,
     running: false,
   };

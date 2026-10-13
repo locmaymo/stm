@@ -1,15 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Activity, CircleCheck, CircleOff, Ellipsis, KeyRound, List, LoaderCircle, Network, Pencil, Play, Plus, RefreshCw, Route, Send, Trash2 } from 'lucide-react';
+import { Activity, BellRing, CircleCheck, CircleOff, Ellipsis, KeyRound, List, LoaderCircle, Network, Pencil, Play, Plus, RefreshCw, Route, Send, Trash2 } from 'lucide-react';
 import {
   Alert, AlertDescription, Badge, Button, Card, CardAction, CardContent, CardHeader, ConfirmDialog,
   Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger, EmptyState, Field, Input, PasswordInput,
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
-  Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, useToast,
+  Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, Switch, useToast,
 } from '../../../packages/ui/src/index.js';
 import {
   CONNECTION_PROVIDER_NAMES, connectionApiProvider, connectionProviderName, connectionTargetKey,
-  type ConnectionKey, type ConnectionModel, type ConnectionModelList, type ConnectionProfile, type ConnectionProxy, type ConnectionsOverview, type ConnectionTarget, type ConnectionTestResult,
+  type ConnectionKey, type ConnectionModel, type ConnectionModelList, type ConnectionProfile, type ConnectionProxy, type ConnectionsOverview, type ConnectionTarget, type ConnectionTestResult, type ConnectionWatchSettings,
 } from '../../../packages/contracts/src/index.js';
 import type { Fail, MessageKey, Translate } from './i18n.js';
 import type { LocaleCode } from './preferences.js';
@@ -281,6 +281,8 @@ export function ConnectionsPage({ t, locale, fail, csrfToken }: { t: Translate; 
       })}</ul> : null}
     </Section>
 
+    {overview?.profile ? <WatchCard t={t} locale={locale} csrfToken={csrfToken} /> : null}
+
     <p className="text-xs text-muted-foreground">{t('connections.readNote')}</p>
 
     <ModelsSheet t={t} named={modelsOf} onClose={() => setModelsOf(null)} onSend={(model) => { if (modelsOf) setSending({ ...modelsOf, model }); }} canSend={csrfToken !== null} />
@@ -308,6 +310,76 @@ export function ConnectionsPage({ t, locale, fail, csrfToken }: { t: Translate; 
     <AddKeyDialog t={t} open={adding} onOpenChange={setAdding} onAdd={(body) => changeKey('add', body, 'connections.keyAdded')} />
     <RenameKeyDialog t={t} item={renaming} onClose={() => setRenaming(null)} onRename={(label) => renaming?.id ? changeKey('rename', { secretKey: renaming.secretKey, id: renaming.id, label }, 'connections.keyRenamed') : Promise.resolve(false)} />
   </div>;
+}
+
+/**
+ * The watch's switches: the daily test, off until turned on because it calls
+ * every provider with the user's keys, the line below which a balance is
+ * worth a word, and hints from SillyTavern's own traffic.
+ */
+function WatchCard({ t, locale, csrfToken }: { t: Translate; locale: LocaleCode; csrfToken: string | null }) {
+  const { toast } = useToast();
+  const [settings, setSettings] = useState<ConnectionWatchSettings | null>(null);
+  const [threshold, setThreshold] = useState('');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    void (async () => {
+      try {
+        const response = await apiFetch('/api/v1/connections/watch', { credentials: 'same-origin' });
+        if (!response.ok) return;
+        const next = await response.json() as ConnectionWatchSettings;
+        setSettings(next);
+        setThreshold(next.creditThreshold === null ? '' : String(next.creditThreshold));
+      } catch { /* the card stays empty; the page still works */ }
+    })();
+  }, []);
+  const save = async (change: Partial<ConnectionWatchSettings>) => {
+    if (!csrfToken || !settings) return;
+    setBusy(true);
+    try {
+      const response = await apiFetch('/api/v1/connections/watch', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify(change) });
+      if (!response.ok) throw new Error('watch not saved');
+      const next = await response.json() as ConnectionWatchSettings;
+      setSettings(next);
+      setThreshold(next.creditThreshold === null ? '' : String(next.creditThreshold));
+      toast({ title: t('connections.watchSaved'), tone: 'success' });
+    } catch {
+      toast({ title: t('connections.watchSaveFailed'), tone: 'destructive' });
+    } finally {
+      setBusy(false);
+    }
+  };
+  const saveThreshold = () => {
+    const text = threshold.trim().replace(',', '.');
+    const value = text === '' ? null : Number(text);
+    if (value !== null && (!Number.isFinite(value) || value < 0)) { setThreshold(settings?.creditThreshold === null || !settings ? '' : String(settings.creditThreshold)); return; }
+    if (value !== (settings?.creditThreshold ?? null)) void save({ creditThreshold: value });
+  };
+  const when = settings?.lastRunAt ? new Intl.DateTimeFormat(locale === 'vi' ? 'vi-VN' : 'en-GB', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(settings.lastRunAt)) : null;
+  const disabled = settings === null || busy || !csrfToken;
+  return <Card>
+    <CardHeader className="grid-rows-[auto] items-center"><h2 className="panel-title"><BellRing />{t('connections.watchTitle')}</h2></CardHeader>
+    <CardContent className="grid gap-4">
+      <label className="flex items-start justify-between gap-3">
+        <span className="grid gap-0.5">
+          <span className="text-sm font-medium">{t('connections.watchDaily')}</span>
+          <span className="text-xs text-muted-foreground">{t('connections.watchDailyHint')}</span>
+          {settings?.daily ? <span className="text-xs text-muted-foreground">{when ? t('connections.watchLastRun', { when }) : t('connections.watchNeverRun')}</span> : null}
+        </span>
+        <Switch checked={settings?.daily ?? false} disabled={disabled} onCheckedChange={(daily) => void save({ daily })} />
+      </label>
+      <Field label={t('connections.watchThreshold')} hint={t('connections.watchThresholdHint')}>
+        <Input inputMode="decimal" autoComplete="off" className="max-w-40" value={threshold} disabled={disabled} onChange={(event) => setThreshold(event.target.value)} onBlur={saveThreshold} onKeyDown={(event) => { if (event.key === 'Enter') saveThreshold(); }} />
+      </Field>
+      <label className="flex items-start justify-between gap-3">
+        <span className="grid gap-0.5">
+          <span className="text-sm font-medium">{t('connections.watchErrors')}</span>
+          <span className="text-xs text-muted-foreground">{t('connections.watchErrorsHint')}</span>
+        </span>
+        <Switch checked={settings?.errorHints ?? true} disabled={disabled} onCheckedChange={(errorHints) => void save({ errorHints })} />
+      </label>
+    </CardContent>
+  </Card>;
 }
 
 /** Providers to add a key for: the common ones first, the rest by name. */

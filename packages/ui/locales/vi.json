@@ -27,6 +27,17 @@
     "config": "Thiết lập"
   },
   "connections": {
+    "watchTitle": "Theo dõi",
+    "watchDaily": "Kiểm tra mọi key và proxy mỗi ngày một lần",
+    "watchDailyHint": "Gọi tới từng nhà cung cấp bằng key của bạn, từ máy này, rồi báo lên chuông khi một key bị từ chối, hết tiền hoặc một proxy không còn trả lời.",
+    "watchThreshold": "Báo khi số dư xuống dưới",
+    "watchThresholdHint": "Tính theo đơn vị tiền của nhà cung cấp, với những nơi có báo số dư (OpenRouter, DeepSeek). Để trống nếu không cần.",
+    "watchErrors": "Báo khi có nhiều yêu cầu bị từ chối liên tiếp",
+    "watchErrorsHint": "Đọc lưu lượng của chính SillyTavern trên máy này: từ 5 lần trả lời 401 hoặc 429 của cùng một nhà cung cấp trong 10 phút.",
+    "watchLastRun": "Lần kiểm tra hằng ngày gần nhất: {when}",
+    "watchNeverRun": "Chưa chạy lần kiểm tra hằng ngày nào.",
+    "watchSaved": "Đã lưu.",
+    "watchSaveFailed": "Không lưu được thiết lập.",
     "switchExpired": "Không có tab SillyTavern nào nhận lệnh trong 10 phút.",
     "profileUse": "Dùng profile này",
     "profileUsed": "SillyTavern đang dùng profile {name}.",
@@ -1501,6 +1512,31 @@
     "page": "Trang {page} trên {of}"
   },
   "notify": {
+    "checkNow": "Kiểm tra ngay",
+    "connectionKeyInvalid": {
+      "title": "{name} bị từ chối",
+      "body": "Trong lần kiểm tra hằng ngày, nhà cung cấp đã từ chối key này. Có thể key đã bị thu hồi hoặc hết hạn."
+    },
+    "connectionNoCredit": {
+      "title": "{name} đã hết tiền",
+      "body": "Trong lần kiểm tra hằng ngày, nhà cung cấp báo tài khoản này đã hết tiền hoặc hết hạn mức. Các câu trả lời qua key này sẽ lỗi."
+    },
+    "connectionLowCredit": {
+      "title": "{name} chỉ còn {amount}",
+      "body": "Đã xuống dưới mức {threshold} bạn muốn được báo."
+    },
+    "connectionProxyDown": {
+      "title": "Proxy {name} không còn hoạt động",
+      "body": "Trong lần kiểm tra hằng ngày: {problem}."
+    },
+    "connectionRefused": {
+      "title": "{provider} từ chối {count} lần trong {minutes} phút",
+      "body": "Có thể key đã hết hạn hoặc bị thu hồi."
+    },
+    "connectionRateLimited": {
+      "title": "{provider} giới hạn {count} lần trong {minutes} phút",
+      "body": "Đang gửi quá nhanh, hoặc tài khoản đã hết hạn mức."
+    },
     "sillytavernRolledBack": {
       "title": "SillyTavern {version} không chạy được, đã quay lại {previous}",
       "body": "SillyTavern {version} không chạy được với dữ liệu của bạn, nên trình quản lý đã quay lại {previous}. Mở trình quản lý để xem chi tiết."
