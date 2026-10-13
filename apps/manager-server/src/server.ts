@@ -1661,6 +1661,55 @@ async function handleConnectionsRequest(context: RequestContext, deps: { readonl
     }
     return;
   }
+  /*
+   * Adding, renaming, removing and choosing keys, through SillyTavern's own
+   * secrets API: `secrets.json` is its server's file, and that API is what
+   * the page's own key manager calls. So SillyTavern has to be running.
+   *
+   * A key's value comes in only to be added and goes straight on to
+   * SillyTavern; it is never logged, kept or sent back.
+   */
+  const keyAction = /^\/api\/v1\/connections\/keys(?:\/(rename|delete|activate))?$/u.exec(pathname);
+  if (keyAction && method === 'POST') {
+    const root = await userRoot();
+    if (!root) { sendError(response, 409, 'no_profile', 'There is no SillyTavern data yet'); return; }
+    const body = await readJson(request);
+    const field = (name: string, max: number): string | null => {
+      const value = isRecord(body) ? body[name] : undefined;
+      return typeof value === 'string' && value.trim() !== '' && value.length <= max ? value.trim() : null;
+    };
+    const secretKey = field('secretKey', 100);
+    if (!secretKey || !/^[a-z0-9_]+$/iu.test(secretKey)) { sendError(response, 400, 'invalid_input', 'Name the key name, such as api_key_openrouter'); return; }
+    const action = keyAction[1] ?? 'add';
+    try {
+      if (action === 'add') {
+        const value = field('value', 20_000);
+        const label = field('label', 100);
+        if (!secretKey.startsWith('api_key_') || !value || !label) { sendError(response, 400, 'invalid_input', 'A provider, a label and the key are needed'); return; }
+        sendJson(response, 200, { id: await connections.sillyTavern.writeSecret(secretKey, value, label) });
+        return;
+      }
+      const id = field('id', 200);
+      const stored = await readStoredConnections(root);
+      const exists = id !== null && 'value' in stored.secrets && stored.secrets.value.secrets.some((secret) => secret.secretKey === secretKey && secret.id === id);
+      if (!id || !exists) { sendError(response, 404, 'connection_target_missing', 'That key is no longer in SillyTavern'); return; }
+      if (action === 'rename') {
+        const label = field('label', 100);
+        if (!label) { sendError(response, 400, 'invalid_input', 'A label is needed'); return; }
+        await connections.sillyTavern.renameSecret(secretKey, id, label);
+      } else if (action === 'activate') {
+        await connections.sillyTavern.rotateSecret(secretKey, id);
+      } else {
+        await connections.sillyTavern.deleteSecret(secretKey, id);
+        await connections.results.forget({ kind: 'key', secretKey, id });
+      }
+      sendJson(response, 200, { ok: true });
+    } catch (error: unknown) {
+      if (error instanceof SillyTavernError) { sendSillyTavernError(response, error); return; }
+      throw error;
+    }
+    return;
+  }
   // The models a target's last test brought back, while they are kept.
   if (pathname === `${CONNECTIONS_API}/models` && method === 'GET') {
     const target = parseConnectionTarget({ kind: searchParams.get('kind'), secretKey: searchParams.get('secretKey'), id: searchParams.get('id'), name: searchParams.get('name') });
@@ -1673,6 +1722,13 @@ async function handleConnectionsRequest(context: RequestContext, deps: { readonl
   sendError(response, 404, 'not_found', 'Route not found');
 }
 
+/** A refusal from SillyTavern's own API, as the console reads it. */
+function sendSillyTavernError(response: ServerResponse, error: SillyTavernError): void {
+  if (error.code === 'st_not_running') { sendError(response, 409, error.code, 'SillyTavern is not running; start it and try again'); return; }
+  if (error.code === 'st_accounts_enabled') { sendError(response, 409, error.code, error.message); return; }
+  sendError(response, 502, error.code, error.message);
+}
+
 /** How many targets "test all" asks about at once. */
 const CONNECTION_TEST_CONCURRENCY = 3;
 
@@ -1680,6 +1736,8 @@ interface ConnectionServices {
   readonly tester: ConnectionTester;
   readonly results: ConnectionTestStore;
   readonly models: ModelCache;
+  /** SillyTavern's own API, for changing keys. */
+  readonly sillyTavern: SillyTavernClient;
   /** A test of every connection is under way. */
   running: boolean;
 }
@@ -1703,6 +1761,7 @@ function connectionServices(paths: PlatformPaths, sillyTavern: SillyTavernClient
     tester: new ConnectionTester({ sillyTavern: status }),
     results: new ConnectionTestStore(paths),
     models: new ModelCache(),
+    sillyTavern,
     running: false,
   };
 }

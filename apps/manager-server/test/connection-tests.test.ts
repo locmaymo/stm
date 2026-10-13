@@ -317,6 +317,9 @@ test('results are kept across a restart, and model lists for a day in memory', a
   const together = new ConnectionTestStore(getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: await mkdtemp(join(tmpdir(), 'stm-connection-results-')) } }));
   await Promise.all(['a', 'b', 'c', 'd'].map((name) => together.set({ kind: 'proxy', name }, result('2026-10-13T04:00:00.000Z'))));
   assert.deepEqual(Object.keys(await together.all()).sort(), ['proxy:a', 'proxy:b', 'proxy:c', 'proxy:d']);
+  await together.forget({ kind: 'proxy', name: 'b' });
+  await together.forget({ kind: 'proxy', name: 'gone' });
+  assert.deepEqual(Object.keys(await together.all()).sort(), ['proxy:a', 'proxy:c', 'proxy:d']);
   let now = 0;
   const cache = new ModelCache(1_000, 50, () => now);
   cache.set({ kind: 'proxy', name: 'a' }, null, [{ id: 'm', name: null, contextLength: null, promptPrice: null, completionPrice: null }]);

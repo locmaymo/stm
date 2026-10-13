@@ -393,7 +393,20 @@ export class ConnectionTestStore {
    */
   public async set(target: ConnectionTarget, result: ConnectionTestResult): Promise<void> {
     await this.all();
-    const results = { ...this.cache, [connectionTargetKey(target)]: result };
+    await this.save({ ...this.cache, [connectionTargetKey(target)]: result });
+  }
+
+  /** A target that is gone has no last test. */
+  public async forget(target: ConnectionTarget): Promise<void> {
+    await this.all();
+    const key = connectionTargetKey(target);
+    if (!this.cache || !(key in this.cache)) return;
+    const results = { ...this.cache };
+    delete results[key];
+    await this.save(results);
+  }
+
+  private async save(results: Record<string, ConnectionTestResult>): Promise<void> {
     const kept = Object.entries(results).sort(([, a], [, b]) => b.testedAt.localeCompare(a.testedAt)).slice(0, this.maxKept);
     this.cache = Object.fromEntries(kept);
     const snapshot = JSON.stringify({ schemaVersion: 1, results: this.cache });

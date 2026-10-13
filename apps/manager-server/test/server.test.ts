@@ -908,6 +908,13 @@ test('connections are tested one at a time or all together, and remembered', asy
   assert.equal(overview.tests['key:api_key_custom:bad']?.code, 'invalid_key');
   assert.equal(overview.sillyTavernRunning, false);
   assert.equal(JSON.stringify(overview).includes('custom-key'), false);
+  // Changing keys goes through SillyTavern, so with it stopped the answer says so.
+  assert.equal((await post('keys', { secretKey: 'api_key_openrouter', value: 'sk-or-new', label: 'new' })).status, 409);
+  assert.equal(((await (await post('keys/activate', { secretKey: 'api_key_custom', id: 'bad' })).json()) as ApiErrorBody).error.code, 'st_not_running');
+  assert.equal((await post('keys/delete', { secretKey: 'api_key_custom', id: 'not-there' })).status, 404);
+  assert.equal((await post('keys/rename', { secretKey: '../secrets', id: 'bad', label: 'x' })).status, 400);
+  assert.equal((await post('keys', { secretKey: 'deepl', value: 'x', label: 'x' })).status, 400);
+  assert.equal((await post('keys', { secretKey: 'api_key_openai', value: '   ', label: 'x' })).status, 400);
 });
 
 test('extensions are checked, updated and rolled back as jobs, one at a time', { skip: await gitMissing() }, async (t) => {

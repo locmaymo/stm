@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Activity, Ellipsis, KeyRound, List, LoaderCircle, Network, RefreshCw, Route, Send } from 'lucide-react';
+import { Activity, CircleCheck, Ellipsis, KeyRound, List, LoaderCircle, Network, Pencil, Plus, RefreshCw, Route, Send, Trash2 } from 'lucide-react';
 import {
   Alert, AlertDescription, Badge, Button, Card, CardAction, CardContent, CardHeader, ConfirmDialog,
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, EmptyState, Input,
+  Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger, EmptyState, Field, Input, PasswordInput,
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
   Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, useToast,
 } from '../../../packages/ui/src/index.js';
 import {
-  connectionApiProvider, connectionProviderName, connectionTargetKey,
+  CONNECTION_PROVIDER_NAMES, connectionApiProvider, connectionProviderName, connectionTargetKey,
   type ConnectionKey, type ConnectionModel, type ConnectionModelList, type ConnectionProfile, type ConnectionProxy, type ConnectionsOverview, type ConnectionTarget, type ConnectionTestResult,
 } from '../../../packages/contracts/src/index.js';
 import type { Fail, MessageKey, Translate } from './i18n.js';
@@ -46,6 +48,9 @@ export function ConnectionsPage({ t, locale, fail, csrfToken }: { t: Translate; 
   const [testingAll, setTestingAll] = useState(false);
   const [modelsOf, setModelsOf] = useState<Named | null>(null);
   const [sending, setSending] = useState<Sending | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [renaming, setRenaming] = useState<ConnectionKey | null>(null);
+  const [deleting, setDeleting] = useState<ConnectionKey | null>(null);
   const alive = useRef(true);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
 
@@ -79,6 +84,23 @@ export function ConnectionsPage({ t, locale, fail, csrfToken }: { t: Translate; 
     }
     return payload;
   }, [csrfToken, fail, t, toast]);
+
+  /**
+   * A change to the keys, made by SillyTavern; then the page is read again,
+   * since SillyTavern may have changed which key is active as well.
+   */
+  const changeKey = useCallback(async (action: 'add' | 'rename' | 'activate' | 'delete', body: Record<string, string>, done: MessageKey): Promise<boolean> => {
+    if (!csrfToken) return false;
+    const response = await apiFetch(`/api/v1/connections/keys${action === 'add' ? '' : `/${action}`}`, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify(body) });
+    const payload: unknown = await response.json().catch(() => null);
+    await load();
+    if (!response.ok) {
+      toast({ title: fail.body(payload, t('connections.keyChangeFailed')), tone: 'destructive' });
+      return false;
+    }
+    toast({ title: t(done), tone: 'success' });
+    return true;
+  }, [csrfToken, fail, load, t, toast]);
 
   /** Put one result in place without reading the whole page again. */
   const remember = useCallback((target: ConnectionTarget, result: ConnectionTestResult) => {
@@ -118,12 +140,19 @@ export function ConnectionsPage({ t, locale, fail, csrfToken }: { t: Translate; 
   const profileNames = new Map((overview?.profiles ?? []).map((profile) => [profile.id, profile.name]));
   const tests = overview?.tests ?? {};
   const needsSillyTavern = Object.values(tests).some((result) => result.code === 'needs_sillytavern') && overview?.sillyTavernRunning === false;
-  const controls = (named: Named, extra?: { readonly model?: string | null }) => {
+  const controls = (named: Named, extra?: { readonly model?: string | null; readonly menu?: ReactNode }) => {
     const key = connectionTargetKey(named.target);
     return <TestControls t={t} named={named} result={tests[key] ?? null} busy={testing.has(key) || testingAll} canAct={csrfToken !== null}
       onTest={() => void test(named)} onModels={() => setModelsOf(named)}
-      onSend={extra?.model ? () => setSending({ ...named, model: extra.model ?? '' }) : undefined} />;
+      onSend={extra?.model ? () => setSending({ ...named, model: extra.model ?? '' }) : undefined} menu={extra?.menu} />;
   };
+  // What can be done to a key, which needs it to have an id: a key kept the
+  // old way has none until SillyTavern converts it on its next start.
+  const keyMenu = (key: ConnectionKey): ReactNode => key.id === null ? null : <>
+    {!key.active ? <DropdownMenuItem disabled={!csrfToken} onSelect={() => void changeKey('activate', { secretKey: key.secretKey, id: key.id ?? '' }, 'connections.keyActivated')}><CircleCheck />{t('connections.keyActivate')}</DropdownMenuItem> : null}
+    <DropdownMenuItem disabled={!csrfToken} onSelect={() => setRenaming(key)}><Pencil />{t('common.rename')}</DropdownMenuItem>
+    <DropdownMenuItem variant="destructive" disabled={!csrfToken} onSelect={() => setDeleting(key)}><Trash2 />{t('common.delete')}</DropdownMenuItem>
+  </>;
   const status = (target: ConnectionTarget) => <TestStatus t={t} locale={locale} result={tests[connectionTargetKey(target)] ?? null} money={money} />;
   const empty = overview !== null && overview.keys.length + overview.proxies.length + overview.profiles.length === 0;
 
@@ -141,9 +170,14 @@ export function ConnectionsPage({ t, locale, fail, csrfToken }: { t: Translate; 
       </Button>
     </div> : null}
 
-    <Section icon={<KeyRound />} title={t('connections.keysTitle')} action={<Button variant="ghost" size="icon-sm" aria-label={t('common.refresh')} onClick={() => void load()}><RefreshCw /></Button>} loading={overview === null && !failed}
+    <Section icon={<KeyRound />} title={t('connections.keysTitle')} loading={overview === null && !failed}
+      action={<span className="flex items-center gap-1">
+        {overview?.profile ? <Button variant="outline" size="sm" disabled={!csrfToken} onClick={() => setAdding(true)}><Plus />{t('connections.keyAdd')}</Button> : null}
+        <Button variant="ghost" size="icon-sm" aria-label={t('common.refresh')} onClick={() => void load()}><RefreshCw /></Button>
+      </span>}
       empty={<EmptyState icon={<KeyRound />} title={t('connections.keysEmpty')} description={t('connections.keysEmptyHint')} />}>
-      {overview && overview.keys.length > 0 ? <KeyGroups t={t} keys={overview.keys} profileNames={profileNames} status={status} controls={controls} /> : null}
+      {overview && overview.keys.length > 0 ? <KeyGroups t={t} keys={overview.keys} profileNames={profileNames} status={status} controls={(named, key) => controls(named, { menu: keyMenu(key) })} /> : null}
+      {overview?.profile && overview.sillyTavernRunning === false ? <p className="text-xs text-muted-foreground">{t('connections.keysNeedRunning')}</p> : null}
     </Section>
 
     <Section icon={<Route />} title={t('connections.proxiesTitle')} loading={overview === null && !failed}
@@ -174,7 +208,109 @@ export function ConnectionsPage({ t, locale, fail, csrfToken }: { t: Translate; 
       cancelLabel={t('common.cancel')}
       onConfirm={() => { if (sending) void test(sending, sending.model); setSending(null); }}
     />
+    <ConfirmDialog
+      open={deleting !== null}
+      onOpenChange={(open) => { if (!open) setDeleting(null); }}
+      title={t('connections.keyDeleteTitle', { label: deleting?.label ?? '' })}
+      description={deleting && deleting.profiles.length > 0
+        ? t('connections.keyDeleteBodyProfiles', { names: deleting.profiles.map((id) => profileNames.get(id) ?? id).join(', ') })
+        : t('connections.keyDeleteBody')}
+      confirmLabel={t('common.delete')}
+      cancelLabel={t('common.cancel')}
+      tone="destructive"
+      onConfirm={() => { if (deleting?.id) void changeKey('delete', { secretKey: deleting.secretKey, id: deleting.id }, 'connections.keyDeleted'); setDeleting(null); }}
+    />
+    <AddKeyDialog t={t} open={adding} onOpenChange={setAdding} onAdd={(body) => changeKey('add', body, 'connections.keyAdded')} />
+    <RenameKeyDialog t={t} item={renaming} onClose={() => setRenaming(null)} onRename={(label) => renaming?.id ? changeKey('rename', { secretKey: renaming.secretKey, id: renaming.id, label }, 'connections.keyRenamed') : Promise.resolve(false)} />
   </div>;
+}
+
+/** Providers to add a key for: the common ones first, the rest by name. */
+const COMMON_PROVIDERS = ['openrouter', 'openai', 'claude', 'makersuite', 'deepseek', 'custom'];
+
+function AddKeyDialog({ t, open, onOpenChange, onAdd }: { t: Translate; open: boolean; onOpenChange: (open: boolean) => void; onAdd: (body: Record<string, string>) => Promise<boolean> }) {
+  const [provider, setProvider] = useState('openrouter');
+  const [label, setLabel] = useState('');
+  const [value, setValue] = useState('');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { if (!open) { setLabel(''); setValue(''); } }, [open]);
+  const others = Object.keys(CONNECTION_PROVIDER_NAMES).filter((name) => !COMMON_PROVIDERS.includes(name)).sort((a, b) => connectionProviderName(a).localeCompare(connectionProviderName(b)));
+  const ready = label.trim() !== '' && value.trim() !== '' && !busy;
+  const submit = async () => {
+    if (!ready) return;
+    setBusy(true);
+    try {
+      if (await onAdd({ secretKey: `api_key_${provider}`, label: label.trim(), value: value.trim() })) onOpenChange(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return <Dialog open={open} onOpenChange={onOpenChange}>
+    <DialogContent className="sm:max-w-md">
+      <DialogHeader>
+        <DialogTitle>{t('connections.keyAddTitle')}</DialogTitle>
+        <DialogDescription>{t('connections.keyAddDescription')}</DialogDescription>
+      </DialogHeader>
+      <DialogBody>
+        <form className="grid gap-4" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+          <Field label={t('connections.keyProvider')}>
+            <Select value={provider} onValueChange={setProvider}>
+              <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {[...COMMON_PROVIDERS, ...others].map((name) => <SelectItem key={name} value={name}>{connectionProviderName(name)}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field label={t('connections.keyLabel')} hint={t('connections.keyLabelHint')}>
+            <Input autoComplete="off" maxLength={100} value={label} onChange={(event) => setLabel(event.target.value)} />
+          </Field>
+          <Field label={t('connections.keyValue')} hint={t('connections.keyValueHint')}>
+            <PasswordInput autoComplete="off" spellCheck={false} revealLabel={t('setup.reveal')} hideLabel={t('setup.hide')} value={value} onChange={(event) => setValue(event.target.value)} />
+          </Field>
+          <button type="submit" hidden />
+        </form>
+      </DialogBody>
+      <DialogFooter>
+        <Button variant="outline" onClick={() => onOpenChange(false)} disabled={busy}>{t('common.cancel')}</Button>
+        <Button onClick={() => void submit()} disabled={!ready}>{busy ? <LoaderCircle className="animate-spin" /> : <Plus />}{t('connections.keyAddSubmit')}</Button>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>;
+}
+
+function RenameKeyDialog({ t, item, onClose, onRename }: { t: Translate; item: ConnectionKey | null; onClose: () => void; onRename: (label: string) => Promise<boolean> }) {
+  const [label, setLabel] = useState('');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { setLabel(item?.label ?? ''); }, [item]);
+  const ready = label.trim() !== '' && label.trim() !== item?.label && !busy;
+  const submit = async () => {
+    if (!ready) return;
+    setBusy(true);
+    try {
+      if (await onRename(label.trim())) onClose();
+    } finally {
+      setBusy(false);
+    }
+  };
+  return <Dialog open={item !== null} onOpenChange={(open) => { if (!open) onClose(); }}>
+    <DialogContent className="sm:max-w-md">
+      <DialogHeader>
+        <DialogTitle>{t('connections.keyRenameTitle', { label: item?.label ?? '' })}</DialogTitle>
+        <DialogDescription className="font-mono">{item?.masked}</DialogDescription>
+      </DialogHeader>
+      <DialogBody>
+        <form onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+          <Field label={t('connections.keyLabel')}>
+            <Input autoComplete="off" maxLength={100} value={label} onChange={(event) => setLabel(event.target.value)} />
+          </Field>
+        </form>
+      </DialogBody>
+      <DialogFooter>
+        <Button variant="outline" onClick={onClose} disabled={busy}>{t('common.cancel')}</Button>
+        <Button onClick={() => void submit()} disabled={!ready}>{t('common.save')}</Button>
+      </DialogFooter>
+    </DialogContent>
+  </Dialog>;
 }
 
 function Section({ icon, title, action, loading, empty, children }: { icon: ReactNode; title: string; action?: ReactNode; loading: boolean; empty: ReactNode; children: ReactNode }) {
@@ -190,7 +326,7 @@ function Section({ icon, title, action, loading, empty, children }: { icon: Reac
 }
 
 type StatusOf = (target: ConnectionTarget) => ReactNode;
-type ControlsOf = (named: Named) => ReactNode;
+type ControlsOf = (named: Named, key: ConnectionKey) => ReactNode;
 
 /** Keys grouped under their provider, in the order SillyTavern lists them. */
 function KeyGroups({ t, keys, profileNames, status, controls }: { t: Translate; keys: readonly ConnectionKey[]; profileNames: ReadonlyMap<string, string>; status: StatusOf; controls: ControlsOf }) {
@@ -204,7 +340,7 @@ function KeyGroups({ t, keys, profileNames, status, controls }: { t: Translate; 
         <ul className="grid divide-y rounded-lg border px-3">
           {group.map((key) => {
             const target: ConnectionTarget = { kind: 'key', secretKey: key.secretKey, id: key.id };
-            return <Row key={key.id ?? key.secretKey} controls={controls({ target, name: t('connections.keyName', { label: key.label, provider }) })}>
+            return <Row key={key.id ?? key.secretKey} controls={controls({ target, name: t('connections.keyName', { label: key.label, provider }) }, key)}>
               <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
                 <span className="font-medium break-all">{key.label}</span>
                 <span className="font-mono text-xs text-muted-foreground">{key.masked}</span>
@@ -266,19 +402,21 @@ function UsedBy({ t, ids, profileNames }: { t: Translate; ids: readonly string[]
   return <span className="text-xs break-all text-muted-foreground">{t('connections.usedBy', { names: ids.map((id) => profileNames.get(id) ?? id).join(', ') })}</span>;
 }
 
-function TestControls({ t, named, result, busy, canAct, onTest, onModels, onSend }: { t: Translate; named: Named; result: ConnectionTestResult | null; busy: boolean; canAct: boolean; onTest: () => void; onModels: () => void; onSend: (() => void) | undefined }) {
+function TestControls({ t, named, result, busy, canAct, onTest, onModels, onSend, menu }: { t: Translate; named: Named; result: ConnectionTestResult | null; busy: boolean; canAct: boolean; onTest: () => void; onModels: () => void; onSend: (() => void) | undefined; menu?: ReactNode }) {
   const hasModels = (result?.modelCount ?? 0) > 0;
   return <>
     <Button variant="outline" size="sm" disabled={busy || !canAct} onClick={onTest} aria-label={t('connections.testNamed', { name: named.name })}>
       {busy ? <LoaderCircle className="animate-spin" /> : <Activity />}<span className="max-sm:sr-only">{t('connections.test')}</span>
     </Button>
-    {hasModels || onSend ? <DropdownMenu>
+    {hasModels || onSend || menu ? <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button variant="ghost" size="icon-sm" aria-label={t('connections.rowMenu', { name: named.name })} disabled={busy}><Ellipsis /></Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
         {hasModels ? <DropdownMenuItem onSelect={onModels}><List />{t('connections.modelsButton')}</DropdownMenuItem> : null}
         {onSend ? <DropdownMenuItem onSelect={onSend} disabled={!canAct}><Send />{t('connections.sendTest')}</DropdownMenuItem> : null}
+        {menu && (hasModels || onSend) ? <DropdownMenuSeparator /> : null}
+        {menu}
       </DropdownMenuContent>
     </DropdownMenu> : null}
   </>;
