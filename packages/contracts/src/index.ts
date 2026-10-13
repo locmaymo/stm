@@ -2215,3 +2215,143 @@ export interface BridgeCommandStatus {
   /** How many SillyTavern tabs are connected now, so a waiting command can say why. */
   readonly tabs: number;
 }
+
+/**
+ * The keys, proxies and connection profiles SillyTavern keeps, as the
+ * Connections page shows them; see connections.ts.
+ *
+ * Read off the disk, so the page answers the same with SillyTavern stopped.
+ * A key leaves the manager only masked, a proxy's password not at all, and a
+ * proxy's or server's address without its query or credentials.
+ */
+export interface ConnectionsOverview {
+  /** False when there is no profile to read: nothing installed or restored yet. */
+  readonly profile: boolean;
+  readonly keys: readonly ConnectionKey[];
+  readonly proxies: readonly ConnectionProxy[];
+  readonly profiles: readonly ConnectionProfile[];
+  /**
+   * `secrets.json` still holds one bare key per provider, the way versions
+   * before 1.13.1 kept it. SillyTavern turns it into the list form on its
+   * next start; until then a key has no id and no label of its own.
+   */
+  readonly legacySecrets: boolean;
+  /** Files that are there and could not be read as JSON; their section is empty. */
+  readonly unreadable: readonly ('secrets' | 'settings')[];
+}
+
+/** One key SillyTavern keeps for a provider. */
+export interface ConnectionKey {
+  /** The name it is filed under in `secrets.json`, such as `api_key_openrouter`. */
+  readonly secretKey: string;
+  /** The provider, which is the name without `api_key_`: `openrouter`, `claude`, `custom`. */
+  readonly provider: string;
+  /** SillyTavern's id for it; null for a key kept the old way. */
+  readonly id: string | null;
+  readonly label: string;
+  /** The first and last four characters, or only dots for a short one. */
+  readonly masked: string;
+  /** The one of its provider's keys SillyTavern uses when nothing names another. */
+  readonly active: boolean;
+  /** Ids of the connection profiles that name this key. */
+  readonly profiles: readonly string[];
+}
+
+/** A reverse proxy preset. */
+export interface ConnectionProxy {
+  readonly name: string;
+  /** Where it points, without query or credentials; null when that is not an address. */
+  readonly url: string | null;
+  readonly hasPassword: boolean;
+  /** The preset chat completion uses now. */
+  readonly selected: boolean;
+  /** Ids of the connection profiles that name this preset. */
+  readonly profiles: readonly string[];
+}
+
+/** A connection profile from SillyTavern's connection manager. */
+export interface ConnectionProfile {
+  readonly id: string;
+  readonly name: string;
+  /** `cc` for chat completion, `tc` for text completion. */
+  readonly mode: 'cc' | 'tc';
+  /** What `/api` was set to, such as `openrouter` or `koboldcpp`. */
+  readonly api: string | null;
+  readonly model: string | null;
+  /** The server address it names, shown like a proxy's. */
+  readonly apiUrl: string | null;
+  /** The proxy preset it names, when one other than None. */
+  readonly proxy: string | null;
+  readonly preset: string | null;
+  /** The key it names; null when it uses whichever key of its provider is active. */
+  readonly secretId: string | null;
+  /** That key's label, or null when it names a key that is no longer there. */
+  readonly secretLabel: string | null;
+  /** The name its provider's keys are filed under, such as `api_key_openrouter`. */
+  readonly secretKey: string | null;
+  /** The profile SillyTavern has selected. */
+  readonly selected: boolean;
+}
+
+/**
+ * Names people know providers by, for the secret names SillyTavern files keys
+ * under (without `api_key_`). One missing here is shown by its own name.
+ */
+export const CONNECTION_PROVIDER_NAMES: Readonly<Record<string, string>> = {
+  openai: 'OpenAI',
+  claude: 'Anthropic Claude',
+  openrouter: 'OpenRouter',
+  makersuite: 'Google AI Studio',
+  vertexai: 'Google Vertex AI',
+  mistralai: 'Mistral AI',
+  custom: 'Custom (OpenAI-compatible)',
+  cohere: 'Cohere',
+  deepseek: 'DeepSeek',
+  groq: 'Groq',
+  xai: 'xAI',
+  perplexity: 'Perplexity',
+  ai21: 'AI21',
+  togetherai: 'Together AI',
+  infermaticai: 'InfermaticAI',
+  dreamgen: 'DreamGen',
+  featherless: 'Featherless',
+  chutes: 'Chutes',
+  electronhub: 'Electron Hub',
+  nanogpt: 'NanoGPT',
+  aimlapi: 'AI/ML API',
+  moonshot: 'Moonshot AI',
+  fireworks: 'Fireworks AI',
+  cometapi: 'CometAPI',
+  azure_openai: 'Azure OpenAI',
+  zai: 'Z.AI',
+  siliconflow: 'SiliconFlow',
+  pollinations: 'Pollinations',
+  minimax: 'MiniMax',
+  novel: 'NovelAI',
+  horde: 'AI Horde',
+  mancer: 'Mancer',
+  ooba: 'Text Generation WebUI',
+  koboldcpp: 'KoboldCpp',
+  llamacpp: 'llama.cpp',
+  vllm: 'vLLM',
+  aphrodite: 'Aphrodite',
+  tabby: 'TabbyAPI',
+  generic: 'Generic',
+};
+
+/**
+ * The provider `/api <value>` reaches, by the name its keys are filed under.
+ *
+ * SillyTavern names each key after the source it is for, so this is the
+ * value with its aliases undone: `oai` is OpenAI, `google` is Google AI
+ * Studio, `kcpp` is KoboldCpp and `openrouter-text` is still OpenRouter.
+ */
+export function connectionApiProvider(api: string): string {
+  const aliases: Readonly<Record<string, string>> = { oai: 'openai', google: 'makersuite', kcpp: 'koboldcpp', 'openrouter-text': 'openrouter' };
+  return aliases[api] ?? api;
+}
+
+/** The name a provider is shown by. */
+export function connectionProviderName(provider: string): string {
+  return CONNECTION_PROVIDER_NAMES[provider] ?? provider;
+}

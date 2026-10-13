@@ -9,7 +9,7 @@ import { promisify } from 'node:util';
 import { getPlatformPaths } from '../../../packages/platform/src/index.js';
 import { StateStore } from '../src/state.js';
 import { preferredNetworkHost, startManagerServer, type ManagerServer } from '../src/server.js';
-import type { AccessGatewayState, ApiErrorBody, BridgeCommandStatus, ConsoleStatus, ExtensionList, Installation, Job, LegalReview, ManagerUpdateStatus, OnlineState, ProcessState, SystemSnapshot, TunnelState, VersionOption, VersionSwitchStatus } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, ApiErrorBody, BridgeCommandStatus, ConnectionsOverview, ConsoleStatus, ExtensionList, Installation, Job, LegalReview, ManagerUpdateStatus, OnlineState, ProcessState, SystemSnapshot, TunnelState, VersionOption, VersionSwitchStatus } from '../../../packages/contracts/src/index.js';
 import { LEGAL_META } from '../../../packages/legal/src/index.js';
 import type { WorkerBudget, WorkerBudgetLevel } from '../src/worker-budget.js';
 import { hashPassword } from '../src/password.js';
@@ -845,6 +845,28 @@ test('the extension list reads the active profile and the installed copy, and ne
   assert.equal(response.status, 200);
   const list = await response.json() as ExtensionList;
   assert.deepEqual(list.extensions.map((item) => [item.scope, item.displayName]), [['user', 'Mine'], ['global', 'Shared One']]);
+});
+
+test('the connections overview reads the active profile, masked, and needs a session', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-connections-api-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const manager = await startManagerServer({ host: '127.0.0.1', port: 0, paths, env: { STM_ADMIN_PASSWORD: 'correct horse battery staple' }, secureCookies: false, accessPort: 0, logger: () => undefined });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  assert.equal((await fetch(`${base}/api/v1/connections`)).status, 401);
+  const { cookie } = await signIn(base);
+  const profile = (await (await fetch(`${base}/api/v1/profiles`, { headers: { cookie } })).json() as { profiles: Array<{ dataPath: string }> }).profiles[0];
+  assert.ok(profile);
+  const userRoot = join(profile.dataPath, 'default-user');
+  await mkdir(userRoot, { recursive: true });
+  const key = 'sk-or-v1-00000000000000000000000000000001';
+  await writeFile(join(userRoot, 'secrets.json'), JSON.stringify({ api_key_openrouter: [{ id: 'k1', value: key, label: 'main', active: true }] }));
+  const response = await fetch(`${base}/api/v1/connections`, { headers: { cookie } });
+  assert.equal(response.status, 200);
+  const text = await response.text();
+  assert.equal(text.includes(key), false);
+  const overview = JSON.parse(text) as ConnectionsOverview;
+  assert.deepEqual(overview.keys.map((item) => [item.provider, item.label, item.masked]), [['openrouter', 'main', 'sk-o…0001']]);
 });
 
 test('extensions are checked, updated and rolled back as jobs, one at a time', { skip: await gitMissing() }, async (t) => {

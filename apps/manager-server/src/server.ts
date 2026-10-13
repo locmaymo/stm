@@ -21,6 +21,7 @@ import { panelStaticRoot } from './bootstrap.js';
 import { ProcessSupervisor } from './supervisor.js';
 import { SillyTavernClient } from './st-client.js';
 import { BridgeBusyError, SillyTavernBridge } from './st-bridge.js';
+import { readConnections } from './connections.js';
 import { AccessGateway } from './gateway.js';
 import { ACCESS_GATEWAY_PORT, checkSillyTavernPort, findFreePort, isPortFree, MANAGER_PORT, PortError, portWasDemanded, resolveAccessPort, resolveConsolePort, SILLYTAVERN_PORT, type ResolvedPort } from './ports.js';
 import { previewImage, previewLogo, previewManifest } from './preview.js';
@@ -49,7 +50,7 @@ import { OnlineKeeper } from './online.js';
 import { formatGibibytes, SaverMode } from './saver.js';
 import { capacityFor, checkFits, decideTrim, diskSpace, memoryGuard, roomCheck } from './headroom.js';
 import { applyManagerSettings, foreignManagerSettings, managerSettingsOffer, restoreFromBucketIfBlank, saveManagerSettings, SettingsOfferWatch, settingsOfferKey, type ManagerSettingsDeps } from './manager-settings.js';
-import type { AccessLinkKind, AccessLinkPreference, AccessLinkTarget, ExtensionErrorKind, ExtensionList, ExtensionReconnectPreview, PluginErrors, VersionSwitch, VersionSwitchStatus, ManagerSettingsOffer, ManagerSettingsRecord } from '../../../packages/contracts/src/index.js';
+import type { AccessLinkKind, AccessLinkPreference, AccessLinkTarget, ConnectionsOverview, ExtensionErrorKind, ExtensionList, ExtensionReconnectPreview, PluginErrors, VersionSwitch, VersionSwitchStatus, ManagerSettingsOffer, ManagerSettingsRecord } from '../../../packages/contracts/src/index.js';
 import { instrumentationLoaderPath } from '../../../packages/instrumentation/src/index.js';
 import { ConfigError, ConfigStore } from '../../../packages/config/src/index.js';
 import { DEFAULT_TELEMETRY_ENDPOINT, DEFAULT_TELEMETRY_ENROLLMENT_ENDPOINT, TelemetryTransport } from '../../../packages/telemetry/src/index.js';
@@ -105,6 +106,7 @@ const PROTECTED_PATHS = new Set([
   '/api/v1/preview',
   '/api/v1/preview/image',
   '/api/v1/extensions',
+  '/api/v1/connections',
   '/api/v1/auth/password',
   '/api/v1/metrics',
   '/api/v1/system',
@@ -1562,10 +1564,32 @@ async function handleRequest(options: {
       await handleBridgeRequest(context, bridge);
       return;
     }
+    if (pathname === CONNECTIONS_API || pathname.startsWith(`${CONNECTIONS_API}/`)) {
+      await handleConnectionsRequest(context, { profiles });
+      return;
+    }
     await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, online, proxy, publishProxies, budget, logger, handoffs, saver, sessions, notifications, push, extensions);
     return;
   }
 
+  sendError(response, 404, 'not_found', 'Route not found');
+}
+
+const CONNECTIONS_API = '/api/v1/connections';
+
+/*
+ * The keys, proxies and connection profiles SillyTavern keeps; see
+ * connections.ts. Read off the active profile's files, so it answers the
+ * same with SillyTavern stopped.
+ */
+async function handleConnectionsRequest(context: RequestContext, deps: { readonly profiles: ProfileStore }): Promise<void> {
+  const { pathname, request, response } = context;
+  const method = request.method ?? 'GET';
+  if (pathname === CONNECTIONS_API && method === 'GET') {
+    const profile = await deps.profiles.getActive();
+    sendJson(response, 200, await readConnections(profile ? userDataRoot(profile) : null) satisfies ConnectionsOverview);
+    return;
+  }
   sendError(response, 404, 'not_found', 'Route not found');
 }
 
@@ -4822,6 +4846,7 @@ function isProtectedPath(pathname: string): boolean {
     || pathname.startsWith('/api/v1/r2/')
     || pathname.startsWith('/api/v1/config/')
     || pathname.startsWith('/api/v1/extensions/')
+    || pathname.startsWith('/api/v1/connections/')
     || pathname.startsWith('/api/v1/sillytavern/');
 }
 
