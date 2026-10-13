@@ -6,6 +6,7 @@ import type { Duplex } from 'node:stream';
 import { AccessGateway, ACCESS_COOKIE_NAME, clientAddress } from '../src/gateway.js';
 import type { GatewayReplies } from '../src/gateway-notify.js';
 import type { ExtensionErrorReport } from '../src/extension-errors.js';
+import { SillyTavernBridge } from '../src/st-bridge.js';
 import { rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -803,4 +804,59 @@ test('a page carries the extension error script, and the door keeps only well-fo
   // A body larger than any report is cut off, as the door does with every one of its own forms.
   assert.equal(await report(JSON.stringify({ name: 'Notes', message: 'x'.repeat(10_000) })).then((response) => response.status, () => 'cut off'), 'cut off');
   assert.deepEqual(reports, [{ name: 'Notes', message: 'boom', file: null, line: 3 }]);
+});
+
+test('a page carries the bridge script, and a signed-in tab receives commands on its stream and answers them', async (t) => {
+  const upstream = await startUpstream((_request, response) => {
+    response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    response.end('<!doctype html><html><head><title>SillyTavern</title></head><body></body></html>');
+  });
+  const bridge = new SillyTavernBridge();
+  const gateway = new AccessGateway({ port: 0, targetPort: upstream.port, logger: () => undefined, bridge });
+  gateway.setPassword(hashPassword(PASSWORD));
+  const state = await gateway.start(false);
+  const base = `http://127.0.0.1:${state.port}`;
+  const streams = new AbortController();
+  t.after(async () => { streams.abort(); bridge.close(); await gateway.close(); await upstream.close(); });
+
+  assert.equal((await fetch(`${base}/__stm/bridge.js`)).status, 401, 'behind the door like the rest');
+  assert.equal((await fetch(`${base}/__stm/bridge/events?tab=tabaaaaaaaa1`)).status, 401, 'and so is the stream');
+  const cookie = await signIn(base);
+  const html = await (await fetch(`${base}/`, { headers: { cookie, accept: 'text/html', 'sec-fetch-dest': 'document' } })).text();
+  assert.ok(html.includes('<script src="/__stm/bridge.js" defer></script></head>'));
+  assert.match((await fetch(`${base}/__stm/bridge.js`, { headers: { cookie } })).headers.get('content-type') ?? '', /javascript/u);
+  assert.equal((await fetch(`${base}/__stm/bridge/events?tab=bad`, { headers: { cookie } })).status, 400);
+
+  const stream = await fetch(`${base}/__stm/bridge/events?tab=tabaaaaaaaa1&visible=1&v=1.19.0`, { headers: { cookie }, signal: streams.signal });
+  assert.equal(stream.status, 200);
+  assert.match(stream.headers.get('content-type') ?? '', /^text\/event-stream/u);
+  const reader = stream.body!.pipeThrough(new TextDecoderStream()).getReader();
+  let received = '';
+  const until = async (pattern: RegExp): Promise<RegExpExecArray> => {
+    for (;;) {
+      const found = pattern.exec(received);
+      if (found) return found;
+      const { value, done } = await reader.read();
+      if (done) assert.fail(`the stream ended before ${pattern}`);
+      received += value;
+    }
+  };
+  await until(/event: ping/u);
+  assert.deepEqual(bridge.summary(), { tabs: 1, visible: true });
+
+  const sent = bridge.send({ kind: 'slash', command: '/profile Work' });
+  const delivered = await until(/event: command\ndata: (.+)\n\n/u);
+  assert.deepEqual(JSON.parse(delivered[1] ?? ''), { id: sent.id, command: { kind: 'slash', command: '/profile Work' } });
+
+  const post = (path: string, body: unknown, headers: Record<string, string> = { 'x-stm-tools': '1' }) => fetch(`${base}/__stm/bridge/${path}`, { method: 'POST', headers: { cookie, 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
+  const answer = { tab: 'tabaaaaaaaa1', id: sent.id, ok: true, value: 'Work' };
+  assert.equal((await post('result', answer, {})).status, 403, 'a form on another site cannot answer for a tab');
+  assert.equal((await post('result', { tab: 'tabaaaaaaaa1' })).status, 400);
+  assert.equal((await post('result', answer)).status, 204);
+  assert.deepEqual(bridge.status(sent.id)?.result, { ok: true, value: 'Work' });
+
+  const report = await post('state', { tab: 'tabaaaaaaaa1', visible: false, stVersion: '1.19.0' });
+  assert.deepEqual(await report.json(), { commands: [] }, 'a tab with a stream gets its commands there');
+  assert.deepEqual(bridge.summary(), { tabs: 1, visible: false });
+  assert.equal(upstream.seen.filter((request) => (request.url ?? '').startsWith('/__stm')).length, 0, 'none of this reaches SillyTavern');
 });
