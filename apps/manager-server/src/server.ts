@@ -19,6 +19,7 @@ import { SystemStore } from './system.js';
 import { easesPolling, withholdsAddress, WorkerBudget } from './worker-budget.js';
 import { panelStaticRoot } from './bootstrap.js';
 import { ProcessSupervisor } from './supervisor.js';
+import { SillyTavernClient } from './st-client.js';
 import { AccessGateway } from './gateway.js';
 import { ACCESS_GATEWAY_PORT, checkSillyTavernPort, findFreePort, isPortFree, MANAGER_PORT, PortError, portWasDemanded, resolveAccessPort, resolveConsolePort, SILLYTAVERN_PORT, type ResolvedPort } from './ports.js';
 import { previewImage, previewLogo, previewManifest } from './preview.js';
@@ -233,6 +234,8 @@ export interface ManagerServer {
   readonly sessions: SessionStore;
   readonly runtime: RuntimeManager;
   readonly supervisor: ProcessSupervisor;
+  /** SillyTavern's own API, for files its server owns; see st-client.ts. */
+  readonly sillyTavern: SillyTavernClient;
   readonly tunnel: TunnelManager;
   readonly managerTunnel: TunnelManager;
   readonly gateway: AccessGateway;
@@ -551,6 +554,8 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     replyFile: replyFile(paths),
     logger: (line) => { jobs.append('sillytavern', line); baseLogger(line); },
   });
+  // SillyTavern's own API, for what its server owns; see st-client.ts.
+  const sillyTavern = new SillyTavernClient({ port: () => sillyTavernPort, status: () => supervisor.getState().status });
   const tunnel = options.tunnel ?? new TunnelManager({
     paths,
     env,
@@ -1161,6 +1166,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     runtime,
     port: actualPort,
     supervisor,
+    sillyTavern,
     tunnel,
     managerTunnel,
     gateway,
