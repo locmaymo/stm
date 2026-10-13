@@ -44,7 +44,25 @@
     "gitMissing": "Máy này không có git, nên không hiện được thông tin cập nhật.",
     "sizeDetail": "{size}, thêm {dependencies} trong node_modules",
     "scopeNote": "Extension của hồ sơ này nằm trong bản sao lưu. Extension cho mọi hồ sơ đi theo bản SillyTavern đã cài và không được sao lưu.",
-    "homePage": "Trang chủ"
+    "homePage": "Trang chủ",
+    "checkUpdates": "Kiểm tra cập nhật",
+    "checkedAt": "Đã kiểm tra lúc {when}",
+    "neverChecked": "Chưa kiểm tra cập nhật",
+    "updateAll": "Cập nhật tất cả ({count})",
+    "update": "Cập nhật",
+    "rollBack": "Quay lại bản trước",
+    "actions": "Thao tác",
+    "rowMenu": "Thao tác cho {name}",
+    "updateAvailable": "Có bản mới",
+    "updateAvailableHint": "Nhánh của nó có {count} commit mới",
+    "checkProblem": "Không kiểm tra được",
+    "updateDone": "Đã cập nhật xong. Tải lại SillyTavern trong trình duyệt để dùng bản mới.",
+    "updatePartial": "Có extension không cập nhật được. Xem lý do trong nhật ký.",
+    "upToDate": "Đã là bản mới nhất.",
+    "rollBackDone": "Đã quay lại bản trước. Tải lại SillyTavern trong trình duyệt để dùng nó.",
+    "rollBackTitle": "Quay {name} về bản trước?",
+    "rollBackBody": "Extension sẽ về đúng bản nó có trước lần cập nhật gần nhất từ đây. Cài đặt của nó giữ nguyên.",
+    "taskFailed": "Tác vụ extension không thành công."
   },
   "setup": {
     "title": "Thiết lập trình quản lý",
@@ -789,6 +807,16 @@
     "publicAddress": "Từ xa (mọi thiết bị)"
   },
   "errors": {
+    "extension_busy": "Đang có một tác vụ extension khác chạy. Chờ nó xong đã.",
+    "extension_not_found": "Extension này không còn được cài. Hãy tải lại danh sách.",
+    "extension_local_changes": "File của extension này đã bị sửa tay, nên nó được giữ nguyên.",
+    "extension_no_branch": "Extension này không nằm trên nhánh nào, nên không có nguồn để cập nhật.",
+    "extension_no_upstream": "Nhánh của extension này không theo nhánh nào trên nguồn.",
+    "extension_fetch_failed": "Không kết nối được tới nguồn của extension.",
+    "extension_diverged": "Extension này có thay đổi mà nguồn không có, nên không cập nhật an toàn được.",
+    "extension_no_rollback": "Không có bản trước nào được ghi lại để quay về.",
+    "extension_git_unreadable": "Git không đọc được thư mục của extension này.",
+    "git_unavailable": "Máy này không có git.",
     "archive_too_large": "Tệp đó quá lớn.",
     "cloudflare_authorization_denied": "Quyền truy cập chưa được cấp trên Cloudflare.",
     "cloudflare_conflict": "Cloudflare từ chối vì đã có thứ trùng tên ở đó.",
@@ -893,6 +921,17 @@
     "upload_too_large": "Tệp tải lên quá lớn."
   },
   "logs": {
+    "extensions": {
+      "checking": "Đang kiểm tra cập nhật extension ({done}/{total})",
+      "checked": "{available} trên {total} extension có bản mới",
+      "updating": "Đang cập nhật {name}",
+      "updatingAll": "Đang cập nhật extension",
+      "updated": "Đã cập nhật {name} từ {from} lên {to}",
+      "upToDate": "{name} đã là bản mới nhất",
+      "updateFailed": "Không cập nhật được {name}: {reason}",
+      "rollingBack": "Đang quay {name} về bản trước",
+      "rolledBack": "Đã quay {name} về {commit}"
+    },
     "panel": {
       "building": "Giao diện chưa được dựng; đang dựng ngay bây giờ",
       "built": "Đã dựng xong giao diện",
@@ -1249,7 +1288,8 @@
       "restore": "Khôi phục",
       "r2Upload": "Sao lưu lên cloud",
       "r2Fetch": "Lấy điểm khôi phục",
-      "installation": "Cài đặt"
+      "installation": "Cài đặt",
+      "extensions": "Cập nhật extension"
     },
     "quota": {
       "storage": "dung lượng",

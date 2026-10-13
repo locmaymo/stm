@@ -22,7 +22,8 @@ import { ProcessSupervisor } from './supervisor.js';
 import { AccessGateway } from './gateway.js';
 import { ACCESS_GATEWAY_PORT, checkSillyTavernPort, findFreePort, isPortFree, MANAGER_PORT, PortError, portWasDemanded, resolveAccessPort, resolveConsolePort, SILLYTAVERN_PORT, type ResolvedPort } from './ports.js';
 import { previewImage, previewLogo, previewManifest } from './preview.js';
-import { listExtensions } from './extensions.js';
+import { canRunGit, findExtensions, type FoundExtension } from './extensions.js';
+import { ExtensionError, ExtensionUpdater } from './extension-updates.js';
 import { TunnelManager } from '../../../packages/tunnel/src/index.js';
 import { isWaitingProfile, ProfileError, ProfileStore } from '../../../packages/profiles/src/index.js';
 import { BackupError, BackupStore, MAX_ZIP_DIRECTORY_BYTES, type RestoreOptions } from '../../../packages/backup/src/index.js';
@@ -842,6 +843,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   });
   // Every browser that asked to be told is told, in the language it asked in.
   const push = new WebPush({ paths });
+  const extensionUpdater = new ExtensionUpdater({ stateDir: paths.state });
   notifications.subscribe((notification) => { void push.deliver(notification); });
   // Replies are not in the bell - there would be one for every message - and
   // go only to browsers that subscribed from SillyTavern's page.
@@ -987,6 +989,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       online,
       notifications,
       push,
+      extensionUpdater,
       proxy,
       publishProxies,
       budget,
@@ -1177,6 +1180,7 @@ async function handleRequest(options: {
   readonly notifications: NotificationCenter;
   /** Browsers that asked for push notifications; see `web-push.ts`. */
   readonly push: WebPush;
+  readonly extensionUpdater: ExtensionUpdater;
   readonly proxy: ProxyWorkerManager | null;
   /** Put the fixed addresses in place, for a Cloudflare account just connected. */
   readonly publishProxies: () => void;
@@ -1195,7 +1199,7 @@ async function handleRequest(options: {
   readonly autoInstall: boolean;
   readonly onShutdownRequest: (() => void) | undefined;
 }): Promise<void> {
-  const { request, response, store, sessions, rateLimiter, handoffs, startedAt, publicOrigins, proxiedOrigin, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, releases, online, notifications, push, proxy, publishProxies, budget, saver, shutdownToken, autoInstall, onShutdownRequest } = options;
+  const { request, response, store, sessions, rateLimiter, handoffs, startedAt, publicOrigins, proxiedOrigin, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, releases, online, notifications, push, extensionUpdater, proxy, publishProxies, budget, saver, shutdownToken, autoInstall, onShutdownRequest } = options;
   // Whether the browser's side of this connection is HTTPS, which is not the
   // same question as whether ours is: a hosted console is reached over HTTPS
   // that a proxy terminates before us, and only the proxy's own header says so.
@@ -1497,7 +1501,7 @@ async function handleRequest(options: {
     if (method !== 'GET' && !requireCsrf(context, session.csrfToken)) {
       return;
     }
-    await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, online, proxy, publishProxies, budget, logger, handoffs, saver, sessions, notifications, push);
+    await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, online, proxy, publishProxies, budget, logger, handoffs, saver, sessions, notifications, push, extensionUpdater);
     return;
   }
 
@@ -1750,7 +1754,7 @@ async function adoptRestoredPort(deps: PortAdoptionDeps, port: number): Promise<
   }
 }
 
-async function handleRuntimeRequest(context: RequestContext, store: StateStore, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, managerTunnel: TunnelManager, gateway: AccessGateway, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, cloudflare: CloudflareConnection | null, metrics: MetricsStore, activity: ActivityMeter, config: ConfigStore, system: SystemStore, online: OnlineKeeper, proxy: ProxyWorkerManager | null, publishProxies: () => void, budget: WorkerBudget, logger: LogSink, handoffs: HandoffStore, saver: SaverMode, sessions: SessionStore, notifications: NotificationCenter, push: WebPush): Promise<void> {
+async function handleRuntimeRequest(context: RequestContext, store: StateStore, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, managerTunnel: TunnelManager, gateway: AccessGateway, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, cloudflare: CloudflareConnection | null, metrics: MetricsStore, activity: ActivityMeter, config: ConfigStore, system: SystemStore, online: OnlineKeeper, proxy: ProxyWorkerManager | null, publishProxies: () => void, budget: WorkerBudget, logger: LogSink, handoffs: HandoffStore, saver: SaverMode, sessions: SessionStore, notifications: NotificationCenter, push: WebPush, extensionUpdater: ExtensionUpdater): Promise<void> {
   const { pathname, ports, request, response, searchParams } = context;
   const method = request.method ?? 'GET';
   const adoptSillyTavernPort = (port: number): Promise<void> =>
@@ -1922,11 +1926,73 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
    * whether it is running or not.
    */
   if (pathname === '/api/v1/extensions' && method === 'GET') {
-    const [profile, installation] = await Promise.all([profiles.getActive(), runtime.getActiveInstallation()]);
-    sendJson(response, 200, await listExtensions({
-      userRoot: profile ? userDataRoot(profile) : null,
-      runtimeRoot: installation?.status === 'ready' ? installation.runtimePath : null,
-    }) satisfies ExtensionList);
+    const found = await findExtensions(await extensionRoots(profiles, runtime));
+    sendJson(response, 200, {
+      extensions: await extensionUpdater.describe(found.extensions),
+      gitAvailable: found.gitAvailable,
+      checkedAt: extensionUpdater.checkedAt,
+      job: jobs.active('extensions'),
+    } satisfies ExtensionList);
+    return;
+  }
+  /*
+   * Look for updates, update, and roll back: each a job, one at a time.
+   *
+   * A check is asked for by the page whenever the last one is over an hour
+   * old, and answered with no job when it is not; `force` is the button.
+   */
+  const extensionAction = /^\/api\/v1\/extensions\/(check|update|rollback)$/u.exec(pathname)?.[1];
+  if (extensionAction && method === 'POST') {
+    const body = await readJson(request);
+    if (jobs.active('extensions')) { sendError(response, 409, 'extension_busy', 'Another extension task is still running'); return; }
+    if (!await canRunGit('git')) { sendError(response, 409, 'git_unavailable', 'Git is not available on this machine'); return; }
+    const found = (await findExtensions(await extensionRoots(profiles, runtime))).extensions;
+    if (extensionAction === 'check') {
+      if (!(isRecord(body) && body.force === true) && !extensionUpdater.isStale()) { sendJson(response, 200, { job: null }); return; }
+      const job = runExtensionJob(jobs, logEvent('extensions.checking', 'Checking extensions for updates', { done: 0, total: found.length }), async (id) => {
+        await extensionUpdater.check(found, (done, total) => jobs.updateOperation(id, total > 0 ? (done / total) * 100 : 100, logEvent('extensions.checking', `Checking extensions for updates (${done}/${total})`, { done, total })));
+        const available = (await extensionUpdater.describe(found)).filter((item) => (item.update?.behind ?? 0) > 0).length;
+        jobs.append('manager', logEvent('extensions.checked', `[extensions] ${available} of ${found.length} extensions have an update`, { available, total: found.length }));
+      });
+      sendJson(response, 202, { job });
+      return;
+    }
+    const all = extensionAction === 'update' && isRecord(body) && body.all === true;
+    const target = all ? null : findExtensionTarget(found, body);
+    if (!all && !target) { sendError(response, 404, 'extension_not_found', 'That extension is not installed'); return; }
+    if (extensionAction === 'rollback') {
+      const entry = target!;
+      const job = runExtensionJob(jobs, logEvent('extensions.rollingBack', `Rolling ${entry.info.name} back`, { name: entry.info.displayName }), async () => {
+        const result = await extensionUpdater.rollBack(entry);
+        jobs.append('manager', logEvent('extensions.rolledBack', `[extensions] rolled ${entry.info.name} back to ${result.to.slice(0, 7)}`, { name: entry.info.displayName, commit: result.to.slice(0, 7) }));
+      });
+      sendJson(response, 202, { job });
+      return;
+    }
+    const described = await extensionUpdater.describe(found);
+    const targets = target ? [target] : found.filter((entry, index) => (described[index]?.update?.behind ?? 0) > 0);
+    const job = runExtensionJob(jobs, target ? logEvent('extensions.updating', `Updating ${target.info.name}`, { name: target.info.displayName }) : logEvent('extensions.updatingAll', 'Updating extensions'), async (id) => {
+      const failures: string[] = [];
+      let lastError: ExtensionError | null = null;
+      for (const [index, entry] of targets.entries()) {
+        jobs.updateOperation(id, (index / Math.max(targets.length, 1)) * 100, logEvent('extensions.updating', `Updating ${entry.info.name}`, { name: entry.info.displayName }));
+        try {
+          const result = await extensionUpdater.update(entry);
+          jobs.append('manager', result.outcome === 'updated'
+            ? logEvent('extensions.updated', `[extensions] updated ${entry.info.name} from ${result.from.slice(0, 7)} to ${result.to.slice(0, 7)}`, { name: entry.info.displayName, from: result.from.slice(0, 7), to: result.to.slice(0, 7) })
+            : logEvent('extensions.upToDate', `[extensions] ${entry.info.name} is already up to date`, { name: entry.info.displayName }));
+        } catch (error: unknown) {
+          if (!(error instanceof ExtensionError)) throw error;
+          lastError = error;
+          failures.push(entry.info.displayName);
+          jobs.append('manager', logEvent('extensions.updateFailed', `[extensions] could not update ${entry.info.name}: ${error.message}`, { name: entry.info.displayName, reason: error.message }), 'warn');
+        }
+      }
+      // One extension refusing is that extension's answer; the job failed only
+      // if it was all there was to do, and then it says why in its own words.
+      if (lastError && failures.length === targets.length) throw lastError;
+    });
+    sendJson(response, 202, { job });
     return;
   }
   if (pathname === '/api/v1/preview/image' && method === 'GET') {
@@ -3532,6 +3598,43 @@ function userDataRoot(profile: Profile): string {
   return profile.layout === 'data' ? join(profile.dataPath, 'default-user') : profile.dataPath;
 }
 
+/** Where the active profile and the installed copy keep their extensions. */
+async function extensionRoots(profiles: ProfileStore, runtime: RuntimeManager): Promise<{ userRoot: string | null; runtimeRoot: string | null }> {
+  const [profile, installation] = await Promise.all([profiles.getActive(), runtime.getActiveInstallation()]);
+  return {
+    userRoot: profile ? userDataRoot(profile) : null,
+    runtimeRoot: installation?.status === 'ready' ? installation.runtimePath : null,
+  };
+}
+
+/**
+ * The extension a request names, looked up among those on disk.
+ *
+ * Never a path built from the request: a name is only ever matched against
+ * the folders that are there, so `..` or a separator names nothing.
+ */
+function findExtensionTarget(found: readonly FoundExtension[], body: unknown): FoundExtension | null {
+  if (!isRecord(body) || (body.scope !== 'user' && body.scope !== 'global') || typeof body.name !== 'string') return null;
+  return found.find((entry) => entry.info.scope === body.scope && entry.info.name === body.name) ?? null;
+}
+
+/**
+ * Run an extension task as a job the panel can follow.
+ *
+ * A refusal the manager made keeps its code on the job, so the panel says it
+ * in the reader's language; anything else is git's or the system's own words.
+ */
+function runExtensionJob(jobs: JobStore, step: LogEvent, work: (id: string) => Promise<void>): Job {
+  const { job } = jobs.createOperation('extensions', step);
+  void work(job.id)
+    .then(() => jobs.finishOperation(job.id, 'succeeded', null))
+    .catch((error: unknown) => jobs.finishOperation(job.id, 'failed', error instanceof Error ? error.message : 'The extension task failed', {
+      evenIfCanceled: true,
+      ...(error instanceof ExtensionError ? { errorCode: error.code } : {}),
+    }));
+  return jobs.get(job.id) ?? job;
+}
+
 function cloudflareConnectionFromEnvironment(paths: PlatformPaths, env: NodeJS.ProcessEnv): CloudflareConnection | null {
   const clientId = (env.STM_CLOUDFLARE_OAUTH_CLIENT_ID ?? DEFAULT_CLOUDFLARE_CLIENT_ID).trim();
   if (!clientId) return null;
@@ -4210,7 +4313,8 @@ function isProtectedPath(pathname: string): boolean {
     || pathname.startsWith('/api/v1/profiles/')
     || pathname.startsWith('/api/v1/backups/')
     || pathname.startsWith('/api/v1/r2/')
-    || pathname.startsWith('/api/v1/config/');
+    || pathname.startsWith('/api/v1/config/')
+    || pathname.startsWith('/api/v1/extensions/');
 }
 
 function parseConfigUpdateInput(value: unknown): ConfigUpdateInput {
@@ -5313,6 +5417,12 @@ class JobStore {
     return null;
   }
 
+  /** The running job of one kind, for kinds that run one at a time. */
+  public active(kind: JobKind): Job | null {
+    for (const job of this.jobs.values()) if (job.state === 'running' && job.kind === kind) return job;
+    return null;
+  }
+
   public activeOperation(): Job | null {
     let newest: Job | null = null;
     for (const job of this.jobs.values()) {
@@ -5358,14 +5468,14 @@ class JobStore {
    * `evenIfCanceled` keeps a failure that happened after a stop reported as one.
    * `backupId` names an archive the job produced, for a panel that has to act on it.
    */
-  public finishOperation(id: string, state: 'succeeded' | 'failed', error: string | null, options: { readonly evenIfCanceled?: boolean; readonly stepCode?: string | undefined; readonly backupId?: string | undefined } = {}): void {
+  public finishOperation(id: string, state: 'succeeded' | 'failed', error: string | null, options: { readonly evenIfCanceled?: boolean; readonly stepCode?: string | undefined; readonly backupId?: string | undefined; readonly errorCode?: string | undefined } = {}): void {
     const current = this.jobs.get(id);
     if (!current) return;
     const settled: JobState = state === 'failed' && this.wasCanceled(id) && !options.evenIfCanceled ? 'canceled' : state;
     const step = settled === 'succeeded' ? 'Completed' : settled === 'canceled' ? 'Stopped' : 'Failed';
     const stepCode = options.stepCode ?? (settled === 'succeeded' ? 'job.completed' : settled === 'canceled' ? 'job.stopped' : 'job.failed');
     this.controllers.delete(id);
-    this.jobs.set(id, { ...current, state: settled, progress: settled === 'succeeded' ? 100 : current.progress, step, stepCode, ...(options.backupId ? { resultBackupId: options.backupId } : {}), error: settled === 'canceled' ? null : error, updatedAt: new Date().toISOString() });
+    this.jobs.set(id, { ...current, state: settled, progress: settled === 'succeeded' ? 100 : current.progress, step, stepCode, ...(options.backupId ? { resultBackupId: options.backupId } : {}), ...(options.errorCode && settled === 'failed' ? { errorCode: options.errorCode } : {}), error: settled === 'canceled' ? null : error, updatedAt: new Date().toISOString() });
     this.finished(id);
   }
 }

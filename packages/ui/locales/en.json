@@ -44,7 +44,25 @@
     "gitMissing": "Git is not available on this machine, so update details are not shown.",
     "sizeDetail": "{size}, plus {dependencies} in node_modules",
     "scopeNote": "Extensions for this profile are in its backups. Extensions for all profiles belong to the installed SillyTavern and are not backed up.",
-    "homePage": "Home page"
+    "homePage": "Home page",
+    "checkUpdates": "Check for updates",
+    "checkedAt": "Checked {when}",
+    "neverChecked": "Not checked for updates yet",
+    "updateAll": "Update all ({count})",
+    "update": "Update",
+    "rollBack": "Roll back",
+    "actions": "Actions",
+    "rowMenu": "Actions for {name}",
+    "updateAvailable": "Update available",
+    "updateAvailableHint": "{count} new commits on its branch",
+    "checkProblem": "Could not check",
+    "updateDone": "Update finished. Reload SillyTavern in your browser to load it.",
+    "updatePartial": "Some extensions could not be updated. The log says why.",
+    "upToDate": "Already up to date.",
+    "rollBackDone": "Rolled back. Reload SillyTavern in your browser to load it.",
+    "rollBackTitle": "Roll {name} back?",
+    "rollBackBody": "It goes back to the version it had before the last update made here. Its settings stay as they are.",
+    "taskFailed": "The extension task failed."
   },
   "setup": {
     "title": "Set up your manager",
@@ -789,6 +807,16 @@
     "publicAddress": "Remote (any device)"
   },
   "errors": {
+    "extension_busy": "Another extension task is still running. Wait for it to finish.",
+    "extension_not_found": "That extension is not installed any more. Refresh the list.",
+    "extension_local_changes": "This extension’s files were changed by hand, so it was left as it is.",
+    "extension_no_branch": "This extension is not on a branch, so there is nothing to update it from.",
+    "extension_no_upstream": "This extension’s branch does not follow a remote branch.",
+    "extension_fetch_failed": "The extension’s source could not be reached.",
+    "extension_diverged": "This extension has changes its source does not have, so it cannot be updated safely.",
+    "extension_no_rollback": "There is no earlier version recorded to go back to.",
+    "extension_git_unreadable": "Git could not read this extension’s folder.",
+    "git_unavailable": "Git is not available on this machine.",
     "archive_too_large": "That file is too large.",
     "cloudflare_authorization_denied": "Access was not granted on Cloudflare.",
     "cloudflare_conflict": "Cloudflare refused that because something with the same name is already there.",
@@ -893,6 +921,17 @@
     "upload_too_large": "That upload is too large."
   },
   "logs": {
+    "extensions": {
+      "checking": "Checking extensions for updates ({done}/{total})",
+      "checked": "{available} of {total} extensions have an update",
+      "updating": "Updating {name}",
+      "updatingAll": "Updating extensions",
+      "updated": "Updated {name} from {from} to {to}",
+      "upToDate": "{name} is already up to date",
+      "updateFailed": "Could not update {name}: {reason}",
+      "rollingBack": "Rolling {name} back",
+      "rolledBack": "Rolled {name} back to {commit}"
+    },
     "panel": {
       "building": "The panel has not been built yet; building it now",
       "built": "The panel is built",
@@ -1249,7 +1288,8 @@
       "restore": "The restore",
       "r2Upload": "The cloud backup",
       "r2Fetch": "Bringing back the recovery point",
-      "installation": "The install"
+      "installation": "The install",
+      "extensions": "Updating extensions"
     },
     "quota": {
       "storage": "storage",

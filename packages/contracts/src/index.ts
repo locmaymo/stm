@@ -449,12 +449,37 @@ export interface ExtensionInfo {
   readonly hasGit: boolean;
   /** Null without a checkout, or when git could not read it. */
   readonly git: ExtensionGit | null;
+  /** What the last check for updates found; null until one has looked at this extension. */
+  readonly update: ExtensionUpdate | null;
+  /**
+   * Whether an update made here recorded the commit it left, so it can be
+   * undone. Updates made by SillyTavern itself record nothing.
+   */
+  readonly canRollBack: boolean;
+}
+
+export interface ExtensionUpdate {
+  /** Commits the extension's branch has that this checkout does not; null when it could not be told. */
+  readonly behind: number | null;
+  /** Why it could not be told, as an `errors.*` code. */
+  readonly problem: string | null;
+  readonly checkedAt: string;
 }
 
 export interface ExtensionList {
   readonly extensions: readonly ExtensionInfo[];
   /** False when git could not be run here; then no extension has git details. */
   readonly gitAvailable: boolean;
+  /** When updates were last looked for, or null if they never were since the manager started. */
+  readonly checkedAt: string | null;
+  /** The extension job that is running, for a page that did not start it. */
+  readonly job: Job | null;
+}
+
+/** Which extension a request is about; the name alone is not enough, since both places can hold it. */
+export interface ExtensionTarget {
+  readonly scope: ExtensionScope;
+  readonly name: string;
 }
 
 export type RestoreMode = 'merge' | 'replace';
@@ -1043,7 +1068,7 @@ export type JobState = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled
  * announced itself as "Back up now" in the local backup card while the cloud
  * card, which had started it, showed nothing.
  */
-export type JobKind = 'installation' | 'backup' | 'restore' | 'r2Upload' | 'r2Fetch';
+export type JobKind = 'installation' | 'backup' | 'restore' | 'r2Upload' | 'r2Fetch' | 'extensions';
 
 /** The jobs a panel reattaches to and shows progress for; an install is its own screen. */
 export const OPERATION_JOB_KINDS: readonly JobKind[] = ['backup', 'restore', 'r2Upload', 'r2Fetch'];
@@ -1075,6 +1100,8 @@ export interface Job {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly error: string | null;
+  /** The manager's own code for that failure, when it has one; see `Installation.errorCode`. */
+  readonly errorCode?: string;
 }
 
 /** Values substituted into a translated log line or progress step. */

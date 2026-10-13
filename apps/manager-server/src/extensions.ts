@@ -41,7 +41,21 @@ interface Candidate {
   readonly path: string;
 }
 
-export async function listExtensions(roots: ExtensionRoots, options: ListExtensionsOptions = {}): Promise<ExtensionList> {
+/** What the list says about an extension, before anything is known about updates. */
+export type ExtensionFacts = Omit<ExtensionInfo, 'update' | 'canRollBack'>;
+
+/** An extension as found, with the folder it is in; the folder never leaves the server. */
+export interface FoundExtension {
+  readonly info: ExtensionFacts;
+  readonly path: string;
+}
+
+export async function listExtensions(roots: ExtensionRoots, options: ListExtensionsOptions = {}): Promise<Pick<ExtensionList, 'gitAvailable'> & { readonly extensions: readonly ExtensionFacts[] }> {
+  const found = await findExtensions(roots, options);
+  return { extensions: found.extensions.map((entry) => entry.info), gitAvailable: found.gitAvailable };
+}
+
+export async function findExtensions(roots: ExtensionRoots, options: ListExtensionsOptions = {}): Promise<{ readonly extensions: readonly FoundExtension[]; readonly gitAvailable: boolean }> {
   const gitCommand = options.gitCommand ?? 'git';
   const user = roots.userRoot ? await extensionFolders(join(roots.userRoot, 'extensions'), 'user') : [];
   const global = roots.runtimeRoot ? await extensionFolders(join(roots.runtimeRoot, 'public', 'scripts', 'extensions', 'third-party'), 'global') : [];
@@ -49,14 +63,17 @@ export async function listExtensions(roots: ExtensionRoots, options: ListExtensi
   const userNames = new Set(user.map((candidate) => candidate.name));
   const candidates = [...user, ...global];
   const gitAvailable = candidates.length > 0 ? await canRunGit(gitCommand) : true;
-  const extensions = await mapPooled(candidates, CONCURRENCY, async (candidate) => describe(candidate, {
-    enabled: !disabled.has(extensionKey(candidate.name)),
-    shadowed: candidate.scope === 'global' && userNames.has(candidate.name),
-    gitCommand: gitAvailable ? gitCommand : null,
+  const extensions = await mapPooled(candidates, CONCURRENCY, async (candidate) => ({
+    info: await describe(candidate, {
+      enabled: !disabled.has(extensionKey(candidate.name)),
+      shadowed: candidate.scope === 'global' && userNames.has(candidate.name),
+      gitCommand: gitAvailable ? gitCommand : null,
+    }),
+    path: candidate.path,
   }));
-  extensions.sort((left, right) => left.scope === right.scope
-    ? left.displayName.localeCompare(right.displayName, undefined, { sensitivity: 'base' })
-    : left.scope === 'user' ? -1 : 1);
+  extensions.sort((left, right) => left.info.scope === right.info.scope
+    ? left.info.displayName.localeCompare(right.info.displayName, undefined, { sensitivity: 'base' })
+    : left.info.scope === 'user' ? -1 : 1);
   return { extensions, gitAvailable };
 }
 
@@ -122,7 +139,7 @@ async function disabledExtensions(settingsPath: string): Promise<Set<string>> {
   } catch { return new Set(); }
 }
 
-async function describe(candidate: Candidate, context: { enabled: boolean; shadowed: boolean; gitCommand: string | null }): Promise<ExtensionInfo> {
+async function describe(candidate: Candidate, context: { enabled: boolean; shadowed: boolean; gitCommand: string | null }): Promise<ExtensionFacts> {
   const manifest = await readManifest(join(candidate.path, 'manifest.json'));
   const hasGit = await stat(join(candidate.path, '.git')).then(() => true, () => false);
   const [size, git] = await Promise.all([
@@ -179,11 +196,11 @@ async function measure(root: string): Promise<{ bytes: number; dependencyBytes: 
 
 async function readGit(gitCommand: string, directory: string): Promise<ExtensionGit | null> {
   try {
-    const head = await git(gitCommand, directory, ['log', '-1', '--format=%H%x00%cI%x00%D']);
+    const head = await runGit(gitCommand, directory, ['log', '-1', '--format=%H%x00%cI%x00%D']);
     const [commit = '', committedAt = '', refs = ''] = head.trim().split('\u0000');
     if (!/^[0-9a-f]{40,64}$/u.test(commit)) return null;
     const branch = refs.split(', ').find((ref) => ref.startsWith('HEAD -> '))?.slice('HEAD -> '.length) ?? null;
-    const remote = await git(gitCommand, directory, ['config', '--get', 'remote.origin.url']).then(safeRemote, () => null);
+    const remote = await runGit(gitCommand, directory, ['config', '--get', 'remote.origin.url']).then(safeRemote, () => null);
     return { remote, branch, commit, committedAt: committedAt || null };
   } catch { return null; }
 }
@@ -191,7 +208,7 @@ async function readGit(gitCommand: string, directory: string): Promise<Extension
 const gitChecks = new Map<string, Promise<boolean>>();
 
 /** Whether git runs here at all; asked once per process, since that does not change while it runs. */
-function canRunGit(gitCommand: string): Promise<boolean> {
+export function canRunGit(gitCommand: string): Promise<boolean> {
   let check = gitChecks.get(gitCommand);
   if (!check) {
     check = new Promise((resolvePromise) => {
@@ -202,20 +219,35 @@ function canRunGit(gitCommand: string): Promise<boolean> {
   return check;
 }
 
-function git(gitCommand: string, directory: string, args: readonly string[]): Promise<string> {
-  // The ceiling keeps git from walking up to a repository around the folder
-  // when the folder's own `.git` turns out not to be one.
-  const env: NodeJS.ProcessEnv = { ...process.env, GIT_CEILING_DIRECTORIES: dirname(directory), GIT_TERMINAL_PROMPT: '0' };
+/**
+ * Git, run in one extension's folder and nowhere above it.
+ *
+ * The ceiling keeps git from walking up to a repository around the folder
+ * when the folder's own `.git` turns out not to be one. Nothing may ask a
+ * question: a remote that wants a password fails rather than waiting for an
+ * answer nobody is there to type, whichever helper would have asked.
+ */
+export function runGit(gitCommand: string, directory: string, args: readonly string[], timeoutMs = GIT_TIMEOUT_MS): Promise<string> {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    GIT_CEILING_DIRECTORIES: dirname(directory),
+    GIT_TERMINAL_PROMPT: '0',
+    GCM_INTERACTIVE: 'never',
+    GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND ?? 'ssh -o BatchMode=yes',
+  };
   delete env.GIT_DIR;
   delete env.GIT_WORK_TREE;
   return new Promise((resolvePromise, reject) => {
-    execFile(gitCommand, ['-C', directory, ...args], { env, timeout: GIT_TIMEOUT_MS, windowsHide: true, maxBuffer: 64 * 1024 }, (error, stdout) => {
-      if (error) reject(error); else resolvePromise(stdout);
+    execFile(gitCommand, ['-C', directory, '-c', 'credential.interactive=false', ...args], { env, timeout: timeoutMs, windowsHide: true, maxBuffer: 256 * 1024 }, (error, stdout, stderr) => {
+      if (error) reject(new GitError(String(stderr || error.message).trim().split(/\r?\n/u).slice(-3).join(' '))); else resolvePromise(stdout);
     });
   });
 }
 
-async function mapPooled<Item, Result>(items: readonly Item[], limit: number, map: (item: Item) => Promise<Result>): Promise<Result[]> {
+/** A git command that failed, carrying the last lines it printed. */
+export class GitError extends Error {}
+
+export async function mapPooled<Item, Result>(items: readonly Item[], limit: number, map: (item: Item) => Promise<Result>): Promise<Result[]> {
   const results = new Array<Result>(items.length);
   let next = 0;
   const worker = async (): Promise<void> => {

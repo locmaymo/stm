@@ -1,13 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
 import { request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { getPlatformPaths } from '../../../packages/platform/src/index.js';
 import { StateStore } from '../src/state.js';
 import { preferredNetworkHost, startManagerServer, type ManagerServer } from '../src/server.js';
-import type { AccessGatewayState, ApiErrorBody, ConsoleStatus, ExtensionList, Installation, LegalReview, ManagerUpdateStatus, OnlineState, ProcessState, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, ApiErrorBody, ConsoleStatus, ExtensionList, Installation, Job, LegalReview, ManagerUpdateStatus, OnlineState, ProcessState, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { LEGAL_META } from '../../../packages/legal/src/index.js';
 import type { WorkerBudget, WorkerBudgetLevel } from '../src/worker-budget.js';
 import { hashPassword } from '../src/password.js';
@@ -21,6 +23,13 @@ import { ReleaseWatch } from '../src/manager-release.js';
 import { KEEP_ONLINE_DEFAULT_MINUTES, KEEP_ONLINE_MAX_MINUTES } from '../../../packages/contracts/src/index.js';
 import { OnlineKeeper } from '../src/online.js';
 import { SILLYTAVERN_PORT } from '../src/ports.js';
+
+const execFileAsync = promisify(execFile);
+
+/** A skip reason when git cannot run here, for the tests that need a real repository. */
+async function gitMissing(): Promise<string | false> {
+  return execFileAsync('git', ['--version']).then(() => false as const, () => 'git is not installed here');
+}
 
 async function createServer(options: {
   bootstrapPassword?: string;
@@ -816,6 +825,72 @@ test('the extension list reads the active profile and the installed copy, and ne
   assert.equal(response.status, 200);
   const list = await response.json() as ExtensionList;
   assert.deepEqual(list.extensions.map((item) => [item.scope, item.displayName]), [['user', 'Mine'], ['global', 'Shared One']]);
+});
+
+test('extensions are checked, updated and rolled back as jobs, one at a time', { skip: await gitMissing() }, async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-extension-jobs-api-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const git = (directory: string, ...args: string[]) => execFileAsync('git', ['-C', directory, '-c', 'user.email=stm@test.example', '-c', 'user.name=STM Test', '-c', 'commit.gpgsign=false', ...args]);
+  const remote = join(root, 'remote.git');
+  const author = join(root, 'author');
+  await execFileAsync('git', ['init', '--bare', '-q', '-b', 'main', remote]);
+  await execFileAsync('git', ['clone', '-q', remote, author]);
+  await git(author, 'checkout', '-q', '-b', 'main');
+  await writeFile(join(author, 'manifest.json'), JSON.stringify({ display_name: 'Notes' }));
+  await git(author, 'add', '.'); await git(author, 'commit', '-q', '-m', 'one'); await git(author, 'push', '-q', 'origin', 'main');
+  const runtimePath = join(root, 'runtime');
+  await mkdir(runtimePath, { recursive: true });
+  const now = new Date().toISOString();
+  const installation: Installation = { id: 'install-one', selector: 'latest', resolvedRef: '1.0.0', channel: 'release', runtimePath, markerPath: join(runtimePath, '.stm-installation.json'), status: 'ready', progress: 100, step: 'Installation ready', error: null, createdAt: now, updatedAt: now, activatedAt: now };
+  const fakeRuntime = { listVersions: async () => [], listInstallations: async () => [installation], getActiveInstallation: async () => installation, getInstallation: async () => installation } as unknown as RuntimeManager;
+  const manager = await startManagerServer({ host: '127.0.0.1', port: 0, paths, env: { STM_ADMIN_PASSWORD: 'correct horse battery staple' }, secureCookies: false, accessPort: 0, runtime: fakeRuntime, logger: () => undefined });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const { cookie, csrfToken } = await signIn(base);
+  const profile = (await (await fetch(`${base}/api/v1/profiles`, { headers: { cookie } })).json() as { profiles: Array<{ dataPath: string }> }).profiles[0];
+  assert.ok(profile);
+  const extensionPath = join(profile.dataPath, 'default-user', 'extensions', 'Notes');
+  await execFileAsync('git', ['clone', '-q', remote, extensionPath]);
+  const first = (await git(extensionPath, 'rev-parse', 'HEAD')).stdout.trim();
+  await writeFile(join(author, 'index.js'), 'new'); await git(author, 'add', '.'); await git(author, 'commit', '-q', '-m', 'two'); await git(author, 'push', '-q', 'origin', 'main');
+
+  const post = (action: string, body: unknown, headers: Record<string, string> = { 'x-csrf-token': csrfToken }) => fetch(`${base}/api/v1/extensions/${action}`, { method: 'POST', headers: { cookie, 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
+  const settle = async (response: Response): Promise<Job> => {
+    assert.equal(response.status, 202);
+    const { job } = await response.json() as { job: Job };
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+      const current = await (await fetch(`${base}/api/v1/jobs/${job.id}`, { headers: { cookie } })).json() as Job;
+      if (current.state !== 'running') return current;
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+    }
+    throw new Error('the job did not finish');
+  };
+  const list = async () => await (await fetch(`${base}/api/v1/extensions`, { headers: { cookie } })).json() as ExtensionList;
+
+  assert.equal((await post('check', { force: true }, {})).status, 403, 'a change needs the CSRF token');
+  assert.equal((await post('update', { scope: 'user', name: '../Notes' })).status, 404);
+  assert.equal((await post('update', { scope: 'global', name: 'Notes' })).status, 404, 'the scope is part of the name');
+
+  const checking = await post('check', { force: true });
+  const second = await post('check', { force: true });
+  assert.equal(second.status, 409, 'a second task waits for the first');
+  assert.equal((await second.json() as ApiErrorBody).error.code, 'extension_busy');
+  assert.equal((await settle(checking)).state, 'succeeded');
+  const checked = await list();
+  assert.ok(checked.checkedAt);
+  assert.equal(checked.extensions[0]?.update?.behind, 1);
+  assert.deepEqual(await (await post('check', {})).json(), { job: null }, 'a fresh check is not asked for again');
+
+  assert.equal((await settle(await post('update', { all: true }))).state, 'succeeded');
+  const updated = await list();
+  assert.equal(updated.extensions[0]?.update?.behind, 0);
+  assert.equal(updated.extensions[0]?.canRollBack, true);
+
+  assert.equal((await settle(await post('rollback', { scope: 'user', name: 'Notes' }))).state, 'succeeded');
+  assert.equal((await list()).extensions[0]?.git?.commit, first);
+  const refused = await settle(await post('rollback', { scope: 'user', name: 'Notes' }));
+  assert.equal(refused.state, 'failed');
+  assert.equal(refused.errorCode, 'extension_no_rollback', 'a refusal keeps its code for the panel to translate');
 });
 
 test('a reinstall installs the same release again, from scratch', async (t) => {
