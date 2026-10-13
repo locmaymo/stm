@@ -66,6 +66,35 @@ const navigation = [
 type PageId = typeof navigation[number]['id'];
 type Navigate = (page: PageId) => void;
 
+/**
+ * A tab with SillyTavern at a path the manager is asked for, for the chat
+ * search's "Open in SillyTavern".
+ *
+ * The tab is opened before anything is awaited, while the press still counts
+ * as one. On this machine it goes through the door, signed in by the console
+ * as the overview's button does, since only a page served by the door carries
+ * the script that opens the chat; elsewhere the address already is the door.
+ * Without a path to go to - the manager said no - the tab is closed again.
+ */
+async function openInSillyTavernTab(address: ReachableAddress, doorPort: number, csrfToken: string | null, path: () => Promise<string | null>): Promise<void> {
+  // The phone app keeps one SillyTavern page of its own, and opens it there.
+  const inApp = hasAppChannel();
+  const tab = inApp ? null : window.open('about:blank', '_blank');
+  if (tab) tab.opener = null;
+  const where = await path().catch(() => null);
+  if (where === null) { tab?.close(); return; }
+  let destination = new URL(where, address.url).href;
+  if (address.kind === 'local') {
+    let signedIn = false;
+    if (csrfToken) {
+      try { signedIn = (await apiFetch('/api/v1/access/embed-session', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } })).ok; } catch { /* SillyTavern's own address instead */ }
+    }
+    destination = signedIn ? localDoorUrl(window.location.hostname, doorPort, where) : address.url;
+  }
+  if (tab) tab.location.href = destination;
+  else if (!inApp || !openInApp(destination)) window.location.assign(destination);
+}
+
 function pageFromHash(): PageId {
   const hash = window.location.hash.slice(1);
   return navigation.find(({ id }) => id === hash)?.id ?? 'overview';
@@ -1646,7 +1675,15 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
   // document reports it too, but it is null until something is installed and
   // the addresses are shown before that.
   const sillyTavernPort = portSettings?.port ?? configDocument?.settings.port ?? DEFAULT_SILLYTAVERN_PORT;
-  const logProps = { t, catalog, source: logSource, onSourceChange: setLogSource, entries: liveLogs.entries, query: logQuery, onQueryChange: setLogQuery, compact: compactLogs, onToggleCompact: () => setCompactLogs((current) => !current), onLoadOlder: liveLogs.loadOlder, hasOlder: liveLogs.hasOlder, loadingOlder: liveLogs.loadingOlder };
+  // Where the chat search opens a hit: the address the overview's button
+  // opens, while SillyTavern is up to be opened at all.
+  const sillyTavernAddress = processState.status === 'running'
+    ? reachableAddresses(tunnelState, accessSecurity, accessSecurity.networkHost ?? null, sillyTavernPort, isThisMachine(window.location.hostname))[0] ?? null
+    : null;
+  const openSillyTavernAt = sillyTavernAddress
+    ? (path: () => Promise<string | null>) => { void openInSillyTavernTab(sillyTavernAddress, accessSecurity.port, csrfToken, path); }
+    : null;
+  const logProps ={ t, catalog, source: logSource, onSourceChange: setLogSource, entries: liveLogs.entries, query: logQuery, onQueryChange: setLogQuery, compact: compactLogs, onToggleCompact: () => setCompactLogs((current) => !current), onLoadOlder: liveLogs.loadOlder, hasOlder: liveLogs.hasOlder, loadingOlder: liveLogs.loadingOlder };
   const logs = <LogsPanel {...logProps} expanded={logsExpanded} onToggleExpanded={() => setLogsExpanded((current) => !current)} />;
   const updateConfig = async (input: ConfigUpdateInput): Promise<string | null> => {
     const response = await apiFetch('/api/v1/config', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify(input) });
@@ -2080,7 +2117,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
             {page !== 'data' && dataActivity?.label
               ? <DataActivityStrip t={t} label={dataActivity.label} step={dataActivity.step} percent={dataActivity.percent} onOpen={() => navigate('data')} />
               : null}
-            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{termuxOffer ? <TermuxOfferCard t={t} onStart={openTermuxImport} onDismiss={() => { answerTermuxOffer(true); setTermuxOfferAnswered(true); }} /> : activeInstallation?.status === 'ready' ? <BubbleOfferCard t={t} /> : null}<VersionSwitchCard t={t} fail={fail} locale={preferences.locale} csrfToken={csrfToken} onOpenExtensions={() => navigate('extensions')} />{hero}{checklist}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} hostAddress={shownHostAddress(online?.hostAddress ?? null)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} onSetAccessLink={setAccessLink} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} canBackUp={activeProfileId !== null && saver?.enabled !== true} onBackup={openBackup} onUpload={openUpload} onUploadFromPhone={phoneImport ? openPhoneUpload : undefined} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? null : page === 'extensions' ? <ExtensionsPage t={t} locale={preferences.locale} labels={tableLabels(t)} fail={fail} csrfToken={csrfToken} /> : page === 'connections' ? <ConnectionsPage t={t} locale={preferences.locale} fail={fail} csrfToken={csrfToken} /> : page === 'chats' ? <ChatSearchPage t={t} locale={preferences.locale} fail={fail} csrfToken={csrfToken} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} onSetAccessLink={setAccessLink} startup={startup} saver={saver} online={online} onSetAutoStart={setAutoStartSillyTavern} onSetNightlyUpdate={setNightlyUpdate} onSetSaver={setSaverMode} onSetKeepOnline={setKeepOnline} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} onEraseEverything={eraseEverything} /> : <ResourcePanel page={page} t={t} />}
+            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{termuxOffer ? <TermuxOfferCard t={t} onStart={openTermuxImport} onDismiss={() => { answerTermuxOffer(true); setTermuxOfferAnswered(true); }} /> : activeInstallation?.status === 'ready' ? <BubbleOfferCard t={t} /> : null}<VersionSwitchCard t={t} fail={fail} locale={preferences.locale} csrfToken={csrfToken} onOpenExtensions={() => navigate('extensions')} />{hero}{checklist}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} hostAddress={shownHostAddress(online?.hostAddress ?? null)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} onSetAccessLink={setAccessLink} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} canBackUp={activeProfileId !== null && saver?.enabled !== true} onBackup={openBackup} onUpload={openUpload} onUploadFromPhone={phoneImport ? openPhoneUpload : undefined} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? null : page === 'extensions' ? <ExtensionsPage t={t} locale={preferences.locale} labels={tableLabels(t)} fail={fail} csrfToken={csrfToken} /> : page === 'connections' ? <ConnectionsPage t={t} locale={preferences.locale} fail={fail} csrfToken={csrfToken} /> : page === 'chats' ? <ChatSearchPage t={t} locale={preferences.locale} fail={fail} csrfToken={csrfToken} openAt={openSillyTavernAt} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} onSetAccessLink={setAccessLink} startup={startup} saver={saver} online={online} onSetAutoStart={setAutoStartSillyTavern} onSetNightlyUpdate={setNightlyUpdate} onSetSaver={setSaverMode} onSetKeepOnline={setKeepOnline} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} onEraseEverything={eraseEverything} /> : <ResourcePanel page={page} t={t} />}
             {/* Kept, hidden, while it has work under way, so leaving for another
                 page does not take the work's progress and its last question
                 with it; the strip above stands in for it meanwhile. */}

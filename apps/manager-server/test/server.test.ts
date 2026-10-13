@@ -902,6 +902,16 @@ test('chats are searched as a stream of hits, behind a session, and the log keep
   assert.equal(events.at(-1)?.type, 'done');
   assert.ok(logged.some((line) => line.includes('chats.searched')));
   assert.equal(logged.some((line) => /secretword|khong/i.test(line)), false);
+
+  // A hit is opened with a token for it, and only for a chat that is there.
+  const open = (body: unknown): Promise<Response> => fetch(`${base}/api/v1/chats/open`, { method: 'POST', headers: { 'content-type': 'application/json', cookie, 'x-csrf-token': csrfToken }, body: JSON.stringify(body) });
+  const opened = await open({ kind: 'character', character: 'Seraphina', chat: 'first', index: 0 });
+  assert.equal(opened.status, 200);
+  const { path } = await opened.json() as { path: string };
+  assert.match(path, /^\/\?stm_open=[A-Za-z0-9_-]{24}$/u);
+  assert.equal(path.includes('first'), false, 'the chat is not named in the address');
+  assert.equal((await open({ kind: 'character', character: 'Seraphina', chat: 'missing', index: 0 })).status, 404);
+  assert.equal((await open({ kind: 'character', character: '../Seraphina', chat: 'first', index: 0 })).status, 400);
 });
 
 test('connections are tested one at a time or all together, and remembered', async (t) => {

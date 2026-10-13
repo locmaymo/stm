@@ -7,6 +7,7 @@ import { AccessGateway, ACCESS_COOKIE_NAME, clientAddress } from '../src/gateway
 import type { GatewayReplies } from '../src/gateway-notify.js';
 import type { ExtensionErrorReport } from '../src/extension-errors.js';
 import { SillyTavernBridge } from '../src/st-bridge.js';
+import { ChatOpenTokens } from '../src/chat-open.js';
 import { rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -859,4 +860,35 @@ test('a page carries the bridge script, and a signed-in tab receives commands on
   assert.deepEqual(await report.json(), { commands: [] }, 'a tab with a stream gets its commands there');
   assert.deepEqual(bridge.summary(), { tabs: 1, visible: false });
   assert.equal(upstream.seen.filter((request) => (request.url ?? '').startsWith('/__stm')).length, 0, 'none of this reaches SillyTavern');
+});
+
+test('a page carries the chat opener, and a token says what to open only to a signed-in page of its own', async (t) => {
+  const upstream = await startUpstream((_request, response) => {
+    response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    response.end('<!doctype html><html><head><title>SillyTavern</title></head><body></body></html>');
+  });
+  const opens = new ChatOpenTokens();
+  const gateway = new AccessGateway({ port: 0, targetPort: upstream.port, logger: () => undefined, opener: opens });
+  gateway.setPassword(hashPassword(PASSWORD));
+  const state = await gateway.start(false);
+  const base = `http://127.0.0.1:${state.port}`;
+  t.after(async () => { await gateway.close(); await upstream.close(); });
+  const token = opens.issue({ kind: 'character', character: 'Seraphina', group: null, chat: 'Seraphina - 2024-07-12@01h31m37s', index: 12, title: 'Seraphina' });
+
+  assert.equal((await fetch(`${base}/__stm/open/${token}`, { headers: { 'x-stm-tools': '1' } })).status, 401, 'behind the door like the rest');
+  // Signing in from a link with a token lands back on it, token and all, and nothing else of the query.
+  const door = await (await fetch(`${base}/?stm_open=${token}&other=1`, { headers: { accept: 'text/html', 'sec-fetch-dest': 'document' } })).text();
+  assert.ok(door.includes(`value="/?stm_open=${token}"`));
+  const cookie = await signIn(base);
+  const html = await (await fetch(`${base}/`, { headers: { cookie, accept: 'text/html', 'sec-fetch-dest': 'document' } })).text();
+  assert.ok(html.includes('<script src="/__stm/open.js" defer></script></head>'));
+  const script = await fetch(`${base}/__stm/open.js`, { headers: { cookie } });
+  assert.match(script.headers.get('content-type') ?? '', /javascript/u);
+  const source = await script.text();
+  assert.doesNotThrow(() => new Function(source), 'the script is JavaScript a browser can run');
+  assert.equal((await fetch(`${base}/__stm/open/${token}`, { headers: { cookie } })).status, 403, 'only a script of this origin asks');
+  const answer = await fetch(`${base}/__stm/open/${token}`, { headers: { cookie, 'x-stm-tools': '1' } });
+  assert.equal(answer.status, 200);
+  assert.deepEqual(await answer.json(), { kind: 'character', avatar: 'Seraphina.png', group: null, chat: 'Seraphina - 2024-07-12@01h31m37s', index: 12, title: 'Seraphina' });
+  assert.equal((await fetch(`${base}/__stm/open/not-a-token-at-all`, { headers: { cookie, 'x-stm-tools': '1' } })).status, 404);
 });

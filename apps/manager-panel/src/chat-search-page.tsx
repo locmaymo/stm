@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { ListFilter, LoaderCircle, MessagesSquare, Search, SearchX, Users, X } from 'lucide-react';
+import { ExternalLink, ListFilter, LoaderCircle, MessagesSquare, Search, SearchX, Users, X } from 'lucide-react';
 import {
   Alert, AlertDescription, Badge, Button, Card, CardContent, CardHeader, EmptyState, Input, Label,
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue, useToast,
 } from '../../../packages/ui/src/index.js';
 import type { ChatSearchDone, ChatSearchEvent, ChatSearchHit, ChatSearchRequest, ChatSearchScope, ChatSearchWho } from '../../../packages/contracts/src/index.js';
 import type { Fail, Translate } from './i18n.js';
@@ -33,8 +33,12 @@ const NO_FILTERS: Filters = { scope: ALL, who: 'any', from: '', to: '' };
  * The manager reads the chats newest first and sends each hit as it finds
  * it, so the first ones show while the rest are read; a new search, or
  * leaving the page, stops the one before. Nothing typed here is kept.
+ *
+ * A hit opens in SillyTavern through openAt, which is null while
+ * SillyTavern is not running.
  */
-export function ChatSearchPage({ t, locale, fail, csrfToken }: { t: Translate; locale: LocaleCode; fail: Fail; csrfToken: string | null }) {
+export function ChatSearchPage({ t, locale, fail, csrfToken, openAt }: { t: Translate; locale: LocaleCode; fail: Fail; csrfToken: string | null; openAt: ((path: () => Promise<string | null>) => void) | null }) {
+  const { toast } = useToast();
   const [scope, setScope] = useState<ChatSearchScope | null>(null);
   const [scopeFailed, setScopeFailed] = useState<'none' | 'noProfile' | 'failed'>('none');
   const [query, setQuery] = useState('');
@@ -135,6 +139,22 @@ export function ChatSearchPage({ t, locale, fail, csrfToken }: { t: Translate; l
   const groupName = (id: string): string => scope?.groups.find((group) => group.id === id)?.name ?? id;
   const empty = scope !== null && scope.totalChats === 0;
 
+  /** Ask the manager for a token for this message, and open SillyTavern with it. */
+  const openHit = (hit: ChatSearchHit, title: string): void => {
+    if (!openAt || !csrfToken) return;
+    openAt(async () => {
+      const response = await apiFetch('/api/v1/chats/open', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken },
+        body: JSON.stringify({ kind: hit.kind, character: hit.character, group: hit.group?.id, chat: hit.chat, index: hit.index, title }),
+      });
+      const payload: unknown = await response.json().catch(() => null);
+      if (!response.ok) { toast({ title: fail.body(payload, t('chatSearch.openFailed')), tone: 'destructive' }); return null; }
+      return (payload as { path?: string } | null)?.path ?? null;
+    });
+  };
+
   return <div className="grid min-w-0 gap-4">
     {scopeFailed === 'noProfile' ? <Alert><AlertDescription>{t('chatSearch.noProfile')}</AlertDescription></Alert> : null}
     {scopeFailed === 'failed' ? <Alert variant="destructive"><AlertDescription>{t('chatSearch.failed')}</AlertDescription></Alert> : null}
@@ -209,10 +229,14 @@ export function ChatSearchPage({ t, locale, fail, csrfToken }: { t: Translate; l
         </CardHeader>
         <ul className="divide-y">
           {group.hits.map((hit) => <li key={hit.index} className="grid gap-1 px-3 py-2.5 sm:px-4">
-            <p className="flex flex-wrap items-baseline gap-x-2 text-xs text-muted-foreground">
+            <p className="flex flex-wrap items-center gap-x-2 text-xs text-muted-foreground">
               <span className={hit.isUser ? 'font-medium text-foreground' : 'font-medium text-primary'}>{hit.name}</span>
               <span>{hit.date === null ? t('chatSearch.noDate') : dates.format(hit.date)}</span>
               <span className="tabular-nums">#{hit.index}</span>
+              {hit.kind === 'character' || hit.group ? <Button type="button" variant="ghost" size="sm" className="ml-auto h-7 px-2 text-xs" disabled={!openAt || !csrfToken}
+                title={openAt ? undefined : t('chatSearch.openNeedsRunning')} onClick={() => openHit(hit, title)}>
+                <ExternalLink />{t('chatSearch.open')}
+              </Button> : null}
             </p>
             <p className="text-sm leading-relaxed break-words">
               {highlightParts(hit.snippet, hit.ranges).map((part, index) => part.match
