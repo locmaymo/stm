@@ -301,6 +301,8 @@
     "startupTitle": "Khi mở trình quản lý",
     "autoStartSillyTavern": "Tự chạy SillyTavern",
     "autoStartSillyTavernHint": "Tắt đi nếu bạn muốn tự bật.",
+    "nightlyUpdate": "Tự cập nhật SillyTavern lúc 4 giờ sáng",
+    "nightlyUpdateHint": "Trong khoảng 4 đến 5 giờ sáng theo giờ của máy này, khi không ai dùng SillyTavern trong một giờ. Dữ liệu được sao lưu trước, trừ chế độ tiết kiệm, và bản không chạy được sẽ tự quay lại.",
     "startupSaveFailed": "Không lưu được tuỳ chọn này",
     "startupSaved": "Đã lưu. Tuỳ chọn này áp dụng từ lần mở trình quản lý sau.",
     "saverMode": "Chế độ tiết kiệm",
@@ -1005,7 +1007,8 @@
       "wentBack": "Đã quay lại SillyTavern {previous}",
       "wentBackFailed": "Không quay lại được SillyTavern {previous}: {reason}",
       "restoringSafetyCopy": "Đang đưa dữ liệu về như trước khi đổi phiên bản",
-      "goingBack": "Đang quay lại SillyTavern {previous}"
+      "goingBack": "Đang quay lại SillyTavern {previous}",
+      "nightlyStarting": "Đang tự cập nhật SillyTavern lên {version} như bạn đã chọn"
     },
     "extensions": {
       "checking": "Đang kiểm tra cập nhật extension ({done}/{total})",

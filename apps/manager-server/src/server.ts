@@ -25,6 +25,7 @@ import { previewImage, previewLogo, previewManifest } from './preview.js';
 import { canRunGit, findExtensions, type FoundExtension } from './extensions.js';
 import { ExtensionError, ExtensionUpdater } from './extension-updates.js';
 import { PROBATION_MS, VersionSwitchStore, watchProbation } from './version-probation.js';
+import { NightlyUpdater } from './nightly-update.js';
 import { BrokenAnnouncer, ExtensionErrorStore, isExtensionName, lastVersionChange, pluginFailure, type ExtensionErrorReport } from './extension-errors.js';
 import { cloneExtension, compareFolders, ExtensionTrash, move, parseBranch, parseInstallUrl, placeExtension, setExtensionEnabled, TRASH_DAYS } from './extension-changes.js';
 import { TunnelManager } from '../../../packages/tunnel/src/index.js';
@@ -874,6 +875,19 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     const failure = typeof line === 'string' ? pluginFailure(line) : null;
     if (failure) recordExtensionError('plugin', failure);
   });
+  // A new release installed by itself at night, for whoever turned it on.
+  const nightly = new NightlyUpdater({
+    enabled: async () => (await store.getPersisted()).nightlyUpdate,
+    update: async () => availableUpdate(await runtime.listVersions(), await runtime.getActiveInstallation()),
+    lastUseAt: () => gateway.lastRequestAt(),
+    busy: () => Boolean(jobs.activeInstallation() ?? jobs.activeOperation() ?? jobs.active('extensions') ?? jobs.active('versionRollback')),
+    lastSwitch: () => extensions.switches.get(),
+    install: async (update) => {
+      jobs.append('installer', logEvent('versions.nightlyStarting', `[installer] updating SillyTavern to ${update.label} by itself, as asked`, { version: update.label }));
+      await beginInstallation({ runtime, jobs, supervisor, profiles, backups, r2, system, metrics, gateway, notifications, extensions }, 'latest');
+    },
+  });
+  if (!testRuntime) nightly.start();
   notifications.subscribe((notification) => { void push.deliver(notification); });
   // Replies are not in the bell - there would be one for every message - and
   // go only to browsers that subscribed from SillyTavern's page.
@@ -1160,7 +1174,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     online,
     // The meter closes first, so the part of today that has just been spent is
     // written down before the transport looks for finished days.
-    close: async () => { extensions.closing.abort(); online.close(); notificationRules.close(); replyNotifier.close(); announcements?.close(); await activity.close(); await telemetry.close(); await scheduler.close(); await tunnel.close(); await managerTunnel.close(); await gateway.close(); await supervisor.close(); await backups.settle(); await profiles.settle(); await closeServer(server); },
+    close: async () => { extensions.closing.abort(); nightly.close(); online.close(); notificationRules.close(); replyNotifier.close(); announcements?.close(); await activity.close(); await telemetry.close(); await scheduler.close(); await tunnel.close(); await managerTunnel.close(); await gateway.close(); await supervisor.close(); await backups.settle(); await profiles.settle(); await closeServer(server); },
   };
 }
 
@@ -2878,17 +2892,22 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
   }
   if (pathname === '/api/v1/startup' && method === 'GET') {
     const state = await store.getPersisted();
-    sendJson(response, 200, { startup: { autoStartSillyTavern: state.autoStartSillyTavern } satisfies StartupSettings });
+    sendJson(response, 200, { startup: { autoStartSillyTavern: state.autoStartSillyTavern, nightlyUpdate: state.nightlyUpdate } satisfies StartupSettings });
     return;
   }
+  // Either switch, or both; a switch left out stays where it is.
   if (pathname === '/api/v1/startup' && method === 'PUT') {
     const body = await readJson(request);
-    if (!isRecord(body) || typeof body.autoStartSillyTavern !== 'boolean') {
-      sendError(response, 400, 'invalid_input', 'autoStartSillyTavern must be true or false');
+    const autoStart = isRecord(body) ? body.autoStartSillyTavern : undefined;
+    const nightly = isRecord(body) ? body.nightlyUpdate : undefined;
+    if (!isRecord(body) || (autoStart === undefined && nightly === undefined) || (autoStart !== undefined && typeof autoStart !== 'boolean') || (nightly !== undefined && typeof nightly !== 'boolean')) {
+      sendError(response, 400, 'invalid_input', 'autoStartSillyTavern and nightlyUpdate must be true or false');
       return;
     }
-    await store.setAutoStartSillyTavern(body.autoStartSillyTavern);
-    sendJson(response, 200, { startup: { autoStartSillyTavern: body.autoStartSillyTavern } satisfies StartupSettings });
+    if (typeof autoStart === 'boolean') await store.setAutoStartSillyTavern(autoStart);
+    if (typeof nightly === 'boolean') await store.setNightlyUpdate(nightly);
+    const state = await store.getPersisted();
+    sendJson(response, 200, { startup: { autoStartSillyTavern: state.autoStartSillyTavern, nightlyUpdate: state.nightlyUpdate } satisfies StartupSettings });
     return;
   }
   /*

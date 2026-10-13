@@ -153,6 +153,12 @@ export interface ApiErrorBody {
 export interface StartupSettings {
   /** Start SillyTavern when the manager starts. On unless it is turned off. */
   readonly autoStartSillyTavern: boolean;
+  /**
+   * Install a new SillyTavern release by itself in the hour after four in the
+   * morning, when nothing has used SillyTavern for an hour. Off unless it is
+   * turned on; see nightly-update.ts.
+   */
+  readonly nightlyUpdate: boolean;
 }
 
 /** The steps on the overview's setup checklist, in the order they are shown. */

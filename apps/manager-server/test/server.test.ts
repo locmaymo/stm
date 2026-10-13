@@ -357,6 +357,26 @@ test('starting SillyTavern with the manager is on by default, and stays where it
   assert.equal((await restarted.json() as { startup: { autoStartSillyTavern: boolean } }).startup.autoStartSillyTavern, false);
 });
 
+test('updating SillyTavern by itself at night is off until it is turned on, and is its own switch', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-nightly-'));
+  const manager = await createServer({ root, bootstrapPassword: 'correct horse battery staple' });
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  const put = (body: unknown) => fetch(`${base}/api/v1/startup`, { method: 'PUT', headers: { cookie: auth.cookie, 'x-csrf-token': auth.csrfToken, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  type Startup = { startup: { autoStartSillyTavern: boolean; nightlyUpdate: boolean } };
+  const initial = await (await fetch(`${base}/api/v1/startup`, { headers: { cookie: auth.cookie } })).json() as Startup;
+  assert.deepEqual(initial.startup, { autoStartSillyTavern: true, nightlyUpdate: false });
+  const on = await (await put({ nightlyUpdate: true })).json() as Startup;
+  assert.deepEqual(on.startup, { autoStartSillyTavern: true, nightlyUpdate: true }, 'the other switch stays where it was');
+  assert.equal((await put({ nightlyUpdate: 'tonight' })).status, 400);
+  assert.equal((await put({})).status, 400);
+  await manager.close();
+  const again = await createServer({ root });
+  t.after(() => again.close());
+  const restarted = await (await fetch(`${serverUrl(again)}/api/v1/startup`, { headers: { cookie: (await signIn(serverUrl(again))).cookie } })).json() as Startup;
+  assert.equal(restarted.startup.nightlyUpdate, true);
+});
+
 test('a setup step written down as done stays done across a restart', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'stm-checklist-'));
   const manager = await createServer({ root, bootstrapPassword: 'correct horse battery staple' });

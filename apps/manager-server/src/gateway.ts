@@ -202,6 +202,8 @@ export class AccessGateway {
   private opened = false;
   /** When SillyTavern last answered a request that can change data; 0 for never. */
   private lastWriteAt = 0;
+  /** When anything signed in last asked SillyTavern for anything; 0 for never. */
+  private lastUseAt = 0;
   private readonly attempts: RateLimiter;
   private readonly sessions = new Map<string, number>();
   /**
@@ -402,6 +404,11 @@ export class AccessGateway {
     return this.lastWriteAt >= at;
   }
 
+  /** When SillyTavern was last used through the door, for an update that must not interrupt anyone. */
+  public lastRequestAt(): number {
+    return this.lastUseAt;
+  }
+
   private handle(request: IncomingMessage, response: ServerResponse): void {
     const pathname = requestPath(request);
     const text = TEXT[localeOf(request)];
@@ -419,6 +426,7 @@ export class AccessGateway {
       if (pathname.startsWith(TOOLS_PREFIX)) { void this.handleTools(request, response, pathname); return; }
       if (this.replies && (pathname === NOTIFY_SCRIPT_PATH || pathname === NOTIFY_WORKER_PATH || pathname.startsWith(NOTIFY_PREFIX))) { void this.handleNotify(request, response, pathname, this.replies); return; }
       if (this.extensionErrors && (pathname === ERRORS_SCRIPT_PATH || pathname === ERRORS_REPORT_PATH)) { void this.handleErrors(request, response, pathname, this.extensionErrors); return; }
+      this.lastUseAt = this.now();
       this.proxy(request, response, text);
       return;
     }

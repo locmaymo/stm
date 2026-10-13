@@ -301,6 +301,8 @@
     "startupTitle": "When the manager opens",
     "autoStartSillyTavern": "Start SillyTavern automatically",
     "autoStartSillyTavernHint": "Off if you would rather start it yourself.",
+    "nightlyUpdate": "Update SillyTavern by itself at night",
+    "nightlyUpdateHint": "Between 4 and 5 in the morning by this machine’s clock, when nothing has used SillyTavern for an hour. Your data is copied first, except in saver mode, and a version that will not run is taken back.",
     "startupSaveFailed": "Could not save that setting",
     "startupSaved": "Saved. This takes effect the next time the manager starts.",
     "saverMode": "Saver mode",
@@ -1005,7 +1007,8 @@
       "wentBack": "Back on SillyTavern {previous}",
       "wentBackFailed": "Could not go back to SillyTavern {previous}: {reason}",
       "restoringSafetyCopy": "Putting the data back as it was before the switch",
-      "goingBack": "Going back to SillyTavern {previous}"
+      "goingBack": "Going back to SillyTavern {previous}",
+      "nightlyStarting": "Updating SillyTavern to {version} by itself, as asked"
     },
     "extensions": {
       "checking": "Checking extensions for updates ({done}/{total})",
