@@ -5,7 +5,7 @@ import { createReadStream } from 'node:fs';
 import { hostname, networkInterfaces } from 'node:os';
 import { createSocket } from 'node:dgram';
 import { extname, join, relative, resolve, sep } from 'node:path';
-import { applyQuery, BACKUP_PURPOSES, isLogEvent, availableUpdate, parseBridgeCommand, type BridgeCommandStatus, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, isConsoleStatusSection, KEEP_ONLINE_DEFAULT_MINUTES, OPERATION_JOB_KINDS, SETUP_STEPS, type AccessGatewayState, type ApiErrorBody, type BackupManifest, type BackupPurpose, type ConfigUpdateInput, type ConsoleStatus, type ConsoleStatusSection, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogPage, type LogSink, type LogSourceFilter, type LegalReview, type ManagerPorts, type ManagerUpdateStatus, type OnlineState, type PortSettings, type Profile, type ProfileLayout, type RestorePreview, type SetupChecklistState, type SetupStatus, type SetupStep, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
+import { applyQuery, BACKUP_PURPOSES, isLogEvent, availableUpdate, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, isConsoleStatusSection, KEEP_ONLINE_DEFAULT_MINUTES, OPERATION_JOB_KINDS, SETUP_STEPS, type AccessGatewayState, type ApiErrorBody, type BackupManifest, type BackupPurpose, type ConfigUpdateInput, type ConsoleStatus, type ConsoleStatusSection, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogPage, type LogSink, type LogSourceFilter, type LegalReview, type ManagerPorts, type ManagerUpdateStatus, type OnlineState, type PortSettings, type Profile, type ProfileLayout, type RestorePreview, type SetupChecklistState, type SetupStatus, type SetupStep, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
 import { getPlatformPaths, storageDurability, storageMedium, storageReport, type PlatformPaths } from '../../../packages/platform/src/index.js';
 import { INSTALL_CANCELED, RuntimeError, RuntimeManager, type InstallationProgress } from '../../../packages/sillytavern-runtime/src/index.js';
 import { hashPassword, MIN_PASSWORD_LENGTH, validatePasscode, validatePassword, verifyPassword } from './password.js';
@@ -19,8 +19,6 @@ import { SystemStore } from './system.js';
 import { easesPolling, withholdsAddress, WorkerBudget } from './worker-budget.js';
 import { panelStaticRoot } from './bootstrap.js';
 import { ProcessSupervisor } from './supervisor.js';
-import { SillyTavernClient } from './st-client.js';
-import { BridgeBusyError, SillyTavernBridge } from './st-bridge.js';
 import { AccessGateway } from './gateway.js';
 import { ACCESS_GATEWAY_PORT, checkSillyTavernPort, findFreePort, isPortFree, MANAGER_PORT, PortError, portWasDemanded, resolveAccessPort, resolveConsolePort, SILLYTAVERN_PORT, type ResolvedPort } from './ports.js';
 import { previewImage, previewLogo, previewManifest } from './preview.js';
@@ -235,8 +233,6 @@ export interface ManagerServer {
   readonly sessions: SessionStore;
   readonly runtime: RuntimeManager;
   readonly supervisor: ProcessSupervisor;
-  /** SillyTavern's own API, for files its server owns; see st-client.ts. */
-  readonly sillyTavern: SillyTavernClient;
   readonly tunnel: TunnelManager;
   readonly managerTunnel: TunnelManager;
   readonly gateway: AccessGateway;
@@ -476,11 +472,8 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   // origin is compared as written.
   /** Filled in once the listener is up; an ephemeral port is not known before that. */
   let boundPort: number = consolePort;
-  // What the manager asks of an open SillyTavern tab; see st-bridge.ts.
-  const bridge = new SillyTavernBridge();
   const gateway = options.gateway ?? new AccessGateway({
     port: accessPort,
-    bridge,
     targetPort: sillyTavernPort,
     frameAncestors: [`http://127.0.0.1:${consolePort}`, `http://localhost:${consolePort}`],
     // The sign-in page shows SillyTavern's own mark, read from whatever
@@ -558,8 +551,6 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     replyFile: replyFile(paths),
     logger: (line) => { jobs.append('sillytavern', line); baseLogger(line); },
   });
-  // SillyTavern's own API, for what its server owns; see st-client.ts.
-  const sillyTavern = new SillyTavernClient({ port: () => sillyTavernPort, status: () => supervisor.getState().status });
   const tunnel = options.tunnel ?? new TunnelManager({
     paths,
     env,
@@ -1043,7 +1034,6 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       notifications,
       push,
       extensions,
-      bridge,
       proxy,
       publishProxies,
       budget,
@@ -1171,7 +1161,6 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     runtime,
     port: actualPort,
     supervisor,
-    sillyTavern,
     tunnel,
     managerTunnel,
     gateway,
@@ -1185,7 +1174,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     online,
     // The meter closes first, so the part of today that has just been spent is
     // written down before the transport looks for finished days.
-    close: async () => { extensions.closing.abort(); bridge.close(); nightly.close(); online.close(); notificationRules.close(); replyNotifier.close(); announcements?.close(); await activity.close(); await telemetry.close(); await scheduler.close(); await tunnel.close(); await managerTunnel.close(); await gateway.close(); await supervisor.close(); await backups.settle(); await profiles.settle(); await closeServer(server); },
+    close: async () => { extensions.closing.abort(); nightly.close(); online.close(); notificationRules.close(); replyNotifier.close(); announcements?.close(); await activity.close(); await telemetry.close(); await scheduler.close(); await tunnel.close(); await managerTunnel.close(); await gateway.close(); await supervisor.close(); await backups.settle(); await profiles.settle(); await closeServer(server); },
   };
 }
 
@@ -1236,8 +1225,6 @@ async function handleRequest(options: {
   /** Browsers that asked for push notifications; see `web-push.ts`. */
   readonly push: WebPush;
   readonly extensions: ExtensionServices;
-  /** Commands for an open SillyTavern tab; see st-bridge.ts. */
-  readonly bridge: SillyTavernBridge;
   readonly proxy: ProxyWorkerManager | null;
   /** Put the fixed addresses in place, for a Cloudflare account just connected. */
   readonly publishProxies: () => void;
@@ -1256,7 +1243,7 @@ async function handleRequest(options: {
   readonly autoInstall: boolean;
   readonly onShutdownRequest: (() => void) | undefined;
 }): Promise<void> {
-  const { request, response, store, sessions, rateLimiter, handoffs, startedAt, publicOrigins, proxiedOrigin, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, releases, online, notifications, push, extensions, bridge, proxy, publishProxies, budget, saver, shutdownToken, autoInstall, onShutdownRequest } = options;
+  const { request, response, store, sessions, rateLimiter, handoffs, startedAt, publicOrigins, proxiedOrigin, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, releases, online, notifications, push, extensions, proxy, publishProxies, budget, saver, shutdownToken, autoInstall, onShutdownRequest } = options;
   // Whether the browser's side of this connection is HTTPS, which is not the
   // same question as whether ours is: a hosted console is reached over HTTPS
   // that a proxy terminates before us, and only the proxy's own header says so.
@@ -1558,58 +1545,10 @@ async function handleRequest(options: {
     if (method !== 'GET' && !requireCsrf(context, session.csrfToken)) {
       return;
     }
-    if (pathname.startsWith(BRIDGE_API_PREFIX)) {
-      await handleBridgeRequest(context, bridge);
-      return;
-    }
     await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, online, proxy, publishProxies, budget, logger, handoffs, saver, sessions, notifications, push, extensions);
     return;
   }
 
-  sendError(response, 404, 'not_found', 'Route not found');
-}
-
-const BRIDGE_API_PREFIX = '/api/v1/sillytavern/bridge';
-/** The longest a status request is held open waiting for an answer. */
-const BRIDGE_WAIT_MAX_MS = 25_000;
-
-/*
- * Asking an open SillyTavern tab to do something; see st-bridge.ts.
- *
- * A command is queued and its id returned at once, whether or not a tab is
- * open. The panel then asks after it, and each of those requests is held
- * open until there is an answer or for up to twenty-five seconds - so a tab
- * that takes the command a second later is heard about a second later,
- * without the panel asking every second over a link that counts requests.
- */
-async function handleBridgeRequest(context: RequestContext, bridge: SillyTavernBridge): Promise<void> {
-  const { pathname, request, response, searchParams } = context;
-  const method = request.method ?? 'GET';
-  if (pathname === BRIDGE_API_PREFIX && method === 'GET') {
-    sendJson(response, 200, bridge.summary());
-    return;
-  }
-  if (pathname === `${BRIDGE_API_PREFIX}/commands` && method === 'POST') {
-    const command = parseBridgeCommand(await readJson(request));
-    if (!command) { sendError(response, 400, 'invalid_command', 'That is not something SillyTavern can be asked to do from here'); return; }
-    try {
-      sendJson(response, 202, bridge.send(command) satisfies BridgeCommandStatus);
-    } catch (error: unknown) {
-      if (error instanceof BridgeBusyError) { sendError(response, 429, error.code, error.message); return; }
-      throw error;
-    }
-    return;
-  }
-  const match = /^\/api\/v1\/sillytavern\/bridge\/commands\/([0-9a-f-]{36})$/u.exec(pathname);
-  if (match && method === 'GET') {
-    const wait = Math.min(BRIDGE_WAIT_MAX_MS, Math.max(0, Number(searchParams.get('wait') ?? 0) * 1000 || 0));
-    const gone = new AbortController();
-    response.on('close', () => gone.abort());
-    const status = await bridge.wait(match[1] ?? '', wait, gone.signal);
-    if (!status) { sendError(response, 404, 'command_not_found', 'No such command'); return; }
-    if (!response.destroyed) sendJson(response, 200, status satisfies BridgeCommandStatus);
-    return;
-  }
   sendError(response, 404, 'not_found', 'Route not found');
 }
 
@@ -4821,8 +4760,7 @@ function isProtectedPath(pathname: string): boolean {
     || pathname.startsWith('/api/v1/backups/')
     || pathname.startsWith('/api/v1/r2/')
     || pathname.startsWith('/api/v1/config/')
-    || pathname.startsWith('/api/v1/extensions/')
-    || pathname.startsWith('/api/v1/sillytavern/');
+    || pathname.startsWith('/api/v1/extensions/');
 }
 
 function parseConfigUpdateInput(value: unknown): ConfigUpdateInput {

@@ -9,7 +9,7 @@ import { promisify } from 'node:util';
 import { getPlatformPaths } from '../../../packages/platform/src/index.js';
 import { StateStore } from '../src/state.js';
 import { preferredNetworkHost, startManagerServer, type ManagerServer } from '../src/server.js';
-import type { AccessGatewayState, ApiErrorBody, BridgeCommandStatus, ConsoleStatus, ExtensionList, Installation, Job, LegalReview, ManagerUpdateStatus, OnlineState, ProcessState, SystemSnapshot, TunnelState, VersionOption, VersionSwitchStatus } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, ApiErrorBody, ConsoleStatus, ExtensionList, Installation, Job, LegalReview, ManagerUpdateStatus, OnlineState, ProcessState, SystemSnapshot, TunnelState, VersionOption, VersionSwitchStatus } from '../../../packages/contracts/src/index.js';
 import { LEGAL_META } from '../../../packages/legal/src/index.js';
 import type { WorkerBudget, WorkerBudgetLevel } from '../src/worker-budget.js';
 import { hashPassword } from '../src/password.js';
@@ -2821,39 +2821,4 @@ test('the bell is behind the sign-in, carried on the console clock, and marked r
   assert.deepEqual(await read.json(), { unread: 0, latestId: null });
   const cleared = await fetch(`${base}/api/v1/notifications`, { method: 'DELETE', headers: { ...headers, 'x-csrf-token': auth.csrfToken } });
   assert.equal(cleared.status, 200);
-});
-
-test('the console asks an open SillyTavern tab through the door, and hears its answer', async (t) => {
-  const manager = await createServer();
-  t.after(() => manager.close());
-  const base = serverUrl(manager);
-  const auth = await signIn(base);
-  const headers = { cookie: auth.cookie, 'content-type': 'application/json' };
-  const command = (body: unknown, extra: Record<string, string> = { 'x-csrf-token': auth.csrfToken }) => fetch(`${base}/api/v1/sillytavern/bridge/commands`, { method: 'POST', headers: { ...headers, ...extra }, body: JSON.stringify(body) });
-
-  assert.equal((await fetch(`${base}/api/v1/sillytavern/bridge`)).status, 401);
-  assert.deepEqual(await (await fetch(`${base}/api/v1/sillytavern/bridge`, { headers })).json(), { tabs: 0, visible: false });
-  assert.equal((await command({ kind: 'slash', command: '/profile Work' }, {})).status, 403, 'queuing a command needs the CSRF token');
-  const refused = await command({ kind: 'slash', command: '/profile Work | /run x' });
-  assert.equal(refused.status, 400);
-  assert.equal((await refused.json() as { error: { code: string } }).error.code, 'invalid_command');
-
-  const queued = await command({ kind: 'slash', command: '/profile Work' });
-  assert.equal(queued.status, 202);
-  const sent = await queued.json() as BridgeCommandStatus;
-  assert.deepEqual({ state: sent.state, tabs: sent.tabs }, { state: 'waiting', tabs: 0 }, 'no tab is open yet');
-  assert.equal((await fetch(`${base}/api/v1/sillytavern/bridge/commands/00000000-0000-4000-8000-000000000000`, { headers })).status, 404);
-
-  // A tab signed in to the door - here through the console's own session -
-  // asks for its commands, runs this one and answers.
-  const embed = await fetch(`${base}/api/v1/access/embed-session`, { method: 'POST', headers: { ...headers, 'x-csrf-token': auth.csrfToken } });
-  const access = /stm_access=[^;]+/u.exec(embed.headers.get('set-cookie') ?? '')?.[0];
-  assert.ok(access);
-  const door = `http://127.0.0.1:${manager.gateway.getState().port}`;
-  const tab = (path: string, body: unknown) => fetch(`${door}/__stm/bridge/${path}`, { method: 'POST', headers: { cookie: access, 'content-type': 'application/json', 'x-stm-tools': '1' }, body: JSON.stringify(body) });
-  const answer = fetch(`${base}/api/v1/sillytavern/bridge/commands/${sent.id}?wait=10`, { headers });
-  const taken = await (await tab('state', { tab: 'tabaaaaaaaa1', visible: true, stVersion: '1.19.0' })).json() as { commands: Array<{ id: string }> };
-  assert.deepEqual(taken.commands, [{ id: sent.id, command: { kind: 'slash', command: '/profile Work' } }]);
-  assert.equal((await tab('result', { tab: 'tabaaaaaaaa1', id: sent.id, ok: true, value: 'Work' })).status, 204);
-  assert.deepEqual(await (await answer).json(), { id: sent.id, state: 'done', result: { ok: true, value: 'Work' }, tabs: 1 });
 });

@@ -1,13 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { localDoorUrl, machineName, publicAddress, publicLinks, reachableAddresses, shortenHost } from '../src/addresses.js';
-
-test('this machine opens SillyTavern through the door, on the hostname the console was read at', () => {
-  // The console's session cookie is on that name; one set for localhost never reaches 127.0.0.1.
-  assert.equal(localDoorUrl('localhost', 8001), 'http://localhost:8001/');
-  assert.equal(localDoorUrl('127.0.0.1', 8061, '/__stm/window'), 'http://127.0.0.1:8061/__stm/window');
-  assert.equal(localDoorUrl('[::1]', 8001), 'http://[::1]:8001/');
-});
+import { machineName, publicAddress, publicLinks, reachableAddresses, shortenHost } from '../src/addresses.js';
 
 test('the tunnel comes first, then the network, then this machine', () => {
   const all = reachableAddresses({ url: 'https://example.trycloudflare.com' }, { lan: true, port: 8001 }, '192.168.1.20', 8000, true);
