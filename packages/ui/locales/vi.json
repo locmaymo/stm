@@ -21,47 +21,10 @@
     "overview": "Tổng quan",
     "data": "Dữ liệu",
     "backups": "Sao lưu",
-    "chats": "Tìm chat",
     "extensions": "Extension",
     "connections": "Kết nối",
     "metrics": "Số liệu",
     "config": "Thiết lập"
-  },
-  "chatSearch": {
-    "placeholder": "Tìm tin nhắn",
-    "submit": "Tìm",
-    "stop": "Dừng",
-    "filters": "Bộ lọc",
-    "chatScope": "Nhân vật hoặc nhóm",
-    "allChats": "Mọi chat",
-    "groupOption": "{name} (nhóm)",
-    "who": "Người viết",
-    "whoAny": "Bất kỳ ai",
-    "whoMe": "Tôi",
-    "whoThem": "Nhân vật",
-    "from": "Từ ngày",
-    "to": "Đến ngày",
-    "clearFilters": "Bỏ lọc",
-    "idleTitle": "Tìm một tin nhắn trong mọi chat",
-    "hint": "Không cần gõ dấu hay chữ hoa: \"khong\" vẫn tìm ra \"Không\". Tin nhắn phải có đủ mọi từ; đặt các từ trong ngoặc kép để tìm đúng cụm đó.",
-    "privacy": "Tìm ngay trên máy này. Những gì bạn gõ không được lưu hay gửi đi đâu.",
-    "progress": "Đã quét {scanned} / {total} chat, thấy {hits}",
-    "stopped": "Đã dừng sau {scanned} / {total} chat, thấy {hits}.",
-    "done": "Thấy {hits} trong {scanned} chat, mất {seconds} giây.",
-    "truncated": "Chỉ hiện những kết quả đầu; thêm từ hoặc bộ lọc để thu hẹp.",
-    "noResults": "Không tìm thấy",
-    "noResultsHint": "Thử ít từ hơn, cách viết khác, hoặc bớt bộ lọc.",
-    "noChats": "Chưa có chat nào.",
-    "noProfile": "Chưa có dữ liệu SillyTavern. Hãy cài SillyTavern hoặc khôi phục một bản sao lưu trước.",
-    "failed": "Chưa tìm được lúc này. Thử lại sau giây lát.",
-    "busy": "Một tìm kiếm khác đang chạy trên manager này. Thử lại khi nó xong.",
-    "group": "Nhóm",
-    "groupUnknown": "Chat nhóm",
-    "chatLine": "{chat} · ghi lần cuối {date}",
-    "noDate": "Không rõ ngày",
-    "open": "Mở trong SillyTavern",
-    "openNeedsRunning": "Hãy chạy SillyTavern để mở chat trong đó.",
-    "openFailed": "Chưa mở được chat này. Thử lại sau giây lát."
   },
   "connections": {
     "watchTitle": "Theo dõi",
@@ -1045,8 +1008,6 @@
     "publicAddress": "Từ xa (mọi thiết bị)"
   },
   "errors": {
-    "chat_not_found": "Chat này không còn nữa. Có thể nó đã bị đổi tên hoặc bị xoá.",
-    "search_busy": "Một tìm kiếm khác đang chạy trên manager này. Thử lại khi nó xong.",
     "st_running": "SillyTavern đang chạy nên thay đổi phải đi qua tab đang mở của nó.",
     "settings_missing": "SillyTavern chưa lưu thiết lập lần nào. Hãy bật nó một lần trước.",
     "settings_not_round_trip": "settings.json đã bị sửa tay nên được giữ nguyên. Hãy đổi proxy trong SillyTavern.",
@@ -1307,9 +1268,6 @@
       "failed": "Cài đặt thất bại",
       "canceled": "Đã dừng cài đặt",
       "safetyCopy": "Đang sao chép dữ liệu trước khi đổi phiên bản"
-    },
-    "chats": {
-      "searched": "Đã tìm trong {scanned} / {total} chat, mất {ms} ms: {hits} kết quả"
     },
     "profiles": {
       "created": "Đã tạo {name} ({layout})",

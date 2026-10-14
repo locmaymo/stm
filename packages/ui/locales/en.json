@@ -21,47 +21,10 @@
     "overview": "Overview",
     "data": "Data",
     "backups": "Backups",
-    "chats": "Search",
     "extensions": "Extensions",
     "connections": "Connections",
     "metrics": "Metrics",
     "config": "Settings"
-  },
-  "chatSearch": {
-    "placeholder": "Search messages",
-    "submit": "Search",
-    "stop": "Stop",
-    "filters": "Filters",
-    "chatScope": "Character or group",
-    "allChats": "All chats",
-    "groupOption": "{name} (group)",
-    "who": "Written by",
-    "whoAny": "Anyone",
-    "whoMe": "Me",
-    "whoThem": "Characters",
-    "from": "From",
-    "to": "To",
-    "clearFilters": "Clear filters",
-    "idleTitle": "Find a message in any chat",
-    "hint": "Accents and capitals do not matter: \"khong\" finds \"Không\". Every word has to be in the message; put words in quotes to find them side by side.",
-    "privacy": "Searched here on this machine. What you type is not saved or sent anywhere.",
-    "progress": "Searched {scanned} of {total} chats, {hits} found",
-    "stopped": "Stopped after {scanned} of {total} chats, {hits} found.",
-    "done": "{hits} found in {scanned} chats, {seconds} s.",
-    "truncated": "Only the first ones are shown; add words or filters to narrow it down.",
-    "noResults": "Nothing found",
-    "noResultsHint": "Try fewer words, another spelling, or fewer filters.",
-    "noChats": "There are no chats yet.",
-    "noProfile": "There is no SillyTavern data yet. Install SillyTavern or restore a backup first.",
-    "failed": "The search could not run. Try again in a moment.",
-    "busy": "Another search is running on this manager. Try again when it ends.",
-    "group": "Group",
-    "groupUnknown": "Group chat",
-    "chatLine": "{chat} · last written {date}",
-    "noDate": "No date",
-    "open": "Open in SillyTavern",
-    "openNeedsRunning": "Start SillyTavern to open chats in it.",
-    "openFailed": "This chat could not be opened. Try again in a moment."
   },
   "connections": {
     "watchTitle": "Watch",
@@ -1045,8 +1008,6 @@
     "publicAddress": "Remote (any device)"
   },
   "errors": {
-    "chat_not_found": "That chat is not there any more. It may have been renamed or deleted.",
-    "search_busy": "Another search is running on this manager. Try again when it ends.",
     "st_running": "SillyTavern is running, so the change goes through its open tab.",
     "settings_missing": "SillyTavern has not saved its settings yet. Start it once first.",
     "settings_not_round_trip": "settings.json has been edited by hand, so it is left alone. Change the proxy in SillyTavern instead.",
@@ -1307,9 +1268,6 @@
       "failed": "Installation failed",
       "canceled": "Installation stopped",
       "safetyCopy": "Copying your data before switching version"
-    },
-    "chats": {
-      "searched": "Searched {scanned} of {total} chats in {ms} ms: {hits} found"
     },
     "profiles": {
       "created": "Created {name} ({layout})",
