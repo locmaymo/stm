@@ -9,8 +9,6 @@ export default [
     '**/coverage/**',
     '**/.tmp/**',
     'docs/**',
-    // Local tool state, including whole worktrees of this repository.
-    '.claude/**',
   ]),
   {
     languageOptions: {

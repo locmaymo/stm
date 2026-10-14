@@ -6,7 +6,7 @@ import {
   LogOut, RotateCcw, ScrollText, Search, Sun, Trash2, Upload, X, Rows3,
   BrainCircuit, CircleStop, Clock3, Cpu, Ellipsis, Play, QrCode as QrCodeIcon, RefreshCw, Scale, Settings2, ShieldCheck, Square,
   Blocks, BookmarkPlus, Bug, FileCode2, LoaderCircle, Gauge, HardDrive, History, KeyRound, Leaf, MemoryStick, Monitor, CircleArrowUp, Star, Terminal, TriangleAlert,
-  MessageCircle, MessagesSquare, Puzzle,
+  MessageCircle,
 } from 'lucide-react';
 import {
   Alert, AlertDescription, AlertTitle, AuthLayout, Badge, BrandMark, Button, ButtonGroup, ButtonGroupSeparator, buttonVariants, Card, CardAction,
@@ -48,52 +48,19 @@ import { POLL_BACKGROUND_MS, POLL_RELEASE_MS, statusIntervalMs } from './polling
 import { foldForSearch, translateLogEntry, translateStep } from '../../../packages/contracts/src/index.js';
 import { QrCode } from './qr-code.js';
 import { CLOUDFLARE_ORANGE, CloudflareMark } from './cloudflare-mark.js';
-import { bareHost, localDoorUrl, localHost, machineName, publicAddress, publicLinks, reachableAddresses, shortenHost, type PublicLink, type ReachableAddress } from './addresses.js';
+import { bareHost, localHost, machineName, publicAddress, publicLinks, reachableAddresses, shortenHost, type PublicLink, type ReachableAddress } from './addresses.js';
 import { EmbedStage } from './embed-stage.js';
-import { ExtensionsPage } from './extensions-page.js';
-import { ConnectionsPage } from './connections-page.js';
-import { ChatSearchPage } from './chat-search-page.js';
-import { VersionSwitchCard } from './version-switch-card.js';
 import { SetupChecklist, type ChecklistItem } from './setup-checklist.js';
 import { LegalCredit, LegalDialog, LEGAL_REVISION } from './legal-dialog.js';
 import { legalBundle, legalRevision, type LegalDocumentId } from '../../../packages/legal/src/index.js';
 
 const navigation = [
   { id: 'overview', icon: LayoutDashboard },
-  { id: 'data', icon: Database }, { id: 'chats', icon: MessagesSquare }, { id: 'extensions', icon: Puzzle }, { id: 'connections', icon: KeyRound }, { id: 'metrics', icon: BarChart3 },
+  { id: 'data', icon: Database }, { id: 'metrics', icon: BarChart3 },
   { id: 'config', icon: Settings2 },
 ] as const;
 type PageId = typeof navigation[number]['id'];
 type Navigate = (page: PageId) => void;
-
-/**
- * A tab with SillyTavern at a path the manager is asked for, for the chat
- * search's "Open in SillyTavern".
- *
- * The tab is opened before anything is awaited, while the press still counts
- * as one. On this machine it goes through the door, signed in by the console
- * as the overview's button does, since only a page served by the door carries
- * the script that opens the chat; elsewhere the address already is the door.
- * Without a path to go to - the manager said no - the tab is closed again.
- */
-async function openInSillyTavernTab(address: ReachableAddress, doorPort: number, csrfToken: string | null, path: () => Promise<string | null>): Promise<void> {
-  // The phone app keeps one SillyTavern page of its own, and opens it there.
-  const inApp = hasAppChannel();
-  const tab = inApp ? null : window.open('about:blank', '_blank');
-  if (tab) tab.opener = null;
-  const where = await path().catch(() => null);
-  if (where === null) { tab?.close(); return; }
-  let destination = new URL(where, address.url).href;
-  if (address.kind === 'local') {
-    let signedIn = false;
-    if (csrfToken) {
-      try { signedIn = (await apiFetch('/api/v1/access/embed-session', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } })).ok; } catch { /* SillyTavern's own address instead */ }
-    }
-    destination = signedIn ? localDoorUrl(window.location.hostname, doorPort, where) : address.url;
-  }
-  if (tab) tab.location.href = destination;
-  else if (!inApp || !openInApp(destination)) window.location.assign(destination);
-}
 
 function pageFromHash(): PageId {
   const hash = window.location.hash.slice(1);
@@ -1550,15 +1517,6 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     await apiFetch(`/api/v1/jobs/${encodeURIComponent(installJobId)}/cancel`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } }).catch(() => undefined);
   };
 
-  /** Whether SillyTavern is updated by itself at night. Reported back so the switch can go back. */
-  const setNightlyUpdate = async (enabled: boolean): Promise<string | null> => {
-    const response = await apiFetch('/api/v1/startup', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ nightlyUpdate: enabled }) });
-    const payload = await response.json() as { startup?: StartupSettings; error?: { message?: string } };
-    if (!response.ok || !payload.startup) return fail.body(payload, t('console.startupSaveFailed'));
-    setStartup(payload.startup);
-    return null;
-  };
-
   /** Whether SillyTavern comes up with the manager. Reported back so the switch can go back. */
   const setAutoStartSillyTavern = async (enabled: boolean): Promise<string | null> => {
     const response = await apiFetch('/api/v1/startup', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ autoStartSillyTavern: enabled }) });
@@ -1675,15 +1633,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
   // document reports it too, but it is null until something is installed and
   // the addresses are shown before that.
   const sillyTavernPort = portSettings?.port ?? configDocument?.settings.port ?? DEFAULT_SILLYTAVERN_PORT;
-  // Where the chat search opens a hit: the address the overview's button
-  // opens, while SillyTavern is up to be opened at all.
-  const sillyTavernAddress = processState.status === 'running'
-    ? reachableAddresses(tunnelState, accessSecurity, accessSecurity.networkHost ?? null, sillyTavernPort, isThisMachine(window.location.hostname))[0] ?? null
-    : null;
-  const openSillyTavernAt = sillyTavernAddress
-    ? (path: () => Promise<string | null>) => { void openInSillyTavernTab(sillyTavernAddress, accessSecurity.port, csrfToken, path); }
-    : null;
-  const logProps ={ t, catalog, source: logSource, onSourceChange: setLogSource, entries: liveLogs.entries, query: logQuery, onQueryChange: setLogQuery, compact: compactLogs, onToggleCompact: () => setCompactLogs((current) => !current), onLoadOlder: liveLogs.loadOlder, hasOlder: liveLogs.hasOlder, loadingOlder: liveLogs.loadingOlder };
+  const logProps = { t, catalog, source: logSource, onSourceChange: setLogSource, entries: liveLogs.entries, query: logQuery, onQueryChange: setLogQuery, compact: compactLogs, onToggleCompact: () => setCompactLogs((current) => !current), onLoadOlder: liveLogs.loadOlder, hasOlder: liveLogs.hasOlder, loadingOlder: liveLogs.loadingOlder };
   const logs = <LogsPanel {...logProps} expanded={logsExpanded} onToggleExpanded={() => setLogsExpanded((current) => !current)} />;
   const updateConfig = async (input: ConfigUpdateInput): Promise<string | null> => {
     const response = await apiFetch('/api/v1/config', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify(input) });
@@ -2117,7 +2067,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
             {page !== 'data' && dataActivity?.label
               ? <DataActivityStrip t={t} label={dataActivity.label} step={dataActivity.step} percent={dataActivity.percent} onOpen={() => navigate('data')} />
               : null}
-            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{termuxOffer ? <TermuxOfferCard t={t} onStart={openTermuxImport} onDismiss={() => { answerTermuxOffer(true); setTermuxOfferAnswered(true); }} /> : activeInstallation?.status === 'ready' ? <BubbleOfferCard t={t} /> : null}<VersionSwitchCard t={t} fail={fail} locale={preferences.locale} csrfToken={csrfToken} onOpenExtensions={() => navigate('extensions')} />{hero}{checklist}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} hostAddress={shownHostAddress(online?.hostAddress ?? null)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} onSetAccessLink={setAccessLink} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} canBackUp={activeProfileId !== null && saver?.enabled !== true} onBackup={openBackup} onUpload={openUpload} onUploadFromPhone={phoneImport ? openPhoneUpload : undefined} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? null : page === 'extensions' ? <ExtensionsPage t={t} locale={preferences.locale} labels={tableLabels(t)} fail={fail} csrfToken={csrfToken} /> : page === 'connections' ? <ConnectionsPage t={t} locale={preferences.locale} fail={fail} csrfToken={csrfToken} /> : page === 'chats' ? <ChatSearchPage t={t} locale={preferences.locale} fail={fail} csrfToken={csrfToken} openAt={openSillyTavernAt} /> : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} onSetAccessLink={setAccessLink} startup={startup} saver={saver} online={online} onSetAutoStart={setAutoStartSillyTavern} onSetNightlyUpdate={setNightlyUpdate} onSetSaver={setSaverMode} onSetKeepOnline={setKeepOnline} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} onEraseEverything={eraseEverything} /> : <ResourcePanel page={page} t={t} />}
+            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{termuxOffer ? <TermuxOfferCard t={t} onStart={openTermuxImport} onDismiss={() => { answerTermuxOffer(true); setTermuxOfferAnswered(true); }} /> : activeInstallation?.status === 'ready' ? <BubbleOfferCard t={t} /> : null}{hero}{checklist}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} hostAddress={shownHostAddress(online?.hostAddress ?? null)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} onSetAccessLink={setAccessLink} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} canBackUp={activeProfileId !== null && saver?.enabled !== true} onBackup={openBackup} onUpload={openUpload} onUploadFromPhone={phoneImport ? openPhoneUpload : undefined} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? null : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} onSetAccessLink={setAccessLink} startup={startup} saver={saver} online={online} onSetAutoStart={setAutoStartSillyTavern} onSetSaver={setSaverMode} onSetKeepOnline={setKeepOnline} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} onEraseEverything={eraseEverything} /> : <ResourcePanel page={page} t={t} />}
             {/* Kept, hidden, while it has work under way, so leaving for another
                 page does not take the work's progress and its last question
                 with it; the strip above stands in for it meanwhile. */}
@@ -2906,39 +2856,7 @@ function RuntimeCard({
    */
   const primary = addresses[0] ?? null;
   const otherCount = Math.max(0, addresses.length - 1);
-  /*
-   * A tab on the door's port of this machine, signed in by the console.
-   *
-   * The tab is opened before anything is awaited, while the press still counts
-   * as one, and pointed at its address once the door has given a session; a
-   * browser that will not open one gets this page sent there instead. With a
-   * `fallback`, a door that gives no session sends it there rather than to a
-   * sign-in page asking for a PIN that may not exist.
-   */
-  const openThroughDoor = async (path: string, fallback: string | null) => {
-    const target = localDoorUrl(window.location.hostname, security.port, path);
-    const tab = window.open('about:blank', '_blank');
-    if (tab) tab.opener = null;
-    let signedIn = false;
-    if (csrfToken) {
-      try { signedIn = (await apiFetch('/api/v1/access/embed-session', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } })).ok; } catch { /* the fallback, or the door's own sign-in */ }
-    }
-    const destination = signedIn || fallback === null ? target : fallback;
-    if (tab) tab.location.href = destination;
-    else window.location.assign(destination);
-  };
-  /*
-   * On this machine the best address is SillyTavern's own port, and a page
-   * opened there never sees the door - so it gets none of the manager's
-   * scripts, and the console cannot ask it to switch a profile. The button
-   * opens it through the door instead; the address shown stays SillyTavern's
-   * own, which is where it can still be reached without the console.
-   */
-  const openPrimary = () => {
-    if (!primary) return;
-    if (primary.kind === 'local') { void openThroughDoor('/', primary.url); return; }
-    window.open(primary.url, '_blank', 'noopener,noreferrer');
-  };
+  const openPrimary = () => { if (primary) window.open(primary.url, '_blank', 'noopener,noreferrer'); };
   /*
    * SillyTavern in a tab of its own, with the tools window around it.
    *
@@ -2946,17 +2864,24 @@ function RuntimeCard({
    * it goes wherever the best address goes - except on this machine, where
    * that address is SillyTavern's own port and the window is on the door's.
    * There the console signs the tab in first, the way the embedded view is
-   * signed in: the cookie is host-scoped, and cookies ignore ports. Without a
-   * session the door asks for the PIN, which is why one is set first.
+   * signed in: the cookie is host-scoped, and cookies ignore ports.
+   *
+   * The tab is opened before anything is awaited, while the press still
+   * counts as one, and pointed at the window once it is ready.
    */
   const openTools = async () => {
     if (!primary) return;
     if (!security.passwordConfigured) { setAfterPasscode('tools'); setPasscodeAsked(true); return; }
-    if (primary.kind === 'local') { await openThroughDoor('/__stm/window', null); return; }
-    const target = `${primary.url.replace(/\/$/u, '')}/__stm/window`;
+    const local = primary.kind === 'local';
+    const target = local
+      ? `http://${window.location.hostname}:${security.port}/__stm/window`
+      : `${primary.url.replace(/\/$/u, '')}/__stm/window`;
     const tab = window.open('about:blank', '_blank');
     if (!tab) { window.location.assign(target); return; }
     tab.opener = null;
+    if (local && csrfToken) {
+      try { await apiFetch('/api/v1/access/embed-session', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } }); } catch { /* the door asks for the PIN instead */ }
+    }
     tab.location.href = target;
   };
   // A phone cannot open this machine's loopback address, so the code is only
@@ -7211,7 +7136,7 @@ function configFileName(path: string): string {
  * version installed. This belongs to the manager and outlives every version it
  * installs - which is also why it is not in the file the Edit button opens.
  */
-function StartupCard({ t, startup, saver, onSetAutoStart, onSetNightlyUpdate, onSetSaver }: { t: Translate; startup: StartupSettings | null; saver: SaverState | null; onSetAutoStart: (enabled: boolean) => Promise<string | null>; onSetNightlyUpdate: (enabled: boolean) => Promise<string | null>; onSetSaver: (enabled: boolean) => Promise<string | null> }) {
+function StartupCard({ t, startup, saver, onSetAutoStart, onSetSaver }: { t: Translate; startup: StartupSettings | null; saver: SaverState | null; onSetAutoStart: (enabled: boolean) => Promise<string | null>; onSetSaver: (enabled: boolean) => Promise<string | null> }) {
   // What the switch shows while the answer is in flight, so it moves under the
   // press rather than a second later.
   const [pending, setPending] = useState<boolean | null>(null);
@@ -7236,34 +7161,9 @@ function StartupCard({ t, startup, saver, onSetAutoStart, onSetNightlyUpdate, on
           ? <Skeleton className="h-5 w-9" />
           : <Switch checked={checked} disabled={busy} onCheckedChange={(next) => void save(next)} aria-label={t('console.autoStartSillyTavern')} />}
       </DetailRow>
-      <NightlyUpdateRow t={t} startup={startup} onSetNightlyUpdate={onSetNightlyUpdate} />
       <SaverRow t={t} saver={saver} onSetSaver={onSetSaver} />
     </CardContent>
   </Card>;
-}
-
-/**
- * Updating SillyTavern by itself at night, beside the other two things the
- * manager does without being asked each time. Off unless it is turned on.
- */
-function NightlyUpdateRow({ t, startup, onSetNightlyUpdate }: { t: Translate; startup: StartupSettings | null; onSetNightlyUpdate: (enabled: boolean) => Promise<string | null> }) {
-  const [pending, setPending] = useState<boolean | null>(null);
-  const [busy, setBusy] = useState(false);
-  const { toast } = useToast();
-  const checked = pending ?? startup?.nightlyUpdate ?? null;
-  const save = async (next: boolean) => {
-    setPending(next); setBusy(true);
-    try {
-      const failure = await onSetNightlyUpdate(next);
-      if (failure) { toast({ title: failure, tone: 'destructive' }); return; }
-      toast({ title: t('console.startupSaved'), tone: 'success' });
-    } finally { setPending(null); setBusy(false); }
-  };
-  return <DetailRow label={t('console.nightlyUpdate')} hint={t('console.nightlyUpdateHint')}>
-    {checked === null
-      ? <Skeleton className="h-5 w-9" />
-      : <Switch checked={checked} disabled={busy} onCheckedChange={(next) => void save(next)} aria-label={t('console.nightlyUpdate')} />}
-  </DetailRow>;
 }
 
 /**
@@ -7476,7 +7376,7 @@ interface ActionFailure {
   readonly text: string;
 }
 
-function ConfigPage({ t, locale, config, security, ports, managerTunnel, process, catalog, startup, saver, online, onSetAutoStart, onSetNightlyUpdate, onSetSaver, onSetKeepOnline, onSetManagerTunnel, onSetAccessLink, onPortChange, onConfigUpdate, onConfigReset, onChangeManagerPassword, onSetPassword, onSignOut, onSignOutDevices, onEraseEverything }: { t: Translate; locale: LocaleCode; config: ConfigDocument | null; security: AccessGatewayState; ports: PortSettings | null; managerTunnel: TunnelState; process: ProcessState; catalog: Record<string, unknown>; startup: StartupSettings | null; saver: SaverState | null; online: OnlineState | null; onSetAutoStart: (enabled: boolean) => Promise<string | null>; onSetNightlyUpdate: (enabled: boolean) => Promise<string | null>; onSetSaver: (enabled: boolean) => Promise<string | null>; onSetKeepOnline: (enabled: boolean, minutes: number) => Promise<string | null>; onSetManagerTunnel: (on: boolean) => Promise<ActionFailure | null>; onSetAccessLink: (target: AccessLinkTarget, change: Partial<AccessLinkPreference>) => Promise<void>; onPortChange: (port: number) => Promise<string | null>; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onConfigReset: () => Promise<string | null>; onChangeManagerPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSignOut: () => Promise<void>; onSignOutDevices: () => Promise<string | null>; onEraseEverything: (password: string) => Promise<string | null> }) {
+function ConfigPage({ t, locale, config, security, ports, managerTunnel, process, catalog, startup, saver, online, onSetAutoStart, onSetSaver, onSetKeepOnline, onSetManagerTunnel, onSetAccessLink, onPortChange, onConfigUpdate, onConfigReset, onChangeManagerPassword, onSetPassword, onSignOut, onSignOutDevices, onEraseEverything }: { t: Translate; locale: LocaleCode; config: ConfigDocument | null; security: AccessGatewayState; ports: PortSettings | null; managerTunnel: TunnelState; process: ProcessState; catalog: Record<string, unknown>; startup: StartupSettings | null; saver: SaverState | null; online: OnlineState | null; onSetAutoStart: (enabled: boolean) => Promise<string | null>; onSetSaver: (enabled: boolean) => Promise<string | null>; onSetKeepOnline: (enabled: boolean, minutes: number) => Promise<string | null>; onSetManagerTunnel: (on: boolean) => Promise<ActionFailure | null>; onSetAccessLink: (target: AccessLinkTarget, change: Partial<AccessLinkPreference>) => Promise<void>; onPortChange: (port: number) => Promise<string | null>; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onConfigReset: () => Promise<string | null>; onChangeManagerPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSignOut: () => Promise<void>; onSignOutDevices: () => Promise<string | null>; onEraseEverything: (password: string) => Promise<string | null> }) {
   const [form, setForm] = useState<ConfigSettingsInput>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -7706,7 +7606,7 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
       cancelLabel={t('common.cancel')}
       onConfirm={() => applyManagerTunnel(false)}
     />
-    <StartupCard t={t} startup={startup} saver={saver} onSetAutoStart={onSetAutoStart} onSetNightlyUpdate={onSetNightlyUpdate} onSetSaver={onSetSaver} />
+    <StartupCard t={t} startup={startup} saver={saver} onSetAutoStart={onSetAutoStart} onSetSaver={onSetSaver} />
     {/* Under what the manager does when it opens, because this is what it
         does for the rest of the time it is open. */}
     <KeepOnlineCard t={t} locale={locale} online={online} onSetKeepOnline={onSetKeepOnline} />
@@ -7985,7 +7885,7 @@ function YamlDialog({ t, open, onOpenChange, initial, busy, onApply }: { t: Tran
   </Dialog>;
 }
 
-function ResourcePanel({ page, t }: { page: Exclude<PageId, 'overview' | 'data' | 'extensions' | 'connections' | 'chats'>; t: Translate }) {
+function ResourcePanel({ page, t }: { page: Exclude<PageId, 'overview' | 'data'>; t: Translate }) {
   const emptyMessage = { metrics: 'console.noMetrics', config: 'console.noConfiguration' } as const;
   return <Card className="resource-panel"><CardContent className="resource-empty"><p>{t(emptyMessage[page])}</p></CardContent></Card>;
 }

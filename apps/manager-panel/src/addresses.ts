@@ -11,19 +11,6 @@ export function localHost(sillyTavernPort: number): string {
   return `127.0.0.1:${sillyTavernPort}`;
 }
 
-/**
- * SillyTavern through the door, from a console read on this machine.
- *
- * The console's own hostname rather than a fixed `127.0.0.1`: the session the
- * console asks the door for is a cookie on the hostname in the address bar,
- * and cookies ignore ports but not names - one set for `localhost` is never
- * sent to `127.0.0.1`. Only through the door does a page get the manager's
- * scripts, the bridge among them.
- */
-export function localDoorUrl(hostname: string, doorPort: number, path = '/'): string {
-  return `http://${hostname}:${doorPort}${path}`;
-}
-
 /** What a tunnel's public address is read from, whichever card is asking. */
 export type PublicTunnel = Pick<TunnelState, 'url' | 'proxyUrl' | 'proxyPending' | 'linkPreference'>;
 

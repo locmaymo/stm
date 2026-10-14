@@ -4,11 +4,7 @@ import { readFile } from 'node:fs/promises';
 import type { Duplex } from 'node:stream';
 import { logEvent, logLineText, type AccessGatewayState, type Job, type LogPage, type LogSink } from '../../../packages/contracts/src/index.js';
 import { windowJob, windowLogs, windowPage, type WindowLocale } from './gateway-window.js';
-import { NOTIFY_PREFIX, NOTIFY_SCRIPT, NOTIFY_SCRIPT_PATH, NOTIFY_TAG, NOTIFY_WORKER, NOTIFY_WORKER_PATH, withScripts, type GatewayReplies } from './gateway-notify.js';
-import { ERRORS_REPORT_PATH, ERRORS_SCRIPT, ERRORS_SCRIPT_PATH, ERRORS_TAG } from './gateway-errors.js';
-import { parseErrorReport, type ExtensionErrorReport } from './extension-errors.js';
-import { BRIDGE_PREFIX, BRIDGE_SCRIPT, BRIDGE_SCRIPT_PATH, BRIDGE_TAG, isTabId, parseBridgeResult, type SillyTavernBridge } from './st-bridge.js';
-import { OPEN_PARAMETER, OPEN_PREFIX, OPEN_SCRIPT, OPEN_SCRIPT_PATH, OPEN_TAG, openAnswer, type GatewayChatOpener } from './chat-open.js';
+import { NOTIFY_PREFIX, NOTIFY_SCRIPT, NOTIFY_SCRIPT_PATH, NOTIFY_WORKER, NOTIFY_WORKER_PATH, withNotifyScript, type GatewayReplies } from './gateway-notify.js';
 import { isPageState, parseReplyReport } from './replies.js';
 import { validSubscription } from './web-push.js';
 import { verifyPassword } from './password.js';
@@ -46,17 +42,6 @@ const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const MAX_LOGIN_BODY_BYTES = 4 * 1024;
 /** A reply a page reports, with up to a thousand characters of it; or a push subscription. */
 const MAX_NOTIFY_BODY_BYTES = 16 * 1024;
-/** An extension's error: a name, three hundred characters and a file. */
-const MAX_ERROR_BODY_BYTES = 4 * 1024;
-/** A tab's report, or a command's result of up to a thousand characters. */
-const MAX_BRIDGE_BODY_BYTES = 8 * 1024;
-/**
- * How often an open bridge stream says something.
- *
- * Often enough that a proxy does not close it as idle, and that the page
- * notices a stream held back somewhere and asks by itself instead.
- */
-const BRIDGE_PING_MS = 25_000;
 /** A SillyTavern page larger than this is passed through as it is, without the reply script. */
 const MAX_INJECTED_PAGE_BYTES = 4 * 1024 * 1024;
 /**
@@ -170,17 +155,6 @@ export interface AccessGatewayOptions {
   readonly tools?: GatewayTools;
   /** Reply notifications; see gateway-notify.ts. Without them SillyTavern's pages are passed through untouched. */
   readonly replies?: GatewayReplies;
-  /** Where errors from third-party extensions go; see gateway-errors.ts. */
-  readonly extensionErrors?: GatewayExtensionErrors;
-  /** Commands for an open SillyTavern tab; see st-bridge.ts. */
-  readonly bridge?: SillyTavernBridge;
-  /** Chats the console asked to open; see chat-open.ts. */
-  readonly opener?: GatewayChatOpener;
-}
-
-/** What the door does with an extension's error a page reported. */
-export interface GatewayExtensionErrors {
-  report(report: ExtensionErrorReport): void;
 }
 
 /**
@@ -212,15 +186,8 @@ export class AccessGateway {
   private readonly framePolicy: string;
   private readonly tools: GatewayTools | null;
   private readonly replies: GatewayReplies | null;
-  private readonly extensionErrors: GatewayExtensionErrors | null;
-  private readonly bridge: SillyTavernBridge | null;
-  private readonly opener: GatewayChatOpener | null;
   /** Whether the access link has ever been turned on; see `AccessGatewayState.opened`. */
   private opened = false;
-  /** When SillyTavern last answered a request that can change data; 0 for never. */
-  private lastWriteAt = 0;
-  /** When anything signed in last asked SillyTavern for anything; 0 for never. */
-  private lastUseAt = 0;
   private readonly attempts: RateLimiter;
   private readonly sessions = new Map<string, number>();
   /**
@@ -279,9 +246,6 @@ export class AccessGateway {
     this.brandLogo = options.brandLogo ?? null;
     this.tools = options.tools ?? null;
     this.replies = options.replies ?? null;
-    this.extensionErrors = options.extensionErrors ?? null;
-    this.bridge = options.bridge ?? null;
-    this.opener = options.opener ?? null;
     // `'self'` so the sign-in page can still be reached inside whatever frame
     // the console put the gateway in; without it, signing in from the embedded
     // view would blank the frame at the one moment it has something to say.
@@ -414,20 +378,6 @@ export class AccessGateway {
     return count;
   }
 
-  /**
-   * Whether SillyTavern answered anything that can change data at or after
-   * this time, for a version change deciding whether the copy taken before
-   * it can still be put back without losing anything.
-   */
-  public servedSince(at: number): boolean {
-    return this.lastWriteAt >= at;
-  }
-
-  /** When SillyTavern was last used through the door, for an update that must not interrupt anyone. */
-  public lastRequestAt(): number {
-    return this.lastUseAt;
-  }
-
   private handle(request: IncomingMessage, response: ServerResponse): void {
     const pathname = requestPath(request);
     const text = TEXT[localeOf(request)];
@@ -444,10 +394,6 @@ export class AccessGateway {
       if (pathname === WINDOW_PATH) { this.sendWindow(request, response); return; }
       if (pathname.startsWith(TOOLS_PREFIX)) { void this.handleTools(request, response, pathname); return; }
       if (this.replies && (pathname === NOTIFY_SCRIPT_PATH || pathname === NOTIFY_WORKER_PATH || pathname.startsWith(NOTIFY_PREFIX))) { void this.handleNotify(request, response, pathname, this.replies); return; }
-      if (this.extensionErrors && (pathname === ERRORS_SCRIPT_PATH || pathname === ERRORS_REPORT_PATH)) { void this.handleErrors(request, response, pathname, this.extensionErrors); return; }
-      if (this.bridge && (pathname === BRIDGE_SCRIPT_PATH || pathname.startsWith(BRIDGE_PREFIX))) { void this.handleBridge(request, response, pathname, this.bridge); return; }
-      if (this.opener && (pathname === OPEN_SCRIPT_PATH || pathname.startsWith(OPEN_PREFIX))) { this.handleOpen(request, response, pathname, this.opener); return; }
-      this.lastUseAt = this.now();
       this.proxy(request, response, text);
       return;
     }
@@ -455,7 +401,7 @@ export class AccessGateway {
     // A browser opening a page gets the door. Anything else - an asset, an API
     // call from a page that was open before the session expired - gets a status
     // it can act on rather than a login page parsed as JSON.
-    if (wantsDocument(request)) { this.sendLogin(request, response, 401, text, null, withOpenToken(request, pathname)); return; }
+    if (wantsDocument(request)) { this.sendLogin(request, response, 401, text, null, pathname); return; }
     sendJson(response, 401, { error: { code: 'login_required', message: 'Sign in to SillyTavern first' } });
   }
 
@@ -534,7 +480,7 @@ export class AccessGateway {
     // A page opened in the browser gets the reply script, so it is asked for
     // whole and unzipped: there is nothing to add to a compressed one, and an
     // answer that it has not changed would keep a copy without the script.
-    const page = (this.replies !== null || this.extensionErrors !== null || this.bridge !== null || this.opener !== null) && method === 'GET' && opensDocument(request);
+    const page = this.replies !== null && method === 'GET' && opensDocument(request);
     const headers = forwardedHeaders(request);
     if (page) for (const name of ['accept-encoding', 'if-none-match', 'if-modified-since']) delete headers[name];
     const upstream = httpRequest({
@@ -545,9 +491,6 @@ export class AccessGateway {
       headers,
       agent: this.upstreamAgent,
     }, (upstreamResponse) => {
-      // SillyTavern reads and writes with POST alike, so any of them that it
-      // answered counts: the data may have changed since.
-      if (!bodyless) this.lastWriteAt = this.now();
       if (page && (upstreamResponse.statusCode ?? 0) === 200 && isPlainHtml(upstreamResponse)) { this.injectNotify(upstreamResponse, response); return; }
       response.writeHead(upstreamResponse.statusCode ?? 502, this.framed(responseHeaders(upstreamResponse)));
       // No compression, no buffering: a token stream has to arrive as it is
@@ -595,8 +538,7 @@ export class AccessGateway {
     };
     const finish = (): void => {
       const original = Buffer.concat(chunks);
-      const tags = [...(this.replies ? [NOTIFY_TAG] : []), ...(this.extensionErrors ? [ERRORS_TAG] : []), ...(this.bridge ? [BRIDGE_TAG] : []), ...(this.opener ? [OPEN_TAG] : [])];
-      const changed = withScripts(original.toString('utf8'), tags);
+      const changed = withNotifyScript(original.toString('utf8'));
       const body = changed === null ? original : Buffer.from(changed, 'utf8');
       for (const name of Object.keys(headers)) {
         if (['content-length', 'etag', 'last-modified'].includes(name.toLowerCase())) delete headers[name];
@@ -611,101 +553,6 @@ export class AccessGateway {
     upstreamResponse.on('data', collect);
     upstreamResponse.on('end', finish);
     upstreamResponse.on('error', () => response.destroy());
-  }
-
-  /**
-   * The error script, and the errors it reports.
-   *
-   * Held to the same header as the tools, a small body, and the store's own
-   * rate; a malformed report is dropped without a word, since the page that
-   * sent it can do nothing about it.
-   */
-  private async handleErrors(request: IncomingMessage, response: ServerResponse, pathname: string, sink: GatewayExtensionErrors): Promise<void> {
-    const method = (request.method ?? 'GET').toUpperCase();
-    if (pathname === ERRORS_SCRIPT_PATH) {
-      if (method !== 'GET') { sendJson(response, 405, { error: { code: 'method_not_allowed', message: 'Only GET' } }); return; }
-      response.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'content-length': Buffer.byteLength(ERRORS_SCRIPT), 'cache-control': 'no-cache', 'x-content-type-options': 'nosniff' });
-      response.end(ERRORS_SCRIPT);
-      return;
-    }
-    if (method !== 'POST') { sendJson(response, 405, { error: { code: 'method_not_allowed', message: 'Only POST' } }); return; }
-    if (request.headers[TOOLS_HEADER] !== '1') { sendJson(response, 403, { error: { code: 'forbidden', message: 'Only for SillyTavern pages served here' } }); return; }
-    let report: ExtensionErrorReport | null = null;
-    try { report = parseErrorReport(JSON.parse(await readBody(request, MAX_ERROR_BODY_BYTES) || 'null')); } catch { report = null; }
-    if (report) sink.report(report);
-    response.writeHead(204, { 'cache-control': 'no-store' });
-    response.end();
-  }
-
-  /**
-   * The bridge script, its stream of commands, and what a tab says back.
-   *
-   * The stream is a GET so the page's EventSource can open it; it carries
-   * commands to a page on this origin and nothing anywhere else can read it.
-   * Everything the page posts carries the tools header, like the reply
-   * script's requests.
-   */
-  private async handleBridge(request: IncomingMessage, response: ServerResponse, pathname: string, bridge: SillyTavernBridge): Promise<void> {
-    const method = (request.method ?? 'GET').toUpperCase();
-    if (pathname === BRIDGE_SCRIPT_PATH) {
-      if (method !== 'GET') { sendJson(response, 405, { error: { code: 'method_not_allowed', message: 'Only GET' } }); return; }
-      response.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'content-length': Buffer.byteLength(BRIDGE_SCRIPT), 'cache-control': 'no-cache', 'x-content-type-options': 'nosniff' });
-      response.end(BRIDGE_SCRIPT);
-      return;
-    }
-    if (pathname === `${BRIDGE_PREFIX}events` && method === 'GET') {
-      const url = new URL(request.url ?? '/', 'http://gateway.invalid');
-      const tab = url.searchParams.get('tab');
-      if (!isTabId(tab)) { sendJson(response, 400, { error: { code: 'invalid_input', message: 'A tab id is required' } }); return; }
-      response.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store', 'x-accel-buffering': 'no' });
-      // How soon a page should come back after a dropped stream, then the
-      // first word, so the page knows the stream is through.
-      response.write('retry: 5000\n\nevent: ping\ndata: {}\n\n');
-      const ping = setInterval(() => { response.write('event: ping\ndata: {}\n\n'); }, BRIDGE_PING_MS);
-      const disconnect = bridge.connect(tab, { visible: url.searchParams.get('visible') === '1', stVersion: (url.searchParams.get('v') ?? '').slice(0, 32) }, (delivery) => {
-        response.write(`event: command\ndata: ${JSON.stringify(delivery)}\n\n`);
-      });
-      response.on('close', () => { clearInterval(ping); disconnect(); });
-      return;
-    }
-    if (method !== 'POST') { sendJson(response, 405, { error: { code: 'method_not_allowed', message: 'Only POST' } }); return; }
-    if (request.headers[TOOLS_HEADER] !== '1') { sendJson(response, 403, { error: { code: 'forbidden', message: 'Only for SillyTavern pages served here' } }); return; }
-    let body: unknown = null;
-    try { body = JSON.parse(await readBody(request, MAX_BRIDGE_BODY_BYTES) || 'null'); } catch { body = null; }
-    const record = typeof body === 'object' && body !== null ? body as Record<string, unknown> : {};
-    if (pathname === `${BRIDGE_PREFIX}state`) {
-      if (!isTabId(record.tab)) { sendJson(response, 400, { error: { code: 'invalid_input', message: 'A tab id is required' } }); return; }
-      const commands = bridge.report(record.tab, { visible: record.visible === true, stVersion: typeof record.stVersion === 'string' ? record.stVersion.slice(0, 32) : '' });
-      sendJson(response, 200, { commands });
-      return;
-    }
-    if (pathname === `${BRIDGE_PREFIX}result`) {
-      const parsed = parseBridgeResult(body);
-      if (!parsed) { sendJson(response, 400, { error: { code: 'invalid_input', message: 'That is not a result' } }); return; }
-      bridge.result(parsed.tab, parsed.id, parsed.result);
-      response.writeHead(204, { 'cache-control': 'no-store' });
-      response.end();
-      return;
-    }
-    sendJson(response, 404, { error: { code: 'not_found', message: 'Nothing here' } });
-  }
-
-  /**
-   * The script that opens a chat the console asked for, and what a token
-   * stands for. Held to the tools' header, so only a script on this origin can
-   * ask with somebody's session.
-   */
-  private handleOpen(request: IncomingMessage, response: ServerResponse, pathname: string, opener: GatewayChatOpener): void {
-    if ((request.method ?? 'GET').toUpperCase() !== 'GET') { sendJson(response, 405, { error: { code: 'method_not_allowed', message: 'Only GET' } }); return; }
-    if (pathname === OPEN_SCRIPT_PATH) {
-      response.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'content-length': Buffer.byteLength(OPEN_SCRIPT), 'cache-control': 'no-cache', 'x-content-type-options': 'nosniff' });
-      response.end(OPEN_SCRIPT);
-      return;
-    }
-    if (request.headers[TOOLS_HEADER] !== '1') { sendJson(response, 403, { error: { code: 'forbidden', message: 'Only for SillyTavern pages served here' } }); return; }
-    const target = opener.target(pathname.slice(OPEN_PREFIX.length));
-    if (!target) { sendJson(response, 404, { error: { code: 'open_expired', message: 'That link has expired' } }); return; }
-    sendJson(response, 200, openAnswer(target));
   }
 
   /** The reply script, its service worker, and the requests the script makes. */
@@ -1009,15 +856,6 @@ export class AccessGateway {
     });
     response.end(loginPage(text, message, this.passwordHash === null ? text.unconfigured : null, safeNext(next ?? requestPath(request)), formToken, this.passcode, nonce, this.logo !== null));
   }
-}
-
-/**
- * Where to go after signing in: the page asked for, with a chat the console
- * asked to open still asked for. No other part of the query is carried.
- */
-function withOpenToken(request: IncomingMessage, pathname: string): string {
-  const token = new URL(request.url ?? '/', 'http://gateway.invalid').searchParams.get(OPEN_PARAMETER);
-  return token && /^[A-Za-z0-9_-]{16,64}$/u.test(token) ? `${pathname}?${OPEN_PARAMETER}=${token}` : pathname;
 }
 
 function requestPath(request: IncomingMessage): string {
