@@ -211,7 +211,7 @@ export function renderNotification(notification: ManagerNotification, locale: No
  * turned into words from `notify.<group>.<code>` before they are put in a
  * sentence. The same rule the console applies, so both say the same thing.
  */
-export const NOTIFY_WORD_PARAMS: Readonly<Record<string, string>> = { job: 'notify.jobs', what: 'notify.quota', problem: 'connections.codes' };
+export const NOTIFY_WORD_PARAMS: Readonly<Record<string, string>> = { job: 'notify.jobs', what: 'notify.quota' };
 
 export function localizedParams(params: MessageParams | undefined, find: (path: string) => string | undefined): MessageParams | undefined {
   if (!params) return params;

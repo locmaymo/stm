@@ -71,14 +71,3 @@ test('a dropped connection is retried, and three in a row give up', async () => 
   const lost = manager([json(status('delivered', 1), { status: 202 }), new TypeError('a'), new TypeError('b'), new TypeError('c')]);
   await assert.rejects(runInSillyTavern(command, { csrfToken: 'csrf', fetch: lost.fetch, retryMs: 1 }), /c/u);
 });
-
-test('stopping the wait withdraws the command, so it does not run when a tab opens later', async () => {
-  const controller = new AbortController();
-  const fake = manager([json(status('waiting', 0), { status: 202 }), new DOMException('aborted', 'AbortError'), json({ cancelled: true })]);
-  const result = runInSillyTavern(command, { csrfToken: 'csrf', fetch: fake.fetch, signal: controller.signal, onWaiting: () => controller.abort() });
-  await assert.rejects(result);
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.equal(fake.asked[2]?.input, `/api/v1/sillytavern/bridge/commands/${id}`);
-  assert.equal(fake.asked[2]?.init?.method, 'DELETE');
-  assert.equal((fake.asked[2]?.init?.headers as Record<string, string>)['x-csrf-token'], 'csrf');
-});

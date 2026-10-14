@@ -26,15 +26,13 @@ interface Fake {
   tokensIssued: number;
   /** Forget every token handed out, as a restart with a new secret would. */
   rotate(): void;
-  /** What `secrets.json` would hold, changed the way 1.19.0's secrets API changes it. */
-  readonly secrets: Record<string, Array<{ id: string; value: string; label: string; active: boolean }>>;
   close(): Promise<void>;
 }
 
 async function fakeSillyTavern(options: FakeOptions = {}): Promise<Fake> {
   const valid = new Map<string, string>();
   let counter = 0;
-  const fake: Partial<Fake> & { seen: string[]; tokensIssued: number; secrets: Fake['secrets'] } = { seen: [], tokensIssued: 0, secrets: {} };
+  const fake: Partial<Fake> & { seen: string[]; tokensIssued: number } = { seen: [], tokensIssued: 0 };
   const server = createServer((request: IncomingMessage, response: ServerResponse) => {
     const path = (request.url ?? '/').split('?')[0] ?? '/';
     fake.seen.push(`${request.method} ${path}`);
@@ -77,35 +75,6 @@ async function fakeSillyTavern(options: FakeOptions = {}): Promise<Fake> {
       request.on('end', () => {
         response.writeHead(200, { 'content-type': 'application/json', 'set-cookie': `session-test=${session ?? ''}; path=/` });
         response.end(JSON.stringify({ type: request.headers['content-type'], body: JSON.parse(body) as unknown }));
-      });
-      return;
-    }
-    if (path.startsWith('/api/secrets/') && request.method === 'POST') {
-      let raw = '';
-      request.setEncoding('utf8');
-      request.on('data', (chunk: string) => { raw += chunk; });
-      request.on('end', () => {
-        const body = JSON.parse(raw) as { key: string; id?: string; value?: string; label?: string };
-        const list = fake.secrets[body.key] ?? [];
-        const action = path.slice('/api/secrets/'.length);
-        if (action === 'write') {
-          for (const item of list) item.active = false;
-          const id = `id-${list.length + 1}`;
-          fake.secrets[body.key] = [...list, { id, value: body.value ?? '', label: body.label ?? 'Unlabeled', active: true }];
-          response.writeHead(200, { 'content-type': 'application/json' });
-          response.end(JSON.stringify({ id }));
-          return;
-        }
-        const target = list.find((item) => item.id === body.id);
-        if (action === 'rename' && target) target.label = body.label ?? '';
-        if (action === 'rotate' && target) { for (const item of list) item.active = item === target; }
-        if (action === 'delete' && target) {
-          const left = list.filter((item) => item !== target);
-          if (left.length > 0 && !left.some((item) => item.active) && left[0]) left[0].active = true;
-          fake.secrets[body.key] = left;
-        }
-        response.writeHead(204);
-        response.end();
       });
       return;
     }
@@ -236,20 +205,4 @@ test('calls made at the same moment share one session', async (t) => {
   const st = client(() => fake.port);
   await Promise.all([st.ping(), st.ping(), st.version()]);
   assert.equal(fake.tokensIssued, 1);
-});
-
-test('keys are added, renamed, chosen and removed through the secrets API of SillyTavern', async (t) => {
-  const fake = await fakeSillyTavern();
-  t.after(() => fake.close());
-  const st = client(() => fake.port);
-  assert.equal(await st.writeSecret('api_key_openrouter', 'sk-or-first', 'main'), 'id-1');
-  assert.equal(await st.writeSecret('api_key_openrouter', 'sk-or-second', 'spare'), 'id-2');
-  await st.renameSecret('api_key_openrouter', 'id-2', 'backup');
-  await st.rotateSecret('api_key_openrouter', 'id-1');
-  assert.deepEqual(fake.secrets.api_key_openrouter?.map((item) => [item.id, item.label, item.active]), [['id-1', 'main', true], ['id-2', 'backup', false]]);
-  await st.deleteSecret('api_key_openrouter', 'id-1');
-  assert.deepEqual(fake.secrets.api_key_openrouter?.map((item) => [item.id, item.active]), [['id-2', true]]);
-  assert.deepEqual(fake.seen.filter((line) => line.startsWith('POST')), ['POST /api/secrets/write', 'POST /api/secrets/write', 'POST /api/secrets/rename', 'POST /api/secrets/rotate', 'POST /api/secrets/delete']);
-  const stopped = await refusal(client(() => fake.port, () => 'stopped').writeSecret('api_key_openai', 'sk', 'x'));
-  assert.equal(stopped.code, 'st_not_running');
 });

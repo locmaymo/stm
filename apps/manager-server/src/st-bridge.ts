@@ -176,21 +176,6 @@ export class SillyTavernBridge {
     return this.describe(entry);
   }
 
-  /**
-   * Withdraw a command no tab has taken yet, because whoever asked stopped
-   * waiting for it: left in the queue, it would run whenever a tab opened,
-   * long after anyone wanted it. One a tab has already taken runs to its end.
-   */
-  public cancel(id: string): boolean {
-    const entry = this.entries.get(id);
-    if (!entry || entry.state !== 'waiting') return false;
-    entry.state = 'expired';
-    entry.result = { ok: false, error: 'cancelled' };
-    entry.finishedAt = this.now();
-    this.changed(id);
-    return true;
-  }
-
   public status(id: string): BridgeCommandStatus | null {
     this.sweep();
     const entry = this.entries.get(id);

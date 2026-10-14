@@ -124,39 +124,6 @@ export class SillyTavernClient {
     await this.request('POST', '/api/ping');
   }
 
-  /*
-   * Keys in `secrets.json`, through SillyTavern's secrets API.
-   *
-   * Checked against 1.19.0 (`src/endpoints/secrets.js`): `write` takes
-   * `{ key, value, label }`, makes the new key the active one of its name and
-   * answers `{ id }`; `rename` takes `{ key, id, label }`, `delete` and
-   * `rotate` take `{ key, id }`, and all three answer 204. None of them says
-   * when the id is not there - they do nothing - so callers check first.
-   */
-
-  /** Adds a key under `key` and makes it the active one; its new id. */
-  public async writeSecret(key: string, value: string, label: string): Promise<string> {
-    const response = await this.request('POST', '/api/secrets/write', { body: { key, value, label } });
-    const body: unknown = await response.json().catch(() => null);
-    const id = typeof body === 'object' && body !== null ? (body as Record<string, unknown>).id : undefined;
-    if (typeof id !== 'string' || id === '') throw new SillyTavernError('st_refused', 'SillyTavern did not say which id the new key has', response.status);
-    return id;
-  }
-
-  public async renameSecret(key: string, id: string, label: string): Promise<void> {
-    await this.request('POST', '/api/secrets/rename', { body: { key, id, label } });
-  }
-
-  /** Removes a key; when it was the active one, SillyTavern makes the first left active. */
-  public async deleteSecret(key: string, id: string): Promise<void> {
-    await this.request('POST', '/api/secrets/delete', { body: { key, id } });
-  }
-
-  /** Makes a key the active one of its name. */
-  public async rotateSecret(key: string, id: string): Promise<void> {
-    await this.request('POST', '/api/secrets/rotate', { body: { key, id } });
-  }
-
   /**
    * One request to SillyTavern, with the session and token it needs.
    *
