@@ -153,12 +153,6 @@ export interface ApiErrorBody {
 export interface StartupSettings {
   /** Start SillyTavern when the manager starts. On unless it is turned off. */
   readonly autoStartSillyTavern: boolean;
-  /**
-   * Install a new SillyTavern release by itself in the hour after four in the
-   * morning, when nothing has used SillyTavern for an hour. Off unless it is
-   * turned on; see nightly-update.ts.
-   */
-  readonly nightlyUpdate: boolean;
 }
 
 /** The steps on the overview's setup checklist, in the order they are shown. */
@@ -407,188 +401,6 @@ export interface Profile {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly activatedAt: string | null;
-}
-
-/**
- * Where a third-party extension lives.
- *
- * `user` is inside the profile, so it travels with backups; `global` is inside
- * the installed copy of SillyTavern, shared by every profile and in no backup.
- */
-export type ExtensionScope = 'user' | 'global';
-
-/** What git says about an extension that was cloned rather than copied. */
-export interface ExtensionGit {
-  /** Where updates come from, with any user name or token taken out. */
-  readonly remote: string | null;
-  /** Null when the checkout is not on a branch. */
-  readonly branch: string | null;
-  readonly commit: string;
-  readonly committedAt: string | null;
-}
-
-export interface ExtensionInfo {
-  /** The folder name, which is what SillyTavern calls it. */
-  readonly name: string;
-  /** As SillyTavern writes it in its list of disabled extensions: `third-party/<name>`. */
-  readonly key: string;
-  readonly scope: ExtensionScope;
-  /** The manifest's `display_name`, or the folder name when it has none. */
-  readonly displayName: string;
-  readonly version: string | null;
-  readonly author: string | null;
-  /** Only ever an http or https address. */
-  readonly homePage: string | null;
-  readonly enabled: boolean;
-  /**
-   * A global extension with a user one of the same name beside it.
-   *
-   * SillyTavern loads the user one and never this, so its version and its
-   * switch say nothing about what runs.
-   */
-  readonly shadowed: boolean;
-  /** Bytes of the extension itself, its git history included. */
-  readonly bytes: number;
-  /** Bytes under `node_modules`, which some extensions bring and none need backed up. */
-  readonly dependencyBytes: number;
-  /** Whether the folder is a git checkout of its own, which is what an update needs. */
-  readonly hasGit: boolean;
-  /** Null without a checkout, or when git could not read it. */
-  readonly git: ExtensionGit | null;
-  /** What the last check for updates found; null until one has looked at this extension. */
-  readonly update: ExtensionUpdate | null;
-  /**
-   * Whether an update made here recorded the commit it left, so it can be
-   * undone. Updates made by SillyTavern itself record nothing.
-   */
-  readonly canRollBack: boolean;
-  /** What its errors in the browser come to; null when it has reported none. */
-  readonly errors: ExtensionErrorSummary | null;
-}
-
-/** Where an error came from: an extension in the browser, or a server plugin in SillyTavern's log. */
-export type ExtensionErrorKind = 'extension' | 'plugin';
-
-export interface ExtensionErrorSummary {
-  /** Every time any of its kept errors was seen. */
-  readonly count: number;
-  readonly lastAt: string;
-  readonly lastMessage: string;
-  /** The SillyTavern version it started failing on, when that was within a day of switching to it. */
-  readonly brokeAfter: string | null;
-}
-
-export interface ExtensionErrorEntry {
-  /** The error's own first few hundred characters, and nothing else from the page. */
-  readonly message: string;
-  readonly file: string | null;
-  readonly line: number | null;
-  /** The SillyTavern version it was seen on. */
-  readonly version: string | null;
-  readonly firstSeen: string;
-  readonly lastSeen: string;
-  readonly count: number;
-}
-
-/** A server plugin with errors, which the extension list does not otherwise show. */
-export interface PluginErrors {
-  readonly name: string;
-  readonly errors: ExtensionErrorSummary;
-}
-
-export interface ExtensionUpdate {
-  /** Commits the extension's branch has that this checkout does not; null when it could not be told. */
-  readonly behind: number | null;
-  /** Why it could not be told, as an `errors.*` code. */
-  readonly problem: string | null;
-  readonly checkedAt: string;
-}
-
-export interface ExtensionList {
-  readonly extensions: readonly ExtensionInfo[];
-  /** False when git could not be run here; then no extension has git details. */
-  readonly gitAvailable: boolean;
-  /** When updates were last looked for, or null if they never were since the manager started. */
-  readonly checkedAt: string | null;
-  /** The extension job that is running, for a page that did not start it. */
-  readonly job: Job | null;
-  /** Extensions removed in the last week, newest first, which can still be put back. */
-  readonly trash: readonly ExtensionTrashItem[];
-  readonly plugins: readonly PluginErrors[];
-}
-
-export interface ExtensionTrashItem {
-  readonly id: string;
-  readonly name: string;
-  readonly displayName: string;
-  readonly scope: ExtensionScope;
-  readonly removedAt: string;
-  /** When the trash deletes it for good. */
-  readonly expiresAt: string;
-  readonly bytes: number;
-}
-
-/**
- * What reconnecting an extension to its source would change, before it does.
- *
- * An extension restored from a backup has its files and no git history. A
- * fresh clone of its home page is compared with what is there, and only
- * replaces it when the reader has seen this and agreed.
- */
-export interface ExtensionReconnectPreview {
-  readonly id: string;
-  readonly scope: ExtensionScope;
-  readonly name: string;
-  readonly displayName: string;
-  readonly url: string;
-  readonly added: number;
-  /** Files only the current folder has: these go to the trash with it. */
-  readonly removed: number;
-  readonly changed: number;
-  readonly unchanged: number;
-  readonly samples: { readonly added: readonly string[]; readonly removed: readonly string[]; readonly changed: readonly string[] };
-}
-
-/** Which extension a request is about; the name alone is not enough, since both places can hold it. */
-export interface ExtensionTarget {
-  readonly scope: ExtensionScope;
-  readonly name: string;
-}
-
-/**
- * The last switch of SillyTavern's version, as the manager kept it.
- *
- * Written when a new version is first started on the reader's data, and
- * updated when it has proved itself or been taken back.
- */
-export interface VersionSwitch {
-  readonly previousInstallationId: string;
-  readonly previousRef: string;
-  readonly installationId: string;
-  readonly ref: string;
-  readonly at: string;
-  /** The copy of the profile taken just before the switch; null in saver mode, which takes none. */
-  readonly safetyCopyId: string | null;
-  readonly profileId: string | null;
-  /** `probation` while it is being watched, `kept` after, `rolledBack` when the previous version went back. */
-  readonly outcome: 'probation' | 'kept' | 'rolledBack' | 'rollbackFailed';
-  /** Why it was taken back, or why taking it back failed. */
-  readonly reason?: string | null;
-  /** The reader said not to show it on the overview any more. */
-  readonly dismissed: boolean;
-}
-
-/** What the overview needs to offer the way back from a version. */
-export interface VersionSwitchStatus {
-  readonly switch: VersionSwitch | null;
-  /** Extensions and server plugins whose trouble started with this version. */
-  readonly broken: readonly { readonly kind: ExtensionErrorKind; readonly name: string; readonly displayName: string }[];
-  /** Whether the copy taken before the switch is still there to put back. */
-  readonly canRestoreData: boolean;
-  /** Saver mode, which keeps no copy to put back. */
-  readonly saving: boolean;
-  /** A way back that is running, for a page that did not start it. */
-  readonly job: Job | null;
 }
 
 export type RestoreMode = 'merge' | 'replace';
@@ -1177,7 +989,7 @@ export type JobState = 'queued' | 'running' | 'succeeded' | 'failed' | 'canceled
  * announced itself as "Back up now" in the local backup card while the cloud
  * card, which had started it, showed nothing.
  */
-export type JobKind = 'installation' | 'backup' | 'restore' | 'r2Upload' | 'r2Fetch' | 'extensions' | 'versionRollback';
+export type JobKind = 'installation' | 'backup' | 'restore' | 'r2Upload' | 'r2Fetch';
 
 /** The jobs a panel reattaches to and shows progress for; an install is its own screen. */
 export const OPERATION_JOB_KINDS: readonly JobKind[] = ['backup', 'restore', 'r2Upload', 'r2Fetch'];
@@ -1209,8 +1021,6 @@ export interface Job {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly error: string | null;
-  /** The manager's own code for that failure, when it has one; see `Installation.errorCode`. */
-  readonly errorCode?: string;
 }
 
 /** Values substituted into a translated log line or progress step. */
@@ -1300,7 +1110,6 @@ export type StopReason =
   | 'restore'
   | 'profileSwitch'
   | 'configChange'
-  | 'extensionChange'
   | 'passwordChange'
   | 'shutdown'
   | 'startupFailed';
@@ -1313,7 +1122,6 @@ export const STOP_REASON_TEXT: Readonly<Record<StopReason, string>> = {
   restore: 'restoring a backup',
   profileSwitch: 'switching profile',
   configChange: 'applying a configuration change',
-  extensionChange: 'switching an extension on or off',
   passwordChange: 'applying the new SillyTavern password',
   shutdown: 'the manager is shutting down',
   startupFailed: 'it did not finish starting',
@@ -2082,9 +1890,6 @@ function newestRelease(versions: readonly VersionOption[]): VersionOption | null
  */
 export const NOTIFICATION_KINDS = [
   'sillytavernCrashed',
-  'extensionsBroke',
-  'sillytavernRolledBack',
-  'sillytavernRollbackFailed',
   'installFinished',
   'installFailed',
   'backupFailed',

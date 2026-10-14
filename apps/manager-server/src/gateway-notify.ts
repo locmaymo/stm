@@ -54,15 +54,9 @@ export const NOTIFY_TAG = `<script src="${NOTIFY_SCRIPT_PATH}" defer></script>`;
  * templates do not, and are left as they came.
  */
 export function withNotifyScript(html: string): string | null {
-  return withScripts(html, [NOTIFY_TAG]);
-}
-
-/** The page with each of the door's script tags in it that it does not already carry. */
-export function withScripts(html: string, tags: readonly string[]): string | null {
   const at = html.search(/<\/head\s*>/iu);
-  const missing = tags.filter((tag) => !html.includes(tag));
-  if (at === -1 || missing.length === 0) return null;
-  return `${html.slice(0, at)}${missing.join('')}${html.slice(at)}`;
+  if (at === -1 || html.includes(NOTIFY_SCRIPT_PATH)) return null;
+  return `${html.slice(0, at)}${NOTIFY_TAG}${html.slice(at)}`;
 }
 
 interface NotifyText {
