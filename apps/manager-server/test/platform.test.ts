@@ -1,7 +1,9 @@
 import test from 'node:test';
 import { posix } from 'node:path';
 import assert from 'node:assert/strict';
-import { createIoLimiter, detectPlatform, getPlatformPaths, ioConcurrency, runPooled, storageAssurance, storageDurability, storageMedium } from '../../../packages/platform/src/index.js';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { createIoLimiter, detectPlatform, getPlatformPaths, ioConcurrency, onNetworkStorage, runPooled, runtimeRoot, storageAssurance, storageDurability, storageMedium } from '../../../packages/platform/src/index.js';
 
 test('platform paths follow the documented durable roots', () => {
   assert.equal(detectPlatform({ platform: 'win32', env: {} }), 'windows');
@@ -160,4 +162,38 @@ test('a machine is only vouched for when it is the reader’s own', () => {
   assert.equal(storageAssurance('hosted', { durable: true, filesystem: 'ext4' }), 'unverified');
   assert.equal(storageAssurance('docker', { durable: true, filesystem: 'ext4' }), 'unverified');
   assert.equal(storageAssurance('unknown', { durable: true, filesystem: null }), 'unverified');
+});
+
+/*
+ * SillyTavern is twenty thousand small files. On a data directory that is an
+ * object store drawn as a folder, each one Node opens as it starts is a round
+ * trip, and starting took minutes. The runtime goes on the machine's own disk
+ * there, and nowhere else.
+ */
+test('SillyTavern is kept off a data directory on network storage', () => {
+  const objectStore = 'overlay / overlay rw 0 0\nbucket /mnt/workspace fuse.remotefs rw,nosuid,nodev 0 0';
+  assert.equal(onNetworkStorage('/mnt/workspace/sillytavern-manager', objectStore), true);
+  assert.equal(runtimeRoot('/mnt/workspace/sillytavern-manager', {}, objectStore), join(tmpdir(), 'sillytavern-manager-runtime'));
+  assert.equal(onNetworkStorage('/srv/manager', 'server:/export /srv nfs4 rw 0 0'), true);
+  assert.equal(onNetworkStorage('/srv/manager', '//server/share /srv cifs rw 0 0'), true);
+
+  // A local disk, a rootless container's overlay and a machine with no mount
+  // table keep the runtime beside the profiles, as they always have.
+  assert.equal(runtimeRoot('/data/sillytavern-manager', {}, '/dev/sda1 /data ext4 rw 0 0'), join('/data/sillytavern-manager', 'profiles', 'runtime'));
+  assert.equal(onNetworkStorage('/home/someone/manager', 'fuse-overlayfs / fuse.fuse-overlayfs rw 0 0'), false);
+  assert.equal(onNetworkStorage('C:/Users/someone/AppData/Local/SillyTavernManager', null), false);
+  // The network share is somewhere else; the data directory is not on it.
+  assert.equal(onNetworkStorage('/data/manager', '/dev/sda1 / ext4 rw 0 0\nserver:/export /mnt/share nfs rw 0 0'), false);
+
+  // STM_RUNTIME_DIR names the place outright, either way.
+  assert.equal(runtimeRoot('/mnt/workspace/sillytavern-manager', { STM_RUNTIME_DIR: '/srv/runtime' }, objectStore), resolve('/srv/runtime'));
+  assert.equal(runtimeRoot('/data/manager', { STM_RUNTIME_DIR: '/srv/runtime' }, null), resolve('/srv/runtime'));
+
+  // A data directory given as a POSIX path stays one only where paths are
+  // POSIX; on Windows it resolves onto a drive no mount table names.
+  if (process.platform !== 'win32') {
+    const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: '/mnt/workspace/sillytavern-manager' }, mountTable: objectStore });
+    assert.equal(paths.runtime, join(tmpdir(), 'sillytavern-manager-runtime'));
+  }
+  assert.equal(getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: '/data/manager' }, mountTable: null }).runtime, join(resolve('/data/manager'), 'profiles', 'runtime'));
 });

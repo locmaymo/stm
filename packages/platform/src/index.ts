@@ -95,12 +95,19 @@ export interface PlatformPaths {
   readonly outbox: string;
   readonly tmp: string;
   readonly bin: string;
+  /**
+   * Where the SillyTavern checkout lives: beside the profiles, unless the data
+   * directory is on network storage. See `runtimeRoot`.
+   */
+  readonly runtime: string;
 }
 
 export interface PlatformPathOptions {
   readonly platform?: NodeJS.Platform;
   readonly env?: NodeJS.ProcessEnv;
   readonly homeDirectory?: string;
+  /** The mount table to read instead of /proc/mounts; null for a machine without one. */
+  readonly mountTable?: string | null;
 }
 
 function hasTruthyEnvironmentValue(value: string | undefined): boolean {
@@ -333,6 +340,49 @@ function unescapeMountPath(value: string): string {
   return value.replace(/\\([0-7]{3})/gu, (_match, octal: string) => String.fromCharCode(parseInt(octal, 8)));
 }
 
+/** Filesystems whose files are fetched from another machine on every open. */
+const NETWORK_FILESYSTEMS = new Set(['nfs', 'nfs4', 'cifs', 'smb3', 'smbfs', 'ceph']);
+
+/**
+ * Filesystems in userspace that are a local disk all the same: a rootless
+ * container's overlay, and the one that fakes /proc for a container.
+ */
+const LOCAL_FUSE_FILESYSTEMS = new Set(['fuse.fuse-overlayfs', 'fuse.lxcfs']);
+
+/**
+ * Whether the data directory is on storage reached over a network.
+ *
+ * A filesystem in userspace is how an object store or a remote share is drawn
+ * as a directory, and on one of those every file operation is a request over
+ * the network: milliseconds where a disk takes microseconds. Reading a large
+ * file still goes at the network's speed. What suffers is anything made of
+ * thousands of small files.
+ */
+export function onNetworkStorage(dataRoot: string, mountTable?: string | null): boolean {
+  const table = mountTable === undefined ? readMountTable() : mountTable;
+  const mount = table === null ? null : mountOf(dataRoot, table);
+  if (!mount) return false;
+  if (NETWORK_FILESYSTEMS.has(mount.filesystem)) return true;
+  return mount.filesystem.startsWith('fuse.') && !LOCAL_FUSE_FILESYSTEMS.has(mount.filesystem);
+}
+
+/**
+ * Where SillyTavern itself is installed.
+ *
+ * Beside the profiles, so one data directory holds everything - unless that
+ * directory is on network storage. SillyTavern is about twenty thousand small
+ * files, most of them dependencies that Node opens one by one as it starts,
+ * and on network storage each of those opens is a round trip. It is then put
+ * on this machine's own disk instead, which does not outlive the machine; the
+ * runtime manager keeps a packed copy of it in the data directory to put it
+ * back from. `STM_RUNTIME_DIR` names the place outright.
+ */
+export function runtimeRoot(root: string, env: NodeJS.ProcessEnv = process.env, mountTable?: string | null): string {
+  if (env.STM_RUNTIME_DIR) return resolve(env.STM_RUNTIME_DIR);
+  if (onNetworkStorage(root, mountTable)) return join(tmpdir(), 'sillytavern-manager-runtime');
+  return join(root, 'profiles', 'runtime');
+}
+
 export function getPlatformPaths(options: PlatformPathOptions = {}): PlatformPaths {
   const env = options.env ?? process.env;
   const platform = detectPlatform(options);
@@ -353,5 +403,6 @@ export function getPlatformPaths(options: PlatformPathOptions = {}): PlatformPat
     outbox: join(root, 'outbox'),
     tmp: scratchRoot,
     bin: join(root, 'bin'),
+    runtime: runtimeRoot(root, env, options.mountTable),
   };
 }
