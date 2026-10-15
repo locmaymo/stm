@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, posix, resolve } from 'node:path';
+import { basename, dirname, join, posix, resolve } from 'node:path';
 import type { PlatformKind, StorageAssurance, StorageMedium } from '../../contracts/src/index.js';
 
 const DEFAULT_IO_CONCURRENCY = 8;
@@ -260,7 +260,7 @@ function parseSwitch(value: string | undefined): boolean | null {
 
 /** The mount the directory is on, from a table in the shape of /proc/mounts. */
 function mountOf(dataRoot: string, table: string): { point: string; filesystem: string } | null {
-  const target = posixPath(dataRoot);
+  const target = posixPath(followLinks(dataRoot));
   let best: { point: string; filesystem: string } | null = null;
   for (const line of table.split('\n')) {
     // device mountpoint fstype options dump pass, with spaces and the escape
@@ -327,6 +327,31 @@ export function storageReport(paths: Pick<PlatformPaths, 'platform' | 'root'>, m
  * resolved against the working directory first, which is a question only the
  * platform can answer.
  */
+/**
+ * `path` with the symbolic links on the way to it followed.
+ *
+ * The mount table names where filesystems are attached, and a directory
+ * reached through a link is on whatever the link points at, not on the disk
+ * the link itself sits on. A host that hands out its network storage as a
+ * link to the mount, rather than as the mount itself, otherwise reads as the
+ * local disk under the link - and SillyTavern and the profiles were then
+ * looked for there. Only the part of the path that exists can be followed;
+ * the rest is kept as written. Not on Windows, whose paths are not in a
+ * mount table.
+ */
+function followLinks(path: string): string {
+  if (process.platform === 'win32' || !path.startsWith('/')) return path;
+  let existing = path;
+  const rest: string[] = [];
+  while (!existsSync(existing)) {
+    const parent = dirname(existing);
+    if (parent === existing) return path;
+    rest.unshift(basename(existing));
+    existing = parent;
+  }
+  try { return posix.join(realpathSync.native(existing), ...rest); } catch { return path; }
+}
+
 function posixPath(dataRoot: string): string {
   if (dataRoot.startsWith('/')) return posix.normalize(dataRoot);
   return posix.normalize(resolve(dataRoot).replace(/\\/gu, '/'));

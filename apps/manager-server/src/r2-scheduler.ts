@@ -222,6 +222,15 @@ export class BackupScheduler {
        * recover would be given back an empty profile.
        */
       if (!profile || isWaitingProfile(profile)) return;
+      /*
+       * A profile whose data is not where it is recorded is not an empty one.
+       *
+       * The directory is gone, or not reachable from here: storage that has
+       * not come up, or a manager that looked for it in the wrong place. A
+       * copy taken now is a ZIP with nothing in it, written as the newest
+       * backup - the one a restore reaches for first.
+       */
+      if (!await lstat(profile.dataPath).then(() => true, () => false)) throw new Error(`the profile's data is not at ${profile.dataPath}, so there is nothing to copy from there`);
       // Safety copies expire on a clock, not only when something new is written.
       await this.backups.pruneCreated(profile.id);
       const fingerprint = await this.backups.fingerprint(profile);
