@@ -113,6 +113,8 @@ export class ReplyNotifier {
   private plainAt = Number.NEGATIVE_INFINITY;
   /** Who a page said it is waiting for, and when. */
   private expected: { readonly report: ReplyReport; readonly at: number } | null = null;
+  /** The last look at where the usage log ends, begun when a page last spoke. */
+  private following: Promise<void> = Promise.resolve();
   private closed = false;
 
   public constructor(options: ReplyNotifierOptions) {
@@ -136,7 +138,12 @@ export class ReplyNotifier {
     }
     // Somebody is looking again: whatever the log was about to say, they can see.
     if (this.lookedAt() && this.pending) { clearTimeout(this.pending); this.pending = null; }
-    void this.follow();
+    this.following = this.follow();
+  }
+
+  /** Resolves once the usage log is read from where it ended when a page last spoke. */
+  public async settled(): Promise<void> {
+    await this.following;
   }
 
   /** A page saw a reply arrive while it was not looked at. */
