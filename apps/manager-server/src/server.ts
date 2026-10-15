@@ -211,6 +211,15 @@ export interface ManagerServerOptions {
    * owning them. This gives it a way to ask instead.
    */
   readonly onShutdownRequest?: () => void;
+  /**
+   * Called once the console is listening, before the rest of startup.
+   *
+   * What comes after can take a minute on a machine that was replaced -
+   * SillyTavern and the profiles are put back on its disk - and the console
+   * answers all through it. Whoever prints its address does it here rather
+   * than after `startManagerServer` returns.
+   */
+  readonly onListening?: (listening: { readonly port: number; readonly managerVersion: string }) => void;
 }
 
 export interface ManagerServer {
@@ -704,7 +713,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   }
   // Worth a line: it means the network mount was not attached yet when this
   // manager looked, and everything else that reads the table saw a local disk.
-  if (workedFromLocalDisk(paths.root) && !onNetworkStorage(paths.root)) {
+  if (!env.STM_RUNTIME_DIR && !env.STM_PROFILE_DATA_DIR && workedFromLocalDisk(paths.root) && !onNetworkStorage(paths.root)) {
     logger(logEvent('storage.stillLocal', `[manager] ${paths.root} does not look like network storage right now, but SillyTavern and the profiles have been worked on from this machine's disk before, so they still are`, { path: paths.root }));
   }
   let persisted = await store.load();
@@ -1058,6 +1067,11 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   const address = server.address();
   const actualPort = address && typeof address !== 'string' ? address.port : port;
   boundPort = actualPort;
+  // How long a start took to reach a console that answers, for the next time
+  // somebody asks why it felt slow.
+  const startedSeconds = process.uptime().toFixed(1);
+  logger(logEvent('manager.listening', `[manager] the console is listening on port ${actualPort}, ${startedSeconds}s after the manager started`, { port: actualPort, seconds: startedSeconds }));
+  options.onListening?.({ port: actualPort, managerVersion: persisted.managerVersion });
   // The door opens with the manager rather than with SillyTavern, so its
   // address is the same one every time and a saved bookmark keeps working.
   gateway.setPassword(persisted.accessPasswordHash, persisted.accessPasscode);
@@ -2397,6 +2411,13 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     return;
   }
   if (pathname === '/api/v1/profiles' && method === 'GET') {
+    // Shown, not touched, while their data is still coming back: the list is
+    // in the state file, and making the default profile can wait for the data.
+    if (profiles.filling) {
+      const shown = await profiles.peek();
+      sendJson(response, 200, { profiles: shown, activeProfileId: shown.find((profile) => profile.active)?.id ?? null });
+      return;
+    }
     const activeInstallation = await runtime.getActiveInstallation();
     if (activeInstallation?.status === 'ready') await profiles.ensureDefault({ installationId: activeInstallation.id, runtimePath: activeInstallation.runtimePath });
     const items = await profiles.list();
@@ -2443,7 +2464,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     return;
   }
   if (pathname === '/api/v1/backups' && method === 'GET') {
-    const activeProfile = await profiles.getActive();
+    const activeProfile = profiles.filling ? (await profiles.peek()).find((profile) => profile.active) ?? null : await profiles.getActive();
     const list = activeProfile ? await backups.list(activeProfile.id) : [];
     sendList(response, 'backups', list, searchParams, { searchText: backupSearchText, sortValue: backupSortValue });
     return;
@@ -2984,7 +3005,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     let backupList: readonly BackupManifest[] | undefined;
     let backupsTag: string | undefined;
     if (sections.has('backups')) {
-      const activeProfile = await profiles.getActive();
+      const activeProfile = profiles.filling ? (await profiles.peek()).find((profile) => profile.active) ?? null : await profiles.getActive();
       const list = activeProfile ? await backups.list(activeProfile.id) : [];
       backupsTag = listTag(list);
       // Only when it is not the list the caller already has.
@@ -3033,6 +3054,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     const settingsOffer = acting || !connected ? NO_SETTINGS_OFFER : offers.current(offerKey);
     const status: ConsoleStatus = {
       process: supervisor.getState(),
+      ...(profiles.filling ? { profilesFilling: true } : {}),
       tunnel: await withProxyUrl(tunnel.getState(), proxy, cloudflare, 'sillyTavern', budget, await linkPreference(store, 'sillyTavern')),
       managerTunnel: await withProxyUrl(managerTunnel.getState(), proxy, cloudflare, 'manager', budget, await linkPreference(store, 'manager')),
       security: await decorateSecurity(gateway.getState()),

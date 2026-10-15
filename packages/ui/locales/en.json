@@ -690,6 +690,8 @@
     "r2CheckedJustNow": "Checked just now",
     "r2CheckedAt": "Checked at {time}",
     "r2CheckFailed": "The bucket could not be read. {error}",
+    "profilesFillingTitle": "Putting your profiles back on this machine",
+    "profilesFillingBody": "This machine was replaced, so your characters and chats are being unpacked onto its own disk. SillyTavern starts by itself when that is done; nothing is lost in the meantime.",
     "cfR2NotEnabledTitle": "This account has not enabled R2",
     "cfR2NotEnabledBody": "R2 is not switched on for this Cloudflare account. Turn on the free R2 plan - 10 GB a month - on Cloudflare, then come back and connect.",
     "cfR2NotEnabledAction": "Activate R2 on Cloudflare",
@@ -878,6 +880,7 @@
       "stale": "The panel is older than the sources it was built from; building it again"
     },
     "manager": {
+      "listening": "The console is listening on port {port}, {seconds}s after the manager started",
       "resetting": "Erasing everything this manager keeps, because the console asked for it",
       "dataErased": "Every file this manager kept was erased ({count} directories)",
       "dataPartlyErased": "{count} directories were erased and {failed} would not go",

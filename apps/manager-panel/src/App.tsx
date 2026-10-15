@@ -1013,6 +1013,9 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
   const [backgroundJob, setBackgroundJob] = useState<Job | null>(null);
   /** The job the last poll saw, so the moment one finishes can be noticed. */
   const backgroundJobSeen = useRef<string | null>(null);
+  // The profiles' data coming back onto a replaced machine's disk; see ConsoleStatus.
+  const [profilesFilling, setProfilesFilling] = useState(false);
+  const profilesFillingSeen = useRef(false);
   /** What the manager does with SillyTavern on its own way up. Null until read. */
   const [startup, setStartup] = useState<StartupSettings | null>(null);
   const [saver, setSaver] = useState<SaverState | null>(null);
@@ -1317,6 +1320,16 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
      */
     setR2Owner(status.r2Owner);
     setR2Problem(status.r2Problem);
+    /*
+     * The profiles coming back onto this machine's disk after it was replaced.
+     *
+     * The console answers through it with the profiles' names, not what is in
+     * them, so the lists are asked for again once the data is there.
+     */
+    const filling = status.profilesFilling === true;
+    if (profilesFillingSeen.current && !filling) reloadProfiles();
+    profilesFillingSeen.current = filling;
+    setProfilesFilling(filling);
     // Carried on the same clock, so connecting a bucket that holds another
     // machine's setup offers it without a reload. Absent until the manager
     // has read it, which leaves what is here alone.
@@ -1986,6 +1999,13 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
                 this machine at all. Above everything for as long as it is
                 true, because for as long as it is true nothing is being
                 kept anywhere but here. */}
+            {profilesFilling
+              ? <div className="mb-(--section-gap)"><Alert>
+                <LoaderCircle className="animate-spin" />
+                <AlertTitle>{t('console.profilesFillingTitle')}</AlertTitle>
+                <AlertDescription>{t('console.profilesFillingBody')}</AlertDescription>
+              </Alert></div>
+              : null}
             {r2Problem === 'r2_not_enabled'
               ? <div className="mb-(--section-gap)"><Alert variant="destructive">
                 <TriangleAlert />

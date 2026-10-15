@@ -690,6 +690,8 @@
     "r2CheckedJustNow": "Vừa kiểm tra xong",
     "r2CheckedAt": "Đã kiểm tra lúc {time}",
     "r2CheckFailed": "Không đọc được kho lưu trữ. {error}",
+    "profilesFillingTitle": "Đang đưa hồ sơ trở lại máy này",
+    "profilesFillingBody": "Máy này vừa được thay mới, nên nhân vật và chat đang được giải nén lên ổ đĩa của nó. SillyTavern sẽ tự khởi động khi xong; trong lúc chờ không có gì bị mất.",
     "cfR2NotEnabledTitle": "Tài khoản này chưa kích hoạt R2",
     "cfR2NotEnabledBody": "Cloudflare R2 của bạn chưa được kích hoạt trên tài khoản. Vui lòng kích hoạt gói R2 miễn phí 10GB/tháng trên trang chủ của Cloudflare, rồi quay lại đây để kết nối.",
     "cfR2NotEnabledAction": "Kích hoạt R2 trên Cloudflare",
@@ -878,6 +880,7 @@
       "stale": "Giao diện cũ hơn mã nguồn đã dựng ra nó; đang dựng lại"
     },
     "manager": {
+      "listening": "Bảng điều khiển đang lắng nghe ở cổng {port}, {seconds} giây sau khi trình quản lý khởi động",
       "resetting": "Đang xoá mọi thứ trình quản lý này giữ, vì bảng điều khiển yêu cầu",
       "dataErased": "Đã xoá mọi tệp trình quản lý này giữ ({count} thư mục)",
       "dataPartlyErased": "Đã xoá {count} thư mục, còn {failed} thư mục không xoá được",
