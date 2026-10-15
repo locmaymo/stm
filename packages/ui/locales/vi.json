@@ -1171,6 +1171,7 @@
       "inMemory": "Máy này lưu file trong RAM ({signal}): file dùng chung {memory} với các chương trình",
       "onDisk": "Máy này lưu file trên ổ đĩa, còn trống {disk}; RAM {memory}",
       "notDurable": "{path} nằm trên {filesystem}, máy này không giữ lại sau khi khởi động lại; hãy kết nối Cloudflare R2 để bản sao lưu nằm ở nơi khác",
+      "stillLocal": "{path} lúc này trông không giống ổ mạng, nhưng SillyTavern và hồ sơ đã từng chạy từ ổ đĩa của máy này nên vẫn tiếp tục như vậy",
       "notVerified": "Trình quản lý không thể biết chắc {path} có còn sau khi khởi động lại hay không, nên hãy coi đây là bộ nhớ có thể chỉ là tạm thời; hãy kết nối Cloudflare R2 để bản sao lưu nằm ở nơi khác"
     },
     "cloudflare": {

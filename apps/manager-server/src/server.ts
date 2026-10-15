@@ -6,7 +6,7 @@ import { hostname, networkInterfaces } from 'node:os';
 import { createSocket } from 'node:dgram';
 import { extname, join, relative, resolve, sep } from 'node:path';
 import { applyQuery, BACKUP_PURPOSES, isLogEvent, availableUpdate, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, isConsoleStatusSection, KEEP_ONLINE_DEFAULT_MINUTES, OPERATION_JOB_KINDS, SETUP_STEPS, type AccessGatewayState, type ApiErrorBody, type BackupManifest, type BackupPurpose, type ConfigUpdateInput, type ConsoleStatus, type ConsoleStatusSection, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogPage, type LogSink, type LogSourceFilter, type LegalReview, type ManagerPorts, type ManagerUpdateStatus, type OnlineState, type PortSettings, type Profile, type ProfileLayout, type RestorePreview, type SetupChecklistState, type SetupStatus, type SetupStep, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
-import { getPlatformPaths, PROFILE_STORE_DIR, storageDurability, storageMedium, storageReport, type PlatformPaths } from '../../../packages/platform/src/index.js';
+import { getPlatformPaths, onNetworkStorage, PROFILE_STORE_DIR, storageDurability, storageMedium, storageReport, workedFromLocalDisk, type PlatformPaths } from '../../../packages/platform/src/index.js';
 import { INSTALL_CANCELED, RuntimeError, RuntimeManager, type InstallationProgress } from '../../../packages/sillytavern-runtime/src/index.js';
 import { hashPassword, MIN_PASSWORD_LENGTH, validatePasscode, validatePassword, verifyPassword } from './password.js';
 import { RateLimiter } from './rate-limit.js';
@@ -694,6 +694,11 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     // the machine under it is kept, and the one thing that makes the answer
     // not matter is a copy somewhere else.
     logger(logEvent('storage.notVerified', `[manager] this manager cannot tell whether ${paths.root} survives a restart here, so treat it as storage that may be temporary; connect Cloudflare R2 so backups are held somewhere else`, { path: paths.root, filesystem: durability.filesystem ?? 'unknown' }));
+  }
+  // Worth a line: it means the network mount was not attached yet when this
+  // manager looked, and everything else that reads the table saw a local disk.
+  if (workedFromLocalDisk(paths.root) && !onNetworkStorage(paths.root)) {
+    logger(logEvent('storage.stillLocal', `[manager] ${paths.root} does not look like network storage right now, but SillyTavern and the profiles have been worked on from this machine's disk before, so they still are`, { path: paths.root }));
   }
   let persisted = await store.load();
   r2.noteInstallation(persisted.installId);

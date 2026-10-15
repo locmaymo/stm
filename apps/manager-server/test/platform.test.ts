@@ -254,3 +254,28 @@ test('profiles already in the vault come back to the temporary directory even wh
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('a data directory worked on from local disk before stays that way when the mount table misses its network mount', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-sticky-'));
+  try {
+    // The network mount is not attached yet: the table shows only the local disk under it.
+    const early = 'overlay / overlay rw 0 0';
+    assert.equal(runtimeRoot(root, {}, early), join(root, 'profiles', 'runtime'));
+    assert.equal(profileDataRoot(root, {}, early), join(root, 'profiles', '.profile-data'));
+
+    await mkdir(join(root, 'profiles', '.runtime-pack'), { recursive: true });
+    await writeFile(join(root, 'profiles', '.runtime-pack', 'runtime-pack.json'), '{}', 'utf8');
+    assert.equal(runtimeRoot(root, {}, early), join(tmpdir(), 'sillytavern-manager-runtime'), 'SillyTavern is put back from its pack, not fetched again into the data directory');
+    assert.equal(profileDataRoot(root, {}, early), join(root, 'profiles', '.profile-data'), 'a runtime pack alone says nothing about the profiles');
+
+    await mkdir(join(root, 'profiles', '.profile-store'), { recursive: true });
+    await writeFile(join(root, 'profiles', '.profile-store', 'head.json'), '{}', 'utf8');
+    assert.equal(profileDataRoot(root, {}, early, '/tmp'), join('/tmp', 'sillytavern-manager-profiles'), 'the profiles come back from the vault, not from an empty tree');
+
+    // The overrides still win.
+    assert.equal(runtimeRoot(root, { STM_RUNTIME_DIR: '/srv/runtime' }, early), resolve('/srv/runtime'));
+    assert.equal(profileDataRoot(root, { STM_PROFILE_DATA_DIR: '/srv/profiles' }, early), resolve('/srv/profiles'));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

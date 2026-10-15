@@ -1171,6 +1171,7 @@
       "inMemory": "Files here are kept in memory ({signal}): they share the {memory} this manager may use with the programs",
       "onDisk": "Files here are on disk, with {disk} free; {memory} of memory",
       "notDurable": "{path} is on {filesystem}, which this machine does not keep across a restart; connect Cloudflare R2 so backups are held somewhere else",
+      "stillLocal": "{path} does not look like network storage right now, but SillyTavern and the profiles have been worked on from this machine's disk before, so they still are",
       "notVerified": "This manager cannot tell whether {path} survives a restart here, so treat it as storage that may be temporary; connect Cloudflare R2 so backups are held somewhere else"
     },
     "cloudflare": {
