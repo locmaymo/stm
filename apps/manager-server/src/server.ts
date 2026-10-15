@@ -22,6 +22,7 @@ import { ProcessSupervisor } from './supervisor.js';
 import { AccessGateway } from './gateway.js';
 import { ACCESS_GATEWAY_PORT, checkSillyTavernPort, findFreePort, isPortFree, MANAGER_PORT, PortError, portWasDemanded, resolveAccessPort, resolveConsolePort, SILLYTAVERN_PORT, type ResolvedPort } from './ports.js';
 import { previewImage, previewLogo, previewManifest } from './preview.js';
+import { LargeProfileLazyLoad } from './lazy-characters.js';
 import { TunnelManager } from '../../../packages/tunnel/src/index.js';
 import { isWaitingProfile, ProfileError, ProfileStore } from '../../../packages/profiles/src/index.js';
 import { BackupError, BackupStore, MAX_ZIP_DIRECTORY_BYTES, type RestoreOptions } from '../../../packages/backup/src/index.js';
@@ -403,6 +404,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   // by the console that started them; see cloudflare-handoff.ts.
   const handoffs = new HandoffStore();
   const config = options.config ?? new ConfigStore({ managedPort: () => sillyTavernPort, logger: (line) => { jobs.append('manager', line); baseLogger(line); } });
+  const lazyCharacters = new LargeProfileLazyLoad({ file: join(paths.state, 'lazy-characters.json'), config, userRoot: userDataRoot, logger });
   // Where the console binds, which is also which addresses its ports have to be
   // free on. Read here rather than at `listen` below, because everything from
   // the gateway's frame policy to SillyTavern's port is settled against a
@@ -521,6 +523,11 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
           } catch (error: unknown) {
             if (!(error instanceof ConfigError) || error.code !== 'config_missing') throw error;
           }
+          // A convenience, so it never stands between the profile and starting.
+          await lazyCharacters.apply(profile, installation).catch((error: unknown) => {
+            if (error instanceof ConfigError && error.code === 'config_missing') return;
+            logger(`[config] lazy loading of characters could not be looked at: ${error instanceof Error ? error.message : 'unknown error'}`);
+          });
         }
         // Preparing a legacy runtime rewrites the whole user directory, so no
         // backup may be reading it while this runs.

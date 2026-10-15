@@ -900,6 +900,7 @@
     },
     "config": {
       "updated": "Đã cập nhật {path}",
+      "lazyLoadLarge": "Đã bật tải nhân vật theo nhu cầu (lazy load) cho {name}: hồ sơ có {count} thẻ nhân vật ({size}); có thể tắt trong bảng điều khiển và sẽ không tự bật lại",
       "managedDefaults": "Đã đưa các thiết lập do trình quản lý giữ trong {path} về mặc định",
       "restoredDefaults": "Đã khôi phục {path} về mặc định của bản {ref}",
       "portAdoptFailed": "Không chuyển được SillyTavern sang cổng {port} vừa khôi phục: {reason}",
