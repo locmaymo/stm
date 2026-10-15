@@ -900,6 +900,7 @@
     },
     "config": {
       "updated": "Updated {path}",
+      "lazyLoadLarge": "Turned on lazy loading of characters for {name}: it has {count} character cards ({size}); it can be turned off in the console and stays off",
       "managedDefaults": "Returned the managed settings in {path} to their defaults",
       "restoredDefaults": "Restored {path} to the defaults shipped with {ref}",
       "portAdoptFailed": "SillyTavern could not be moved onto the restored port {port}: {reason}",
