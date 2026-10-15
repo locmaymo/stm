@@ -18,9 +18,13 @@ Cloudflare only redirects to an address registered on the OAuth client, matched
 exactly, while a manager can be open on any port or host: this machine, the LAN, a
 tunnel, a hosted workspace. So one address is registered, this page, and it forwards.
 
-It forwards on its own only to loopback, private-network, `.local`,
-and `*.trycloudflare.com` hosts. Any other address - hosting platforms included, since none of them is trusted by name - is shown with a
-**Continue** button, so the page cannot be used as a silent redirect to another site.
+It forwards on its own only to loopback, private-network and `.local` hosts. Any
+other address - tunnels and hosting platforms included, since anyone can get a name
+there - is shown with a **Continue** button, so the page cannot be used as a silent
+redirect to another site. The page names no provider and carries a footer linking
+to the project and this repository: a page that forwards sign-in codes to public
+addresses, or that shows a third party's name on a domain that is not theirs, is
+what browsers' phishing checks look for.
 The authorization code is useless without the PKCE verifier, which never leaves the
 manager.
 

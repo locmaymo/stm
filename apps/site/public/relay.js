@@ -1,23 +1,24 @@
 /**
- * Sends the browser from Cloudflare's sign-in back to the SillyTavern Manager it
+ * Sends the browser from an OAuth sign-in back to the SillyTavern Manager it
  * started from.
  *
- * Cloudflare only returns to a redirect registered on the OAuth client, matched
- * exactly, and a manager can be open on any address: this machine, the LAN, a
- * tunnel, a hosted workspace. So the registered redirect is this page, and the manager
- * puts its own origin in `state`. Nothing here is secret or stored: the
- * authorization code is useless without the PKCE verifier the manager kept.
+ * The OAuth provider only returns to a redirect registered on its client,
+ * matched exactly, and a manager can be open on any address: this machine, the
+ * LAN, a tunnel, a hosted workspace. So the registered redirect is this page, and
+ * the manager puts its own origin in `state`. Nothing here is secret or stored:
+ * the authorization code is useless without the PKCE verifier the manager kept.
  *
  * Because it forwards to an address it is handed, it only does so on its own for
- * the places a manager usually runs. Anywhere else it shows the address and waits
- * for a click, so it cannot be used as a silent redirect to another site.
+ * addresses that can only be the reader's own machine or network: loopback and
+ * private ranges. Anywhere else it shows the address and waits for a click, so
+ * it cannot be used as a silent redirect to another site.
  *
- * Those places are all addresses that reach one particular machine: this one,
- * something on the same network, or a tunnel named for the manager at the end
- * of it. Shared hosting is deliberately not among them - a whole provider's
- * domain admits every tenant on it, so forwarding there on sight would hand
- * anyone who rents a subdomain a redirect out of this page. Managers hosted
- * that way are one click away instead, which is the price of not being one.
+ * Public names are never among them, tunnels included. A tunnel service's
+ * domain admits anyone who starts a tunnel, and shared hosting admits every
+ * tenant, so forwarding there on sight would hand a stranger a redirect out of
+ * this page - and a page that silently sends sign-in codes to public addresses
+ * is what a phishing page looks like to the browsers' safety checks. Managers
+ * reached that way are one click away instead.
  */
 
 export const CALLBACK_PATH = '/oauth/cloudflare/callback';
@@ -45,7 +46,6 @@ export function originFromState(state) {
 export function isUsualManagerHost(hostname) {
   const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
   if (host === 'localhost' || host.endsWith('.localhost') || host === '::1' || host.endsWith('.local')) return true;
-  if (host.endsWith('.trycloudflare.com')) return true;
   const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
   if (!ipv4) return false;
   const [a, b] = [Number(ipv4[1]), Number(ipv4[2])];
@@ -57,7 +57,7 @@ export function isUsualManagerHost(hostname) {
 }
 
 /**
- * Where to send the browser, decided from the query Cloudflare returned with.
+ * Where to send the browser, decided from the query the provider returned with.
  *
  * @returns {{ kind: 'invalid' } | { kind: 'forward', url: string, host: string, automatic: boolean }}
  */
@@ -95,7 +95,13 @@ export function run(window, document) {
   show(document, 'confirm', true);
   const destination = document.getElementById('destination');
   if (destination) destination.textContent = decision.host;
-  document.getElementById('continue')?.addEventListener('click', () => window.location.replace(decision.url));
+  // After the click the manager may take a few seconds to answer; say that it
+  // is on its way rather than leave a card whose button still looks pressable.
+  document.getElementById('continue')?.addEventListener('click', () => {
+    show(document, 'confirm', false);
+    show(document, 'working', true);
+    window.location.replace(decision.url);
+  });
 }
 
 if (typeof window !== 'undefined' && typeof document !== 'undefined') run(window, document);
