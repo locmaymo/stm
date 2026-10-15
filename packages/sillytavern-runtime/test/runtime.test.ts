@@ -2,10 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { deflateRawSync } from 'node:zlib';
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer as createNetServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { getPlatformPaths } from '../../platform/src/index.js';
 import { RuntimeError, RuntimeManager, extractZipSafely, gitFetchAttempts, npmInvocation } from '../src/index.js';
@@ -493,4 +493,131 @@ test('work run before the download can say what it is doing', async () => {
   await queued.promise;
   assert.equal(ran, true);
   assert.ok(steps.includes('4:install.safetyCopy'), `expected the reported step, saw ${steps.join(', ')}`);
+});
+
+async function sourceRepository(root: string): Promise<string> {
+  const repository = join(root, 'source');
+  await exec('git', ['init', repository]);
+  await exec('git', ['-C', repository, 'config', 'user.email', 'stm@test.local']);
+  await exec('git', ['-C', repository, 'config', 'user.name', 'STM Test']);
+  await writeFile(join(repository, 'package.json'), '{"name":"sillytavern","scripts":{"start":"node server.js"}}', 'utf8');
+  await writeFile(join(repository, 'server.js'), 'module.exports = "kept";\n', 'utf8');
+  await exec('git', ['-C', repository, 'add', '.']);
+  await exec('git', ['-C', repository, 'commit', '-m', 'kept']);
+  await exec('git', ['-C', repository, 'tag', '1.0.0']);
+  return repository;
+}
+
+/**
+ * An installation made with the runtime in the data directory, and the paths
+ * of the same manager once the runtime has a place of its own - what happens
+ * when the data directory turns out to be network storage.
+ */
+async function installedInDataDirectory(root: string) {
+  const repository = await sourceRepository(root);
+  const env = { STM_DATA_DIR: join(root, 'manager') };
+  const before = getPlatformPaths({ platform: 'linux', env, mountTable: null });
+  const first = new RuntimeManager({ paths: before, useGit: true, repositoryUrl: repository, installDependencies: async () => undefined, healthCheck: async () => undefined });
+  const installation = await first.install('1.0.0');
+  await first.settled();
+  const after = getPlatformPaths({ platform: 'linux', env: { ...env, STM_RUNTIME_DIR: join(root, 'local-disk', 'runtime') }, mountTable: null });
+  return { repository, before, after, installation };
+}
+
+test('a runtime kept in the data directory moves to its own place, and leaves a packed copy behind', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-runtime-move-'));
+  t.after(async () => { await rm(root, { recursive: true, force: true }); });
+  const { repository, before, after, installation } = await installedInDataDirectory(root);
+  assert.equal(installation.runtimePath, join(before.profiles, 'runtime'));
+  assert.equal(await stat(join(before.profiles, '.runtime-pack')).then(() => true, () => false), false, 'a runtime in the data directory needs no packed copy');
+
+  const lines: string[] = [];
+  const runtime = new RuntimeManager({ paths: after, useGit: true, repositoryUrl: repository, installDependencies: async () => undefined, healthCheck: async () => undefined, logger: (line) => lines.push(logLineText(line)) });
+  const moved = await runtime.migrateLegacyInstallation(installation);
+  await runtime.settled();
+
+  assert.equal(moved.runtimePath, after.runtime);
+  assert.equal(moved.revision, installation.revision);
+  assert.equal((await readFile(join(moved.runtimePath, 'server.js'), 'utf8')).replaceAll('\r\n', '\n'), 'module.exports = "kept";\n');
+  assert.equal((await runtime.getActiveInstallation())?.runtimePath, after.runtime);
+  assert.equal(await stat(installation.runtimePath).then(() => true, () => false), false, 'the old copy in the data directory is gone');
+  const packed = await readdir(join(after.profiles, '.runtime-pack'));
+  assert.ok(packed.includes('runtime-pack.json'));
+  assert.equal(packed.filter((name) => name.startsWith('runtime-') && name.includes('.tar.')).length, 1);
+  assert.ok(lines.some((line) => line.includes('onto this machine\'s disk')), 'the move is logged');
+});
+
+test('a machine that comes back without its disk gets SillyTavern back from the packed copy, without Git or npm', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-runtime-unpack-'));
+  t.after(async () => { await rm(root, { recursive: true, force: true }); });
+  const { repository, after, installation } = await installedInDataDirectory(root);
+  const mover = new RuntimeManager({ paths: after, useGit: true, repositoryUrl: repository, installDependencies: async () => undefined, healthCheck: async () => undefined });
+  const moved = await mover.migrateLegacyInstallation(installation);
+  await mover.settled();
+
+  // A new machine: the same data directory, an empty disk.
+  await rm(after.runtime, { recursive: true, force: true });
+  const lines: string[] = [];
+  const fresh = new RuntimeManager({
+    paths: after,
+    useGit: true,
+    repositoryUrl: join(root, 'nowhere'),
+    installDependencies: async () => { throw new Error('npm was not supposed to run'); },
+    healthCheck: async () => undefined,
+    logger: (line) => lines.push(logLineText(line)),
+  });
+  const restored = await fresh.migrateLegacyInstallation(moved);
+  assert.deepEqual(restored, moved);
+  assert.equal((await readFile(join(after.runtime, 'server.js'), 'utf8')).replaceAll('\r\n', '\n'), 'module.exports = "kept";\n');
+  assert.ok(lines.some((line) => line.includes('from its packed copy')), lines.join('\n'));
+  assert.equal((await readdir(dirname(after.runtime))).filter((name) => name.includes('.unpack-')).length, 0, 'no unpacking leftovers');
+});
+
+test('without a usable packed copy, SillyTavern is built again from Git at the revision it had', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-runtime-rebuild-'));
+  t.after(async () => { await rm(root, { recursive: true, force: true }); });
+  const { repository, after, installation } = await installedInDataDirectory(root);
+  const mover = new RuntimeManager({ paths: after, useGit: true, repositoryUrl: repository, installDependencies: async () => undefined, healthCheck: async () => undefined });
+  const moved = await mover.migrateLegacyInstallation(installation);
+  await mover.settled();
+
+  await rm(after.runtime, { recursive: true, force: true });
+  await rm(join(after.profiles, '.runtime-pack'), { recursive: true, force: true });
+  let installs = 0;
+  const lines: string[] = [];
+  const fresh = new RuntimeManager({ paths: after, useGit: true, repositoryUrl: repository, installDependencies: async () => { installs += 1; }, healthCheck: async () => undefined, logger: (line) => lines.push(logLineText(line)) });
+  const rebuilt = await fresh.migrateLegacyInstallation(moved);
+  await fresh.settled();
+
+  assert.equal(rebuilt.revision, moved.revision);
+  assert.equal(installs, 1);
+  assert.equal((await readFile(join(after.runtime, 'server.js'), 'utf8')).replaceAll('\r\n', '\n'), 'module.exports = "kept";\n');
+  assert.ok(lines.some((line) => line.includes('built 1.0.0 again')), lines.join('\n'));
+  assert.ok((await readdir(join(after.profiles, '.runtime-pack'))).includes('runtime-pack.json'), 'a new packed copy is kept');
+});
+
+test('a runtime whose public folder still holds a profile is not moved', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-runtime-legacy-'));
+  t.after(async () => { await rm(root, { recursive: true, force: true }); });
+  const { repository, after, installation } = await installedInDataDirectory(root);
+  await mkdir(join(installation.runtimePath, 'public', 'characters'), { recursive: true });
+  const runtime = new RuntimeManager({ paths: after, useGit: true, repositoryUrl: repository, installDependencies: async () => undefined, healthCheck: async () => undefined });
+  const kept = await runtime.migrateLegacyInstallation(installation);
+  await runtime.settled();
+  assert.deepEqual(kept, installation);
+  assert.equal(await stat(join(installation.runtimePath, 'public', 'characters')).then(() => true, () => false), true);
+  assert.equal(await stat(after.runtime).then(() => true, () => false), false);
+});
+
+test('removing SillyTavern takes the runtime on the local disk and its packed copy', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-runtime-remove-'));
+  t.after(async () => { await rm(root, { recursive: true, force: true }); });
+  const { repository, after, installation } = await installedInDataDirectory(root);
+  const runtime = new RuntimeManager({ paths: after, useGit: true, repositoryUrl: repository, installDependencies: async () => undefined, healthCheck: async () => undefined });
+  await runtime.migrateLegacyInstallation(installation);
+  await runtime.settled();
+
+  await runtime.removeInstallations();
+  assert.equal(await stat(after.runtime).then(() => true, () => false), false);
+  assert.deepEqual((await readdir(join(after.profiles, '.runtime-pack'))).filter((name) => name.startsWith('runtime-')), []);
 });

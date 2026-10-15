@@ -20,6 +20,8 @@ import {
   type VersionSelector,
 } from '../../contracts/src/index.js';
 import type { PlatformPaths } from '../../platform/src/index.js';
+import { removeTreeGently } from '../../platform/src/remove.js';
+import { readRuntimePack, removeRuntimePack, unpackRuntime, writeRuntimePack } from './pack.js';
 
 const REPOSITORY = 'SillyTavern/SillyTavern';
 const INSTALLATIONS_FILE = 'installations.json';
@@ -116,6 +118,12 @@ export class RuntimeManager {
   private versionsCache: { expiresAt: number; options: VersionOption[] } | null = null;
   private writeQueue: Promise<void> = Promise.resolve();
   private inFlightId: string | null = null;
+  /**
+   * Where a packed copy of the runtime is kept, or null when the runtime is
+   * already in the data directory and needs none. See `pack.ts`.
+   */
+  private readonly packDirectory: string | null;
+  private background: Promise<void> = Promise.resolve();
 
   public constructor(options: RuntimeManagerOptions) {
     this.paths = options.paths;
@@ -132,6 +140,7 @@ export class RuntimeManager {
     this.useGit = options.useGit ?? options.fetch === undefined;
     this.gitCommand = options.gitCommand ?? 'git';
     this.repositoryUrl = options.repositoryUrl ?? GIT_REPOSITORY;
+    this.packDirectory = this.useGit && !isInside(this.paths.runtime, this.paths.root) ? join(this.paths.profiles, '.runtime-pack') : null;
     const configured = options.healthCheckPort;
     const healthCheckPort = typeof configured === 'function' ? configured : (): number => configured ?? DEFAULT_SILLYTAVERN_PORT;
     this.healthCheck = options.healthCheck
@@ -280,14 +289,30 @@ export class RuntimeManager {
   }
 
   /**
-   * Move an installation created before the shared Git checkout existed onto
-   * the shared runtime. The old copy is left in place until every validation
-   * step succeeds; callers can remove stale copies afterwards.
+   * Put the active installation where this machine keeps its runtime.
+   *
+   * Three cases arrive here at startup. An installation already in place is
+   * left alone. One whose runtime belongs on this machine's own disk but is
+   * not there - the machine was replaced, and its disk with it - is unpacked
+   * from the copy in the data directory, or built again from Git if there is
+   * no usable copy. And one whose runtime is somewhere else - created before
+   * the shared Git checkout existed, or kept in the data directory before that
+   * directory was found to be network storage - is checked out afresh in the
+   * right place. The old copy is left in place until every step succeeds.
    */
   public async migrateLegacyInstallation(installation: Installation): Promise<Installation> {
-    if (!this.useGit || resolve(installation.runtimePath) === resolve(this.runtimePathFor(installation.id))) return installation;
-    if (installation.status !== 'ready') return installation;
+    if (!this.useGit || installation.status !== 'ready') return installation;
     const runtimePath = this.runtimePathFor(installation.id);
+    if (resolve(installation.runtimePath) === resolve(runtimePath)) return this.ensureOnDisk(installation);
+    const previousPath = resolve(installation.runtimePath);
+    const leavingDataDirectory = previousPath === resolve(this.paths.profiles, 'runtime');
+    // A runtime that still holds a profile in its public folder is where that
+    // profile lives, so it stays where it is until the profile has moved out.
+    if (leavingDataDirectory && await holdsLegacyUserData(join(previousPath, 'public'))) {
+      this.logger('[installer] SillyTavern stays in the data directory: a profile still keeps its data inside it');
+      return installation;
+    }
+    const started = Date.now();
     const markerPath = join(runtimePath, MARKER_FILE);
     await mkdir(runtimePath, { recursive: true });
     await rm(markerPath, { force: true });
@@ -305,8 +330,99 @@ export class RuntimeManager {
     await this.writeMarker(migrated);
     await this.upsert(migrated);
     await this.writeActiveInstallation(migrated.id);
-    this.logger(logEvent('installer.migratedToSharedCheckout', `[installer] migrated ${installation.resolvedRef} to the shared Git checkout`, { ref: installation.resolvedRef }));
+    if (leavingDataDirectory) {
+      this.logger(logEvent('installer.movedToLocalDisk', `[installer] moved ${installation.resolvedRef} out of the data directory onto this machine's disk in ${seconds(started)}s`, { ref: installation.resolvedRef, seconds: seconds(started) }));
+      // Twenty thousand files on network storage take minutes to delete, and
+      // nothing is waiting for them to go.
+      this.later(async () => {
+        await removeTreeGently(previousPath);
+        this.logger(logEvent('installer.oldRuntimeRemoved', '[installer] removed the old copy of SillyTavern from the data directory'));
+      });
+    } else {
+      this.logger(logEvent('installer.migratedToSharedCheckout', `[installer] migrated ${installation.resolvedRef} to the shared Git checkout`, { ref: installation.resolvedRef }));
+    }
+    this.savePack(migrated);
     return migrated;
+  }
+
+  /**
+   * Make sure the runtime of `installation` is on this machine's disk.
+   *
+   * Only where the runtime is kept outside the data directory: anywhere else a
+   * missing runtime is a fault to report, not a machine to refill.
+   */
+  private async ensureOnDisk(installation: Installation): Promise<Installation> {
+    if (!this.packDirectory || await pathExists(installation.markerPath)) return installation;
+    const started = Date.now();
+    const record = await readRuntimePack(this.packDirectory);
+    if (record && record.installationId === installation.id && record.revision === (installation.revision ?? null)) {
+      try {
+        await unpackRuntime(this.packDirectory, record, installation.runtimePath);
+        await assertInstallationMarker(installation);
+        this.logger(logEvent('installer.runtimeRestored', `[installer] put SillyTavern back on this machine's disk from its packed copy in ${seconds(started)}s`, { seconds: seconds(started) }));
+        return installation;
+      } catch (error: unknown) {
+        const reason = error instanceof Error ? error.message : 'unknown error';
+        this.logger(logEvent('installer.runtimeRestoreFailed', `[installer] the packed copy of SillyTavern could not be used, so it is being built again: ${reason}`, { reason }));
+      }
+    }
+    const runtimePath = installation.runtimePath;
+    // Whatever is there without a Git checkout in it is a half-finished unpack
+    // or something nobody asked for; either way it is in the runtime's place.
+    if (!await pathExists(join(runtimePath, '.git')) && this.ownsRuntimeRoot(resolve(runtimePath))) await rm(runtimePath, { recursive: true, force: true });
+    await mkdir(runtimePath, { recursive: true });
+    const revision = await this.prepareGitCheckout(runtimePath, installation.resolvedRef, this.logger, installation.revision);
+    await this.installDependenciesIfNeeded(runtimePath, this.logger);
+    await this.healthCheck(runtimePath, this.logger);
+    const rebuilt = { ...installation, revision, updatedAt: this.now().toISOString() } satisfies Installation;
+    await this.writeMarker(rebuilt);
+    await this.upsert(rebuilt);
+    this.logger(logEvent('installer.runtimeRebuilt', `[installer] built ${installation.resolvedRef} again on this machine's disk in ${seconds(started)}s`, { ref: installation.resolvedRef, seconds: seconds(started) }));
+    this.savePack(rebuilt);
+    return rebuilt;
+  }
+
+  /**
+   * Keep a packed copy of `installation`'s runtime in the data directory, in
+   * the background: it takes a while and nothing has to wait for it.
+   */
+  private savePack(installation: Installation): void {
+    const directory = this.packDirectory;
+    if (!directory) return;
+    this.later(async () => {
+      const started = Date.now();
+      try {
+        const identity = { installationId: installation.id, revision: installation.revision ?? null };
+        const record = await writeRuntimePack(installation.runtimePath, directory, identity, this.now);
+        // An install that started while this was packing has changed the
+        // checkout under it, and its own pack is queued behind this one.
+        const active = await this.getActiveInstallation();
+        if (active?.id !== installation.id || (active.revision ?? null) !== identity.revision) return;
+        this.logger(logEvent('installer.runtimeSaved', `[installer] kept a packed copy of SillyTavern in the data directory (${formatMegabytes(record.bytes)}) in ${seconds(started)}s`, { size: formatMegabytes(record.bytes), seconds: seconds(started) }));
+      } catch (error: unknown) {
+        const reason = error instanceof Error ? error.message : 'unknown error';
+        this.logger(logEvent('installer.runtimeSaveFailed', `[installer] no packed copy of SillyTavern could be kept: ${reason}`, { reason }));
+      }
+    });
+  }
+
+  /** Queue work that nothing waits for; see `settled`. */
+  private later(task: () => Promise<void>): void {
+    this.background = this.background.then(task).catch((error: unknown) => {
+      this.logger(`[installer] background work failed: ${error instanceof Error ? error.message : 'unknown error'}`);
+    });
+  }
+
+  /** Resolves once the background work queued so far is done. */
+  public async settled(): Promise<void> {
+    await this.background;
+  }
+
+  /** Whether `root` is a runtime this manager put there, and so may delete. */
+  private ownsRuntimeRoot(root: string): boolean {
+    if (root === resolve(this.paths.runtime)) return true;
+    const base = resolve(this.paths.profiles);
+    return root !== base && (root.startsWith(`${base}/`) || root.startsWith(`${base}\\`));
   }
 
   /** Remove pre-shared-checkout runtime copies after their data has been rebound. */
@@ -348,13 +464,12 @@ export class RuntimeManager {
     }
     roots.add(resolve(this.runtimePathFor(installations[0]?.id ?? 'runtime')));
     for (const root of roots) {
-      // Never step outside the profiles tree, whatever a record claims its
-      // runtime path was.
-      const base = resolve(this.paths.profiles);
-      if (root !== base && !root.startsWith(`${base}/`) && !root.startsWith(`${base}\\`)) continue;
-      if (root === base) continue;
+      // Never step outside the runtime's own place, whatever a record claims
+      // its runtime path was.
+      if (!this.ownsRuntimeRoot(root)) continue;
       await rm(root, { recursive: true, force: true });
     }
+    if (this.packDirectory) await removeRuntimePack(this.packDirectory);
     await this.writeInstallations([]);
     await rm(join(this.paths.state, ACTIVE_FILE), { force: true });
     this.versionsCache = null;
@@ -370,7 +485,11 @@ export class RuntimeManager {
       await this.installDependenciesIfNeeded(installation.runtimePath, this.logger);
       await this.healthCheck(installation.runtimePath, this.logger);
       await this.writeMarker(installation);
-    } else await assertInstallationMarker(installation);
+      await this.writeActiveInstallation(id);
+      this.savePack(installation);
+      return installation;
+    }
+    await assertInstallationMarker(installation);
     await this.writeActiveInstallation(id);
     return installation;
   }
@@ -473,6 +592,7 @@ export class RuntimeManager {
       await this.upsert(activated);
       await this.writeActiveInstallation(id);
       this.logger(logEvent('installer.ready', `[installer:${id}] installation ${resolved.ref} is ready`, { ref: resolved.ref }));
+      if (this.useGit) this.savePack(activated);
       return activated;
     } catch (error: unknown) {
       /*
@@ -520,9 +640,8 @@ export class RuntimeManager {
     const record = await this.getInstallation(id);
     const now = this.now().toISOString();
     if (!previous && checkoutChanged) {
-      const base = resolve(this.paths.profiles);
       const root = resolve(this.runtimePathFor(id));
-      if (root !== base && (root.startsWith(base + '/') || root.startsWith(base + '\\'))) {
+      if (this.ownsRuntimeRoot(root)) {
         await rm(root, { recursive: true, force: true });
         this.logger(logEvent('installer.canceledCleanup', `[installer:${id}] the stopped installation was removed`, { id }));
       }
@@ -539,7 +658,7 @@ export class RuntimeManager {
   }
 
   private runtimePathFor(id: string): string {
-    return this.useGit ? join(this.paths.profiles, 'runtime') : join(this.paths.profiles, id, 'runtime');
+    return this.useGit ? this.paths.runtime : join(this.paths.profiles, id, 'runtime');
   }
 
   private async installDependenciesIfNeeded(runtimePath: string, onLine: (line: string) => void, signal?: AbortSignal): Promise<void> {
@@ -589,6 +708,14 @@ export class RuntimeManager {
     const moving = ref === 'release' || ref === 'staging';
     const localRef = `refs/stm/${moving ? 'heads' : 'tags'}/${ref}`;
     let revision = pinnedRevision;
+    // A pinned revision is only as good as the checkout holding it. One built
+    // again on an empty disk has none, so the revision is fetched by itself,
+    // and when the remote will not hand it over the ref is fetched instead.
+    if (revision && !await hasCommit(this.gitCommand, runtimePath, revision)) {
+      onLine(`Fetching ${revision.slice(0, 12)}`);
+      await runGit(this.gitCommand, ['-C', runtimePath, 'fetch', '--depth=1', '--no-tags', 'origin', revision], onLine).catch(() => undefined);
+      if (!await hasCommit(this.gitCommand, runtimePath, revision)) revision = undefined;
+    }
     if (!revision && !moving) revision = await runGit(this.gitCommand, ['-C', runtimePath, 'rev-parse', '--verify', `${localRef}^{commit}`], () => undefined).then((value) => value.trim()).catch(() => undefined);
     if (!revision) {
       onLine(`Fetching ${ref}`);
@@ -1056,6 +1183,37 @@ async function dependencyFingerprint(runtimePath: string): Promise<string> {
 
 async function pathExists(path: string): Promise<boolean> {
   try { await stat(path); return true; } catch (error: unknown) { return isFileNotFound(error) ? false : Promise.reject(error); }
+}
+
+async function hasCommit(gitCommand: string, runtimePath: string, revision: string): Promise<boolean> {
+  return runGit(gitCommand, ['-C', runtimePath, 'cat-file', '-e', `${revision}^{commit}`], () => undefined).then(() => true, () => false);
+}
+
+/** Whether `path` is `parent` or somewhere inside it. */
+function isInside(path: string, parent: string): boolean {
+  const child = resolve(path);
+  const base = resolve(parent);
+  return child === base || child.startsWith(`${base}/`) || child.startsWith(`${base}\\`);
+}
+
+/**
+ * Whether a runtime's public folder still holds somebody's data, as it did
+ * before SillyTavern took a data root of its own. The same names the profile
+ * store looks for when it moves such a profile out.
+ */
+async function holdsLegacyUserData(publicPath: string): Promise<boolean> {
+  for (const name of ['settings.json', 'chats', 'characters', 'groups', 'group chats', 'worlds', 'backgrounds', 'User Avatars']) {
+    if (await pathExists(join(publicPath, name))) return true;
+  }
+  return false;
+}
+
+function seconds(started: number): string {
+  return ((Date.now() - started) / 1000).toFixed(1);
+}
+
+function formatMegabytes(bytes: number): string {
+  return `${(bytes / (1024 * 1024)).toFixed(0)} MB`;
 }
 
 export async function assertInstallationMarker(installation: Installation): Promise<void> {

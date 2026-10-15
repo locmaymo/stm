@@ -1678,6 +1678,12 @@ async function handleReset(context: RequestContext, deps: ResetDeps): Promise<vo
   await managerTunnel.disable();
   await backups.settle();
   await profiles.settle();
+  // SillyTavern lives outside the data directory when that directory is on
+  // network storage, and the wipe below would leave it behind.
+  const runtimeOutside = relative(store.paths.root, store.paths.runtime);
+  if (runtimeOutside.startsWith('..') || resolve(store.paths.runtime) === resolve(runtimeOutside)) {
+    await runtime.removeInstallations().catch((error: unknown) => logger(`[manager] SillyTavern could not be removed: ${error instanceof Error ? error.message : 'unknown error'}`));
+  }
   const report = await eraseManagerData(store.paths, logger);
   await Promise.all([store.forget(), runtime.forget(), profiles.forget(), backups.forget()]);
   // A machine that has just been wiped is a machine nobody has set up, and
