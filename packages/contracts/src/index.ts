@@ -1214,27 +1214,54 @@ export type AccessLinkKind = 'fixed' | 'tunnel';
  *
  * A setting of the reader's, so it travels with the rest of the manager's
  * settings to the bucket and back.
+ *
+ * Unless the reader has said otherwise, SillyTavern's door puts the tunnel's
+ * own address first: every request through the fixed one takes a turn through
+ * the Worker, and loading SillyTavern is hundreds of requests, so it opens and
+ * switches characters noticeably slower. The console's own door keeps the
+ * fixed one first - it loads a handful of files, so the Worker costs it
+ * nothing anybody notices, and an address that survives a restart is worth
+ * more there. Either way the other is a choice away; see `DEFAULT_ACCESS_LINKS`.
  */
 export interface AccessLinkPreference {
   readonly preferred: AccessLinkKind;
   readonly showFixed: boolean;
+  /**
+   * Whether `preferred` was picked by the reader rather than filled in.
+   *
+   * Managers before this wrote the default out in full, and the default was
+   * `fixed` for both doors: a stored `fixed` from then is no choice at all,
+   * while a stored `tunnel` can only have been picked. Absent on such a record,
+   * and always written since.
+   */
+  readonly chosen?: boolean;
 }
 
 export type AccessLinkPreferences = Readonly<Record<AccessLinkTarget, AccessLinkPreference>>;
 
-export const DEFAULT_ACCESS_LINK: AccessLinkPreference = { preferred: 'fixed', showFixed: true };
+/** What each door offers first until the reader picks; see `AccessLinkPreference`. */
+export const DEFAULT_ACCESS_LINKS: AccessLinkPreferences = {
+  sillyTavern: { preferred: 'tunnel', showFixed: true, chosen: false },
+  manager: { preferred: 'fixed', showFixed: true, chosen: false },
+};
+
+/** SillyTavern's, for a reader that does not know which door it is looking at. */
+export const DEFAULT_ACCESS_LINK: AccessLinkPreference = DEFAULT_ACCESS_LINKS.sillyTavern;
 
 /** Read preferences back, correcting anything missing or malformed to the default. */
 export function parseAccessLinks(value: unknown): AccessLinkPreferences {
   const record = typeof value === 'object' && value !== null ? value as Record<string, unknown> : {};
-  const one = (entry: unknown): AccessLinkPreference => {
+  const one = (entry: unknown, target: AccessLinkTarget): AccessLinkPreference => {
     const fields = typeof entry === 'object' && entry !== null ? entry as Record<string, unknown> : {};
+    const valid = fields.preferred === 'tunnel' || fields.preferred === 'fixed';
+    const chosen = valid && (fields.chosen === true || (fields.chosen === undefined && fields.preferred === 'tunnel'));
     return {
-      preferred: fields.preferred === 'tunnel' ? 'tunnel' : 'fixed',
+      preferred: chosen ? fields.preferred as AccessLinkKind : DEFAULT_ACCESS_LINKS[target].preferred,
       showFixed: fields.showFixed !== false,
+      chosen,
     };
   };
-  return { sillyTavern: one(record.sillyTavern), manager: one(record.manager) };
+  return { sillyTavern: one(record.sillyTavern, 'sillyTavern'), manager: one(record.manager, 'manager') };
 }
 
 /**

@@ -38,14 +38,14 @@ import { NotificationBell, PushOfferDialog, PushToggle } from './notification-be
 import { answerTermuxOffer, appFeatures, bubbleRequest, hasAppChannel, importZipFromApp, openInApp, type AppFeatures, type BubbleState, type ImportSource } from './app-bridge.js';
 import { BUBBLE_OFFER_KEY, bubbleOfferWanted, offerAccepted, offerDue, offerSnoozed, readOffer, writeOffer } from './offers.js';
 import { collectCloudflareResult, framed, inPhoneApp, openReturnWindow, popupsBlocked, whenAbandoned, type CollectedResult } from './oauth.js';
-import type { AccessGatewayState, AccessLinkPreference, AccessLinkTarget, BackupManifest, CloudflareAccountProblem, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LegalReview, LogEntry, LogSourceFilter, ManagerRelease, ManagerSettingsOffer, ManagerUpdateStatus, NotificationSummary, OnlineState, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, SaverState, SetupChecklistState, SetupStep, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, AccessLinkKind, AccessLinkPreference, AccessLinkTarget, BackupManifest, CloudflareAccountProblem, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LegalReview, LogEntry, LogSourceFilter, ManagerRelease, ManagerSettingsOffer, ManagerUpdateStatus, NotificationSummary, OnlineState, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, SaverState, SetupChecklistState, SetupStep, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, isCloudJob, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
 import termuxGuideEn from './assets/termux-guide-en.webp';
 import termuxGuideVi from './assets/termux-guide-vi.webp';
 import { usePoll } from './use-poll.js';
 import { POLL_BACKGROUND_MS, POLL_RELEASE_MS, statusIntervalMs } from './polling.js';
-import { foldForSearch, translateLogEntry, translateStep } from '../../../packages/contracts/src/index.js';
+import { DEFAULT_ACCESS_LINKS, foldForSearch, translateLogEntry, translateStep } from '../../../packages/contracts/src/index.js';
 import { QrCode } from './qr-code.js';
 import { CLOUDFLARE_ORANGE, CloudflareMark } from './cloudflare-mark.js';
 import { bareHost, localHost, machineName, publicAddress, publicLinks, reachableAddresses, shortenHost, type PublicLink, type ReachableAddress } from './addresses.js';
@@ -3711,44 +3711,41 @@ function AddressRow({ t, label, url, display, disabledHint, pending, shorten, li
 /**
  * The code, and every address that reaches this door.
  *
- * The code carries the first address. Where a door has two - a fixed address
- * that never changes and the tunnel's own - both are here, one under the
- * other with "or" between them, each a link with its own copy button: either
- * works, and the reader is entitled to see the second rather than be told
- * about it.
+ * Where a door has two public addresses, the sheet is where the reader picks
+ * which one is the default - the one on the card, behind the Open button and
+ * in this code - and each says in two words what it is good and bad at. The
+ * tunnel's own is the default: it is faster, because nothing stands between
+ * it and the machine. The fixed one never changes, which is what a Home Screen
+ * app and its notifications need, since they belong to the address they were
+ * added from.
  *
- * With both, the reader also chooses between them here: a star on the one to
- * put first everywhere, and a switch that hides the fixed address from the
- * console for somebody who finds the Worker slow. Both are settings of theirs,
- * kept on the manager and in the bucket with the rest.
+ * This replaced a star on each address, an "or" between them and a switch to
+ * hide the fixed one, which together told nobody why they would want either.
  */
 function ShareDialog({ t, open, onOpenChange, label, links, description, choice }: { t: Translate; open: boolean; onOpenChange: (open: boolean) => void; label: string; links: readonly string[]; /** What scanning it opens, when it is not SillyTavern. */ description?: string; choice?: LinkChoice }) {
   const { toast } = useToast();
   const [saving, setSaving] = useState(false);
-  const preference = choice?.tunnel.linkPreference ?? { preferred: 'fixed' as const, showFixed: true };
+  const preference = choice?.tunnel.linkPreference ?? DEFAULT_ACCESS_LINKS[choice?.target ?? 'sillyTavern'];
   const fixedUrl = choice?.tunnel.proxyUrl ?? null;
   const ownUrl = choice?.tunnel.url ?? null;
-  // Both addresses, whether or not the fixed one is hidden: this is where it
-  // is brought back.
-  const rows: Array<{ kind: 'fixed' | 'tunnel'; url: string }> = choice && fixedUrl && ownUrl
-    ? (preference.preferred === 'tunnel' || !preference.showFixed ? [{ kind: 'tunnel' as const, url: ownUrl }, { kind: 'fixed' as const, url: fixedUrl }] : [{ kind: 'fixed' as const, url: fixedUrl }, { kind: 'tunnel' as const, url: ownUrl }])
-    : [];
-  const primary = links[0] ?? '';
-  const change = async (next: Partial<AccessLinkPreference>) => {
-    if (!choice) return;
+  const both = choice && fixedUrl && ownUrl ? { fixed: fixedUrl, tunnel: ownUrl } : null;
+  // A fixed address hidden before this sheet offered a choice reads as not chosen.
+  const preferred: AccessLinkKind = preference.preferred === 'fixed' && preference.showFixed ? 'fixed' : 'tunnel';
+  const primary = both ? both[preferred] : links[0] ?? '';
+  const choose = async (kind: AccessLinkKind) => {
+    if (!choice || kind === preferred) return;
     setSaving(true);
-    try { await choice.onChange(choice.target, next); } finally { setSaving(false); }
+    try { await choice.onChange(choice.target, kind === 'fixed' ? { preferred: 'fixed', showFixed: true } : { preferred: 'tunnel' }); } finally { setSaving(false); }
   };
   const copy = async (url: string) => {
     try { await navigator.clipboard.writeText(url); toast({ title: t('console.linkCopied'), tone: 'success' }); }
     catch { toast({ title: t('console.actionFailed'), tone: 'destructive' }); }
   };
-  // A place with one address - this Wi-Fi, this machine - is laid out the
-  // same way, named by the place, so the three sheets read alike.
-  const plain: Array<{ kind: 'fixed' | 'tunnel' | null; url: string }> = rows.length === 0 ? links.map((url) => ({ kind: null, url })) : rows;
-  // The tunnel's own address is only explained when it is the fallback under
-  // a fixed one that is in use.
-  const fallbackUnderFixed = plain[0]?.kind === 'fixed' && preference.showFixed;
+  const copyButton = (url: string) => <Button variant="ghost" size="icon-sm" aria-label={t('dashboard.copyLink')} title={t('dashboard.copyLink')} onClick={(event) => { event.preventDefault(); void copy(url); }}><Copy /></Button>;
+  const kinds: Record<AccessLinkKind, { readonly name: string; readonly good: string; readonly bad: string }> = {
+    tunnel: { name: t('console.linkTunnel'), good: t('console.linkTunnelGood'), bad: t('console.linkTunnelBad') },
+    fixed: { name: t('console.linkFixed'), good: t('console.linkFixedGood'), bad: t('console.linkFixedBad') },
+  };
   return <Dialog open={open} onOpenChange={onOpenChange}>
     <DialogContent className="share-dialog">
       <DialogHeader>
@@ -3757,39 +3754,43 @@ function ShareDialog({ t, open, onOpenChange, label, links, description, choice 
       </DialogHeader>
       <DialogBody className="share-body">
         <QrCode value={primary} label={`${label}: ${primary}`} />
-        <div className="share-links">
-          {plain.map((row, index) => {
-            const hidden = row.kind === 'fixed' && !preference.showFixed;
-            const preferred = row.kind !== null && !hidden && index === 0;
-            return <div key={row.url} className="share-link-group">
-              {index > 0 ? <div className="share-or" aria-hidden="true"><span>{t('console.linkOr')}</span></div> : null}
-              <div className="share-link" data-hidden={hidden || undefined}>
-                {row.kind ? <button
-                  type="button"
-                  className="share-star"
-                  aria-pressed={preferred}
-                  aria-label={preferred ? t('console.linkPreferred') : t('console.linkPrefer')}
-                  title={preferred ? t('console.linkPreferred') : t('console.linkPrefer')}
-                  disabled={saving || hidden || preferred}
-                  onClick={() => void change({ preferred: row.kind as 'fixed' | 'tunnel' })}
-                ><Star aria-hidden="true" /></button> : null}
-                <div className="share-link-text">
-                  <span className="share-link-kind">
-                    {row.kind === 'fixed' ? t('console.linkFixed') : row.kind === 'tunnel' ? t('console.linkTunnel') : label}
-                    {hidden ? <Badge variant="secondary">{t('console.linkHidden')}</Badge> : preferred ? <Badge variant="secondary" className="bg-(--success-background) text-(--success)">{t('console.linkPreferred')}</Badge> : null}
-                  </span>
-                  <a className="share-url" href={row.url} target="_blank" rel="noopener noreferrer">{row.url}</a>
-                  {row.kind === 'tunnel' && index > 0 && fallbackUnderFixed ? <span className="share-link-hint">{t('console.linkTunnelHint')}</span> : null}
-                </div>
-                <Button variant="ghost" size="icon-sm" aria-label={t('dashboard.copyLink')} title={t('dashboard.copyLink')} onClick={() => void copy(row.url)}><Copy /></Button>
+        {both
+          ? <>
+            <RadioGroup className="share-choices" value={preferred} onValueChange={(value) => void choose(value as AccessLinkKind)} disabled={saving} aria-label={t('console.linkDefaultLabel')}>
+              {(['tunnel', 'fixed'] as const).map((kind) => {
+                const url = both[kind];
+                const id = `share-${choice?.target ?? 'link'}-${kind}`;
+                return <div key={kind} className="share-choice" data-selected={kind === preferred || undefined}>
+                  <RadioGroupItem id={id} value={kind} />
+                  <div className="share-link-text">
+                    <Label htmlFor={id} className="share-link-kind">
+                      {kinds[kind].name}
+                      {kind === preferred ? <Badge variant="secondary" className="bg-(--success-background) text-(--success)">{t('console.linkDefault')}</Badge> : null}
+                    </Label>
+                    <a className="share-url" href={url} target="_blank" rel="noopener noreferrer">{bareHost(url)}</a>
+                    <span className="share-traits">
+                      <span className="share-trait" data-tone="good"><Check aria-hidden="true" />{kinds[kind].good}</span>
+                      <span className="share-trait" data-tone="bad"><TriangleAlert aria-hidden="true" />{kinds[kind].bad}</span>
+                    </span>
+                    {kind === 'fixed' ? <span className="share-link-hint">{t('console.linkFixedUse')}</span> : null}
+                  </div>
+                  {copyButton(url)}
+                </div>;
+              })}
+            </RadioGroup>
+            <p className="share-note">{t('console.linkDefaultNote')}</p>
+          </>
+          // A place with one address - this Wi-Fi, this machine - is laid out
+          // the same way, named by the place.
+          : <div className="share-choices">
+            {links.map((url) => <div key={url} className="share-choice">
+              <div className="share-link-text">
+                <span className="share-link-kind">{label}</span>
+                <a className="share-url" href={url} target="_blank" rel="noopener noreferrer">{url}</a>
               </div>
-            </div>;
-          })}
-        </div>
-        {rows.length > 0 ? <Label className="share-switch">
-          <span className="font-medium">{t('console.linkShowFixed')}</span>
-          <Switch checked={preference.showFixed} disabled={saving} onCheckedChange={(checked) => void change({ showFixed: checked })} aria-label={t('console.linkShowFixed')} />
-        </Label> : null}
+              {copyButton(url)}
+            </div>)}
+          </div>}
       </DialogBody>
     </DialogContent>
   </Dialog>;

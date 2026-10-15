@@ -795,27 +795,23 @@
    opening the address is done by pressing the address. */
 .share-url { color: var(--muted-foreground); font-size: 12.5px; text-align: center; overflow-wrap: anywhere; font-family: var(--font-mono, ui-monospace, monospace); text-decoration: underline; text-underline-offset: 3px; }
 .share-url:hover, .share-url:focus-visible { color: var(--foreground); }
-/* One line per address, each of them a link. A place can answer on two - a
-   Worker with a fixed name and the tunnel behind it - and both belong here,
-   with "or" between them. */
-.share-links { display: grid; gap: 6px; justify-items: center; width: 100%; }
-.share-link-group { display: grid; gap: 6px; width: 100%; }
-.share-or { display: flex; align-items: center; gap: 10px; color: var(--muted-foreground); font-size: 11.5px; text-transform: lowercase; }
-.share-or::before, .share-or::after { content: ""; flex: 1; height: 1px; background: var(--border); }
-.share-link { display: flex; align-items: flex-start; gap: 8px; width: 100%; }
-.share-link[data-hidden] .share-link-text { opacity: .55; }
-.share-link .share-url { text-align: left; }
 .share-link-text { display: grid; flex: 1; gap: 2px; min-width: 0; }
+.share-link-text .share-url { text-align: left; }
 .share-link-kind { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; }
 .share-link-hint { color: var(--muted-foreground); font-size: 11.5px; line-height: 1.4; }
-.share-star { display: grid; flex: none; place-items: center; width: 28px; height: 28px; min-height: 0; margin-top: 1px; border: 0; border-radius: 8px; background: transparent; color: var(--muted-foreground); cursor: pointer; }
-.share-star:hover:not(:disabled) { background: var(--accent); color: var(--foreground); }
-.share-star:disabled { cursor: default; }
-.share-star svg { width: 16px; height: 16px; }
-.share-star[aria-pressed="true"] { color: #f5a524; }
-.share-star[aria-pressed="true"] svg { fill: currentColor; }
-.share-switch { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; cursor: pointer; }
-.share-actions > * { width: 100%; }
+/* One card per address. Where a place answers on two - the tunnel's own and
+   a Worker with a fixed name - the cards are the choice of which one is the
+   default, and each says what it is good and bad at. */
+.share-choices { display: grid; gap: 8px; width: 100%; }
+.share-choice { display: flex; align-items: flex-start; gap: 10px; width: 100%; padding: 10px 10px 10px 12px; border: 1px solid var(--border); border-radius: 10px; }
+.share-choice > [role="radio"] { margin-top: 2px; }
+.share-choice[data-selected] { border-color: var(--success); background: var(--success-background); }
+.share-traits { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 2px; font-size: 11.5px; }
+.share-trait { display: inline-flex; align-items: center; gap: 4px; }
+.share-trait svg { width: 12px; height: 12px; flex: none; }
+.share-trait[data-tone="good"] { color: var(--success); }
+.share-trait[data-tone="bad"] { color: var(--attention); }
+.share-note { width: 100%; color: var(--muted-foreground); font-size: 11.5px; line-height: 1.4; }
 .qr-code { border-radius: 8px; }
 .qr-quiet-zone { fill: #fff; }
 .qr-modules { fill: #000; }
