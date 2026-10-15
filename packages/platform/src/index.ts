@@ -100,6 +100,11 @@ export interface PlatformPaths {
    * directory is on network storage. See `runtimeRoot`.
    */
   readonly runtime: string;
+  /**
+   * Where the profiles' data roots live: beside the profiles, unless the data
+   * directory is on network storage. See `profileDataRoot`.
+   */
+  readonly profileData: string;
 }
 
 export interface PlatformPathOptions {
@@ -349,6 +354,25 @@ const NETWORK_FILESYSTEMS = new Set(['nfs', 'nfs4', 'cifs', 'smb3', 'smbfs', 'ce
  */
 const LOCAL_FUSE_FILESYSTEMS = new Set(['fuse.fuse-overlayfs', 'fuse.lxcfs']);
 
+/** Where the profile vault keeps its packs, under the profiles directory. */
+export const PROFILE_STORE_DIR = '.profile-store';
+/** Where the packed copy of SillyTavern is kept, under the profiles directory. */
+export const RUNTIME_PACK_DIR = '.runtime-pack';
+
+/**
+ * Whether this data directory has been worked on from a machine's own disk
+ * before: its profiles are in the vault, or SillyTavern is packed beside them.
+ *
+ * Then that is where they live, whatever the mount table says now. The table
+ * is read once, as the manager starts, and a network mount that is still
+ * being attached at that moment is not in it yet: the data directory looks
+ * like the local disk under it, SillyTavern is looked for where it has not
+ * been for a long time, and the profiles where they no longer are.
+ */
+export function workedFromLocalDisk(root: string): boolean {
+  return existsSync(join(root, 'profiles', PROFILE_STORE_DIR, 'head.json')) || existsSync(join(root, 'profiles', RUNTIME_PACK_DIR, 'runtime-pack.json'));
+}
+
 /**
  * Whether the data directory is on storage reached over a network.
  *
@@ -379,8 +403,38 @@ export function onNetworkStorage(dataRoot: string, mountTable?: string | null): 
  */
 export function runtimeRoot(root: string, env: NodeJS.ProcessEnv = process.env, mountTable?: string | null): string {
   if (env.STM_RUNTIME_DIR) return resolve(env.STM_RUNTIME_DIR);
-  if (onNetworkStorage(root, mountTable)) return join(tmpdir(), 'sillytavern-manager-runtime');
+  if (onNetworkStorage(root, mountTable) || workedFromLocalDisk(root)) return join(tmpdir(), 'sillytavern-manager-runtime');
   return join(root, 'profiles', 'runtime');
+}
+
+/**
+ * Where the profiles' data - characters, chats, settings - is read and written.
+ *
+ * Beside the profiles, unless the data directory is on network storage. A
+ * profile is thousands of small files, and SillyTavern reads most of them each
+ * time it is opened, which took minutes there. It is then worked on from this
+ * machine's own disk, and the profile vault keeps the data directory's copy as
+ * one pack plus a journal of what changed. `STM_PROFILE_DATA_DIR` names the
+ * place outright.
+ *
+ * Not when this machine's temporary directory is kept in memory, as many
+ * Linux systems keep /tmp: a profile is gigabytes, and there it would all be
+ * held in RAM. The data directory is slow, but it does not run the machine out
+ * of memory. Once the vault holds the profiles they come back only from its
+ * packs, so from then on they go to the temporary directory whatever it is.
+ */
+export function profileDataRoot(root: string, env: NodeJS.ProcessEnv = process.env, mountTable?: string | null, scratch: string = tmpdir()): string {
+  if (env.STM_PROFILE_DATA_DIR) return resolve(env.STM_PROFILE_DATA_DIR);
+  const besideProfiles = join(root, 'profiles', '.profile-data');
+  const table = mountTable === undefined ? readMountTable() : mountTable;
+  const local = join(scratch, 'sillytavern-manager-profiles');
+  // In the vault, the packs are the only copy: there is no tree beside the
+  // profiles to fall back on, whatever the disks look like now.
+  if (existsSync(join(root, 'profiles', PROFILE_STORE_DIR, 'head.json'))) return local;
+  if (!onNetworkStorage(root, table)) return besideProfiles;
+  const scratchMount = table === null ? null : mountOf(scratch, table);
+  if (scratchMount !== null && MEMORY_FILESYSTEMS.has(scratchMount.filesystem)) return besideProfiles;
+  return local;
 }
 
 export function getPlatformPaths(options: PlatformPathOptions = {}): PlatformPaths {
@@ -392,6 +446,8 @@ export function getPlatformPaths(options: PlatformPathOptions = {}): PlatformPat
     : platform === 'hosted' || platform === 'docker'
       ? join(tmpdir(), 'sillytavern-manager')
       : join(root, 'tmp');
+  // Read once: both questions below are asked of the same mount table.
+  const mountTable = options.mountTable === undefined ? readMountTable() : options.mountTable;
   return {
     platform,
     root,
@@ -403,6 +459,7 @@ export function getPlatformPaths(options: PlatformPathOptions = {}): PlatformPat
     outbox: join(root, 'outbox'),
     tmp: scratchRoot,
     bin: join(root, 'bin'),
-    runtime: runtimeRoot(root, env, options.mountTable),
+    runtime: runtimeRoot(root, env, mountTable),
+    profileData: profileDataRoot(root, env, mountTable),
   };
 }

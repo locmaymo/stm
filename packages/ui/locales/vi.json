@@ -979,6 +979,17 @@
       "legacySyncFailed": "Đồng bộ dữ liệu cũ thất bại: {reason}",
       "deferredCleanupFailed": "Dọn dẹp trì hoãn thất bại cho {path}: {reason}"
     },
+    "vault": {
+      "kept": "Giữ nguyên {files} file hồ sơ đã có sẵn trên ổ đĩa của máy này",
+      "restored": "Đã đưa {files} file hồ sơ trở lại ổ đĩa của máy này trong {seconds} giây",
+      "adopted": "Đã chuyển {files} file hồ sơ từ thư mục dữ liệu sang ổ đĩa của máy này trong {seconds} giây",
+      "legacyRemoved": "Đã xoá bản sao hồ sơ dạng từng file cũ khỏi thư mục dữ liệu",
+      "packed": "Đã ghi toàn bộ {files} file hồ sơ vào thư mục dữ liệu thành một gói ({size}) trong {seconds} giây",
+      "keptEarlier": "Hồ sơ giờ chỉ còn {files} file trong khi gói trước có {earlier}, nên gói đó được giữ lại tại {path} thay vì bị xoá; nó không tự được khôi phục",
+      "keptReleased": "Đã xoá gói {files} file được giữ lại từ trước, {file}",
+      "flushFailed": "Chưa ghi được các thay đổi của hồ sơ vào thư mục dữ liệu: {reason}",
+      "restoreFailed": "Không đưa được hồ sơ trở lại ổ đĩa của máy này, nên sẽ không ghi gì đè lên bản trong thư mục dữ liệu: {reason}"
+    },
     "saver": {
       "onFromEnvironment": "Đã bật chế độ tiết kiệm theo STM_SAVER: không sao lưu cục bộ trên máy này",
       "onByChoice": "Đã bật chế độ tiết kiệm theo lựa chọn trong bảng điều khiển: không sao lưu cục bộ trên máy này",
@@ -1161,6 +1172,7 @@
       "inMemory": "Máy này lưu file trong RAM ({signal}): file dùng chung {memory} với các chương trình",
       "onDisk": "Máy này lưu file trên ổ đĩa, còn trống {disk}; RAM {memory}",
       "notDurable": "{path} nằm trên {filesystem}, máy này không giữ lại sau khi khởi động lại; hãy kết nối Cloudflare R2 để bản sao lưu nằm ở nơi khác",
+      "stillLocal": "{path} lúc này trông không giống ổ mạng, nhưng SillyTavern và hồ sơ đã từng chạy từ ổ đĩa của máy này nên vẫn tiếp tục như vậy",
       "notVerified": "Trình quản lý không thể biết chắc {path} có còn sau khi khởi động lại hay không, nên hãy coi đây là bộ nhớ có thể chỉ là tạm thời; hãy kết nối Cloudflare R2 để bản sao lưu nằm ở nơi khác"
     },
     "cloudflare": {

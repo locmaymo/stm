@@ -1,11 +1,7 @@
-import { spawn, type ChildProcess } from 'node:child_process';
-import { createReadStream, createWriteStream } from 'node:fs';
-import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { basename, dirname, join } from 'node:path';
-import { pipeline } from 'node:stream/promises';
-import type { Transform } from 'node:stream';
-import * as zlib from 'node:zlib';
+import { archiveFormat, packTree, unpackTree, type ArchiveFormat } from '../../platform/src/archive.js';
 
 /**
  * A packed copy of the SillyTavern runtime, kept in the data directory.
@@ -21,39 +17,14 @@ import * as zlib from 'node:zlib';
 const RECORD_FILE = 'runtime-pack.json';
 const PACK_PREFIX = 'runtime-';
 
-export type PackFormat = 'zst' | 'gz';
-
 export interface RuntimePackRecord {
   readonly schemaVersion: 1;
   readonly installationId: string;
   readonly revision: string | null;
   readonly file: string;
-  readonly format: PackFormat;
+  readonly format: ArchiveFormat;
   readonly bytes: number;
   readonly createdAt: string;
-}
-
-interface ZstdZlib {
-  readonly createZstdCompress?: (options?: object) => Transform;
-  readonly createZstdDecompress?: () => Transform;
-}
-
-/** Zstandard where this Node has it, which is faster both ways; gzip otherwise. */
-function preferredFormat(): PackFormat {
-  return typeof (zlib as ZstdZlib).createZstdCompress === 'function' ? 'zst' : 'gz';
-}
-
-function compressor(format: PackFormat): Transform {
-  const zstd = (zlib as ZstdZlib).createZstdCompress;
-  if (format === 'zst' && zstd) return zstd();
-  return zlib.createGzip({ level: 1 });
-}
-
-function decompressor(format: PackFormat): Transform {
-  if (format === 'gz') return zlib.createGunzip();
-  const zstd = (zlib as ZstdZlib).createZstdDecompress;
-  if (!zstd) throw new Error('this Node cannot read a Zstandard archive');
-  return zstd();
 }
 
 /** The record of the pack in `directory`, or null when there is none to trust. */
@@ -69,28 +40,6 @@ export async function readRuntimePack(directory: string): Promise<RuntimePackRec
 }
 
 /**
- * A directory as `tar` should be given it. Forward slashes on Windows, where
- * the tar first on the path may be a POSIX one that reads a backslash as an
- * escape; Windows' own tar takes them as well.
- */
-function tarPath(path: string): string {
-  return process.platform === 'win32' ? path.replace(/\\/gu, '/') : path;
-}
-
-/** Start `tar` with `args`; `done` settles when it exits, rejecting with what it said if it failed. */
-function startTar(args: readonly string[], withInput: boolean): { child: ChildProcess; done: Promise<void> } {
-  const child = spawn('tar', [...args], { stdio: [withInput ? 'pipe' : 'ignore', withInput ? 'ignore' : 'pipe', 'pipe'], windowsHide: true });
-  let errorText = '';
-  child.stderr?.setEncoding('utf8');
-  child.stderr?.on('data', (chunk: string) => { errorText = (errorText + chunk).slice(-2000); });
-  const done = new Promise<void>((resolvePromise, reject) => {
-    child.once('error', reject);
-    child.once('close', (code) => code === 0 ? resolvePromise() : reject(new Error(`tar exited with ${code ?? 'a signal'}${errorText.trim() ? `: ${errorText.trim()}` : ''}`)));
-  });
-  return { child, done };
-}
-
-/**
  * Pack `runtimePath` into `directory`, and point the record at the new pack.
  *
  * The pack is written under a name of its own and only then named in the
@@ -100,18 +49,10 @@ function startTar(args: readonly string[], withInput: boolean): { child: ChildPr
  */
 export async function writeRuntimePack(runtimePath: string, directory: string, identity: { readonly installationId: string; readonly revision: string | null }, now: () => Date = () => new Date()): Promise<RuntimePackRecord> {
   await mkdir(directory, { recursive: true });
-  const format = preferredFormat();
+  const format = archiveFormat();
   const file = `${PACK_PREFIX}${(identity.revision ?? identity.installationId).slice(0, 12)}-${randomBytes(4).toString('hex')}.tar.${format}`;
-  const target = join(directory, file);
-  try {
-    const tar = startTar(['-C', tarPath(runtimePath), '-cf', '-', '.'], false);
-    if (!tar.child.stdout) throw new Error('tar gave no output');
-    await Promise.all([pipeline(tar.child.stdout, compressor(format), createWriteStream(target, { mode: 0o600 })), tar.done]);
-  } catch (error: unknown) {
-    await rm(target, { force: true });
-    throw error;
-  }
-  const record: RuntimePackRecord = { schemaVersion: 1, installationId: identity.installationId, revision: identity.revision, file, format, bytes: (await stat(target)).size, createdAt: now().toISOString() };
+  const bytes = await packTree(runtimePath, join(directory, file), format);
+  const record: RuntimePackRecord = { schemaVersion: 1, installationId: identity.installationId, revision: identity.revision, file, format, bytes, createdAt: now().toISOString() };
   const recordPath = join(directory, RECORD_FILE);
   const temporary = `${recordPath}.${randomBytes(4).toString('hex')}.tmp`;
   await writeFile(temporary, `${JSON.stringify(record, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
@@ -146,10 +87,7 @@ export async function unpackRuntime(directory: string, record: RuntimePackRecord
   await mkdir(dirname(target), { recursive: true });
   await mkdir(staging, { recursive: true });
   try {
-    const unpacked = decompressor(record.format);
-    const tar = startTar(['-C', tarPath(staging), '-xf', '-'], true);
-    if (!tar.child.stdin) throw new Error('tar took no input');
-    await Promise.all([pipeline(createReadStream(join(directory, record.file)), unpacked, tar.child.stdin), tar.done]);
+    await unpackTree(join(directory, record.file), record.format, staging);
     await rm(target, { recursive: true, force: true });
     await rename(staging, target);
   } catch (error: unknown) {

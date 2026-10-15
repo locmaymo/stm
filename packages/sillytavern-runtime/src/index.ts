@@ -19,7 +19,7 @@ import {
   type VersionOption,
   type VersionSelector,
 } from '../../contracts/src/index.js';
-import type { PlatformPaths } from '../../platform/src/index.js';
+import { RUNTIME_PACK_DIR, type PlatformPaths } from '../../platform/src/index.js';
 import { removeTreeGently } from '../../platform/src/remove.js';
 import { readRuntimePack, removeRuntimePack, unpackRuntime, writeRuntimePack } from './pack.js';
 
@@ -140,7 +140,7 @@ export class RuntimeManager {
     this.useGit = options.useGit ?? options.fetch === undefined;
     this.gitCommand = options.gitCommand ?? 'git';
     this.repositoryUrl = options.repositoryUrl ?? GIT_REPOSITORY;
-    this.packDirectory = this.useGit && !isInside(this.paths.runtime, this.paths.root) ? join(this.paths.profiles, '.runtime-pack') : null;
+    this.packDirectory = this.useGit && !isInside(this.paths.runtime, this.paths.root) ? join(this.paths.profiles, RUNTIME_PACK_DIR) : null;
     const configured = options.healthCheckPort;
     const healthCheckPort = typeof configured === 'function' ? configured : (): number => configured ?? DEFAULT_SILLYTAVERN_PORT;
     this.healthCheck = options.healthCheck

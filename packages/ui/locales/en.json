@@ -979,6 +979,17 @@
       "legacySyncFailed": "Legacy synchronization failed: {reason}",
       "deferredCleanupFailed": "Deferred cleanup failed for {path}: {reason}"
     },
+    "vault": {
+      "kept": "Kept the {files} profile files already on this machine's disk",
+      "restored": "Put {files} profile files back on this machine's disk in {seconds}s",
+      "adopted": "Moved {files} profile files from the data directory onto this machine's disk in {seconds}s",
+      "legacyRemoved": "Removed the old file-by-file copy of the profiles from the data directory",
+      "packed": "Wrote all {files} profile files to the data directory as one pack ({size}) in {seconds}s",
+      "keptEarlier": "The profiles now hold {files} files where the last pack held {earlier}, so that pack is kept as {path} and not removed; it is not put back on its own",
+      "keptReleased": "Removed the pack of {files} files kept from before, {file}",
+      "flushFailed": "Changes to the profiles could not be written to the data directory yet: {reason}",
+      "restoreFailed": "The profiles could not be put back on this machine's disk, so nothing will be written over the data directory's copy: {reason}"
+    },
     "saver": {
       "onFromEnvironment": "Saver mode is on, set by STM_SAVER: no local backups are taken on this machine",
       "onByChoice": "Saver mode is on, as chosen in the console: no local backups are taken on this machine",
@@ -1161,6 +1172,7 @@
       "inMemory": "Files here are kept in memory ({signal}): they share the {memory} this manager may use with the programs",
       "onDisk": "Files here are on disk, with {disk} free; {memory} of memory",
       "notDurable": "{path} is on {filesystem}, which this machine does not keep across a restart; connect Cloudflare R2 so backups are held somewhere else",
+      "stillLocal": "{path} does not look like network storage right now, but SillyTavern and the profiles have been worked on from this machine's disk before, so they still are",
       "notVerified": "This manager cannot tell whether {path} survives a restart here, so treat it as storage that may be temporary; connect Cloudflare R2 so backups are held somewhere else"
     },
     "cloudflare": {
