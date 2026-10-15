@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { BackupStore } from '../../../packages/backup/src/index.js';
 import type { ProfileStore } from '../../../packages/profiles/src/index.js';
 import type { R2Manager } from '../../../packages/r2/src/index.js';
 import { BackupScheduler } from '../src/r2-scheduler.js';
 
-function scheduler(intervalMinutes: number) {
+function scheduler(intervalMinutes: number, dataPath: string = tmpdir()) {
   const created: string[] = [];
   const backups = {
     isOperationRunning: () => false,
@@ -15,15 +17,24 @@ function scheduler(intervalMinutes: number) {
     list: async () => [],
     create: async (_profile: unknown, options: { kind: string }) => { created.push(options.kind); return { name: options.kind }; },
   } as unknown as BackupStore;
-  const profiles = { getActive: async () => ({ id: 'p1', name: 'Main' }) } as unknown as ProfileStore;
+  const profiles = { getActive: async () => ({ id: 'p1', name: 'Main', dataPath }) } as unknown as ProfileStore;
   const r2 = { getConfig: async () => ({ enabled: false, configured: false }) } as unknown as R2Manager;
-  return { created, instance: new BackupScheduler({ backups, profiles, r2, logger: () => undefined }) };
+  const lines: string[] = [];
+  return { created, lines, instance: new BackupScheduler({ backups, profiles, r2, logger: (line) => lines.push(typeof line === 'string' ? line : line.message) }) };
 }
 
 test('a scheduled local backup is taken when one is due', async () => {
   const { created, instance } = scheduler(60);
   await instance.tick();
   assert.deepEqual(created, ['scheduled']);
+});
+
+test('a profile whose data is not where it is recorded is not backed up as an empty one', async () => {
+  const missing = join(tmpdir(), `stm-missing-${process.pid}-${Date.now()}`, 'data');
+  const { created, lines, instance } = scheduler(60, missing);
+  await instance.tick();
+  assert.deepEqual(created, [], 'no ZIP with nothing in it');
+  assert.ok(lines.some((line) => line.includes(`is not at ${missing}`)), lines.join('\n'));
 });
 
 test('a local schedule that was turned off takes nothing', async () => {
@@ -42,7 +53,7 @@ function remoteScheduler(options: { coldDue?: boolean; now?: () => Date } = {}) 
     getSchedule: async () => ({ intervalMinutes: 0 }),
     list: async () => [],
   } as unknown as BackupStore;
-  const profiles = { getActive: async () => ({ id: 'p1', name: 'Main' }) } as unknown as ProfileStore;
+  const profiles = { getActive: async () => ({ id: 'p1', name: 'Main', dataPath: tmpdir() }) } as unknown as ProfileStore;
   const r2 = {
     // Nothing has moved since the last run, so the profile itself is not due.
     getConfig: async () => ({ enabled: true, configured: true, schedule: { hotIntervalMinutes: 5 }, lastFingerprint: 'unchanged' }),
@@ -140,7 +151,7 @@ test('nothing goes up to an account that is still offering somebody else’s lib
       // is taken as usual.
       create: async (_profile: unknown, options: { kind: string }) => { sent.push(`local:${options.kind}`); return { name: options.kind }; },
     } as unknown as BackupStore,
-    profiles: { getActive: async () => ({ id: 'p1', name: 'Main' }) } as unknown as ProfileStore,
+    profiles: { getActive: async () => ({ id: 'p1', name: 'Main', dataPath: tmpdir() }) } as unknown as ProfileStore,
     r2: {
       getConfig: async () => ({ enabled: true, configured: true, schedule: { hotIntervalMinutes: 5 }, lastFingerprint: null }),
       // Nothing of this machine's is in that bucket yet, which is the only

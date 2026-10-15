@@ -279,3 +279,23 @@ test('a data directory worked on from local disk before stays that way when the 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test('a data directory reached through a link is on whatever the link points at', { skip: process.platform === 'win32' ? 'no mount table on Windows' : false }, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-link-'));
+  try {
+    const { realpath, symlink } = await import('node:fs/promises');
+    const mounted = await realpath(await mkdtemp(join(root, 'remote-')));
+    // The host's workspace is a link to the network mount, not the mount itself.
+    const workspace = join(root, 'workspace');
+    await symlink(mounted, workspace);
+    const table = `/dev/vda1 / ext4 rw 0 0\nbucket ${mounted} fuse.remotefs rw 0 0`;
+    const dataRoot = join(workspace, 'sillytavern-manager');
+    assert.equal(onNetworkStorage(dataRoot, table), true, 'the part that does not exist yet is kept as written');
+    await mkdir(dataRoot, { recursive: true });
+    assert.equal(onNetworkStorage(dataRoot, table), true);
+    assert.equal(runtimeRoot(dataRoot, {}, table), join(tmpdir(), 'sillytavern-manager-runtime'));
+    assert.deepEqual(storageDurability(dataRoot, table), { durable: true, filesystem: 'fuse.remotefs' });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
