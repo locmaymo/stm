@@ -179,10 +179,13 @@ function toRelease(payload: ReleasePayload): ManagerRelease | null {
   const url = typeof payload.html_url === 'string' && payload.html_url.length > 0
     ? payload.html_url
     : `https://github.com/${REPOSITORY}/releases/tag/${tag}`;
+  const sections = releaseSections(typeof payload.body === 'string' ? payload.body : '');
+  const vietnamese = sections.vi === null ? '' : releaseNotes(sections.vi);
   return {
     version: versionOf(tag),
     name: releaseName(typeof payload.name === 'string' ? payload.name : '', tag),
-    notes: releaseNotes(typeof payload.body === 'string' ? payload.body : ''),
+    notes: releaseNotes(sections.en),
+    ...(vietnamese ? { notesByLocale: { vi: vietnamese } } : {}),
     url,
     publishedAt: typeof payload.published_at === 'string' ? payload.published_at : null,
   };
@@ -228,6 +231,30 @@ export function compareVersions(left: string, right: string): number {
   return 0;
 }
 
+/** Where a release body's Vietnamese section starts and ends. */
+const VIETNAMESE_START = '<!-- stm:notes:vi -->';
+const VIETNAMESE_END = '<!-- /stm:notes:vi -->';
+
+/**
+ * A release body split into its English and its Vietnamese.
+ *
+ * The Vietnamese is whatever sits between the two markers, which GitHub does
+ * not render; the author can wrap it in `<details>` so the release page shows
+ * it folded under a heading of its own. Everything outside the markers is the
+ * English, including the notes GitHub generates under it. A body with no
+ * markers is all English, and one with an opening marker and no closing one
+ * runs to the end.
+ */
+export function releaseSections(body: string): { readonly en: string; readonly vi: string | null } {
+  const start = body.indexOf(VIETNAMESE_START);
+  if (start === -1) return { en: body, vi: null };
+  const from = start + VIETNAMESE_START.length;
+  const end = body.indexOf(VIETNAMESE_END, from);
+  const vi = (end === -1 ? body.slice(from) : body.slice(from, end)).trim();
+  const en = `${body.slice(0, start)}${end === -1 ? '' : body.slice(end + VIETNAMESE_END.length)}`;
+  return { en, vi: vi.length > 0 ? vi : null };
+}
+
 /**
  * The release body, reduced to something a card can show.
  *
@@ -244,6 +271,11 @@ export function releaseNotes(body: string): string {
     // commits and a compare link, which says nothing a reader can act on.
     .split(/\n\*\*Full Changelog\*\*/u)[0] ?? '';
   const cleaned = text
+    // HTML comments, and the fold a section may be wrapped in on the release
+    // page: its heading is the page's, and a card says it already.
+    .replace(/<!--[\s\S]*?-->/gu, '')
+    .replace(/<summary>[\s\S]*?<\/summary>/giu, '')
+    .replace(/<\/?details[^>]*>/giu, '')
     // Images and links keep the words and lose the addresses.
     .replace(/!\[[^\]]*\]\([^)]*\)/gu, '')
     .replace(/\[([^\]]+)\]\([^)]*\)/gu, '$1')

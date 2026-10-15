@@ -38,18 +38,20 @@ import { NotificationBell, PushOfferDialog, PushToggle } from './notification-be
 import { answerTermuxOffer, appFeatures, bubbleRequest, hasAppChannel, importZipFromApp, openInApp, type AppFeatures, type BubbleState, type ImportSource } from './app-bridge.js';
 import { BUBBLE_OFFER_KEY, bubbleOfferWanted, offerAccepted, offerDue, offerSnoozed, readOffer, writeOffer } from './offers.js';
 import { collectCloudflareResult, framed, inPhoneApp, openReturnWindow, popupsBlocked, whenAbandoned, type CollectedResult } from './oauth.js';
-import type { AccessGatewayState, AccessLinkPreference, AccessLinkTarget, BackupManifest, CloudflareAccountProblem, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LegalReview, LogEntry, LogSourceFilter, ManagerRelease, ManagerSettingsOffer, ManagerUpdateStatus, NotificationSummary, OnlineState, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, SaverState, SetupChecklistState, SetupStep, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, AccessLinkKind, AccessLinkPreference, AccessLinkTarget, BackupManifest, CloudflareAccountProblem, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LegalReview, LogEntry, LogSourceFilter, ManagerRelease, ManagerSettingsOffer, ManagerUpdateStatus, NotificationSummary, OnlineState, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, SaverState, SetupChecklistState, SetupStep, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, isCloudJob, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
 import termuxGuideEn from './assets/termux-guide-en.webp';
 import termuxGuideVi from './assets/termux-guide-vi.webp';
 import { usePoll } from './use-poll.js';
 import { POLL_BACKGROUND_MS, POLL_RELEASE_MS, statusIntervalMs } from './polling.js';
-import { foldForSearch, translateLogEntry, translateStep } from '../../../packages/contracts/src/index.js';
+import { DEFAULT_ACCESS_LINKS, foldForSearch, translateLogEntry, translateStep } from '../../../packages/contracts/src/index.js';
 import { QrCode } from './qr-code.js';
 import { CLOUDFLARE_ORANGE, CloudflareMark } from './cloudflare-mark.js';
 import { bareHost, localHost, machineName, publicAddress, publicLinks, reachableAddresses, shortenHost, type PublicLink, type ReachableAddress } from './addresses.js';
 import { EmbedStage } from './embed-stage.js';
+import { AUTOSAVE_DELAY_MS, changedSettings, yamlProblem } from './config-settings.js';
+import { maskProxy, PROXY_SCHEMES, proxySchemeOf, readProxy, savedProxy, type ProxyProblem } from './proxy-address.js';
 import { SetupChecklist, type ChecklistItem } from './setup-checklist.js';
 import { LegalCredit, LegalDialog, LEGAL_REVISION } from './legal-dialog.js';
 import { legalBundle, legalRevision, type LegalDocumentId } from '../../../packages/legal/src/index.js';
@@ -2065,7 +2067,11 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
                 }}
               /></div>
               : null}
-            {backgroundJob && page !== 'data' && !(page === 'overview' && !activeInstallationId)
+            {/* Not while the data page in this tab is reporting work of its
+                own: a restore or backup started there is also the manager's
+                running job, and both cards used to show it, one above the
+                other. The strip below says the same and leads back to it. */}
+            {backgroundJob && page !== 'data' && !dataActivity?.label && !(page === 'overview' && !activeInstallationId)
               ? <div className="mb-(--section-gap)"><BackgroundTaskCard t={t} catalog={catalog} job={backgroundJob} /></div>
               : null}
             {/* Below the work and below anything broken, because a release
@@ -2359,6 +2365,9 @@ function ManagerReleaseCard({ t, locale, current, release, onDismiss }: {
   release: ManagerRelease;
   onDismiss: () => void;
 }) {
+  // In the reader's language where the release carries it; otherwise the
+  // English the release was written in, rather than nothing.
+  const notes = (locale === 'vi' ? release.notesByLocale?.vi : undefined) || release.notes;
   return <Card className="release-card">
     <PanelHeading icon={<CircleArrowUp />}>{t('console.managerUpdateTitle', { version: release.version })}</PanelHeading>
     <CardContent className="grid gap-3">
@@ -2366,10 +2375,10 @@ function ManagerReleaseCard({ t, locale, current, release, onDismiss }: {
         {t('console.managerUpdateBody', { current, version: release.version })}
         {release.publishedAt ? ` ${t('console.managerUpdatePublished', { when: releaseDate(release.publishedAt, locale) })}` : ''}
       </p>
-      {release.notes
+      {notes
         ? <div className="release-notes">
           {release.name ? <p className="release-notes-title">{release.name}</p> : null}
-          <p className="release-notes-body">{release.notes}</p>
+          <p className="release-notes-body">{notes}</p>
         </div>
         : null}
       <div className="flex flex-wrap gap-2">
@@ -3709,44 +3718,41 @@ function AddressRow({ t, label, url, display, disabledHint, pending, shorten, li
 /**
  * The code, and every address that reaches this door.
  *
- * The code carries the first address. Where a door has two - a fixed address
- * that never changes and the tunnel's own - both are here, one under the
- * other with "or" between them, each a link with its own copy button: either
- * works, and the reader is entitled to see the second rather than be told
- * about it.
+ * Where a door has two public addresses, the sheet is where the reader picks
+ * which one is the default - the one on the card, behind the Open button and
+ * in this code - and each says in two words what it is good and bad at. The
+ * tunnel's own is the default: it is faster, because nothing stands between
+ * it and the machine. The fixed one never changes, which is what a Home Screen
+ * app and its notifications need, since they belong to the address they were
+ * added from.
  *
- * With both, the reader also chooses between them here: a star on the one to
- * put first everywhere, and a switch that hides the fixed address from the
- * console for somebody who finds the Worker slow. Both are settings of theirs,
- * kept on the manager and in the bucket with the rest.
+ * This replaced a star on each address, an "or" between them and a switch to
+ * hide the fixed one, which together told nobody why they would want either.
  */
 function ShareDialog({ t, open, onOpenChange, label, links, description, choice }: { t: Translate; open: boolean; onOpenChange: (open: boolean) => void; label: string; links: readonly string[]; /** What scanning it opens, when it is not SillyTavern. */ description?: string; choice?: LinkChoice }) {
   const { toast } = useToast();
   const [saving, setSaving] = useState(false);
-  const preference = choice?.tunnel.linkPreference ?? { preferred: 'fixed' as const, showFixed: true };
+  const preference = choice?.tunnel.linkPreference ?? DEFAULT_ACCESS_LINKS[choice?.target ?? 'sillyTavern'];
   const fixedUrl = choice?.tunnel.proxyUrl ?? null;
   const ownUrl = choice?.tunnel.url ?? null;
-  // Both addresses, whether or not the fixed one is hidden: this is where it
-  // is brought back.
-  const rows: Array<{ kind: 'fixed' | 'tunnel'; url: string }> = choice && fixedUrl && ownUrl
-    ? (preference.preferred === 'tunnel' || !preference.showFixed ? [{ kind: 'tunnel' as const, url: ownUrl }, { kind: 'fixed' as const, url: fixedUrl }] : [{ kind: 'fixed' as const, url: fixedUrl }, { kind: 'tunnel' as const, url: ownUrl }])
-    : [];
-  const primary = links[0] ?? '';
-  const change = async (next: Partial<AccessLinkPreference>) => {
-    if (!choice) return;
+  const both = choice && fixedUrl && ownUrl ? { fixed: fixedUrl, tunnel: ownUrl } : null;
+  // A fixed address hidden before this sheet offered a choice reads as not chosen.
+  const preferred: AccessLinkKind = preference.preferred === 'fixed' && preference.showFixed ? 'fixed' : 'tunnel';
+  const primary = both ? both[preferred] : links[0] ?? '';
+  const choose = async (kind: AccessLinkKind) => {
+    if (!choice || kind === preferred) return;
     setSaving(true);
-    try { await choice.onChange(choice.target, next); } finally { setSaving(false); }
+    try { await choice.onChange(choice.target, kind === 'fixed' ? { preferred: 'fixed', showFixed: true } : { preferred: 'tunnel' }); } finally { setSaving(false); }
   };
   const copy = async (url: string) => {
     try { await navigator.clipboard.writeText(url); toast({ title: t('console.linkCopied'), tone: 'success' }); }
     catch { toast({ title: t('console.actionFailed'), tone: 'destructive' }); }
   };
-  // A place with one address - this Wi-Fi, this machine - is laid out the
-  // same way, named by the place, so the three sheets read alike.
-  const plain: Array<{ kind: 'fixed' | 'tunnel' | null; url: string }> = rows.length === 0 ? links.map((url) => ({ kind: null, url })) : rows;
-  // The tunnel's own address is only explained when it is the fallback under
-  // a fixed one that is in use.
-  const fallbackUnderFixed = plain[0]?.kind === 'fixed' && preference.showFixed;
+  const copyButton = (url: string) => <Button variant="ghost" size="icon-sm" aria-label={t('dashboard.copyLink')} title={t('dashboard.copyLink')} onClick={(event) => { event.preventDefault(); void copy(url); }}><Copy /></Button>;
+  const kinds: Record<AccessLinkKind, { readonly name: string; readonly good: string; readonly bad: string }> = {
+    tunnel: { name: t('console.linkTunnel'), good: t('console.linkTunnelGood'), bad: t('console.linkTunnelBad') },
+    fixed: { name: t('console.linkFixed'), good: t('console.linkFixedGood'), bad: t('console.linkFixedBad') },
+  };
   return <Dialog open={open} onOpenChange={onOpenChange}>
     <DialogContent className="share-dialog">
       <DialogHeader>
@@ -3755,39 +3761,43 @@ function ShareDialog({ t, open, onOpenChange, label, links, description, choice 
       </DialogHeader>
       <DialogBody className="share-body">
         <QrCode value={primary} label={`${label}: ${primary}`} />
-        <div className="share-links">
-          {plain.map((row, index) => {
-            const hidden = row.kind === 'fixed' && !preference.showFixed;
-            const preferred = row.kind !== null && !hidden && index === 0;
-            return <div key={row.url} className="share-link-group">
-              {index > 0 ? <div className="share-or" aria-hidden="true"><span>{t('console.linkOr')}</span></div> : null}
-              <div className="share-link" data-hidden={hidden || undefined}>
-                {row.kind ? <button
-                  type="button"
-                  className="share-star"
-                  aria-pressed={preferred}
-                  aria-label={preferred ? t('console.linkPreferred') : t('console.linkPrefer')}
-                  title={preferred ? t('console.linkPreferred') : t('console.linkPrefer')}
-                  disabled={saving || hidden || preferred}
-                  onClick={() => void change({ preferred: row.kind as 'fixed' | 'tunnel' })}
-                ><Star aria-hidden="true" /></button> : null}
-                <div className="share-link-text">
-                  <span className="share-link-kind">
-                    {row.kind === 'fixed' ? t('console.linkFixed') : row.kind === 'tunnel' ? t('console.linkTunnel') : label}
-                    {hidden ? <Badge variant="secondary">{t('console.linkHidden')}</Badge> : preferred ? <Badge variant="secondary" className="bg-(--success-background) text-(--success)">{t('console.linkPreferred')}</Badge> : null}
-                  </span>
-                  <a className="share-url" href={row.url} target="_blank" rel="noopener noreferrer">{row.url}</a>
-                  {row.kind === 'tunnel' && index > 0 && fallbackUnderFixed ? <span className="share-link-hint">{t('console.linkTunnelHint')}</span> : null}
-                </div>
-                <Button variant="ghost" size="icon-sm" aria-label={t('dashboard.copyLink')} title={t('dashboard.copyLink')} onClick={() => void copy(row.url)}><Copy /></Button>
+        {both
+          ? <>
+            <RadioGroup className="share-choices" value={preferred} onValueChange={(value) => void choose(value as AccessLinkKind)} disabled={saving} aria-label={t('console.linkDefaultLabel')}>
+              {(['tunnel', 'fixed'] as const).map((kind) => {
+                const url = both[kind];
+                const id = `share-${choice?.target ?? 'link'}-${kind}`;
+                return <div key={kind} className="share-choice" data-selected={kind === preferred || undefined}>
+                  <RadioGroupItem id={id} value={kind} />
+                  <div className="share-link-text">
+                    <Label htmlFor={id} className="share-link-kind">
+                      {kinds[kind].name}
+                      {kind === preferred ? <Badge variant="secondary" className="bg-(--success-background) text-(--success)">{t('console.linkDefault')}</Badge> : null}
+                    </Label>
+                    <a className="share-url" href={url} target="_blank" rel="noopener noreferrer">{bareHost(url)}</a>
+                    <span className="share-traits">
+                      <span className="share-trait" data-tone="good"><Check aria-hidden="true" />{kinds[kind].good}</span>
+                      <span className="share-trait" data-tone="bad"><TriangleAlert aria-hidden="true" />{kinds[kind].bad}</span>
+                    </span>
+                    {kind === 'fixed' ? <span className="share-link-hint">{t('console.linkFixedUse')}</span> : null}
+                  </div>
+                  {copyButton(url)}
+                </div>;
+              })}
+            </RadioGroup>
+            <p className="share-note">{t('console.linkDefaultNote')}</p>
+          </>
+          // A place with one address - this Wi-Fi, this machine - is laid out
+          // the same way, named by the place.
+          : <div className="share-choices">
+            {links.map((url) => <div key={url} className="share-choice">
+              <div className="share-link-text">
+                <span className="share-link-kind">{label}</span>
+                <a className="share-url" href={url} target="_blank" rel="noopener noreferrer">{url}</a>
               </div>
-            </div>;
-          })}
-        </div>
-        {rows.length > 0 ? <Label className="share-switch">
-          <span className="font-medium">{t('console.linkShowFixed')}</span>
-          <Switch checked={preference.showFixed} disabled={saving} onCheckedChange={(checked) => void change({ showFixed: checked })} aria-label={t('console.linkShowFixed')} />
-        </Label> : null}
+              {copyButton(url)}
+            </div>)}
+          </div>}
       </DialogBody>
     </DialogContent>
   </Dialog>;
@@ -7100,7 +7110,7 @@ function usageDuration(t: Translate, seconds: number): string {
  * note. Success and failure are separate states now, and success is a toast,
  * because saving restarts SillyTavern and redraws the page underneath it.
  */
-type FlagKey = Exclude<Extract<keyof ConfigSettingsInput, string>, 'memoryCacheCapacity' | 'chatBackupCount'>;
+type FlagKey = Exclude<Extract<keyof ConfigSettingsInput, string>, 'memoryCacheCapacity' | 'chatBackupCount' | 'requestProxyUrl'>;
 
 const MEMORY_CACHE_SIZES = ['0', '50mb', '100mb', '250mb', '500mb'] as const;
 const CHAT_BACKUP_COUNTS = ['5', '20', '50', '100', '200'] as const;
@@ -7123,6 +7133,10 @@ function offeredSettings(settings: ConfigSettings): ConfigSettingsInput {
     allowKeysExposure: settings.allowKeysExposure,
     chatBackups: settings.chatBackups,
     chatBackupCount: settings.chatBackupCount,
+    requestProxyEnabled: settings.requestProxyEnabled,
+    // The example SillyTavern ships reads as no proxy, and is only replaced
+    // once somebody enters one.
+    requestProxyUrl: savedProxy(settings.requestProxyUrl),
   };
 }
 
@@ -7403,8 +7417,10 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
   const [managerPasswordOpen, setManagerPasswordOpen] = useState(false);
   const [sillyPasswordOpen, setSillyPasswordOpen] = useState(false);
   const [yamlOpen, setYamlOpen] = useState(false);
+  // A file the manager refused, with what the reader had typed, so the editor
+  // reopens on their text and not on the file as it was.
+  const [yamlFailure, setYamlFailure] = useState<{ readonly draft: string; readonly error: string } | null>(null);
   const [signOutDevicesOpen, setSignOutDevicesOpen] = useState(false);
-  const [saveOpen, setSaveOpen] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
   const [managerTunnelBusy, setManagerTunnelBusy] = useState(false);
   const [managerTunnelError, setManagerTunnelError] = useState<string | null>(null);
@@ -7456,10 +7472,75 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
       if (!failure) toast({ title: on ? t('console.managerTunnelOnDone') : t('console.managerTunnelOffDone'), tone: 'success' });
     } finally { setManagerTunnelBusy(false); }
   };
+  /*
+   * Every switch and choice below is saved as it is moved.
+   *
+   * There was a Save button at the foot of the card, and a switch moved
+   * without pressing it looked exactly like a switch that had taken effect -
+   * until the next visit put it back. Saving restarts SillyTavern, so a moment
+   * is left for the next press, and everything pressed in that moment goes in
+   * one restart. A press made during a restart waits for it and goes in the
+   * next one, rather than being written behind its back.
+   *
+   * `desired` is what the switches say, `saved` what the file is known to say.
+   */
+  const desired = useRef<ConfigSettingsInput>({});
+  const saved = useRef<ConfigSettings | null>(config?.settings ?? null);
+  const saving = useRef(false);
+  const saveTimer = useRef<number | undefined>(undefined);
+  const [autoSave, setAutoSave] = useState<'idle' | 'waiting' | 'saving'>('idle');
   useEffect(() => {
     if (!config) return;
-    setForm(offeredSettings(config.settings));
+    saved.current = config.settings;
+    // Not while a change is on its way: the file read back now would flip a
+    // switch back under the reader's finger.
+    if (saving.current || saveTimer.current !== undefined) return;
+    const next = offeredSettings(config.settings);
+    desired.current = next;
+    setForm(next);
   }, [config]);
+  const flushSettings = async (): Promise<void> => {
+    window.clearTimeout(saveTimer.current);
+    saveTimer.current = undefined;
+    const known = saved.current;
+    if (saving.current || !known) return;
+    const changes = changedSettings(desired.current, offeredSettings(known));
+    if (!changes) { setAutoSave('idle'); return; }
+    saving.current = true;
+    setAutoSave('saving');
+    setBusy(true); setError(null);
+    let failure: string | null;
+    try { failure = await onConfigUpdate({ settings: changes }); }
+    catch { failure = t('console.configSaveFailed'); }
+    finally { saving.current = false; }
+    if (failure) {
+      setError(failure);
+      toast({ title: failure, tone: 'destructive' });
+      // Back to what the file says, so no switch claims a setting that is
+      // not in effect.
+      const truth = offeredSettings(known);
+      desired.current = truth;
+      setForm(truth);
+      setBusy(false); setAutoSave('idle');
+      return;
+    }
+    saved.current = { ...known, ...changes } as ConfigSettings;
+    // Pressed while that restart was going on: on to the next one now,
+    // since it has already waited.
+    if (changedSettings(desired.current, offeredSettings(saved.current))) { void flushSettings(); return; }
+    setBusy(false); setAutoSave('idle');
+    toast({ title: t('console.configSaved'), tone: 'success' });
+  };
+  const flushRef = useRef(flushSettings);
+  flushRef.current = flushSettings;
+  useEffect(() => {
+    // Leaving the page, or the tab, with a press still waiting saves it now
+    // rather than dropping it.
+    const now = () => { if (saveTimer.current !== undefined) void flushRef.current(); };
+    const hidden = () => { if (document.visibilityState === 'hidden') now(); };
+    document.addEventListener('visibilitychange', hidden);
+    return () => { document.removeEventListener('visibilitychange', hidden); now(); };
+  }, []);
   const save = async (input: ConfigUpdateInput): Promise<string | null> => {
     setBusy(true); setError(null);
     try {
@@ -7485,8 +7566,26 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
     if (managerPasswordFirst) { setManagerPasswordFirst(false); void applyManagerTunnel(true); }
     return null;
   };
-  const set = <K extends keyof ConfigSettingsInput>(key: K, value: ConfigSettingsInput[K]) =>
-    setForm((current) => ({ ...current, [key]: value }));
+  const set = <K extends keyof ConfigSettingsInput>(key: K, value: ConfigSettingsInput[K]) => { setSettings({ [key]: value }); };
+  const setSettings = (change: ConfigSettingsInput) => {
+    const next = { ...desired.current, ...change };
+    desired.current = next;
+    setForm(next);
+    if (!saving.current) setAutoSave('waiting');
+    window.clearTimeout(saveTimer.current);
+    saveTimer.current = window.setTimeout(() => { saveTimer.current = undefined; void flushRef.current(); }, AUTOSAVE_DELAY_MS);
+  };
+  // The file is about to be replaced as a whole, so nothing may be waiting to
+  // be written into the copy of it that is being replaced.
+  const settingsQuiet = autoSave === 'idle' && !busy;
+  const applyYaml = async (rawYaml: string): Promise<void> => {
+    // Closed at once: the file has been read and is sound, and what follows is
+    // SillyTavern restarting, which the card below shows step by step.
+    setYamlOpen(false);
+    setYamlFailure(null);
+    const failure = await save({ rawYaml });
+    if (failure) { setYamlFailure({ draft: rawYaml, error: failure }); setYamlOpen(true); }
+  };
   const flag = (key: FlagKey, options: { readonly disabled?: boolean } = {}) =>
     <DetailRow key={key} label={t(`console.settings.${key}`)} hint={t(`console.settings.${key}Hint`)} className={options.disabled ? 'opacity-55' : ''}>
       <Switch
@@ -7496,8 +7595,12 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
         aria-label={t(`console.settings.${key}`)}
       />
     </DetailRow>;
-  const choice = (key: 'memoryCacheCapacity' | 'chatBackupCount', values: readonly string[], options: { readonly disabled?: boolean } = {}) =>
-    <DetailRow label={t(`console.settings.${key}`)} hint={t(`console.settings.${key}Hint`)} className={options.disabled ? 'opacity-55' : ''}>
+  const choice = (key: 'memoryCacheCapacity' | 'chatBackupCount', offered: readonly string[], options: { readonly disabled?: boolean } = {}) => {
+    // A value set in the file by hand is still the value: offered alongside
+    // the usual ones rather than shown as an empty box.
+    const current = form[key] === undefined ? null : String(form[key]);
+    const values = current === null || offered.includes(current) ? offered : [...offered, current];
+    return <DetailRow label={t(`console.settings.${key}`)} hint={t(`console.settings.${key}Hint`)} className={options.disabled ? 'opacity-55' : ''}>
       <Select
         value={String(form[key] ?? '')}
         onValueChange={(value) => set(key, (key === 'chatBackupCount' ? Number(value) : value) as never)}
@@ -7509,6 +7612,7 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
         </SelectContent>
       </Select>
     </DetailRow>;
+  };
 
   /*
    * One card for both doors.
@@ -7669,6 +7773,13 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
               <SettingsGroup icon={<KeyRound />} title={t('console.apiKeysTitle')} />
               {flag('allowKeysExposure')}
             </div>
+            <RequestProxyGroup
+              t={t}
+              url={form.requestProxyUrl ?? ''}
+              enabled={form.requestProxyEnabled === true}
+              supported={config.supports?.requestProxy ?? true}
+              onChange={setSettings}
+            />
             <div>
               <SettingsGroup icon={<History />} title={t('console.chatBackupsTitle')} />
               {flag('chatBackups')}
@@ -7686,8 +7797,8 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
               <p className="text-xs text-muted-foreground">{t('console.configFileHint')}</p>
               <div className="flex flex-wrap items-center gap-2">
                 <code className="mr-auto font-mono text-sm">{configFileName(config.path)}</code>
-                <Button variant="outline" size="sm" disabled={busy} onClick={() => setResetOpen(true)}><RotateCcw />{t('console.restoreDefaults')}</Button>
-                <Button variant="outline" size="sm" disabled={busy} onClick={() => setYamlOpen(true)}><Pencil />{t('common.edit')}</Button>
+                <Button variant="outline" size="sm" disabled={!settingsQuiet} onClick={() => setResetOpen(true)}><RotateCcw />{t('console.restoreDefaults')}</Button>
+                <Button variant="outline" size="sm" disabled={!settingsQuiet} onClick={() => setYamlOpen(true)}><Pencil />{t('common.edit')}</Button>
               </div>
             </div>
             {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
@@ -7699,20 +7810,16 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
               <TaskBar />
             </div> : null}
           </CardContent>
-          <CardFooter className="justify-end">
-            <Button onClick={() => setSaveOpen(true)} loading={busy}>{t('console.saveChanges')}</Button>
+          {/* Where the Save button was: what saving does, said before the
+              first press rather than asked after it, and then how it is
+              going. */}
+          <CardFooter className="text-xs text-muted-foreground" role="status">
+            {autoSave === 'waiting'
+              ? <span className="thinking">{t('console.autoSaveWaiting')}</span>
+              : autoSave === 'saving' ? <span>{t('console.autoSaveSaving')}</span>
+                : <span className="flex items-center gap-1.5"><Check className="size-3.5" />{t('console.autoSaveHint')}</span>}
           </CardFooter>
         </Card>
-        <ConfirmDialog
-          open={saveOpen}
-          onOpenChange={setSaveOpen}
-          tone="default"
-          title={t('console.saveChangesTitle')}
-          description={t('console.saveChangesBody')}
-          confirmLabel={t('console.saveChanges')}
-          cancelLabel={t('common.cancel')}
-          onConfirm={async () => { await save({ settings: form }); }}
-        />
         <ConfirmDialog
           open={resetOpen}
           onOpenChange={setResetOpen}
@@ -7723,7 +7830,7 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
           onConfirm={restoreDefaults}
         />
       </>}
-    {config ? <YamlDialog t={t} open={yamlOpen} onOpenChange={setYamlOpen} initial={config.rawYaml} busy={busy} onApply={(rawYaml) => save({ rawYaml })} /> : null}
+    {config ? <YamlDialog t={t} open={yamlOpen} onOpenChange={(open) => { setYamlOpen(open); if (!open) setYamlFailure(null); }} initial={yamlFailure?.draft ?? config.rawYaml} failure={yamlFailure?.error ?? null} busy={busy} onApply={applyYaml} /> : null}
     <StartOverCard t={t} onErase={onEraseEverything} />
     <AboutPanel t={t} locale={locale} onOpenLegal={(id) => { setLegalDocument(id); setLegalOpen(true); }} />
     <LegalDialog
@@ -7734,6 +7841,95 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
       document={legalDocument}
       onDocumentChange={setLegalDocument}
     />
+  </div>;
+}
+
+/**
+ * SillyTavern's proxy for what it sends out, asked for as one line.
+ *
+ * Whatever was pasted is read the moment the box is left - `ip:port:user:pass`,
+ * `user:pass@ip:port`, a whole link - and what is saved is the one form
+ * SillyTavern reads, shown under the box before it is saved. The kind chosen
+ * beside the box applies to an address that does not name one.
+ *
+ * Entering the first address turns the proxy on: an address typed in with the
+ * switch left off was the same trap as a setting nobody saved. Emptying the
+ * box turns it off again.
+ *
+ * The password is hidden whenever the box is not being edited.
+ */
+function RequestProxyGroup({ t, url, enabled, supported, onChange }: { t: Translate; url: string; enabled: boolean; /** False on a SillyTavern older than 1.12.6, which does not read it. */ supported: boolean; onChange: (change: ConfigSettingsInput) => void }) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const [scheme, setScheme] = useState<string>(proxySchemeOf(url) ?? PROXY_SCHEMES[0]);
+  const [problem, setProblem] = useState<ProxyProblem | null>(null);
+  const inputId = useId();
+  useEffect(() => { const named = proxySchemeOf(url); if (named) setScheme(named); }, [url]);
+  const reading = draft !== null && draft.trim() !== '' ? readProxy(draft, scheme) : null;
+  const commit = (kind: string = scheme) => {
+    if (draft === null) return;
+    if (draft.trim() === '') {
+      setDraft(null); setProblem(null);
+      if (url !== '' || enabled) onChange({ requestProxyUrl: '', requestProxyEnabled: false });
+      return;
+    }
+    const read = readProxy(draft, kind);
+    if (!read.ok) { setProblem(read.problem); return; }
+    setDraft(null); setProblem(null);
+    if (read.url !== url) onChange({ requestProxyUrl: read.url, ...(url === '' && !enabled ? { requestProxyEnabled: true } : {}) });
+  };
+  const changeScheme = (next: string) => {
+    setScheme(next);
+    setProblem(null);
+    // Changing the kind of an address already saved changes the address.
+    if (draft === null && url !== '' && proxySchemeOf(url)) onChange({ requestProxyUrl: url.replace(/^[a-z0-9]+:\/\//iu, `${next}://`) });
+  };
+  const problemText = problem === 'scheme' ? t('console.settings.requestProxyProblemScheme')
+    : problem === 'port' ? t('console.settings.requestProxyProblemPort')
+      : problem === 'host' ? t('console.settings.requestProxyProblemHost') : null;
+  return <div className={supported ? '' : 'opacity-55'}>
+    <SettingsGroup icon={<Globe2 />} title={t('console.settings.requestProxyTitle')} />
+    <DetailRow label={t('console.settings.requestProxyEnabled')} hint={supported ? t('console.settings.requestProxyEnabledHint') : t('console.settings.requestProxyUnsupported')}>
+      <Switch
+        checked={enabled}
+        onCheckedChange={(value) => onChange({ requestProxyEnabled: value })}
+        disabled={!supported || (url === '' && !enabled)}
+        aria-label={t('console.settings.requestProxyEnabled')}
+      />
+    </DetailRow>
+    <div className="grid gap-1.5 pb-3">
+      <Label htmlFor={inputId} className="sr-only">{t('console.settings.requestProxyAddress')}</Label>
+      <div className="flex gap-2">
+        <Select value={scheme} onValueChange={changeScheme} disabled={!supported}>
+          <SelectTrigger size="sm" className="w-28 shrink-0" aria-label={t('console.settings.requestProxyScheme')}><SelectValue /></SelectTrigger>
+          <SelectContent>
+            {PROXY_SCHEMES.map((value) => <SelectItem key={value} value={value}>{value.toUpperCase()}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        <Input
+          id={inputId}
+          className="h-8 min-w-0 font-mono text-sm"
+          value={draft ?? maskProxy(url)}
+          placeholder={t('console.settings.requestProxyPlaceholder')}
+          disabled={!supported}
+          autoComplete="off"
+          spellCheck={false}
+          aria-invalid={problem !== null || undefined}
+          onFocus={() => { if (draft === null) setDraft(url); }}
+          onChange={(event) => { setDraft(event.target.value); setProblem(null); }}
+          onBlur={() => commit()}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur(); }
+            if (event.key === 'Escape') { setDraft(null); setProblem(null); event.currentTarget.blur(); }
+          }}
+        />
+      </div>
+      {/* What will be saved, while it is still being typed; why it cannot be,
+          once the box has been left; and otherwise which forms it takes. */}
+      <p className={problemText ? 'text-xs text-destructive' : 'text-xs text-muted-foreground'} aria-live="polite">
+        {problemText
+          ?? (reading?.ok && reading.url !== draft?.trim() ? t('console.settings.requestProxyWillUse', { url: maskProxy(reading.url) }) : t('console.settings.requestProxyFormats'))}
+      </p>
+    </div>
   </div>;
 }
 
@@ -7874,17 +8070,32 @@ function AboutPanel({ t, locale, onOpenLegal }: { t: Translate; locale: LocaleCo
 }
 
 /** SillyTavern's own configuration file, for whoever wants to edit it directly. */
-function YamlDialog({ t, open, onOpenChange, initial, busy, onApply }: { t: Translate; open: boolean; onOpenChange: (open: boolean) => void; initial: string; busy: boolean; onApply: (rawYaml: string) => Promise<string | null> }) {
+/**
+ * The file itself, for whatever the switches do not cover.
+ *
+ * Applying used to keep this open until SillyTavern had stopped, taken the
+ * file and started again - the whole of a restart, with the progress for it
+ * already running on the card behind. The file is checked here instead, and
+ * the editor closes the moment it is sound; a refusal that only the manager
+ * could make reopens it on the reader's own text, with the reason.
+ */
+function YamlDialog({ t, open, onOpenChange, initial, failure, busy, onApply }: { t: Translate; open: boolean; onOpenChange: (open: boolean) => void; initial: string; /** Why the last apply was refused, when it was. */ failure: string | null; busy: boolean; onApply: (rawYaml: string) => Promise<void> }) {
   const [rawYaml, setRawYaml] = useState(initial);
   const [error, setError] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
   // Opening reloads the file as it is on disk, so an edit abandoned last time
   // is not silently re-applied over a change made since.
-  useEffect(() => { if (open) { setRawYaml(initial); setError(null); } }, [open, initial]);
+  useEffect(() => { if (open) { setRawYaml(initial); setError(failure); } }, [open, initial, failure]);
 
   const apply = async () => {
-    const failure = await onApply(rawYaml);
-    setError(failure);
-    if (!failure) onOpenChange(false);
+    setChecking(true);
+    let problem: { readonly detail: string } | null;
+    try { problem = await yamlProblem(rawYaml); }
+    // The parser could not be fetched; the manager checks the file as well.
+    catch { problem = null; }
+    finally { setChecking(false); }
+    if (problem) { setError(problem.detail ? `${t('errors.invalid_yaml')}\n${problem.detail}` : t('errors.invalid_yaml')); return; }
+    void onApply(rawYaml);
   };
 
   return <Dialog open={open} onOpenChange={onOpenChange}>
@@ -7895,11 +8106,11 @@ function YamlDialog({ t, open, onOpenChange, initial, busy, onApply }: { t: Tran
       </DialogHeader>
       <DialogBody className="grid gap-3">
         <textarea className="config-editor" value={rawYaml} onChange={(event) => setRawYaml(event.target.value)} spellCheck={false} aria-label={t('console.configFile')} />
-        {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
+        {error ? <Alert variant="destructive"><AlertDescription className="whitespace-pre-wrap">{error}</AlertDescription></Alert> : null}
       </DialogBody>
       <DialogFooter>
-        <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={busy}>{t('common.cancel')}</Button>
-        <Button onClick={() => apply()} disabled={busy}>{t('console.applyYaml')}</Button>
+        <Button variant="ghost" onClick={() => onOpenChange(false)}>{t('common.cancel')}</Button>
+        <Button onClick={() => apply()} disabled={busy} loading={checking}>{t('console.applyYaml')}</Button>
       </DialogFooter>
     </DialogContent>
   </Dialog>;

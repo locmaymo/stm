@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ReleaseWatch, compareVersions, releaseName, releaseNotes, versionOf } from '../src/manager-release.js';
+import { ReleaseWatch, compareVersions, releaseName, releaseNotes, releaseSections, versionOf } from '../src/manager-release.js';
 
 interface FakeRelease {
   readonly tag_name: string;
@@ -44,6 +44,44 @@ test('a release newer than the running version is reported with its notes', asyn
   assert.equal(status.update?.url, 'https://example.invalid/v0.3.0');
   assert.equal(status.update?.notes, 'What is new\n\n- A card that says what changed');
   assert.ok(status.checkedAt);
+});
+
+test('a release that carries Vietnamese notes is reported with both', async () => {
+  // The way the release workflow writes it: the notes file first, with its
+  // Vietnamese folded on the release page, then the generated changelog.
+  const body = [
+    'Saving settings no longer needs a button.',
+    '',
+    '<!-- stm:notes:vi -->',
+    '<details>',
+    '<summary>Tiếng Việt</summary>',
+    '',
+    'Lưu thiết lập không cần bấm nút nữa.',
+    '',
+    '</details>',
+    '<!-- /stm:notes:vi -->',
+    '',
+    "## What's Changed",
+    '* Save settings as they change by @locmaymo in https://github.com/locmaymo/stm/pull/50',
+    '',
+    '**Full Changelog**: https://github.com/locmaymo/stm/compare/v0.2.0...v0.3.0',
+  ].join('\n');
+  const watch = new ReleaseWatch({ version: '0.2.0', fetch: fakeGitHub([{ tag_name: 'v0.3.0', body }]).fetch });
+  await watch.check();
+  const update = watch.status().update;
+  assert.equal(update?.notes, "Saving settings no longer needs a button.\n\nWhat's Changed\n- Save settings as they change");
+  assert.deepEqual(update?.notesByLocale, { vi: 'Lưu thiết lập không cần bấm nút nữa.' });
+
+  // A release with no Vietnamese is English only, and says nothing more.
+  const plain = new ReleaseWatch({ version: '0.2.0', fetch: fakeGitHub([{ tag_name: 'v0.3.0', body: 'Only English.' }]).fetch });
+  await plain.check();
+  assert.equal(plain.status().update?.notesByLocale, undefined);
+});
+
+test('a Vietnamese section with no end runs to the end of the body', () => {
+  assert.deepEqual(releaseSections('English.\n<!-- stm:notes:vi -->\nTiếng Việt.'), { en: 'English.\n', vi: 'Tiếng Việt.' });
+  assert.deepEqual(releaseSections('English only.'), { en: 'English only.', vi: null });
+  assert.deepEqual(releaseSections('<!-- stm:notes:vi --><!-- /stm:notes:vi -->English.'), { en: 'English.', vi: null });
 });
 
 test('the version already running is not offered to itself', async () => {

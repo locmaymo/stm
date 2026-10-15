@@ -25,16 +25,17 @@ test('moving SillyTavern moves the address that points straight at it', () => {
   assert.deepEqual(shared.map((address) => address.url), ['http://192.168.1.20:8001', 'http://127.0.0.1:8003']);
 });
 
-test('a fixed address in front of the tunnel is the one offered', () => {
+test('a fixed address in front of the tunnel is offered first where it was picked', () => {
   /*
-   * A Quick Tunnel's hostname changes every time cloudflared starts, so it is
-   * the wrong thing to hand anybody: the link they save or send stops working
-   * on the next restart, and stops as DNS_PROBE_FINISHED_NXDOMAIN because the
-   * name has gone from DNS altogether. The Worker address is the same one for
-   * good, so it is what the card shows and what the Open button takes.
+   * A Quick Tunnel's hostname changes every time cloudflared starts, so the
+   * link somebody saves or sends stops working on the next restart. The
+   * Worker address is the same one for good - slower, since every request
+   * takes a turn through the Worker, so it goes first only for a reader who
+   * picked it.
    */
+  const fixedFirst = { preferred: 'fixed', showFixed: true, chosen: true } as const;
   const withProxy = reachableAddresses(
-    { url: 'https://example.trycloudflare.com', proxyUrl: 'https://sillytavern.acme.workers.dev' },
+    { url: 'https://example.trycloudflare.com', proxyUrl: 'https://sillytavern.acme.workers.dev', linkPreference: fixedFirst },
     { lan: false, port: 8001 },
     'localhost',
     8000,
@@ -47,6 +48,9 @@ test('a fixed address in front of the tunnel is the one offered', () => {
   // The tunnel behind it is still worth being able to see: it is what the
   // traffic really goes through, and the share sheet says so.
   assert.equal(withProxy[0]?.via, 'example.trycloudflare.com');
+  // Left to the default, the tunnel's own address goes first: it is faster.
+  const byDefault = reachableAddresses({ url: 'https://example.trycloudflare.com', proxyUrl: 'https://sillytavern.acme.workers.dev' }, { lan: false, port: 8001 }, 'localhost', 8000, false);
+  assert.deepEqual(byDefault.map((address) => address.link), ['tunnel', 'fixed']);
 
   // With no Cloudflare sign-in there is no Worker, and the tunnel's own
   // address is the only address there is.
@@ -70,10 +74,11 @@ test('an address still being deployed is not an address anybody is given', () =>
    * first it was worse: the Worker exists, still pointing at last time's
    * tunnel, so the link on the card answered with an error.
    */
-  assert.equal(publicAddress({ url: 'https://new.trycloudflare.com', proxyUrl: null, proxyPending: true }), null);
-  assert.equal(publicAddress({ url: 'https://new.trycloudflare.com', proxyUrl: 'https://stm.acme.workers.dev', proxyPending: true }), null);
+  const fixedFirst = { preferred: 'fixed', showFixed: true, chosen: true } as const;
+  assert.equal(publicAddress({ url: 'https://new.trycloudflare.com', proxyUrl: null, proxyPending: true, linkPreference: fixedFirst }), null);
+  assert.equal(publicAddress({ url: 'https://new.trycloudflare.com', proxyUrl: 'https://stm.acme.workers.dev', proxyPending: true, linkPreference: fixedFirst }), null);
   // Once it points at the tunnel that is up, it is the address to give.
-  assert.equal(publicAddress({ url: 'https://new.trycloudflare.com', proxyUrl: 'https://stm.acme.workers.dev', proxyPending: false }), 'https://stm.acme.workers.dev');
+  assert.equal(publicAddress({ url: 'https://new.trycloudflare.com', proxyUrl: 'https://stm.acme.workers.dev', proxyPending: false, linkPreference: fixedFirst }), 'https://stm.acme.workers.dev');
   // And with no Cloudflare sign-in nothing is ever pending, so the tunnel's
   // own address is offered the moment it exists.
   assert.equal(publicAddress({ url: 'https://new.trycloudflare.com', proxyUrl: null, proxyPending: false }), 'https://new.trycloudflare.com');
@@ -81,7 +86,7 @@ test('an address still being deployed is not an address anybody is given', () =>
   // The card loses the public row while it waits rather than showing one that
   // is about to change; the addresses that do work are still there.
   const waiting = reachableAddresses(
-    { url: 'https://new.trycloudflare.com', proxyUrl: 'https://stm.acme.workers.dev', proxyPending: true },
+    { url: 'https://new.trycloudflare.com', proxyUrl: 'https://stm.acme.workers.dev', proxyPending: true, linkPreference: fixedFirst },
     { lan: true, port: 8001 },
     '192.168.1.20',
     8000,
@@ -136,12 +141,14 @@ test('another machine is named by its hostname, or by both ends of its address',
 
 test('the address the reader starred goes first, and a hidden fixed address is not offered', () => {
   const both = { url: 'https://example.trycloudflare.com', proxyUrl: 'https://sillytavern.acme.workers.dev' };
-  assert.deepEqual(publicLinks(both).map((link) => link.kind), ['fixed', 'tunnel'], 'the fixed one first, as always, when nothing was chosen');
+  assert.deepEqual(publicLinks(both).map((link) => link.kind), ['tunnel', 'fixed'], 'the faster one first when nothing was chosen');
+  assert.deepEqual(publicLinks({ ...both, linkPreference: { preferred: 'fixed', showFixed: true, chosen: true } }).map((link) => link.kind), ['fixed', 'tunnel']);
   assert.deepEqual(publicLinks({ ...both, linkPreference: { preferred: 'tunnel', showFixed: true } }).map((link) => link.kind), ['tunnel', 'fixed']);
   assert.equal(publicAddress({ ...both, linkPreference: { preferred: 'tunnel', showFixed: true } }), 'https://example.trycloudflare.com');
   assert.deepEqual(publicLinks({ ...both, linkPreference: { preferred: 'fixed', showFixed: false } }).map((link) => link.kind), ['tunnel']);
   // Preferring the tunnel's own address is not kept waiting for a Worker
   // deploy nobody is going to use.
   assert.equal(publicAddress({ ...both, proxyPending: true, linkPreference: { preferred: 'tunnel', showFixed: true } }), 'https://example.trycloudflare.com');
-  assert.equal(publicAddress({ ...both, proxyPending: true }), null);
+  assert.equal(publicAddress({ ...both, proxyPending: true }), 'https://example.trycloudflare.com', 'nor is the default');
+  assert.equal(publicAddress({ ...both, proxyPending: true, linkPreference: { preferred: 'fixed', showFixed: true, chosen: true } }), null);
 });

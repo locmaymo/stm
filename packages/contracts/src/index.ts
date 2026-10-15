@@ -313,6 +313,15 @@ export interface ManagerRelease {
    * with nothing to say about it rather than one to hide.
    */
   readonly notes: string;
+  /**
+   * The same notes in another language, where the release carries them.
+   *
+   * Pull requests and the notes generated from them are written in English, so
+   * a console read in Vietnamese announced every release in English. A release
+   * can now carry a Vietnamese section of its own; see `releaseSections` in the
+   * manager. Absent where it does not, and the English is shown instead.
+   */
+  readonly notesByLocale?: { readonly vi?: string };
   /** Where to read the whole of it. */
   readonly url: string;
   readonly publishedAt: string | null;
@@ -1214,27 +1223,54 @@ export type AccessLinkKind = 'fixed' | 'tunnel';
  *
  * A setting of the reader's, so it travels with the rest of the manager's
  * settings to the bucket and back.
+ *
+ * Unless the reader has said otherwise, SillyTavern's door puts the tunnel's
+ * own address first: every request through the fixed one takes a turn through
+ * the Worker, and loading SillyTavern is hundreds of requests, so it opens and
+ * switches characters noticeably slower. The console's own door keeps the
+ * fixed one first - it loads a handful of files, so the Worker costs it
+ * nothing anybody notices, and an address that survives a restart is worth
+ * more there. Either way the other is a choice away; see `DEFAULT_ACCESS_LINKS`.
  */
 export interface AccessLinkPreference {
   readonly preferred: AccessLinkKind;
   readonly showFixed: boolean;
+  /**
+   * Whether `preferred` was picked by the reader rather than filled in.
+   *
+   * Managers before this wrote the default out in full, and the default was
+   * `fixed` for both doors: a stored `fixed` from then is no choice at all,
+   * while a stored `tunnel` can only have been picked. Absent on such a record,
+   * and always written since.
+   */
+  readonly chosen?: boolean;
 }
 
 export type AccessLinkPreferences = Readonly<Record<AccessLinkTarget, AccessLinkPreference>>;
 
-export const DEFAULT_ACCESS_LINK: AccessLinkPreference = { preferred: 'fixed', showFixed: true };
+/** What each door offers first until the reader picks; see `AccessLinkPreference`. */
+export const DEFAULT_ACCESS_LINKS: AccessLinkPreferences = {
+  sillyTavern: { preferred: 'tunnel', showFixed: true, chosen: false },
+  manager: { preferred: 'fixed', showFixed: true, chosen: false },
+};
+
+/** SillyTavern's, for a reader that does not know which door it is looking at. */
+export const DEFAULT_ACCESS_LINK: AccessLinkPreference = DEFAULT_ACCESS_LINKS.sillyTavern;
 
 /** Read preferences back, correcting anything missing or malformed to the default. */
 export function parseAccessLinks(value: unknown): AccessLinkPreferences {
   const record = typeof value === 'object' && value !== null ? value as Record<string, unknown> : {};
-  const one = (entry: unknown): AccessLinkPreference => {
+  const one = (entry: unknown, target: AccessLinkTarget): AccessLinkPreference => {
     const fields = typeof entry === 'object' && entry !== null ? entry as Record<string, unknown> : {};
+    const valid = fields.preferred === 'tunnel' || fields.preferred === 'fixed';
+    const chosen = valid && (fields.chosen === true || (fields.chosen === undefined && fields.preferred === 'tunnel'));
     return {
-      preferred: fields.preferred === 'tunnel' ? 'tunnel' : 'fixed',
+      preferred: chosen ? fields.preferred as AccessLinkKind : DEFAULT_ACCESS_LINKS[target].preferred,
       showFixed: fields.showFixed !== false,
+      chosen,
     };
   };
-  return { sillyTavern: one(record.sillyTavern), manager: one(record.manager) };
+  return { sillyTavern: one(record.sillyTavern, 'sillyTavern'), manager: one(record.manager, 'manager') };
 }
 
 /**
@@ -1281,6 +1317,14 @@ export interface ConfigSettings {
   /** SillyTavern's own per-chat backups, which the manager then backs up too. */
   readonly chatBackups: boolean;
   readonly chatBackupCount: number;
+  /**
+   * Whether SillyTavern sends what it asks of the outside world - the AI
+   * services above all - through a proxy of the reader's: the way round a
+   * network that blocks one.
+   */
+  readonly requestProxyEnabled: boolean;
+  /** That proxy, as SillyTavern reads it: `http://user:pass@host:port`. Empty when none. */
+  readonly requestProxyUrl: string;
 }
 
 /** The settings the console may write. Everything else is read-only or YAML. */
@@ -1294,6 +1338,8 @@ export type ConfigSettingsInput = Partial<Pick<ConfigSettings,
   | 'allowKeysExposure'
   | 'chatBackups'
   | 'chatBackupCount'
+  | 'requestProxyEnabled'
+  | 'requestProxyUrl'
 >>;
 
 export interface ConfigDocument {
@@ -1309,6 +1355,17 @@ export interface ConfigDocument {
   readonly rawYaml: string;
   readonly settings: ConfigSettings;
   readonly restartRequired: boolean;
+  /**
+   * What the installed SillyTavern can do with the settings above, where that
+   * depends on its version. A key it does not read is a switch that does
+   * nothing, so the console offers it only where it is read.
+   *
+   * Additive: absent from a document written before this existed.
+   */
+  readonly supports?: {
+    /** `requestProxy`, which SillyTavern reads from 1.12.6. */
+    readonly requestProxy: boolean;
+  };
 }
 
 export interface ConfigUpdateInput {

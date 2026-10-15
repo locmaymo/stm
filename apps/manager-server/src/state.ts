@@ -419,7 +419,8 @@ export class StateStore {
     let result: AccessLinkPreferences = parseAccessLinks(null);
     const operation = async (): Promise<void> => {
       const state = await this.load();
-      const next = parseAccessLinks({ ...state.accessLinks, [target]: { ...state.accessLinks[target], ...change } });
+      // Picking one is what makes it a choice; see `AccessLinkPreference.chosen`.
+      const next = parseAccessLinks({ ...state.accessLinks, [target]: { ...state.accessLinks[target], ...change, ...(change.preferred && change.chosen === undefined ? { chosen: true } : {}) } });
       result = next;
       if (JSON.stringify(next) === JSON.stringify(state.accessLinks)) return;
       const updated: PersistedManagerState = { ...state, accessLinks: next, updatedAt: this.now().toISOString() };
@@ -434,8 +435,9 @@ export class StateStore {
 
   /** Put every door's preference back at once, as a restore does. */
   public async setAccessLinks(links: AccessLinkPreferences): Promise<void> {
-    await this.setAccessLink('sillyTavern', links.sillyTavern);
-    await this.setAccessLink('manager', links.manager);
+    // As they were recorded: a default that came back is still a default.
+    await this.setAccessLink('sillyTavern', { ...links.sillyTavern, chosen: links.sillyTavern.chosen === true });
+    await this.setAccessLink('manager', { ...links.manager, chosen: links.manager.chosen === true });
   }
 
   /** Whether SillyTavern comes up with the manager. */
