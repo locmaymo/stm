@@ -2365,6 +2365,9 @@ function ManagerReleaseCard({ t, locale, current, release, onDismiss }: {
   release: ManagerRelease;
   onDismiss: () => void;
 }) {
+  // In the reader's language where the release carries it; otherwise the
+  // English the release was written in, rather than nothing.
+  const notes = (locale === 'vi' ? release.notesByLocale?.vi : undefined) || release.notes;
   return <Card className="release-card">
     <PanelHeading icon={<CircleArrowUp />}>{t('console.managerUpdateTitle', { version: release.version })}</PanelHeading>
     <CardContent className="grid gap-3">
@@ -2372,10 +2375,10 @@ function ManagerReleaseCard({ t, locale, current, release, onDismiss }: {
         {t('console.managerUpdateBody', { current, version: release.version })}
         {release.publishedAt ? ` ${t('console.managerUpdatePublished', { when: releaseDate(release.publishedAt, locale) })}` : ''}
       </p>
-      {release.notes
+      {notes
         ? <div className="release-notes">
           {release.name ? <p className="release-notes-title">{release.name}</p> : null}
-          <p className="release-notes-body">{release.notes}</p>
+          <p className="release-notes-body">{notes}</p>
         </div>
         : null}
       <div className="flex flex-wrap gap-2">

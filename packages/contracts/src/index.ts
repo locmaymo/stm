@@ -313,6 +313,15 @@ export interface ManagerRelease {
    * with nothing to say about it rather than one to hide.
    */
   readonly notes: string;
+  /**
+   * The same notes in another language, where the release carries them.
+   *
+   * Pull requests and the notes generated from them are written in English, so
+   * a console read in Vietnamese announced every release in English. A release
+   * can now carry a Vietnamese section of its own; see `releaseSections` in the
+   * manager. Absent where it does not, and the English is shown instead.
+   */
+  readonly notesByLocale?: { readonly vi?: string };
   /** Where to read the whole of it. */
   readonly url: string;
   readonly publishedAt: string | null;

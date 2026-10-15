@@ -130,9 +130,22 @@ jobs:
         with:
           name: npm-package
           path: release/npm
+      # The release's own notes, in English and Vietnamese, put above the
+      # changelog GitHub generates from pull request titles - which are English
+      # only, and were all a console read in Vietnamese had to show. A version
+      # with no notes file is released with the generated changelog alone.
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: packaging/release-notes
+          path: source
+      - id: notes
+        run: |
+          file="source/packaging/release-notes/${GITHUB_REF_NAME#v}.md"
+          if [ -f "$file" ]; then echo "path=$file" >> "$GITHUB_OUTPUT"; else echo "::notice::no $file, releasing with generated notes only"; fi
       - uses: softprops/action-gh-release@v3
         with:
           files: release/**/*
+          body_path: ${{ steps.notes.outputs.path }}
           generate_release_notes: true
 
   # The same tarball the GitHub Release carries, published to npm, so a version
