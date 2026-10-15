@@ -28,6 +28,20 @@ export interface ProfileStoreOptions {
   readonly paths: PlatformPaths;
   readonly now?: () => Date;
   readonly logger?: LogSink;
+  /**
+   * What keeps the profiles' data on the data directory when it is worked on
+   * from somewhere else; see `ProfileVault`. Nothing is read before it has
+   * filled the working copy.
+   */
+  readonly vault?: WorkingCopyKeeper | null;
+}
+
+/** The part of `ProfileVault` the store drives. */
+export interface WorkingCopyKeeper {
+  restore(): Promise<void>;
+  start(): void;
+  erase(): Promise<void>;
+  close(): Promise<void>;
 }
 
 /** The installation id of a profile made before there was any installation to give it; see `ensureWaiting`. */
@@ -62,12 +76,48 @@ export class ProfileStore {
   private profiles: Profile[] | null = null;
   private writeQueue: Promise<void> = Promise.resolve();
   private cleanupTail: Promise<void> = Promise.resolve();
+  private readonly vault: WorkingCopyKeeper | null;
+  private readonly ready: Promise<void>;
 
   public constructor(options: ProfileStoreOptions) {
     this.paths = options.paths;
     this.now = options.now ?? (() => new Date());
     this.logger = options.logger ?? ((line) => console.log(logLineText(line)));
+    this.vault = options.vault ?? null;
+    const vault = this.vault;
+    this.ready = vault ? vault.restore().then(() => vault.start()) : Promise.resolve();
+    // Every profile read waits on this and fails with it, which is the point:
+    // a working copy that could not be filled must not be used, or written out
+    // over the copy that holds the data.
+    this.ready.catch((error: unknown) => {
+      const reason = error instanceof Error ? error.message : 'unknown error';
+      this.logger(logEvent('vault.restoreFailed', `[vault] the profiles could not be put back on this machine's disk, so nothing will be written over the data directory's copy: ${reason}`, { reason }));
+    });
   }
+
+  /** Empty the working copy and its copy in the data directory, for a reset. */
+  public async eraseWorkingCopy(): Promise<void> {
+    await this.vault?.erase();
+  }
+
+  /** Write out what the working copy still holds unwritten, and stop. */
+  public async close(): Promise<void> {
+    await this.settle();
+    await this.vault?.close();
+  }
+
+  /**
+   * Where profile data roots are recorded: under the data directory, always,
+   * so the record means the same thing on a machine that keeps them there and
+   * on one that works on them from its own disk.
+   */
+  private get recordedDataRoot(): string { return resolve(this.paths.profiles, '.profile-data'); }
+
+  /** A recorded path as this machine reaches it. */
+  private toWorking(path: string): string { return swapRoot(path, this.recordedDataRoot, resolve(this.paths.profileData)); }
+
+  /** A path on this machine as it is recorded. */
+  private toRecorded(path: string): string { return swapRoot(path, resolve(this.paths.profileData), this.recordedDataRoot); }
 
   public async list(): Promise<Profile[]> {
     return (await this.load()).map((profile) => ({ ...profile }));
@@ -146,7 +196,7 @@ export class ProfileStore {
     }
     const layout = input.layout ?? 'data';
     const id = randomUUID();
-    const profileRoot = join(this.paths.profiles, '.profile-data', id);
+    const profileRoot = join(this.paths.profileData, id);
     const dataPath = layout === 'data' ? join(profileRoot, 'data') : join(input.runtimePath, 'public');
     const configPath = layout === 'data' ? join(profileRoot, 'config.yaml') : join(input.runtimePath, 'config.yaml');
     if (layout === 'data') await mkdir(dataPath, { recursive: true });
@@ -381,7 +431,7 @@ export class ProfileStore {
   }
 
   private async migrateTreeToData(profile: Profile): Promise<{ dataPath: string; configPath: string }> {
-    const profileRoot = join(this.paths.profiles, '.profile-data', profile.id);
+    const profileRoot = join(this.paths.profileData, profile.id);
     const dataPath = join(profileRoot, 'data');
     const userPath = join(dataPath, DEFAULT_USER_HANDLE);
     const configPath = join(profileRoot, 'config.yaml');
@@ -395,11 +445,16 @@ export class ProfileStore {
 
   private async load(): Promise<Profile[]> {
     if (this.profiles) return this.profiles;
+    await this.ready;
+    if (this.profiles) return this.profiles;
     await mkdir(this.paths.state, { recursive: true });
     try {
       const parsed: unknown = JSON.parse(await readFile(join(this.paths.state, PROFILE_STATE_FILE), 'utf8'));
       if (!isRecord(parsed) || parsed.schemaVersion !== PROFILE_SCHEMA_VERSION || !Array.isArray(parsed.profiles)) throw new Error('Invalid profile state');
-      this.profiles = parsed.profiles.map((profile) => parseProfile(profile));
+      this.profiles = parsed.profiles.map((profile) => {
+        const parsedProfile = parseProfile(profile);
+        return { ...parsedProfile, dataPath: this.toWorking(parsedProfile.dataPath), configPath: this.toWorking(parsedProfile.configPath) };
+      });
     } catch (error: unknown) {
       if (!isFileNotFound(error)) throw error;
       this.profiles = [];
@@ -412,7 +467,8 @@ export class ProfileStore {
       await mkdir(this.paths.state, { recursive: true });
       const target = join(this.paths.state, PROFILE_STATE_FILE);
       const temporary = `${target}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
-      const payload: PersistedProfiles = { schemaVersion: PROFILE_SCHEMA_VERSION, profiles };
+      const recorded = profiles.map((profile) => ({ ...profile, dataPath: this.toRecorded(profile.dataPath), configPath: this.toRecorded(profile.configPath) }));
+      const payload: PersistedProfiles = { schemaVersion: PROFILE_SCHEMA_VERSION, profiles: recorded };
       await writeFile(temporary, `${JSON.stringify(payload, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
       await rename(temporary, target);
       this.profiles = profiles;
@@ -435,6 +491,17 @@ function normalizeName(value: string): string {
   const name = value.trim();
   if (name.length < 1 || name.length > 80) throw new ProfileError('invalid_profile_name', 'Profile name must be between 1 and 80 characters');
   return name;
+}
+
+/** `path` with the root `from` exchanged for `to`, or `path` itself when it is not under `from`. */
+function swapRoot(path: string, from: string, to: string): string {
+  if (from === to) return path;
+  const absolute = resolve(path);
+  if (absolute === from) return to;
+  for (const separator of ['/', '\\']) {
+    if (absolute.startsWith(`${from}${separator}`)) return join(to, absolute.slice(from.length + 1));
+  }
+  return path;
 }
 
 function parseProfile(value: unknown): Profile {

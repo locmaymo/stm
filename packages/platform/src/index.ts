@@ -100,6 +100,11 @@ export interface PlatformPaths {
    * directory is on network storage. See `runtimeRoot`.
    */
   readonly runtime: string;
+  /**
+   * Where the profiles' data roots live: beside the profiles, unless the data
+   * directory is on network storage. See `profileDataRoot`.
+   */
+  readonly profileData: string;
 }
 
 export interface PlatformPathOptions {
@@ -349,6 +354,9 @@ const NETWORK_FILESYSTEMS = new Set(['nfs', 'nfs4', 'cifs', 'smb3', 'smbfs', 'ce
  */
 const LOCAL_FUSE_FILESYSTEMS = new Set(['fuse.fuse-overlayfs', 'fuse.lxcfs']);
 
+/** Where the profile vault keeps its packs, under the profiles directory. */
+export const PROFILE_STORE_DIR = '.profile-store';
+
 /**
  * Whether the data directory is on storage reached over a network.
  *
@@ -383,6 +391,33 @@ export function runtimeRoot(root: string, env: NodeJS.ProcessEnv = process.env, 
   return join(root, 'profiles', 'runtime');
 }
 
+/**
+ * Where the profiles' data - characters, chats, settings - is read and written.
+ *
+ * Beside the profiles, unless the data directory is on network storage. A
+ * profile is thousands of small files, and SillyTavern reads most of them each
+ * time it is opened, which took minutes there. It is then worked on from this
+ * machine's own disk, and the profile vault keeps the data directory's copy as
+ * one pack plus a journal of what changed. `STM_PROFILE_DATA_DIR` names the
+ * place outright.
+ *
+ * Not when this machine's temporary directory is kept in memory, as many
+ * Linux systems keep /tmp: a profile is gigabytes, and there it would all be
+ * held in RAM. The data directory is slow, but it does not run the machine out
+ * of memory. Once the vault holds the profiles they come back only from its
+ * packs, so from then on they go to the temporary directory whatever it is.
+ */
+export function profileDataRoot(root: string, env: NodeJS.ProcessEnv = process.env, mountTable?: string | null, scratch: string = tmpdir()): string {
+  if (env.STM_PROFILE_DATA_DIR) return resolve(env.STM_PROFILE_DATA_DIR);
+  const besideProfiles = join(root, 'profiles', '.profile-data');
+  const table = mountTable === undefined ? readMountTable() : mountTable;
+  if (!onNetworkStorage(root, table)) return besideProfiles;
+  const scratchMount = table === null ? null : mountOf(scratch, table);
+  const inMemory = scratchMount !== null && MEMORY_FILESYSTEMS.has(scratchMount.filesystem);
+  if (inMemory && !existsSync(join(root, 'profiles', PROFILE_STORE_DIR, 'head.json'))) return besideProfiles;
+  return join(scratch, 'sillytavern-manager-profiles');
+}
+
 export function getPlatformPaths(options: PlatformPathOptions = {}): PlatformPaths {
   const env = options.env ?? process.env;
   const platform = detectPlatform(options);
@@ -392,6 +427,8 @@ export function getPlatformPaths(options: PlatformPathOptions = {}): PlatformPat
     : platform === 'hosted' || platform === 'docker'
       ? join(tmpdir(), 'sillytavern-manager')
       : join(root, 'tmp');
+  // Read once: both questions below are asked of the same mount table.
+  const mountTable = options.mountTable === undefined ? readMountTable() : options.mountTable;
   return {
     platform,
     root,
@@ -403,6 +440,7 @@ export function getPlatformPaths(options: PlatformPathOptions = {}): PlatformPat
     outbox: join(root, 'outbox'),
     tmp: scratchRoot,
     bin: join(root, 'bin'),
-    runtime: runtimeRoot(root, env, options.mountTable),
+    runtime: runtimeRoot(root, env, mountTable),
+    profileData: profileDataRoot(root, env, mountTable),
   };
 }

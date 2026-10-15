@@ -1,11 +1,13 @@
 import test from 'node:test';
 import { posix } from 'node:path';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { gunzipSync, gzipSync } from 'node:zlib';
+import { packTree, unpackTree } from '../../../packages/platform/src/archive.js';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { removeTreeGently } from '../../../packages/platform/src/remove.js';
-import { createIoLimiter, detectPlatform, getPlatformPaths, ioConcurrency, onNetworkStorage, runPooled, runtimeRoot, storageAssurance, storageDurability, storageMedium } from '../../../packages/platform/src/index.js';
+import { createIoLimiter, detectPlatform, getPlatformPaths, ioConcurrency, onNetworkStorage, profileDataRoot, runPooled, runtimeRoot, storageAssurance, storageDurability, storageMedium } from '../../../packages/platform/src/index.js';
 
 test('platform paths follow the documented durable roots', () => {
   assert.equal(detectPlatform({ platform: 'win32', env: {} }), 'windows');
@@ -187,6 +189,16 @@ test('SillyTavern is kept off a data directory on network storage', () => {
   // The network share is somewhere else; the data directory is not on it.
   assert.equal(onNetworkStorage('/data/manager', '/dev/sda1 / ext4 rw 0 0\nserver:/export /mnt/share nfs rw 0 0'), false);
 
+  // The profiles' data follows the same rule, with its own override.
+  assert.equal(profileDataRoot('/mnt/workspace/sillytavern-manager', {}, objectStore), join(tmpdir(), 'sillytavern-manager-profiles'));
+  assert.equal(profileDataRoot('/data/sillytavern-manager', {}, '/dev/sda1 /data ext4 rw 0 0'), join('/data/sillytavern-manager', 'profiles', '.profile-data'));
+  assert.equal(profileDataRoot('/data/manager', { STM_PROFILE_DATA_DIR: '/srv/profiles' }, null), resolve('/srv/profiles'));
+
+  // A temporary directory kept in memory would hold the whole profile in RAM.
+  const memoryTmp = `${objectStore}\ntmpfs /tmp tmpfs rw 0 0`;
+  assert.equal(profileDataRoot('/mnt/workspace/sillytavern-manager', {}, memoryTmp, '/tmp'), join('/mnt/workspace/sillytavern-manager', 'profiles', '.profile-data'));
+  assert.equal(profileDataRoot('/mnt/workspace/sillytavern-manager', {}, `${objectStore}\n/dev/sda1 /tmp ext4 rw 0 0`, '/tmp'), join('/tmp', 'sillytavern-manager-profiles'));
+
   // STM_RUNTIME_DIR names the place outright, either way.
   assert.equal(runtimeRoot('/mnt/workspace/sillytavern-manager', { STM_RUNTIME_DIR: '/srv/runtime' }, objectStore), resolve('/srv/runtime'));
   assert.equal(runtimeRoot('/data/manager', { STM_RUNTIME_DIR: '/srv/runtime' }, null), resolve('/srv/runtime'));
@@ -211,4 +223,34 @@ test('a tree is removed whole, a few files at a time', async () => {
   // Nothing there is nothing to do.
   await removeTreeGently(join(root, 'tree'));
   await rm(root, { recursive: true, force: true });
+});
+
+test('a pack with padding after the end of the archive still unpacks', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-archive-'));
+  await mkdir(join(root, 'tree', 'nested'), { recursive: true });
+  await writeFile(join(root, 'tree', 'nested', 'chat.jsonl'), 'a chat', 'utf8');
+  const packed = join(root, 'pack.tar.gz');
+  await packTree(join(root, 'tree'), packed, 'gz');
+  // tar stops reading at the end marker; whatever follows it is never read,
+  // and a writer still pushing it in meets a closed pipe.
+  const padded = join(root, 'padded.tar.gz');
+  await writeFile(padded, gzipSync(Buffer.concat([gunzipSync(await readFile(packed)), Buffer.alloc(9 * 1024 * 1024)])));
+  await mkdir(join(root, 'out'));
+  await unpackTree(padded, 'gz', join(root, 'out'));
+  assert.equal(await readFile(join(root, 'out', 'nested', 'chat.jsonl'), 'utf8'), 'a chat');
+  await rm(root, { recursive: true, force: true });
+});
+
+test('profiles already in the vault come back to the temporary directory even when it is in memory', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-vault-root-'));
+  try {
+    const table = `remote ${root.replace(/\\/gu, '/')} fuse.remotefs rw 0 0\ntmpfs /tmp tmpfs rw 0 0`;
+    assert.equal(profileDataRoot(root, {}, table, '/tmp'), join(root, 'profiles', '.profile-data'));
+    await mkdir(join(root, 'profiles', '.profile-store'), { recursive: true });
+    await writeFile(join(root, 'profiles', '.profile-store', 'head.json'), '{}', 'utf8');
+    // The packs are the only copy now; the data directory has no tree to fall back on.
+    assert.equal(profileDataRoot(root, {}, table, '/tmp'), join('/tmp', 'sillytavern-manager-profiles'));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

@@ -6,7 +6,7 @@ import { hostname, networkInterfaces } from 'node:os';
 import { createSocket } from 'node:dgram';
 import { extname, join, relative, resolve, sep } from 'node:path';
 import { applyQuery, BACKUP_PURPOSES, isLogEvent, availableUpdate, backupSearchText, backupSortValue, installationSearchText, installationSortValue, pageInfo, parseTableQuery, snapshotSearchText, snapshotSortValue, logEvent, logLineText, isConsoleStatusSection, KEEP_ONLINE_DEFAULT_MINUTES, OPERATION_JOB_KINDS, SETUP_STEPS, type AccessGatewayState, type ApiErrorBody, type BackupManifest, type BackupPurpose, type ConfigUpdateInput, type ConsoleStatus, type ConsoleStatusSection, type HealthResponse, type Installation, type Job, type JobKind, type JobState, type LogEntry, type LogEvent, type LogLine, type LogPage, type LogSink, type LogSourceFilter, type LegalReview, type ManagerPorts, type ManagerUpdateStatus, type OnlineState, type PortSettings, type Profile, type ProfileLayout, type RestorePreview, type SetupChecklistState, type SetupStatus, type SetupStep, type StartupSettings, type TunnelState, type VersionSelector } from '../../../packages/contracts/src/index.js';
-import { getPlatformPaths, storageDurability, storageMedium, storageReport, type PlatformPaths } from '../../../packages/platform/src/index.js';
+import { getPlatformPaths, PROFILE_STORE_DIR, storageDurability, storageMedium, storageReport, type PlatformPaths } from '../../../packages/platform/src/index.js';
 import { INSTALL_CANCELED, RuntimeError, RuntimeManager, type InstallationProgress } from '../../../packages/sillytavern-runtime/src/index.js';
 import { hashPassword, MIN_PASSWORD_LENGTH, validatePasscode, validatePassword, verifyPassword } from './password.js';
 import { RateLimiter } from './rate-limit.js';
@@ -24,6 +24,7 @@ import { ACCESS_GATEWAY_PORT, checkSillyTavernPort, findFreePort, isPortFree, MA
 import { previewImage, previewLogo, previewManifest } from './preview.js';
 import { TunnelManager } from '../../../packages/tunnel/src/index.js';
 import { isWaitingProfile, ProfileError, ProfileStore } from '../../../packages/profiles/src/index.js';
+import { ProfileVault } from '../../../packages/profiles/src/vault.js';
 import { BackupError, BackupStore, MAX_ZIP_DIRECTORY_BYTES, type RestoreOptions } from '../../../packages/backup/src/index.js';
 import { CloudflareConnection, R2Error, R2Manager, type R2UpdateInput } from '../../../packages/r2/src/index.js';
 import { CloudflareApiError, CloudflareOAuthError, CloudflareRateLimitError, DEFAULT_SCOPES, PROXY_WORKER_TARGETS, ProxyWorkerManager, type ProxyWorkerTarget } from '../../../packages/cloudflare/src/index.js';
@@ -301,7 +302,12 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   // npm's cache is dropped after an install in saver mode; `backups` holds the
   // switch, and is only asked once an install has finished.
   const runtime = options.runtime ?? new RuntimeManager({ paths, healthCheckPort: () => sillyTavernPort, dropNpmCache: () => backups.saving, logger: (line) => { jobs.append('installer', line); baseLogger(line); } });
-  const profiles = options.profileStore ?? new ProfileStore({ paths, logger: (line) => { jobs.append('manager', line); baseLogger(line); } });
+  const profileLogger: LogSink = (line) => { jobs.append('manager', line); baseLogger(line); };
+  // The profiles are worked on away from the data directory only when it is
+  // network storage; the vault then keeps the data directory's copy.
+  const recordedProfileData = resolve(paths.profiles, '.profile-data');
+  const vault = resolve(paths.profileData) === recordedProfileData ? null : new ProfileVault({ local: paths.profileData, durable: join(paths.profiles, PROFILE_STORE_DIR), legacy: recordedProfileData, logger: profileLogger });
+  const profiles = options.profileStore ?? new ProfileStore({ paths, vault, logger: profileLogger });
   const backups = options.backupStore ?? new BackupStore({ paths, logger: (line) => { jobs.append('backup', line); baseLogger(line); } });
   const cloudflare = options.cloudflare !== undefined ? options.cloudflare : cloudflareConnectionFromEnvironment(paths, env);
   const r2 = options.r2 ?? new R2Manager({
@@ -1125,7 +1131,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     online,
     // The meter closes first, so the part of today that has just been spent is
     // written down before the transport looks for finished days.
-    close: async () => { online.close(); notificationRules.close(); replyNotifier.close(); announcements?.close(); await activity.close(); await telemetry.close(); await scheduler.close(); await tunnel.close(); await managerTunnel.close(); await gateway.close(); await supervisor.close(); await backups.settle(); await profiles.settle(); await closeServer(server); },
+    close: async () => { online.close(); notificationRules.close(); replyNotifier.close(); announcements?.close(); await activity.close(); await telemetry.close(); await scheduler.close(); await tunnel.close(); await managerTunnel.close(); await gateway.close(); await supervisor.close(); await backups.settle(); await profiles.close(); await closeServer(server); },
   };
 }
 
@@ -1684,6 +1690,9 @@ async function handleReset(context: RequestContext, deps: ResetDeps): Promise<vo
   if (runtimeOutside.startsWith('..') || resolve(store.paths.runtime) === resolve(runtimeOutside)) {
     await runtime.removeInstallations().catch((error: unknown) => logger(`[manager] SillyTavern could not be removed: ${error instanceof Error ? error.message : 'unknown error'}`));
   }
+  // A working copy away from the data directory would be written back over
+  // the wipe a few seconds after it.
+  await profiles.eraseWorkingCopy();
   const report = await eraseManagerData(store.paths, logger);
   await Promise.all([store.forget(), runtime.forget(), profiles.forget(), backups.forget()]);
   // A machine that has just been wiped is a machine nobody has set up, and
