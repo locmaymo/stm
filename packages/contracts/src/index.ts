@@ -1281,6 +1281,14 @@ export interface ConfigSettings {
   /** SillyTavern's own per-chat backups, which the manager then backs up too. */
   readonly chatBackups: boolean;
   readonly chatBackupCount: number;
+  /**
+   * Whether SillyTavern sends what it asks of the outside world - the AI
+   * services above all - through a proxy of the reader's: the way round a
+   * network that blocks one.
+   */
+  readonly requestProxyEnabled: boolean;
+  /** That proxy, as SillyTavern reads it: `http://user:pass@host:port`. Empty when none. */
+  readonly requestProxyUrl: string;
 }
 
 /** The settings the console may write. Everything else is read-only or YAML. */
@@ -1294,6 +1302,8 @@ export type ConfigSettingsInput = Partial<Pick<ConfigSettings,
   | 'allowKeysExposure'
   | 'chatBackups'
   | 'chatBackupCount'
+  | 'requestProxyEnabled'
+  | 'requestProxyUrl'
 >>;
 
 export interface ConfigDocument {
@@ -1309,6 +1319,17 @@ export interface ConfigDocument {
   readonly rawYaml: string;
   readonly settings: ConfigSettings;
   readonly restartRequired: boolean;
+  /**
+   * What the installed SillyTavern can do with the settings above, where that
+   * depends on its version. A key it does not read is a switch that does
+   * nothing, so the console offers it only where it is read.
+   *
+   * Additive: absent from a document written before this existed.
+   */
+  readonly supports?: {
+    /** `requestProxy`, which SillyTavern reads from 1.12.6. */
+    readonly requestProxy: boolean;
+  };
 }
 
 export interface ConfigUpdateInput {

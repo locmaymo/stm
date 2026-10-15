@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import type { Installation, Profile } from '../../contracts/src/index.js';
-import { ConfigError, ConfigStore } from '../src/index.js';
+import { ConfigError, ConfigStore, proxyUrlProblem } from '../src/index.js';
 
 async function fixture(): Promise<{ store: ConfigStore; profile: Profile; installation: Installation; configPath: string }> {
   const root = await mkdtemp(join(tmpdir(), 'stm-config-'));
@@ -42,6 +42,33 @@ test('settings update atomically without disturbing comments or unknown keys', a
   assert.match(raw, /username: user/u);
   assert.equal((parseYaml(raw) as { basicAuthUser: { password: string } }).basicAuthUser.password, 'old-secret');
   assert.equal(await readFile(`${configPath}.bak`, 'utf8').then((value) => value.includes('# keep this comment')), true);
+});
+
+test('the request proxy is written where SillyTavern reads it, and only an address it can use', async () => {
+  const { store, profile, installation, configPath } = await fixture();
+  // A runtime older than 1.12.6 ships no request-proxy module and is told so.
+  assert.equal((await store.read(profile, installation)).supports?.requestProxy, false);
+  await mkdir(join(installation.runtimePath, 'src'), { recursive: true });
+  await writeFile(join(installation.runtimePath, 'src', 'request-proxy.js'), 'export default function () {}', 'utf8');
+  assert.equal((await store.read(profile, installation)).supports?.requestProxy, true);
+
+  const saved = await store.update(profile, installation, { settings: { requestProxyUrl: 'http://user:p%40ss@1.2.3.4:8080', requestProxyEnabled: true } });
+  assert.equal(saved.settings.requestProxyEnabled, true);
+  assert.equal(saved.settings.requestProxyUrl, 'http://user:p%40ss@1.2.3.4:8080');
+  const written = parseYaml(await readFile(configPath, 'utf8')) as { requestProxy: { enabled: boolean; url: string } };
+  assert.deepEqual(written.requestProxy, { enabled: true, url: 'http://user:p%40ss@1.2.3.4:8080' });
+
+  // Turned on with nothing to use, or given something that is not a proxy.
+  await assert.rejects(store.update(profile, installation, { settings: { requestProxyUrl: '' } }), (error: unknown) => error instanceof ConfigError && error.code === 'invalid_proxy');
+  assert.throws(() => store.check({ settings: { requestProxyUrl: '1.2.3.4:8080:user:pass' } }), (error: unknown) => error instanceof ConfigError && error.code === 'invalid_proxy');
+  // Off, the address can go.
+  const off = await store.update(profile, installation, { settings: { requestProxyEnabled: false, requestProxyUrl: '' } });
+  assert.equal(off.settings.requestProxyEnabled, false);
+});
+
+test('a proxy address is one SillyTavern can actually use', () => {
+  for (const ok of ['', 'http://1.2.3.4:8080', 'socks5://user:pass@proxy.example:1080', 'socks5h://[2001:db8::1]:1080', 'pac+https://proxy.example/proxy.pac']) assert.equal(proxyUrlProblem(ok), null, ok);
+  for (const bad of ['1.2.3.4:8080', 'ftp://1.2.3.4:21', 'http://1.2.3.4:8080/path', 'http://1.2.3.4:8080 extra']) assert.notEqual(proxyUrlProblem(bad), null, bad);
 });
 
 test('saving masked raw YAML keeps the stored Basic Auth password', async () => {

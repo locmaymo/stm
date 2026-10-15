@@ -40,7 +40,7 @@ const MANAGED_DEFAULTS: ReadonlyArray<{ readonly path: readonly string[]; readon
 ];
 
 export class ConfigError extends Error {
-  public readonly code: 'config_missing' | 'invalid_yaml' | 'invalid_config' | 'invalid_security';
+  public readonly code: 'config_missing' | 'invalid_yaml' | 'invalid_config' | 'invalid_proxy' | 'invalid_security';
 
   public constructor(code: ConfigError['code'], message: string) {
     super(message);
@@ -77,7 +77,7 @@ export class ConfigStore {
     const path = await resolveConfigPath(profile, installation.runtimePath);
     const raw = await readConfig(path);
     const document = parseYaml(raw);
-    return toConfigDocument(document, raw, path, installation);
+    return toConfigDocument(document, raw, path, installation, await runtimeSupports(installation.runtimePath));
   }
 
   /**
@@ -114,7 +114,7 @@ export class ConfigStore {
     const nextRaw = String(document);
     await atomicWriteYaml(path, nextRaw);
     this.logger(logEvent('config.restoredDefaults', `[config] restored ${path} to the defaults shipped with ${installation.resolvedRef}`, { path, ref: installation.resolvedRef }));
-    return toConfigDocument(parseYaml(nextRaw), nextRaw, path, installation);
+    return toConfigDocument(parseYaml(nextRaw), nextRaw, path, installation, await runtimeSupports(installation.runtimePath));
   }
 
   public async validate(rawYaml: string): Promise<ConfigSettings> {
@@ -158,6 +158,14 @@ export class ConfigStore {
       setPath(document, ['basicAuthUser', 'password'], getPath(previousDocument, ['basicAuthUser', 'password']) ?? DEFAULT_BASIC_AUTH_USER.password);
     }
     applySettings(document, input.settings);
+    // Turned on with no address to use: SillyTavern would start, log that it
+    // has no proxy, and send everything out directly.
+    if (input.settings?.requestProxyEnabled === true || input.settings?.requestProxyUrl !== undefined) {
+      const url = getPath(document, ['requestProxy', 'url']);
+      if (getPath(document, ['requestProxy', 'enabled']) === true && (typeof url !== 'string' || url === '' || proxyUrlProblem(url))) {
+        throw new ConfigError('invalid_proxy', 'Enter a proxy address before turning the proxy on');
+      }
+    }
     // An edited YAML document can carry anything, including the settings that
     // decide who can reach SillyTavern. Those are not the editor's to move -
     // and neither is the port, which the console hands out so that it cannot
@@ -166,7 +174,7 @@ export class ConfigStore {
     const nextRaw = String(document);
     await atomicWriteYaml(path, nextRaw);
     this.logger(logEvent('config.updated', `[config] updated ${path}`, { path }));
-    return toConfigDocument(parseYaml(nextRaw), nextRaw, path, installation);
+    return toConfigDocument(parseYaml(nextRaw), nextRaw, path, installation, await runtimeSupports(installation.runtimePath));
   }
 }
 
@@ -214,7 +222,16 @@ function parseYaml(raw: string): Document.Parsed {
   }
 }
 
-function toConfigDocument(document: Document.Parsed, raw: string, path: string, installation: Installation): ConfigDocument {
+/**
+ * What this SillyTavern reads, told by the files it ships rather than by its
+ * version number: a branch or a commit has no number to compare.
+ */
+async function runtimeSupports(runtimePath: string): Promise<NonNullable<ConfigDocument['supports']>> {
+  const present = async (path: string): Promise<boolean> => { try { await stat(path); return true; } catch { return false; } };
+  return { requestProxy: await present(join(runtimePath, 'src', 'request-proxy.js')) };
+}
+
+function toConfigDocument(document: Document.Parsed, raw: string, path: string, installation: Installation, supports: NonNullable<ConfigDocument['supports']>): ConfigDocument {
   const redacted = parseYaml(raw);
   const password = getPath(redacted, ['basicAuthUser', 'password']);
   if (typeof password === 'string' && password && password !== DEFAULT_BASIC_AUTH_USER.password) {
@@ -231,6 +248,7 @@ function toConfigDocument(document: Document.Parsed, raw: string, path: string, 
     rawYaml: String(redacted),
     settings,
     restartRequired: true,
+    supports,
   };
 }
 
@@ -274,6 +292,8 @@ function extractSettings(document: Document.Parsed): ConfigSettings {
     allowKeysExposure: getBoolean(['allowKeysExposure'], false),
     chatBackups: getBoolean(['backups', 'chat', 'enabled'], true),
     chatBackupCount: getNumber(['backups', 'common', 'numberOfBackups'], 50),
+    requestProxyEnabled: getBoolean(['requestProxy', 'enabled'], false),
+    requestProxyUrl: getString(['requestProxy', 'url'], ''),
   };
 }
 
@@ -291,7 +311,33 @@ const SETTING_PATHS: { readonly [K in keyof Required<ConfigSettingsInput>]: read
   allowKeysExposure: ['allowKeysExposure'],
   chatBackups: ['backups', 'chat', 'enabled'],
   chatBackupCount: ['backups', 'common', 'numberOfBackups'],
+  requestProxyEnabled: ['requestProxy', 'enabled'],
+  requestProxyUrl: ['requestProxy', 'url'],
 };
+
+/** What SillyTavern's proxy library is asked to speak; see `proxyUrlProblem`. */
+const PROXY_PROTOCOLS = new Set(['http:', 'https:', 'socks:', 'socks4:', 'socks4a:', 'socks5:', 'socks5h:']);
+
+/**
+ * Why SillyTavern could not use this as its proxy, or null when it could.
+ *
+ * SillyTavern itself only asks whether the text parses as a URL, and says
+ * nothing but a line in its own log when it does not - every request then
+ * goes out directly, which is the one thing somebody setting a proxy did not
+ * want. Empty is allowed: it is what turning the proxy off can leave behind.
+ */
+export function proxyUrlProblem(value: string): string | null {
+  if (value === '') return null;
+  if (value.length > 2048 || /\s/u.test(value)) return 'The proxy address must be one line without spaces';
+  let url: URL;
+  try { url = new URL(value); } catch { return 'The proxy address is not a valid URL'; }
+  // A PAC file is a script that picks the proxy, and is fetched from wherever it is.
+  if (url.protocol.startsWith('pac+')) return null;
+  if (!PROXY_PROTOCOLS.has(url.protocol)) return `A proxy address starts with http, https, socks4 or socks5, not ${url.protocol.replace(/:$/u, '')}`;
+  if (!url.hostname) return 'The proxy address has no host';
+  if (url.pathname !== '/' && url.pathname !== '') return 'The proxy address is a host and a port, without a path';
+  return null;
+}
 
 function applySettings(document: Document.Parsed, settings: ConfigUpdateInput['settings']): void {
   if (!settings) return;
@@ -309,6 +355,10 @@ function checkSettings(settings: ConfigUpdateInput['settings']): void {
   }
   if (settings.chatBackupCount !== undefined && (!Number.isInteger(settings.chatBackupCount) || settings.chatBackupCount < 1 || settings.chatBackupCount > MAX_CHAT_BACKUPS)) {
     throw new ConfigError('invalid_config', `The number of chat backups must be between 1 and ${MAX_CHAT_BACKUPS}`);
+  }
+  if (settings.requestProxyUrl !== undefined) {
+    const problem = proxyUrlProblem(settings.requestProxyUrl);
+    if (problem) throw new ConfigError('invalid_proxy', problem);
   }
 }
 

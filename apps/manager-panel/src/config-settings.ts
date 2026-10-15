@@ -1,4 +1,4 @@
-import type { ConfigSettings, ConfigSettingsInput } from '../../../packages/contracts/src/index.js';
+import type { ConfigSettingsInput } from '../../../packages/contracts/src/index.js';
 
 /**
  * How long the settings card waits after a press before saving it.
@@ -16,10 +16,10 @@ export const AUTOSAVE_DELAY_MS = 1200;
  * already holds - including one that changed in the file since the card read
  * it, by hand or by another console.
  */
-export function changedSettings(desired: ConfigSettingsInput, saved: ConfigSettings): ConfigSettingsInput | null {
+export function changedSettings(desired: ConfigSettingsInput, saved: ConfigSettingsInput): ConfigSettingsInput | null {
   const changes: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(desired)) {
-    if (value !== undefined && value !== saved[key as keyof ConfigSettings]) changes[key] = value;
+    if (value !== undefined && value !== saved[key as keyof ConfigSettingsInput]) changes[key] = value;
   }
   return Object.keys(changes).length > 0 ? changes as ConfigSettingsInput : null;
 }

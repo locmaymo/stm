@@ -204,7 +204,7 @@ export class ProcessSupervisor {
   public async close(): Promise<void> { await this.stop('shutdown'); }
 
   private handleLine(line: string): void {
-    const clean = line.replace(/\u001b\[[0-?]*[ -\/]*[@-~]/gu, '').trim();
+    const clean = withoutPasswords(line.replace(/\u001b\[[0-?]*[ -\/]*[@-~]/gu, '').trim());
     if (!clean) return;
     this.logger(`[sillytavern] ${clean}`);
     if (this.current.status !== 'starting') return;
@@ -223,6 +223,17 @@ export class ProcessSupervisor {
     this.logger(logEvent('sillytavern.failed', `[sillytavern] ${error}`, { reason: error }));
     return this.getState();
   }
+}
+
+/**
+ * A line with the password taken out of any address that carries one.
+ *
+ * SillyTavern prints the proxy it was given in full on every start -
+ * `Proxy URL is used: http://user:pass@host:port` - and that line lands in a
+ * log the console shows, keeps on disk and offers to download.
+ */
+export function withoutPasswords(line: string): string {
+  return line.replace(/\b([a-z][a-z0-9+.-]*:\/\/)([^\s:@/]+):([^\s@/]+)@/giu, '$1$2:***@');
 }
 
 function withoutStep(state: ProcessState): ProcessState {

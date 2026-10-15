@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getPlatformPaths } from '../../../packages/platform/src/index.js';
 import { isLogEvent, logLineText, type Installation, type LogLine, type Profile } from '../../../packages/contracts/src/index.js';
-import { ProcessSupervisor, startupPhase } from '../src/supervisor.js';
+import { ProcessSupervisor, startupPhase, withoutPasswords } from '../src/supervisor.js';
 import { TunnelManager } from '../../../packages/tunnel/src/index.js';
 
 test('process supervisor starts the marker-verified active runtime and captures output', async () => {
@@ -134,4 +134,10 @@ test('a start says which part of the SillyTavern startup it is in', () => {
   assert.deepEqual(startupPhase('SillyTavern is listening on IPv4: 127.0.0.1:8003'), { code: 'process.listening', params: { port: '8003' } });
   assert.deepEqual(startupPhase('SillyTavern is listening on IPv6: [::1]:8003'), { code: 'process.listening', params: { port: '8003' } });
   assert.equal(startupPhase('Preferring IPv4 for DNS resolution'), null);
+});
+
+test('a proxy password SillyTavern prints is not kept in the log', () => {
+  assert.equal(withoutPasswords('[Request Proxy] Proxy URL is used: http://user:secret@1.2.3.4:8080'), '[Request Proxy] Proxy URL is used: http://user:***@1.2.3.4:8080');
+  assert.equal(withoutPasswords('socks5://u:p%40ss@proxy.example:1080 and https://example.com/a:b'), 'socks5://u:***@proxy.example:1080 and https://example.com/a:b');
+  assert.equal(withoutPasswords('Go to: http://127.0.0.1:8000/ to open SillyTavern'), 'Go to: http://127.0.0.1:8000/ to open SillyTavern');
 });

@@ -22,6 +22,8 @@ const SAVED: ConfigSettings = {
   allowKeysExposure: false,
   chatBackups: true,
   chatBackupCount: 50,
+  requestProxyEnabled: false,
+  requestProxyUrl: '',
 };
 
 test('only what the switches say differently from the file is saved', () => {

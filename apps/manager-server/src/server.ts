@@ -4266,12 +4266,13 @@ function parseConfigUpdateInput(value: unknown): ConfigUpdateInput {
   if (!isRecord(settings)) throw new RequestError(400, 'invalid_input', 'Configuration settings are required');
   const flags = [
     'lazyLoadCharacters', 'useDiskCache', 'requestCompression',
-    'extensions', 'extensionAutoUpdate', 'allowKeysExposure', 'chatBackups',
+    'extensions', 'extensionAutoUpdate', 'allowKeysExposure', 'chatBackups', 'requestProxyEnabled',
   ] as const;
   const input: Record<string, unknown> = {};
   for (const flag of flags) if (typeof settings[flag] === 'boolean') input[flag] = settings[flag];
   if (typeof settings.memoryCacheCapacity === 'string') input.memoryCacheCapacity = settings.memoryCacheCapacity;
   if (typeof settings.chatBackupCount === 'number') input.chatBackupCount = settings.chatBackupCount;
+  if (typeof settings.requestProxyUrl === 'string') input.requestProxyUrl = settings.requestProxyUrl;
   // The values themselves are checked where they are written, so one rule
   // covers the console, a stray API call and a restored profile alike.
   return { settings: input as NonNullable<ConfigUpdateInput['settings']> };

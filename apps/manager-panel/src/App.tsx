@@ -51,6 +51,7 @@ import { CLOUDFLARE_ORANGE, CloudflareMark } from './cloudflare-mark.js';
 import { bareHost, localHost, machineName, publicAddress, publicLinks, reachableAddresses, shortenHost, type PublicLink, type ReachableAddress } from './addresses.js';
 import { EmbedStage } from './embed-stage.js';
 import { AUTOSAVE_DELAY_MS, changedSettings, yamlProblem } from './config-settings.js';
+import { maskProxy, PROXY_SCHEMES, proxySchemeOf, readProxy, savedProxy, type ProxyProblem } from './proxy-address.js';
 import { SetupChecklist, type ChecklistItem } from './setup-checklist.js';
 import { LegalCredit, LegalDialog, LEGAL_REVISION } from './legal-dialog.js';
 import { legalBundle, legalRevision, type LegalDocumentId } from '../../../packages/legal/src/index.js';
@@ -7101,7 +7102,7 @@ function usageDuration(t: Translate, seconds: number): string {
  * note. Success and failure are separate states now, and success is a toast,
  * because saving restarts SillyTavern and redraws the page underneath it.
  */
-type FlagKey = Exclude<Extract<keyof ConfigSettingsInput, string>, 'memoryCacheCapacity' | 'chatBackupCount'>;
+type FlagKey = Exclude<Extract<keyof ConfigSettingsInput, string>, 'memoryCacheCapacity' | 'chatBackupCount' | 'requestProxyUrl'>;
 
 const MEMORY_CACHE_SIZES = ['0', '50mb', '100mb', '250mb', '500mb'] as const;
 const CHAT_BACKUP_COUNTS = ['5', '20', '50', '100', '200'] as const;
@@ -7124,6 +7125,10 @@ function offeredSettings(settings: ConfigSettings): ConfigSettingsInput {
     allowKeysExposure: settings.allowKeysExposure,
     chatBackups: settings.chatBackups,
     chatBackupCount: settings.chatBackupCount,
+    requestProxyEnabled: settings.requestProxyEnabled,
+    // The example SillyTavern ships reads as no proxy, and is only replaced
+    // once somebody enters one.
+    requestProxyUrl: savedProxy(settings.requestProxyUrl),
   };
 }
 
@@ -7491,7 +7496,7 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
     saveTimer.current = undefined;
     const known = saved.current;
     if (saving.current || !known) return;
-    const changes = changedSettings(desired.current, known);
+    const changes = changedSettings(desired.current, offeredSettings(known));
     if (!changes) { setAutoSave('idle'); return; }
     saving.current = true;
     setAutoSave('saving');
@@ -7514,7 +7519,7 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
     saved.current = { ...known, ...changes } as ConfigSettings;
     // Pressed while that restart was going on: on to the next one now,
     // since it has already waited.
-    if (changedSettings(desired.current, saved.current)) { void flushSettings(); return; }
+    if (changedSettings(desired.current, offeredSettings(saved.current))) { void flushSettings(); return; }
     setBusy(false); setAutoSave('idle');
     toast({ title: t('console.configSaved'), tone: 'success' });
   };
@@ -7553,8 +7558,9 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
     if (managerPasswordFirst) { setManagerPasswordFirst(false); void applyManagerTunnel(true); }
     return null;
   };
-  const set = <K extends keyof ConfigSettingsInput>(key: K, value: ConfigSettingsInput[K]) => {
-    const next = { ...desired.current, [key]: value };
+  const set = <K extends keyof ConfigSettingsInput>(key: K, value: ConfigSettingsInput[K]) => { setSettings({ [key]: value }); };
+  const setSettings = (change: ConfigSettingsInput) => {
+    const next = { ...desired.current, ...change };
     desired.current = next;
     setForm(next);
     if (!saving.current) setAutoSave('waiting');
@@ -7759,6 +7765,13 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
               <SettingsGroup icon={<KeyRound />} title={t('console.apiKeysTitle')} />
               {flag('allowKeysExposure')}
             </div>
+            <RequestProxyGroup
+              t={t}
+              url={form.requestProxyUrl ?? ''}
+              enabled={form.requestProxyEnabled === true}
+              supported={config.supports?.requestProxy ?? true}
+              onChange={setSettings}
+            />
             <div>
               <SettingsGroup icon={<History />} title={t('console.chatBackupsTitle')} />
               {flag('chatBackups')}
@@ -7820,6 +7833,95 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
       document={legalDocument}
       onDocumentChange={setLegalDocument}
     />
+  </div>;
+}
+
+/**
+ * SillyTavern's proxy for what it sends out, asked for as one line.
+ *
+ * Whatever was pasted is read the moment the box is left - `ip:port:user:pass`,
+ * `user:pass@ip:port`, a whole link - and what is saved is the one form
+ * SillyTavern reads, shown under the box before it is saved. The kind chosen
+ * beside the box applies to an address that does not name one.
+ *
+ * Entering the first address turns the proxy on: an address typed in with the
+ * switch left off was the same trap as a setting nobody saved. Emptying the
+ * box turns it off again.
+ *
+ * The password is hidden whenever the box is not being edited.
+ */
+function RequestProxyGroup({ t, url, enabled, supported, onChange }: { t: Translate; url: string; enabled: boolean; /** False on a SillyTavern older than 1.12.6, which does not read it. */ supported: boolean; onChange: (change: ConfigSettingsInput) => void }) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const [scheme, setScheme] = useState<string>(proxySchemeOf(url) ?? PROXY_SCHEMES[0]);
+  const [problem, setProblem] = useState<ProxyProblem | null>(null);
+  const inputId = useId();
+  useEffect(() => { const named = proxySchemeOf(url); if (named) setScheme(named); }, [url]);
+  const reading = draft !== null && draft.trim() !== '' ? readProxy(draft, scheme) : null;
+  const commit = (kind: string = scheme) => {
+    if (draft === null) return;
+    if (draft.trim() === '') {
+      setDraft(null); setProblem(null);
+      if (url !== '' || enabled) onChange({ requestProxyUrl: '', requestProxyEnabled: false });
+      return;
+    }
+    const read = readProxy(draft, kind);
+    if (!read.ok) { setProblem(read.problem); return; }
+    setDraft(null); setProblem(null);
+    if (read.url !== url) onChange({ requestProxyUrl: read.url, ...(url === '' && !enabled ? { requestProxyEnabled: true } : {}) });
+  };
+  const changeScheme = (next: string) => {
+    setScheme(next);
+    setProblem(null);
+    // Changing the kind of an address already saved changes the address.
+    if (draft === null && url !== '' && proxySchemeOf(url)) onChange({ requestProxyUrl: url.replace(/^[a-z0-9]+:\/\//iu, `${next}://`) });
+  };
+  const problemText = problem === 'scheme' ? t('console.settings.requestProxyProblemScheme')
+    : problem === 'port' ? t('console.settings.requestProxyProblemPort')
+      : problem === 'host' ? t('console.settings.requestProxyProblemHost') : null;
+  return <div className={supported ? '' : 'opacity-55'}>
+    <SettingsGroup icon={<Globe2 />} title={t('console.settings.requestProxyTitle')} />
+    <DetailRow label={t('console.settings.requestProxyEnabled')} hint={supported ? t('console.settings.requestProxyEnabledHint') : t('console.settings.requestProxyUnsupported')}>
+      <Switch
+        checked={enabled}
+        onCheckedChange={(value) => onChange({ requestProxyEnabled: value })}
+        disabled={!supported || (url === '' && !enabled)}
+        aria-label={t('console.settings.requestProxyEnabled')}
+      />
+    </DetailRow>
+    <div className="grid gap-1.5 pb-3">
+      <Label htmlFor={inputId} className="sr-only">{t('console.settings.requestProxyAddress')}</Label>
+      <div className="flex gap-2">
+        <Select value={scheme} onValueChange={changeScheme} disabled={!supported}>
+          <SelectTrigger size="sm" className="w-28 shrink-0" aria-label={t('console.settings.requestProxyScheme')}><SelectValue /></SelectTrigger>
+          <SelectContent>
+            {PROXY_SCHEMES.map((value) => <SelectItem key={value} value={value}>{value.toUpperCase()}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        <Input
+          id={inputId}
+          className="h-8 min-w-0 font-mono text-sm"
+          value={draft ?? maskProxy(url)}
+          placeholder={t('console.settings.requestProxyPlaceholder')}
+          disabled={!supported}
+          autoComplete="off"
+          spellCheck={false}
+          aria-invalid={problem !== null || undefined}
+          onFocus={() => { if (draft === null) setDraft(url); }}
+          onChange={(event) => { setDraft(event.target.value); setProblem(null); }}
+          onBlur={() => commit()}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur(); }
+            if (event.key === 'Escape') { setDraft(null); setProblem(null); event.currentTarget.blur(); }
+          }}
+        />
+      </div>
+      {/* What will be saved, while it is still being typed; why it cannot be,
+          once the box has been left; and otherwise which forms it takes. */}
+      <p className={problemText ? 'text-xs text-destructive' : 'text-xs text-muted-foreground'} aria-live="polite">
+        {problemText
+          ?? (reading?.ok && reading.url !== draft?.trim() ? t('console.settings.requestProxyWillUse', { url: maskProxy(reading.url) }) : t('console.settings.requestProxyFormats'))}
+      </p>
+    </div>
   </div>;
 }
 
