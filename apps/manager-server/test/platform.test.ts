@@ -1,8 +1,10 @@
 import test from 'node:test';
 import { posix } from 'node:path';
 import assert from 'node:assert/strict';
+import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { removeTreeGently } from '../../../packages/platform/src/remove.js';
 import { createIoLimiter, detectPlatform, getPlatformPaths, ioConcurrency, onNetworkStorage, runPooled, runtimeRoot, storageAssurance, storageDurability, storageMedium } from '../../../packages/platform/src/index.js';
 
 test('platform paths follow the documented durable roots', () => {
@@ -196,4 +198,17 @@ test('SillyTavern is kept off a data directory on network storage', () => {
     assert.equal(paths.runtime, join(tmpdir(), 'sillytavern-manager-runtime'));
   }
   assert.equal(getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: '/data/manager' }, mountTable: null }).runtime, join(resolve('/data/manager'), 'profiles', 'runtime'));
+});
+
+test('a tree is removed whole, a few files at a time', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-remove-'));
+  for (let index = 0; index < 30; index += 1) {
+    await mkdir(join(root, 'tree', `folder-${index % 4}`, 'deeper'), { recursive: true });
+    await writeFile(join(root, 'tree', `folder-${index % 4}`, 'deeper', `file-${index}.txt`), 'x', 'utf8');
+  }
+  await removeTreeGently(join(root, 'tree'));
+  assert.deepEqual(await readdir(root), []);
+  // Nothing there is nothing to do.
+  await removeTreeGently(join(root, 'tree'));
+  await rm(root, { recursive: true, force: true });
 });

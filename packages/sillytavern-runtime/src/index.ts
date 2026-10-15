@@ -20,6 +20,7 @@ import {
   type VersionSelector,
 } from '../../contracts/src/index.js';
 import type { PlatformPaths } from '../../platform/src/index.js';
+import { removeTreeGently } from '../../platform/src/remove.js';
 import { readRuntimePack, removeRuntimePack, unpackRuntime, writeRuntimePack } from './pack.js';
 
 const REPOSITORY = 'SillyTavern/SillyTavern';
@@ -334,7 +335,7 @@ export class RuntimeManager {
       // Twenty thousand files on network storage take minutes to delete, and
       // nothing is waiting for them to go.
       this.later(async () => {
-        await rm(previousPath, { recursive: true, force: true });
+        await removeTreeGently(previousPath);
         this.logger(logEvent('installer.oldRuntimeRemoved', '[installer] removed the old copy of SillyTavern from the data directory'));
       });
     } else {
