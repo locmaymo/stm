@@ -65,6 +65,8 @@ export interface ConfigStoreOptions {
 export class ConfigStore {
   private readonly logger: LogSink;
   private readonly managedPort: () => number;
+  /** The change in progress, which the next one waits behind. */
+  private turn: Promise<unknown> = Promise.resolve();
 
   public constructor(options: ConfigStoreOptions = {}) {
     this.logger = options.logger ?? ((line) => console.log(logLineText(line)));
@@ -118,6 +120,33 @@ export class ConfigStore {
   public async validate(rawYaml: string): Promise<ConfigSettings> {
     const document = parseYaml(rawYaml);
     return extractSettings(document);
+  }
+
+  /**
+   * Refuse an update that could not be written, without writing anything.
+   *
+   * Asked before SillyTavern is stopped to make room for the write. A file
+   * that does not parse used to be found out only after the stop, and the
+   * refusal left SillyTavern down for a typo nobody had saved.
+   */
+  public check(input: ConfigUpdateInput): void {
+    if (input.rawYaml !== undefined) parseYaml(input.rawYaml);
+    checkSettings(input.settings);
+  }
+
+  /**
+   * Run one change to the file, and the restart around it, after the last.
+   *
+   * The console saves each switch as it is pressed, so two saves can be in
+   * flight at once. Run side by side, the second read SillyTavern as already
+   * stopped by the first, wrote without a restart of its own, and could land
+   * after the first restart had read the file - saved, reported as saved, and
+   * not in effect.
+   */
+  public exclusive<T>(task: () => Promise<T>): Promise<T> {
+    const run = this.turn.then(task, task);
+    this.turn = run.catch(() => undefined);
+    return run;
   }
 
   public async update(profile: Profile, installation: Installation, input: ConfigUpdateInput): Promise<ConfigDocument> {
@@ -266,15 +295,20 @@ const SETTING_PATHS: { readonly [K in keyof Required<ConfigSettingsInput>]: read
 
 function applySettings(document: Document.Parsed, settings: ConfigUpdateInput['settings']): void {
   if (!settings) return;
+  checkSettings(settings);
+  for (const [key, path] of Object.entries(SETTING_PATHS)) {
+    const value = settings[key as keyof ConfigSettingsInput];
+    if (value !== undefined) setPath(document, [...path], value);
+  }
+}
+
+function checkSettings(settings: ConfigUpdateInput['settings']): void {
+  if (!settings) return;
   if (settings.memoryCacheCapacity !== undefined && !MEMORY_CACHE_PATTERN.test(settings.memoryCacheCapacity)) {
     throw new ConfigError('invalid_config', 'The character cache size must be 0 or a size like 100mb');
   }
   if (settings.chatBackupCount !== undefined && (!Number.isInteger(settings.chatBackupCount) || settings.chatBackupCount < 1 || settings.chatBackupCount > MAX_CHAT_BACKUPS)) {
     throw new ConfigError('invalid_config', `The number of chat backups must be between 1 and ${MAX_CHAT_BACKUPS}`);
-  }
-  for (const [key, path] of Object.entries(SETTING_PATHS)) {
-    const value = settings[key as keyof ConfigSettingsInput];
-    if (value !== undefined) setPath(document, [...path], value);
   }
 }
 

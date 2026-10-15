@@ -50,6 +50,7 @@ import { QrCode } from './qr-code.js';
 import { CLOUDFLARE_ORANGE, CloudflareMark } from './cloudflare-mark.js';
 import { bareHost, localHost, machineName, publicAddress, publicLinks, reachableAddresses, shortenHost, type PublicLink, type ReachableAddress } from './addresses.js';
 import { EmbedStage } from './embed-stage.js';
+import { AUTOSAVE_DELAY_MS, changedSettings, yamlProblem } from './config-settings.js';
 import { SetupChecklist, type ChecklistItem } from './setup-checklist.js';
 import { LegalCredit, LegalDialog, LEGAL_REVISION } from './legal-dialog.js';
 import { legalBundle, legalRevision, type LegalDocumentId } from '../../../packages/legal/src/index.js';
@@ -7403,8 +7404,10 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
   const [managerPasswordOpen, setManagerPasswordOpen] = useState(false);
   const [sillyPasswordOpen, setSillyPasswordOpen] = useState(false);
   const [yamlOpen, setYamlOpen] = useState(false);
+  // A file the manager refused, with what the reader had typed, so the editor
+  // reopens on their text and not on the file as it was.
+  const [yamlFailure, setYamlFailure] = useState<{ readonly draft: string; readonly error: string } | null>(null);
   const [signOutDevicesOpen, setSignOutDevicesOpen] = useState(false);
-  const [saveOpen, setSaveOpen] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
   const [managerTunnelBusy, setManagerTunnelBusy] = useState(false);
   const [managerTunnelError, setManagerTunnelError] = useState<string | null>(null);
@@ -7456,10 +7459,75 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
       if (!failure) toast({ title: on ? t('console.managerTunnelOnDone') : t('console.managerTunnelOffDone'), tone: 'success' });
     } finally { setManagerTunnelBusy(false); }
   };
+  /*
+   * Every switch and choice below is saved as it is moved.
+   *
+   * There was a Save button at the foot of the card, and a switch moved
+   * without pressing it looked exactly like a switch that had taken effect -
+   * until the next visit put it back. Saving restarts SillyTavern, so a moment
+   * is left for the next press, and everything pressed in that moment goes in
+   * one restart. A press made during a restart waits for it and goes in the
+   * next one, rather than being written behind its back.
+   *
+   * `desired` is what the switches say, `saved` what the file is known to say.
+   */
+  const desired = useRef<ConfigSettingsInput>({});
+  const saved = useRef<ConfigSettings | null>(config?.settings ?? null);
+  const saving = useRef(false);
+  const saveTimer = useRef<number | undefined>(undefined);
+  const [autoSave, setAutoSave] = useState<'idle' | 'waiting' | 'saving'>('idle');
   useEffect(() => {
     if (!config) return;
-    setForm(offeredSettings(config.settings));
+    saved.current = config.settings;
+    // Not while a change is on its way: the file read back now would flip a
+    // switch back under the reader's finger.
+    if (saving.current || saveTimer.current !== undefined) return;
+    const next = offeredSettings(config.settings);
+    desired.current = next;
+    setForm(next);
   }, [config]);
+  const flushSettings = async (): Promise<void> => {
+    window.clearTimeout(saveTimer.current);
+    saveTimer.current = undefined;
+    const known = saved.current;
+    if (saving.current || !known) return;
+    const changes = changedSettings(desired.current, known);
+    if (!changes) { setAutoSave('idle'); return; }
+    saving.current = true;
+    setAutoSave('saving');
+    setBusy(true); setError(null);
+    let failure: string | null;
+    try { failure = await onConfigUpdate({ settings: changes }); }
+    catch { failure = t('console.configSaveFailed'); }
+    finally { saving.current = false; }
+    if (failure) {
+      setError(failure);
+      toast({ title: failure, tone: 'destructive' });
+      // Back to what the file says, so no switch claims a setting that is
+      // not in effect.
+      const truth = offeredSettings(known);
+      desired.current = truth;
+      setForm(truth);
+      setBusy(false); setAutoSave('idle');
+      return;
+    }
+    saved.current = { ...known, ...changes } as ConfigSettings;
+    // Pressed while that restart was going on: on to the next one now,
+    // since it has already waited.
+    if (changedSettings(desired.current, saved.current)) { void flushSettings(); return; }
+    setBusy(false); setAutoSave('idle');
+    toast({ title: t('console.configSaved'), tone: 'success' });
+  };
+  const flushRef = useRef(flushSettings);
+  flushRef.current = flushSettings;
+  useEffect(() => {
+    // Leaving the page, or the tab, with a press still waiting saves it now
+    // rather than dropping it.
+    const now = () => { if (saveTimer.current !== undefined) void flushRef.current(); };
+    const hidden = () => { if (document.visibilityState === 'hidden') now(); };
+    document.addEventListener('visibilitychange', hidden);
+    return () => { document.removeEventListener('visibilitychange', hidden); now(); };
+  }, []);
   const save = async (input: ConfigUpdateInput): Promise<string | null> => {
     setBusy(true); setError(null);
     try {
@@ -7485,8 +7553,25 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
     if (managerPasswordFirst) { setManagerPasswordFirst(false); void applyManagerTunnel(true); }
     return null;
   };
-  const set = <K extends keyof ConfigSettingsInput>(key: K, value: ConfigSettingsInput[K]) =>
-    setForm((current) => ({ ...current, [key]: value }));
+  const set = <K extends keyof ConfigSettingsInput>(key: K, value: ConfigSettingsInput[K]) => {
+    const next = { ...desired.current, [key]: value };
+    desired.current = next;
+    setForm(next);
+    if (!saving.current) setAutoSave('waiting');
+    window.clearTimeout(saveTimer.current);
+    saveTimer.current = window.setTimeout(() => { saveTimer.current = undefined; void flushRef.current(); }, AUTOSAVE_DELAY_MS);
+  };
+  // The file is about to be replaced as a whole, so nothing may be waiting to
+  // be written into the copy of it that is being replaced.
+  const settingsQuiet = autoSave === 'idle' && !busy;
+  const applyYaml = async (rawYaml: string): Promise<void> => {
+    // Closed at once: the file has been read and is sound, and what follows is
+    // SillyTavern restarting, which the card below shows step by step.
+    setYamlOpen(false);
+    setYamlFailure(null);
+    const failure = await save({ rawYaml });
+    if (failure) { setYamlFailure({ draft: rawYaml, error: failure }); setYamlOpen(true); }
+  };
   const flag = (key: FlagKey, options: { readonly disabled?: boolean } = {}) =>
     <DetailRow key={key} label={t(`console.settings.${key}`)} hint={t(`console.settings.${key}Hint`)} className={options.disabled ? 'opacity-55' : ''}>
       <Switch
@@ -7496,8 +7581,12 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
         aria-label={t(`console.settings.${key}`)}
       />
     </DetailRow>;
-  const choice = (key: 'memoryCacheCapacity' | 'chatBackupCount', values: readonly string[], options: { readonly disabled?: boolean } = {}) =>
-    <DetailRow label={t(`console.settings.${key}`)} hint={t(`console.settings.${key}Hint`)} className={options.disabled ? 'opacity-55' : ''}>
+  const choice = (key: 'memoryCacheCapacity' | 'chatBackupCount', offered: readonly string[], options: { readonly disabled?: boolean } = {}) => {
+    // A value set in the file by hand is still the value: offered alongside
+    // the usual ones rather than shown as an empty box.
+    const current = form[key] === undefined ? null : String(form[key]);
+    const values = current === null || offered.includes(current) ? offered : [...offered, current];
+    return <DetailRow label={t(`console.settings.${key}`)} hint={t(`console.settings.${key}Hint`)} className={options.disabled ? 'opacity-55' : ''}>
       <Select
         value={String(form[key] ?? '')}
         onValueChange={(value) => set(key, (key === 'chatBackupCount' ? Number(value) : value) as never)}
@@ -7509,6 +7598,7 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
         </SelectContent>
       </Select>
     </DetailRow>;
+  };
 
   /*
    * One card for both doors.
@@ -7686,8 +7776,8 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
               <p className="text-xs text-muted-foreground">{t('console.configFileHint')}</p>
               <div className="flex flex-wrap items-center gap-2">
                 <code className="mr-auto font-mono text-sm">{configFileName(config.path)}</code>
-                <Button variant="outline" size="sm" disabled={busy} onClick={() => setResetOpen(true)}><RotateCcw />{t('console.restoreDefaults')}</Button>
-                <Button variant="outline" size="sm" disabled={busy} onClick={() => setYamlOpen(true)}><Pencil />{t('common.edit')}</Button>
+                <Button variant="outline" size="sm" disabled={!settingsQuiet} onClick={() => setResetOpen(true)}><RotateCcw />{t('console.restoreDefaults')}</Button>
+                <Button variant="outline" size="sm" disabled={!settingsQuiet} onClick={() => setYamlOpen(true)}><Pencil />{t('common.edit')}</Button>
               </div>
             </div>
             {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
@@ -7699,20 +7789,16 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
               <TaskBar />
             </div> : null}
           </CardContent>
-          <CardFooter className="justify-end">
-            <Button onClick={() => setSaveOpen(true)} loading={busy}>{t('console.saveChanges')}</Button>
+          {/* Where the Save button was: what saving does, said before the
+              first press rather than asked after it, and then how it is
+              going. */}
+          <CardFooter className="text-xs text-muted-foreground" role="status">
+            {autoSave === 'waiting'
+              ? <span className="thinking">{t('console.autoSaveWaiting')}</span>
+              : autoSave === 'saving' ? <span>{t('console.autoSaveSaving')}</span>
+                : <span className="flex items-center gap-1.5"><Check className="size-3.5" />{t('console.autoSaveHint')}</span>}
           </CardFooter>
         </Card>
-        <ConfirmDialog
-          open={saveOpen}
-          onOpenChange={setSaveOpen}
-          tone="default"
-          title={t('console.saveChangesTitle')}
-          description={t('console.saveChangesBody')}
-          confirmLabel={t('console.saveChanges')}
-          cancelLabel={t('common.cancel')}
-          onConfirm={async () => { await save({ settings: form }); }}
-        />
         <ConfirmDialog
           open={resetOpen}
           onOpenChange={setResetOpen}
@@ -7723,7 +7809,7 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
           onConfirm={restoreDefaults}
         />
       </>}
-    {config ? <YamlDialog t={t} open={yamlOpen} onOpenChange={setYamlOpen} initial={config.rawYaml} busy={busy} onApply={(rawYaml) => save({ rawYaml })} /> : null}
+    {config ? <YamlDialog t={t} open={yamlOpen} onOpenChange={(open) => { setYamlOpen(open); if (!open) setYamlFailure(null); }} initial={yamlFailure?.draft ?? config.rawYaml} failure={yamlFailure?.error ?? null} busy={busy} onApply={applyYaml} /> : null}
     <StartOverCard t={t} onErase={onEraseEverything} />
     <AboutPanel t={t} locale={locale} onOpenLegal={(id) => { setLegalDocument(id); setLegalOpen(true); }} />
     <LegalDialog
@@ -7874,17 +7960,32 @@ function AboutPanel({ t, locale, onOpenLegal }: { t: Translate; locale: LocaleCo
 }
 
 /** SillyTavern's own configuration file, for whoever wants to edit it directly. */
-function YamlDialog({ t, open, onOpenChange, initial, busy, onApply }: { t: Translate; open: boolean; onOpenChange: (open: boolean) => void; initial: string; busy: boolean; onApply: (rawYaml: string) => Promise<string | null> }) {
+/**
+ * The file itself, for whatever the switches do not cover.
+ *
+ * Applying used to keep this open until SillyTavern had stopped, taken the
+ * file and started again - the whole of a restart, with the progress for it
+ * already running on the card behind. The file is checked here instead, and
+ * the editor closes the moment it is sound; a refusal that only the manager
+ * could make reopens it on the reader's own text, with the reason.
+ */
+function YamlDialog({ t, open, onOpenChange, initial, failure, busy, onApply }: { t: Translate; open: boolean; onOpenChange: (open: boolean) => void; initial: string; /** Why the last apply was refused, when it was. */ failure: string | null; busy: boolean; onApply: (rawYaml: string) => Promise<void> }) {
   const [rawYaml, setRawYaml] = useState(initial);
   const [error, setError] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
   // Opening reloads the file as it is on disk, so an edit abandoned last time
   // is not silently re-applied over a change made since.
-  useEffect(() => { if (open) { setRawYaml(initial); setError(null); } }, [open, initial]);
+  useEffect(() => { if (open) { setRawYaml(initial); setError(failure); } }, [open, initial, failure]);
 
   const apply = async () => {
-    const failure = await onApply(rawYaml);
-    setError(failure);
-    if (!failure) onOpenChange(false);
+    setChecking(true);
+    let problem: { readonly detail: string } | null;
+    try { problem = await yamlProblem(rawYaml); }
+    // The parser could not be fetched; the manager checks the file as well.
+    catch { problem = null; }
+    finally { setChecking(false); }
+    if (problem) { setError(problem.detail ? `${t('errors.invalid_yaml')}\n${problem.detail}` : t('errors.invalid_yaml')); return; }
+    void onApply(rawYaml);
   };
 
   return <Dialog open={open} onOpenChange={onOpenChange}>
@@ -7895,11 +7996,11 @@ function YamlDialog({ t, open, onOpenChange, initial, busy, onApply }: { t: Tran
       </DialogHeader>
       <DialogBody className="grid gap-3">
         <textarea className="config-editor" value={rawYaml} onChange={(event) => setRawYaml(event.target.value)} spellCheck={false} aria-label={t('console.configFile')} />
-        {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
+        {error ? <Alert variant="destructive"><AlertDescription className="whitespace-pre-wrap">{error}</AlertDescription></Alert> : null}
       </DialogBody>
       <DialogFooter>
-        <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={busy}>{t('common.cancel')}</Button>
-        <Button onClick={() => apply()} disabled={busy}>{t('console.applyYaml')}</Button>
+        <Button variant="ghost" onClick={() => onOpenChange(false)}>{t('common.cancel')}</Button>
+        <Button onClick={() => apply()} disabled={busy} loading={checking}>{t('console.applyYaml')}</Button>
       </DialogFooter>
     </DialogContent>
   </Dialog>;

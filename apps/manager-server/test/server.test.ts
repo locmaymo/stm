@@ -1374,6 +1374,61 @@ test('a legacy runtime that rewrites the profile config on stop does not lose th
   }
 });
 
+test('a config save that cannot be written leaves SillyTavern running, and saves take turns', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-config-turns-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const runtimePath = join(root, 'runtime');
+  await mkdir(join(runtimePath, 'src'), { recursive: true });
+  await writeFile(join(runtimePath, 'src', 'users.js'), 'export const users = true;', 'utf8');
+  const now = new Date().toISOString();
+  const installation: Installation = { id: 'install-1', selector: 'latest', resolvedRef: '1.18.0', channel: 'release', runtimePath, markerPath: join(runtimePath, '.stm-installation.json'), status: 'ready', progress: 100, step: 'Installation ready', error: null, createdAt: now, updatedAt: now, activatedAt: now };
+  const fakeRuntime = { listVersions: async () => [], listInstallations: async () => [installation], getActiveInstallation: async () => installation, getInstallation: async (id: string) => id === installation.id ? installation : null } as unknown as RuntimeManager;
+  let processState: ProcessState = { status: 'running', installationId: installation.id, profileId: 'profile-1', pid: 321, startedAt: now, error: null };
+  const calls: string[] = [];
+  const fakeSupervisor = {
+    getState: () => processState,
+    start: async () => {
+      calls.push('start');
+      // A start takes a moment, which is when a second save used to slip in.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      processState = { ...processState, status: 'running' };
+      return processState;
+    },
+    stop: async () => { calls.push('stop'); processState = { ...processState, status: 'stopped' }; return processState; },
+    restart: async () => processState,
+    close: async () => undefined,
+  } as unknown as ProcessSupervisor;
+  const manager = await startManagerServer({ host: '127.0.0.1', port: 0, paths, env: { STM_ADMIN_PASSWORD: 'correct horse battery staple' }, secureCookies: false, accessPort: 0, runtime: fakeRuntime, supervisor: fakeSupervisor, logger: () => undefined });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const login = await fetch(`${base}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'correct horse battery staple' }) });
+  const cookie = cookieFrom(login);
+  const csrf = (await login.json() as { session: { csrfToken: string } }).session.csrfToken;
+  const profile = (await (await fetch(`${base}/api/v1/profiles`, { headers: { cookie } })).json() as { profiles: Array<{ configPath: string }> }).profiles[0];
+  assert.ok(profile);
+  await writeFile(profile.configPath, 'listen: false\nport: 8000\nperformance:\n  lazyLoadCharacters: false\n  useDiskCache: true\n', 'utf8');
+  const put = (body: unknown): Promise<Response> => fetch(`${base}/api/v1/config`, { method: 'PUT', headers: { cookie, 'x-csrf-token': csrf, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+
+  // Whatever the manager started on its own way up is not part of this.
+  calls.length = 0;
+  // A file that does not parse is refused while SillyTavern is still up.
+  const broken = await put({ rawYaml: 'listen: [unclosed' });
+  assert.equal(broken.status, 400);
+  assert.equal((await broken.json() as { error: { code: string } }).error.code, 'invalid_yaml');
+  assert.deepEqual(calls, [], 'nothing was stopped for a file that was never going to be written');
+  assert.equal(processState.status, 'running');
+
+  // Two switches pressed one after the other: each save gets a stop and a
+  // start of its own, in order, and both end up in the file.
+  const [first, second] = await Promise.all([put({ settings: { lazyLoadCharacters: true } }), put({ settings: { useDiskCache: false } })]);
+  assert.equal(first.status, 200);
+  assert.equal(second.status, 200);
+  assert.deepEqual(calls, ['stop', 'start', 'stop', 'start']);
+  const written = await readFile(profile.configPath, 'utf8');
+  assert.match(written, /lazyLoadCharacters: true/u);
+  assert.match(written, /useDiskCache: false/u);
+});
+
 test('the LAN address offered is one another device can actually reach', () => {
   const wifi = { family: 'IPv4' as const, internal: false, address: '192.168.1.25' };
   const linkLocal = { family: 'IPv4' as const, internal: false, address: '169.254.83.107' };

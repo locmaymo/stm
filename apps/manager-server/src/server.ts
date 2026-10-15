@@ -43,7 +43,7 @@ import { OnlineKeeper } from './online.js';
 import { formatGibibytes, SaverMode } from './saver.js';
 import { capacityFor, checkFits, decideTrim, diskSpace, memoryGuard, roomCheck } from './headroom.js';
 import { applyManagerSettings, foreignManagerSettings, managerSettingsOffer, restoreFromBucketIfBlank, saveManagerSettings, SettingsOfferWatch, settingsOfferKey, type ManagerSettingsDeps } from './manager-settings.js';
-import type { AccessLinkKind, AccessLinkPreference, AccessLinkTarget, ManagerSettingsOffer, ManagerSettingsRecord } from '../../../packages/contracts/src/index.js';
+import type { AccessLinkKind, AccessLinkPreference, AccessLinkTarget, ManagerSettingsOffer, ManagerSettingsRecord, ProcessState } from '../../../packages/contracts/src/index.js';
 import { instrumentationLoaderPath } from '../../../packages/instrumentation/src/index.js';
 import { ConfigError, ConfigStore } from '../../../packages/config/src/index.js';
 import { DEFAULT_TELEMETRY_ENDPOINT, DEFAULT_TELEMETRY_ENROLLMENT_ENDPOINT, TelemetryTransport } from '../../../packages/telemetry/src/index.js';
@@ -1795,6 +1795,30 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
   const adoptSillyTavernPort = (port: number): Promise<void> =>
     adoptRestoredPort({ ports, supervisor, profiles, runtime, config, logger }, port);
   const adoptKeepOnline = (enabled: boolean, minutes: number): void => { online.setEnabled(enabled, minutes); };
+  /*
+   * Change SillyTavern's file with SillyTavern stopped, then start it again.
+   *
+   * Stopped before writing: a runtime old enough to keep its own copy of the
+   * config has that copy synchronized back into the profile when it stops, so
+   * a config written first is overwritten by the restart that was meant to
+   * apply it - which is why nothing the panel saved ever took effect.
+   *
+   * Started again whatever the change did. A write that failed used to leave
+   * SillyTavern stopped, for a save that had not happened.
+   *
+   * One at a time, because the console saves each switch as it is pressed.
+   */
+  const withSillyTavernStopped = <T>(change: () => Promise<T>): Promise<{ result: T; process: ProcessState }> => config.exclusive(async () => {
+    const wasRunning = supervisor.getState().status === 'running';
+    if (wasRunning) await supervisor.stop('configChange');
+    let result: T;
+    try { result = await change(); }
+    catch (error: unknown) {
+      if (wasRunning) await supervisor.start();
+      throw error;
+    }
+    return { result, process: wasRunning ? await supervisor.start() : supervisor.getState() };
+  });
   if (pathname === '/api/v1/auth/password' && method === 'POST') {
     const body = await readJson(request);
     if (!isRecord(body) || typeof body.password !== 'string' || typeof body.confirmPassword !== 'string' || body.password !== body.confirmPassword) {
@@ -1836,14 +1860,9 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     if (!profile || !installation || installation.status !== 'ready') { sendError(response, 409, 'installation_required', 'Install SillyTavern before editing its configuration'); return; }
     if (method === 'GET') { sendJson(response, 200, await decorateConfig(await config.read(profile, installation))); return; }
     const input = parseConfigUpdateInput(await readJson(request));
-    const wasRunning = supervisor.getState().status === 'running';
-    // Stop before writing. A runtime old enough to keep its own copy of the
-    // config has that copy synchronized back into the profile when it stops,
-    // so a config written first is overwritten by the restart that was meant
-    // to apply it - which is why nothing the panel saved ever took effect.
-    if (wasRunning) await supervisor.stop('configChange');
-    const saved = await config.update(profile, installation, input);
-    const process = wasRunning ? await supervisor.start() : supervisor.getState();
+    // Refused here, with SillyTavern still up, rather than after stopping it.
+    config.check(input);
+    const { result: saved, process } = await withSillyTavernStopped(() => config.update(profile, installation, input));
     sendJson(response, 200, { config: await decorateConfig(saved), process, tunnel: tunnel.getState() });
     return;
   }
@@ -1874,19 +1893,18 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       throw error;
     }
     if (port === ports.sillyTavern()) { sendJson(response, 200, { port, process: supervisor.getState() }); return; }
-    const wasRunning = supervisor.getState().status === 'running';
-    if (wasRunning) await supervisor.stop('configChange');
-    await store.setSillyTavernPort(port);
-    ports.setSillyTavern(port);
-    // Write it into the file too, so a reader of config.yaml is not told one
-    // thing while SillyTavern is started with another.
-    const profile = await profiles.getActive();
-    const installation = await runtime.getActiveInstallation();
-    if (profile && installation?.status === 'ready') {
-      try { await config.applyManagedDefaults(profile, installation); }
-      catch (error: unknown) { if (!(error instanceof ConfigError) || error.code !== 'config_missing') throw error; }
-    }
-    const process = wasRunning ? await supervisor.start() : supervisor.getState();
+    const { process } = await withSillyTavernStopped(async () => {
+      await store.setSillyTavernPort(port);
+      ports.setSillyTavern(port);
+      // Write it into the file too, so a reader of config.yaml is not told one
+      // thing while SillyTavern is started with another.
+      const profile = await profiles.getActive();
+      const installation = await runtime.getActiveInstallation();
+      if (profile && installation?.status === 'ready') {
+        try { await config.applyManagedDefaults(profile, installation); }
+        catch (error: unknown) { if (!(error instanceof ConfigError) || error.code !== 'config_missing') throw error; }
+      }
+    });
     sendJson(response, 200, { port, process });
     return;
   }
@@ -1894,12 +1912,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     const profile = await profiles.getActive();
     const installation = await runtime.getActiveInstallation();
     if (!profile || !installation || installation.status !== 'ready') { sendError(response, 409, 'installation_required', 'Install SillyTavern before editing its configuration'); return; }
-    // Same order as a save, and for the same reason: a runtime that keeps its
-    // own copy of the config writes it back when it stops.
-    const wasRunning = supervisor.getState().status === 'running';
-    if (wasRunning) await supervisor.stop('configChange');
-    const restored = await config.restoreDefaults(profile, installation);
-    const process = wasRunning ? await supervisor.start() : supervisor.getState();
+    const { result: restored, process } = await withSillyTavernStopped(() => config.restoreDefaults(profile, installation));
     sendJson(response, 200, { config: await decorateConfig(restored), process, tunnel: tunnel.getState() });
     return;
   }
