@@ -1,16 +1,31 @@
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { createServer } from 'node:http';
+import { createServer, type RequestListener } from 'node:http';
 import { mkdtemp, readFile, mkdir, symlink } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { aggregateUsageEvents, instrumentationLoaderPath, type UsageEvent } from '../src/index.js';
 
-test('fetch loader records only allowlisted metadata for JSON and streaming responses', async () => {
+/**
+ * A local server for the child to call, closed when the test ends, however it
+ * ends: one left listening keeps this file's process alive, and the whole run
+ * waits for it for ever instead of reporting the failure.
+ */
+async function serve(t: TestContext, handler: RequestListener): Promise<string> {
+  const server = createServer(handler);
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address !== 'string');
+  return `http://127.0.0.1:${address.port}`;
+}
+
+test('fetch loader records only allowlisted metadata for JSON and streaming responses', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'stm-instrumentation-'));
   const eventsPath = join(root, 'metrics', 'usage-events.jsonl');
-  const server = createServer((request, response) => {
+  const base = await serve(t, (request, response) => {
     if (request.url === '/stream') {
       response.writeHead(200, { 'content-type': 'text/event-stream' });
       response.end('data: {"model":"ignored","usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}\n\ndata: [DONE]\n\n');
@@ -24,10 +39,6 @@ test('fetch loader records only allowlisted metadata for JSON and streaming resp
     response.writeHead(200, { 'content-type': 'application/json' });
     response.end(JSON.stringify({ choices: [], usage: { prompt_tokens: 11, completion_tokens: 7, total_tokens: 18 }, secret: 'must not persist' }));
   });
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const address = server.address();
-  assert.ok(address && typeof address !== 'string');
-  const base = `http://127.0.0.1:${address.port}`;
   const script = `
     const nodeFetch = (await import('node-fetch')).default;
     const body = JSON.stringify({ model: 'gpt-test', max_tokens: 128, stream: false, prompt: 'never persist' });
@@ -38,7 +49,6 @@ test('fetch loader records only allowlisted metadata for JSON and streaming resp
     await google.json();
   `;
   await runNode(['--import', instrumentationLoaderPath, '--input-type=module', '-e', script], { STM_METRICS_FILE: eventsPath });
-  server.close();
   const events = (await readFile(eventsPath, 'utf8')).trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
   assert.equal(events.length, 3);
   assert.deepEqual(Object.keys(events[0] ?? {}).sort(), ['cacheReadTokens', 'cacheWriteTokens', 'completionSource', 'durationMs', 'endpointHost', 'inputTokens', 'maxTokens', 'model', 'outputTokens', 'provider', 'reasoningTokens', 'schemaVersion', 'status', 'stream', 'timestamp', 'totalTokens']);
@@ -63,10 +73,10 @@ test('fetch loader records only allowlisted metadata for JSON and streaming resp
   assert.equal(JSON.stringify(events).includes('must not persist'), false);
 });
 
-test('requests that are not model calls are left out of the usage log', async () => {
+test('requests that are not model calls are left out of the usage log', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'stm-instrumentation-noise-'));
   const eventsPath = join(root, 'metrics', 'usage-events.jsonl');
-  const server = createServer((request, response) => {
+  const base = await serve(t, (request, response) => {
     response.writeHead(200, { 'content-type': 'application/json' });
     if (request.url === '/proxy/custom-path') {
       response.end(JSON.stringify({ usage: { prompt_tokens: 4, completion_tokens: 1, total_tokens: 5 } }));
@@ -74,10 +84,6 @@ test('requests that are not model calls are left out of the usage log', async ()
     }
     response.end(JSON.stringify({ name: 'extension', version: '1.0.0', usage: 'not a token count' }));
   });
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const address = server.address();
-  assert.ok(address && typeof address !== 'string');
-  const base = `http://127.0.0.1:${address.port}`;
   const script = `
     // An extension manifest, a model list, and a plugin call with no usage in its answer.
     await (await fetch(${JSON.stringify(`${base}/SillyTavern/Extension/main/manifest.json`)})).text();
@@ -89,15 +95,14 @@ test('requests that are not model calls are left out of the usage log', async ()
     await (await fetch(${JSON.stringify(`${base}/v1/chat/completions`)}, { method: 'POST', body: JSON.stringify({ model: 'quiet' }) })).text();
   `;
   await runNode(['--import', instrumentationLoaderPath, '--input-type=module', '-e', script], { STM_METRICS_FILE: eventsPath });
-  server.close();
   const events = (await readFile(eventsPath, 'utf8')).trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
   assert.deepEqual(events.map((event) => event.model), ['proxied', 'quiet']);
 });
 
-test('an answer let go of before its end is marked cut, and one that ends whole is not', async () => {
+test('an answer let go of before its end is marked cut, and one that ends whole is not', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'stm-instrumentation-cut-'));
   const eventsPath = join(root, 'metrics', 'usage-events.jsonl');
-  const server = createServer((request, response) => {
+  const base = await serve(t, (request, response) => {
     response.writeHead(200, { 'content-type': 'text/event-stream' });
     if (request.url === '/whole/chat/completions') {
       response.end('data: {"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}\n\ndata: [DONE]\n\n');
@@ -106,10 +111,6 @@ test('an answer let go of before its end is marked cut, and one that ends whole 
     // A reply still being written when whoever asked goes away.
     response.write('data: {"choices":[{"delta":{"content":"Once"}}]}\n\n');
   });
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const address = server.address();
-  assert.ok(address && typeof address !== 'string');
-  const base = `http://127.0.0.1:${address.port}`;
   const body = JSON.stringify({ model: 'cut-test', stream: true });
   const script = `
     const nodeFetch = (await import('node-fetch')).default;
@@ -127,12 +128,7 @@ test('an answer let go of before its end is marked cut, and one that ends whole 
     await two.text().catch(() => undefined);
     await (await fetch(${JSON.stringify(`${base}/whole/chat/completions`)}, { method: 'POST', body: ${JSON.stringify(body)} })).text();
   `;
-  try {
-    await runNode(['--import', instrumentationLoaderPath, '--input-type=module', '-e', script], { STM_METRICS_FILE: eventsPath });
-  } finally {
-    server.closeAllConnections();
-    server.close();
-  }
+  await runNode(['--import', instrumentationLoaderPath, '--input-type=module', '-e', script], { STM_METRICS_FILE: eventsPath });
   const events = (await readFile(eventsPath, 'utf8')).trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
   assert.equal(events.length, 3, 'each answer is recorded once, however it ended');
   assert.equal(events[0]?.cut, true);
@@ -141,11 +137,11 @@ test('an answer let go of before its end is marked cut, and one that ends whole 
   assert.equal(events[2]?.outputTokens, 3);
 });
 
-test('the start of a finished reply goes to its own file, and never into the usage log', async () => {
+test('the start of a finished reply goes to its own file, and never into the usage log', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'stm-instrumentation-reply-'));
   const eventsPath = join(root, 'metrics', 'usage-events.jsonl');
   const replyPath = join(root, 'tmp', 'reply.json');
-  const server = createServer((request, response) => {
+  const base = await serve(t, (request, response) => {
     if (request.url === '/v1/chat/completions') {
       // A reasoning model that thinks out loud first, streamed.
       response.writeHead(200, { 'content-type': 'text/event-stream' });
@@ -163,31 +159,23 @@ test('the start of a finished reply goes to its own file, and never into the usa
     response.writeHead(200, { 'content-type': 'application/json' });
     response.end(JSON.stringify({ candidates: [{ content: { parts: [{ text: 'hmm', thought: true }, { text: 'Gemini says hi.' }] } }], usageMetadata: { promptTokenCount: 1, candidatesTokenCount: 2, totalTokenCount: 3 } }, null, 2));
   });
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const address = server.address();
-  assert.ok(address && typeof address !== 'string');
-  const base = `http://127.0.0.1:${address.port}`;
   const read = async () => JSON.parse(await readFile(replyPath, 'utf8')) as { timestamp: string; text: string };
   const run = async (path: string, body: object) => {
     const script = `const nodeFetch = (await import('node-fetch')).default; await (await nodeFetch(${JSON.stringify(`${base}${path}`)}, { method: 'POST', body: ${JSON.stringify(JSON.stringify(body))} })).text();`;
     await runNode(['--import', instrumentationLoaderPath, '--input-type=module', '-e', script], { STM_METRICS_FILE: eventsPath, STM_REPLY_FILE: replyPath });
   };
-  try {
-    await run('/v1/chat/completions', { model: 'think-test', stream: true });
-    const openai = await read();
-    assert.equal(openai.text, '*She smiles.* Welcome back.', 'what it said, not what it thought');
-    await run('/v1/messages', { model: 'claude-test', stream: true });
-    assert.equal((await read()).text, 'Claude says hi.');
-    await run('/v1beta/models/gemini-test:generateContent', {});
-    assert.equal((await read()).text, 'Gemini says hi.');
-    const log = await readFile(eventsPath, 'utf8');
-    const events = log.trim().split('\n').map((line) => JSON.parse(line) as { timestamp: string });
-    assert.equal(events.length, 3);
-    assert.equal(events[2]?.timestamp, (await read()).timestamp, 'matched to its log line by timestamp');
-    for (const words of ['Welcome back', 'Claude says', 'Gemini says', 'plan the']) assert.equal(log.includes(words), false, 'the usage log carries no words');
-  } finally {
-    server.close();
-  }
+  await run('/v1/chat/completions', { model: 'think-test', stream: true });
+  const openai = await read();
+  assert.equal(openai.text, '*She smiles.* Welcome back.', 'what it said, not what it thought');
+  await run('/v1/messages', { model: 'claude-test', stream: true });
+  assert.equal((await read()).text, 'Claude says hi.');
+  await run('/v1beta/models/gemini-test:generateContent', {});
+  assert.equal((await read()).text, 'Gemini says hi.');
+  const log = await readFile(eventsPath, 'utf8');
+  const events = log.trim().split('\n').map((line) => JSON.parse(line) as { timestamp: string });
+  assert.equal(events.length, 3);
+  assert.equal(events[2]?.timestamp, (await read()).timestamp, 'matched to its log line by timestamp');
+  for (const words of ['Welcome back', 'Claude says', 'Gemini says', 'plan the']) assert.equal(log.includes(words), false, 'the usage log carries no words');
 });
 
 test('usage logged before the observer knew better leaves out downloads it recorded', () => {
@@ -199,27 +187,24 @@ test('usage logged before the observer knew better leaves out downloads it recor
   assert.equal(snapshot.models.some((bucket) => bucket.key === 'unknown'), false);
 });
 
-test('CJS node-fetch is wrapped for legacy SillyTavern runtimes', async () => {
+test('CJS node-fetch is wrapped for legacy SillyTavern runtimes', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'stm-instrumentation-cjs-'));
   const eventsPath = join(root, 'metrics', 'usage-events.jsonl');
   await mkdir(join(root, 'node_modules'), { recursive: true });
-  const v2Path = join(process.cwd(), 'node_modules', 'node-fetch-v2');
+  // Found the way Node finds it, so wherever the dependencies were installed.
+  const v2Path = dirname(createRequire(import.meta.url).resolve('node-fetch-v2/package.json'));
   await symlink(v2Path, join(root, 'node_modules', 'node-fetch'), 'junction');
-  const server = createServer((_request, response) => {
+  const base = await serve(t, (_request, response) => {
     response.writeHead(200, { 'content-type': 'application/json' });
     response.end(JSON.stringify({ usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 } }));
   });
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const address = server.address();
-  assert.ok(address && typeof address !== 'string');
   const script = `(async () => {
     const { createRequire } = await import('node:module');
     const fetch = createRequire(${JSON.stringify(join(root, 'main.cjs'))})('node-fetch');
-    const response = await fetch(${JSON.stringify(`http://127.0.0.1:${address.port}/chat`)}, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'legacy-model', stream: false }) });
+    const response = await fetch(${JSON.stringify(`${base}/chat`)}, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'legacy-model', stream: false }) });
     await response.json();
   })();`;
   await runNode(['--import', instrumentationLoaderPath, '--input-type=module', '-e', script], { STM_METRICS_FILE: eventsPath });
-  server.close();
   const events = (await readFile(eventsPath, 'utf8')).trim().split('\n').map((line) => JSON.parse(line) as Record<string, unknown>);
   assert.equal(events.length, 1);
   assert.equal(events[0]?.model, 'legacy-model');

@@ -10,6 +10,15 @@ import type { PushMessage } from '../src/web-push.js';
 
 const wait = (ms: number) => new Promise((resolve) => { setTimeout(resolve, ms); });
 
+/** Wait for what the timers and the disk are still doing, however long a busy machine makes it. */
+async function until(done: () => boolean): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (!done()) {
+    if (Date.now() > deadline) assert.fail('still waiting after 5 s');
+    await wait(5);
+  }
+}
+
 const ANSWER: UsageEvent = { schemaVersion: 1, timestamp: '2026-10-12T10:00:00.000Z', provider: 'openai', completionSource: 'openai', model: 'gpt-test', endpointHost: 'api.openai.com', stream: true, maxTokens: null, inputTokens: 10, outputTokens: 20, totalTokens: 30, status: 200, durationMs: 900 };
 
 const REPORT: ReplyReport = { page: 'phone', title: 'Seraphina', name: 'Seraphina', group: false, text: 'You are safe here.\n\nRest now.', avatar: 'Seraphina.png', key: 'c:Seraphina.png', chat: 'Seraphina - 2026-10-12' };
@@ -70,7 +79,7 @@ test('an answer nobody saw arrive is told in plain words once the page had its c
   replies.presence('phone', 'hidden');
   replies.answer(ANSWER);
   assert.equal(told.length, 0, 'not at once: the page may still say it better');
-  await wait(80);
+  await until(() => told.length > 0);
   assert.equal(told.length, 1);
   assert.equal(told[0]!.en.body, 'A reply is ready.');
   assert.equal(told[0]!.vi.body, 'Đã có câu trả lời.');
@@ -94,7 +103,7 @@ test('an answer that was cut short or failed says so', async (t) => {
     t.after(() => replies.close());
     replies.presence('phone', 'hidden');
     replies.answer(event);
-    await wait(80);
+    await until(() => told.length > 0);
     assert.equal(told[0]?.en.body, words);
     assert.equal(told[0]?.en.level, 'warning');
   }
@@ -142,6 +151,7 @@ test('the usage log is read from where it ended when the reader left', async (t)
   const { replies, told } = notifier(file, { pollMs: 10 });
   t.after(() => replies.close());
   replies.presence('phone', 'hidden');
+  await replies.settled();
   await wait(60);
   assert.equal(told.length, 0);
   // Half a line, then the rest of it, as an append still going on looks.
@@ -149,7 +159,7 @@ test('the usage log is read from where it ended when the reader left', async (t)
   await appendFile(file, line.slice(0, 20));
   await wait(40);
   await appendFile(file, `${line.slice(20)}\n`);
-  await wait(120);
+  await until(() => told.length > 0);
   assert.equal(told.length, 1);
   assert.equal(told[0]!.en.body, 'The reply stopped before it finished. Open SillyTavern to see what arrived.');
 });
@@ -172,7 +182,7 @@ test('a page stopped before the reply ended is still told who replied, and what 
   replies.presence('phone', 'hidden');
   await writeFile(replyFile, JSON.stringify({ timestamp: ANSWER.timestamp, text: '*She smiles.* You came back, traveller.' }));
   replies.answer(ANSWER);
-  await wait(80);
+  await until(() => told.length > 0);
   assert.equal(told.length, 1);
   assert.equal(told[0]!.en.title, 'Seraphina');
   assert.equal(told[0]!.en.body, 'She smiles. You came back, traveller.', 'without the roleplay asterisks');
@@ -188,7 +198,7 @@ test('a page stopped before the reply ended is still told who replied, and what 
   later.expect({ ...REPORT, text: '' });
   later.presence('phone', 'hidden');
   later.answer(ANSWER);
-  await wait(60);
+  await until(() => told.length > 1);
   assert.equal(told[1]!.en.title, 'Seraphina');
   assert.equal(told[1]!.en.body, 'Seraphina replied.');
 
@@ -198,7 +208,7 @@ test('a page stopped before the reply ended is still told who replied, and what 
   cut.expect({ ...REPORT, text: '' });
   cut.presence('phone', 'hidden');
   cut.answer({ ...ANSWER, cut: true });
-  await wait(60);
+  await until(() => told.length > 2);
   assert.equal(told[2]!.en.title, 'Seraphina');
   assert.equal(told[2]!.vi.body, 'Câu trả lời bị dừng giữa chừng. Mở SillyTavern để xem phần đã nhận được.');
 });

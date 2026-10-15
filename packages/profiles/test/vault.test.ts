@@ -251,6 +251,9 @@ test('a disk without room for the profiles is refused before anything is copied'
   const roomy = new ProfileVault({ local: join(root, 'roomy'), durable, legacy, freeBytes: async () => 64 * 1024 * 1024 * 1024 });
   await roomy.restore();
   assert.equal((await tree(roomy.local))['p1/data/default-user/characters/Big.png']?.length, 100_000);
+  // The old tree is removed after restore returns; it is still going until settled.
+  await roomy.settled();
+  assert.equal(await exists(legacy), false, 'the old tree is removed once the pack holds it');
 });
 
 test('nothing is written out before the working copy has been filled', async (t) => {
