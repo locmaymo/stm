@@ -1517,6 +1517,11 @@ export interface ManagerSettingsOffer {
  */
 export interface ConsoleStatus {
   readonly process: ProcessState;
+  /**
+   * The profiles' data is still being put back on this machine's disk, after
+   * the machine was replaced. SillyTavern starts when it is done.
+   */
+  readonly profilesFilling?: boolean;
   readonly tunnel: TunnelState;
   readonly managerTunnel: TunnelState;
   readonly security: AccessGatewayState;

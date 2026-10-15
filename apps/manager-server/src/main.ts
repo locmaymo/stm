@@ -20,35 +20,6 @@ const shutdown = async (reason: string): Promise<void> => {
   process.exit(0);
 };
 
-const manager = await startManagerServer({ onShutdownRequest: () => { void shutdown('the launcher asked'); } });
-const url = `http://127.0.0.1:${manager.port}`;
-
-/*
- * Say where the console is, once, in the place the operator is already looking.
- *
- * The lines above this are the log: a missing `.env`, the gateway's port, a
- * panel build. They are worth keeping and worth nobody having to read. What
- * somebody who has just installed this needs is the address, the address their
- * phone can use, and how to stop the thing again.
- *
- * Colour is for a terminal only. Piped into a file or a service manager's
- * journal, this is plain text.
- */
-const persisted = await manager.store.getPersisted();
-const lan = await networkHost();
-const lanUrl = lan ? `http://${lan}:${manager.port}` : undefined;
-const colour = Boolean(process.stdout.isTTY) && process.env.NO_COLOR === undefined && process.env.TERM !== 'dumb';
-console.log(bootstrapBanner({
-  title: `ST Manager ${persisted.managerVersion}`,
-  addresses: [
-    { label: 'On this computer', url },
-    ...(lanUrl ? [{ label: 'On this Wi-Fi', url: lanUrl }] : []),
-  ],
-  stopHint: 'Press Ctrl+C to stop.',
-  colour,
-  ...(process.stdout.columns ? { width: process.stdout.columns } : {}),
-}));
-
 /**
  * Report a fault instead of letting it end the process in silence.
  *
@@ -61,14 +32,61 @@ console.log(bootstrapBanner({
  * The work that can damage data runs in the SillyTavern child, not here. The
  * manager's job after a fault is to still be there: to serve the console, to
  * show the line below, and to let a different version be installed.
+ *
+ * Installed before the manager starts: starting can take a minute on a
+ * machine that was replaced, and a fault in that minute is the one most worth
+ * a line. Until the manager is there to log it, it goes to the console.
  */
+let started: Awaited<ReturnType<typeof startManagerServer>> | null = null;
 const reportFault = (kind: string, error: unknown): void => {
   const detail = error instanceof Error ? error.stack ?? error.message : String(error);
-  for (const line of detail.split('\n')) manager.logger(`[manager] ${kind}: ${line.trim()}`);
+  for (const line of detail.split('\n')) {
+    const text = `[manager] ${kind}: ${line.trim()}`;
+    if (started) started.logger(text);
+    else console.error(text);
+  }
 };
 
 process.on('uncaughtException', (error: unknown) => { reportFault('uncaught exception', error); });
 process.on('unhandledRejection', (reason: unknown) => { reportFault('unhandled rejection', reason); });
+
+/*
+ * Say where the console is, once, in the place the operator is already looking.
+ *
+ * The lines above this are the log: a missing `.env`, the gateway's port, a
+ * panel build. They are worth keeping and worth nobody having to read. What
+ * somebody who has just installed this needs is the address, the address their
+ * phone can use, and how to stop the thing again.
+ *
+ * Said as soon as the console listens rather than when startup is over: on a
+ * machine that was replaced, putting SillyTavern and the profiles back on its
+ * disk takes a while, and the console answers all through it.
+ *
+ * Colour is for a terminal only. Piped into a file or a service manager's
+ * journal, this is plain text.
+ */
+const printAddress = async (port: number, managerVersion: string): Promise<void> => {
+  const lan = await networkHost();
+  const lanUrl = lan ? `http://${lan}:${port}` : undefined;
+  const colour = Boolean(process.stdout.isTTY) && process.env.NO_COLOR === undefined && process.env.TERM !== 'dumb';
+  console.log(bootstrapBanner({
+    title: `ST Manager ${managerVersion}`,
+    addresses: [
+      { label: 'On this computer', url: `http://127.0.0.1:${port}` },
+      ...(lanUrl ? [{ label: 'On this Wi-Fi', url: lanUrl }] : []),
+    ],
+    stopHint: 'Press Ctrl+C to stop.',
+    colour,
+    ...(process.stdout.columns ? { width: process.stdout.columns } : {}),
+  }));
+};
+
+const manager = await startManagerServer({
+  onShutdownRequest: () => { void shutdown('the launcher asked'); },
+  onListening: ({ port, managerVersion }) => { void printAddress(port, managerVersion).catch(() => undefined); },
+});
+started = manager;
+const url = `http://127.0.0.1:${manager.port}`;
 
 await openInBrowser(url, { logger: manager.logger });
 

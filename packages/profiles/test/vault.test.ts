@@ -296,3 +296,27 @@ test('the profile record names the data directory, wherever the data is worked o
   const plain = new ProfileStore({ paths: getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: env.STM_DATA_DIR }, mountTable: null }), logger: () => undefined });
   assert.equal((await plain.getActive())?.dataPath, join(paths.profiles, '.profile-data', created.id, 'data'));
 });
+
+test('while the data is still coming back, the profiles can be shown but not touched', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-vault-peek-'));
+  t.after(async () => { await rm(root, { recursive: true, force: true }); });
+  const env = { STM_DATA_DIR: join(root, 'manager'), STM_PROFILE_DATA_DIR: join(root, 'local-disk', 'profiles') };
+  const paths = getPlatformPaths({ platform: 'linux', env, mountTable: null });
+  const created = await new ProfileStore({ paths, logger: () => undefined }).create({ name: 'Main', installationId: 'install-1', runtimePath: join(root, 'runtime') }, true);
+
+  let finish: () => void = () => undefined;
+  const filled = new Promise<void>((resolvePromise) => { finish = resolvePromise; });
+  const keeper = { restore: () => filled, start: () => undefined, erase: async () => undefined, close: async () => undefined };
+  const store = new ProfileStore({ paths, vault: keeper, logger: () => undefined });
+  assert.equal(store.filling, true);
+  assert.deepEqual((await store.peek()).map((profile) => [profile.id, profile.active, profile.dataPath]), [[created.id, true, created.dataPath]]);
+
+  let listed = false;
+  const listing = store.list().then(() => { listed = true; });
+  await new Promise((resolvePromise) => { setTimeout(resolvePromise, 20); });
+  assert.equal(listed, false, 'what reads the profiles for real still waits for their data');
+
+  finish();
+  await listing;
+  assert.equal(store.filling, false);
+});

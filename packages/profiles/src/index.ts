@@ -78,6 +78,7 @@ export class ProfileStore {
   private cleanupTail: Promise<void> = Promise.resolve();
   private readonly vault: WorkingCopyKeeper | null;
   private readonly ready: Promise<void>;
+  private fillingNow: boolean;
 
   public constructor(options: ProfileStoreOptions) {
     this.paths = options.paths;
@@ -86,6 +87,8 @@ export class ProfileStore {
     this.vault = options.vault ?? null;
     const vault = this.vault;
     this.ready = vault ? vault.restore().then(() => vault.start()) : Promise.resolve();
+    this.fillingNow = vault !== null;
+    void this.ready.finally(() => { this.fillingNow = false; }).catch(() => undefined);
     // Every profile read waits on this and fails with it, which is the point:
     // a working copy that could not be filled must not be used, or written out
     // over the copy that holds the data.
@@ -93,6 +96,26 @@ export class ProfileStore {
       const reason = error instanceof Error ? error.message : 'unknown error';
       this.logger(logEvent('vault.restoreFailed', `[vault] the profiles could not be put back on this machine's disk, so nothing will be written over the data directory's copy: ${reason}`, { reason }));
     });
+  }
+
+  /**
+   * Whether the profiles' data is still being put back on this machine's disk.
+   *
+   * It takes half a minute or more for a large profile after the machine was
+   * replaced, and everything that touches the data waits for it. What only
+   * shows the profiles - their names, their backups - does not have to.
+   */
+  public get filling(): boolean { return this.fillingNow; }
+
+  /**
+   * The profiles as recorded, without waiting for their data.
+   *
+   * For showing them while the working copy is still being filled, never for
+   * reading or writing what is in them: nothing is guaranteed to be on this
+   * disk yet, and nothing here makes the default profile or moves one.
+   */
+  public async peek(): Promise<Profile[]> {
+    return (this.profiles ?? await this.readRecords()).map((profile) => ({ ...profile }));
   }
 
   /** Empty the working copy and its copy in the data directory, for a reset. */
@@ -448,18 +471,24 @@ export class ProfileStore {
     await this.ready;
     if (this.profiles) return this.profiles;
     await mkdir(this.paths.state, { recursive: true });
+    const records = await this.readRecords();
+    this.profiles ??= records;
+    return this.profiles;
+  }
+
+  /** The profile records on disk, as this machine reaches their paths. */
+  private async readRecords(): Promise<Profile[]> {
     try {
       const parsed: unknown = JSON.parse(await readFile(join(this.paths.state, PROFILE_STATE_FILE), 'utf8'));
       if (!isRecord(parsed) || parsed.schemaVersion !== PROFILE_SCHEMA_VERSION || !Array.isArray(parsed.profiles)) throw new Error('Invalid profile state');
-      this.profiles = parsed.profiles.map((profile) => {
+      return parsed.profiles.map((profile) => {
         const parsedProfile = parseProfile(profile);
         return { ...parsedProfile, dataPath: this.toWorking(parsedProfile.dataPath), configPath: this.toWorking(parsedProfile.configPath) };
       });
     } catch (error: unknown) {
       if (!isFileNotFound(error)) throw error;
-      this.profiles = [];
+      return [];
     }
-    return this.profiles;
   }
 
   private async save(profiles: Profile[]): Promise<void> {
