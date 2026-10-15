@@ -2067,7 +2067,11 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
                 }}
               /></div>
               : null}
-            {backgroundJob && page !== 'data' && !(page === 'overview' && !activeInstallationId)
+            {/* Not while the data page in this tab is reporting work of its
+                own: a restore or backup started there is also the manager's
+                running job, and both cards used to show it, one above the
+                other. The strip below says the same and leads back to it. */}
+            {backgroundJob && page !== 'data' && !dataActivity?.label && !(page === 'overview' && !activeInstallationId)
               ? <div className="mb-(--section-gap)"><BackgroundTaskCard t={t} catalog={catalog} job={backgroundJob} /></div>
               : null}
             {/* Below the work and below anything broken, because a release
