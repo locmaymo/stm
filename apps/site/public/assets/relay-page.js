@@ -1,9 +1,9 @@
 /*
- * The language and theme switches on the Cloudflare callback page.
+ * The language and theme switches on the OAuth callback page.
  *
  * The rest of the site says a page in Vietnamese should be a Vietnamese URL,
  * linkable and indexable as such. This page cannot be: its address is
- * registered on the OAuth client and Cloudflare returns to it matched exactly,
+ * registered on the OAuth client and the provider returns to it matched exactly,
  * so there is one address and it has to speak both languages. It used to do
  * that by printing every sentence twice, one under the other, which is twice
  * the reading for a page whose whole job is to be understood in a second.
@@ -15,16 +15,19 @@
  * documentation in Vietnamese arrives here in Vietnamese.
  */
 const VI = {
-  'page.title': 'SillyTavern Manager · Cloudflare',
+  'page.title': 'SillyTavern Manager',
   'working.title': 'Đang quay lại SillyTavern Manager…',
-  'working.body': 'Chỉ một giây thôi.',
+  'working.body': 'Vui lòng chờ, trang sẽ tự chuyển.',
   'confirm.title': 'Tiếp tục tới trình quản lý?',
-  'confirm.body': 'Đăng nhập Cloudflare đã xong. Việc kết nối sẽ được hoàn tất tại:',
+  'confirm.body': 'Đăng nhập đã xong. Việc kết nối sẽ được hoàn tất tại:',
   'confirm.warn': 'Chỉ tiếp tục nếu đây đúng là địa chỉ bạn đang mở SillyTavern Manager.',
   'confirm.button': 'Tiếp tục',
   'invalid.title': 'Không dùng được liên kết này',
-  'invalid.body': 'Liên kết không đến từ một lần đăng nhập của SillyTavern Manager. Hãy bắt đầu lại từ nút Kết nối Cloudflare trong trình quản lý.',
+  'invalid.body': 'Liên kết không đến từ một lần đăng nhập của SillyTavern Manager. Hãy bắt đầu lại từ trình quản lý.',
   'noscript': 'Cần bật JavaScript để quay lại trình quản lý.',
+  'foot.about': 'Đây là trang chuyển tiếp của SillyTavern Manager, một dự án mã nguồn mở. Trang không thu thập thông tin nào, chỉ đưa bạn về trình quản lý chạy trên thiết bị của chính bạn.',
+  'foot.home': 'Trang chủ',
+  'foot.source': 'Mã nguồn trên GitHub',
   'lang.other': 'English',
   'lang.switch': 'Read this page in English',
   'theme.dark': 'Chuyển sang giao diện tối',

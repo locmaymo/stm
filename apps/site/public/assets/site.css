@@ -591,16 +591,16 @@ tbody tr:last-child td { border-bottom: 0; }
 /* ---- the OAuth relay page -------------------------------------------- */
 
 /*
- * The one page here that is not part of the site: Cloudflare returns a browser
- * to it mid-sign-in, it forwards, and it is gone. It carries the site's mark
- * and colours so the hop does not look like a stranger's page, and nothing
- * else - no bar, no footer, nowhere else to go from here.
+ * The one page here that is not part of the site: an OAuth provider returns a
+ * browser to it mid-sign-in, it forwards, and it is gone. It carries the site's
+ * mark and colours so the hop does not look like a stranger's page, and a
+ * footer that says whose page it is and links to the project and its source.
  */
 /*
- * The Cloudflare callback page, dressed as the manager's own sign-in.
+ * The OAuth callback page, shaped like the manager's own screens.
  *
  * Somebody arrives here mid-way through connecting their account: they pressed
- * a button in the manager, went to Cloudflare, and landed on a third site.
+ * a button in the manager, went to the provider, and landed on a third site.
  * Looking like the place they started from is what says the journey is still
  * the one they began - so this borrows the sign-in's shape: the glow behind,
  * the mark above the title, and the card holding only what has to be decided.
@@ -625,3 +625,6 @@ tbody tr:last-child td { border-bottom: 0; }
 .relay-card code { display: block; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--muted); font-size: 14.5px; line-height: 1.5; overflow-wrap: anywhere; }
 .relay-card .relay-warn { margin: 14px 0 0; }
 .relay-card .button { margin-top: 16px; width: 100%; justify-content: center; }
+.relay-foot { margin-top: 32px; padding-top: 16px; border-top: 1px solid var(--border); }
+.relay-main .relay-foot p { font-size: 12.5px; }
+.relay-foot a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }

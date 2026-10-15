@@ -6,7 +6,7 @@
   <meta name="referrer" content="no-referrer">
   <meta name="robots" content="noindex">
   <meta name="color-scheme" content="light dark">
-  <title>SillyTavern Manager · Cloudflare</title>
+  <title>SillyTavern Manager</title>
   <link rel="icon" href="/assets/favicon.ico" sizes="16x16 32x32 48x48">
   <script src="/assets/boot.js"></script>
   <link rel="stylesheet" href="/assets/site.css">
@@ -14,7 +14,7 @@
 <!--
   One address, two languages.
 
-  This page's address is registered on the OAuth client and Cloudflare returns
+  This page's address is registered on the OAuth client and the provider returns
   to it matched exactly, so it cannot be a Vietnamese URL the way every other
   page on this site is. It used to print each sentence twice instead. Now it
   holds one language and a switch changes it: English here, Vietnamese in
@@ -38,12 +38,12 @@
 
     <div id="working">
       <h1 data-i18n="working.title">Returning to SillyTavern Manager…</h1>
-      <p data-i18n="working.body">This takes a second.</p>
+      <p data-i18n="working.body">Please wait. This page moves on by itself.</p>
     </div>
 
     <div id="confirm" hidden>
       <h1 data-i18n="confirm.title">Continue to your manager?</h1>
-      <p data-i18n="confirm.body">Cloudflare sign-in finished. It will be completed on:</p>
+      <p data-i18n="confirm.body">Sign-in finished. It will be completed on:</p>
       <div class="relay-card">
         <code id="destination"></code>
         <p class="relay-warn" data-i18n="confirm.warn">Only continue if this is the address you opened SillyTavern Manager on.</p>
@@ -53,10 +53,15 @@
 
     <div id="invalid" hidden>
       <h1 data-i18n="invalid.title">This link cannot be used</h1>
-      <p data-i18n="invalid.body">It did not come from a SillyTavern Manager sign-in. Start again from Connect Cloudflare in the manager.</p>
+      <p data-i18n="invalid.body">It did not come from a SillyTavern Manager sign-in. Start again from the manager.</p>
     </div>
 
     <noscript><p data-i18n="noscript">JavaScript is needed to return to the manager.</p></noscript>
+
+    <footer class="relay-foot">
+      <p data-i18n="foot.about">This is the redirect page of SillyTavern Manager, an open-source project. It collects nothing; it only returns you to the manager running on your own device.</p>
+      <p><a href="/" data-i18n="foot.home">Home page</a> · <a href="https://github.com/locmaymo/stm" rel="noopener" data-i18n="foot.source">Source code on GitHub</a></p>
+    </footer>
   </main>
 
   <script type="module" src="/assets/relay-page.js"></script>
