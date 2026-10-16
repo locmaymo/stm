@@ -29,8 +29,9 @@ import java.util.Set;
  * chat_bridge.js, says when it is up, reports finished replies and switches
  * chats when a bubble asks; the console asks and sets whether replies are
  * notified and whether they bubble, asks for SillyTavern to be shown, and
- * has the app send a backup zip from the phone (see {@link BackupImport}) or
- * move a SillyTavern over from Termux (see {@link TermuxImport}).
+ * has the app send a backup zip from the phone (see {@link BackupImport}),
+ * move a SillyTavern over from Termux (see {@link TermuxImport}) or install
+ * a newer release of itself (see {@link AppUpdate}).
  * Only pages served on this phone are listened to: a frame from anywhere else
  * - a picture or a video a character card embeds, say - also gets the object,
  * and everything it sends is dropped.
@@ -97,7 +98,8 @@ final class ChatBridge {
                 // What this app can do for the console; an older app says nothing.
                 try {
                     reply.postMessage(new JSONObject().put("type", "features").put("importZip", true)
-                        .put("termux", TermuxImport.present(app)).put("termuxOffer", TermuxImport.offer(app)).toString());
+                        .put("termux", TermuxImport.present(app)).put("termuxOffer", TermuxImport.offer(app))
+                        .put("appUpdate", true).toString());
                 } catch (JSONException | IllegalStateException e) {
                     Log.w(TAG, "the console could not be told what the app can do", e);
                 }
@@ -115,6 +117,13 @@ final class ChatBridge {
                 break;
             case "importCancel":
                 BackupImport.cancel();
+                break;
+            case "appUpdate":
+                // The console's new-version card; see AppUpdate.
+                if (!SillyTavernHost.isHost(view) && origin.getPort() == ManagerService.port) MainActivity.updateApp(data.optString("version", ""), reply);
+                break;
+            case "appUpdateCancel":
+                AppUpdate.cancel();
                 break;
             case "bubbles":
                 if (data.has("replies")) {

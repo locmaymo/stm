@@ -88,15 +88,17 @@ export interface AppFeatures {
   readonly termux: boolean;
   /** Whether to offer that move: Termux is there and the offer was never answered. */
   readonly termuxOffer: boolean;
+  /** Whether the app installs a newer release of itself; see `updateApp`. */
+  readonly appUpdate: boolean;
 }
 
-const NO_FEATURES: AppFeatures = { importZip: false, termux: false, termuxOffer: false };
+const NO_FEATURES: AppFeatures = { importZip: false, termux: false, termuxOffer: false, appUpdate: false };
 
 /** What the app said it can do; anything it did not say, it cannot. */
 export function parseFeatures(data: unknown): AppFeatures | null {
   const value = parseMessage(data);
   if (value?.type !== 'features') return null;
-  return { importZip: value.importZip === true, termux: value.termux === true, termuxOffer: value.termuxOffer === true };
+  return { importZip: value.importZip === true, termux: value.termux === true, termuxOffer: value.termuxOffer === true, appUpdate: value.appUpdate === true };
 }
 
 let asked: Promise<AppFeatures> | null = null;
@@ -196,6 +198,66 @@ export function importZipFromApp(csrfToken: string, onEvent: (event: ImportEvent
 export function answerTermuxOffer(declined: boolean): void {
   if (declined) channel()?.postMessage(JSON.stringify({ type: 'termuxOffer', dismiss: true }));
   asked = asked?.then((features) => ({ ...features, termuxOffer: false })) ?? null;
+}
+
+/**
+ * How an update the app installs is going; see `updateApp`.
+ *
+ * `permission`: Android's switch that lets the app install apps is open, and
+ * the app goes on by itself once the reader is back. `installing`: the
+ * manager is stopping and Android is about to ask, so this page is about to
+ * go - there is nothing after it. A failure carries a `code`: `network`,
+ * `missing` (the release has no APK for this phone), `checksum`,
+ * `permission` or `notNewer`.
+ */
+export type AppUpdateEvent =
+  | { readonly state: 'progress'; readonly received: number; readonly total: number }
+  | { readonly state: 'permission' }
+  | { readonly state: 'installing' }
+  | { readonly state: 'canceled' }
+  | { readonly state: 'failed'; readonly code: string };
+
+export function parseAppUpdateEvent(data: unknown): AppUpdateEvent | null {
+  const value = parseMessage(data);
+  if (value?.type !== 'appUpdate') return null;
+  switch (value.state) {
+    case 'progress': return {
+      state: 'progress',
+      received: typeof value.received === 'number' ? value.received : 0,
+      total: typeof value.total === 'number' ? value.total : -1,
+    };
+    case 'permission': return { state: 'permission' };
+    case 'installing': return { state: 'installing' };
+    case 'canceled': return { state: 'canceled' };
+    case 'failed': return { state: 'failed', code: typeof value.code === 'string' ? value.code : '' };
+    default: return null;
+  }
+}
+
+/**
+ * Have the app download `version` of itself and install it.
+ *
+ * Resolves with how it ended - installing, canceled or failed; the progress
+ * and the permission step before that go to `onEvent`. Null when there is no
+ * app to ask. Aborting `signal` asks the app to stop downloading.
+ */
+export function updateApp(version: string, onEvent: (event: AppUpdateEvent) => void, signal?: AbortSignal): Promise<AppUpdateEvent | null> {
+  const app = channel();
+  if (!app) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const stop = () => app.postMessage(JSON.stringify({ type: 'appUpdateCancel' }));
+    const listener = (event: MessageEvent<string>) => {
+      const update = parseAppUpdateEvent(event.data);
+      if (!update) return;
+      if (update.state === 'progress' || update.state === 'permission') { onEvent(update); return; }
+      app.removeEventListener('message', listener);
+      signal?.removeEventListener('abort', stop);
+      resolve(update);
+    };
+    app.addEventListener('message', listener);
+    signal?.addEventListener('abort', stop, { once: true });
+    app.postMessage(JSON.stringify({ type: 'appUpdate', version }));
+  });
 }
 
 function parseMessage(data: unknown): Record<string, unknown> | null {

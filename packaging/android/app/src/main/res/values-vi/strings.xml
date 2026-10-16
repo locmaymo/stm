@@ -39,4 +39,7 @@
     <string name="permissions_start">Bắt đầu</string>
     <string name="permissions_later">Để sau</string>
     <string name="sillytavern_stopped">SillyTavern đã dừng. Mở lại từ bảng điều khiển khi nó chạy lại.</string>
-</resources>
+    <string name="status_updating">Đang cài bản mới…\n\nBấm Cập nhật khi Android hỏi.</string>
+    <string name="update_failed">Chưa cài được bản mới: %1$s</string>
+    <string name="update_done">STM đã lên bản %1$s</string>
+    <string name="update_done_open">Chạm để mở.</string></resources>

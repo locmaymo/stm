@@ -9,6 +9,8 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- Asked for on the permissions screen; see Permissions. -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- Installs a newer release of this app from the console; see AppUpdate. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!-- Whether Termux is here, to offer moving a SillyTavern out of it; see TermuxImport. -->
     <queries>
@@ -64,6 +66,25 @@
             android:label="@string/bubble_label"
             android:resizeableActivity="true"
             android:windowSoftInputMode="adjustResize" />
+
+        <!--
+          That the app was replaced, so after an update it installed the
+          manager starts again; see AppUpdate.
+        -->
+        <receiver
+            android:name=".UpdateReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- The downloaded update, for Android's installer to read; see UpdateFiles. -->
+        <provider
+            android:name=".UpdateFiles"
+            android:authorities="${applicationId}.update"
+            android:exported="false"
+            android:grantUriPermissions="true" />
 
         <service
             android:name=".ManagerService"

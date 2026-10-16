@@ -19,6 +19,11 @@ android {
         targetSdk 34
         versionName version
         versionCode parts[0].toInteger() * 10000 + parts[1].toInteger() * 100 + parts[2].toInteger()
+        // Where the app fetches a newer release of itself (see AppUpdate): a
+        // tag's folder holds its APKs and their checksums. A test build can be
+        // pointed at a local copy.
+        def releases = System.getenv('STM_ANDROID_RELEASES_URL') ?: 'https://github.com/locmaymo/stm/releases/download'
+        buildConfigField 'String', 'RELEASES_URL', "\"${releases}\""
     }
 
     signingConfigs {

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { answerTermuxOffer, appFeatures, bubbleRequest, hasAppChannel, importZipFromApp, openInApp, parseBubbleState, parseFeatures, parseImportEvent } from '../src/app-bridge.js';
+import { answerTermuxOffer, appFeatures, bubbleRequest, hasAppChannel, importZipFromApp, openInApp, parseAppUpdateEvent, parseBubbleState, parseFeatures, parseImportEvent, updateApp } from '../src/app-bridge.js';
 
 test('the app says whether replies are told, whether they bubble, and whether Android lets them float', () => {
   assert.deepEqual(parseBubbleState('{"type":"bubbles","replies":false,"enabled":true,"bubbles":true,"allowed":false}'), { replies: false, enabled: true, bubbles: true, allowed: false });
@@ -65,9 +65,9 @@ test('SillyTavern is handed to the app when there is one, and left to the page w
 });
 
 test('the app says what it can do, and anything it leaves out it cannot', () => {
-  assert.deepEqual(parseFeatures('{"type":"features","importZip":true,"termux":true,"termuxOffer":false}'), { importZip: true, termux: true, termuxOffer: false });
+  assert.deepEqual(parseFeatures('{"type":"features","importZip":true,"termux":true,"termuxOffer":false}'), { importZip: true, termux: true, termuxOffer: false, appUpdate: false });
   // An app from before Termux was asked about.
-  assert.deepEqual(parseFeatures('{"type":"features","importZip":true}'), { importZip: true, termux: false, termuxOffer: false });
+  assert.deepEqual(parseFeatures('{"type":"features","importZip":true}'), { importZip: true, termux: false, termuxOffer: false, appUpdate: false });
   assert.equal(parseFeatures('{"type":"bubbles"}'), null);
 });
 
@@ -93,9 +93,9 @@ test('moving from Termux is asked for on the channel, and answering the offer pu
   };
   try {
     assert.deepEqual(await importZipFromApp('token', () => undefined, undefined, 'termux'), { state: 'canceled' });
-    assert.deepEqual(await appFeatures(), { importZip: true, termux: true, termuxOffer: true });
+    assert.deepEqual(await appFeatures(), { importZip: true, termux: true, termuxOffer: true, appUpdate: false });
     answerTermuxOffer(true);
-    assert.deepEqual(await appFeatures(), { importZip: true, termux: true, termuxOffer: false });
+    assert.deepEqual(await appFeatures(), { importZip: true, termux: true, termuxOffer: false, appUpdate: false });
     assert.deepEqual(sent.map((message) => JSON.parse(message) as unknown), [
       { type: 'importTermux', csrf: 'token' },
       { type: 'features' },
@@ -104,4 +104,50 @@ test('moving from Termux is asked for on the channel, and answering the offer pu
   } finally {
     delete (globalThis as { STMApp?: unknown }).STMApp;
   }
+});
+
+test('the app says it installs its own updates, and how one goes', () => {
+  assert.deepEqual(parseFeatures('{"type":"features","importZip":true,"appUpdate":true}'), { importZip: true, termux: false, termuxOffer: false, appUpdate: true });
+  assert.deepEqual(parseAppUpdateEvent('{"type":"appUpdate","state":"progress","received":5,"total":10}'), { state: 'progress', received: 5, total: 10 });
+  assert.deepEqual(parseAppUpdateEvent('{"type":"appUpdate","state":"progress"}'), { state: 'progress', received: 0, total: -1 });
+  assert.deepEqual(parseAppUpdateEvent('{"type":"appUpdate","state":"failed","code":"checksum"}'), { state: 'failed', code: 'checksum' });
+  assert.deepEqual(parseAppUpdateEvent('{"type":"appUpdate","state":"installing"}'), { state: 'installing' });
+  for (const data of ['{"type":"import","state":"progress"}', '{"type":"appUpdate","state":"what"}', 'not json', null]) {
+    assert.equal(parseAppUpdateEvent(data), null, String(data));
+  }
+});
+
+test('an update is asked for on the channel; progress goes to the caller and the end resolves it', async () => {
+  const sent: string[] = [];
+  const listeners = new Set<(event: MessageEvent<string>) => void>();
+  const say = (message: object) => { for (const listener of [...listeners]) listener({ data: JSON.stringify(message) } as MessageEvent<string>); };
+  (globalThis as { STMApp?: unknown }).STMApp = {
+    postMessage(message: string) {
+      sent.push(message);
+      if ((JSON.parse(message) as { type: string }).type !== 'appUpdate') return;
+      queueMicrotask(() => {
+        say({ type: 'appUpdate', state: 'progress', received: 1, total: 2 });
+        say({ type: 'appUpdate', state: 'permission' });
+        say({ type: 'appUpdate', state: 'installing' });
+      });
+    },
+    addEventListener(_type: 'message', listener: (event: MessageEvent<string>) => void) { listeners.add(listener); },
+    removeEventListener(_type: 'message', listener: (event: MessageEvent<string>) => void) { listeners.delete(listener); },
+  };
+  try {
+    const seen: unknown[] = [];
+    const controller = new AbortController();
+    assert.deepEqual(await updateApp('9.9.9', (event) => seen.push(event), controller.signal), { state: 'installing' });
+    assert.deepEqual(seen, [{ state: 'progress', received: 1, total: 2 }, { state: 'permission' }]);
+    assert.equal(listeners.size, 0);
+    // Over: aborting now asks the app for nothing.
+    controller.abort();
+    assert.deepEqual(sent.map((message) => JSON.parse(message) as unknown), [{ type: 'appUpdate', version: '9.9.9' }]);
+  } finally {
+    delete (globalThis as { STMApp?: unknown }).STMApp;
+  }
+});
+
+test('a browser has no app to update', async () => {
+  assert.equal(await updateApp('9.9.9', () => undefined), null);
 });

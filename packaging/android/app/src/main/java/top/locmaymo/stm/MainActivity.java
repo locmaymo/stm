@@ -48,6 +48,8 @@ public class MainActivity extends Activity implements SillyTavernHost.Host {
     static final String EXTRA_URL = "top.locmaymo.stm.extra.URL";
     /** Whether the reader is looking at SillyTavern in the app; a chat bubble is for when they are not. */
     static volatile boolean watching;
+    /** Whether this screen is in front at all. */
+    static volatile boolean inFront;
     private static MainActivity current;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -95,6 +97,11 @@ public class MainActivity extends Activity implements SillyTavernHost.Host {
         if (current != null) BackupImport.pickTermux(current, origin, csrf, reply);
     }
 
+    /** The console asked for a newer release of the app; see {@link AppUpdate}. */
+    static void updateApp(String version, androidx.webkit.JavaScriptReplyProxy reply) {
+        if (current != null) AppUpdate.start(current, version, reply);
+    }
+
     /**
      * SillyTavern stopped under its page: back to the console, saying so, and
      * the page goes. Opening SillyTavern again loads it fresh once it is up.
@@ -129,7 +136,7 @@ public class MainActivity extends Activity implements SillyTavernHost.Host {
         statusView.setPadding(0, padding, 0, 0);
         splash.addView(spinner);
         splash.addView(statusView);
-        splash.setOnClickListener((view) -> { if (ManagerService.failed || managerDown()) startManager(); });
+        splash.setOnClickListener((view) -> { if (!AppUpdate.installing && (ManagerService.failed || managerDown())) startManager(); });
         root.addView(splash, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
         sillyTavern = new FrameLayout(this);
         sillyTavern.setBackgroundColor(Color.BLACK);
@@ -138,6 +145,10 @@ public class MainActivity extends Activity implements SillyTavernHost.Host {
         setContentView(root);
         ChatBubbles.createChannel(this);
 
+        // Back from letting the app install its update, which ended the app:
+        // the update goes on from onResume, and the manager is started by the
+        // new version instead of here.
+        if (AppUpdate.resuming(this)) return;
         // A manager already running was started after this screen was passed.
         if (!ManagerService.running && Permissions.shouldAsk(this)) {
             permissions = new PermissionsScreen(this, this::permissionsDone);
@@ -212,15 +223,22 @@ public class MainActivity extends Activity implements SillyTavernHost.Host {
     protected void onResume() {
         super.onResume();
         resumed = true;
+        inFront = true;
         if (permissions != null) {
             // Back from one of the settings it opened.
             permissions.refresh();
             return;
         }
+        // Back from Android's switch that lets the app install its update.
+        AppUpdate.resumed(this);
         // Coming back to the app is asking for it: a manager stopped from the
         // notification, or one that ended on its own, starts again. One still
-        // starting - this screen has just asked for it - is left to start.
-        if (ManagerService.stopped || ManagerService.failed || (web != null && !ManagerService.running)) {
+        // starting - this screen has just asked for it - is left to start, and
+        // one stopped for an update is started by the update if it does not go in.
+        if (AppUpdate.installing) {
+            if (web != null && managerDown()) dropConsole();
+            poll();
+        } else if (ManagerService.stopped || ManagerService.failed || (web != null && !ManagerService.running)) {
             dropConsole();
             startManager();
         } else if (web == null) {
@@ -247,6 +265,7 @@ public class MainActivity extends Activity implements SillyTavernHost.Host {
     }
 
     private void updateWatching() {
+        inFront = resumed;
         watching = resumed && showingSillyTavern;
     }
 
@@ -301,10 +320,12 @@ public class MainActivity extends Activity implements SillyTavernHost.Host {
                     handler.post(() -> { polling = false; showConsole(port); });
                     return;
                 }
-                boolean stopped = ManagerService.stopped;
-                String text = stopped ? getString(R.string.status_stopped)
+                boolean updating = AppUpdate.installing;
+                boolean stopped = ManagerService.stopped && !updating;
+                String text = updating ? getString(R.string.status_updating)
+                    : stopped ? getString(R.string.status_stopped)
                     : ManagerService.status.isEmpty() ? getString(R.string.status_waiting) : ManagerService.status;
-                boolean idle = ManagerService.failed || stopped;
+                boolean idle = (ManagerService.failed || stopped) && !updating;
                 handler.post(() -> {
                     statusView.setText(idle ? text + "\n\n" + getString(R.string.status_restart) : text);
                     spinner.setVisibility(idle ? View.GONE : View.VISIBLE);
