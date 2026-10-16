@@ -8,6 +8,8 @@
     "apps/**/*.tsx",
     "packages/**/*.ts",
     "packages/**/*.tsx",
+    "deploy/oauth-relay/src/**/*.ts",
+    "deploy/oauth-relay/test/**/*.ts",
     "scripts/**/*.mjs"
   ]
 }

@@ -8,6 +8,7 @@ export default [
     '**/build/**',
     '**/coverage/**',
     '**/.tmp/**',
+    '**/.wrangler/**',
     'docs/**',
   ]),
   {
