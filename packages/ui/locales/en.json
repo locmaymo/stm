@@ -678,7 +678,7 @@
     "cfErrorUnavailable": "This manager has no Cloudflare sign-in configured.",
     "cfErrorGeneric": "Connecting to Cloudflare failed ({code}). Try again.",
     "r2MethodGoogle": "Google Drive",
-    "r2MethodGoogleBody": "Sign in with Google. Backups go to a hidden folder in your own Drive that only this app can see, and the manager cannot see anything else in your Drive.",
+    "r2MethodGoogleBody": "Sign in with Google. STM backs up your SillyTavern data to your own Drive storage.",
     "gdConnect": "Connect Google Drive",
     "gdReconnect": "Connect again",
     "gdReconnectHint": "Google no longer accepts this sign-in. Connect again to keep backing up.",

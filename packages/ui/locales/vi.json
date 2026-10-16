@@ -678,7 +678,7 @@
     "cfErrorUnavailable": "Trình quản lý này chưa được cấu hình đăng nhập Cloudflare.",
     "cfErrorGeneric": "Kết nối Cloudflare thất bại ({code}). Hãy thử lại.",
     "r2MethodGoogle": "Google Drive",
-    "r2MethodGoogleBody": "Đăng nhập bằng Google. Bản sao lưu nằm trong một thư mục ẩn trên Drive của chính bạn mà chỉ ứng dụng này thấy được, và trình quản lý không thấy được gì khác trong Drive của bạn.",
+    "r2MethodGoogleBody": "Đăng nhập bằng Google. STM sử dụng bộ nhớ Drive của chính bạn để sao lưu dữ liệu SillyTavern.",
     "gdConnect": "Kết nối Google Drive",
     "gdReconnect": "Kết nối lại",
     "gdReconnectHint": "Google không còn chấp nhận lần đăng nhập này. Hãy kết nối lại để tiếp tục sao lưu.",
