@@ -35,7 +35,7 @@ import { availableUpdate, readDismissedManagerRelease, readDismissedUpdate, save
 import { readDismissedDisplaced, readDismissedRecovery, readDismissedSettings, saveDismissedDisplaced, saveDismissedRecovery, saveDismissedSettings, shouldOfferSettings, shouldShowDisplaced, shouldShowRecovery } from './settings-offer.js';
 import { apiFetch, onSessionExpired, resetSessionWatch, sessionToken, setSessionToken } from './session.js';
 import { NotificationBell, PushOfferDialog, PushToggle } from './notification-bell.js';
-import { answerTermuxOffer, appFeatures, bubbleRequest, hasAppChannel, importZipFromApp, openInApp, type AppFeatures, type BubbleState, type ImportSource } from './app-bridge.js';
+import { answerTermuxOffer, appFeatures, bubbleRequest, hasAppChannel, importZipFromApp, openInApp, updateApp, type AppFeatures, type AppUpdateEvent, type BubbleState, type ImportSource } from './app-bridge.js';
 import { BUBBLE_OFFER_KEY, bubbleOfferWanted, offerAccepted, offerDue, offerSnoozed, readOffer, writeOffer } from './offers.js';
 import { collectCloudflareResult, framed, inPhoneApp, openReturnWindow, popupsBlocked, whenAbandoned, type CollectedResult } from './oauth.js';
 import type { AccessGatewayState, AccessLinkKind, AccessLinkPreference, AccessLinkTarget, BackupManifest, CloudflareAccountProblem, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LegalReview, LogEntry, LogSourceFilter, ManagerRelease, ManagerSettingsOffer, ManagerUpdateStatus, NotificationSummary, OnlineState, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2Transfer, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, SaverState, SetupChecklistState, SetupStep, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
@@ -1974,6 +1974,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
   const openConnect = () => { setDataIntent({ kind: 'connect' }); navigate('data'); };
   const openUpload = (file: File) => { setDataIntent({ kind: 'upload', file }); navigate('data'); };
   const phoneImport = usePhoneImport(saver?.enabled === true);
+  const appUpdates = useAppFeatures()?.appUpdate === true;
   const openPhoneUpload = () => { setDataIntent({ kind: 'phoneUpload' }); navigate('data'); };
   /*
    * Moving a SillyTavern out of Termux, offered once on a phone that has
@@ -2236,6 +2237,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
                 locale={preferences.locale}
                 current={newerManager.current}
                 release={newerManager.release}
+                canInstall={appUpdates}
                 onDismiss={() => {
                   saveDismissedManagerRelease(newerManager.release.version, browserStorage());
                   setDismissedManagerRelease(newerManager.release.version);
@@ -2490,18 +2492,23 @@ function LegalReviewCard({ t, locale, review, busy, failure, checked, nudges, on
 /**
  * A newer manager than the one being looked at, and what it says it changed.
  *
- * There is no button here that installs it, and that is deliberate. The
- * manager is on the machine in one of three shapes - a checkout, a package
- * from npm, a bundle on Windows - each replaced its own way, and a console
- * that tried to overwrite the program it is itself running is the one upgrade
- * that can leave a machine with neither version. So this says a new one
- * exists, shows what the release said about itself, and links to it.
+ * The console itself installs nothing. The manager is on the machine in one
+ * of several shapes - a checkout, a package from npm, a bundle on Windows -
+ * each replaced its own way, and a console that tried to overwrite the
+ * program it is itself running is the one upgrade that can leave a machine
+ * with neither version. So this says a new one exists, shows what the release
+ * said about itself, and links to it.
+ *
+ * The phone app is the exception, because there the program is replaced by
+ * Android, which keeps the old one until the new one is in: the app fetches
+ * its own APK and hands it over (see `updateApp`), and this card shows how
+ * far it got.
  *
  * The notes are the release's own text, printed as written. Whoever cut the
  * release wrote its line breaks on purpose, and a card that reflows them into
  * a paragraph turns a list of changes into a run-on sentence.
  */
-function ManagerReleaseCard({ t, locale, current, release, onDismiss }: {
+function ManagerReleaseCard({ t, locale, current, release, canInstall, onDismiss }: {
   t: Translate;
   locale: LocaleCode;
   /**
@@ -2515,11 +2522,27 @@ function ManagerReleaseCard({ t, locale, current, release, onDismiss }: {
    */
   current: string;
   release: ManagerRelease;
+  /** Whether the app this console is shown in installs the release itself. */
+  canInstall: boolean;
   onDismiss: () => void;
 }) {
   // In the reader's language where the release carries it; otherwise the
   // English the release was written in, rather than nothing.
   const notes = (locale === 'vi' ? release.notesByLocale?.vi : undefined) || release.notes;
+  const [install, setInstall] = useState<AppUpdateEvent | null>(null);
+  const abort = useRef<AbortController | null>(null);
+  useEffect(() => () => abort.current?.abort(), []);
+  const busy = install !== null && install.state !== 'failed' && install.state !== 'canceled';
+  const startInstall = () => {
+    const controller = new AbortController();
+    abort.current = controller;
+    setInstall({ state: 'progress', received: 0, total: -1 });
+    void updateApp(release.version, setInstall, controller.signal).then((ended) => {
+      if (abort.current === controller) abort.current = null;
+      // Stopped by the reader: the card is as it was before they asked.
+      setInstall(ended?.state === 'canceled' ? null : ended);
+    });
+  };
   return <Card className="release-card">
     <PanelHeading icon={<CircleArrowUp />}>{t('console.managerUpdateTitle', { version: release.version })}</PanelHeading>
     <CardContent className="grid gap-3">
@@ -2533,18 +2556,55 @@ function ManagerReleaseCard({ t, locale, current, release, onDismiss }: {
           <p className="release-notes-body">{notes}</p>
         </div>
         : null}
+      {install ? <AppInstallLine t={t} event={install} /> : null}
       <div className="flex flex-wrap gap-2">
-        <Button size="sm" asChild>
-          <a href={release.url} target="_blank" rel="noreferrer noopener">
-            <ArrowUpRight />{t('console.managerUpdateOpen')}
-          </a>
-        </Button>
+        {canInstall && !busy
+          ? <Button size="sm" onClick={startInstall}>
+            <Download />{t(install?.state === 'failed' ? 'console.appUpdateRetry' : 'console.appUpdateInstall')}
+          </Button>
+          : null}
+        {busy && install?.state === 'progress'
+          ? <Button size="sm" variant="outline" onClick={() => abort.current?.abort()}>{t('console.appUpdateCancel')}</Button>
+          : null}
+        {busy
+          ? null
+          : <Button size="sm" variant={canInstall ? 'outline' : 'default'} asChild>
+            <a href={release.url} target="_blank" rel="noreferrer noopener">
+              <ArrowUpRight />{t('console.managerUpdateOpen')}
+            </a>
+          </Button>}
         {/* Saying no is an answer, and it is remembered against this version:
             the next release is a different one and says so again. */}
-        <Button size="sm" variant="ghost" onClick={onDismiss}>{t('console.updateDismiss')}</Button>
+        {busy ? null : <Button size="sm" variant="ghost" onClick={onDismiss}>{t('console.updateDismiss')}</Button>}
       </div>
     </CardContent>
   </Card>;
+}
+
+const APP_UPDATE_FAILURES: Record<string, MessageKey> = {
+  network: 'console.appUpdateFailedNetwork',
+  missing: 'console.appUpdateFailedMissing',
+  checksum: 'console.appUpdateFailedChecksum',
+  permission: 'console.appUpdateFailedPermission',
+};
+
+/** Where the app's own update has got to, under the release card. */
+function AppInstallLine({ t, event }: { t: Translate; event: AppUpdateEvent }) {
+  if (event.state === 'failed') {
+    // `notNewer` is a card shown from a stale answer; nothing to tell beyond trying again.
+    return <p className="text-sm text-destructive" role="alert">{t(APP_UPDATE_FAILURES[event.code] ?? 'console.appUpdateFailedNetwork')}</p>;
+  }
+  if (event.state === 'permission') return <p className="text-sm text-muted-foreground" role="status">{t('console.appUpdatePermission')}</p>;
+  if (event.state === 'installing') return <p className="text-sm text-muted-foreground" role="status">{t('console.appUpdateInstalling')}</p>;
+  if (event.state !== 'progress') return null;
+  const known = event.total > 0;
+  const filled = known ? ratio(event.received, event.total) : 0;
+  return <div className="grid gap-1" role="status">
+    <span className="text-xs text-muted-foreground">{known
+      ? t('console.appUpdateDownloading', { done: formatBytes(event.received), total: formatBytes(event.total) })
+      : t('console.appUpdateStarting')}</span>
+    <span className="progress-track"><span className="progress-value" style={{ width: `${Math.max(1, filled * 100)}%` }} /></span>
+  </div>;
 }
 
 /** The day a release was published, written the way the reader writes dates. */

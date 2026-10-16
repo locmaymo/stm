@@ -47,7 +47,7 @@ public class ManagerService extends Service {
     private static final String TAG = "STM";
     private static final String CHANNEL = "manager";
     /** The manager's own notifications, apart from the one saying it runs. */
-    private static final String EVENTS_CHANNEL = "events";
+    static final String EVENTS_CHANNEL = "events";
     /**
      * How the manager hands this app a notification: one line of its output,
      * this prefix and then the notification in words, as JSON.

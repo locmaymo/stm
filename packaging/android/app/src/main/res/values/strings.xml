@@ -39,4 +39,7 @@
     <string name="permissions_start">Start</string>
     <string name="permissions_later">Not now</string>
     <string name="sillytavern_stopped">SillyTavern stopped. Open it again from the console once it is running.</string>
-</resources>
+    <string name="status_updating">Installing the new version…\n\nConfirm the update when Android asks.</string>
+    <string name="update_failed">The update was not installed: %1$s</string>
+    <string name="update_done">STM is updated to %1$s</string>
+    <string name="update_done_open">Tap to open it.</string></resources>

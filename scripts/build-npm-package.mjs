@@ -2,6 +2,7 @@ import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const buildRoot = join(repositoryRoot, 'build', 'npm');
@@ -9,7 +10,8 @@ const packageRoot = join(buildRoot, 'package');
 
 await rm(buildRoot, { recursive: true, force: true });
 await mkdir(packageRoot, { recursive: true });
-run(process.execPath, [join(repositoryRoot, 'node_modules', 'typescript', 'bin', 'tsc'), '-p', join(repositoryRoot, 'packaging', 'npm', 'tsconfig.release.json')]);
+// Found the way Node finds it: a worktree has no node_modules of its own.
+run(process.execPath, [createRequire(import.meta.url).resolve('typescript/bin/tsc'), '-p', join(repositoryRoot, 'packaging', 'npm', 'tsconfig.release.json')]);
 run('npm', ['run', 'panel:build']);
 await cp(join(repositoryRoot, 'apps', 'manager-panel', 'dist'), join(packageRoot, 'panel'), { recursive: true });
 for (const file of ['loader.mjs', 'observer.mjs', 'node-fetch-hook.mjs']) {
