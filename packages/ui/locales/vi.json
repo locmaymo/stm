@@ -65,6 +65,7 @@
     "cloudSignInFailed": "Không bắt đầu được đăng nhập Cloudflare",
     "cloudNotOwner": "Trình quản lý này thuộc về một tài khoản Cloudflare khác. Hãy đăng nhập bằng tài khoản đó, hoặc dùng mật khẩu trình quản lý.",
     "cloudAccountRequired": "Chưa chọn tài khoản nào nên không có ai để đăng nhập. Thử lại và chọn một tài khoản.",
+    "cloudPasswordFirst": "Trình quản lý này có mật khẩu nhưng chưa liên kết tài khoản Cloudflare nào. Hãy đăng nhập bằng mật khẩu rồi kết nối Cloudflare trong bảng điều khiển; sau đó tài khoản này cũng mở được trình quản lý.",
     "cloudUnavailable": "Trình quản lý này không đăng nhập được bằng Cloudflare.",
     "cloudDenied": "Cloudflare chưa được cấp quyền truy cập.",
     "cloudExpired": "Liên kết đăng nhập đó đã hết hạn. Hãy bắt đầu lại.",

@@ -142,6 +142,20 @@ interface PersistedManagerState {
   readonly accessLinks: AccessLinkPreferences;
 }
 
+/** A Cloudflare account as a sign-in names it. */
+export interface CloudflareAccountRef {
+  readonly id: string;
+  readonly name: string;
+}
+
+/** What `claimCloudflareOwner` decided: the account let in, or why nobody is. */
+export interface CloudflareClaim {
+  readonly account: CloudflareAccountRef | null;
+  /** The account that does open this manager, to name in a refusal. */
+  readonly owner: string | null;
+  readonly refusal: 'cloudflare_not_owner' | 'cloudflare_password_first' | 'cloudflare_account_required' | 'cloudflare_no_account' | null;
+}
+
 export interface StateStoreOptions {
   readonly paths?: PlatformPaths;
   readonly managerVersion?: string;
@@ -491,6 +505,30 @@ export class StateStore {
     await this.adminWriteQueue;
   }
 
+  /**
+   * The password chosen on the first-run screen, for a manager nobody owns.
+   *
+   * Refused once there is a password or a Cloudflare account that opens the
+   * manager: either one means it is set up, and the first-run screen is open
+   * to anyone who reaches it.
+   */
+  public async saveFirstAdminPassword(passwordHash: string): Promise<boolean> {
+    let saved = false;
+    const operation = async (): Promise<void> => {
+      const state = await this.load();
+      if (state.adminPasswordHash || state.ownerAccountId !== null) return;
+      const now = this.now().toISOString();
+      const updated: PersistedManagerState = { ...state, adminPasswordHash: passwordHash, setupAcceptedAt: now, updatedAt: now };
+      await this.write(updated);
+      this.state = updated;
+      saved = true;
+    };
+    const previous = this.adminWriteQueue;
+    this.adminWriteQueue = previous.then(operation, operation);
+    await this.adminWriteQueue;
+    return saved;
+  }
+
   public async bootstrapAdminPassword(passwordHash: string): Promise<boolean> {
     const state = await this.load();
     if (state.adminPasswordHash) {
@@ -553,28 +591,49 @@ export class StateStore {
   }
 
   /**
-   * Let a Cloudflare account open this manager, or find out it already may.
+   * Which Cloudflare account, of those a sign-in reaches, may open this
+   * manager - or why none may.
    *
-   * The first account to ask claims it, and the answer says whether it was
-   * this one. An account that is not the owner is refused rather than added:
-   * a manager with an owner is not a door that the next person to arrive gets
-   * a key to.
+   * The recorded owner is let in and nobody else. With none recorded, the
+   * account this manager is already connected to stands in for it: somebody
+   * signed in connected it from the console, so it is theirs, and it is
+   * recorded now. With neither, only a manager nobody has set up - no password
+   * - is claimed by the first account to ask, which is a wiped machine coming
+   * back. A manager with a password is not, or anyone who could reach its
+   * sign-in page could open it with their own account.
+   *
+   * Asked before the sign-in is kept, so a refused one changes nothing here or
+   * in the connection the owner's backups go through.
    *
    * Through the same queue as every other write, so two sign-ins landing
    * together cannot both be told they are the owner.
    */
-  public async claimCloudflareOwner(accountId: string, accountName: string): Promise<{ readonly allowed: boolean; readonly owner: string | null }> {
-    let allowed = false;
-    let owner: string | null = null;
+  public async claimCloudflareOwner(offered: readonly CloudflareAccountRef[], connected: CloudflareAccountRef | null): Promise<CloudflareClaim> {
+    let claim: CloudflareClaim = { account: null, owner: null, refusal: 'cloudflare_not_owner' };
     const operation = async (): Promise<void> => {
       const state = await this.load();
-      owner = state.ownerAccountName ?? state.ownerAccountId;
-      if (state.ownerAccountId !== null) { allowed = state.ownerAccountId === accountId; return; }
+      const owner = state.ownerAccountName ?? state.ownerAccountId;
+      if (state.ownerAccountId !== null) {
+        const account = offered.find((entry) => entry.id === state.ownerAccountId) ?? null;
+        claim = account ? { account, owner, refusal: null } : { account: null, owner, refusal: 'cloudflare_not_owner' };
+        return;
+      }
+      let account: CloudflareAccountRef | null;
+      if (connected !== null) {
+        account = offered.find((entry) => entry.id === connected.id) ?? null;
+        if (!account) { claim = { account: null, owner: connected.name, refusal: 'cloudflare_not_owner' }; return; }
+      } else if (state.adminPasswordHash !== null) {
+        claim = { account: null, owner: null, refusal: 'cloudflare_password_first' };
+        return;
+      } else {
+        account = offered.length === 1 ? offered[0] ?? null : null;
+        if (!account) { claim = { account: null, owner: null, refusal: offered.length === 0 ? 'cloudflare_no_account' : 'cloudflare_account_required' }; return; }
+      }
       const now = this.now().toISOString();
       const updated: PersistedManagerState = {
         ...state,
-        ownerAccountId: accountId,
-        ownerAccountName: accountName,
+        ownerAccountId: account.id,
+        ownerAccountName: account.name,
         // Claiming a manager with a Cloudflare account is setting it up, so
         // the terms were accepted on the screen that offered the sign-in.
         setupAcceptedAt: state.setupAcceptedAt ?? now,
@@ -582,13 +641,29 @@ export class StateStore {
       };
       await this.write(updated);
       this.state = updated;
-      allowed = true;
-      owner = accountName;
+      claim = { account, owner: account.name, refusal: null };
     };
     const previous = this.adminWriteQueue;
     this.adminWriteQueue = previous.then(operation, operation);
     await this.adminWriteQueue;
-    return { allowed, owner };
+    return claim;
+  }
+
+  /**
+   * The signed-in owner connected this Cloudflare account from the console, so
+   * it may open the manager from now on, in place of any account before it.
+   */
+  public async recordCloudflareOwner(account: CloudflareAccountRef): Promise<void> {
+    const operation = async (): Promise<void> => {
+      const state = await this.load();
+      if (state.ownerAccountId === account.id && state.ownerAccountName === account.name) return;
+      const updated: PersistedManagerState = { ...state, ownerAccountId: account.id, ownerAccountName: account.name, updatedAt: this.now().toISOString() };
+      await this.write(updated);
+      this.state = updated;
+    };
+    const previous = this.adminWriteQueue;
+    this.adminWriteQueue = previous.then(operation, operation);
+    await this.adminWriteQueue;
   }
 
   /** Stop letting a Cloudflare account open this manager. */

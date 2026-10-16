@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DEFAULT_SCOPES } from '../../../packages/cloudflare/src/index.js';
@@ -46,8 +46,25 @@ async function begin(base: string): Promise<string> {
   return new URL((await response.json() as { url: string }).url).searchParams.get('state') ?? '';
 }
 
-function callback(base: string, query: Record<string, string>): Promise<Response> {
-  return fetch(`${base}${CLOUDFLARE_CALLBACK_PATH}?${new URLSearchParams(query).toString()}`, { redirect: 'manual' });
+const PASSWORD = 'correct horse battery staple';
+
+function callback(base: string, query: Record<string, string>, cookie?: string): Promise<Response> {
+  return fetch(`${base}${CLOUDFLARE_CALLBACK_PATH}?${new URLSearchParams(query).toString()}`, { redirect: 'manual', ...(cookie ? { headers: { cookie } } : {}) });
+}
+
+async function passwordSession(base: string): Promise<{ cookie: string; csrf: string }> {
+  const response = await fetch(`${base}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: PASSWORD }) });
+  assert.equal(response.status, 200);
+  const cookie = cookieFrom(response);
+  assert.ok(cookie);
+  return { cookie, csrf: (await response.json() as { session: { csrfToken: string } }).session.csrfToken };
+}
+
+/** Connect an account from the console, as its signed-in owner would. */
+async function beginConnect(base: string, auth: { cookie: string; csrf: string }): Promise<string> {
+  const response = await fetch(`${base}/api/v1/r2/cloudflare/connect`, { method: 'POST', headers: { cookie: auth.cookie, 'x-csrf-token': auth.csrf, origin: base } });
+  assert.equal(response.status, 200);
+  return new URL((await response.json() as { url: string }).url).searchParams.get('state') ?? '';
 }
 
 function cookieFrom(response: Response): string | null {
@@ -141,21 +158,88 @@ test('a second account is refused, rather than handed a key', async (t) => {
 });
 
 test('signing in with an account does not become a way past the password', async (t) => {
-  // A manager somebody set up by hand, then connected an account to. Their
-  // password is still the password; the account is a second way in for the
-  // same person, not a way round the first.
-  const { manager, base } = await start({ password: 'correct horse battery staple' });
+  // A manager somebody set up by hand and never connected an account to.
+  // Anyone who reaches its sign-in page has a Cloudflare account of their own;
+  // a password is what opens this one, and no account has been put beside it.
+  const { manager, base } = await start({ password: PASSWORD });
   t.after(() => manager.close());
 
   const status = await (await fetch(`${base}/api/v1/setup/status`)).json() as SetupStatus;
   assert.equal(status.setupRequired, false);
 
   const landed = await callback(base, { state: await begin(base), code: 'good-code' });
-  assert.ok(cookieFrom(landed), 'the first account to sign in still claims an unclaimed manager');
+  assert.match(landed.headers.get('location') ?? '', /cloudflare_error=cloudflare_password_first/u);
+  assert.equal(cookieFrom(landed), null, 'a stranger with an account of their own is not let in');
+  assert.equal((await (await fetch(`${base}/api/v1/setup/status`)).json() as SetupStatus).cloudflareSignIn?.owner, null, 'and does not become the owner either');
 
   // And the password still works, because nothing replaced it.
-  const password = await fetch(`${base}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'correct horse battery staple' }) });
+  const password = await fetch(`${base}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: PASSWORD }) });
   assert.equal(password.status, 200);
+});
+
+test('the account connected from the console is the one that may sign in, and a refused sign-in leaves it connected', async (t) => {
+  const { manager, base, state } = await start({ password: PASSWORD, cloudflare: { accounts: [{ id: ACCOUNT_ID, name: 'Personal' }] } });
+  t.after(() => manager.close());
+
+  // The owner signs in with the password and connects their account.
+  const auth = await passwordSession(base);
+  const connected = await callback(base, { state: await beginConnect(base, auth), code: 'good-code' }, auth.cookie);
+  assert.match(connected.headers.get('location') ?? '', /cloudflare=connected/u);
+  assert.equal((await (await fetch(`${base}/api/v1/setup/status`)).json() as SetupStatus).cloudflareSignIn?.owner, 'Personal', 'connecting from the console records who owns the manager');
+
+  // Somebody else signs in with their own account.
+  state.accounts = [{ id: OTHER_ACCOUNT_ID, name: 'Somebody else' }];
+  const intruder = await callback(base, { state: await begin(base), code: 'good-code' });
+  assert.match(intruder.headers.get('location') ?? '', /cloudflare_error=cloudflare_not_owner/u);
+  assert.equal(cookieFrom(intruder), null);
+
+  // The owner's connection was not replaced on the way to the refusal, so the
+  // backups still go to the owner's bucket and not to the stranger's.
+  const after = await (await fetch(`${base}/api/v1/r2/cloudflare`, { headers: { cookie: auth.cookie } })).json() as { cloudflare: { state: string; account: { id: string } | null } };
+  assert.equal(after.cloudflare.state, 'connected');
+  assert.equal(after.cloudflare.account?.id, ACCOUNT_ID);
+
+  // And the owner's account is let in.
+  state.accounts = [{ id: ACCOUNT_ID, name: 'Personal' }];
+  assert.ok(cookieFrom(await callback(base, { state: await begin(base), code: 'good-code' })));
+});
+
+test('a manager connected before owners were recorded is opened by the account it is connected to', async (t) => {
+  // Installed before connecting from the console recorded anything: a
+  // password, a connected account, no owner on file.
+  const first = await start({ password: PASSWORD, cloudflare: { accounts: [{ id: ACCOUNT_ID, name: 'Personal' }] } });
+  const auth = await passwordSession(first.base);
+  await callback(first.base, { state: await beginConnect(first.base, auth), code: 'good-code' }, auth.cookie);
+  await first.manager.close();
+  const file = join(first.root, 'state', 'manager-state.json');
+  const saved = JSON.parse(await readFile(file, 'utf8')) as Record<string, unknown>;
+  await writeFile(file, JSON.stringify({ ...saved, ownerAccountId: null, ownerAccountName: null }), 'utf8');
+
+  const { manager, base, state } = await start({ password: PASSWORD, root: first.root, cloudflare: { accounts: [{ id: OTHER_ACCOUNT_ID, name: 'Somebody else' }] } });
+  t.after(() => manager.close());
+  assert.equal((await (await fetch(`${base}/api/v1/setup/status`)).json() as SetupStatus).cloudflareSignIn?.owner, null);
+
+  const intruder = await callback(base, { state: await begin(base), code: 'good-code' });
+  assert.match(intruder.headers.get('location') ?? '', /cloudflare_error=cloudflare_not_owner/u);
+
+  state.accounts = [{ id: ACCOUNT_ID, name: 'Personal' }];
+  assert.ok(cookieFrom(await callback(base, { state: await begin(base), code: 'good-code' })));
+  assert.equal((await (await fetch(`${base}/api/v1/setup/status`)).json() as SetupStatus).cloudflareSignIn?.owner, 'Personal', 'and is recorded as the owner from then on');
+});
+
+test('a manager an account opens does not take a first password from whoever arrives', async (t) => {
+  const { manager, base } = await start();
+  t.after(() => manager.close());
+  assert.ok(cookieFrom(await callback(base, { state: await begin(base), code: 'good-code' })));
+
+  // The first-run screen is open to anyone; the manager is already set up.
+  const setup = await fetch(`${base}/api/v1/setup/password`, {
+    method: 'POST', headers: { 'content-type': 'application/json', origin: base },
+    body: JSON.stringify({ password: PASSWORD, termsAccepted: true, telemetryAccepted: true }),
+  });
+  assert.equal(setup.status, 409);
+  const login = await fetch(`${base}/api/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: PASSWORD }) });
+  assert.notEqual(login.status, 200);
 });
 
 test('a sign-in that Cloudflare refused says so, and opens nothing', async (t) => {
