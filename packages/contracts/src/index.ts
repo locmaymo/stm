@@ -1912,11 +1912,15 @@ export function usageBytes(value: unknown): number | null {
   return Math.min(Math.round(value), 2 ** 50);
 }
 
-/** Whether backups go to R2, and through which kind of connection. */
-export type R2UsageMode = 'off' | 'keys' | 'cloudflare';
+/**
+ * Whether cloud backups are on, and through which kind of connection. The
+ * field is still called `r2` on the wire; `google` is a Google Drive
+ * connection, which managers before 1.2.0 reported as `keys`.
+ */
+export type R2UsageMode = 'off' | 'keys' | 'cloudflare' | 'google';
 
 export function isR2UsageMode(value: unknown): value is R2UsageMode {
-  return value === 'off' || value === 'keys' || value === 'cloudflare';
+  return value === 'off' || value === 'keys' || value === 'cloudflare' || value === 'google';
 }
 
 /** What the panel shows about how much the manager itself is used. */

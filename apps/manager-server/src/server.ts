@@ -833,9 +833,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     r2Mode: async () => {
       const config = await r2.getConfig();
       if (!config.enabled || !config.configured) return 'off';
-      // Google Drive is reported with the keys until the receiver accepts a
-      // value of its own: it refuses a whole batch over a mode it does not know.
-      return config.mode === 'cloudflare' ? 'cloudflare' : 'keys';
+      return config.mode === 'cloudflare' || config.mode === 'google' ? config.mode : 'keys';
     },
     // Figures the manager already holds: the last measurement of the profile,
     // the archives' own sizes, and its count of what went to the bucket.

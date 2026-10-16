@@ -1,7 +1,7 @@
 {
   "meta": {
-    "effective": "2026-09-28",
-    "revision": "2026.09.3",
+    "effective": "2026-10-16",
+    "revision": "2026.10.1",
     "author": "locmaymo",
     "project": "SillyTavern Manager",
     "repository": "https://github.com/locmaymo/stm",
@@ -17,9 +17,11 @@
   "revision": {
     "summary": "Every revision publishes all four documents in full, so nothing from an earlier one carries over unsaid. This is the revision in force.",
     "changes": [
-      "The daily report now also carries three sizes: how much SillyTavern data the profile in use holds, how much the backups kept on the machine take, and how much the manager has stored in R2. Only the totals are sent, never a file name or anything inside the files.",
-      "The Android app is now named as a platform of its own, apart from Termux.",
-      "The manager now asks the project for announcements a few times a day. The request carries only the platform and the application version."
+      "Backups can now go to Google Drive. The Privacy Notice gains a section on what the manager reads from your Google account, what passes through the project's token service on the way to Google, and how to take it all back.",
+      "Notifications can now tell your phone or computer that a character replied, with the first words of the reply unless you hide them. The Privacy Notice says what they carry and who delivers them.",
+      "The sign-in relay now also serves Google, and forwards on its own only to addresses on your own machine or network. Everywhere else it asks first.",
+      "A Cloudflare or Google account can now open the manager. Which account may do so is recorded on your machine and sent nowhere.",
+      "The daily report now says whether cloud backups go to Google Drive, and counts what is stored there with what is stored in R2."
     ]
   },
   "documents": {
@@ -32,8 +34,8 @@
           "heading": "What this software is",
           "body": [
             "SillyTavern Manager (the software, the manager) is an open-source control panel that installs, runs, backs up and monitors SillyTavern on a computer you control. It is published by locmaymo under the GNU Affero General Public License version 3.",
-            "The project operates no service on your behalf. There is no account to create, no server that holds your data, and nothing that runs unless you start it. Every copy runs on hardware you own, rent or otherwise control.",
-            "These terms cover your use of the software, of the project's website at stm.locmaymo.top, and of the Cloudflare sign-in relay page hosted there. They do not replace the AGPL-3.0, which grants you the rights to use, study, modify and redistribute the source code. Where these terms and that licence disagree, the licence prevails."
+            "The project runs no service that holds your data. There is no account to create with it, no server that keeps your data, and nothing that runs unless you start it. Every copy runs on hardware you own, rent or otherwise control. The only things the project runs for you are the sign-in pages and the Google token service described below, and they keep nothing.",
+            "These terms cover your use of the software, of the project's website at stm.locmaymo.top, and of the Cloudflare and Google sign-in relay pages and the Google token service hosted there. They do not replace the AGPL-3.0, which grants you the rights to use, study, modify and redistribute the source code. Where these terms and that licence disagree, the licence prevails."
           ]
         },
         "acceptance": {
@@ -48,7 +50,7 @@
           "heading": "Not affiliated with SillyTavern",
           "body": [
             "SillyTavern is separate software, written and maintained by other people. This project is not affiliated with, endorsed by, sponsored by or connected to the SillyTavern project, its developers or its community in any official capacity.",
-            "The manager obtains SillyTavern the way you would obtain it yourself: at your request, it clones or downloads the public repository at github.com/SillyTavern/SillyTavern onto your machine. It does not redistribute SillyTavern, does not host a copy of it, and does not alter what upstream publishes beyond the configuration file you choose to edit.",
+            "The manager obtains SillyTavern the way you would obtain it yourself: at your request, it clones or downloads the public repository at github.com/SillyTavern/SillyTavern onto your machine. It does not redistribute SillyTavern, does not host a copy of it, and does not alter what upstream publishes beyond the configuration file you choose to edit. Pages served through the access gateway carry a small script of the manager's own, for its tools and notifications; SillyTavern's files are not changed.",
             "SillyTavern is licensed by its own authors under its own terms, and your use of SillyTavern is governed by those terms rather than by these. Upstream may change, rename, restructure or withdraw anything at any time. When that breaks an installation, it is not a defect of this software, and the project owes you no fix.",
             "The name SillyTavern is used here only to state truthfully what this software manages."
           ]
@@ -74,10 +76,11 @@
         "services": {
           "heading": "Third-party services and accounts",
           "body": [
-            "The manager can connect to services that are not ours: Cloudflare for tunnels, R2 storage, Workers and account analytics; GitHub for releases and source downloads; npm for dependency installs; and whichever model providers SillyTavern is configured to call.",
+            "The manager can connect to services that are not ours: Cloudflare for tunnels, R2 storage, Workers and account analytics; Google Drive for backups; the push service of each browser you allow to receive notifications; GitHub for releases and source downloads; npm for dependency installs; any proxy you set for SillyTavern's requests; and whichever model providers SillyTavern is configured to call.",
             "Those connections use your accounts, your credentials and your quotas. Each provider's own terms, prices and privacy policies apply to them, and you should read them. The project is not a party to your relationship with any provider.",
             "Storage, bandwidth, operations, tunnels and model usage can cost money. Any charge a provider bills you is yours to pay — including one caused by a backup larger, more frequent or more numerous than you expected, by a misconfiguration, or by a defect in this software. Set your own limits and alerts in the provider's dashboard.",
-            "Signing in to Cloudflare creates resources inside your own Cloudflare account: a bucket, and optionally a Worker. They stay yours, they remain after you disconnect, and you can delete them yourself at any time."
+            "Signing in to Cloudflare creates resources inside your own Cloudflare account: a bucket, and optionally a Worker. They stay yours, they remain after you disconnect, and you can delete them yourself at any time.",
+            "Connecting Google Drive keeps backups in the app's hidden folder of your own Drive, where they count against your Google storage. They stay there until you delete them, either when you disconnect in the manager or in Drive's settings under Manage apps."
           ]
         },
         "backups": {
@@ -100,7 +103,7 @@
           "heading": "Availability, updates and endings",
           "body": [
             "The software is published as it is, when it is published. There is no release schedule, no support commitment, no service level, and no guarantee that a version will keep working, that a feature will be kept, or that the project will continue at all.",
-            "The project's website, the Cloudflare sign-in relay and the telemetry receiver are conveniences. They may change, move or be withdrawn without notice. An installation keeps working without them, except that signing in to Cloudflare through the project's OAuth client needs the relay — and you may register your own client and run your own relay, as the repository documents."
+            "The project's website, the sign-in relay, the Google token service and the telemetry receiver are conveniences. They may change, move or be withdrawn without notice. An installation keeps working without them, with two exceptions. Signing in to Cloudflare through the project's OAuth client needs the relay, and you may register your own client and run your own relay, as the repository documents. Google Drive backups need the relay to connect and the token service to keep going; if either is withdrawn, backups to Drive stop, and the copies already in your Drive stay yours."
           ]
         },
         "licence": {
@@ -191,7 +194,7 @@
         "security": {
           "heading": "Security",
           "body": [
-            "The software takes reasonable care: the administration panel is never exposed through the access gateway, the gateway asks for a passcode and locks after repeated failures, secrets are written to files readable by your user alone, and a Cloudflare sign-in stores a refresh token rather than long-lived keys.",
+            "The software takes reasonable care: the administration panel is never exposed through the access gateway, the gateway asks for a passcode and locks after repeated failures, secrets are written to files readable by your user alone, and a Cloudflare or Google sign-in stores a refresh token rather than long-lived keys.",
             "Reasonable care is not a guarantee. No software is free of defects, nothing here has been independently audited, and no claim of security is made or implied.",
             "Running an installation where other people can reach it is a decision with consequences, and that decision is yours."
           ]
@@ -207,21 +210,22 @@
     "privacy": {
       "title": "Privacy Notice",
       "short": "Privacy",
-      "summary": "There is no account, no cloud and no copy of your data held by this project. One small usage summary is sent, and you can switch it off.",
+      "summary": "There is no account with this project and no copy of your data held by it. One small usage summary is sent, and you can switch it off.",
       "sections": {
         "summary": {
           "heading": "The short version",
           "body": [
-            "There is no account, no cloud, and no copy of your data held by this project. Chats, characters, prompts, settings, backups and API keys stay on machines you control.",
-            "The software sends the project exactly one thing: a small, allowlisted usage summary, described below, which contains nothing you wrote and nothing that identifies you."
+            "There is no account with this project, and no copy of your data held by it. Chats, characters, prompts, settings, backups and API keys stay on machines you control, and in cloud storage of your own if you connect it.",
+            "The software sends the project one thing of its own accord: a small, allowlisted usage summary, described below, which contains nothing you wrote and nothing that identifies you. If you connect Google Drive, your Google sign-in tokens also pass through the project's token service on their way to Google, and are not kept."
           ]
         },
         "local": {
           "heading": "What stays on your machine",
           "body": [
             "Everything SillyTavern holds: chats, characters, personas, prompts, world info, images, extensions and settings.",
-            "Everything the manager holds: backup archives, data profiles, the administrator password hash, session tokens, logs, usage metrics, and any Cloudflare refresh token.",
-            "The data folder is kept outside the application folder, so replacing the application never touches it. Nothing in it is transmitted to the project."
+            "Everything the manager holds: backup archives, data profiles, the administrator password hash, session tokens, logs, usage metrics, any Cloudflare or Google refresh token, the Cloudflare or Google account allowed to open the manager, and the browsers subscribed to its notifications.",
+            "The data folder is kept outside the application folder, so replacing the application never touches it. Nothing in it is transmitted to the project.",
+            "Moving a SillyTavern from Termux into the Android app reads its folder through Android's own file picker, only after you allow it, and copies it on the phone. Nothing of it leaves the device."
           ]
         },
         "sent": {
@@ -230,7 +234,7 @@
             "Once per installation: a random installation identifier, generated on your machine and connected to nothing else.",
             "With each batch: the platform (Windows, Linux, Termux, the Android app, Docker, a hosted workspace or unknown) and the application version.",
             "For each model request SillyTavern makes: the timestamp, provider name, completion API format, model name, endpoint hostname, whether streaming was used, the maximum token setting, input, output and total token counts, cache read and write tokens, reasoning tokens, the HTTP status, and the duration in milliseconds.",
-            "Once for each finished day: how long the manager ran, how long SillyTavern ran under it, how long the console was open and in view, how many times the manager started, whether backups to R2 were off, set up with keys, or set up through a Cloudflare sign-in, and three sizes in bytes: the SillyTavern data in the profile in use, the backups kept on the machine, and what the manager has stored in R2. No bucket name, account or file is included.",
+            "Once for each finished day: how long the manager ran, how long SillyTavern ran under it, how long the console was open and in view, how many times the manager started, whether cloud backups were off, set up with R2 keys, set up through a Cloudflare sign-in, or sent to Google Drive, and three sizes in bytes: the SillyTavern data in the profile in use, the backups kept on the machine, and what the manager has stored in R2 or Google Drive. No bucket name, account or file is included.",
             "A few times a day the manager also asks the project for announcements to show in its notifications. That request carries the platform and the application version and nothing else: no installation identifier and nothing about you.",
             "That is the complete list. The allowlist is in the source code, under packages/instrumentation and packages/telemetry, and you can read it."
           ]
@@ -258,21 +262,41 @@
             "If you connect Cloudflare, the sign-in is a standard OAuth authorization with PKCE against Cloudflare's own servers. The project never sees your Cloudflare password.",
             "Only the refresh token is stored, in a file on your machine readable by your user alone. Access tokens and Worker keys are short-lived and live in memory.",
             "Backups are uploaded from your machine to a bucket in your own Cloudflare account. They pass through no server of this project. What Cloudflare stores and logs is covered by Cloudflare's own privacy policy.",
-            "Disconnecting removes this installation's Worker key and revokes the sign-in. You can also revoke it yourself in your Cloudflare profile, under Manage OAuth authorizations. The bucket and its contents remain yours."
+            "Disconnecting removes this installation's Worker key and revokes the sign-in. You can also revoke it yourself in your Cloudflare profile, under Manage OAuth authorizations. The bucket and its contents remain yours.",
+            "If you open the manager by signing in with Cloudflare, the account's identifier and name are recorded on your machine, so that only that account can open it again. They are sent nowhere."
+          ]
+        },
+        "google": {
+          "heading": "Google Drive backups",
+          "body": [
+            "If you connect Google Drive, you sign in on Google's own page, with a standard OAuth authorization and PKCE. The manager asks for one permission only: the app's own hidden folder in your Drive (drive.appdata). With it, the manager cannot see, open or change any other file in your Drive. The project never sees your Google password.",
+            "From your Google account the manager reads your e-mail address, display name, Drive user identifier and storage quota. It uses them to show which account is connected and how much room is left, and to let only that account open the manager. The e-mail address and identifier are kept on your machine and sent nowhere else.",
+            "Google asks for the app's client secret whenever a sign-in is completed or renewed, and a secret cannot be shipped inside public software. So those two requests go through the project's token service at stm.locmaymo.top, which adds the secret, passes the request to Google and returns Google's answer. Your authorization code or refresh token, and the access token Google sends back, pass through it on the way. It keeps none of them and logs none of them. Your IP address is used there only to limit how often the service can be called, and is not stored by the project.",
+            "Backups travel from your machine straight to Google; no file passes through the token service or any other server of the project. The refresh token is stored in a file on your machine readable by your user alone. What Google stores and logs is covered by Google's own privacy policy.",
+            "Disconnecting revokes the sign-in at Google, unless another machine is still backing up to the same Drive, because Google withdraws a grant from every machine at once. You can choose to delete the backups from Drive as you disconnect. You can also remove the manager's access yourself in your Google Account, under your connections to third-party apps and services, and delete its hidden data in Drive's settings, under Manage apps.",
+            "The manager's use of information received from Google APIs adheres to the Google API Services User Data Policy, including the Limited Use requirements. Google user data is used only to store and bring back your backups and to show and check the connected account. It is not transferred to anyone, not used for advertising, and not read by any person."
+          ]
+        },
+        "notifications": {
+          "heading": "Notifications on your devices",
+          "body": [
+            "When you allow notifications in a browser, that browser gives the manager an address on its maker's push service. The manager keeps that address on your machine and sends notifications to it from there; the project is not involved.",
+            "A notification about SillyTavern names the character who replied and, unless you switch the preview off on that device, shows about the first 120 characters of the reply. Every notification is encrypted on your machine so that only your browser can read it; the push service delivers it without being able to read what it says.",
+            "Subscriptions are dropped when the PIN changes or every device is signed out. The Android app's chat bubble and its notifications stay on the phone."
           ]
         },
         "relay": {
           "heading": "The sign-in relay at stm.locmaymo.top",
           "body": [
-            "Cloudflare only returns a browser to an address registered on the OAuth client, matched exactly, and a manager can be open on any address. So the registered address is a static page on this site, which forwards the browser back to the manager that started the sign-in.",
-            "That page stores nothing, sets no cookie and runs no analytics. The authorization code it forwards is useless without the PKCE verifier, which never leaves your manager.",
-            "It forwards on its own only to loopback, private-network, .local and trycloudflare.com addresses. Anywhere else - including any hosting platform - it shows the destination and waits for a click, so it cannot be used as a silent redirect to another site."
+            "Cloudflare and Google only return a browser to an address registered on the OAuth client, matched exactly, and a manager can be open on any address. So each registered address is a static page on this site, which forwards the browser back to the manager that started the sign-in.",
+            "Those pages store nothing, set no cookie and run no analytics. The authorization code they forward is useless without the PKCE verifier, which never leaves your manager.",
+            "They forward on their own only to addresses that can only be your own machine or network: loopback, private ranges, the shared range some private networks use, and .local or .localhost names. Anywhere else, tunnels and hosting platforms included, they show the destination and wait for a click, so they cannot be used as a silent redirect to another site."
           ]
         },
         "website": {
           "heading": "The website",
           "body": [
-            "The pages at stm.locmaymo.top are static files served from Cloudflare's network. There is no account, no login, no tracking pixel, no advertising and no third-party analytics script.",
+            "The pages at stm.locmaymo.top are static files served from Cloudflare's network; the only code the project runs there is the Google token service described above. There is no account, no login, no tracking pixel, no advertising and no third-party analytics script.",
             "Cloudflare, as the host, processes request metadata such as IP address and user agent in order to serve and protect the site, under its own privacy policy.",
             "Your language and theme choice, if you change them, are remembered in your own browser and sent nowhere. Pages may link to GitHub and npm; following a link puts you on their sites, under their policies."
           ]
@@ -281,13 +305,13 @@
           "heading": "Your choices and your rights",
           "body": [
             "Because the project holds no personal data about you, there is usually nothing to access, correct, export or erase. If you believe an installation identifier or a telemetry record relates to you, write to the issue tracker and it will be deleted.",
-            "You can switch telemetry off with the setting above, disconnect Cloudflare at any time, and delete the data folder to remove everything the software ever wrote."
+            "You can switch telemetry off with the setting above, disconnect Cloudflare or Google Drive at any time, turn notifications off in each browser, and delete the data folder to remove everything the software ever wrote."
           ]
         },
         "changes": {
           "heading": "Changes to this notice",
           "body": [
-            "This notice changes when what the software sends changes. The version in force always ships with the software and is published at stm.locmaymo.top/privacy, carrying the date it took effect."
+            "This notice changes when what the software sends or reads changes. The version in force always ships with the software and is published at stm.locmaymo.top/privacy, carrying the date it took effect."
           ]
         }
       }
@@ -317,7 +341,7 @@
         "trademarks": {
           "heading": "Trademarks",
           "body": [
-            "SillyTavern is the name of a separate project and belongs to its authors. Cloudflare and the Cloudflare logo are trademarks of Cloudflare, Inc. Docker and the Docker logo are trademarks of Docker, Inc. GitHub and the GitHub logo are trademarks of GitHub, Inc. Node.js is a trademark of the OpenJS Foundation.",
+            "SillyTavern is the name of a separate project and belongs to its authors. Cloudflare and the Cloudflare logo are trademarks of Cloudflare, Inc. Docker and the Docker logo are trademarks of Docker, Inc. GitHub and the GitHub logo are trademarks of GitHub, Inc. Google Drive and the Google Drive logo are trademarks of Google LLC. Node.js is a trademark of the OpenJS Foundation.",
             "Each is named or drawn here only to identify that product where this software works with it. No endorsement, sponsorship or affiliation is claimed by any of them, and none is implied."
           ]
         },
@@ -325,7 +349,7 @@
           "heading": "Artwork",
           "body": [
             "The application icon, favicon and in-application brand mark are resized from the SillyTavern Vietnam (STVN) logo, used with permission as this project's own mark.",
-            "The service marks drawn in packages/ui/src/brand.tsx are simplified redrawings of the Cloudflare, Cloudflare R2, Docker and GitHub logos, used only to identify those services in the interface.",
+            "The service marks drawn in packages/ui/src/brand.tsx are simplified redrawings of the Cloudflare, Cloudflare R2, Docker and GitHub logos, used only to identify those services in the interface. The Google Drive logo in apps/manager-panel/src/google-drive-mark.tsx is drawn in its own colours, only on the buttons that connect Google Drive.",
             "Logos and artwork are not covered by the AGPL-3.0 and are not licensed for reuse with it."
           ]
         }

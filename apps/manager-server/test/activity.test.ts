@@ -118,6 +118,8 @@ test('a finished day says how backups to R2 were set up when it was last looked 
   assert.equal(parseUsageDay(JSON.parse(line ?? '{}'))?.r2, 'cloudflare');
   // A day written before this was recorded is not known, rather than off.
   assert.equal(parseUsageDay({ date: '2026-09-18', managerSeconds: 60 })?.r2, undefined);
+  // Google Drive is a destination of its own, not counted with the keys.
+  assert.equal(parseUsageDay({ date: '2026-09-21', managerSeconds: 60, r2: 'google' })?.r2, 'google');
 });
 
 test('a finished day carries how much there was to keep, and leaves out what was not measured', async () => {
