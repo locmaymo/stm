@@ -48,6 +48,10 @@ test('a Google account claims only a manager nobody has set up', async () => {
   assert.deepEqual(await blank.claimGoogleOwner('perm-owner', 'owner@example.com'), { allowed: true, owner: 'owner@example.com' });
   assert.deepEqual(await blank.claimGoogleOwner('perm-stranger', 'stranger@example.com'), { allowed: false, owner: 'owner@example.com' });
   assert.deepEqual(await new StateStore({ paths }).googleOwner(), { id: 'perm-owner', email: 'owner@example.com' });
+  // Set up by that sign-in, with no password: not the next Cloudflare account's
+  // to claim, and its first-run password screen is closed.
+  assert.deepEqual(await blank.claimCloudflareOwner([{ id: 'cf-stranger', name: 'Somebody else' }], null), { account: null, owner: 'owner@example.com', refusal: 'cloudflare_google_first' });
+  assert.equal(await blank.saveFirstAdminPassword(hashPassword('123456')), false);
 
   // A manager with a password is not taken by whoever signs in first.
   const otherRoot = await mkdtemp(join(tmpdir(), 'stm-state-google-pw-'));

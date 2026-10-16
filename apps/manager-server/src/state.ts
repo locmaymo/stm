@@ -164,7 +164,7 @@ export interface CloudflareClaim {
   readonly account: CloudflareAccountRef | null;
   /** The account that does open this manager, to name in a refusal. */
   readonly owner: string | null;
-  readonly refusal: 'cloudflare_not_owner' | 'cloudflare_password_first' | 'cloudflare_account_required' | 'cloudflare_no_account' | null;
+  readonly refusal: 'cloudflare_not_owner' | 'cloudflare_password_first' | 'cloudflare_google_first' | 'cloudflare_account_required' | 'cloudflare_no_account' | null;
 }
 
 export interface StateStoreOptions {
@@ -529,7 +529,7 @@ export class StateStore {
     let saved = false;
     const operation = async (): Promise<void> => {
       const state = await this.load();
-      if (state.adminPasswordHash || state.ownerAccountId !== null) return;
+      if (state.adminPasswordHash || state.ownerAccountId !== null || state.googleOwnerId !== null) return;
       const now = this.now().toISOString();
       const updated: PersistedManagerState = { ...state, adminPasswordHash: passwordHash, setupAcceptedAt: now, updatedAt: now };
       await this.write(updated);
@@ -637,6 +637,11 @@ export class StateStore {
         if (!account) { claim = { account: null, owner: connected.name, refusal: 'cloudflare_not_owner' }; return; }
       } else if (state.adminPasswordHash !== null) {
         claim = { account: null, owner: null, refusal: 'cloudflare_password_first' };
+        return;
+      } else if (state.googleOwnerId !== null) {
+        // Opened with Google and no password: set up all the same, so it is
+        // not the next Cloudflare account's to claim.
+        claim = { account: null, owner: state.googleOwnerEmail, refusal: 'cloudflare_google_first' };
         return;
       } else {
         account = offered.length === 1 ? offered[0] ?? null : null;

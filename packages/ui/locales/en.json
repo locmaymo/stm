@@ -70,6 +70,7 @@
     "cloudSignInFailed": "The Cloudflare sign-in could not be started",
     "cloudNotOwner": "This manager belongs to a different Cloudflare account. Sign in with that one, or use the manager password.",
     "cloudAccountRequired": "No account was chosen, so there is nobody to sign in. Try again and pick one.",
+    "cloudGoogleFirst": "This manager is opened with Google. Continue with Google Drive, then connect Cloudflare in the console - after that, this account can open it too.",
     "cloudPasswordFirst": "This manager has a password and no Cloudflare account yet. Sign in with the password, then connect Cloudflare in the console - after that, this account can open it too.",
     "cloudUnavailable": "This manager cannot sign in with Cloudflare.",
     "cloudDenied": "Access was not granted on Cloudflare.",
