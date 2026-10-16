@@ -120,6 +120,17 @@ interface PersistedManagerState {
   /** What to call that account on screen, so a refusal can name it. */
   readonly ownerAccountName: string | null;
   /**
+   * The Google account that may open this manager, by its stable Drive user
+   * id (never a token), and its address to show.
+   *
+   * Recorded two ways only: when a manager nobody has set up is opened with
+   * Google, and when the signed-in owner connects Google Drive from the
+   * console. A manager with a password is never claimed by a stranger's
+   * Google sign-in.
+   */
+  readonly googleOwnerId: string | null;
+  readonly googleOwnerEmail: string | null;
+  /**
    * Saver mode as the panel's switch last set it, or null for never.
    *
    * Null is not off: it leaves the answer to how much memory the machine has.
@@ -210,6 +221,8 @@ export class StateStore {
         keepOnlineOrigin: null,
         ownerAccountId: null,
         ownerAccountName: null,
+        googleOwnerId: null,
+        googleOwnerEmail: null,
         saverMode: null,
         accessLinkOpened: false,
         firstRunDeferred: false,
@@ -591,6 +604,64 @@ export class StateStore {
     return { allowed, owner };
   }
 
+  /**
+   * Let this Google account open the manager, if it may.
+   *
+   * The recorded account is let in and nobody else. With none recorded, only
+   * a manager nobody has set up - no password, no Cloudflare owner - is
+   * claimed: that is the machine coming back after being wiped. A manager
+   * that has a password is not, or anyone who could reach its sign-in page
+   * could take it with their own Google account.
+   */
+  public async claimGoogleOwner(id: string, email: string): Promise<{ readonly allowed: boolean; readonly owner: string | null }> {
+    let allowed = false;
+    let owner: string | null = null;
+    const operation = async (): Promise<void> => {
+      const state = await this.load();
+      owner = state.googleOwnerEmail ?? state.googleOwnerId;
+      if (state.googleOwnerId !== null) { allowed = state.googleOwnerId === id; return; }
+      if (state.adminPasswordHash !== null || state.ownerAccountId !== null) return;
+      const now = this.now().toISOString();
+      const updated: PersistedManagerState = { ...state, googleOwnerId: id, googleOwnerEmail: email, setupAcceptedAt: state.setupAcceptedAt ?? now, updatedAt: now };
+      await this.write(updated);
+      this.state = updated;
+      allowed = true;
+      owner = email;
+    };
+    const previous = this.adminWriteQueue;
+    this.adminWriteQueue = previous.then(operation, operation);
+    await this.adminWriteQueue;
+    return { allowed, owner };
+  }
+
+  /** The signed-in owner connected this Google account, so it may open the manager from now on. */
+  public async recordGoogleOwner(id: string, email: string): Promise<void> {
+    await this.setGoogleOwner(id, email);
+  }
+
+  /** Stop letting a Google account open this manager. */
+  public async releaseGoogleOwner(): Promise<void> {
+    await this.setGoogleOwner(null, null);
+  }
+
+  public async googleOwner(): Promise<{ readonly id: string; readonly email: string | null } | null> {
+    const state = await this.load();
+    return state.googleOwnerId ? { id: state.googleOwnerId, email: state.googleOwnerEmail } : null;
+  }
+
+  private async setGoogleOwner(id: string | null, email: string | null): Promise<void> {
+    const operation = async (): Promise<void> => {
+      const state = await this.load();
+      if (state.googleOwnerId === id && state.googleOwnerEmail === email) return;
+      const updated: PersistedManagerState = { ...state, googleOwnerId: id, googleOwnerEmail: email, updatedAt: this.now().toISOString() };
+      await this.write(updated);
+      this.state = updated;
+    };
+    const previous = this.adminWriteQueue;
+    this.adminWriteQueue = previous.then(operation, operation);
+    await this.adminWriteQueue;
+  }
+
   /** Stop letting a Cloudflare account open this manager. */
   public async releaseCloudflareOwner(): Promise<void> {
     const operation = async (): Promise<void> => {
@@ -743,6 +814,9 @@ export class StateStore {
     // manager, which is a manager nobody has claimed that way.
     const ownerAccountId = isNullableString(input.ownerAccountId) ? input.ownerAccountId : null;
     const ownerAccountName = isNullableString(input.ownerAccountName) ? input.ownerAccountName : null;
+    // Absent in a file written before Google could open this manager.
+    const googleOwnerId = isNullableString(input.googleOwnerId) ? input.googleOwnerId : null;
+    const googleOwnerEmail = isNullableString(input.googleOwnerEmail) ? input.googleOwnerEmail : null;
     // Absent in every file written before the terms could be revised under a
     // running installation, which is one that has never been asked.
     const noticeAcknowledgedAt = isNullableString(input.noticeAcknowledgedAt) ? input.noticeAcknowledgedAt : null;
@@ -759,7 +833,7 @@ export class StateStore {
     // Absent in a file written before either address could be preferred: the
     // fixed one first, and shown, which is what the console always did.
     const accessLinks = parseAccessLinks(input.accessLinks);
-    return { ...input, accessPasswordHash, accessPasscode, accessLanEnabled, sillyTavernPort, autoStartSillyTavern, firstInstallStartedAt, keepOnline, keepOnlineMinutes, keepOnlineOrigin, ownerAccountId, ownerAccountName, noticeAcknowledgedAt, saverMode, accessLinkOpened, firstRunDeferred, setupStepsDone, accessLinks } as unknown as PersistedManagerState;
+    return { ...input, accessPasswordHash, accessPasscode, accessLanEnabled, sillyTavernPort, autoStartSillyTavern, firstInstallStartedAt, keepOnline, keepOnlineMinutes, keepOnlineOrigin, ownerAccountId, ownerAccountName, googleOwnerId, googleOwnerEmail, noticeAcknowledgedAt, saverMode, accessLinkOpened, firstRunDeferred, setupStepsDone, accessLinks } as unknown as PersistedManagerState;
   }
 }
 

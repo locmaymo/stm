@@ -219,6 +219,34 @@ test('a machine that leaves the grant in place does not sign out the one backing
   assert.equal((await laptop.google.status()).state, 'connected');
 });
 
+test('a refused sign-in keeps the owner’s Drive connected and revokes the stranger’s grant', async () => {
+  const fake = fakeGoogle({ email: 'owner@example.com' });
+  const desk = await machine(fake, 'desk');
+  await signIn(fake, desk.google);
+  const before = await desk.google.status();
+
+  const url = new URL(desk.google.beginConnect('http://127.0.0.1:7860', undefined, 'signIn'));
+  assert.equal(desk.google.pendingPurpose(url.searchParams.get('state') ?? ''), 'signIn');
+  const code = fake.issueCode(url.searchParams.get('code_challenge') ?? '', 'stranger@example.com');
+  const seen: string[] = [];
+  await assert.rejects(desk.google.completeConnect({ state: url.searchParams.get('state') ?? '', code }, {
+    accept: async (account) => { seen.push(`${account.id} ${account.email}`); return false; },
+  }), { code: 'google_not_owner' });
+  assert.deepEqual(seen, ['perm-stranger@example.com stranger@example.com']);
+  assert.equal(fake.calls.revoke, 1);
+
+  // Still the owner's, and still working.
+  const after = await desk.google.status();
+  assert.equal(after.email, 'owner@example.com');
+  assert.equal(after.state, 'connected');
+  assert.equal(after.connectedAt, before.connectedAt);
+  assert.equal((await desk.google.account())?.id, 'perm-owner@example.com');
+  fake.expireAccessTokens();
+  await desk.manager.update({ mode: 'google', enabled: true });
+  const chat = await source(desk.root, 'chats/one.jsonl', 'hello\n');
+  await desk.manager.syncProfile({ profile: profile(), sources: [chat], fingerprint: 'one' });
+});
+
 test('disconnecting revokes the grant at Google and leaves the files in Drive', async () => {
   const fake = fakeGoogle();
   const desk = await machine(fake, 'desk');

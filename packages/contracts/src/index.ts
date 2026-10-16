@@ -91,6 +91,16 @@ export interface SetupStatus {
     /** What the account that already owns this manager is called, if one does. */
     readonly owner: string | null;
   };
+  /**
+   * Opening this manager with the Google account whose Drive holds its
+   * backups. Offered below Cloudflare's: it brings a wiped machine back the
+   * same way, and Cloudflare stays the way this project recommends.
+   */
+  readonly googleSignIn?: {
+    readonly available: boolean;
+    /** The address of the Google account that may open this manager, if one may. */
+    readonly owner: string | null;
+  };
 }
 
 /**

@@ -1316,7 +1316,13 @@ async function handleRequest(options: {
     return;
   }
   if (pathname === GOOGLE_CALLBACK_PATH && (request.method ?? 'GET') === 'GET') {
-    await handleGoogleCallback(context, sessions, google, r2, options.logger, handoffs);
+    await handleGoogleCallback(context, sessions, google, r2, options.logger, handoffs, {
+      store, backups, runtime, secureCookies, rateLimiter,
+      restoreEverything: () => restoreAfterSignIn({
+        store, backups, r2, runtime, jobs, profiles, gateway, metrics, supervisor,
+        tunnel, managerTunnel, ports, firstInstall, adoptSillyTavernPort, adoptKeepOnline, logger: options.logger,
+      }),
+    });
     return;
   }
   if (!pathname.startsWith('/api/v1/')) {
@@ -1364,11 +1370,12 @@ async function handleRequest(options: {
     const status: SetupStatus = {
       // A manager an account already owns is set up, password or no password:
       // that account can open it, which is the whole of what setup produces.
-      setupRequired: state.adminPasswordHash === null && state.ownerAccountId === null,
+      setupRequired: state.adminPasswordHash === null && state.ownerAccountId === null && state.googleOwnerId === null,
       termsVersion: TERMS_VERSION,
       telemetryNoticeVersion: TELEMETRY_NOTICE_VERSION,
       notice: NOTICE,
       cloudflareSignIn: { available: cloudflare !== null, owner: state.ownerAccountName ?? state.ownerAccountId },
+      googleSignIn: { available: google !== null, owner: state.googleOwnerEmail },
     };
     sendJson(response, 200, status);
     return;
@@ -1393,6 +1400,25 @@ async function handleRequest(options: {
     const returnOrigin = panelOrigin(context);
     if (!returnOrigin) { sendError(response, 400, 'invalid_origin', 'The panel origin could not be read'); return; }
     const url = cloudflare.beginConnect(returnOrigin, 'signIn');
+    sendJson(response, 200, { url, ...openHandoff(context, handoffs, url) });
+    return;
+  }
+
+  /*
+   * Open the console with Google instead of a password: the Google account
+   * whose Drive holds this manager's backups.
+   *
+   * Unauthenticated and rate limited like the Cloudflare sign-in above it.
+   * Unlike that one, a Google account claims only a manager nobody has set
+   * up; one with a password lets in the Google account its owner connected
+   * from the console, and nobody else. See `claimGoogleOwner`.
+   */
+  if (pathname === '/api/v1/auth/google' && method === 'POST') {
+    if (!checkRateLimit(context, rateLimiter)) return;
+    if (!google) { sendError(response, 409, 'google_not_available', 'This manager has no Google sign-in configured'); return; }
+    const returnOrigin = panelOrigin(context);
+    if (!returnOrigin) { sendError(response, 400, 'invalid_origin', 'The panel origin could not be read'); return; }
+    const url = google.beginConnect(returnOrigin, undefined, 'signIn');
     sendJson(response, 200, { url, ...openHandoff(context, handoffs, url) });
     return;
   }
@@ -2075,7 +2101,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     return;
   }
   if (pathname.startsWith('/api/v1/r2/google')) {
-    await handleGoogleRequest(context, google, r2, logger, handoffs);
+    await handleGoogleRequest(context, google, r2, logger, handoffs, store);
     return;
   }
   // The one question about the bucket: is it reachable, and what is in it. It
@@ -3632,7 +3658,7 @@ function googleConnectionFromEnvironment(paths: PlatformPaths, env: NodeJS.Proce
  * disconnecting switches backups off rather than leaving them failing on a
  * schedule. The files stay in the Drive either way.
  */
-async function handleGoogleRequest(context: RequestContext, google: GoogleConnection | null, r2: R2Manager, logger: LogSink, handoffs: HandoffStore): Promise<void> {
+async function handleGoogleRequest(context: RequestContext, google: GoogleConnection | null, r2: R2Manager, logger: LogSink, handoffs: HandoffStore, store: StateStore): Promise<void> {
   const { pathname, request, response } = context;
   const method = request.method ?? 'GET';
   if (!google) { sendError(response, 404, 'google_not_available', 'This manager has no Google sign-in configured'); return; }
@@ -3666,6 +3692,8 @@ async function handleGoogleRequest(context: RequestContext, google: GoogleConnec
       });
     }
     const result = await google.disconnect({ revoke: !otherMachine });
+    // The account that was connected no longer opens this manager either.
+    await store.releaseGoogleOwner();
     if ((await r2.getConfig()).mode === 'google') await r2.update({ enabled: false });
     sendJson(response, 200, { ...result, keptFor: otherMachine, config: await r2.getConfig() });
     return;
@@ -3680,25 +3708,29 @@ async function handleGoogleRequest(context: RequestContext, google: GoogleConnec
  * the same way the Cloudflare callback does, including the hand-off to a
  * console that opened the sign-in in a window of its own.
  */
-async function handleGoogleCallback(context: RequestContext, sessions: SessionStore, google: GoogleConnection | null, r2: R2Manager, logger: LogSink, handoffs: HandoffStore): Promise<void> {
+async function handleGoogleCallback(context: RequestContext, sessions: SessionStore, google: GoogleConnection | null, r2: R2Manager, logger: LogSink, handoffs: HandoffStore, signIn: CloudflareSignInDeps): Promise<void> {
   const { response, searchParams } = context;
   r2.noteAddress(forwardedValue(context.request, 'x-forwarded-host') ?? headerValue(context.request.headers.host));
   const state = searchParams.get('state') ?? '';
   const collected = handoffs.isOpen(state);
   const phoneApp = collected && handoffs.forPhoneApp(state);
-  const redirect = (outcome: string, code?: string): void => {
-    if (collected) handoffs.settle(state, { outcome, code: code ?? '', sessionToken: null });
+  const redirect = (outcome: string, code?: string, page = '#data', sessionToken: string | null = null): void => {
+    if (collected) handoffs.settle(state, { outcome, code: code ?? '', sessionToken });
     const query = new URLSearchParams({
       google: outcome,
       ...(code ? { google_error: code } : {}),
       ...(collected ? { handoff: '1' } : {}),
       ...(phoneApp ? { app: '1' } : {}),
     });
-    response.writeHead(303, { location: `/?${query.toString()}#data`, 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' });
+    response.writeHead(303, { location: `/?${query.toString()}${page}`, 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' });
     response.end();
   };
   if (!google) { redirect('error', 'google_not_available'); return; }
   if (!google.isPending(state)) { redirect('error', 'google_state_mismatch'); return; }
+  if (google.pendingPurpose(state) === 'signIn') {
+    await completeGoogleSignIn(context, sessions, google, r2, logger, signIn, redirect);
+    return;
+  }
   // Whoever started this, rather than whoever is standing here; see the
   // Cloudflare callback for why the returning browser may carry no session.
   const startedBy = google.pendingStartedBy(state);
@@ -3709,6 +3741,10 @@ async function handleGoogleCallback(context: RequestContext, sessions: SessionSt
     if (status.state === 'connected') {
       await r2.update({ mode: 'google', enabled: true });
       await claimForThisMachine(r2, logger);
+      // Connected by the signed-in owner, so this Google account may open the
+      // manager from now on - which is what brings it back after a wipe.
+      const account = await google.account();
+      if (account?.id) await signIn.store.recordGoogleOwner(account.id, account.email);
     }
     redirect(status.state);
   } catch (error: unknown) {
@@ -3716,6 +3752,54 @@ async function handleGoogleCallback(context: RequestContext, sessions: SessionSt
     logger(logEvent('r2.googleConnectFailed', `[r2] connecting Google Drive failed: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
     redirect('error', code);
   }
+}
+
+/**
+ * Open the console because Google says who this is, the way the Cloudflare
+ * sign-in does; see `completeCloudflareSignIn`.
+ *
+ * Who may come in is settled before anything is kept: a refused account's
+ * grant is revoked and this manager's own Drive connection stays as it was.
+ */
+async function completeGoogleSignIn(
+  context: RequestContext,
+  sessions: SessionStore,
+  google: GoogleConnection,
+  r2: R2Manager,
+  logger: LogSink,
+  deps: CloudflareSignInDeps,
+  redirect: (outcome: string, code?: string, page?: string, sessionToken?: string | null) => void,
+): Promise<void> {
+  const { searchParams } = context;
+  let owner: string | null = null;
+  let status;
+  try {
+    status = await google.completeConnect({ state: searchParams.get('state') ?? '', code: searchParams.get('code'), error: searchParams.get('error') }, {
+      accept: async (account) => {
+        const claim = await deps.store.claimGoogleOwner(account.id, account.email);
+        owner = claim.owner;
+        return claim.allowed;
+      },
+    });
+  } catch (error: unknown) {
+    const code = isRecord(error) && typeof error.code === 'string' ? error.code : 'google_connect_failed';
+    if (code === 'google_not_owner') logger(logEvent('auth.googleRefused', `[auth] a Google sign-in was refused: this manager belongs to ${owner ?? 'its password'}`, { owner: owner ?? '' }));
+    else logger(logEvent('auth.googleFailed', `[auth] signing in with Google failed: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
+    redirect('error', code, '');
+    return;
+  }
+  if (status.state === 'connected') {
+    await r2.update({ mode: 'google', enabled: true });
+    await claimForThisMachine(r2, logger);
+  }
+  clearRateLimit(context, deps.rateLimiter);
+  const created = sessions.create();
+  context.response.setHeader('Set-Cookie', sessionCookie(created.token, deps.secureCookies));
+  logger(logEvent('auth.googleSignedIn', `[auth] signed in with the Google account ${status.email ?? ''}`, { account: status.email ?? '' }));
+  void deps.restoreEverything().catch((error: unknown) => {
+    logger(logEvent('auth.googleRestoreFailed', `[auth] this machine could not be restored after signing in: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
+  });
+  redirect(status.state === 'connected' ? 'signed_in' : status.state, undefined, '', created.token);
 }
 
 /**
@@ -4568,7 +4652,9 @@ async function handlePasswordSetup(
     return;
   }
   const state = await store.getPersisted();
-  if (state.adminPasswordHash) {
+  // A manager opened with Google has an owner already: its password is set
+  // from inside the console, not on the first-run page by whoever reaches it.
+  if (state.adminPasswordHash || state.googleOwnerId) {
     sendError(context.response, 409, 'already_configured', 'The manager admin password is already configured');
     return;
   }

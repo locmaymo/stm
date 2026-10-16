@@ -48,6 +48,7 @@ import { POLL_BACKGROUND_MS, POLL_RELEASE_MS, statusIntervalMs } from './polling
 import { DEFAULT_ACCESS_LINKS, foldForSearch, translateLogEntry, translateStep } from '../../../packages/contracts/src/index.js';
 import { QrCode } from './qr-code.js';
 import { CLOUDFLARE_ORANGE, CloudflareMark } from './cloudflare-mark.js';
+import { GoogleDriveMark } from './google-drive-mark.js';
 import { bareHost, localHost, machineName, publicAddress, publicLinks, reachableAddresses, shortenHost, type PublicLink, type ReachableAddress } from './addresses.js';
 import { EmbedStage } from './embed-stage.js';
 import { AUTOSAVE_DELAY_MS, changedSettings, yamlProblem } from './config-settings.js';
@@ -235,6 +236,7 @@ function AuthGate() {
    * both of which mean the screen shows the password field and nothing else.
    */
   const [cloudflareSignIn, setCloudflareSignIn] = useState<SetupStatus['cloudflareSignIn'] | null>(null);
+  const [googleSignIn, setGoogleSignIn] = useState<SetupStatus['googleSignIn'] | null>(null);
   const [csrfToken, setCsrfToken] = useState<string | null>(null);
   const [signedOut, setSignedOut] = useState(false);
   const [preferences, setPreferences] = useState(() => readPreferences(browserStorage(), browserEnvironment()));
@@ -271,9 +273,11 @@ function AuthGate() {
   const [signInError, setSignInError] = useState<string | null>(null);
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const outcome = params.get('cloudflare');
+    // Google's sign-in comes back the same way, under its own name.
+    const provider = params.get('cloudflare') ? 'cloudflare' : 'google';
+    const outcome = params.get(provider);
     if (outcome !== 'signed_in' && outcome !== 'error') return;
-    const code = params.get('cloudflare_error') ?? '';
+    const code = params.get(`${provider}_error`) ?? '';
     if (outcome === 'error' && !authErrorKey(code)) return;
     window.history.replaceState(null, '', `${window.location.pathname}${window.location.hash}`);
     if (outcome === 'error') setSignInError(t(authErrorKey(code) as MessageKey));
@@ -284,6 +288,7 @@ function AuthGate() {
     void apiFetch('/api/v1/setup/status').then(async (response) => response.json() as Promise<SetupStatus>).then(async (status) => {
       if (cancelled) return;
       setCloudflareSignIn(status.cloudflareSignIn ?? null);
+      setGoogleSignIn(status.googleSignIn ?? null);
       if (status.setupRequired) { setMode('setup'); return; }
       // The session probe and the sign-in form are the calls where a refusal
       // is an ordinary answer rather than a session running out, so they go
@@ -345,6 +350,7 @@ function AuthGate() {
         signedOut={signedOut}
         preferences={preferences}
         cloudflare={cloudflareSignIn}
+        google={googleSignIn}
         refusal={signInError}
         onPreferencesChange={changePreferences}
         onSignedIn={signedIn}
@@ -362,9 +368,12 @@ function AuthGate() {
   return <Toaster closeLabel={t('common.close')}>{body}</Toaster>;
 }
 
-function AuthScreen({ t, mode, signedOut, preferences, cloudflare, refusal, onPreferencesChange, onSignedIn }: { t: Translate; mode: 'setup' | 'login'; signedOut: boolean; preferences: Preferences; onPreferencesChange: (value: Partial<Preferences>) => void; cloudflare: SetupStatus['cloudflareSignIn'] | null; refusal: string | null; onSignedIn: (csrfToken: string, setUp: boolean) => void }) {
+function AuthScreen({ t, mode, signedOut, preferences, cloudflare, google, refusal, onPreferencesChange, onSignedIn }: { t: Translate; mode: 'setup' | 'login'; signedOut: boolean; preferences: Preferences; onPreferencesChange: (value: Partial<Preferences>) => void; cloudflare: SetupStatus['cloudflareSignIn'] | null; google: SetupStatus['googleSignIn'] | null; refusal: string | null; onSignedIn: (csrfToken: string, setUp: boolean) => void }) {
   const [password, setPassword] = useState('');
   const [cloudflareBusy, setCloudflareBusy] = useState(false);
+  const [googleBusy, setGoogleBusy] = useState(false);
+  /** Set when this page could not open Google's sign-in and handed it over. */
+  const [googleHandOverUrl, setGoogleHandOverUrl] = useState<string | null>(null);
   /** Set when this page could not open Cloudflare's sign-in and handed it over. */
   const [handOverUrl, setHandOverUrl] = useState<string | null>(null);
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -475,6 +484,7 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, refusal, onPr
 
   const collected = (result: CollectedResult) => {
     setCloudflareBusy(false);
+    setGoogleBusy(false);
     if (result.outcome === 'error') {
       const key = authErrorKey(result.code);
       setError(key ? t(key) : t('setup.cloudSignInFailed'));
@@ -540,6 +550,30 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, refusal, onPr
       setHandOverUrl(payload.url);
     } catch { opened?.close(); setCloudflareBusy(false); setError(t('setup.connectionError')); }
   };
+  /** The same as `signInWithCloudflare`, for the Google account whose Drive holds the backups. */
+  const signInWithGoogle = async () => {
+    setGoogleHandOverUrl(null);
+    collecting.current?.();
+    const inFrame = framed();
+    const inApp = inPhoneApp();
+    const opened = inFrame && !popupsBlocked() ? openReturnWindow() : null;
+    setGoogleBusy(true); setError(null);
+    try {
+      const response = await fetch(`/api/v1/auth/google${inFrame || inApp ? '?handoff=1' : ''}`, { method: 'POST', credentials: 'same-origin' });
+      const payload = await response.json() as { url?: string; handoff?: string; error?: { code?: string; message?: string } };
+      if (!response.ok || !payload.url) { opened?.close(); setGoogleBusy(false); setError(fail.body(payload, t('setup.googleSignInFailed'))); return; }
+      if (!inFrame && !inApp) { window.location.assign(payload.url); return; }
+      if (payload.handoff) {
+        const stopCollecting = collectCloudflareResult(payload.handoff, collected);
+        const stopWatching = opened ? whenAbandoned(opened, () => { stopCollecting(); setGoogleBusy(false); }) : null;
+        collecting.current = () => { stopCollecting(); stopWatching?.(); };
+      }
+      if (opened) { opened.location.href = payload.url; return; }
+      if (inApp) { setGoogleBusy(false); window.location.assign(payload.url); return; }
+      setGoogleBusy(false);
+      setGoogleHandOverUrl(payload.url);
+    } catch { opened?.close(); setGoogleBusy(false); setError(t('setup.connectionError')); }
+  };
   /*
    * The second way in, where this build has one.
    *
@@ -586,6 +620,29 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, refusal, onPr
         </Button>}
       <span className="cloud-way-tag" aria-hidden="true">{t('setup.cloudRecommended')}</span>
     </div>
+  </> : null;
+  /*
+   * Google, under Cloudflare and quieter than it: an outline button with the
+   * Drive logo, no tag. It brings a wiped machine back the same way, for the
+   * reader whose backups are in their Google Drive.
+   */
+  const googleWay = google?.available ? <>
+    {cloudflare?.available ? null : <div className="auth-divider"><span>{t('setup.or')}</span></div>}
+    {googleHandOverUrl
+      ? <Button asChild size="lg" variant="outline" className="w-full">
+        <a href={googleHandOverUrl} target="_blank" rel="noopener noreferrer"><GoogleDriveMark />{t('setup.googleSignIn')}</a>
+      </Button>
+      : <Button
+        type="button"
+        size="lg"
+        variant="outline"
+        className="w-full"
+        disabled={busy}
+        loading={googleBusy}
+        onClick={() => { if (consented()) void signInWithGoogle(); }}
+      >
+        <GoogleDriveMark />{t('setup.googleSignIn')}
+      </Button>}
   </> : null;
 
   return (
@@ -636,6 +693,7 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, refusal, onPr
               </Field>
             ) : null}
             {setup ? cloudflareWay : null}
+            {setup ? googleWay : null}
             {setup ? (
               <TermsConsent
                 t={t}
@@ -655,6 +713,7 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, refusal, onPr
               {setup ? t('setup.createAdmin') : t('setup.signIn')}
             </Button>
             {!setup ? cloudflareWay : null}
+            {!setup ? googleWay : null}
           </form>
         </CardContent>
       </Card>}
@@ -2001,7 +2060,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
                 <AlertDescription className="grid gap-2">
                   <span>{t(checklistR2?.mode === 'google' ? 'console.r2DisplacedBodyGoogle' : 'console.r2DisplacedBody', { name: machineName(r2Owner.label), when: new Date(r2Owner.claimedAt ?? r2Owner.lastSeenAt).toLocaleString() })}</span>
                   <span className="flex flex-wrap items-center gap-2">{checklistR2?.mode === 'google'
-                    ? <Button size="sm" onClick={() => void connectGoogleAgain()}><HardDrive />{t('console.gdReconnect')}</Button>
+                    ? <Button size="sm" variant="outline" onClick={() => void connectGoogleAgain()}><GoogleDriveMark />{t('console.gdReconnect')}</Button>
                     : reconnectUrl
                     ? <Button size="sm" asChild style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }} className="hover:opacity-90">
                       <a href={reconnectUrl} target="_blank" rel="noopener noreferrer"><CloudflareMark />{t('console.r2DisplacedSignIn')}</a>
@@ -4484,6 +4543,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
 
   /** Coming back from Google: the same two ways back as from Cloudflare. */
   const settleGoogle = (outcome: string, code: string) => {
+    if (outcome === 'signed_in') return;
     if (outcome === 'connected') {
       void apiFetch('/api/v1/r2', { credentials: 'same-origin' })
         .then(async (response) => (response.ok ? (await response.json() as { config: R2Config }).config : null))
@@ -6389,9 +6449,8 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled
     setError(null);
     setKeys(r2KeysFrom(config));
     setAccount(cloudflare?.accounts[0]?.id ?? '');
-    // Nothing set up yet: the Drive first where it is offered, since it asks
-    // for nothing a reader does not already have.
-    setChoice(config?.configured || (mode === 'cloudflare' && cloudflare?.state === 'choose_account') ? mode : google ? 'google' : cloudflare ? 'cloudflare' : 'keys');
+    // Nothing set up yet: Cloudflare first, the recommended way, then the Drive.
+    setChoice(config?.configured || (mode === 'cloudflare' && cloudflare?.state === 'choose_account') ? mode : cloudflare ? 'cloudflare' : google ? 'google' : 'keys');
   }, [open]);
 
   // Set in `.env`: shown so the reader knows where the value comes from, and
@@ -6437,22 +6496,6 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled
         {fromEnvironment.size > 0 ? <Alert><AlertDescription>{t('console.r2FromEnv')}</AlertDescription></Alert> : null}
         {signInUrl ? <CloudflareSignInNotice t={t} onDismiss={onDismissSignIn} /> : null}
         <RadioGroup value={choice} onValueChange={(value) => setChoice(value as R2ConnectionMode)} aria-label={t('console.r2DestinationTitle')}>
-          {/* The Drive first: everyone has a Google account, and it needs no
-              payment card, which is where a Cloudflare sign-up stops many. */}
-          {google ? <div className="grid gap-3 rounded-lg border p-3 has-[[data-state=checked]]:border-primary has-[[data-state=checked]]:bg-primary/5">
-            <div className="flex items-start gap-3">
-              <RadioGroupItem id={`${group}-google`} value="google" className="mt-0.5" />
-              <div className="grid gap-1">
-                <Label htmlFor={`${group}-google`} className="flex flex-wrap items-center gap-2 font-medium">
-                  <HardDrive />{t('console.r2MethodGoogle')}
-                  <Badge variant="secondary" className="bg-(--success-background) text-(--success)">{t('console.r2NoCard')}</Badge>
-                  {mode === 'google' && googleConnected ? <Badge variant="outline">{t('console.r2MethodInUse')}</Badge> : null}
-                </Label>
-                <p className="text-xs text-muted-foreground">{t('console.r2MethodGoogleBody')}</p>
-              </div>
-            </div>
-            <GoogleMethod t={t} status={google} busy={googleBusy || saving} signInUrl={googleSignInUrl} onConnect={onConnectGoogle} onDisconnect={onDisconnectGoogle} />
-          </div> : null}
           {/* Signing in first, and marked as the one to reach for: it makes the
               bucket, keeps its own keys and is the only one that can show what
               Cloudflare says the account has used. */}
@@ -6461,7 +6504,7 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled
               <RadioGroupItem id={`${group}-cloudflare`} value="cloudflare" className="mt-0.5" />
               <div className="grid gap-1">
                 <Label htmlFor={`${group}-cloudflare`} className="flex flex-wrap items-center gap-2 font-medium">
-                  <CloudflareMark />{t('console.r2MethodCloudflare')}
+                  {t('console.r2MethodCloudflare')}
                   <Badge variant="secondary" className="bg-(--success-background) text-(--success)">{t('console.r2Recommended')}</Badge>
                   {mode === 'cloudflare' && connected ? <Badge variant="outline">{t('console.r2MethodInUse')}</Badge> : null}
                 </Label>
@@ -6481,6 +6524,23 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled
               onDisconnect={onDisconnect}
               onRecheckR2={onRecheckR2}
             />
+          </div> : null}
+          {/* The Drive second: Cloudflare stays the recommended way, and the
+              Drive is the one for somebody without a payment card, which is
+              where a Cloudflare sign-up stops many. */}
+          {google ? <div className="grid gap-3 rounded-lg border p-3 has-[[data-state=checked]]:border-primary has-[[data-state=checked]]:bg-primary/5">
+            <div className="flex items-start gap-3">
+              <RadioGroupItem id={`${group}-google`} value="google" className="mt-0.5" />
+              <div className="grid gap-1">
+                <Label htmlFor={`${group}-google`} className="flex flex-wrap items-center gap-2 font-medium">
+                  {t('console.r2MethodGoogle')}
+                  <Badge variant="secondary" className="bg-(--success-background) text-(--success)">{t('console.r2NoCard')}</Badge>
+                  {mode === 'google' && googleConnected ? <Badge variant="outline">{t('console.r2MethodInUse')}</Badge> : null}
+                </Label>
+                <p className="text-xs text-muted-foreground">{t('console.r2MethodGoogleBody')}</p>
+              </div>
+            </div>
+            <GoogleMethod t={t} status={google} busy={googleBusy || saving} signInUrl={googleSignInUrl} onConnect={onConnectGoogle} onDisconnect={onDisconnectGoogle} />
           </div> : null}
           <div className="grid gap-3 rounded-lg border p-3 has-[[data-state=checked]]:border-primary has-[[data-state=checked]]:bg-primary/5">
             <div className="flex items-start gap-3">
@@ -6529,15 +6589,17 @@ function GoogleMethod({ t, status, busy, signInUrl, onConnect, onDisconnect }: {
   onConnect: () => void;
   onDisconnect: () => void;
 }) {
-  const connectButton = (label: string, icon: ReactNode) => (signInUrl
-    ? <Button size="sm" className="w-fit" asChild><a href={signInUrl} target="_blank" rel="noopener noreferrer">{icon}{label}</a></Button>
-    : <Button size="sm" className="w-fit" onClick={onConnect} disabled={busy}>{icon}{label}</Button>);
-  if (status.state === 'disconnected') return connectButton(t('console.gdConnect'), <HardDrive />);
+  // An outline button with the logo in its own colours, the way Google's
+  // own sign-in buttons look; a filled colour would fight the logo.
+  const connectButton = (label: string) => (signInUrl
+    ? <Button size="sm" variant="outline" className="w-fit" asChild><a href={signInUrl} target="_blank" rel="noopener noreferrer"><GoogleDriveMark />{label}</a></Button>
+    : <Button size="sm" variant="outline" className="w-fit" onClick={onConnect} disabled={busy}><GoogleDriveMark />{label}</Button>);
+  if (status.state === 'disconnected') return connectButton(t('console.gdConnect'));
   if (status.state === 'reconnect_required') {
     return <div className="grid gap-2">
       <p className="text-xs text-muted-foreground">{status.displacedBy ? t('console.gdDisplacedHint', { name: status.displacedBy }) : t('console.gdReconnectHint')}</p>
       <div className="flex flex-wrap gap-2">
-        {connectButton(t('console.gdReconnect'), <RefreshCw />)}
+        {connectButton(t('console.gdReconnect'))}
         <Button variant="outline" size="sm" onClick={onDisconnect} disabled={busy}>{t('console.gdDisconnect')}</Button>
       </div>
     </div>;

@@ -21,8 +21,8 @@ export interface FakeGoogle {
   readonly fetchImpl: typeof fetch;
   readonly files: Map<string, FakeFile>;
   readonly calls: { list: number; create: number; update: number; download: number; remove: number; refresh: number; exchange: number; revoke: number; about: number };
-  /** Codes the fake authorization server has handed out, with their PKCE challenges. */
-  issueCode(challenge: string): string;
+  /** A code the consent screen hands out for this PKCE challenge, as this account (the default one if none). */
+  issueCode(challenge: string, email?: string): string;
   /** Answer the next N Drive calls with this status first. */
   failNext(status: number, count?: number, reason?: string): void;
   /** Make every access token issued so far stop working. */
@@ -35,16 +35,17 @@ export function fakeGoogle(options: { email?: string; brokerOrigin?: string } = 
   const email = options.email ?? 'tester@example.com';
   const brokerOrigin = options.brokerOrigin ?? 'https://broker.example';
   const files = new Map<string, FakeFile>();
-  const codes = new Map<string, string>();
-  const refreshTokens = new Set<string>();
-  let accessTokens = new Set<string>();
+  // Every token knows whose it is: Google's grants are per account.
+  const codes = new Map<string, { challenge: string; email: string }>();
+  const refreshTokens = new Map<string, string>();
+  let accessTokens = new Map<string, string>();
   const calls = { list: 0, create: 0, update: 0, download: 0, remove: 0, refresh: 0, exchange: 0, revoke: 0, about: 0 };
   const failures: Array<{ status: number; reason: string }> = [];
   let clock = Date.parse('2026-10-16T00:00:00.000Z');
 
   const json = (status: number, body: unknown): Response => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
   const tick = (): string => new Date((clock += 1000)).toISOString();
-  const issueAccess = (): string => { const token = `ya-test-${randomBytes(6).toString('hex')}`; accessTokens.add(token); return token; };
+  const issueAccess = (owner: string): string => { const token = `ya-test-${randomBytes(6).toString('hex')}`; accessTokens.set(token, owner); return token; };
   const view = (file: FakeFile): Record<string, unknown> => ({ id: file.id, name: file.name, size: String(file.content.byteLength), modifiedTime: file.modifiedTime, md5Checksum: createHash('md5').update(file.content).digest('hex') });
 
   const matches = (file: FakeFile, query: string): boolean => {
@@ -71,17 +72,18 @@ export function fakeGoogle(options: { email?: string; brokerOrigin?: string } = 
       const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, string>;
       if (url.pathname === '/api/google/token') {
         calls.exchange += 1;
-        const challenge = codes.get(body.code ?? '');
-        if (!challenge || createHash('sha256').update(body.code_verifier ?? '', 'ascii').digest('base64url') !== challenge) return json(400, { error: 'invalid_grant' });
+        const issued = codes.get(body.code ?? '');
+        if (!issued || createHash('sha256').update(body.code_verifier ?? '', 'ascii').digest('base64url') !== issued.challenge) return json(400, { error: 'invalid_grant' });
         codes.delete(body.code ?? '');
         const refresh = `1-test-${randomBytes(6).toString('hex')}`;
-        refreshTokens.add(refresh);
-        return json(200, { access_token: issueAccess(), expires_in: 3599, refresh_token: refresh, scope: 'https://www.googleapis.com/auth/drive.file', token_type: 'Bearer' });
+        refreshTokens.set(refresh, issued.email);
+        return json(200, { access_token: issueAccess(issued.email), expires_in: 3599, refresh_token: refresh, scope: 'https://www.googleapis.com/auth/drive.file', token_type: 'Bearer' });
       }
       if (url.pathname === '/api/google/refresh') {
         calls.refresh += 1;
-        if (!refreshTokens.has(body.refresh_token ?? '')) return json(400, { error: 'invalid_grant', error_description: 'Token has been expired or revoked.' });
-        return json(200, { access_token: issueAccess(), expires_in: 3599, scope: 'https://www.googleapis.com/auth/drive.file', token_type: 'Bearer' });
+        const owner = refreshTokens.get(body.refresh_token ?? '');
+        if (!owner) return json(400, { error: 'invalid_grant', error_description: 'Token has been expired or revoked.' });
+        return json(200, { access_token: issueAccess(owner), expires_in: 3599, scope: 'https://www.googleapis.com/auth/drive.file', token_type: 'Bearer' });
       }
       return json(404, { error: 'not_found' });
     }
@@ -91,19 +93,24 @@ export function fakeGoogle(options: { email?: string; brokerOrigin?: string } = 
       // Google revokes the whole grant, not just the token it was handed:
       // every machine signed in with this app loses its access too.
       const token = new URLSearchParams(String(init?.body ?? '')).get('token') ?? '';
-      if (refreshTokens.has(token)) { refreshTokens.clear(); accessTokens = new Set(); }
+      const owner = refreshTokens.get(token);
+      if (owner) {
+        for (const [key, value] of [...refreshTokens]) if (value === owner) refreshTokens.delete(key);
+        for (const [key, value] of [...accessTokens]) if (value === owner) accessTokens.delete(key);
+      }
       return new Response('', { status: 200 });
     }
 
     if (url.hostname !== 'www.googleapis.com') return json(404, {});
     const authorization = new Headers(init?.headers).get('authorization') ?? '';
-    if (!accessTokens.has(authorization.replace(/^Bearer /u, ''))) return json(401, { error: { code: 401, status: 'UNAUTHENTICATED' } });
+    const caller = accessTokens.get(authorization.replace(/^Bearer /u, ''));
+    if (!caller) return json(401, { error: { code: 401, status: 'UNAUTHENTICATED' } });
     const failure = failures.shift();
     if (failure) return json(failure.status, { error: { code: failure.status, errors: [{ reason: failure.reason }] } });
 
     if (url.pathname === '/drive/v3/about') {
       calls.about += 1;
-      return json(200, { user: { emailAddress: email, displayName: 'Tester' }, storageQuota: { limit: '16106127360', usage: '1073741824' } });
+      return json(200, { user: { emailAddress: caller, displayName: 'Tester', permissionId: `perm-${caller}` }, storageQuota: { limit: '16106127360', usage: '1073741824' } });
     }
     if (url.pathname === '/drive/v3/files' && method === 'GET') {
       calls.list += 1;
@@ -157,10 +164,10 @@ export function fakeGoogle(options: { email?: string; brokerOrigin?: string } = 
     files,
     calls,
     email,
-    issueCode: (challenge: string) => { const code = `4/code-${randomBytes(6).toString('hex')}`; codes.set(code, challenge); return code; },
+    issueCode: (challenge: string, as: string = email) => { const code = `4/code-${randomBytes(6).toString('hex')}`; codes.set(code, { challenge, email: as }); return code; },
     failNext: (status: number, count = 1, reason = 'rateLimitExceeded') => { for (let index = 0; index < count; index += 1) failures.push({ status, reason }); },
-    expireAccessTokens: () => { accessTokens = new Set(); },
-    revokeAll: () => { refreshTokens.clear(); accessTokens = new Set(); },
+    expireAccessTokens: () => { accessTokens = new Map(); },
+    revokeAll: () => { refreshTokens.clear(); accessTokens = new Map(); },
   };
 }
 

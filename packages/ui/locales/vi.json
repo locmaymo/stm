@@ -49,6 +49,11 @@
     "cloudSkip": "Để sau",
     "or": "hoặc",
     "cloudSignIn": "Tiếp tục với Cloudflare",
+    "googleSignIn": "Tiếp tục với Google Drive",
+    "googleSignInFailed": "Không bắt đầu được đăng nhập Google. Hãy thử lại.",
+    "googleNotOwner": "Tài khoản Google này không mở được trình quản lý này. Hãy đăng nhập bằng mật khẩu, hoặc bằng tài khoản Google đã kết nối với nó.",
+    "googleUnavailable": "Trình quản lý này không có đăng nhập bằng Google.",
+    "googleDenied": "Bạn chưa cấp quyền truy cập Google Drive.",
     "addressFound": "Link gốc của app được tìm thấy",
     "addressHint": "Hãy mở nó để có trải nghiệm tốt nhất.",
     "addressOpen": "Mở ngay",
@@ -1239,7 +1244,11 @@
       "cloudflareSignedIn": "Đã đăng nhập bằng tài khoản Cloudflare {account}",
       "cloudflareRefused": "Một lần đăng nhập Cloudflare bị từ chối: trình quản lý này thuộc về {owner}",
       "cloudflareFailed": "Đăng nhập bằng Cloudflare thất bại: {reason}",
-      "cloudflareRestoreFailed": "Không khôi phục được máy này sau khi đăng nhập: {reason}"
+      "cloudflareRestoreFailed": "Không khôi phục được máy này sau khi đăng nhập: {reason}",
+      "googleSignedIn": "Đã đăng nhập bằng tài khoản Google {account}",
+      "googleRefused": "Một lần đăng nhập Google bị từ chối: trình quản lý này thuộc về {owner}",
+      "googleFailed": "Đăng nhập bằng Google thất bại: {reason}",
+      "googleRestoreFailed": "Không khôi phục được máy này sau khi đăng nhập: {reason}"
     }
   },
   "system": {

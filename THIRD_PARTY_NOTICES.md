@@ -81,3 +81,8 @@ services where the manager integrates with them. Cloudflare and the Cloudflare
 logo are trademarks of Cloudflare, Inc.; Docker and the Docker logo are
 trademarks of Docker, Inc.; GitHub and the GitHub logo are trademarks of
 GitHub, Inc. No endorsement or affiliation is claimed.
+
+`apps/manager-panel/src/google-drive-mark.tsx` draws the Google Drive logo in
+its own colours, used only on the buttons that connect Google Drive. Google
+Drive and the Google Drive logo are trademarks of Google LLC. No endorsement
+or affiliation is claimed.

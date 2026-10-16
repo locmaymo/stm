@@ -49,6 +49,11 @@
     "cloudSkip": "Not now",
     "or": "or",
     "cloudSignIn": "Continue with Cloudflare",
+    "googleSignIn": "Continue with Google Drive",
+    "googleSignInFailed": "The Google sign-in could not be started. Try again.",
+    "googleNotOwner": "This manager does not open with that Google account. Sign in with the password, or with the Google account connected to it.",
+    "googleUnavailable": "This manager has no Google sign-in.",
+    "googleDenied": "Access to Google Drive was not granted.",
     "addressFound": "The app’s own link was found",
     "addressHint": "Open it for the best experience.",
     "addressOpen": "Open now",
@@ -1239,7 +1244,11 @@
       "cloudflareSignedIn": "Signed in with the Cloudflare account {account}",
       "cloudflareRefused": "A Cloudflare sign-in was refused: this manager belongs to {owner}",
       "cloudflareFailed": "Signing in with Cloudflare failed: {reason}",
-      "cloudflareRestoreFailed": "This machine could not be restored after signing in: {reason}"
+      "cloudflareRestoreFailed": "This machine could not be restored after signing in: {reason}",
+      "googleSignedIn": "Signed in with the Google account {account}",
+      "googleRefused": "A Google sign-in was refused: this manager belongs to {owner}",
+      "googleFailed": "Signing in with Google failed: {reason}",
+      "googleRestoreFailed": "This machine could not be restored after signing in: {reason}"
     }
   },
   "system": {

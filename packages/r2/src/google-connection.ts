@@ -30,8 +30,23 @@ const DATA_FOLDER_NAME = 'data';
 /** Marks the two folders as the manager's, so finding them does not depend on their names. */
 const FOLDER_PROPERTY = 'stmFolder';
 
+/**
+ * What a sign-in with Google was started for: arranging backups from inside
+ * the console, or opening the console with Google instead of a password.
+ * Held here, not in the state Google hands back, so a browser cannot edit it.
+ */
+export type GooglePurpose = 'connect' | 'signIn';
+
+/** The Google account behind a connection; `id` is Drive's stable user id. */
+export interface GoogleAccount {
+  readonly id: string;
+  readonly email: string;
+  readonly name: string | null;
+}
+
 interface PendingSignIn {
   readonly authorization: PendingAuthorization;
+  readonly purpose: GooglePurpose;
   readonly startedBy?: string;
 }
 
@@ -41,7 +56,7 @@ interface StoredConnection {
   readonly installationKeyId: string;
   /** The one long-lived secret. */
   readonly refreshToken: string | null;
-  readonly account: { readonly email: string; readonly name: string | null } | null;
+  readonly account: GoogleAccount | null;
   readonly folders: DriveFolders | null;
   readonly connectedAt: string | null;
   readonly reconnectRequired: boolean;
@@ -108,9 +123,9 @@ export class GoogleConnection {
   }
 
   /** Start a sign-in; the answer comes back to `completeConnect` through the relay page. */
-  public beginConnect(returnOrigin: string, startedBy?: string): string {
+  public beginConnect(returnOrigin: string, startedBy?: string, purpose: GooglePurpose = 'connect'): string {
     const authorization = createGoogleAuthorization(this.client, returnOrigin, this.now());
-    this.prunePending().push({ authorization, ...(startedBy ? { startedBy } : {}) });
+    this.prunePending().push({ authorization, purpose, ...(startedBy ? { startedBy } : {}) });
     while (this.pending.length > PENDING_SIGN_IN_LIMIT) this.pending.shift();
     return authorization.url;
   }
@@ -118,6 +133,11 @@ export class GoogleConnection {
   /** Whether this callback belongs to a sign-in started here and still in time. */
   public isPending(state: string): boolean {
     return this.findPending(state) !== undefined;
+  }
+
+  /** What the sign-in this callback belongs to was started for, if it is one of ours. */
+  public pendingPurpose(state: string): GooglePurpose | null {
+    return this.findPending(state)?.purpose ?? null;
   }
 
   /** The console session that started this sign-in, if one did. */
@@ -128,10 +148,15 @@ export class GoogleConnection {
   /**
    * Finish signing in with what Google sent back.
    *
-   * The refresh token is on disk before anything else is asked of Google, so a
-   * failure while finding the folders never loses the grant just given.
+   * `accept` is asked who signed in before anything is kept. Refused, the new
+   * grant is revoked and this manager's own connection is left exactly as it
+   * was: a stranger signing in on the login page must not replace the owner's
+   * Drive with theirs, or sign the owner out by trying.
+   *
+   * Accepted, the refresh token is on disk before the folders are looked for,
+   * so a failure there never loses the grant just given.
    */
-  public async completeConnect(callback: { state: string; code?: string | null; error?: string | null }): Promise<GoogleConnectionStatus> {
+  public async completeConnect(callback: { state: string; code?: string | null; error?: string | null }, options: { readonly accept?: (account: GoogleAccount) => Promise<boolean> } = {}): Promise<GoogleConnectionStatus> {
     const index = this.prunePending().findIndex((entry) => matchesPending(entry.authorization, callback.state, this.now()));
     const entry = index === -1 ? null : this.pending.splice(index, 1)[0] ?? null;
     if (!entry) throw new R2Error('google_state_mismatch', 'This sign-in link has expired or was not started here. Connect again.');
@@ -140,11 +165,17 @@ export class GoogleConnection {
     }
     const grant = await exchangeGoogleCode(this.client, entry.authorization, callback.code ?? '', { fetchImpl: this.fetchImpl, now: this.now });
     if (!grant.refreshToken) throw new R2Error('google_no_refresh_token', 'Google did not issue a lasting sign-in. Connect again.');
+    // Who this is, asked with the new token alone, before anything is kept.
+    const about = await this.readAbout(grant.accessToken);
+    if (!about.account.id) throw new R2Error('google_account_unknown', 'Google did not say which account signed in');
+    if (options.accept && !await options.accept(about.account)) {
+      await revokeGoogleToken(grant.refreshToken, this.fetchImpl).catch(() => undefined);
+      throw new R2Error('google_not_owner', 'This manager belongs to another Google account');
+    }
     this.accessToken = { value: grant.accessToken, expiresAt: grant.expiresAt };
     this.store = null;
     const previous = await this.load();
     await this.save({ ...previous, refreshToken: grant.refreshToken, reconnectRequired: false, lastError: null, displacedBy: null, connectedAt: new Date(this.now()).toISOString(), folders: null });
-    const about = await this.readAbout();
     const folders = await this.ensureFolders();
     await this.save({ ...(await this.load()), account: about.account, folders });
     return await this.status();
@@ -187,6 +218,11 @@ export class GoogleConnection {
     return (await this.load()).installationKeyId;
   }
 
+  /** The account connected, for recording who may open this manager. */
+  public async account(): Promise<GoogleAccount | null> {
+    return (await this.load()).account;
+  }
+
   /** Where backups go, as the chunk ledger names it. */
   public async target(): Promise<{ email: string | null; folder: string } | null> {
     const stored = await this.load();
@@ -219,14 +255,20 @@ export class GoogleConnection {
     });
   }
 
-  private async readAbout(): Promise<{ account: { email: string; name: string | null } }> {
-    const response = await this.drive(`${DRIVE_API}/about?fields=${encodeURIComponent('user(emailAddress,displayName),storageQuota(limit,usage)')}`, { method: 'GET' });
-    const about = await response.json() as { user?: { emailAddress?: unknown; displayName?: unknown }; storageQuota?: { limit?: unknown; usage?: unknown } };
+  /** The account and its space; with `accessToken`, asked with that token rather than the connection's. */
+  private async readAbout(accessToken?: string): Promise<{ account: GoogleAccount }> {
+    const url = `${DRIVE_API}/about?fields=${encodeURIComponent('user(emailAddress,displayName,permissionId),storageQuota(limit,usage)')}`;
+    const response = accessToken
+      ? await this.fetchImpl(url, { method: 'GET', headers: { authorization: `Bearer ${accessToken}` } })
+      : await this.drive(url, { method: 'GET' });
+    if (!response.ok) throw new R2Error('google_drive_failed', `Google Drive answered ${response.status}`);
+    const about = await response.json() as { user?: { emailAddress?: unknown; displayName?: unknown; permissionId?: unknown }; storageQuota?: { limit?: unknown; usage?: unknown } };
     const used = Number(about.storageQuota?.usage ?? Number.NaN);
     const limit = about.storageQuota?.limit === undefined ? null : Number(about.storageQuota.limit);
     if (Number.isFinite(used)) this.storage = { at: this.now(), usedBytes: used, limitBytes: limit !== null && Number.isFinite(limit) ? limit : null };
     const email = typeof about.user?.emailAddress === 'string' ? about.user.emailAddress : '';
-    return { account: { email, name: typeof about.user?.displayName === 'string' ? about.user.displayName : null } };
+    const id = typeof about.user?.permissionId === 'string' ? about.user.permissionId : '';
+    return { account: { id, email, name: typeof about.user?.displayName === 'string' ? about.user.displayName : null } };
   }
 
   /**
@@ -360,7 +402,9 @@ function parseStored(value: unknown): StoredConnection {
   if (!isRecord(value) || value.schemaVersion !== SCHEMA_VERSION || typeof value.installationKeyId !== 'string' || !/^[a-z0-9]{8,64}$/u.test(value.installationKeyId)) {
     throw new Error('Unsupported Google connection state');
   }
-  const account = isRecord(value.account) && typeof value.account.email === 'string' ? { email: value.account.email, name: typeof value.account.name === 'string' ? value.account.name : null } : null;
+  const account = isRecord(value.account) && typeof value.account.email === 'string'
+    ? { id: typeof value.account.id === 'string' ? value.account.id : '', email: value.account.email, name: typeof value.account.name === 'string' ? value.account.name : null }
+    : null;
   const folders = isRecord(value.folders) && typeof value.folders.root === 'string' && typeof value.folders.data === 'string' ? { root: value.folders.root, data: value.folders.data } : null;
   return {
     schemaVersion: SCHEMA_VERSION,

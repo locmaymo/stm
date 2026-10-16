@@ -36,6 +36,7 @@ export type { ObjectRecord, ObjectStore } from './store.js';
 export { CloudflareConnection } from './cloudflare-connection.js';
 export type { KnownBucket } from './cloudflare-connection.js';
 export { GoogleConnection } from './google-connection.js';
+export type { GoogleAccount, GooglePurpose } from './google-connection.js';
 
 const R2_STATE_FILE = 'r2-config.json';
 /** The connection settings `.env` may provide, and the variable for each. */
