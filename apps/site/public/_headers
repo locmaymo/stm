@@ -1,5 +1,5 @@
 /*
-  Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src https://api.github.com; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
+  Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; media-src 'self'; font-src 'self'; connect-src https://api.github.com; base-uri 'none'; form-action 'none'; frame-ancestors 'none'
   Referrer-Policy: no-referrer
   X-Content-Type-Options: nosniff
 
@@ -7,6 +7,9 @@
   Cache-Control: public, max-age=3600, stale-while-revalidate=86400
 
 /img/*
+  Cache-Control: public, max-age=86400, stale-while-revalidate=604800
+
+/media/*
   Cache-Control: public, max-age=86400, stale-while-revalidate=604800
 
 /oauth/*

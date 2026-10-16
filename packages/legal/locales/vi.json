@@ -1,7 +1,7 @@
 {
   "meta": {
-    "effective": "2026-09-28",
-    "revision": "2026.09.3",
+    "effective": "2026-10-16",
+    "revision": "2026.10.1",
     "author": "locmaymo",
     "project": "SillyTavern Manager",
     "repository": "https://github.com/locmaymo/stm",
@@ -17,9 +17,11 @@
   "revision": {
     "summary": "Mỗi bản sửa đổi đều công bố trọn vẹn cả bốn văn bản, nên không có điều nào của bản cũ được giữ lại mà không nói ra. Đây là bản đang có hiệu lực.",
     "changes": [
-      "Báo cáo theo ngày nay có thêm ba con số dung lượng: dữ liệu SillyTavern trong hồ sơ đang dùng, các bản sao lưu giữ trên máy, và phần trình quản lý đã lưu trên R2. Chỉ gửi tổng dung lượng, không bao giờ gửi tên tệp hay nội dung bên trong.",
-      "Ứng dụng Android nay được ghi nhận là một nền tảng riêng, tách khỏi Termux.",
-      "Trình quản lý nay hỏi dự án xem có thông báo mới không, vài lần mỗi ngày. Yêu cầu chỉ mang theo nền tảng và phiên bản ứng dụng."
+      "Bản sao lưu nay có thể lưu lên Google Drive. Thông báo quyền riêng tư có thêm một mục nói rõ trình quản lý đọc gì từ tài khoản Google của bạn, những gì đi qua dịch vụ token của dự án trên đường tới Google, và cách thu hồi tất cả.",
+      "Thông báo nay có thể báo lên điện thoại hay máy tính của bạn rằng nhân vật đã trả lời, kèm vài chữ đầu của câu trả lời nếu bạn không ẩn đi. Thông báo quyền riêng tư nói rõ chúng mang theo gì và ai chuyển chúng đi.",
+      "Trang chuyển tiếp đăng nhập nay phục vụ cả Google, và chỉ tự chuyển tiếp tới các địa chỉ trên chính máy hay mạng của bạn. Mọi nơi khác, nó hỏi bạn trước.",
+      "Nay có thể mở trình quản lý bằng một tài khoản Cloudflare hoặc Google. Tài khoản nào được phép mở chỉ được ghi trên máy bạn và không gửi đi đâu cả.",
+      "Báo cáo theo ngày nay cho biết sao lưu đám mây có đang lưu lên Google Drive hay không, và tính dung lượng lưu ở đó chung với dung lượng lưu trên R2."
     ]
   },
   "documents": {
@@ -32,8 +34,8 @@
           "heading": "Phần mềm này là gì",
           "body": [
             "SillyTavern Manager (gọi tắt là phần mềm, trình quản lý) là một bảng điều khiển mã nguồn mở dùng để cài đặt, chạy, sao lưu và theo dõi SillyTavern trên máy do bạn kiểm soát. Phần mềm được locmaymo phát hành theo Giấy phép Công cộng Affero GNU phiên bản 3.",
-            "Dự án không vận hành dịch vụ nào thay bạn. Không có tài khoản phải tạo, không có máy chủ nào giữ dữ liệu của bạn, và không có gì chạy nếu bạn không tự khởi động. Mọi bản sao đều chạy trên phần cứng do bạn sở hữu, thuê hoặc kiểm soát.",
-            "Điều khoản này áp dụng cho việc bạn sử dụng phần mềm, sử dụng trang web của dự án tại stm.locmaymo.top, và sử dụng trang chuyển tiếp đăng nhập Cloudflare đặt tại đó. Điều khoản không thay thế giấy phép AGPL-3.0, vốn trao cho bạn quyền sử dụng, nghiên cứu, sửa đổi và phân phối lại mã nguồn. Khi điều khoản và giấy phép mâu thuẫn, giấy phép có hiệu lực cao hơn."
+            "Dự án không vận hành dịch vụ nào giữ dữ liệu của bạn. Không có tài khoản nào phải tạo với dự án, không có máy chủ nào cất dữ liệu của bạn, và không có gì chạy nếu bạn không tự khởi động. Mọi bản sao đều chạy trên phần cứng do bạn sở hữu, thuê hoặc kiểm soát. Thứ duy nhất dự án chạy cho bạn là các trang đăng nhập và dịch vụ token Google mô tả bên dưới, và chúng không giữ lại gì.",
+            "Điều khoản này áp dụng cho việc bạn sử dụng phần mềm, sử dụng trang web của dự án tại stm.locmaymo.top, và sử dụng các trang chuyển tiếp đăng nhập Cloudflare, Google cùng dịch vụ token Google đặt tại đó. Điều khoản không thay thế giấy phép AGPL-3.0, vốn trao cho bạn quyền sử dụng, nghiên cứu, sửa đổi và phân phối lại mã nguồn. Khi điều khoản và giấy phép mâu thuẫn, giấy phép có hiệu lực cao hơn."
           ]
         },
         "acceptance": {
@@ -48,7 +50,7 @@
           "heading": "Không liên kết với SillyTavern",
           "body": [
             "SillyTavern là phần mềm riêng biệt, do những người khác viết và duy trì. Dự án này không liên kết, không được chứng thực, không được tài trợ và không có quan hệ chính thức nào với dự án SillyTavern, các nhà phát triển hay cộng đồng của họ.",
-            "Trình quản lý lấy SillyTavern đúng theo cách bạn tự lấy: theo yêu cầu của bạn, nó clone hoặc tải kho mã công khai tại github.com/SillyTavern/SillyTavern về máy bạn. Nó không phân phối lại SillyTavern, không lưu trữ bản sao, và không thay đổi những gì thượng nguồn phát hành ngoài tệp cấu hình mà bạn chọn sửa.",
+            "Trình quản lý lấy SillyTavern đúng theo cách bạn tự lấy: theo yêu cầu của bạn, nó clone hoặc tải kho mã công khai tại github.com/SillyTavern/SillyTavern về máy bạn. Nó không phân phối lại SillyTavern, không lưu trữ bản sao, và không thay đổi những gì thượng nguồn phát hành ngoài tệp cấu hình mà bạn chọn sửa. Các trang phục vụ qua cổng truy cập có kèm một đoạn mã nhỏ của chính trình quản lý, cho tiện ích và thông báo của nó; tệp của SillyTavern không bị sửa.",
             "SillyTavern được cấp phép bởi chính tác giả của nó theo điều khoản riêng, và việc bạn dùng SillyTavern chịu sự điều chỉnh của điều khoản đó, không phải của điều khoản này. Thượng nguồn có thể thay đổi, đổi tên, tái cấu trúc hoặc gỡ bỏ bất cứ thứ gì vào bất cứ lúc nào. Khi điều đó làm hỏng một bản cài đặt, đó không phải lỗi của phần mềm này, và dự án không có nghĩa vụ phải sửa.",
             "Tên gọi SillyTavern chỉ được dùng ở đây để nói đúng sự thật rằng phần mềm này quản lý cái gì."
           ]
@@ -74,10 +76,11 @@
         "services": {
           "heading": "Dịch vụ và tài khoản của bên thứ ba",
           "body": [
-            "Trình quản lý có thể kết nối tới những dịch vụ không thuộc về chúng tôi: Cloudflare cho tunnel, lưu trữ R2, Workers và số liệu tài khoản; GitHub cho bản phát hành và mã nguồn; npm cho việc cài phụ thuộc; và bất kỳ nhà cung cấp mô hình nào bạn cấu hình cho SillyTavern gọi tới.",
+            "Trình quản lý có thể kết nối tới những dịch vụ không thuộc về chúng tôi: Cloudflare cho tunnel, lưu trữ R2, Workers và số liệu tài khoản; Google Drive cho sao lưu; dịch vụ đẩy thông báo của mỗi trình duyệt bạn cho phép nhận thông báo; GitHub cho bản phát hành và mã nguồn; npm cho việc cài phụ thuộc; bất kỳ proxy nào bạn đặt cho các yêu cầu của SillyTavern; và bất kỳ nhà cung cấp mô hình nào bạn cấu hình cho SillyTavern gọi tới.",
             "Những kết nối đó dùng tài khoản, thông tin xác thực và hạn mức của bạn. Điều khoản, giá và chính sách riêng tư của từng nhà cung cấp áp dụng cho chúng, và bạn nên đọc. Dự án không phải một bên trong quan hệ giữa bạn và bất kỳ nhà cung cấp nào.",
             "Dung lượng lưu trữ, băng thông, số thao tác, tunnel và lượt gọi mô hình đều có thể tốn tiền. Mọi khoản phí nhà cung cấp tính cho bạn đều do bạn trả — kể cả khoản phát sinh vì một bản sao lưu lớn hơn, dày hơn hay nhiều hơn bạn tưởng, vì cấu hình sai, hoặc vì một lỗi của phần mềm này. Hãy tự đặt hạn mức và cảnh báo trong bảng điều khiển của nhà cung cấp.",
-            "Đăng nhập Cloudflare sẽ tạo tài nguyên bên trong chính tài khoản Cloudflare của bạn: một bucket, và tuỳ chọn thêm một Worker. Chúng vẫn thuộc về bạn, vẫn còn sau khi bạn ngắt kết nối, và bạn có thể tự xoá bất cứ lúc nào."
+            "Đăng nhập Cloudflare sẽ tạo tài nguyên bên trong chính tài khoản Cloudflare của bạn: một bucket, và tuỳ chọn thêm một Worker. Chúng vẫn thuộc về bạn, vẫn còn sau khi bạn ngắt kết nối, và bạn có thể tự xoá bất cứ lúc nào.",
+            "Kết nối Google Drive sẽ giữ bản sao lưu trong thư mục ẩn dành riêng cho ứng dụng trong chính Drive của bạn, và chúng được tính vào dung lượng Google của bạn. Chúng ở đó cho tới khi bạn xoá, hoặc lúc ngắt kết nối trong trình quản lý, hoặc trong phần cài đặt của Drive, mục Quản lý ứng dụng."
           ]
         },
         "backups": {
@@ -100,7 +103,7 @@
           "heading": "Tính sẵn có, cập nhật và việc dừng dự án",
           "body": [
             "Phần mềm được phát hành đúng như nó có, vào lúc nó được phát hành. Không có lịch phát hành, không có cam kết hỗ trợ, không có mức dịch vụ, và không có bảo đảm rằng một phiên bản sẽ tiếp tục chạy được, rằng một tính năng sẽ được giữ lại, hay rằng dự án sẽ còn tiếp tục.",
-            "Trang web của dự án, trang chuyển tiếp đăng nhập Cloudflare và máy chủ nhận số liệu chỉ là tiện ích. Chúng có thể thay đổi, chuyển đi hoặc ngừng hoạt động mà không báo trước. Một bản cài đặt vẫn chạy bình thường khi không có chúng, trừ việc đăng nhập Cloudflare qua OAuth client của dự án thì cần trang chuyển tiếp — và bạn hoàn toàn có thể đăng ký client riêng rồi tự chạy trang chuyển tiếp của mình, kho mã có hướng dẫn."
+            "Trang web của dự án, trang chuyển tiếp đăng nhập, dịch vụ token Google và máy chủ nhận số liệu chỉ là tiện ích. Chúng có thể thay đổi, chuyển đi hoặc ngừng hoạt động mà không báo trước. Một bản cài đặt vẫn chạy bình thường khi không có chúng, trừ hai trường hợp. Đăng nhập Cloudflare qua OAuth client của dự án thì cần trang chuyển tiếp, và bạn hoàn toàn có thể đăng ký client riêng rồi tự chạy trang chuyển tiếp của mình, kho mã có hướng dẫn. Sao lưu Google Drive cần trang chuyển tiếp để kết nối và cần dịch vụ token để tiếp tục chạy; nếu một trong hai ngừng hoạt động, việc sao lưu lên Drive sẽ dừng, còn các bản đã có trong Drive vẫn là của bạn."
           ]
         },
         "licence": {
@@ -191,7 +194,7 @@
         "security": {
           "heading": "Bảo mật",
           "body": [
-            "Phần mềm có sự cẩn trọng hợp lý: bảng quản trị không bao giờ được mở ra qua cổng truy cập, cổng truy cập yêu cầu mã và tự khoá sau nhiều lần sai, các bí mật được ghi vào tệp chỉ người dùng của bạn đọc được, và một lần đăng nhập Cloudflare lưu refresh token thay vì khoá dài hạn.",
+            "Phần mềm có sự cẩn trọng hợp lý: bảng quản trị không bao giờ được mở ra qua cổng truy cập, cổng truy cập yêu cầu mã và tự khoá sau nhiều lần sai, các bí mật được ghi vào tệp chỉ người dùng của bạn đọc được, và một lần đăng nhập Cloudflare hay Google lưu refresh token thay vì khoá dài hạn.",
             "Cẩn trọng hợp lý không phải là bảo đảm. Không phần mềm nào không có lỗi, không có phần nào ở đây được kiểm toán độc lập, và không có tuyên bố an toàn nào được đưa ra hay hàm ý.",
             "Chạy một bản cài đặt ở nơi người khác có thể truy cập là một quyết định có hệ quả, và quyết định đó là của bạn."
           ]
@@ -207,21 +210,22 @@
     "privacy": {
       "title": "Thông báo quyền riêng tư",
       "short": "Quyền riêng tư",
-      "summary": "Không tài khoản, không đám mây, và dự án không giữ bản sao dữ liệu nào của bạn. Chỉ một bản tóm tắt sử dụng nhỏ được gửi đi, và bạn có thể tắt nó.",
+      "summary": "Không có tài khoản nào với dự án, và dự án không giữ bản sao dữ liệu nào của bạn. Chỉ một bản tóm tắt sử dụng nhỏ được gửi đi, và bạn có thể tắt nó.",
       "sections": {
         "summary": {
           "heading": "Nói ngắn gọn",
           "body": [
-            "Không có tài khoản, không có đám mây, và dự án không giữ bản sao dữ liệu nào của bạn. Đoạn chat, nhân vật, prompt, thiết lập, bản sao lưu và API key đều nằm trên máy do bạn kiểm soát.",
-            "Phần mềm gửi về dự án đúng một thứ: một bản tóm tắt sử dụng nhỏ nằm trong danh sách cho phép, mô tả bên dưới, không chứa bất cứ điều gì bạn viết và không chứa gì nhận dạng được bạn."
+            "Không có tài khoản nào với dự án, và dự án không giữ bản sao dữ liệu nào của bạn. Đoạn chat, nhân vật, prompt, thiết lập, bản sao lưu và API key đều nằm trên máy do bạn kiểm soát, và trong kho lưu trữ đám mây của chính bạn nếu bạn kết nối.",
+            "Phần mềm tự gửi về dự án đúng một thứ: một bản tóm tắt sử dụng nhỏ nằm trong danh sách cho phép, mô tả bên dưới, không chứa bất cứ điều gì bạn viết và không chứa gì nhận dạng được bạn. Nếu bạn kết nối Google Drive, token đăng nhập Google của bạn cũng đi qua dịch vụ token của dự án trên đường tới Google, và không được giữ lại."
           ]
         },
         "local": {
           "heading": "Những gì ở lại trên máy bạn",
           "body": [
             "Toàn bộ những gì SillyTavern giữ: đoạn chat, nhân vật, persona, prompt, world info, hình ảnh, tiện ích mở rộng và thiết lập.",
-            "Toàn bộ những gì trình quản lý giữ: tệp sao lưu, hồ sơ dữ liệu, mã băm mật khẩu quản trị, token phiên, nhật ký, số liệu sử dụng, và refresh token Cloudflare nếu có.",
-            "Thư mục dữ liệu nằm ngoài thư mục ứng dụng, nên việc thay ứng dụng không bao giờ đụng tới nó. Không thứ gì trong đó được gửi về dự án."
+            "Toàn bộ những gì trình quản lý giữ: tệp sao lưu, hồ sơ dữ liệu, mã băm mật khẩu quản trị, token phiên, nhật ký, số liệu sử dụng, refresh token Cloudflare hay Google nếu có, tài khoản Cloudflare hay Google được phép mở trình quản lý, và các trình duyệt đã đăng ký nhận thông báo.",
+            "Thư mục dữ liệu nằm ngoài thư mục ứng dụng, nên việc thay ứng dụng không bao giờ đụng tới nó. Không thứ gì trong đó được gửi về dự án.",
+            "Chuyển một SillyTavern từ Termux sang ứng dụng Android sẽ đọc thư mục của nó qua trình chọn tệp của chính Android, chỉ sau khi bạn cho phép, rồi chép nó ngay trên điện thoại. Không thứ gì trong đó rời khỏi thiết bị."
           ]
         },
         "sent": {
@@ -230,7 +234,7 @@
             "Một lần cho mỗi bản cài đặt: một mã định danh cài đặt ngẫu nhiên, sinh ra trên máy bạn và không gắn với bất cứ thứ gì khác.",
             "Kèm mỗi lô dữ liệu: nền tảng (Windows, Linux, Termux, ứng dụng Android, Docker, máy chủ lưu trữ hoặc không xác định) và phiên bản ứng dụng.",
             "Với mỗi lượt gọi mô hình mà SillyTavern thực hiện: thời điểm, tên nhà cung cấp, định dạng API hoàn thành, tên mô hình, tên máy chủ điểm cuối, có dùng truyền theo luồng hay không, thiết lập token tối đa, số token đầu vào, đầu ra và tổng cộng, số token đọc và ghi bộ nhớ đệm, số token suy luận, mã trạng thái HTTP, và thời lượng tính bằng mili giây.",
-            "Một lần cho mỗi ngày đã qua: trình quản lý chạy bao lâu, SillyTavern chạy bao lâu trong đó, bảng điều khiển được mở và xem bao lâu, trình quản lý khởi động bao nhiêu lần, sao lưu lên R2 đang tắt, được thiết lập bằng khoá, hay qua đăng nhập Cloudflare, và ba con số dung lượng tính bằng byte: dữ liệu SillyTavern trong hồ sơ đang dùng, các bản sao lưu giữ trên máy, và phần trình quản lý đã lưu trên R2. Không kèm tên bucket, tài khoản hay tệp nào.",
+            "Một lần cho mỗi ngày đã qua: trình quản lý chạy bao lâu, SillyTavern chạy bao lâu trong đó, bảng điều khiển được mở và xem bao lâu, trình quản lý khởi động bao nhiêu lần, sao lưu đám mây đang tắt, được thiết lập bằng khoá R2, qua đăng nhập Cloudflare, hay lưu lên Google Drive, và ba con số dung lượng tính bằng byte: dữ liệu SillyTavern trong hồ sơ đang dùng, các bản sao lưu giữ trên máy, và phần trình quản lý đã lưu trên R2 hoặc Google Drive. Không kèm tên bucket, tài khoản hay tệp nào.",
             "Vài lần mỗi ngày, trình quản lý cũng hỏi dự án xem có thông báo nào để hiện trong mục thông báo không. Yêu cầu đó chỉ mang theo nền tảng và phiên bản ứng dụng: không có mã định danh cài đặt, không có gì về bạn.",
             "Đó là toàn bộ danh sách. Danh sách cho phép nằm trong mã nguồn, tại packages/instrumentation và packages/telemetry, và bạn có thể đọc nó."
           ]
@@ -258,21 +262,41 @@
             "Nếu bạn kết nối Cloudflare, việc đăng nhập là một phiên OAuth chuẩn có PKCE trên chính máy chủ của Cloudflare. Dự án không bao giờ nhìn thấy mật khẩu Cloudflare của bạn.",
             "Chỉ refresh token được lưu, trong một tệp trên máy bạn mà chỉ người dùng của bạn đọc được. Access token và khoá Worker đều ngắn hạn và chỉ nằm trong bộ nhớ.",
             "Bản sao lưu được tải lên từ máy bạn tới một bucket trong chính tài khoản Cloudflare của bạn. Chúng không đi qua máy chủ nào của dự án. Những gì Cloudflare lưu và ghi nhật ký thuộc phạm vi chính sách riêng tư của Cloudflare.",
-            "Ngắt kết nối sẽ xoá khoá Worker của bản cài đặt này và thu hồi phiên đăng nhập. Bạn cũng có thể tự thu hồi trong hồ sơ Cloudflare của mình, tại mục Manage OAuth authorizations. Bucket và nội dung bên trong vẫn là của bạn."
+            "Ngắt kết nối sẽ xoá khoá Worker của bản cài đặt này và thu hồi phiên đăng nhập. Bạn cũng có thể tự thu hồi trong hồ sơ Cloudflare của mình, tại mục Manage OAuth authorizations. Bucket và nội dung bên trong vẫn là của bạn.",
+            "Nếu bạn mở trình quản lý bằng cách đăng nhập Cloudflare, mã định danh và tên của tài khoản được ghi lại trên máy bạn, để chỉ tài khoản đó mở lại được. Chúng không được gửi đi đâu cả."
+          ]
+        },
+        "google": {
+          "heading": "Sao lưu Google Drive",
+          "body": [
+            "Nếu bạn kết nối Google Drive, bạn đăng nhập trên chính trang của Google, bằng một phiên OAuth chuẩn có PKCE. Trình quản lý chỉ xin một quyền duy nhất: thư mục ẩn dành riêng cho ứng dụng trong Drive của bạn (drive.appdata). Với quyền đó, trình quản lý không thể thấy, mở hay sửa bất kỳ tệp nào khác trong Drive của bạn. Dự án không bao giờ nhìn thấy mật khẩu Google của bạn.",
+            "Từ tài khoản Google của bạn, trình quản lý đọc địa chỉ e-mail, tên hiển thị, mã định danh người dùng Drive và hạn mức lưu trữ. Nó dùng chúng để cho biết tài khoản nào đang kết nối và còn bao nhiêu chỗ trống, và để chỉ cho tài khoản đó mở trình quản lý. Địa chỉ e-mail và mã định danh được giữ trên máy bạn và không gửi đi đâu khác.",
+            "Google đòi khoá bí mật (client secret) của ứng dụng mỗi khi một phiên đăng nhập được hoàn tất hoặc gia hạn, mà một khoá bí mật thì không thể đóng gói trong phần mềm công khai. Vì vậy hai yêu cầu đó đi qua dịch vụ token của dự án tại stm.locmaymo.top, nơi thêm khoá bí mật, chuyển yêu cầu tới Google và trả lại câu trả lời của Google. Mã uỷ quyền hoặc refresh token của bạn, cùng access token Google gửi về, đi ngang qua đó. Dịch vụ không giữ lại và không ghi nhật ký bất kỳ thứ nào trong số đó. Địa chỉ IP của bạn chỉ được dùng ở đó để giới hạn tần suất gọi dịch vụ, và dự án không lưu lại.",
+            "Bản sao lưu đi thẳng từ máy bạn tới Google; không tệp nào đi qua dịch vụ token hay bất kỳ máy chủ nào khác của dự án. Refresh token được lưu trong một tệp trên máy bạn mà chỉ người dùng của bạn đọc được. Những gì Google lưu và ghi nhật ký thuộc phạm vi chính sách riêng tư của Google.",
+            "Ngắt kết nối sẽ thu hồi phiên đăng nhập tại Google, trừ khi một máy khác vẫn đang sao lưu vào cùng Drive đó, vì Google thu hồi một lần cấp quyền trên mọi máy cùng lúc. Bạn có thể chọn xoá các bản sao lưu khỏi Drive ngay khi ngắt kết nối. Bạn cũng có thể tự gỡ quyền truy cập của trình quản lý trong Tài khoản Google, tại mục kết nối với ứng dụng và dịch vụ bên thứ ba, và xoá dữ liệu ẩn của nó trong phần cài đặt của Drive, mục Quản lý ứng dụng.",
+            "Việc trình quản lý sử dụng thông tin nhận được từ các API của Google tuân thủ Chính sách dữ liệu người dùng của Dịch vụ API Google (Google API Services User Data Policy), bao gồm các yêu cầu về Sử dụng giới hạn (Limited Use). Dữ liệu người dùng Google chỉ được dùng để lưu và lấy lại bản sao lưu của bạn, và để hiển thị và kiểm tra tài khoản đang kết nối. Dữ liệu đó không được chuyển cho bất kỳ ai, không dùng cho quảng cáo, và không ai đọc nó."
+          ]
+        },
+        "notifications": {
+          "heading": "Thông báo trên thiết bị của bạn",
+          "body": [
+            "Khi bạn cho phép thông báo trong một trình duyệt, trình duyệt đó trao cho trình quản lý một địa chỉ trên dịch vụ đẩy thông báo của hãng làm ra nó. Trình quản lý giữ địa chỉ đó trên máy bạn và gửi thông báo tới đó từ chính máy bạn; dự án không tham gia vào việc này.",
+            "Một thông báo về SillyTavern ghi tên nhân vật đã trả lời và, trừ khi bạn tắt phần xem trước trên thiết bị đó, hiện khoảng 120 ký tự đầu của câu trả lời. Mọi thông báo đều được mã hoá ngay trên máy bạn để chỉ trình duyệt của bạn đọc được; dịch vụ đẩy chuyển nó đi mà không thể đọc nội dung.",
+            "Các đăng ký nhận thông báo bị xoá khi mã PIN thay đổi hoặc khi mọi thiết bị bị đăng xuất. Bong bóng chat và thông báo của ứng dụng Android ở yên trên điện thoại."
           ]
         },
         "relay": {
           "heading": "Trang chuyển tiếp đăng nhập tại stm.locmaymo.top",
           "body": [
-            "Cloudflare chỉ đưa trình duyệt quay lại một địa chỉ đã đăng ký trên OAuth client, khớp chính xác, trong khi một trình quản lý có thể mở ở bất kỳ địa chỉ nào. Vì vậy địa chỉ đăng ký là một trang tĩnh trên site này, và nó chuyển trình duyệt về đúng trình quản lý đã khởi tạo phiên đăng nhập.",
-            "Trang đó không lưu gì, không đặt cookie và không chạy công cụ phân tích nào. Mã uỷ quyền mà nó chuyển tiếp là vô dụng nếu thiếu bộ xác minh PKCE, và bộ xác minh này không bao giờ rời khỏi trình quản lý của bạn.",
-            "Trang chỉ tự động chuyển tiếp tới các địa chỉ loopback, mạng riêng, .local và trycloudflare.com. Với mọi địa chỉ khác - kể cả mọi nền tảng lưu trữ - nó hiển thị đích đến và chờ bạn bấm, nên không thể bị lợi dụng để âm thầm chuyển hướng sang trang khác."
+            "Cloudflare và Google chỉ đưa trình duyệt quay lại một địa chỉ đã đăng ký trên OAuth client, khớp chính xác, trong khi một trình quản lý có thể mở ở bất kỳ địa chỉ nào. Vì vậy mỗi địa chỉ đăng ký là một trang tĩnh trên site này, và nó chuyển trình duyệt về đúng trình quản lý đã khởi tạo phiên đăng nhập.",
+            "Các trang đó không lưu gì, không đặt cookie và không chạy công cụ phân tích nào. Mã uỷ quyền mà chúng chuyển tiếp là vô dụng nếu thiếu bộ xác minh PKCE, và bộ xác minh này không bao giờ rời khỏi trình quản lý của bạn.",
+            "Các trang chỉ tự động chuyển tiếp tới những địa chỉ chỉ có thể là máy hay mạng của chính bạn: loopback, dải mạng riêng, dải dùng chung mà một số mạng riêng sử dụng, và tên .local hay .localhost. Với mọi địa chỉ khác, kể cả tunnel và nền tảng lưu trữ, chúng hiển thị đích đến và chờ bạn bấm, nên không thể bị lợi dụng để âm thầm chuyển hướng sang trang khác."
           ]
         },
         "website": {
           "heading": "Trang web",
           "body": [
-            "Các trang tại stm.locmaymo.top là tệp tĩnh phục vụ từ mạng lưới Cloudflare. Không có tài khoản, không có đăng nhập, không có pixel theo dõi, không có quảng cáo và không có mã phân tích của bên thứ ba.",
+            "Các trang tại stm.locmaymo.top là tệp tĩnh phục vụ từ mạng lưới Cloudflare; đoạn mã duy nhất dự án chạy ở đó là dịch vụ token Google mô tả bên trên. Không có tài khoản, không có đăng nhập, không có pixel theo dõi, không có quảng cáo và không có mã phân tích của bên thứ ba.",
             "Cloudflare, với tư cách bên lưu trữ, xử lý siêu dữ liệu của yêu cầu như địa chỉ IP và user agent nhằm phục vụ và bảo vệ trang, theo chính sách riêng tư của họ.",
             "Lựa chọn ngôn ngữ và giao diện sáng tối của bạn, nếu bạn đổi, được nhớ ngay trong trình duyệt của bạn và không gửi đi đâu cả. Các trang có thể dẫn tới GitHub và npm; bấm vào một liên kết là bạn sang trang của họ, theo chính sách của họ."
           ]
@@ -281,13 +305,13 @@
           "heading": "Lựa chọn và quyền của bạn",
           "body": [
             "Vì dự án không giữ dữ liệu cá nhân nào về bạn, thường sẽ không có gì để truy cập, sửa, xuất hay xoá. Nếu bạn cho rằng một mã định danh cài đặt hay một bản ghi số liệu nào đó liên quan tới mình, hãy viết vào trang theo dõi vấn đề và nó sẽ được xoá.",
-            "Bạn có thể tắt số liệu sử dụng bằng thiết lập nêu trên, ngắt kết nối Cloudflare bất cứ lúc nào, và xoá thư mục dữ liệu để bỏ đi mọi thứ phần mềm từng ghi ra."
+            "Bạn có thể tắt số liệu sử dụng bằng thiết lập nêu trên, ngắt kết nối Cloudflare hay Google Drive bất cứ lúc nào, tắt thông báo trong từng trình duyệt, và xoá thư mục dữ liệu để bỏ đi mọi thứ phần mềm từng ghi ra."
           ]
         },
         "changes": {
           "heading": "Thay đổi thông báo này",
           "body": [
-            "Thông báo này thay đổi khi những gì phần mềm gửi đi thay đổi. Bản đang có hiệu lực luôn đi kèm phần mềm và được công bố tại stm.locmaymo.top/privacy, kèm ngày bắt đầu hiệu lực."
+            "Thông báo này thay đổi khi những gì phần mềm gửi đi hoặc đọc vào thay đổi. Bản đang có hiệu lực luôn đi kèm phần mềm và được công bố tại stm.locmaymo.top/privacy, kèm ngày bắt đầu hiệu lực."
           ]
         }
       }
@@ -317,7 +341,7 @@
         "trademarks": {
           "heading": "Nhãn hiệu",
           "body": [
-            "SillyTavern là tên của một dự án riêng biệt và thuộc về tác giả của nó. Cloudflare và logo Cloudflare là nhãn hiệu của Cloudflare, Inc. Docker và logo Docker là nhãn hiệu của Docker, Inc. GitHub và logo GitHub là nhãn hiệu của GitHub, Inc. Node.js là nhãn hiệu của OpenJS Foundation.",
+            "SillyTavern là tên của một dự án riêng biệt và thuộc về tác giả của nó. Cloudflare và logo Cloudflare là nhãn hiệu của Cloudflare, Inc. Docker và logo Docker là nhãn hiệu của Docker, Inc. GitHub và logo GitHub là nhãn hiệu của GitHub, Inc. Google Drive và logo Google Drive là nhãn hiệu của Google LLC. Node.js là nhãn hiệu của OpenJS Foundation.",
             "Mỗi cái tên hay hình vẽ ở đây chỉ nhằm nhận diện sản phẩm tại nơi phần mềm này làm việc cùng nó. Không bên nào trong số đó chứng thực, tài trợ hay liên kết với dự án, và cũng không có hàm ý nào như vậy."
           ]
         },
@@ -325,7 +349,7 @@
           "heading": "Hình hoạ",
           "body": [
             "Biểu tượng ứng dụng, favicon và nhãn thương hiệu trong ứng dụng được chỉnh kích thước từ logo SillyTavern Vietnam (STVN), dùng làm nhãn riêng của dự án này với sự cho phép.",
-            "Các nhãn dịch vụ vẽ trong packages/ui/src/brand.tsx là bản vẽ lại đơn giản hoá của logo Cloudflare, Cloudflare R2, Docker và GitHub, chỉ dùng để nhận diện các dịch vụ đó trong giao diện.",
+            "Các nhãn dịch vụ vẽ trong packages/ui/src/brand.tsx là bản vẽ lại đơn giản hoá của logo Cloudflare, Cloudflare R2, Docker và GitHub, chỉ dùng để nhận diện các dịch vụ đó trong giao diện. Logo Google Drive trong apps/manager-panel/src/google-drive-mark.tsx được vẽ bằng màu gốc của nó, chỉ trên các nút kết nối Google Drive.",
             "Logo và hình hoạ không thuộc phạm vi AGPL-3.0 và không được cấp phép để dùng lại kèm theo nó."
           ]
         }

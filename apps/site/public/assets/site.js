@@ -176,6 +176,30 @@
     }
   }
 
+  // The promo loops play while they are on screen and stop when they are not,
+  // so a page with three of them costs one decoder at a time. A reader who
+  // asked for less motion, or a browser without the observer, keeps the
+  // controls the markup came with and presses play themselves.
+  var clips = document.querySelectorAll('video[data-clip]');
+  var calm = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (clips.length && !calm && 'IntersectionObserver' in window) {
+    var player = new window.IntersectionObserver(function (entries) {
+      for (var each = 0; each < entries.length; each += 1) {
+        var video = entries[each].target;
+        if (entries[each].isIntersecting) {
+          var playing = video.play();
+          if (playing && playing.catch) playing.catch(function () { /* the poster stays */ });
+        } else {
+          video.pause();
+        }
+      }
+    }, { threshold: 0.35 });
+    for (var clip = 0; clip < clips.length; clip += 1) {
+      clips[clip].removeAttribute('controls');
+      player.observe(clips[clip]);
+    }
+  }
+
   // Remember which language was chosen, so the next visit to the bare domain
   // opens in it. Only ever set by a click on the switch: an address somebody
   // typed or was sent is answered as typed, never redirected.

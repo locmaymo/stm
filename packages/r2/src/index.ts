@@ -2,11 +2,13 @@ import { createHash, randomBytes } from 'node:crypto';
 import { hostname, type as systemType } from 'node:os';
 import { mkdir, open, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { formatBytes, logEvent, logLineText, type LogSink, type ManagerSettingsRecord, type Profile, type R2CheckResult, type R2CloudflareUsage, type R2Config, type R2ConnectionMode, type R2UsageResponse, type R2UsageWarning, type R2EnvironmentField, type R2Object, type R2SnapshotSummary, type R2Usage, type TransferProgress } from '../../contracts/src/index.js';
+import { formatBytes, logEvent, logLineText, type LogSink, type ManagerSettingsRecord, type Profile, type R2CheckResult, type R2CloudflareUsage, type R2Config, type R2ConnectionMode, type R2UsageResponse, type R2UsageWarning, type R2EnvironmentField, type R2Object, type R2SnapshotSummary, type R2Transfer, type R2Usage, type TransferProgress } from '../../contracts/src/index.js';
 import { parseS3Endpoint, R2_FREE_TIER, readR2Usage } from '../../cloudflare/src/index.js';
 import { ioConcurrency, runPooled } from '../../platform/src/index.js';
 import type { PlatformPaths } from '../../platform/src/index.js';
 import type { CloudflareConnection, KnownBucket } from './cloudflare-connection.js';
+import { DRIVE_TARGET_LABEL, type GoogleConnection } from './google-connection.js';
+import { DRIVE_TRANSFERS } from './drive-store.js';
 import { BlobLedger } from './ledger.js';
 import { S3ObjectStore, type R2Credentials } from './s3.js';
 import { R2Error, type Billing, type ObjectRecord, type ObjectStore } from './store.js';
@@ -34,6 +36,8 @@ export { R2Error } from './store.js';
 export type { ObjectRecord, ObjectStore } from './store.js';
 export { CloudflareConnection } from './cloudflare-connection.js';
 export type { KnownBucket } from './cloudflare-connection.js';
+export { GoogleConnection } from './google-connection.js';
+export type { GoogleAccount, GooglePurpose } from './google-connection.js';
 
 const R2_STATE_FILE = 'r2-config.json';
 /** The connection settings `.env` may provide, and the variable for each. */
@@ -202,6 +206,8 @@ export interface R2ManagerOptions {
   readonly fetchImpl?: typeof fetch;
   /** The signed-in connection, when this manager has a Cloudflare OAuth client. */
   readonly cloudflare?: CloudflareConnection;
+  /** The Google Drive connection, when this manager has a Google sign-in. */
+  readonly google?: GoogleConnection;
   /**
    * What this machine is called in the bucket's claim; see `machineLabel`
    * for what is used when this is not given.
@@ -217,6 +223,19 @@ export interface R2ManagerOptions {
    * therefore about somebody else's Worker.
    */
   readonly onSurrender?: () => void;
+}
+
+/** What the claim needs from a signed-in provider; see `signedIn`. */
+interface SignedInAccount {
+  /** How the account is named in messages: "signed in with this <name>". */
+  readonly name: string;
+  /** What the reader does to take it back, as the end of a sentence. */
+  readonly signInAgain: string;
+  installationId(): Promise<string>;
+  usable(): Promise<boolean>;
+  connectedAt(): Promise<string | null>;
+  surrender(by: string, reason: string): Promise<boolean>;
+  evict(keyId: string): Promise<boolean>;
 }
 
 export interface R2UpdateInput {
@@ -285,6 +304,7 @@ export class R2Manager {
   private readonly fetchImpl: typeof fetch;
   private readonly ledger: BlobLedger;
   private readonly cloudflare: CloudflareConnection | null;
+  private readonly google: GoogleConnection | null;
   private readonly fixedLabel: string | null;
   /** Where a browser last reached this manager from outside; see `noteAddress`. */
   private address: string | null = null;
@@ -318,6 +338,8 @@ export class R2Manager {
   private usageFlushing = false;
   /** The manager settings last put in the bucket, so unchanged ones cost nothing. */
   private settingsSent: ManagerSettingsRecord | null = null;
+  /** The backup being sent now; see R2Config.transfer. */
+  private transfer: R2Transfer | null = null;
   private settingsSentAt = 0;
 
   public constructor(options: R2ManagerOptions) {
@@ -328,6 +350,7 @@ export class R2Manager {
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.ledger = new BlobLedger({ path: join(this.paths.state, R2_LEDGER_FILE) });
     this.cloudflare = options.cloudflare ?? null;
+    this.google = options.google ?? null;
     this.fixedLabel = options.installationLabel ? options.installationLabel.slice(0, 120) : null;
     this.onSurrender = options.onSurrender ?? null;
   }
@@ -363,8 +386,9 @@ export class R2Manager {
     // and cannot change it, so a stale form cannot quietly replace it either.
     const locked = new Set<string>(this.environmentFields());
     const input = Object.fromEntries(Object.entries(requested).filter(([key]) => !locked.has(key))) as R2UpdateInput;
-    if (input.mode !== undefined && input.mode !== 'keys' && input.mode !== 'cloudflare') throw new R2Error('invalid_r2_mode', 'The R2 connection mode is not valid');
+    if (input.mode !== undefined && input.mode !== 'keys' && input.mode !== 'cloudflare' && input.mode !== 'google') throw new R2Error('invalid_r2_mode', 'The R2 connection mode is not valid');
     if (input.mode === 'cloudflare' && !this.cloudflare) throw new R2Error('cloudflare_not_available', 'This manager has no Cloudflare sign-in configured');
+    if (input.mode === 'google' && !this.google) throw new R2Error('google_not_available', 'This manager has no Google sign-in configured');
     const next: StoredR2Config = {
       ...current,
       ...(input.mode !== undefined ? { mode: input.mode } : {}),
@@ -472,6 +496,7 @@ export class R2Manager {
   private async bucketName(): Promise<string | null> {
     const config = await this.load();
     if (config.mode === 'cloudflare') return (await this.cloudflare?.target())?.bucket ?? null;
+    if (config.mode === 'google') return (await this.google?.target()) ? DRIVE_TARGET_LABEL : null;
     return config.bucket;
   }
 
@@ -520,109 +545,138 @@ export class R2Manager {
 
       const planned = planUpload(input.sources, this.ledger);
       const client = this.client(config);
-      let uploadedChunks = 0;
-      let uploadedBytes = 0;
-      let completed = 0;
-      // What is left to send, which is the only number that says how long this
-      // will take. A count of files cannot: one of them is a settings file and
-      // the next is a twenty megabyte character card.
-      let sentBytes = 0;
-      const dropped = new Set<string>();
-      const uploadedHashes: string[] = [];
-      // Files that changed between being hashed and being sent, as hashed again.
-      const rehashed = new Map<string, HashedFile>();
-      await runPooled(planned.files, ioConcurrency(), async (entry) => {
-        throwIfStopped(input.signal);
-        let current: PlannedFile = entry;
-        let sent = await this.uploadChunks(client, current);
-        /*
-         * Written to while this run was reading it - SillyTavern saves its
-         * settings whenever they change - so what is there now is not what was
-         * hashed. It is hashed again and the new version sent, a few times at
-         * most; a file rewritten faster than that leaves this point.
-         */
-        for (let attempt = 0; sent === 'changed' && attempt < CHANGED_FILE_RETRIES; attempt += 1) {
+      const startedAt = this.now();
+      if (planned.files.length > 0) {
+        this.logger(logEvent('r2.sending', `[r2] sending ${planned.files.length} changed file(s), ${formatBytes(planned.bytes)}`, { files: planned.files.length, size: formatBytes(planned.bytes) }));
+      }
+      this.transfer = { tier: input.tier ?? 'hot', startedAt: startedAt.toISOString(), completedBytes: 0, totalBytes: planned.bytes, completedItems: 0, totalItems: planned.files.length, finishing: false };
+      try {
+        let uploadedChunks = 0;
+        let uploadedBytes = 0;
+        let completed = 0;
+        // What is left to send, which is the only number that says how long this
+        // will take. A count of files cannot: one of them is a settings file and
+        // the next is a twenty megabyte character card.
+        let sentBytes = 0;
+        const dropped = new Set<string>();
+        const uploadedHashes: string[] = [];
+        // Files that changed between being hashed and being sent, as hashed again.
+        const rehashed = new Map<string, HashedFile>();
+        await runPooled(planned.files, this.transferConcurrency(config), async (entry) => {
           throwIfStopped(input.signal);
-          const file = await hashFile(entry.source.file.name, entry.source.path);
-          if (!file) { sent = 'gone'; break; }
-          rehashed.set(file.name, file);
-          current = { source: { file, path: entry.source.path }, chunks: file.chunks.filter((chunk) => !this.ledger.has(chunk.hash) && !uploadedHashes.includes(chunk.hash)) };
-          sent = await this.uploadChunks(client, current);
-        }
-        if (sent === 'gone' || sent === 'changed') {
-          // Gone since the walk, or never still long enough to read. Naming it
-          // in the snapshot would point at a chunk that was never stored, so
-          // the file leaves this recovery point.
-          dropped.add(entry.source.file.name);
-          rehashed.delete(entry.source.file.name);
-        } else {
-          uploadedChunks += sent.hashes.length;
-          uploadedBytes += sent.bytes;
-          uploadedHashes.push(...sent.hashes);
-        }
-        completed += 1;
-        // Measured as the data it holds rather than as what went over the wire,
-        // so the total is known before the first byte is compressed.
-        sentBytes += plannedBytes(entry);
-        input.onProgress?.({ completedBytes: sentBytes, totalBytes: planned.bytes, completedItems: completed, totalItems: planned.files.length });
-      });
-      // Only after the bytes are in the bucket, and only once, so an interrupted
-      // run never records a chunk it did not finish sending.
-      await this.ledger.add(uploadedHashes);
+          let current: PlannedFile = entry;
+          let sent = await this.uploadChunks(client, current);
+          /*
+           * Written to while this run was reading it - SillyTavern saves its
+           * settings whenever they change - so what is there now is not what was
+           * hashed. It is hashed again and the new version sent, a few times at
+           * most; a file rewritten faster than that leaves this point.
+           */
+          for (let attempt = 0; sent === 'changed' && attempt < CHANGED_FILE_RETRIES; attempt += 1) {
+            throwIfStopped(input.signal);
+            const file = await hashFile(entry.source.file.name, entry.source.path);
+            if (!file) { sent = 'gone'; break; }
+            rehashed.set(file.name, file);
+            current = { source: { file, path: entry.source.path }, chunks: file.chunks.filter((chunk) => !this.ledger.has(chunk.hash) && !uploadedHashes.includes(chunk.hash)) };
+            sent = await this.uploadChunks(client, current);
+          }
+          if (sent === 'gone' || sent === 'changed') {
+            // Gone since the walk, or never still long enough to read. Naming it
+            // in the snapshot would point at a chunk that was never stored, so
+            // the file leaves this recovery point.
+            dropped.add(entry.source.file.name);
+            rehashed.delete(entry.source.file.name);
+          } else {
+            uploadedChunks += sent.hashes.length;
+            uploadedBytes += sent.bytes;
+            uploadedHashes.push(...sent.hashes);
+          }
+          completed += 1;
+          // Measured as the data it holds rather than as what went over the wire,
+          // so the total is known before the first byte is compressed.
+          sentBytes += plannedBytes(entry);
+          if (this.transfer) this.transfer = { ...this.transfer, completedBytes: sentBytes, completedItems: completed };
+          input.onProgress?.({ completedBytes: sentBytes, totalBytes: planned.bytes, completedItems: completed, totalItems: planned.files.length });
+        });
+        // Only after the bytes are in the bucket, and only once, so an interrupted
+        // run never records a chunk it did not finish sending.
+        if (this.transfer) this.transfer = { ...this.transfer, finishing: true };
+        await client.flush?.();
+        await this.ledger.add(uploadedHashes);
 
-      const sources = input.sources.map((source) => { const file = rehashed.get(source.file.name); return file ? { ...source, file } : source; });
-      const files = mergeFiles(sources, input.carried ?? [], dropped);
-      const createdAt = this.now().toISOString();
-      const snapshot: R2Snapshot = {
-        schemaVersion: 1,
-        id: snapshotId(createdAt, files),
-        createdAt,
-        profileId: input.profile.id,
-        profileName: input.profile.name,
-        layout: input.profile.layout,
-        fingerprint: input.fingerprint,
-        files,
-      };
-      const body = await encodeSnapshot(snapshot);
-      const key = snapshotKey(OBJECT_PREFIX, input.profile.id, snapshot.id);
-      await client.putObject(key, body, 'application/gzip');
+        const sources = input.sources.map((source) => { const file = rehashed.get(source.file.name); return file ? { ...source, file } : source; });
+        const files = mergeFiles(sources, input.carried ?? [], dropped);
+        const createdAt = this.now().toISOString();
+        const snapshot: R2Snapshot = {
+          schemaVersion: 1,
+          id: snapshotId(createdAt, files),
+          createdAt,
+          profileId: input.profile.id,
+          profileName: input.profile.name,
+          layout: input.profile.layout,
+          fingerprint: input.fingerprint,
+          files,
+        };
+        const body = await encodeSnapshot(snapshot);
+        const key = snapshotKey(OBJECT_PREFIX, input.profile.id, snapshot.id);
+        await client.putObject(key, body, 'application/gzip');
 
-      const nextUsage: StoredUsage = {
-        ...usage,
-        storageBytes: usage.storageBytes + uploadedBytes + body.byteLength,
-        blobCount: usage.blobCount + uploadedChunks,
-        snapshotCount: usage.snapshotCount + 1,
-      };
-      await this.save({
-        ...config,
-        lastUploadAt: createdAt,
-        ...(input.tier === 'cold' ? { lastColdUploadAt: createdAt } : {}),
-        lastFingerprint: input.fingerprint,
-        lastSnapshot: { profileId: input.profile.id, id: snapshot.id },
-        usage: nextUsage,
-      });
-      await this.recordCharges();
-      // On its own clock, so an upload every five minutes does not mean two
-      // more requests every five minutes.
-      await this.syncUsageRecord();
-      if (dropped.size > 0) this.logger(logEvent('r2.skippedMissingFiles', `[r2] skipped ${dropped.size} file(s) removed while the upload was running`, { count: dropped.size }));
-      this.logger(logEvent('r2.synced', `[r2] sent ${uploadedChunks} changed chunk(s), ${formatBytes(uploadedBytes)}, of ${files.length} file(s)`, { chunks: uploadedChunks, bytes: formatBytes(uploadedBytes), files: files.length }));
-      return {
-        snapshot: {
-          id: snapshot.id,
-          profileId: snapshot.profileId,
-          createdAt: snapshot.createdAt,
-          indexBytes: body.byteLength,
+        const nextUsage: StoredUsage = {
+          ...usage,
+          storageBytes: usage.storageBytes + uploadedBytes + body.byteLength,
+          blobCount: usage.blobCount + uploadedChunks,
+          snapshotCount: usage.snapshotCount + 1,
+        };
+        await this.save({
+          ...config,
+          lastUploadAt: createdAt,
+          ...(input.tier === 'cold' ? { lastColdUploadAt: createdAt } : {}),
+          lastFingerprint: input.fingerprint,
+          lastSnapshot: { profileId: input.profile.id, id: snapshot.id },
+          usage: nextUsage,
+        });
+        await this.recordCharges();
+        // On its own clock, so an upload every five minutes does not mean two
+        // more requests every five minutes.
+        await this.syncUsageRecord();
+        if (dropped.size > 0) this.logger(logEvent('r2.skippedMissingFiles', `[r2] skipped ${dropped.size} file(s) removed while the upload was running`, { count: dropped.size }));
+        const seconds = Math.max(0, Math.round((this.now().getTime() - startedAt.getTime()) / 1000));
+        this.logger(logEvent('r2.synced', `[r2] sent ${uploadedChunks} changed chunk(s), ${formatBytes(uploadedBytes)}, of ${files.length} file(s) in ${seconds}s`, { chunks: uploadedChunks, bytes: formatBytes(uploadedBytes), files: files.length, seconds }));
+        return {
+          snapshot: {
+            id: snapshot.id,
+            profileId: snapshot.profileId,
+            createdAt: snapshot.createdAt,
+            indexBytes: body.byteLength,
+            fileCount: files.length,
+            dataBytes: files.reduce((sum, file) => sum + file.sizeBytes, 0),
+          },
           fileCount: files.length,
-          dataBytes: files.reduce((sum, file) => sum + file.sizeBytes, 0),
-        },
-        fileCount: files.length,
-        uploadedChunks,
-        uploadedBytes,
-        reusedChunks: planned.reused,
-        usage: toPublicUsage(nextUsage),
-      };
+          uploadedChunks,
+          uploadedBytes,
+          reusedChunks: planned.reused,
+          usage: toPublicUsage(nextUsage),
+        };
+      } finally {
+        this.transfer = null;
+      }
     });
+  }
+
+  /**
+   * How many files a backup or a restore moves at once.
+   *
+   * The disk's figure for R2, which answers fast. Drive waits a second or two
+   * on every request, so it gets more at once - unless the operator set the
+   * figure themselves, which is how a small machine keeps its memory.
+   */
+  public async transfers(): Promise<number> {
+    return this.transferConcurrency(await this.load());
+  }
+
+  private transferConcurrency(config: StoredR2Config): number {
+    if (config.mode !== 'google' || this.env.STM_IO_CONCURRENCY) return ioConcurrency(this.env);
+    return Math.max(ioConcurrency(this.env), DRIVE_TRANSFERS);
   }
 
   /** The recovery points in the bucket, newest first. */
@@ -752,6 +806,24 @@ export class R2Manager {
       const client = this.client(config);
       const objects = await this.listAll(config, OBJECT_PREFIX, client);
       const { blobs, snapshotKeys, legacyObjectCount, legacyBytes } = summarizeObjects(objects);
+      /*
+       * A listing without the recovery point this machine wrote last is not
+       * the whole bucket, whatever it says.
+       *
+       * This deletes everything no listed recovery point names, so a listing
+       * that lost its recovery points deletes chunks that are wanted. It
+       * happened on Google Drive: a page of another listing took the place of
+       * the second page of this one, and a thousand chunks of the newest point
+       * went. Nothing is collected then; the next sweep reads again. A bucket
+       * this machine knows of no recovery point in - a first upload stopped
+       * before its index - is still swept.
+       */
+      const remembered = config.lastSnapshot ? snapshotKey(OBJECT_PREFIX, config.lastSnapshot.profileId, config.lastSnapshot.id) : null;
+      const lostRemembered = remembered !== null && !snapshotKeys.includes(remembered);
+      const lostAll = snapshotKeys.length === 0 && config.usage.snapshotCount > 0;
+      if (blobs.size > 0 && (lostRemembered || lostAll)) {
+        throw new R2Error('r2_listing_incomplete', 'The bucket listing did not include the newest recovery point, so nothing was collected. The next sweep tries again.');
+      }
 
       const snapshots: R2Snapshot[] = [];
       for (const key of snapshotKeys) {
@@ -785,6 +857,11 @@ export class R2Manager {
         collectedBytes += object.sizeBytes;
       }
       for (const hash of collected) blobs.delete(hash);
+      // A store that keeps chunks inside packs frees their space only here.
+      const compacted = await client.compact?.();
+      if (compacted && (compacted.removedPacks > 0 || compacted.rewrittenPacks > 0 || compacted.gatheredFiles > 0)) {
+        this.logger(logEvent('r2.compacted', `[r2] tidied the packs: ${compacted.removedPacks} removed, ${compacted.rewrittenPacks} rewritten, ${compacted.gatheredFiles} small file(s) gathered`, { removed: compacted.removedPacks, rewritten: compacted.rewrittenPacks, gathered: compacted.gatheredFiles }));
+      }
       await this.ledger.load();
       await this.ledger.reconcile(blobs.keys());
 
@@ -842,6 +919,37 @@ export class R2Manager {
       await this.recordCharges();
       this.logger(logEvent('r2.legacyRemoved', `[r2] removed ${legacy.length} archive(s) in the old whole-file format, ${formatBytes(bytes)}`, { count: legacy.length, size: formatBytes(bytes) }));
       return { removed: legacy.length, bytes };
+    });
+  }
+
+  /**
+   * Remove every backup from the connected Google Drive, for "delete the
+   * backups too" when disconnecting.
+   *
+   * What this machine believes is stored goes with them: the ledger would
+   * otherwise tell the next backup to the same account that chunks are there
+   * which no longer are, and it would write recovery points with holes in.
+   */
+  public async deleteDriveBackups(): Promise<{ readonly files: number; readonly bytes: number }> {
+    return await this.exclusive(async () => {
+      if (!this.google) throw new R2Error('google_not_available', 'This manager has no Google sign-in configured');
+      const removed = await this.google.deleteBackups();
+      const config = await this.load();
+      if (config.mode === 'google') {
+        await this.ledger.load();
+        await this.ledger.reconcile([]);
+        await this.save({
+          ...config,
+          ledgerTarget: null,
+          lastUploadAt: null,
+          lastColdUploadAt: null,
+          lastFingerprint: null,
+          lastSnapshot: null,
+          usage: { ...config.usage, storageBytes: 0, blobCount: 0, snapshotCount: 0, legacyObjectCount: 0, legacyBytes: 0, lastReconciledAt: null },
+        });
+      }
+      this.logger(logEvent('r2.driveBackupsDeleted', `[r2] removed the backups from Google Drive: ${removed.files} file(s), ${formatBytes(removed.bytes)}`, { files: removed.files, size: formatBytes(removed.bytes) }));
+      return removed;
     });
   }
 
@@ -984,8 +1092,9 @@ export class R2Manager {
    * them here would take away a way of working that already worked.
    */
   private async requireOwnership(config: StoredR2Config): Promise<void> {
-    if (config.mode !== 'cloudflare' || !this.cloudflare) return;
-    const keyId = await this.cloudflare.installationId();
+    const account = this.signedIn(config);
+    if (!account) return;
+    const keyId = await account.installationId();
     const now = this.now().getTime();
     const claim = await readClaim(this.client(config), CLAIM_KEY);
     if (claim && claim.keyId !== keyId && !claimIsStale(claim, now) && !await this.outranks(claim)) {
@@ -1001,9 +1110,9 @@ export class R2Manager {
        */
       await this.rememberClaim(claim, false);
       await this.recordCharges();
-      this.logger(logEvent('r2.displaced', `[r2] ${claim.label} signed in with this Cloudflare account, so this machine has stopped backing up; sign in to Cloudflare again here to take it back`, { label: claim.label }));
+      this.logger(logEvent('r2.displaced', `[r2] ${claim.label} signed in with this ${account.name}, so this machine has stopped backing up; ${account.signInAgain} here to take it back`, { label: claim.label }));
       await this.surrenderAccount(claim);
-      throw new R2Error('r2_in_use', `${claim.label} signed in with this Cloudflare account, so this machine has stopped backing up. Sign in to Cloudflare again from this machine to take it back.`);
+      throw new R2Error('r2_in_use', `${claim.label} signed in with this ${account.name}, so this machine has stopped backing up. ${capitalize(account.signInAgain)} from this machine to take it back.`);
     }
     const mine: BucketClaim = {
       schemaVersion: 1,
@@ -1031,7 +1140,7 @@ export class R2Manager {
        * spending its life refused by the machine it replaced.
        */
       else if (claim.keyId !== keyId) {
-        await this.cloudflare.evict(claim.keyId).catch(() => false);
+        await account.evict(claim.keyId).catch(() => false);
         this.logger(logEvent('r2.claimTakenOver', `[r2] this machine took the bucket over from ${claim.label}`, { label: claim.label }));
       }
     }
@@ -1048,12 +1157,13 @@ export class R2Manager {
    */
   public async takeOwnership(): Promise<R2Config> {
     const config = await this.requireUsable();
-    if (config.mode !== 'cloudflare' || !this.cloudflare) throw new R2Error('r2_not_connected_account', 'Only a bucket connected by signing in to Cloudflare has an owner to take over');
-    const keyId = await this.cloudflare.installationId();
+    const account = this.signedIn(config);
+    if (!account) throw new R2Error('r2_not_connected_account', 'Only a bucket connected by signing in has an owner to take over');
+    const keyId = await account.installationId();
     const client = this.client(config);
     const previous = await readClaim(client, CLAIM_KEY);
     if (previous && previous.keyId !== keyId) {
-      await this.cloudflare.evict(previous.keyId).catch(() => false);
+      await account.evict(previous.keyId).catch(() => false);
       this.logger(logEvent('r2.claimTakenOver', `[r2] this machine took the bucket over from ${previous.label}`, { label: previous.label }));
     }
     const at = new Date(this.now()).toISOString();
@@ -1070,9 +1180,10 @@ export class R2Manager {
    */
   public async releaseOwnership(): Promise<void> {
     const config = await this.load();
-    if (config.mode !== 'cloudflare' || !this.cloudflare || !config.enabled) { await this.forgetClaim(); return; }
+    const account = this.signedIn(config);
+    if (!account || !config.enabled) { await this.forgetClaim(); return; }
     try {
-      const keyId = await this.cloudflare.installationId();
+      const keyId = await account.installationId();
       const client = this.client(config);
       const claim = await readClaim(client, CLAIM_KEY);
       if (claim?.keyId === keyId) await client.deleteObject(CLAIM_KEY);
@@ -1099,13 +1210,14 @@ export class R2Manager {
    */
   public async refreshClaim(options: { readonly atMostEvery?: number } = {}): Promise<void> {
     const config = await this.load();
-    if (config.mode !== 'cloudflare' || !this.cloudflare || !config.enabled) return;
+    const account = this.signedIn(config);
+    if (!account || !config.enabled) return;
     const now = this.now().getTime();
     const since = config.claim ? now - Date.parse(config.claim.checkedAt) : Number.POSITIVE_INFINITY;
     if (options.atMostEvery !== undefined && Number.isFinite(since) && since < options.atMostEvery) return;
     try {
-      if (!await this.cloudflare.usable()) return;
-      const keyId = await this.cloudflare.installationId();
+      if (!await account.usable()) return;
+      const keyId = await account.installationId();
       const claim = await readClaim(this.client(config), CLAIM_KEY);
       if (!claim) { await this.forgetClaim(); return; }
       /*
@@ -1159,7 +1271,7 @@ export class R2Manager {
    * so the comparison does not turn on a second of clock drift.
    */
   private async outranks(claim: BucketClaim): Promise<boolean> {
-    const connectedAt = (await this.cloudflare?.status())?.connectedAt ?? null;
+    const connectedAt = await this.signedIn(await this.load())?.connectedAt() ?? null;
     if (!connectedAt) return false;
     const signedIn = Date.parse(connectedAt);
     const claimed = Date.parse(claim.claimedAt);
@@ -1180,10 +1292,11 @@ export class R2Manager {
    * nothing left to give up.
    */
   private async surrenderAccount(claim: BucketClaim): Promise<void> {
-    if (!this.cloudflare) return;
-    const reason = `${claim.label} signed in with this Cloudflare account, so this machine gave up its own sign-in. Sign in to Cloudflare again here to take the account back.`;
-    if (!await this.cloudflare.surrender(claim.label, reason)) return;
-    this.logger(logEvent('r2.accountSurrendered', `[r2] this machine has given up its Cloudflare sign-in, because ${claim.label} holds the account now; nothing here can reach that account until somebody signs in again`, { label: claim.label }));
+    const account = this.signedIn(await this.load());
+    if (!account) return;
+    const reason = `${claim.label} signed in with this ${account.name}, so this machine gave up its own sign-in. ${capitalize(account.signInAgain)} here to take the account back.`;
+    if (!await account.surrender(claim.label, reason)) return;
+    this.logger(logEvent('r2.accountSurrendered', `[r2] this machine has given up its sign-in, because ${claim.label} holds the ${account.name} now; nothing here can reach it until somebody signs in again`, { label: claim.label }));
     this.onSurrender?.();
   }
 
@@ -1233,10 +1346,49 @@ export class R2Manager {
     await this.save({ ...config, claim: null });
   }
 
+  /**
+   * The sign-in behind the bucket, for the claim, whichever provider it is.
+   *
+   * Null for manual keys: those are somebody carrying credentials between
+   * machines on purpose, and the claim does not apply to them.
+   */
+  private signedIn(config: StoredR2Config): SignedInAccount | null {
+    if (config.mode === 'cloudflare' && this.cloudflare) {
+      const cloudflare = this.cloudflare;
+      return {
+        name: 'Cloudflare account',
+        signInAgain: 'sign in to Cloudflare again',
+        installationId: async () => await cloudflare.installationId(),
+        usable: async () => await cloudflare.usable(),
+        connectedAt: async () => (await cloudflare.status()).connectedAt,
+        surrender: async (by, reason) => await cloudflare.surrender(by, reason),
+        evict: async (keyId) => await cloudflare.evict(keyId),
+      };
+    }
+    if (config.mode === 'google' && this.google) {
+      const google = this.google;
+      return {
+        name: 'Google Drive',
+        signInAgain: 'connect Google Drive again',
+        installationId: async () => await google.installationId(),
+        usable: async () => await google.usable(),
+        connectedAt: async () => (await google.status()).connectedAt,
+        surrender: async (by, reason) => await google.surrender(by, reason),
+        // Drive has no per-machine key to take away; the claim is the whole of it.
+        evict: async () => false,
+      };
+    }
+    return null;
+  }
+
   private async requireUsable(): Promise<StoredR2Config> {
     const config = await this.load();
     if (!config.enabled) throw new R2Error('r2_disabled', 'R2 backup is switched off');
-    if (config.mode === 'cloudflare') {
+    if (config.mode === 'google') {
+      const status = await this.google?.status();
+      if (status?.state === 'reconnect_required') throw new R2Error('google_reconnect_required', 'Reconnect Google Drive to continue backing up');
+      if (status?.state !== 'connected') throw new R2Error('r2_not_configured', 'Connect Google Drive first');
+    } else if (config.mode === 'cloudflare') {
       const status = await this.cloudflare?.status();
       if (status?.state === 'reconnect_required') throw new R2Error('cloudflare_reconnect_required', 'Reconnect to Cloudflare to continue backing up');
       if (status?.state !== 'connected') throw new R2Error('r2_not_configured', 'Connect to Cloudflare and choose an account first');
@@ -1253,6 +1405,11 @@ export class R2Manager {
    * through a sign-in, so moving between the two on one bucket keeps the ledger.
    */
   private async storageTarget(config: StoredR2Config): Promise<string> {
+    if (config.mode === 'google') {
+      const target = await this.google?.target();
+      if (!target) throw new R2Error('r2_not_configured', 'Connect Google Drive first');
+      return `google:appdata:${target.accountId}`;
+    }
     if (config.mode === 'cloudflare') {
       const target = await this.cloudflare?.target();
       if (!target) throw new R2Error('r2_not_configured', 'Connect to Cloudflare and choose an account first');
@@ -1338,6 +1495,11 @@ export class R2Manager {
     if (config.mode === 'cloudflare') {
       if (!this.cloudflare) throw new R2Error('cloudflare_not_available', 'This manager has no Cloudflare sign-in configured');
       return this.cloudflare.objectStore(count);
+    }
+    if (config.mode === 'google') {
+      if (!this.google) throw new R2Error('google_not_available', 'This manager has no Google sign-in configured');
+      // Drive is not billed per request, so nothing is counted against the R2 allowance.
+      return this.google.objectStore();
     }
     return new S3ObjectStore(toCredentials(config), this.fetchImpl, count);
   }
@@ -1562,6 +1724,7 @@ export class R2Manager {
         : await this.uploadChunks(client, { source: { file, path }, chunks: missing });
       // Appended to past a chunk boundary mid-read; the next run sends it.
       if (sent === 'gone' || sent === 'changed') return null;
+      await client.flush?.();
       await this.ledger.add(sent.hashes);
       await writeMetricsArchive(client, METRICS_KEY, { schemaVersion: 1, updatedAt: this.now().toISOString(), sizeBytes: file.sizeBytes, chunks: file.chunks });
       await this.save({ ...(await this.load()), lastMetrics: file });
@@ -1665,6 +1828,7 @@ export class R2Manager {
 
   private async toPublic(config: StoredR2Config): Promise<R2Config> {
     const cloudflare = this.cloudflare ? await this.cloudflare.status() : null;
+    const google = this.google ? await this.google.status() : null;
     // The month is rolled over for the reader as well as for the writer. Taken
     // straight from the file, the panel went on showing last month's figures
     // against this month's allowance until something happened to write them.
@@ -1672,14 +1836,18 @@ export class R2Manager {
     return {
       mode: config.mode,
       cloudflare,
+      google,
       enabled: config.enabled,
       endpoint: config.endpoint,
       bucket: config.bucket,
       environmentFields: this.environmentFields(),
-      configured: config.mode === 'cloudflare'
+      configured: config.mode === 'google'
+        ? google?.state === 'connected'
+        : config.mode === 'cloudflare'
         ? cloudflare?.state === 'connected'
         : Boolean(config.endpoint && config.bucket && config.accessKeyId && config.secretAccessKey),
       lastUploadAt: config.lastUploadAt,
+      transfer: this.transfer,
       accessKeyIdMasked: config.accessKeyId ? maskSecret(config.accessKeyId) : null,
       secretAccessKeyConfigured: Boolean(config.secretAccessKey),
       schedule: {
@@ -1793,6 +1961,10 @@ export class R2Manager {
   }
 }
 
+function capitalize(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
 function usageWarnings(report: Pick<R2CloudflareUsage, 'bucket' | 'account'>, config: StoredR2Config): R2UsageWarning[] {
   const warnings: R2UsageWarning[] = [];
   const check = (scope: R2UsageWarning['scope'], metric: R2UsageWarning['metric'], used: number | null, limit: number): void => {
@@ -1843,7 +2015,10 @@ function planUpload(sources: readonly SyncSource[], ledger: BlobLedger): UploadP
   const claimed = new Set<string>();
   const files: PlannedFile[] = [];
   let reused = 0;
-  for (const source of sources) {
+  // In the order a restore reads them back, so chunks a restore wants together
+  // are stored together where a store packs them.
+  const ordered = [...sources].sort((left, right) => left.file.name.localeCompare(right.file.name));
+  for (const source of ordered) {
     const chunks = source.file.chunks.filter((chunk) => {
       if (ledger.has(chunk.hash) || claimed.has(chunk.hash)) { reused += 1; return false; }
       claimed.add(chunk.hash);

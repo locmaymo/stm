@@ -36,9 +36,9 @@
 export const RETURN_WINDOW = 'stm_cloudflare';
 
 /** What a sign-in ended as; `error` carries the reason in `code`. */
-export type CloudflareOutcome = 'signed_in' | 'connected' | 'choose_account' | 'error';
+export type CloudflareOutcome = 'signed_in' | 'connected' | 'choose_account' | 'links' | 'error';
 
-const OUTCOMES: readonly string[] = ['signed_in', 'connected', 'choose_account', 'error'];
+const OUTCOMES: readonly string[] = ['signed_in', 'connected', 'choose_account', 'links', 'error'];
 
 /** How often to ask whether the window has finished, and for how long. */
 const ASK_EVERY_MS = 1200;

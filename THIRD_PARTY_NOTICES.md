@@ -81,3 +81,24 @@ services where the manager integrates with them. Cloudflare and the Cloudflare
 logo are trademarks of Cloudflare, Inc.; Docker and the Docker logo are
 trademarks of Docker, Inc.; GitHub and the GitHub logo are trademarks of
 GitHub, Inc. No endorsement or affiliation is claimed.
+
+`apps/manager-panel/src/google-drive-mark.tsx` draws the Google Drive logo in
+its own colours, used only on the buttons that connect Google Drive. Google
+Drive and the Google Drive logo are trademarks of Google LLC. No endorsement
+or affiliation is claimed.
+
+## The promo clips on the website
+
+`apps/site/public/media/` holds clips rendered from the promo animation kept
+on the `claude/stoic-dirac-il94t1` branch. The pictures in them are resized
+from the default character avatar, the default user avatar and the "tavern
+day" background that ship with SillyTavern
+(<https://github.com/SillyTavern/SillyTavern>), and from the Coding Sensei
+default character that shipped with SillyTavern 1.10.4; SillyTavern is
+licensed under the GNU Affero General Public License version 3.0. The text is
+set in Be Vietnam Pro and JetBrains Mono, under the SIL Open Font License 1.1.
+The operating system marks come from Simple Icons (<https://simpleicons.org>),
+under CC0 1.0. Windows is a trademark of Microsoft Corporation; Android is a
+trademark of Google LLC; macOS is a trademark of Apple Inc.; Linux is a
+trademark of Linus Torvalds; Docker is a trademark of Docker, Inc. They
+identify the systems STM runs on; no endorsement or affiliation is claimed.

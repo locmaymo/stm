@@ -25,9 +25,15 @@ const AUTH_ERRORS: Readonly<Record<string, MessageKey>> = {
   cloudflare_not_owner: 'setup.cloudNotOwner',
   cloudflare_account_required: 'setup.cloudAccountRequired',
   cloudflare_password_first: 'setup.cloudPasswordFirst',
+  cloudflare_google_first: 'setup.cloudGoogleFirst',
   cloudflare_not_available: 'setup.cloudUnavailable',
   cloudflare_authorization_denied: 'setup.cloudDenied',
   cloudflare_state_mismatch: 'setup.cloudExpired',
+  // And with a Google account, the same way.
+  google_not_owner: 'setup.googleNotOwner',
+  google_not_available: 'setup.googleUnavailable',
+  google_authorization_denied: 'setup.googleDenied',
+  google_state_mismatch: 'setup.cloudExpired',
 };
 
 export function authErrorKey(code: unknown): MessageKey | null {

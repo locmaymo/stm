@@ -8,7 +8,7 @@ import { pipeline } from 'node:stream/promises';
 import { chmod, lstat, mkdir, open, readFile, readdir, rename, rm, rmdir, stat, truncate, writeFile } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
 import { join, relative, resolve } from 'node:path';
-import { BACKUP_KINDS, BACKUP_PURPOSES, backupKind, defaultBackupName, type BackupPurpose, logEvent, logLineText, type BackupFilePreview, type BackupKind, type BackupManifest, type BackupSource, type LogEvent, type LogSink, type Profile, type ProfileLayout, type RestoreLosses, type RestoreMode, type RestorePreview, type LocalBackupSchedule } from '../../contracts/src/index.js';
+import { BACKUP_KINDS, BACKUP_PURPOSES, backupKind, defaultBackupName, R2_CONNECTION_MODES, REMOTE_NAME_SLUG, type BackupPurpose, type R2ConnectionMode, logEvent, logLineText, type BackupFilePreview, type BackupKind, type BackupManifest, type BackupSource, type LogEvent, type LogSink, type Profile, type ProfileLayout, type RestoreLosses, type RestoreMode, type RestorePreview, type LocalBackupSchedule } from '../../contracts/src/index.js';
 import { createIoLimiter, ioConcurrency, runPooled } from '../../platform/src/index.js';
 import type { PlatformPaths } from '../../platform/src/index.js';
 
@@ -116,6 +116,8 @@ export interface ImportEntry {
 export interface ImportEntriesOptions {
   readonly name?: string;
   readonly kind?: 'r2' | 'uploaded';
+  /** Where a recovery point came from, for an `r2` one; see `BackupManifest.remote`. */
+  readonly remote?: R2ConnectionMode;
   /** When what is imported was taken, for its default name. */
   readonly takenAt?: string;
   readonly entries: AsyncIterable<ImportEntry>;
@@ -593,7 +595,7 @@ export class BackupStore {
   }
 
   /** Move an uploaded archive into the active profile's durable library. */
-  public async importArchive(profile: Profile, archivePath: string, originalName?: string, options: { readonly kind?: 'r2' | 'uploaded'; readonly takenAt?: string } = {}): Promise<{ manifest: BackupManifest; preview: RestorePreview }> {
+  public async importArchive(profile: Profile, archivePath: string, originalName?: string, options: { readonly kind?: 'r2' | 'uploaded'; readonly remote?: R2ConnectionMode; readonly takenAt?: string } = {}): Promise<{ manifest: BackupManifest; preview: RestorePreview }> {
     const id = randomUUID();
     const createdAt = this.now().toISOString();
     const preview = await this.preview(archivePath, profile.layout);
@@ -604,7 +606,7 @@ export class BackupStore {
     const manifest: BackupManifest = {
       schemaVersion: BACKUP_SCHEMA_VERSION,
       id,
-      name: normalizeBackupName(originalName, profile.name, options.takenAt ?? createdAt, options.kind === 'r2' ? 'r2' : 'manual'),
+      name: normalizeBackupName(originalName, profile.name, options.takenAt ?? createdAt, options.kind === 'r2' ? 'r2' : 'manual', options.kind === 'r2' && options.remote ? REMOTE_NAME_SLUG[options.remote] : undefined),
       createdAt,
       profileId: profile.id,
       profileName: profile.name,
@@ -615,6 +617,7 @@ export class BackupStore {
       source: 'uploaded',
       kind: options.kind ?? 'uploaded',
       ...(options.kind === 'r2' && !originalName?.trim() ? { autoNamed: true } : {}),
+      ...(options.kind === 'r2' && options.remote ? { remote: options.remote } : {}),
     };
     await this.save([...await this.load(), manifest]);
     this.logger(logEvent('backup.imported', `[backup] imported ${manifest.name} (${manifest.fileCount} files)`, { name: manifest.name, files: manifest.fileCount }));
@@ -647,7 +650,7 @@ export class BackupStore {
       }
       await writer.finish();
       writer = null;
-      return await this.importArchive(profile, temporary, options.name, { ...(options.kind ? { kind: options.kind } : {}), ...(options.takenAt ? { takenAt: options.takenAt } : {}) });
+      return await this.importArchive(profile, temporary, options.name, { ...(options.kind ? { kind: options.kind } : {}), ...(options.remote ? { remote: options.remote } : {}), ...(options.takenAt ? { takenAt: options.takenAt } : {}) });
     } catch (error) {
       await writer?.abort();
       await rm(temporary, { force: true });
@@ -2473,8 +2476,8 @@ async function removeTree(path: string): Promise<void> {
 }
 
 /** A name somebody gave, or the default for its kind, made safe to be a file name. */
-function normalizeBackupName(value: string | undefined, profileName: string, createdAt: string, kind: Exclude<BackupKind, 'uploaded'>): string {
-  const base = (value?.trim() || defaultBackupName(profileName, kind, new Date(createdAt))).replaceAll(/[\\/:*?"<>|]/gu, '-').slice(0, 120);
+function normalizeBackupName(value: string | undefined, profileName: string, createdAt: string, kind: Exclude<BackupKind, 'uploaded'>, slug?: string): string {
+  const base = (value?.trim() || defaultBackupName(profileName, kind, new Date(createdAt), slug)).replaceAll(/[\\/:*?"<>|]/gu, '-').slice(0, 120);
   return base.endsWith('.zip') ? base : `${base}.zip`;
 }
 
@@ -2494,10 +2497,11 @@ function parseManifest(value: unknown): BackupManifest {
   if (!isRecord(value) || value.schemaVersion !== BACKUP_SCHEMA_VERSION || typeof value.id !== 'string' || typeof value.name !== 'string' || typeof value.createdAt !== 'string' || typeof value.profileId !== 'string' || typeof value.profileName !== 'string' || (value.layout !== 'data' && value.layout !== 'public') || typeof value.sizeBytes !== 'number' || typeof value.checksumSha256 !== 'string' || typeof value.fileCount !== 'number') throw new Error('Invalid backup manifest');
   const source: BackupSource = value.source === 'uploaded' ? 'uploaded' : 'created';
   const kind = typeof value.kind === 'string' && (BACKUP_KINDS as readonly string[]).includes(value.kind) ? value.kind : undefined;
-  const { kind: _stored, autoNamed, note, purpose, ...rest } = value;
+  const { kind: _stored, autoNamed, note, purpose, remote, ...rest } = value;
   const kept = typeof note === 'string' ? normalizeBackupNote(note) : '';
   const why = typeof purpose === 'string' && (BACKUP_PURPOSES as readonly string[]).includes(purpose) ? purpose : undefined;
-  return { ...rest, source, ...(kind ? { kind } : {}), ...(autoNamed === true ? { autoNamed: true } : {}), ...(why ? { purpose: why } : {}), ...(kept ? { note: kept } : {}) } as unknown as BackupManifest;
+  const from = typeof remote === 'string' && (R2_CONNECTION_MODES as readonly string[]).includes(remote) ? remote : undefined;
+  return { ...rest, source, ...(kind ? { kind } : {}), ...(autoNamed === true ? { autoNamed: true } : {}), ...(why ? { purpose: why } : {}), ...(kept ? { note: kept } : {}), ...(from ? { remote: from } : {}) } as unknown as BackupManifest;
 }
 
 function parseSchedule(value: unknown): LocalBackupSchedule | null {

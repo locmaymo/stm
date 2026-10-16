@@ -91,6 +91,16 @@ export interface SetupStatus {
     /** What the account that already owns this manager is called, if one does. */
     readonly owner: string | null;
   };
+  /**
+   * Opening this manager with the Google account whose Drive holds its
+   * backups. Offered below Cloudflare's: it brings a wiped machine back the
+   * same way, and Cloudflare stays the way this project recommends.
+   */
+  readonly googleSignIn?: {
+    readonly available: boolean;
+    /** The address of the Google account that may open this manager, if one may. */
+    readonly owner: string | null;
+  };
 }
 
 /**
@@ -502,6 +512,12 @@ export interface BackupManifest {
   readonly fingerprint?: string;
   /** What the reader wrote down about a restore point when they made it. */
   readonly note?: string;
+  /**
+   * Where a recovery point brought back into the library came from, so it is
+   * named for that place rather than for R2. Absent on one fetched before this
+   * was recorded, and on every other kind.
+   */
+  readonly remote?: R2ConnectionMode;
 }
 
 /** A connection setting that can come from `.env` instead of the panel. */
@@ -525,8 +541,42 @@ export interface LocalBackupSchedule {
  * `keys` is an endpoint, bucket and S3 key pair entered by hand or set in
  * `.env`, which stays available for anyone who does not want to sign in.
  * `cloudflare` is a bucket the manager set up after signing in to Cloudflare.
+ * `google` is a folder in the user's Google Drive, after signing in with Google.
  */
-export type R2ConnectionMode = 'keys' | 'cloudflare';
+export type R2ConnectionMode = 'keys' | 'cloudflare' | 'google';
+export const R2_CONNECTION_MODES: readonly R2ConnectionMode[] = ['keys', 'cloudflare', 'google'];
+/** The word a fetched recovery point's file name carries for where it came from. */
+export const REMOTE_NAME_SLUG: Readonly<Record<R2ConnectionMode, string>> = { cloudflare: 'cloudflare', google: 'drive', keys: 's3' };
+
+export type GoogleConnectionState = 'disconnected' | 'connected' | 'reconnect_required';
+
+/** How far a backup on its way to the cloud has got. */
+export interface R2Transfer {
+  readonly tier: 'hot' | 'cold';
+  readonly startedAt: string;
+  readonly completedBytes: number;
+  readonly totalBytes: number;
+  readonly completedItems: number;
+  readonly totalItems: number;
+  /** Every file is read; the last packs are still on their way. */
+  readonly finishing: boolean;
+}
+
+/** A Google Drive connected for backups, as the panel shows it. */
+export interface GoogleConnectionStatus {
+  readonly state: GoogleConnectionState;
+  readonly email: string | null;
+  readonly name: string | null;
+  readonly connectedAt: string | null;
+  readonly lastError: string | null;
+  /** The machine that signed in with this Drive after this one; see CloudflareConnectionStatus. */
+  readonly displacedBy: string | null;
+  /**
+   * The whole Google account's space, shared with Gmail and Photos, and what the
+   * backups in the app's hidden folder take of it; null until read.
+   */
+  readonly storage: { readonly usedBytes: number; readonly limitBytes: number | null; readonly backupBytes: number | null; readonly backupFiles: number | null; readonly readAt: string } | null;
+}
 
 export type CloudflareConnectionState = 'disconnected' | 'choose_account' | 'connected' | 'reconnect_required';
 
@@ -614,6 +664,8 @@ export interface R2Config {
   readonly mode: R2ConnectionMode;
   /** Null when this manager has no Cloudflare OAuth client configured. */
   readonly cloudflare: CloudflareConnectionStatus | null;
+  /** Null when this manager has no Google sign-in configured. */
+  readonly google: GoogleConnectionStatus | null;
   readonly enabled: boolean;
   readonly endpoint: string | null;
   readonly bucket: string | null;
@@ -621,6 +673,11 @@ export interface R2Config {
   readonly environmentFields: readonly R2EnvironmentField[];
   readonly configured: boolean;
   readonly lastUploadAt: string | null;
+  /**
+   * A backup being sent right now, scheduled or pressed for, so the console
+   * can show it moving; null when nothing is being sent.
+   */
+  readonly transfer: R2Transfer | null;
   readonly accessKeyIdMasked: string | null;
   readonly secretAccessKeyConfigured: boolean;
   readonly schedule: {
@@ -1855,11 +1912,15 @@ export function usageBytes(value: unknown): number | null {
   return Math.min(Math.round(value), 2 ** 50);
 }
 
-/** Whether backups go to R2, and through which kind of connection. */
-export type R2UsageMode = 'off' | 'keys' | 'cloudflare';
+/**
+ * Whether cloud backups are on, and through which kind of connection. The
+ * field is still called `r2` on the wire; `google` is a Google Drive
+ * connection, which managers before 1.2.0 reported as `keys`.
+ */
+export type R2UsageMode = 'off' | 'keys' | 'cloudflare' | 'google';
 
 export function isR2UsageMode(value: unknown): value is R2UsageMode {
-  return value === 'off' || value === 'keys' || value === 'cloudflare';
+  return value === 'off' || value === 'keys' || value === 'cloudflare' || value === 'google';
 }
 
 /** What the panel shows about how much the manager itself is used. */

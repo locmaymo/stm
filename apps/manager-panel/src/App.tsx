@@ -38,16 +38,17 @@ import { NotificationBell, PushOfferDialog, PushToggle } from './notification-be
 import { answerTermuxOffer, appFeatures, bubbleRequest, hasAppChannel, importZipFromApp, openInApp, type AppFeatures, type BubbleState, type ImportSource } from './app-bridge.js';
 import { BUBBLE_OFFER_KEY, bubbleOfferWanted, offerAccepted, offerDue, offerSnoozed, readOffer, writeOffer } from './offers.js';
 import { collectCloudflareResult, framed, inPhoneApp, openReturnWindow, popupsBlocked, whenAbandoned, type CollectedResult } from './oauth.js';
-import type { AccessGatewayState, AccessLinkKind, AccessLinkPreference, AccessLinkTarget, BackupManifest, CloudflareAccountProblem, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LegalReview, LogEntry, LogSourceFilter, ManagerRelease, ManagerSettingsOffer, ManagerUpdateStatus, NotificationSummary, OnlineState, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, SaverState, SetupChecklistState, SetupStep, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, AccessLinkKind, AccessLinkPreference, AccessLinkTarget, BackupManifest, CloudflareAccountProblem, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LegalReview, LogEntry, LogSourceFilter, ManagerRelease, ManagerSettingsOffer, ManagerUpdateStatus, NotificationSummary, OnlineState, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2Transfer, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, SaverState, SetupChecklistState, SetupStep, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, isCloudJob, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
 import termuxGuideEn from './assets/termux-guide-en.webp';
 import termuxGuideVi from './assets/termux-guide-vi.webp';
 import { usePoll } from './use-poll.js';
-import { POLL_BACKGROUND_MS, POLL_RELEASE_MS, statusIntervalMs } from './polling.js';
+import { POLL_BACKGROUND_MS, POLL_RELEASE_MS, POLL_TRANSFER_MS, statusIntervalMs } from './polling.js';
 import { DEFAULT_ACCESS_LINKS, foldForSearch, translateLogEntry, translateStep } from '../../../packages/contracts/src/index.js';
 import { QrCode } from './qr-code.js';
 import { CLOUDFLARE_ORANGE, CloudflareMark } from './cloudflare-mark.js';
+import { GoogleDriveMark } from './google-drive-mark.js';
 import { bareHost, localHost, machineName, publicAddress, publicLinks, reachableAddresses, shortenHost, type PublicLink, type ReachableAddress } from './addresses.js';
 import { EmbedStage } from './embed-stage.js';
 import { AUTOSAVE_DELAY_MS, changedSettings, yamlProblem } from './config-settings.js';
@@ -235,6 +236,7 @@ function AuthGate() {
    * both of which mean the screen shows the password field and nothing else.
    */
   const [cloudflareSignIn, setCloudflareSignIn] = useState<SetupStatus['cloudflareSignIn'] | null>(null);
+  const [googleSignIn, setGoogleSignIn] = useState<SetupStatus['googleSignIn'] | null>(null);
   const [csrfToken, setCsrfToken] = useState<string | null>(null);
   const [signedOut, setSignedOut] = useState(false);
   const [preferences, setPreferences] = useState(() => readPreferences(browserStorage(), browserEnvironment()));
@@ -271,9 +273,11 @@ function AuthGate() {
   const [signInError, setSignInError] = useState<string | null>(null);
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const outcome = params.get('cloudflare');
+    // Google's sign-in comes back the same way, under its own name.
+    const provider = params.get('cloudflare') ? 'cloudflare' : 'google';
+    const outcome = params.get(provider);
     if (outcome !== 'signed_in' && outcome !== 'error') return;
-    const code = params.get('cloudflare_error') ?? '';
+    const code = params.get(`${provider}_error`) ?? '';
     if (outcome === 'error' && !authErrorKey(code)) return;
     window.history.replaceState(null, '', `${window.location.pathname}${window.location.hash}`);
     if (outcome === 'error') setSignInError(t(authErrorKey(code) as MessageKey));
@@ -284,6 +288,7 @@ function AuthGate() {
     void apiFetch('/api/v1/setup/status').then(async (response) => response.json() as Promise<SetupStatus>).then(async (status) => {
       if (cancelled) return;
       setCloudflareSignIn(status.cloudflareSignIn ?? null);
+      setGoogleSignIn(status.googleSignIn ?? null);
       if (status.setupRequired) { setMode('setup'); return; }
       // The session probe and the sign-in form are the calls where a refusal
       // is an ordinary answer rather than a session running out, so they go
@@ -345,6 +350,7 @@ function AuthGate() {
         signedOut={signedOut}
         preferences={preferences}
         cloudflare={cloudflareSignIn}
+        google={googleSignIn}
         refusal={signInError}
         onPreferencesChange={changePreferences}
         onSignedIn={signedIn}
@@ -362,9 +368,12 @@ function AuthGate() {
   return <Toaster closeLabel={t('common.close')}>{body}</Toaster>;
 }
 
-function AuthScreen({ t, mode, signedOut, preferences, cloudflare, refusal, onPreferencesChange, onSignedIn }: { t: Translate; mode: 'setup' | 'login'; signedOut: boolean; preferences: Preferences; onPreferencesChange: (value: Partial<Preferences>) => void; cloudflare: SetupStatus['cloudflareSignIn'] | null; refusal: string | null; onSignedIn: (csrfToken: string, setUp: boolean) => void }) {
+function AuthScreen({ t, mode, signedOut, preferences, cloudflare, google, refusal, onPreferencesChange, onSignedIn }: { t: Translate; mode: 'setup' | 'login'; signedOut: boolean; preferences: Preferences; onPreferencesChange: (value: Partial<Preferences>) => void; cloudflare: SetupStatus['cloudflareSignIn'] | null; google: SetupStatus['googleSignIn'] | null; refusal: string | null; onSignedIn: (csrfToken: string, setUp: boolean) => void }) {
   const [password, setPassword] = useState('');
   const [cloudflareBusy, setCloudflareBusy] = useState(false);
+  const [googleBusy, setGoogleBusy] = useState(false);
+  /** Set when this page could not open Google's sign-in and handed it over. */
+  const [googleHandOverUrl, setGoogleHandOverUrl] = useState<string | null>(null);
   /** Set when this page could not open Cloudflare's sign-in and handed it over. */
   const [handOverUrl, setHandOverUrl] = useState<string | null>(null);
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -475,6 +484,7 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, refusal, onPr
 
   const collected = (result: CollectedResult) => {
     setCloudflareBusy(false);
+    setGoogleBusy(false);
     if (result.outcome === 'error') {
       const key = authErrorKey(result.code);
       setError(key ? t(key) : t('setup.cloudSignInFailed'));
@@ -540,6 +550,30 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, refusal, onPr
       setHandOverUrl(payload.url);
     } catch { opened?.close(); setCloudflareBusy(false); setError(t('setup.connectionError')); }
   };
+  /** The same as `signInWithCloudflare`, for the Google account whose Drive holds the backups. */
+  const signInWithGoogle = async () => {
+    setGoogleHandOverUrl(null);
+    collecting.current?.();
+    const inFrame = framed();
+    const inApp = inPhoneApp();
+    const opened = inFrame && !popupsBlocked() ? openReturnWindow() : null;
+    setGoogleBusy(true); setError(null);
+    try {
+      const response = await fetch(`/api/v1/auth/google${inFrame || inApp ? '?handoff=1' : ''}`, { method: 'POST', credentials: 'same-origin' });
+      const payload = await response.json() as { url?: string; handoff?: string; error?: { code?: string; message?: string } };
+      if (!response.ok || !payload.url) { opened?.close(); setGoogleBusy(false); setError(fail.body(payload, t('setup.googleSignInFailed'))); return; }
+      if (!inFrame && !inApp) { window.location.assign(payload.url); return; }
+      if (payload.handoff) {
+        const stopCollecting = collectCloudflareResult(payload.handoff, collected);
+        const stopWatching = opened ? whenAbandoned(opened, () => { stopCollecting(); setGoogleBusy(false); }) : null;
+        collecting.current = () => { stopCollecting(); stopWatching?.(); };
+      }
+      if (opened) { opened.location.href = payload.url; return; }
+      if (inApp) { setGoogleBusy(false); window.location.assign(payload.url); return; }
+      setGoogleBusy(false);
+      setGoogleHandOverUrl(payload.url);
+    } catch { opened?.close(); setGoogleBusy(false); setError(t('setup.connectionError')); }
+  };
   /*
    * The second way in, where this build has one.
    *
@@ -586,6 +620,29 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, refusal, onPr
         </Button>}
       <span className="cloud-way-tag" aria-hidden="true">{t('setup.cloudRecommended')}</span>
     </div>
+  </> : null;
+  /*
+   * Google, under Cloudflare and quieter than it: an outline button with the
+   * Drive logo, no tag. It brings a wiped machine back the same way, for the
+   * reader whose backups are in their Google Drive.
+   */
+  const googleWay = google?.available ? <>
+    {cloudflare?.available ? null : <div className="auth-divider"><span>{t('setup.or')}</span></div>}
+    {googleHandOverUrl
+      ? <Button asChild size="lg" variant="outline" className="w-full">
+        <a href={googleHandOverUrl} target="_blank" rel="noopener noreferrer"><GoogleDriveMark />{t('setup.googleSignIn')}</a>
+      </Button>
+      : <Button
+        type="button"
+        size="lg"
+        variant="outline"
+        className="w-full"
+        disabled={busy}
+        loading={googleBusy}
+        onClick={() => { if (consented()) void signInWithGoogle(); }}
+      >
+        <GoogleDriveMark />{t('setup.googleSignIn')}
+      </Button>}
   </> : null;
 
   return (
@@ -636,6 +693,7 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, refusal, onPr
               </Field>
             ) : null}
             {setup ? cloudflareWay : null}
+            {setup ? googleWay : null}
             {setup ? (
               <TermsConsent
                 t={t}
@@ -655,6 +713,7 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, refusal, onPr
               {setup ? t('setup.createAdmin') : t('setup.signIn')}
             </Button>
             {!setup ? cloudflareWay : null}
+            {!setup ? googleWay : null}
           </form>
         </CardContent>
       </Card>}
@@ -902,7 +961,8 @@ function splitOnPlaceholders(template: string): Array<{ text: string; placeholde
  */
 function FirstRun({ t, csrfToken, preferences, onPreferencesChange, onDone }: { t: Translate; csrfToken: string; preferences: Preferences; onPreferencesChange: (value: Partial<Preferences>) => void; onDone: () => void }) {
   const [available, setAvailable] = useState<boolean | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [offers, setOffers] = useState({ cloudflare: false, google: false });
+  const [busy, setBusy] = useState<'cloudflare' | 'google' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const fail = failures(preferences.locale);
 
@@ -914,26 +974,29 @@ function FirstRun({ t, csrfToken, preferences, onPreferencesChange, onDone }: { 
         if (cancelled) return;
         // Already connected - a manager whose settings came from `.env`, say.
         // There is nothing to offer and nothing to ask.
-        if (!config?.cloudflare || config.configured) { onDone(); return; }
+        if ((!config?.cloudflare && !config?.google) || config.configured) { onDone(); return; }
+        setOffers({ cloudflare: Boolean(config.cloudflare), google: Boolean(config.google) });
         setAvailable(true);
       })
       .catch(() => { if (!cancelled) onDone(); });
     return () => { cancelled = true; };
   }, []);
 
-  const connect = async () => {
-    setBusy(true);
+  const connect = async (provider: 'cloudflare' | 'google') => {
+    setBusy(provider);
     setError(null);
+    const failedText = provider === 'google' ? t('console.gdConnectFailed') : t('console.cfConnectFailed');
     try {
       // In the phone app the browser's last page sends the reader back to the
       // app rather than opening a second console there; see oauth.ts.
-      const response = await apiFetch(`/api/v1/r2/cloudflare/connect${inPhoneApp() ? '?handoff=1' : ''}`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      const response = await apiFetch(`/api/v1/r2/${provider}/connect${inPhoneApp() ? '?handoff=1' : ''}`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       const payload = await response.json() as { url?: string; error?: { message?: string } };
-      if (!response.ok || !payload.url) { setError(fail.body(payload, t('console.cfConnectFailed'))); return; }
-      // Cloudflare answers back to the console's own address, which lands on
-      // the Data page with the connection made; see handleCloudflareCallback.
+      if (!response.ok || !payload.url) { setError(fail.body(payload, failedText)); return; }
+      // Either one answers back to the console's own address, which lands on
+      // the Data page with the connection made; see handleCloudflareCallback
+      // and handleGoogleCallback.
       window.location.assign(payload.url);
-    } catch { setError(t('console.cfConnectFailed')); } finally { setBusy(false); }
+    } catch { setError(failedText); } finally { setBusy(null); }
   };
 
   if (available !== true) return <div className="auth-shell" role="status" aria-busy="true" />;
@@ -978,11 +1041,18 @@ function FirstRun({ t, csrfToken, preferences, onPreferencesChange, onDone }: { 
             <li className="cloud-offer-point"><History /><span>{t('setup.cloudPointRestore')}</span></li>
           </ul>
           {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
+          {/* Cloudflare first and in its own colour, the recommended way; the
+              Drive under it in an outline with its logo, the way Google's own
+              sign-in buttons look, for whoever has no card to give Cloudflare. */}
           <div className="grid gap-2">
-            <Button size="lg" className="w-full hover:opacity-90" style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }} loading={busy} onClick={() => connect()}>
+            {offers.cloudflare ? <Button size="lg" className="w-full hover:opacity-90" style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }} loading={busy === 'cloudflare'} disabled={busy !== null} onClick={() => connect('cloudflare')}>
               <CloudflareMark />{t('setup.cloudConnect')}
-            </Button>
-            <Button variant="ghost" size="lg" className="w-full" disabled={busy} onClick={onDone}>{t('setup.cloudSkip')}</Button>
+            </Button> : null}
+            {offers.cloudflare && offers.google ? <div className="auth-divider"><span>{t('setup.or')}</span></div> : null}
+            {offers.google ? <Button size="lg" variant="outline" className="w-full" loading={busy === 'google'} disabled={busy !== null} onClick={() => connect('google')}>
+              <GoogleDriveMark />{t('console.gdConnect')}
+            </Button> : null}
+            <Button variant="ghost" size="lg" className="w-full" disabled={busy !== null} onClick={onDone}>{t('setup.cloudSkip')}</Button>
           </div>
         </CardContent>
       </Card>
@@ -1076,6 +1146,29 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
    * that was backing nothing up looked exactly like one that was.
    */
   const [r2Problem, setR2Problem] = useState<CloudflareAccountProblem | null>(null);
+  /*
+   * The notice across the top of every page, put away until R2 is turned on.
+   *
+   * Somebody can connect Cloudflare for the fixed links alone and never want
+   * R2, and a notice on every page they cannot close reads as something being
+   * broken. Put away for this browser only; the Cloud backup card and the
+   * Cloudflare connection still say it, and forgetting it once R2 is on lets
+   * it speak again if it ever goes off.
+   */
+  const [r2NoticeLater, setR2NoticeLater] = useState(() => { try { return localStorage.getItem(R2_NOTICE_LATER_KEY) === '1'; } catch { return false; } });
+  const putR2NoticeAway = () => { setR2NoticeLater(true); try { localStorage.setItem(R2_NOTICE_LATER_KEY, '1'); } catch { /* shown again next visit */ } };
+  /*
+   * What the manager says about the account, and the only place the notice is
+   * let speak again: when it says R2 is on. Not from an effect on the value -
+   * it starts out null before the manager has answered, which read as R2 being
+   * on and brought the notice back on every reload.
+   */
+  const settleR2Problem = (problem: CloudflareAccountProblem | null) => {
+    setR2Problem(problem);
+    if (problem !== null) return;
+    setR2NoticeLater(false);
+    try { localStorage.removeItem(R2_NOTICE_LATER_KEY); } catch { /* nothing kept */ }
+  };
   const [reconnectUrl, setReconnectUrl] = useState<string | null>(null);
   /*
    * A newer manager than this one, when the project has published one.
@@ -1182,6 +1275,61 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
    * click is still a click, unless this browser has already refused one - in
    * which case the button below becomes a plain link; see oauth.ts.
    */
+  /**
+   * Take a Google Drive back, from the overview.
+   *
+   * Straight to Google where this page can send itself; a console in a frame
+   * or in the phone app goes to the Data page, whose connect button knows how
+   * to hand a sign-in over and collect it.
+   */
+  const connectGoogleAgain = async (): Promise<void> => {
+    if (framed() || inPhoneApp()) { navigate('data'); return; }
+    try {
+      const response = await apiFetch('/api/v1/r2/google/connect', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      const payload = await response.json() as { url?: string };
+      if (response.ok && payload.url) { window.location.assign(payload.url); return; }
+    } catch {
+      // The Data page has the same button and says what went wrong.
+    }
+    navigate('data');
+  };
+  /**
+   * Connect Cloudflare for the fixed links, from beside a link.
+   *
+   * Not the backup dialog: the backups stay where they go, and an account with
+   * no R2 still gets its addresses; see `completeCloudflareForLinks`. The same
+   * tab-and-collect as every other sign-in where this console is in a frame,
+   * and the backup dialog where this browser refuses to open the tab.
+   */
+  const createFixedLinks = async (): Promise<void> => {
+    const inFrame = framed();
+    const inApp = inPhoneApp();
+    if (inFrame && popupsBlocked()) { openConnect(); return; }
+    const tab = inFrame ? openReturnWindow() : null;
+    try {
+      const response = await apiFetch(`/api/v1/r2/cloudflare/connect?for=links${inFrame || inApp ? '&handoff=1' : ''}`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      const payload = await response.json() as { url?: string; handoff?: string; error?: { message?: string } };
+      if (!response.ok || !payload.url) { tab?.close(); toast({ title: fail.body(payload, t('console.cfConnectFailed')), tone: 'destructive' }); return; }
+      if (!inFrame && !inApp) { window.location.assign(payload.url); return; }
+      if (payload.handoff) {
+        const stop = collectCloudflareResult(payload.handoff, (result) => settleLinks(result.outcome, result.code));
+        if (tab) whenAbandoned(tab, stop);
+      }
+      if (tab) { tab.location.href = payload.url; return; }
+      window.location.assign(payload.url);
+    } catch { tab?.close(); toast({ title: t('console.cfConnectFailed'), tone: 'destructive' }); }
+  };
+  const settleLinks = (outcome: string, code: string): void => {
+    if (outcome === 'links') toast({ title: t('console.cfLinksReady'), tone: 'success', duration: 8000 });
+    else toast({ title: cloudflareErrorText(t, code), tone: 'destructive' });
+  };
+  // Back from making the links, said once; the Data page answers its own.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('cloudflare') !== 'links') return;
+    window.history.replaceState(null, '', `${window.location.pathname}${window.location.hash}`);
+    settleLinks('links', '');
+  }, []);
   const signInToCloudflareAgain = async (): Promise<void> => {
     const inFrame = framed();
     const opened = inFrame && !popupsBlocked() ? openReturnWindow() : null;
@@ -1203,7 +1351,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
   const recheckR2 = async (quiet = false) => {
     const outcome = await recheckR2Activation(csrfToken);
     if (outcome.state === 'enabled') {
-      setR2Problem(null);
+      settleR2Problem(null);
       toast({ title: t('console.cfConnected', { bucket: outcome.config.cloudflare?.bucket ?? '' }), tone: 'success' });
     } else if (!quiet) {
       toast({ title: outcome.state === 'still_off' ? t('console.cfR2StillOff') : fail.body(outcome.payload, t('console.cfConnectFailed')), tone: 'destructive' });
@@ -1321,7 +1469,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
      * machine had been locked out of.
      */
     setR2Owner(status.r2Owner);
-    setR2Problem(status.r2Problem);
+    settleR2Problem(status.r2Problem);
     /*
      * The profiles coming back onto this machine's disk after it was replaced.
      *
@@ -1853,6 +2001,8 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
   const checklistReady = checklistRead && installationsLoaded && securityLoaded;
   const stepsSeen: Record<SetupStep, boolean> = {
     install: activeInstallation?.status === 'ready',
+    // Backing up to the Drive is not a Cloudflare account: the account is
+    // still worth connecting for the fixed links, so it stays on the list.
     cloudflare: cloudflareSignedIn || (checklistR2?.mode === 'keys' && checklistR2.configured),
     password: managerPasswordSet === true,
     pin: accessSecurity.passwordConfigured,
@@ -1875,7 +2025,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     { id: 'cloudflare', label: t('console.checkCloudflare'), icon: <CloudflareMark />, done: stepDone('cloudflare'), onSelect: openConnect },
     { id: 'password', label: t('console.checkManagerPassword'), icon: <ShieldCheck />, done: stepDone('password'), onSelect: () => setChecklistPasswordOpen(true) },
     { id: 'pin', label: t('console.checkPin'), icon: <KeyRound />, done: stepDone('pin'), onSelect: () => setChecklistPinOpen(true) },
-    { id: 'r2', label: t('console.checkR2'), icon: <Cloud />, done: stepDone('r2'), onSelect: openConnect },
+    { id: 'r2', label: t(checklistR2?.mode === 'google' ? 'console.checkDrive' : 'console.checkR2'), icon: <Cloud />, done: stepDone('r2'), onSelect: openConnect },
     { id: 'open', label: t('console.checkOpen'), icon: <ArrowUpRight />, done: stepDone('open'), onSelect: () => pointAt('tunnel') },
   ];
   const checklist = <>
@@ -1979,10 +2129,12 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
             {displaced && r2Owner && shouldShowDisplaced(r2Owner.label, dismissedDisplaced)
               ? <div className="mb-(--section-gap)"><Alert variant="destructive">
                 <ShieldCheck />
-                <AlertTitle>{t('console.r2DisplacedTitle')}</AlertTitle>
+                <AlertTitle>{t(checklistR2?.mode === 'google' ? 'console.r2DisplacedTitleGoogle' : 'console.r2DisplacedTitle')}</AlertTitle>
                 <AlertDescription className="grid gap-2">
-                  <span>{t('console.r2DisplacedBody', { name: machineName(r2Owner.label), when: new Date(r2Owner.claimedAt ?? r2Owner.lastSeenAt).toLocaleString() })}</span>
-                  <span className="flex flex-wrap items-center gap-2">{reconnectUrl
+                  <span>{t(checklistR2?.mode === 'google' ? 'console.r2DisplacedBodyGoogle' : 'console.r2DisplacedBody', { name: machineName(r2Owner.label), when: new Date(r2Owner.claimedAt ?? r2Owner.lastSeenAt).toLocaleString() })}</span>
+                  <span className="flex flex-wrap items-center gap-2">{checklistR2?.mode === 'google'
+                    ? <Button size="sm" variant="outline" onClick={() => void connectGoogleAgain()}><GoogleDriveMark />{t('console.gdReconnect')}</Button>
+                    : reconnectUrl
                     ? <Button size="sm" asChild style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }} className="hover:opacity-90">
                       <a href={reconnectUrl} target="_blank" rel="noopener noreferrer"><CloudflareMark />{t('console.r2DisplacedSignIn')}</a>
                     </Button>
@@ -2008,13 +2160,13 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
                 <AlertDescription>{t('console.profilesFillingBody')}</AlertDescription>
               </Alert></div>
               : null}
-            {r2Problem === 'r2_not_enabled'
+            {r2Problem === 'r2_not_enabled' && !r2NoticeLater
               ? <div className="mb-(--section-gap)"><Alert variant="destructive">
                 <TriangleAlert />
                 <AlertTitle>{t('console.cfR2NotEnabledTitle')}</AlertTitle>
                 <AlertDescription className="grid gap-2">
                   <span>{t('console.cfR2NotEnabledBody')}</span>
-                  <R2ActivationActions t={t} onRecheck={recheckR2} />
+                  <R2ActivationActions t={t} onRecheck={recheckR2} onLater={putR2NoticeAway} />
                 </AlertDescription>
               </Alert></div>
               : null}
@@ -2093,7 +2245,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
             {page !== 'data' && dataActivity?.label
               ? <DataActivityStrip t={t} label={dataActivity.label} step={dataActivity.step} percent={dataActivity.percent} onOpen={() => navigate('data')} />
               : null}
-            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{termuxOffer ? <TermuxOfferCard t={t} onStart={openTermuxImport} onDismiss={() => { answerTermuxOffer(true); setTermuxOfferAnswered(true); }} /> : activeInstallation?.status === 'ready' ? <BubbleOfferCard t={t} /> : null}{hero}{checklist}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} hostAddress={shownHostAddress(online?.hostAddress ?? null)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} onSetAccessLink={setAccessLink} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} canBackUp={activeProfileId !== null && saver?.enabled !== true} onBackup={openBackup} onUpload={openUpload} onUploadFromPhone={phoneImport ? openPhoneUpload : undefined} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? null : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} onSetAccessLink={setAccessLink} startup={startup} saver={saver} online={online} onSetAutoStart={setAutoStartSillyTavern} onSetSaver={setSaverMode} onSetKeepOnline={setKeepOnline} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} onEraseEverything={eraseEverything} /> : <ResourcePanel page={page} t={t} />}
+            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{termuxOffer ? <TermuxOfferCard t={t} onStart={openTermuxImport} onDismiss={() => { answerTermuxOffer(true); setTermuxOfferAnswered(true); }} /> : activeInstallation?.status === 'ready' ? <BubbleOfferCard t={t} /> : null}{hero}{checklist}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} hostAddress={shownHostAddress(online?.hostAddress ?? null)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} onSetAccessLink={setAccessLink} onConnectCloudflare={() => void createFixedLinks()} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} canBackUp={activeProfileId !== null && saver?.enabled !== true} onBackup={openBackup} onUpload={openUpload} onUploadFromPhone={phoneImport ? openPhoneUpload : undefined} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? null : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} onConnectCloudflare={() => void createFixedLinks()} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} onSetAccessLink={setAccessLink} startup={startup} saver={saver} online={online} onSetAutoStart={setAutoStartSillyTavern} onSetSaver={setSaverMode} onSetKeepOnline={setKeepOnline} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} onEraseEverything={eraseEverything} /> : <ResourcePanel page={page} t={t} />}
             {/* Kept, hidden, while it has work under way, so leaving for another
                 page does not take the work's progress and its last question
                 with it; the strip above stands in for it meanwhile. */}
@@ -3229,7 +3381,7 @@ function RuntimeCard({
   </>;
 }
 
-function AccessPanel({ t, process, tunnel, config, security, sillyTavernPort, hostAddress, onAction, onSetLan, onSetPassword, onSetAccessLink }: { t: Translate; process: ProcessState; tunnel: TunnelState; config: ConfigDocument | null; security: AccessGatewayState; sillyTavernPort: number; /** The address the machine's host gave it, when there is one worth showing. */ hostAddress: string | null; onAction: (path: string, body?: unknown) => Promise<void>; onSetLan: (lan: boolean) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetAccessLink: (target: AccessLinkTarget, change: Partial<AccessLinkPreference>) => Promise<void> }) {
+function AccessPanel({ t, process, tunnel, config, security, sillyTavernPort, hostAddress, onAction, onSetLan, onSetPassword, onSetAccessLink, onConnectCloudflare }: { t: Translate; process: ProcessState; tunnel: TunnelState; config: ConfigDocument | null; security: AccessGatewayState; sillyTavernPort: number; /** The address the machine's host gave it, when there is one worth showing. */ hostAddress: string | null; onAction: (path: string, body?: unknown) => Promise<void>; onSetLan: (lan: boolean) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetAccessLink: (target: AccessLinkTarget, change: Partial<AccessLinkPreference>) => Promise<void>; onConnectCloudflare: () => void }) {
   const [busy, setBusy] = useState(false);
   const [securityBusy, setSecurityBusy] = useState(false);
   const running = process.status === 'running';
@@ -3402,7 +3554,7 @@ function AccessPanel({ t, process, tunnel, config, security, sillyTavernPort, ho
             display={publicUrl ? bareHost(publicUrl) : ''}
             shorten
             links={publicLinks(tunnel)}
-            choice={{ target: 'sillyTavern', tunnel, onChange: onSetAccessLink }}
+            choice={{ target: 'sillyTavern', tunnel, onChange: onSetAccessLink, onConnectCloudflare }}
             disabledHint={tunnelWanted ? t('console.addressComing') : t('console.tunnelOffShort')}
             pending={tunnelWanted}
           />
@@ -3635,6 +3787,8 @@ interface LinkChoice {
   /** Read for both addresses and the preference, whichever is on screen. */
   readonly tunnel: TunnelState;
   readonly onChange: (target: AccessLinkTarget, change: Partial<AccessLinkPreference>) => Promise<void>;
+  /** Where a fixed address comes from, offered while there is none. */
+  readonly onConnectCloudflare?: () => void;
 }
 
 /**
@@ -3736,6 +3890,10 @@ function ShareDialog({ t, open, onOpenChange, label, links, description, choice 
   const fixedUrl = choice?.tunnel.proxyUrl ?? null;
   const ownUrl = choice?.tunnel.url ?? null;
   const both = choice && fixedUrl && ownUrl ? { fixed: fixedUrl, tunnel: ownUrl } : null;
+  // No Worker and none on its way: the place the fixed address would be says
+  // what it is and what it takes, so the reader knows there is one to have.
+  const connectCloudflare = choice?.onConnectCloudflare;
+  const fixedMissing = Boolean(connectCloudflare && ownUrl && choice?.tunnel.proxyUrl === null && choice.tunnel.proxyPending !== true);
   // A fixed address hidden before this sheet offered a choice reads as not chosen.
   const preferred: AccessLinkKind = preference.preferred === 'fixed' && preference.showFixed ? 'fixed' : 'tunnel';
   const primary = both ? both[preferred] : links[0] ?? '';
@@ -3797,6 +3955,17 @@ function ShareDialog({ t, open, onOpenChange, label, links, description, choice 
               </div>
               {copyButton(url)}
             </div>)}
+            {fixedMissing && connectCloudflare ? <div className="share-choice items-center" data-placeholder="">
+              <div className="share-link-text">
+                <span className="share-link-kind text-muted-foreground">{kinds.fixed.name}</span>
+                {/* What the address will look like, greyed out: a link to show, not to follow. */}
+                <span className="share-url opacity-50 select-none" aria-disabled="true">{choice?.target === 'manager' ? 'stm' : 'sillytavern'}.your-id.workers.dev</span>
+                <span className="share-traits">
+                  <span className="share-trait" data-tone="good"><Check aria-hidden="true" />{kinds.fixed.good}</span>
+                </span>
+              </div>
+              <Button size="xs" style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }} className="shrink-0 hover:opacity-90" onClick={() => { onOpenChange(false); connectCloudflare(); }}><CloudflareMark />{t('console.linkFixedCreate')}</Button>
+            </div> : null}
           </div>}
       </DialogBody>
     </DialogContent>
@@ -4057,6 +4226,18 @@ const BACKUP_KIND_LABEL = {
   uploaded: 'console.backupKindUploaded',
 } as const satisfies Record<BackupKind, string>;
 
+/** A recovery point brought back into the library, named for where it came from. */
+const REMOTE_KIND_LABEL = {
+  cloudflare: 'console.backupKindCloudflare',
+  google: 'console.backupKindDrive',
+  keys: 'console.backupKindKeys',
+} as const satisfies Record<R2ConnectionMode, string>;
+
+function backupKindLabel(backup: BackupManifest): (typeof BACKUP_KIND_LABEL)[BackupKind] | (typeof REMOTE_KIND_LABEL)[R2ConnectionMode] {
+  const kind = backupKind(backup);
+  return kind === 'r2' && backup.remote ? REMOTE_KIND_LABEL[backup.remote] : BACKUP_KIND_LABEL[kind];
+}
+
 /**
  * Why a backup exists, as a small coloured label.
  *
@@ -4064,8 +4245,8 @@ const BACKUP_KIND_LABEL = {
  * because they are what to reach for after a restore went wrong, and the ones
  * that happen on their own stay quiet.
  */
-function BackupKindBadge({ t, kind }: { t: Translate; kind: BackupKind }) {
-  return <span className="backup-kind" data-kind={kind}>{t(BACKUP_KIND_LABEL[kind])}</span>;
+function BackupKindBadge({ t, backup }: { t: Translate; backup: BackupManifest }) {
+  return <span className="backup-kind" data-kind={backupKind(backup)}>{t(backupKindLabel(backup))}</span>;
 }
 
 /** A name the manager chose itself, including the suffix-style names older versions chose. */
@@ -4088,7 +4269,7 @@ export function backupDisplayName(t: Translate, locale: string, backup: BackupMa
   if (!isManagerName(backup)) return backup.name;
   const when = new Date(backup.createdAt).toLocaleString(locale, { dateStyle: 'short', timeStyle: 'short' });
   if (backup.purpose === 'before-termux') return `${t('console.termuxKeptName')} · ${when}`;
-  return `${t(BACKUP_KIND_LABEL[backupKind(backup)])} · ${when}`;
+  return `${t(backupKindLabel(backup))} · ${when}`;
 }
 
 /**
@@ -4365,6 +4546,10 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   const [r2Toggling, setR2Toggling] = useState(false);
   const [cloudflareBusy, setCloudflareBusy] = useState(false);
   const [disconnectOpen, setDisconnectOpen] = useState(false);
+  const [googleSignInUrl, setGoogleSignInUrl] = useState<string | null>(null);
+  const [googleBusy, setGoogleBusy] = useState(false);
+  const [googleDisconnectOpen, setGoogleDisconnectOpen] = useState(false);
+  const [deleteDriveBackups, setDeleteDriveBackups] = useState(false);
   // What the last look at the bucket found. Kept on the card, because an answer
   // that disappears two seconds after it arrives is not an answer.
   const [r2Check, setR2Check] = useState<R2CheckResult | null>(null);
@@ -4448,6 +4633,8 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
           void checkAfterConnect(config);
         })
         .catch(() => undefined);
+    } else if (outcome === 'links') {
+      toast({ title: t('console.cfLinksReady'), tone: 'success', duration: 8000 });
     } else if (outcome === 'choose_account') {
       // The sign-in worked and the only thing left is a choice, so the form
       // that holds that choice opens rather than being described in a message
@@ -4459,14 +4646,32 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
     }
   };
 
+  /** Coming back from Google: the same two ways back as from Cloudflare. */
+  const settleGoogle = (outcome: string, code: string) => {
+    if (outcome === 'signed_in') return;
+    if (outcome === 'connected') {
+      void apiFetch('/api/v1/r2', { credentials: 'same-origin' })
+        .then(async (response) => (response.ok ? (await response.json() as { config: R2Config }).config : null))
+        .then((config) => {
+          toast({ title: t('console.gdConnected', { email: config?.google?.email ?? '' }), tone: 'success', duration: 8000 });
+          if (config) setR2Config(config);
+          void checkAfterConnect(config);
+        })
+        .catch(() => undefined);
+    } else {
+      failed(googleErrorText(t, code));
+    }
+  };
+
   // Said once, then taken out of the address so a reload does not say it again.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const outcome = params.get('cloudflare');
-    if (!outcome) return;
-    const code = params.get('cloudflare_error') ?? '';
+    const google = params.get('google');
+    if (!outcome && !google) return;
     window.history.replaceState(null, '', `${window.location.pathname}${window.location.hash}`);
-    settleCloudflare(outcome, code);
+    if (outcome) settleCloudflare(outcome, params.get('cloudflare_error') ?? '');
+    if (google) settleGoogle(google, params.get('google_error') ?? '');
   }, []);
 
   /*
@@ -4496,7 +4701,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
     } catch {
       // The next poll tries again.
     }
-  }, { intervalMs: POLL_BACKGROUND_MS });
+  }, { intervalMs: r2Config?.transfer ? POLL_TRANSFER_MS : POLL_BACKGROUND_MS });
 
   /*
    * Whether this account holds settings from another machine.
@@ -5077,6 +5282,56 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       setCloudflareSignInUrl(payload.url);
     } catch { tab?.close(); failed(t('console.cfConnectFailed')); } finally { setCloudflareBusy(false); }
   };
+  const connectGoogle = async () => {
+    setGoogleSignInUrl(null);
+    // Google's consent screen refuses frames too, so the same tab-and-collect
+    // as Cloudflare's sign-in; see connectCloudflare.
+    const inFrame = framed();
+    const inApp = inPhoneApp();
+    const tab = inFrame && !popupsBlocked() ? openReturnWindow() : null;
+    setGoogleBusy(true);
+    try {
+      const response = await apiFetch(`/api/v1/r2/google/connect${inFrame || inApp ? '?handoff=1' : ''}`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      const payload = await response.json() as { url?: string; handoff?: string; error?: { message?: string } };
+      if (!response.ok || !payload.url) { tab?.close(); failed(fail.body(payload, t('console.gdConnectFailed'))); return; }
+      if (!inFrame && !inApp) { window.location.assign(payload.url); return; }
+      if (payload.handoff) {
+        const stopCollecting = collectCloudflareResult(payload.handoff, (result) => settleGoogle(result.outcome, result.code));
+        const stopWatching = tab ? whenAbandoned(tab, stopCollecting) : null;
+        collecting.current = () => { stopCollecting(); stopWatching?.(); };
+      }
+      if (tab) { tab.location.href = payload.url; return; }
+      if (inApp) { window.location.assign(payload.url); return; }
+      setGoogleSignInUrl(payload.url);
+    } catch { tab?.close(); failed(t('console.gdConnectFailed')); } finally { setGoogleBusy(false); }
+  };
+  const disconnectGoogle = async () => {
+    setGoogleBusy(true);
+    try {
+      const response = await apiFetch('/api/v1/r2/google/disconnect', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ deleteBackups: deleteDriveBackups }) });
+      const payload = await response.json() as { revoked?: boolean; keptFor?: string | null; deletedBackups?: boolean; config?: R2Config; error?: { message?: string } };
+      if (!response.ok || !payload.config) { failed(fail.body(payload, t('console.gdDisconnectFailed'))); return; }
+      setR2Config(payload.config);
+      setDeleteDriveBackups(false);
+      if (payload.deletedBackups) done(t('console.gdBackupsDeleted'));
+      else if (payload.revoked) done(t('console.gdDisconnected'));
+      else if (payload.keptFor) toast({ title: t('console.gdDisconnectedKept', { name: machineName(payload.keptFor) }), tone: 'success', duration: 10000 });
+      else toast({ title: t('console.gdDisconnectedNotRevoked'), tone: 'destructive', duration: 12000 });
+      await refresh();
+    } catch { failed(t('console.gdDisconnectFailed')); } finally { setGoogleBusy(false); }
+  };
+  const backUpToGoogle = async () => {
+    setGoogleBusy(true);
+    try {
+      const response = await apiFetch('/api/v1/r2', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ mode: 'google', enabled: true }) });
+      const payload = await response.json() as { config?: R2Config; error?: { message?: string } };
+      if (!response.ok || !payload.config) { failed(fail.body(payload, t('console.r2SaveFailed'))); return; }
+      setR2Config(payload.config);
+      done(t('console.gdConnected', { email: payload.config.google?.email ?? '' }));
+      await refresh();
+      await checkAfterConnect(payload.config);
+    } catch { failed(t('console.r2SaveFailed')); } finally { setGoogleBusy(false); }
+  };
   /*
    * Ask again whether the account has R2 now.
    *
@@ -5184,6 +5439,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   const checkAfterConnect = async (config: R2Config | null) => {
     if (!config?.enabled || !config.configured) return;
     if (config.mode === 'cloudflare' && config.cloudflare?.state !== 'connected') return;
+    if (config.mode === 'google' && config.google?.state !== 'connected') return;
     await checkR2();
   };
   const uploadR2 = async () => {
@@ -5314,8 +5570,8 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   const backupColumns: DataTableColumn<BackupManifest>[] = [
     // The kind rides under the name on a phone, where there is no room for a
     // column of its own, and has its column from `md` up.
-    { id: 'name', header: t('common.name'), sortable: true, cell: (backup) => <span className="grid min-w-0 justify-items-start gap-1"><span className="font-medium break-all" title={backup.name}>{displayName(backup)}</span>{backup.note ? <span className="line-clamp-2 text-xs whitespace-pre-line text-muted-foreground" title={backup.note}>{backup.note}</span> : null}<span className="md:hidden"><BackupKindBadge t={t} kind={backupKind(backup)} /></span></span> },
-    { id: 'kind', header: t('console.backupKind'), sortable: true, showFrom: 'md', cell: (backup) => <BackupKindBadge t={t} kind={backupKind(backup)} /> },
+    { id: 'name', header: t('common.name'), sortable: true, cell: (backup) => <span className="grid min-w-0 justify-items-start gap-1"><span className="font-medium break-all" title={backup.name}>{displayName(backup)}</span>{backup.note ? <span className="line-clamp-2 text-xs whitespace-pre-line text-muted-foreground" title={backup.note}>{backup.note}</span> : null}<span className="md:hidden"><BackupKindBadge t={t} backup={backup} /></span></span> },
+    { id: 'kind', header: t('console.backupKind'), sortable: true, showFrom: 'md', cell: (backup) => <BackupKindBadge t={t} backup={backup} /> },
     { id: 'createdAt', header: t('console.backupCreated'), sortable: true, showFrom: 'sm', cell: (backup) => <span className="whitespace-nowrap text-muted-foreground">{new Date(backup.createdAt).toLocaleString()}</span> },
     { id: 'sizeBytes', header: t('console.backupSize'), sortable: true, align: 'end', showFrom: 'sm', cell: (backup) => <span className="whitespace-nowrap text-muted-foreground">{formatBytes(backup.sizeBytes)}</span> },
     {
@@ -5627,6 +5883,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
                 screen, and what gives way there is the label beside them - but
                 a desktop card has the width, and stacking them there left a
                 column of two short buttons against a row with a name on it. */}
+            {r2Config.transfer && r2Busy === null ? <TransferLine t={t} transfer={r2Config.transfer} /> : null}
             <div className="flex flex-col gap-2 sm:flex-row">
               <Button size="sm" onClick={() => uploadR2()} disabled={r2Busy !== null || !r2Config.enabled}><CloudUpload />{t('console.r2UploadLatest')}</Button>
               <Tooltip><TooltipTrigger asChild><span className="inline-flex">
@@ -5657,7 +5914,9 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
           {/* One set of figures, not two: Cloudflare's own when it can be asked,
               because it sees every machine on the bucket, and the manager's
               count when it cannot. */}
-          {signedIn
+          {r2Config.mode === 'google'
+            ? <GoogleUsage t={t} config={r2Config} />
+            : signedIn
             ? <CloudflareUsagePanel t={t} lastUploadAt={r2Config.lastUploadAt} fallback={<R2Usage t={t} config={r2Config} />} onRegisterRefresh={(fn) => { usageRefresh.current = fn; }} />
             : <R2Usage t={t} config={r2Config} />}
           <div className="grid gap-2">
@@ -5738,6 +5997,11 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       onRecheckR2={recheckR2}
       onUseCloudflare={backUpToCloudflare}
       onSaveKeys={saveR2Keys}
+      googleBusy={googleBusy}
+      googleSignInUrl={googleSignInUrl}
+      onConnectGoogle={() => void connectGoogle()}
+      onDisconnectGoogle={() => setGoogleDisconnectOpen(true)}
+      onUseGoogle={backUpToGoogle}
     />
     <R2ScheduleDialog t={t} open={r2ScheduleOpen} onOpenChange={setR2ScheduleOpen} config={r2Config} onSave={saveR2Schedule} />
     <ConfirmDialog
@@ -5749,6 +6013,23 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       cancelLabel={t('common.cancel')}
       onConfirm={disconnectCloudflare}
     />
+    <ConfirmDialog
+      open={googleDisconnectOpen}
+      onOpenChange={setGoogleDisconnectOpen}
+      title={t('console.gdDisconnectTitle')}
+      description={t('console.gdDisconnectBody')}
+      confirmLabel={t('console.gdDisconnect')}
+      cancelLabel={t('common.cancel')}
+      onConfirm={disconnectGoogle}
+    >
+      <div className="flex items-start gap-2">
+        <Checkbox id="gd-delete-backups" checked={deleteDriveBackups} onCheckedChange={(checked) => setDeleteDriveBackups(checked === true)} className="mt-0.5" />
+        <label htmlFor="gd-delete-backups" className="grid gap-0.5 text-sm">
+          <span>{t('console.gdDeleteBackups')}</span>
+          <span className="text-xs text-muted-foreground">{t('console.gdDeleteBackupsHint')}</span>
+        </label>
+      </div>
+    </ConfirmDialog>
   </div>;
 }
 
@@ -5762,6 +6043,9 @@ function destinationText(t: Translate, config: R2Config | null): string {
    * beside a notice at the top of the page naming the account it had just
    * been locked out of. What it has lost is permission, not the address.
    */
+  if (config?.mode === 'google' && config.google?.displacedBy) {
+    return t('console.r2DestinationLostGoogle', { email: config.google.email ?? '' });
+  }
   const lost = config?.mode === 'cloudflare' ? config.cloudflare?.displacedBy ?? null : null;
   if (lost) {
     return t('console.r2DestinationLost', {
@@ -5771,6 +6055,7 @@ function destinationText(t: Translate, config: R2Config | null): string {
     });
   }
   if (!config?.configured) return t('console.r2DestinationNone');
+  if (config.mode === 'google') return t('console.r2DestinationGoogle', { email: config.google?.email ?? '' });
   const bucket = (config.mode === 'cloudflare' ? config.cloudflare?.bucket : config.bucket) || t('console.r2DestinationUnnamed');
   return config.mode === 'cloudflare'
     ? t('console.r2DestinationCloudflare', { bucket, account: config.cloudflare?.account?.name ?? '' })
@@ -5826,7 +6111,10 @@ const R2_RECHECK_GAP_MS = 5000;
  * comes back into view - which is what finishing over there looks like from
  * here.
  */
-function R2ActivationActions({ t, onRecheck }: { t: Translate; onRecheck: (quiet?: boolean) => Promise<void> }) {
+/** Where the page-wide R2 notice remembers being put away; see `r2NoticeLater`. */
+const R2_NOTICE_LATER_KEY = 'stm-r2-notice-later';
+
+function R2ActivationActions({ t, onRecheck, onLater }: { t: Translate; onRecheck: (quiet?: boolean) => Promise<void>; /** Given where the notice may be put away; see `R2_NOTICE_LATER_KEY`. */ onLater?: () => void }) {
   const last = useRef(0);
   const latest = useRef(onRecheck);
   latest.current = onRecheck;
@@ -5845,6 +6133,7 @@ function R2ActivationActions({ t, onRecheck }: { t: Translate; onRecheck: (quiet
       <a href={CLOUDFLARE_R2_URL} target="_blank" rel="noopener noreferrer"><CloudflareMark />{t('console.cfR2NotEnabledAction')}</a>
     </Button>
     <Button size="sm" variant="outline" onClick={() => { last.current = Date.now(); return onRecheck(false); }}><RefreshCw />{t('console.cfR2Recheck')}</Button>
+    {onLater ? <Button size="sm" variant="ghost" onClick={onLater}>{t('console.cfR2Later')}</Button> : null}
   </span>;
 }
 
@@ -6229,7 +6518,7 @@ function CloudflareSignInNotice({ t, url, onDismiss }: { t: Translate; url?: str
  * to. Saving means "use this one", which is the choice that used to need a
  * confirmation dialog of its own, asked here where it is being made.
  */
-function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled, signInUrl, onDismissSignIn, onConnect, onChooseAccount, onChooseBucket, onDisconnect, onRecheckR2, onUseCloudflare, onSaveKeys }: {
+function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled, signInUrl, onDismissSignIn, onConnect, onChooseAccount, onChooseBucket, onDisconnect, onRecheckR2, onUseCloudflare, onSaveKeys, googleBusy, googleSignInUrl, onConnectGoogle, onDisconnectGoogle, onUseGoogle }: {
   t: Translate;
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -6247,9 +6536,16 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled
   onRecheckR2: (quiet?: boolean) => Promise<void>;
   onUseCloudflare: () => Promise<void>;
   onSaveKeys: (form: R2KeysForm & { readonly enabled?: boolean }) => Promise<string | null>;
+  googleBusy: boolean;
+  /** Set when this page could not open Google's sign-in and handed it over instead. */
+  googleSignInUrl: string | null;
+  onConnectGoogle: () => void;
+  onDisconnectGoogle: () => void;
+  onUseGoogle: () => Promise<void>;
 }) {
   const group = useId();
   const cloudflare = config?.cloudflare ?? null;
+  const google = config?.google ?? null;
   const mode = config?.mode ?? 'keys';
   /*
    * Which answer the form opens on.
@@ -6273,7 +6569,8 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled
     setError(null);
     setKeys(r2KeysFrom(config));
     setAccount(cloudflare?.accounts[0]?.id ?? '');
-    setChoice(!cloudflare ? 'keys' : config?.configured ? mode : 'cloudflare');
+    // Nothing set up yet: Cloudflare first, the recommended way, then the Drive.
+    setChoice(config?.configured || (mode === 'cloudflare' && cloudflare?.state === 'choose_account') ? mode : cloudflare ? 'cloudflare' : google ? 'google' : 'keys');
   }, [open]);
 
   // Set in `.env`: shown so the reader knows where the value comes from, and
@@ -6286,7 +6583,8 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled
   // says which way they want to go. What waits for it is Save, because there is
   // no bucket to save yet, and the row below says so rather than leaving a dead
   // button to be puzzled over.
-  const canSave = choice === 'keys' ? keysReady : connected;
+  const googleConnected = google?.state === 'connected';
+  const canSave = choice === 'keys' ? keysReady : choice === 'google' ? googleConnected : connected;
   const cloudflarePending = choice === 'cloudflare' && Boolean(cloudflare) && !connected;
 
   const save = async () => {
@@ -6299,6 +6597,8 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled
         const failure = await onSaveKeys({ ...keys, ...(startEnabled ? { enabled: true } : {}) });
         setError(failure);
         if (failure) return;
+      } else if (choice === 'google') {
+        if (mode !== 'google' || startEnabled) await onUseGoogle();
       } else if (mode !== 'cloudflare' || startEnabled) {
         await onUseCloudflare();
       }
@@ -6324,9 +6624,9 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled
               <RadioGroupItem id={`${group}-cloudflare`} value="cloudflare" className="mt-0.5" />
               <div className="grid gap-1">
                 <Label htmlFor={`${group}-cloudflare`} className="flex flex-wrap items-center gap-2 font-medium">
-                  <CloudflareMark />{t('console.r2MethodCloudflare')}
+                  {t('console.r2MethodCloudflare')}
                   <Badge variant="secondary" className="bg-(--success-background) text-(--success)">{t('console.r2Recommended')}</Badge>
-                  {mode === 'cloudflare' && connected ? <Badge variant="outline">{t('console.r2MethodInUse')}</Badge> : null}
+                  {choice === 'cloudflare' ? <Badge>{t('console.r2Selected')}</Badge> : null}
                 </Label>
                 <p className="text-xs text-muted-foreground">{t('console.r2MethodCloudflareBody')}</p>
               </div>
@@ -6345,13 +6645,29 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled
               onRecheckR2={onRecheckR2}
             />
           </div> : null}
+          {/* The Drive second: Cloudflare stays the recommended way, and the
+              Drive is the one for somebody without a payment card, which is
+              where a Cloudflare sign-up stops many. */}
+          {google ? <div className="grid gap-3 rounded-lg border p-3 has-[[data-state=checked]]:border-primary has-[[data-state=checked]]:bg-primary/5">
+            <div className="flex items-start gap-3">
+              <RadioGroupItem id={`${group}-google`} value="google" className="mt-0.5" />
+              <div className="grid gap-1">
+                <Label htmlFor={`${group}-google`} className="flex flex-wrap items-center gap-2 font-medium">
+                  {t('console.r2MethodGoogle')}
+                  {choice === 'google' ? <Badge>{t('console.r2Selected')}</Badge> : null}
+                </Label>
+                <p className="text-xs text-muted-foreground">{t('console.r2MethodGoogleBody')}</p>
+              </div>
+            </div>
+            <GoogleMethod t={t} status={google} busy={googleBusy || saving} signInUrl={googleSignInUrl} onConnect={onConnectGoogle} onDisconnect={onDisconnectGoogle} />
+          </div> : null}
           <div className="grid gap-3 rounded-lg border p-3 has-[[data-state=checked]]:border-primary has-[[data-state=checked]]:bg-primary/5">
             <div className="flex items-start gap-3">
               <RadioGroupItem id={`${group}-keys`} value="keys" className="mt-0.5" />
               <div className="grid gap-1">
                 <Label htmlFor={`${group}-keys`} className="flex flex-wrap items-center gap-2 font-medium">
                   {t('console.r2MethodKeys')}
-                  {mode === 'keys' && config?.configured ? <Badge variant="outline">{t('console.r2MethodInUse')}</Badge> : null}
+                  {choice === 'keys' ? <Badge>{t('console.r2Selected')}</Badge> : null}
                 </Label>
                 <p className="text-xs text-muted-foreground">{t('console.r2MethodKeysBody')}</p>
               </div>
@@ -6379,6 +6695,86 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled
       </DialogFooter>
     </DialogContent>
   </Dialog>;
+}
+
+/**
+ * The Google half of that question: connect, connected, or connect again.
+ */
+function GoogleMethod({ t, status, busy, signInUrl, onConnect, onDisconnect }: {
+  t: Translate;
+  status: NonNullable<R2Config['google']>;
+  busy: boolean;
+  signInUrl: string | null;
+  onConnect: () => void;
+  onDisconnect: () => void;
+}) {
+  // An outline button with the logo in its own colours, the way Google's
+  // own sign-in buttons look; a filled colour would fight the logo.
+  const connectButton = (label: string) => (signInUrl
+    ? <Button size="sm" variant="outline" className="w-fit" asChild><a href={signInUrl} target="_blank" rel="noopener noreferrer"><GoogleDriveMark />{label}</a></Button>
+    : <Button size="sm" variant="outline" className="w-fit" onClick={onConnect} disabled={busy}><GoogleDriveMark />{label}</Button>);
+  if (status.state === 'disconnected') return connectButton(t('console.gdConnect'));
+  if (status.state === 'reconnect_required') {
+    return <div className="grid gap-2">
+      <p className="text-xs text-muted-foreground">{status.displacedBy ? t('console.gdDisplacedHint', { name: status.displacedBy }) : t('console.gdReconnectHint')}</p>
+      <div className="flex flex-wrap gap-2">
+        {connectButton(t('console.gdReconnect'))}
+        <Button variant="outline" size="sm" onClick={onDisconnect} disabled={busy}>{t('console.gdDisconnect')}</Button>
+      </div>
+    </div>;
+  }
+  return <div className="grid gap-2">
+    <p className="text-xs text-muted-foreground">{t('console.gdConnectedAs', { email: status.email ?? '' })}</p>
+    <p className="text-xs text-muted-foreground">{t('console.gdCleanupHint')}</p>
+    <div className="flex flex-wrap items-center gap-2">
+      <Button variant="outline" size="sm" onClick={onDisconnect} disabled={busy}>{t('console.gdDisconnect')}</Button>
+    </div>
+  </div>;
+}
+
+/**
+ * How much a Drive holds, said the way Google counts it.
+ *
+ * Drive is not billed per request, so the write and read counts R2 is held
+ * against mean nothing here. What runs out is space, and it is the whole
+ * Google account's: Gmail and Photos fill the same 15 GB.
+ */
+function GoogleUsage({ t, config }: { t: Translate; config: R2Config }) {
+  const storage = config.google?.storage ?? null;
+  // What the app folder holds, as Drive counts it, once it has been read.
+  const backup = formatBytes(storage?.backupBytes ?? config.usage.storageBytes);
+  if (!storage || storage.limitBytes === null) return <p className="text-xs text-muted-foreground">{t('console.gdStorageBackupOnly', { backup })}</p>;
+  const filled = ratio(storage.usedBytes, storage.limitBytes);
+  return <div className="grid gap-1">
+    <span className={cn('text-xs', filled >= 0.9 ? 'text-destructive' : 'text-muted-foreground')}>{t('console.gdStorage', { backup, used: formatBytes(storage.usedBytes), limit: formatBytes(storage.limitBytes) })}</span>
+    <span className="progress-track"><span className="progress-value" style={{ width: `${Math.max(1, filled * 100)}%` }} /></span>
+  </div>;
+}
+
+/**
+ * A backup on its way, whoever started it.
+ *
+ * The scheduled ones run with nobody watching, and the first one after
+ * connecting a Drive is the whole profile: minutes in which the card used to
+ * show nothing at all.
+ */
+function TransferLine({ t, transfer }: { t: Translate; transfer: R2Transfer }) {
+  const filled = transfer.finishing ? 1 : ratio(transfer.completedBytes, transfer.totalBytes);
+  const label = transfer.finishing
+    ? t('console.r2TransferFinishing')
+    : t('console.r2TransferUp', { done: formatBytes(transfer.completedBytes), total: formatBytes(transfer.totalBytes) });
+  return <div className="grid gap-1" role="status">
+    <span className="text-xs text-muted-foreground">{label}</span>
+    <span className="progress-track"><span className="progress-value" style={{ width: `${Math.max(1, filled * 100)}%` }} /></span>
+  </div>;
+}
+
+function googleErrorText(t: Translate, code: string): string {
+  if (code === 'login_required') return t('console.gdErrorLoginRequired');
+  if (code === 'google_state_mismatch') return t('console.gdErrorStateMismatch');
+  if (code === 'google_authorization_denied') return t('console.gdErrorDenied');
+  if (code === 'google_not_available' || code === 'google_broker_unavailable' || code === 'google_broker_unreachable' || code === 'google_broker_busy') return t('console.gdErrorUnavailable');
+  return t('console.gdErrorGeneric', { code: code || 'unknown' });
 }
 
 /**
@@ -7410,7 +7806,7 @@ interface ActionFailure {
   readonly text: string;
 }
 
-function ConfigPage({ t, locale, config, security, ports, managerTunnel, process, catalog, startup, saver, online, onSetAutoStart, onSetSaver, onSetKeepOnline, onSetManagerTunnel, onSetAccessLink, onPortChange, onConfigUpdate, onConfigReset, onChangeManagerPassword, onSetPassword, onSignOut, onSignOutDevices, onEraseEverything }: { t: Translate; locale: LocaleCode; config: ConfigDocument | null; security: AccessGatewayState; ports: PortSettings | null; managerTunnel: TunnelState; process: ProcessState; catalog: Record<string, unknown>; startup: StartupSettings | null; saver: SaverState | null; online: OnlineState | null; onSetAutoStart: (enabled: boolean) => Promise<string | null>; onSetSaver: (enabled: boolean) => Promise<string | null>; onSetKeepOnline: (enabled: boolean, minutes: number) => Promise<string | null>; onSetManagerTunnel: (on: boolean) => Promise<ActionFailure | null>; onSetAccessLink: (target: AccessLinkTarget, change: Partial<AccessLinkPreference>) => Promise<void>; onPortChange: (port: number) => Promise<string | null>; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onConfigReset: () => Promise<string | null>; onChangeManagerPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSignOut: () => Promise<void>; onSignOutDevices: () => Promise<string | null>; onEraseEverything: (password: string) => Promise<string | null> }) {
+function ConfigPage({ t, onConnectCloudflare, locale, config, security, ports, managerTunnel, process, catalog, startup, saver, online, onSetAutoStart, onSetSaver, onSetKeepOnline, onSetManagerTunnel, onSetAccessLink, onPortChange, onConfigUpdate, onConfigReset, onChangeManagerPassword, onSetPassword, onSignOut, onSignOutDevices, onEraseEverything }: { t: Translate; onConnectCloudflare: () => void; locale: LocaleCode; config: ConfigDocument | null; security: AccessGatewayState; ports: PortSettings | null; managerTunnel: TunnelState; process: ProcessState; catalog: Record<string, unknown>; startup: StartupSettings | null; saver: SaverState | null; online: OnlineState | null; onSetAutoStart: (enabled: boolean) => Promise<string | null>; onSetSaver: (enabled: boolean) => Promise<string | null>; onSetKeepOnline: (enabled: boolean, minutes: number) => Promise<string | null>; onSetManagerTunnel: (on: boolean) => Promise<ActionFailure | null>; onSetAccessLink: (target: AccessLinkTarget, change: Partial<AccessLinkPreference>) => Promise<void>; onPortChange: (port: number) => Promise<string | null>; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onConfigReset: () => Promise<string | null>; onChangeManagerPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSignOut: () => Promise<void>; onSignOutDevices: () => Promise<string | null>; onEraseEverything: (password: string) => Promise<string | null> }) {
   const [form, setForm] = useState<ConfigSettingsInput>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -7692,7 +8088,7 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
                   <Button variant="outline" size="sm" aria-label={t('console.openInTab')} title={t('console.openInTab')} asChild>
                     <a href={managerTunnelLink} target="_blank" rel="noopener noreferrer"><ArrowUpRight /><span className="hidden sm:inline">{t('console.openInTab')}</span></a>
                   </Button>
-                  <ShareDialog t={t} open={managerQrOpen} onOpenChange={setManagerQrOpen} label={t('console.managerTunnel')} links={publicLinks(managerTunnel).map((link) => link.url)} description={t('console.scanToOpenManager')} choice={{ target: 'manager', tunnel: managerTunnel, onChange: onSetAccessLink }} />
+                  <ShareDialog t={t} open={managerQrOpen} onOpenChange={setManagerQrOpen} label={t('console.managerTunnel')} links={publicLinks(managerTunnel).map((link) => link.url)} description={t('console.scanToOpenManager')} choice={{ target: 'manager', tunnel: managerTunnel, onChange: onSetAccessLink, onConnectCloudflare }} />
                 </>
                 : null}
               <Switch

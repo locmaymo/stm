@@ -68,6 +68,8 @@ export const POLL_EASED_MS = 60_000;
  * how keeping the manager online is going, on the settings page.
  */
 export const POLL_BACKGROUND_MS = 20_000;
+/** While a backup is being sent, so its bar moves rather than jumping every twenty seconds. */
+export const POLL_TRANSFER_MS = 3_000;
 /**
  * For a question whose answer changes on the order of days.
  *
