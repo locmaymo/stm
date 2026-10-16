@@ -66,8 +66,13 @@ export type CloudflareDataPath = 'worker' | 'rest';
  * use. Throws to refuse it; see `completeConnect`.
  */
 export type CloudflareAdmit = (offered: readonly CloudflareAccount[], connected: CloudflareAccount | null) => Promise<CloudflareAccount>;
-/** What a sign-in with Cloudflare was started for; see `beginConnect`. */
-export type CloudflarePurpose = 'connect' | 'signIn';
+/**
+ * What a sign-in with Cloudflare was started for; see `beginConnect`.
+ *
+ * `links` is a `connect` for the fixed addresses alone: it leaves the backups
+ * wherever they go now, and needs no R2 on the account.
+ */
+export type CloudflarePurpose = 'connect' | 'links' | 'signIn';
 export type { CloudflareConnectionState, CloudflareConnectionStatus };
 
 interface StoredConnection {

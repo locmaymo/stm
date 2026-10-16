@@ -3822,7 +3822,8 @@ async function handleCloudflareRequest(context: RequestContext, store: StateStor
     if (!returnOrigin) { sendError(response, 400, 'invalid_origin', 'The panel origin could not be read'); return; }
     // Named here so the callback can find its way back to this session even
     // when the browser returns to a window that carries none; see beginConnect.
-    const url = cloudflare.beginConnect(returnOrigin, 'connect', context.sessionToken);
+    const purpose = context.searchParams.get('for') === 'links' ? 'links' : 'connect';
+    const url = cloudflare.beginConnect(returnOrigin, purpose, context.sessionToken);
     sendJson(response, 200, { url, ...openHandoff(context, handoffs, url) });
     return;
   }
@@ -3971,6 +3972,10 @@ async function handleCloudflareCallback(context: RequestContext, sessions: Sessi
   const startedBy = cloudflare.pendingStartedBy(state);
   const connecting = startedBy && sessions.get(startedBy) ? startedBy : context.sessionToken;
   if (!sessions.get(connecting)) { redirect('error', 'login_required'); return; }
+  if (purpose === 'links') {
+    await completeCloudflareForLinks(cloudflare, r2, logger, signIn.store, publishProxies, state, searchParams, redirect);
+    return;
+  }
   try {
     const status = await cloudflare.completeConnect({
       state,
@@ -4005,6 +4010,71 @@ async function handleCloudflareCallback(context: RequestContext, sessions: Sessi
     logger(logEvent('r2.cloudflareConnectFailed', `[r2] connecting to Cloudflare failed: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
     redirect('error', code);
   }
+}
+
+/**
+ * Connect a Cloudflare account for the fixed addresses, and only for them.
+ *
+ * Pressed beside a link, by somebody who wants an address that does not change
+ * - very often somebody backing up to the Drive because Cloudflare asks for a
+ * card before it turns R2 on. So the backups stay where they go, and an
+ * account without R2 is not a failure: the Workers that carry the addresses
+ * are on every account. A bucket is still made where R2 is there to make one,
+ * so choosing Cloudflare for the backups later is a choice and not another
+ * sign-in.
+ */
+async function completeCloudflareForLinks(
+  cloudflare: CloudflareConnection,
+  r2: R2Manager,
+  logger: LogSink,
+  store: StateStore,
+  publishProxies: () => void,
+  state: string,
+  searchParams: URLSearchParams,
+  redirect: (outcome: string, code?: string, page?: string) => void,
+): Promise<void> {
+  try {
+    await cloudflare.completeConnect({
+      state,
+      code: searchParams.get('code'),
+      error: searchParams.get('error'),
+      errorDescription: searchParams.get('error_description'),
+    }, await r2.keysBucket());
+  } catch (error: unknown) {
+    const code = isRecord(error) && typeof error.code === 'string' ? error.code : 'cloudflare_connect_failed';
+    if (code !== 'cloudflare_r2_not_enabled') {
+      logger(logEvent('r2.cloudflareConnectFailed', `[r2] connecting to Cloudflare failed: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
+      redirect('error', code);
+      return;
+    }
+  }
+  const account = await cloudflare.workersAccount();
+  // Signed in, but not to anything the addresses can be put on: more than one
+  // account and none chosen, or Workers not granted.
+  if (!account) { redirect('error', 'cloudflare_account_required'); return; }
+  // Connected by somebody signed in, so this account opens the manager too.
+  await store.recordCloudflareOwner(account);
+  // Backing up to Cloudflare already - a reconnect - goes on doing so.
+  const config = await r2.getConfig();
+  if (config.mode === 'cloudflare' && (await cloudflare.status()).state === 'connected') {
+    await r2.update({ enabled: true });
+    await claimForThisMachine(r2, logger);
+  }
+  publishProxies();
+  redirect('links', undefined, '');
+}
+
+/**
+ * Whether the backups go to the Drive now.
+ *
+ * A sign-in with Cloudflare used to make Cloudflare the place they go, which
+ * for somebody backing up to the Drive quietly moved them - often to an
+ * account with no R2 to put them in. Signing in is who you are; where the
+ * backups go is chosen in the dialog for it.
+ */
+async function backingUpToDrive(r2: R2Manager): Promise<boolean> {
+  const config = await r2.getConfig();
+  return config.mode === 'google' && config.enabled && config.configured;
 }
 
 /**
@@ -4436,7 +4506,7 @@ async function completeCloudflareSignIn(
     redirect('error', 'cloudflare_account_required', '');
     return;
   }
-  if (status.state === 'connected') await r2.update({ mode: 'cloudflare', enabled: true });
+  if (status.state === 'connected' && !await backingUpToDrive(r2)) await r2.update({ mode: 'cloudflare', enabled: true });
   // Starting the sign-in cost this visitor an attempt; it turned out to be the
   // owner of the manager, so it is given back the same way a password is.
   clearRateLimit(context, deps.rateLimiter);

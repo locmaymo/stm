@@ -129,6 +129,40 @@ test('signing in to Cloudflare connects the backup bucket end to end, and discon
   assert.equal(result.config.cloudflare?.state, 'disconnected');
 });
 
+async function beginLinks(base: string, auth: { cookie: string; csrf: string }): Promise<string> {
+  const response = await fetch(`${base}/api/v1/r2/cloudflare/connect?for=links`, { method: 'POST', headers: { cookie: auth.cookie, 'x-csrf-token': auth.csrf, origin: base } });
+  assert.equal(response.status, 200);
+  return new URL((await response.json() as { url: string }).url).searchParams.get('state') ?? '';
+}
+
+/*
+ * Pressed beside a link, by somebody whose backups go somewhere else - often
+ * the Drive, because Cloudflare asks for a card before it turns R2 on.
+ */
+test('connecting Cloudflare for the fixed links leaves the backups where they go', async (t) => {
+  const { manager, base } = await start();
+  t.after(() => manager.close());
+  const auth = await signIn(base);
+  const landed = await callback(base, { state: await beginLinks(base, auth), code: 'good-code' }, auth.cookie);
+  assert.equal(landed.headers.get('location'), '/?cloudflare=links');
+  const config = await (await fetch(`${base}/api/v1/r2`, { headers: { cookie: auth.cookie } })).json() as ConfigBody;
+  assert.equal(config.config.mode, 'keys', 'the backups are not moved to Cloudflare');
+  assert.equal(config.config.cloudflare?.state, 'connected');
+});
+
+test('an account without R2 still gets its fixed links', async (t) => {
+  const { manager, base } = await start({ cloudflare: { r2Enabled: false } });
+  t.after(() => manager.close());
+  const auth = await signIn(base);
+  const landed = await callback(base, { state: await beginLinks(base, auth), code: 'good-code' }, auth.cookie);
+  // The Workers that carry the addresses need no R2 and no card.
+  assert.equal(landed.headers.get('location'), '/?cloudflare=links');
+  const config = await (await fetch(`${base}/api/v1/r2`, { headers: { cookie: auth.cookie } })).json() as ConfigBody;
+  assert.equal(config.config.mode, 'keys');
+  // Connected from the console, so the account opens the manager too.
+  assert.equal((await (await fetch(`${base}/api/v1/setup/status`)).json() as { cloudflareSignIn?: { owner: string | null } }).cloudflareSignIn?.owner, 'Personal');
+});
+
 test('a sign-in that happened in a window is collected by the console that started it', async (t) => {
   /*
    * The whole point of the handoff, end to end and with nothing shared.

@@ -1135,6 +1135,29 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
    * that was backing nothing up looked exactly like one that was.
    */
   const [r2Problem, setR2Problem] = useState<CloudflareAccountProblem | null>(null);
+  /*
+   * The notice across the top of every page, put away until R2 is turned on.
+   *
+   * Somebody can connect Cloudflare for the fixed links alone and never want
+   * R2, and a notice on every page they cannot close reads as something being
+   * broken. Put away for this browser only; the Cloud backup card and the
+   * Cloudflare connection still say it, and forgetting it once R2 is on lets
+   * it speak again if it ever goes off.
+   */
+  const [r2NoticeLater, setR2NoticeLater] = useState(() => { try { return localStorage.getItem(R2_NOTICE_LATER_KEY) === '1'; } catch { return false; } });
+  const putR2NoticeAway = () => { setR2NoticeLater(true); try { localStorage.setItem(R2_NOTICE_LATER_KEY, '1'); } catch { /* shown again next visit */ } };
+  /*
+   * What the manager says about the account, and the only place the notice is
+   * let speak again: when it says R2 is on. Not from an effect on the value -
+   * it starts out null before the manager has answered, which read as R2 being
+   * on and brought the notice back on every reload.
+   */
+  const settleR2Problem = (problem: CloudflareAccountProblem | null) => {
+    setR2Problem(problem);
+    if (problem !== null) return;
+    setR2NoticeLater(false);
+    try { localStorage.removeItem(R2_NOTICE_LATER_KEY); } catch { /* nothing kept */ }
+  };
   const [reconnectUrl, setReconnectUrl] = useState<string | null>(null);
   /*
    * A newer manager than this one, when the project has published one.
@@ -1259,6 +1282,43 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     }
     navigate('data');
   };
+  /**
+   * Connect Cloudflare for the fixed links, from beside a link.
+   *
+   * Not the backup dialog: the backups stay where they go, and an account with
+   * no R2 still gets its addresses; see `completeCloudflareForLinks`. The same
+   * tab-and-collect as every other sign-in where this console is in a frame,
+   * and the backup dialog where this browser refuses to open the tab.
+   */
+  const createFixedLinks = async (): Promise<void> => {
+    const inFrame = framed();
+    const inApp = inPhoneApp();
+    if (inFrame && popupsBlocked()) { openConnect(); return; }
+    const tab = inFrame ? openReturnWindow() : null;
+    try {
+      const response = await apiFetch(`/api/v1/r2/cloudflare/connect?for=links${inFrame || inApp ? '&handoff=1' : ''}`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      const payload = await response.json() as { url?: string; handoff?: string; error?: { message?: string } };
+      if (!response.ok || !payload.url) { tab?.close(); toast({ title: fail.body(payload, t('console.cfConnectFailed')), tone: 'destructive' }); return; }
+      if (!inFrame && !inApp) { window.location.assign(payload.url); return; }
+      if (payload.handoff) {
+        const stop = collectCloudflareResult(payload.handoff, (result) => settleLinks(result.outcome, result.code));
+        if (tab) whenAbandoned(tab, stop);
+      }
+      if (tab) { tab.location.href = payload.url; return; }
+      window.location.assign(payload.url);
+    } catch { tab?.close(); toast({ title: t('console.cfConnectFailed'), tone: 'destructive' }); }
+  };
+  const settleLinks = (outcome: string, code: string): void => {
+    if (outcome === 'links') toast({ title: t('console.cfLinksReady'), tone: 'success', duration: 8000 });
+    else toast({ title: cloudflareErrorText(t, code), tone: 'destructive' });
+  };
+  // Back from making the links, said once; the Data page answers its own.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('cloudflare') !== 'links') return;
+    window.history.replaceState(null, '', `${window.location.pathname}${window.location.hash}`);
+    settleLinks('links', '');
+  }, []);
   const signInToCloudflareAgain = async (): Promise<void> => {
     const inFrame = framed();
     const opened = inFrame && !popupsBlocked() ? openReturnWindow() : null;
@@ -1280,7 +1340,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
   const recheckR2 = async (quiet = false) => {
     const outcome = await recheckR2Activation(csrfToken);
     if (outcome.state === 'enabled') {
-      setR2Problem(null);
+      settleR2Problem(null);
       toast({ title: t('console.cfConnected', { bucket: outcome.config.cloudflare?.bucket ?? '' }), tone: 'success' });
     } else if (!quiet) {
       toast({ title: outcome.state === 'still_off' ? t('console.cfR2StillOff') : fail.body(outcome.payload, t('console.cfConnectFailed')), tone: 'destructive' });
@@ -1398,7 +1458,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
      * machine had been locked out of.
      */
     setR2Owner(status.r2Owner);
-    setR2Problem(status.r2Problem);
+    settleR2Problem(status.r2Problem);
     /*
      * The profiles coming back onto this machine's disk after it was replaced.
      *
@@ -2089,13 +2149,13 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
                 <AlertDescription>{t('console.profilesFillingBody')}</AlertDescription>
               </Alert></div>
               : null}
-            {r2Problem === 'r2_not_enabled'
+            {r2Problem === 'r2_not_enabled' && !r2NoticeLater
               ? <div className="mb-(--section-gap)"><Alert variant="destructive">
                 <TriangleAlert />
                 <AlertTitle>{t('console.cfR2NotEnabledTitle')}</AlertTitle>
                 <AlertDescription className="grid gap-2">
                   <span>{t('console.cfR2NotEnabledBody')}</span>
-                  <R2ActivationActions t={t} onRecheck={recheckR2} />
+                  <R2ActivationActions t={t} onRecheck={recheckR2} onLater={putR2NoticeAway} />
                 </AlertDescription>
               </Alert></div>
               : null}
@@ -2174,7 +2234,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
             {page !== 'data' && dataActivity?.label
               ? <DataActivityStrip t={t} label={dataActivity.label} step={dataActivity.step} percent={dataActivity.percent} onOpen={() => navigate('data')} />
               : null}
-            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{termuxOffer ? <TermuxOfferCard t={t} onStart={openTermuxImport} onDismiss={() => { answerTermuxOffer(true); setTermuxOfferAnswered(true); }} /> : activeInstallation?.status === 'ready' ? <BubbleOfferCard t={t} /> : null}{hero}{checklist}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} hostAddress={shownHostAddress(online?.hostAddress ?? null)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} onSetAccessLink={setAccessLink} onConnectCloudflare={openConnect} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} canBackUp={activeProfileId !== null && saver?.enabled !== true} onBackup={openBackup} onUpload={openUpload} onUploadFromPhone={phoneImport ? openPhoneUpload : undefined} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? null : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} onConnectCloudflare={openConnect} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} onSetAccessLink={setAccessLink} startup={startup} saver={saver} online={online} onSetAutoStart={setAutoStartSillyTavern} onSetSaver={setSaverMode} onSetKeepOnline={setKeepOnline} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} onEraseEverything={eraseEverything} /> : <ResourcePanel page={page} t={t} />}
+            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{termuxOffer ? <TermuxOfferCard t={t} onStart={openTermuxImport} onDismiss={() => { answerTermuxOffer(true); setTermuxOfferAnswered(true); }} /> : activeInstallation?.status === 'ready' ? <BubbleOfferCard t={t} /> : null}{hero}{checklist}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} hostAddress={shownHostAddress(online?.hostAddress ?? null)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} onSetAccessLink={setAccessLink} onConnectCloudflare={() => void createFixedLinks()} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} canBackUp={activeProfileId !== null && saver?.enabled !== true} onBackup={openBackup} onUpload={openUpload} onUploadFromPhone={phoneImport ? openPhoneUpload : undefined} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? null : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} onConnectCloudflare={() => void createFixedLinks()} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} onSetAccessLink={setAccessLink} startup={startup} saver={saver} online={online} onSetAutoStart={setAutoStartSillyTavern} onSetSaver={setSaverMode} onSetKeepOnline={setKeepOnline} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} onEraseEverything={eraseEverything} /> : <ResourcePanel page={page} t={t} />}
             {/* Kept, hidden, while it has work under way, so leaving for another
                 page does not take the work's progress and its last question
                 with it; the strip above stands in for it meanwhile. */}
@@ -4561,6 +4621,8 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
           void checkAfterConnect(config);
         })
         .catch(() => undefined);
+    } else if (outcome === 'links') {
+      toast({ title: t('console.cfLinksReady'), tone: 'success', duration: 8000 });
     } else if (outcome === 'choose_account') {
       // The sign-in worked and the only thing left is a choice, so the form
       // that holds that choice opens rather than being described in a message
@@ -6026,7 +6088,10 @@ const R2_RECHECK_GAP_MS = 5000;
  * comes back into view - which is what finishing over there looks like from
  * here.
  */
-function R2ActivationActions({ t, onRecheck }: { t: Translate; onRecheck: (quiet?: boolean) => Promise<void> }) {
+/** Where the page-wide R2 notice remembers being put away; see `r2NoticeLater`. */
+const R2_NOTICE_LATER_KEY = 'stm-r2-notice-later';
+
+function R2ActivationActions({ t, onRecheck, onLater }: { t: Translate; onRecheck: (quiet?: boolean) => Promise<void>; /** Given where the notice may be put away; see `R2_NOTICE_LATER_KEY`. */ onLater?: () => void }) {
   const last = useRef(0);
   const latest = useRef(onRecheck);
   latest.current = onRecheck;
@@ -6045,6 +6110,7 @@ function R2ActivationActions({ t, onRecheck }: { t: Translate; onRecheck: (quiet
       <a href={CLOUDFLARE_R2_URL} target="_blank" rel="noopener noreferrer"><CloudflareMark />{t('console.cfR2NotEnabledAction')}</a>
     </Button>
     <Button size="sm" variant="outline" onClick={() => { last.current = Date.now(); return onRecheck(false); }}><RefreshCw />{t('console.cfR2Recheck')}</Button>
+    {onLater ? <Button size="sm" variant="ghost" onClick={onLater}>{t('console.cfR2Later')}</Button> : null}
   </span>;
 }
 
