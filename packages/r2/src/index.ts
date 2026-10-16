@@ -2,12 +2,13 @@ import { createHash, randomBytes } from 'node:crypto';
 import { hostname, type as systemType } from 'node:os';
 import { mkdir, open, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { formatBytes, logEvent, logLineText, type LogSink, type ManagerSettingsRecord, type Profile, type R2CheckResult, type R2CloudflareUsage, type R2Config, type R2ConnectionMode, type R2UsageResponse, type R2UsageWarning, type R2EnvironmentField, type R2Object, type R2SnapshotSummary, type R2Usage, type TransferProgress } from '../../contracts/src/index.js';
+import { formatBytes, logEvent, logLineText, type LogSink, type ManagerSettingsRecord, type Profile, type R2CheckResult, type R2CloudflareUsage, type R2Config, type R2ConnectionMode, type R2UsageResponse, type R2UsageWarning, type R2EnvironmentField, type R2Object, type R2SnapshotSummary, type R2Transfer, type R2Usage, type TransferProgress } from '../../contracts/src/index.js';
 import { parseS3Endpoint, R2_FREE_TIER, readR2Usage } from '../../cloudflare/src/index.js';
 import { ioConcurrency, runPooled } from '../../platform/src/index.js';
 import type { PlatformPaths } from '../../platform/src/index.js';
 import type { CloudflareConnection, KnownBucket } from './cloudflare-connection.js';
-import { ROOT_FOLDER_NAME, type GoogleConnection } from './google-connection.js';
+import { DRIVE_TARGET_LABEL, type GoogleConnection } from './google-connection.js';
+import { DRIVE_TRANSFERS } from './drive-store.js';
 import { BlobLedger } from './ledger.js';
 import { S3ObjectStore, type R2Credentials } from './s3.js';
 import { R2Error, type Billing, type ObjectRecord, type ObjectStore } from './store.js';
@@ -337,6 +338,8 @@ export class R2Manager {
   private usageFlushing = false;
   /** The manager settings last put in the bucket, so unchanged ones cost nothing. */
   private settingsSent: ManagerSettingsRecord | null = null;
+  /** The backup being sent now; see R2Config.transfer. */
+  private transfer: R2Transfer | null = null;
   private settingsSentAt = 0;
 
   public constructor(options: R2ManagerOptions) {
@@ -493,7 +496,7 @@ export class R2Manager {
   private async bucketName(): Promise<string | null> {
     const config = await this.load();
     if (config.mode === 'cloudflare') return (await this.cloudflare?.target())?.bucket ?? null;
-    if (config.mode === 'google') return (await this.google?.target()) ? ROOT_FOLDER_NAME : null;
+    if (config.mode === 'google') return (await this.google?.target()) ? DRIVE_TARGET_LABEL : null;
     return config.bucket;
   }
 
@@ -542,109 +545,138 @@ export class R2Manager {
 
       const planned = planUpload(input.sources, this.ledger);
       const client = this.client(config);
-      let uploadedChunks = 0;
-      let uploadedBytes = 0;
-      let completed = 0;
-      // What is left to send, which is the only number that says how long this
-      // will take. A count of files cannot: one of them is a settings file and
-      // the next is a twenty megabyte character card.
-      let sentBytes = 0;
-      const dropped = new Set<string>();
-      const uploadedHashes: string[] = [];
-      // Files that changed between being hashed and being sent, as hashed again.
-      const rehashed = new Map<string, HashedFile>();
-      await runPooled(planned.files, ioConcurrency(), async (entry) => {
-        throwIfStopped(input.signal);
-        let current: PlannedFile = entry;
-        let sent = await this.uploadChunks(client, current);
-        /*
-         * Written to while this run was reading it - SillyTavern saves its
-         * settings whenever they change - so what is there now is not what was
-         * hashed. It is hashed again and the new version sent, a few times at
-         * most; a file rewritten faster than that leaves this point.
-         */
-        for (let attempt = 0; sent === 'changed' && attempt < CHANGED_FILE_RETRIES; attempt += 1) {
+      const startedAt = this.now();
+      if (planned.files.length > 0) {
+        this.logger(logEvent('r2.sending', `[r2] sending ${planned.files.length} changed file(s), ${formatBytes(planned.bytes)}`, { files: planned.files.length, size: formatBytes(planned.bytes) }));
+      }
+      this.transfer = { tier: input.tier ?? 'hot', startedAt: startedAt.toISOString(), completedBytes: 0, totalBytes: planned.bytes, completedItems: 0, totalItems: planned.files.length, finishing: false };
+      try {
+        let uploadedChunks = 0;
+        let uploadedBytes = 0;
+        let completed = 0;
+        // What is left to send, which is the only number that says how long this
+        // will take. A count of files cannot: one of them is a settings file and
+        // the next is a twenty megabyte character card.
+        let sentBytes = 0;
+        const dropped = new Set<string>();
+        const uploadedHashes: string[] = [];
+        // Files that changed between being hashed and being sent, as hashed again.
+        const rehashed = new Map<string, HashedFile>();
+        await runPooled(planned.files, this.transferConcurrency(config), async (entry) => {
           throwIfStopped(input.signal);
-          const file = await hashFile(entry.source.file.name, entry.source.path);
-          if (!file) { sent = 'gone'; break; }
-          rehashed.set(file.name, file);
-          current = { source: { file, path: entry.source.path }, chunks: file.chunks.filter((chunk) => !this.ledger.has(chunk.hash) && !uploadedHashes.includes(chunk.hash)) };
-          sent = await this.uploadChunks(client, current);
-        }
-        if (sent === 'gone' || sent === 'changed') {
-          // Gone since the walk, or never still long enough to read. Naming it
-          // in the snapshot would point at a chunk that was never stored, so
-          // the file leaves this recovery point.
-          dropped.add(entry.source.file.name);
-          rehashed.delete(entry.source.file.name);
-        } else {
-          uploadedChunks += sent.hashes.length;
-          uploadedBytes += sent.bytes;
-          uploadedHashes.push(...sent.hashes);
-        }
-        completed += 1;
-        // Measured as the data it holds rather than as what went over the wire,
-        // so the total is known before the first byte is compressed.
-        sentBytes += plannedBytes(entry);
-        input.onProgress?.({ completedBytes: sentBytes, totalBytes: planned.bytes, completedItems: completed, totalItems: planned.files.length });
-      });
-      // Only after the bytes are in the bucket, and only once, so an interrupted
-      // run never records a chunk it did not finish sending.
-      await this.ledger.add(uploadedHashes);
+          let current: PlannedFile = entry;
+          let sent = await this.uploadChunks(client, current);
+          /*
+           * Written to while this run was reading it - SillyTavern saves its
+           * settings whenever they change - so what is there now is not what was
+           * hashed. It is hashed again and the new version sent, a few times at
+           * most; a file rewritten faster than that leaves this point.
+           */
+          for (let attempt = 0; sent === 'changed' && attempt < CHANGED_FILE_RETRIES; attempt += 1) {
+            throwIfStopped(input.signal);
+            const file = await hashFile(entry.source.file.name, entry.source.path);
+            if (!file) { sent = 'gone'; break; }
+            rehashed.set(file.name, file);
+            current = { source: { file, path: entry.source.path }, chunks: file.chunks.filter((chunk) => !this.ledger.has(chunk.hash) && !uploadedHashes.includes(chunk.hash)) };
+            sent = await this.uploadChunks(client, current);
+          }
+          if (sent === 'gone' || sent === 'changed') {
+            // Gone since the walk, or never still long enough to read. Naming it
+            // in the snapshot would point at a chunk that was never stored, so
+            // the file leaves this recovery point.
+            dropped.add(entry.source.file.name);
+            rehashed.delete(entry.source.file.name);
+          } else {
+            uploadedChunks += sent.hashes.length;
+            uploadedBytes += sent.bytes;
+            uploadedHashes.push(...sent.hashes);
+          }
+          completed += 1;
+          // Measured as the data it holds rather than as what went over the wire,
+          // so the total is known before the first byte is compressed.
+          sentBytes += plannedBytes(entry);
+          if (this.transfer) this.transfer = { ...this.transfer, completedBytes: sentBytes, completedItems: completed };
+          input.onProgress?.({ completedBytes: sentBytes, totalBytes: planned.bytes, completedItems: completed, totalItems: planned.files.length });
+        });
+        // Only after the bytes are in the bucket, and only once, so an interrupted
+        // run never records a chunk it did not finish sending.
+        if (this.transfer) this.transfer = { ...this.transfer, finishing: true };
+        await client.flush?.();
+        await this.ledger.add(uploadedHashes);
 
-      const sources = input.sources.map((source) => { const file = rehashed.get(source.file.name); return file ? { ...source, file } : source; });
-      const files = mergeFiles(sources, input.carried ?? [], dropped);
-      const createdAt = this.now().toISOString();
-      const snapshot: R2Snapshot = {
-        schemaVersion: 1,
-        id: snapshotId(createdAt, files),
-        createdAt,
-        profileId: input.profile.id,
-        profileName: input.profile.name,
-        layout: input.profile.layout,
-        fingerprint: input.fingerprint,
-        files,
-      };
-      const body = await encodeSnapshot(snapshot);
-      const key = snapshotKey(OBJECT_PREFIX, input.profile.id, snapshot.id);
-      await client.putObject(key, body, 'application/gzip');
+        const sources = input.sources.map((source) => { const file = rehashed.get(source.file.name); return file ? { ...source, file } : source; });
+        const files = mergeFiles(sources, input.carried ?? [], dropped);
+        const createdAt = this.now().toISOString();
+        const snapshot: R2Snapshot = {
+          schemaVersion: 1,
+          id: snapshotId(createdAt, files),
+          createdAt,
+          profileId: input.profile.id,
+          profileName: input.profile.name,
+          layout: input.profile.layout,
+          fingerprint: input.fingerprint,
+          files,
+        };
+        const body = await encodeSnapshot(snapshot);
+        const key = snapshotKey(OBJECT_PREFIX, input.profile.id, snapshot.id);
+        await client.putObject(key, body, 'application/gzip');
 
-      const nextUsage: StoredUsage = {
-        ...usage,
-        storageBytes: usage.storageBytes + uploadedBytes + body.byteLength,
-        blobCount: usage.blobCount + uploadedChunks,
-        snapshotCount: usage.snapshotCount + 1,
-      };
-      await this.save({
-        ...config,
-        lastUploadAt: createdAt,
-        ...(input.tier === 'cold' ? { lastColdUploadAt: createdAt } : {}),
-        lastFingerprint: input.fingerprint,
-        lastSnapshot: { profileId: input.profile.id, id: snapshot.id },
-        usage: nextUsage,
-      });
-      await this.recordCharges();
-      // On its own clock, so an upload every five minutes does not mean two
-      // more requests every five minutes.
-      await this.syncUsageRecord();
-      if (dropped.size > 0) this.logger(logEvent('r2.skippedMissingFiles', `[r2] skipped ${dropped.size} file(s) removed while the upload was running`, { count: dropped.size }));
-      this.logger(logEvent('r2.synced', `[r2] sent ${uploadedChunks} changed chunk(s), ${formatBytes(uploadedBytes)}, of ${files.length} file(s)`, { chunks: uploadedChunks, bytes: formatBytes(uploadedBytes), files: files.length }));
-      return {
-        snapshot: {
-          id: snapshot.id,
-          profileId: snapshot.profileId,
-          createdAt: snapshot.createdAt,
-          indexBytes: body.byteLength,
+        const nextUsage: StoredUsage = {
+          ...usage,
+          storageBytes: usage.storageBytes + uploadedBytes + body.byteLength,
+          blobCount: usage.blobCount + uploadedChunks,
+          snapshotCount: usage.snapshotCount + 1,
+        };
+        await this.save({
+          ...config,
+          lastUploadAt: createdAt,
+          ...(input.tier === 'cold' ? { lastColdUploadAt: createdAt } : {}),
+          lastFingerprint: input.fingerprint,
+          lastSnapshot: { profileId: input.profile.id, id: snapshot.id },
+          usage: nextUsage,
+        });
+        await this.recordCharges();
+        // On its own clock, so an upload every five minutes does not mean two
+        // more requests every five minutes.
+        await this.syncUsageRecord();
+        if (dropped.size > 0) this.logger(logEvent('r2.skippedMissingFiles', `[r2] skipped ${dropped.size} file(s) removed while the upload was running`, { count: dropped.size }));
+        const seconds = Math.max(0, Math.round((this.now().getTime() - startedAt.getTime()) / 1000));
+        this.logger(logEvent('r2.synced', `[r2] sent ${uploadedChunks} changed chunk(s), ${formatBytes(uploadedBytes)}, of ${files.length} file(s) in ${seconds}s`, { chunks: uploadedChunks, bytes: formatBytes(uploadedBytes), files: files.length, seconds }));
+        return {
+          snapshot: {
+            id: snapshot.id,
+            profileId: snapshot.profileId,
+            createdAt: snapshot.createdAt,
+            indexBytes: body.byteLength,
+            fileCount: files.length,
+            dataBytes: files.reduce((sum, file) => sum + file.sizeBytes, 0),
+          },
           fileCount: files.length,
-          dataBytes: files.reduce((sum, file) => sum + file.sizeBytes, 0),
-        },
-        fileCount: files.length,
-        uploadedChunks,
-        uploadedBytes,
-        reusedChunks: planned.reused,
-        usage: toPublicUsage(nextUsage),
-      };
+          uploadedChunks,
+          uploadedBytes,
+          reusedChunks: planned.reused,
+          usage: toPublicUsage(nextUsage),
+        };
+      } finally {
+        this.transfer = null;
+      }
     });
+  }
+
+  /**
+   * How many files a backup or a restore moves at once.
+   *
+   * The disk's figure for R2, which answers fast. Drive waits a second or two
+   * on every request, so it gets more at once - unless the operator set the
+   * figure themselves, which is how a small machine keeps its memory.
+   */
+  public async transfers(): Promise<number> {
+    return this.transferConcurrency(await this.load());
+  }
+
+  private transferConcurrency(config: StoredR2Config): number {
+    if (config.mode !== 'google' || this.env.STM_IO_CONCURRENCY) return ioConcurrency(this.env);
+    return Math.max(ioConcurrency(this.env), DRIVE_TRANSFERS);
   }
 
   /** The recovery points in the bucket, newest first. */
@@ -807,6 +839,11 @@ export class R2Manager {
         collectedBytes += object.sizeBytes;
       }
       for (const hash of collected) blobs.delete(hash);
+      // A store that keeps chunks inside packs frees their space only here.
+      const compacted = await client.compact?.();
+      if (compacted && (compacted.removedPacks > 0 || compacted.rewrittenPacks > 0 || compacted.gatheredFiles > 0)) {
+        this.logger(logEvent('r2.compacted', `[r2] tidied the packs: ${compacted.removedPacks} removed, ${compacted.rewrittenPacks} rewritten, ${compacted.gatheredFiles} small file(s) gathered`, { removed: compacted.removedPacks, rewritten: compacted.rewrittenPacks, gathered: compacted.gatheredFiles }));
+      }
       await this.ledger.load();
       await this.ledger.reconcile(blobs.keys());
 
@@ -864,6 +901,37 @@ export class R2Manager {
       await this.recordCharges();
       this.logger(logEvent('r2.legacyRemoved', `[r2] removed ${legacy.length} archive(s) in the old whole-file format, ${formatBytes(bytes)}`, { count: legacy.length, size: formatBytes(bytes) }));
       return { removed: legacy.length, bytes };
+    });
+  }
+
+  /**
+   * Remove every backup from the connected Google Drive, for "delete the
+   * backups too" when disconnecting.
+   *
+   * What this machine believes is stored goes with them: the ledger would
+   * otherwise tell the next backup to the same account that chunks are there
+   * which no longer are, and it would write recovery points with holes in.
+   */
+  public async deleteDriveBackups(): Promise<{ readonly files: number; readonly bytes: number }> {
+    return await this.exclusive(async () => {
+      if (!this.google) throw new R2Error('google_not_available', 'This manager has no Google sign-in configured');
+      const removed = await this.google.deleteBackups();
+      const config = await this.load();
+      if (config.mode === 'google') {
+        await this.ledger.load();
+        await this.ledger.reconcile([]);
+        await this.save({
+          ...config,
+          ledgerTarget: null,
+          lastUploadAt: null,
+          lastColdUploadAt: null,
+          lastFingerprint: null,
+          lastSnapshot: null,
+          usage: { ...config.usage, storageBytes: 0, blobCount: 0, snapshotCount: 0, legacyObjectCount: 0, legacyBytes: 0, lastReconciledAt: null },
+        });
+      }
+      this.logger(logEvent('r2.driveBackupsDeleted', `[r2] removed the backups from Google Drive: ${removed.files} file(s), ${formatBytes(removed.bytes)}`, { files: removed.files, size: formatBytes(removed.bytes) }));
+      return removed;
     });
   }
 
@@ -1322,7 +1390,7 @@ export class R2Manager {
     if (config.mode === 'google') {
       const target = await this.google?.target();
       if (!target) throw new R2Error('r2_not_configured', 'Connect Google Drive first');
-      return `google:${target.folder}`;
+      return `google:appdata:${target.accountId}`;
     }
     if (config.mode === 'cloudflare') {
       const target = await this.cloudflare?.target();
@@ -1638,6 +1706,7 @@ export class R2Manager {
         : await this.uploadChunks(client, { source: { file, path }, chunks: missing });
       // Appended to past a chunk boundary mid-read; the next run sends it.
       if (sent === 'gone' || sent === 'changed') return null;
+      await client.flush?.();
       await this.ledger.add(sent.hashes);
       await writeMetricsArchive(client, METRICS_KEY, { schemaVersion: 1, updatedAt: this.now().toISOString(), sizeBytes: file.sizeBytes, chunks: file.chunks });
       await this.save({ ...(await this.load()), lastMetrics: file });
@@ -1760,6 +1829,7 @@ export class R2Manager {
         ? cloudflare?.state === 'connected'
         : Boolean(config.endpoint && config.bucket && config.accessKeyId && config.secretAccessKey),
       lastUploadAt: config.lastUploadAt,
+      transfer: this.transfer,
       accessKeyIdMasked: config.accessKeyId ? maskSecret(config.accessKeyId) : null,
       secretAccessKeyConfigured: Boolean(config.secretAccessKey),
       schedule: {
@@ -1927,7 +1997,10 @@ function planUpload(sources: readonly SyncSource[], ledger: BlobLedger): UploadP
   const claimed = new Set<string>();
   const files: PlannedFile[] = [];
   let reused = 0;
-  for (const source of sources) {
+  // In the order a restore reads them back, so chunks a restore wants together
+  // are stored together where a store packs them.
+  const ordered = [...sources].sort((left, right) => left.file.name.localeCompare(right.file.name));
+  for (const source of ordered) {
     const chunks = source.file.chunks.filter((chunk) => {
       if (ledger.has(chunk.hash) || claimed.has(chunk.hash)) { reused += 1; return false; }
       claimed.add(chunk.hash);

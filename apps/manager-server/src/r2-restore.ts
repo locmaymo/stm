@@ -71,7 +71,8 @@ export async function fetchSnapshotToLibrary(options: FetchSnapshotOptions): Pro
         options.onProgress?.({ completedBytes, totalBytes, completedItems: completed, totalItems: files.length });
       },
     } : {}),
-    entries: entriesFor(r2, files, options.signal),
+    // A machine short of memory reads as few files ahead as its disk does.
+    entries: entriesFor(r2, files, backups.saving ? ioConcurrency() : await r2.transfers(), options.signal),
   });
   options.logger?.(logEvent('r2.fetched', `[r2] recovery point ${snapshot.createdAt} is in the backup library as ${result.manifest.name}`, { createdAt: snapshot.createdAt, name: result.manifest.name }));
   return result;
@@ -160,8 +161,8 @@ export async function restoreSnapshotInPlace(options: RestoreSnapshotOptions): P
  * Order matters because the archive is written as it is produced, so this
  * cannot simply fetch whatever finishes first.
  */
-async function* entriesFor(r2: R2Manager, files: readonly HashedFile[], signal?: AbortSignal): AsyncGenerator<ImportEntry> {
-  for await (const { file, buffered } of readAhead(r2, files, Math.max(1, ioConcurrency()), signal)) {
+async function* entriesFor(r2: R2Manager, files: readonly HashedFile[], ahead: number, signal?: AbortSignal): AsyncGenerator<ImportEntry> {
+  for await (const { file, buffered } of readAhead(r2, files, Math.max(1, ahead), signal)) {
     yield {
       name: file.name,
       // A file small enough to have been read ahead is already here. A large

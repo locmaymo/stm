@@ -11,6 +11,15 @@ export interface ObjectStore {
   putObject(key: string, body: Uint8Array, contentType: string): Promise<void>;
   getObject(key: string): Promise<Buffer>;
   deleteObject(key: string): Promise<void>;
+  /**
+   * Finish sending whatever `putObject` accepted but has not stored yet.
+   *
+   * Only for a store that gathers small objects before sending them (Google
+   * Drive's packs). A caller records objects as stored only after this.
+   */
+  flush?(): Promise<void>;
+  /** Take back space held by deleted objects that a store keeps inside bigger ones. */
+  compact?(): Promise<{ readonly removedPacks: number; readonly rewrittenPacks: number; readonly gatheredFiles: number }>;
 }
 
 /**

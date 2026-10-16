@@ -550,19 +550,32 @@ export const REMOTE_NAME_SLUG: Readonly<Record<R2ConnectionMode, string>> = { cl
 
 export type GoogleConnectionState = 'disconnected' | 'connected' | 'reconnect_required';
 
+/** How far a backup on its way to the cloud has got. */
+export interface R2Transfer {
+  readonly tier: 'hot' | 'cold';
+  readonly startedAt: string;
+  readonly completedBytes: number;
+  readonly totalBytes: number;
+  readonly completedItems: number;
+  readonly totalItems: number;
+  /** Every file is read; the last packs are still on their way. */
+  readonly finishing: boolean;
+}
+
 /** A Google Drive connected for backups, as the panel shows it. */
 export interface GoogleConnectionStatus {
   readonly state: GoogleConnectionState;
   readonly email: string | null;
   readonly name: string | null;
-  /** The backup folder in Drive, for opening it there. */
-  readonly folderUrl: string | null;
   readonly connectedAt: string | null;
   readonly lastError: string | null;
   /** The machine that signed in with this Drive after this one; see CloudflareConnectionStatus. */
   readonly displacedBy: string | null;
-  /** The whole Google account's space, shared with Gmail and Photos; null until read. */
-  readonly storage: { readonly usedBytes: number; readonly limitBytes: number | null; readonly readAt: string } | null;
+  /**
+   * The whole Google account's space, shared with Gmail and Photos, and what the
+   * backups in the app's hidden folder take of it; null until read.
+   */
+  readonly storage: { readonly usedBytes: number; readonly limitBytes: number | null; readonly backupBytes: number | null; readonly backupFiles: number | null; readonly readAt: string } | null;
 }
 
 export type CloudflareConnectionState = 'disconnected' | 'choose_account' | 'connected' | 'reconnect_required';
@@ -660,6 +673,11 @@ export interface R2Config {
   readonly environmentFields: readonly R2EnvironmentField[];
   readonly configured: boolean;
   readonly lastUploadAt: string | null;
+  /**
+   * A backup being sent right now, scheduled or pressed for, so the console
+   * can show it moving; null when nothing is being sent.
+   */
+  readonly transfer: R2Transfer | null;
   readonly accessKeyIdMasked: string | null;
   readonly secretAccessKeyConfigured: boolean;
   readonly schedule: {

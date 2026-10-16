@@ -38,13 +38,13 @@ import { NotificationBell, PushOfferDialog, PushToggle } from './notification-be
 import { answerTermuxOffer, appFeatures, bubbleRequest, hasAppChannel, importZipFromApp, openInApp, type AppFeatures, type BubbleState, type ImportSource } from './app-bridge.js';
 import { BUBBLE_OFFER_KEY, bubbleOfferWanted, offerAccepted, offerDue, offerSnoozed, readOffer, writeOffer } from './offers.js';
 import { collectCloudflareResult, framed, inPhoneApp, openReturnWindow, popupsBlocked, whenAbandoned, type CollectedResult } from './oauth.js';
-import type { AccessGatewayState, AccessLinkKind, AccessLinkPreference, AccessLinkTarget, BackupManifest, CloudflareAccountProblem, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LegalReview, LogEntry, LogSourceFilter, ManagerRelease, ManagerSettingsOffer, ManagerUpdateStatus, NotificationSummary, OnlineState, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, SaverState, SetupChecklistState, SetupStep, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, AccessLinkKind, AccessLinkPreference, AccessLinkTarget, BackupManifest, CloudflareAccountProblem, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LegalReview, LogEntry, LogSourceFilter, ManagerRelease, ManagerSettingsOffer, ManagerUpdateStatus, NotificationSummary, OnlineState, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2Transfer, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, SaverState, SetupChecklistState, SetupStep, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, isCloudJob, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
 import termuxGuideEn from './assets/termux-guide-en.webp';
 import termuxGuideVi from './assets/termux-guide-vi.webp';
 import { usePoll } from './use-poll.js';
-import { POLL_BACKGROUND_MS, POLL_RELEASE_MS, statusIntervalMs } from './polling.js';
+import { POLL_BACKGROUND_MS, POLL_RELEASE_MS, POLL_TRANSFER_MS, statusIntervalMs } from './polling.js';
 import { DEFAULT_ACCESS_LINKS, foldForSearch, translateLogEntry, translateStep } from '../../../packages/contracts/src/index.js';
 import { QrCode } from './qr-code.js';
 import { CLOUDFLARE_ORANGE, CloudflareMark } from './cloudflare-mark.js';
@@ -4538,6 +4538,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   const [googleSignInUrl, setGoogleSignInUrl] = useState<string | null>(null);
   const [googleBusy, setGoogleBusy] = useState(false);
   const [googleDisconnectOpen, setGoogleDisconnectOpen] = useState(false);
+  const [deleteDriveBackups, setDeleteDriveBackups] = useState(false);
   // What the last look at the bucket found. Kept on the card, because an answer
   // that disappears two seconds after it arrives is not an answer.
   const [r2Check, setR2Check] = useState<R2CheckResult | null>(null);
@@ -4689,7 +4690,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
     } catch {
       // The next poll tries again.
     }
-  }, { intervalMs: POLL_BACKGROUND_MS });
+  }, { intervalMs: r2Config?.transfer ? POLL_TRANSFER_MS : POLL_BACKGROUND_MS });
 
   /*
    * Whether this account holds settings from another machine.
@@ -5296,11 +5297,13 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   const disconnectGoogle = async () => {
     setGoogleBusy(true);
     try {
-      const response = await apiFetch('/api/v1/r2/google/disconnect', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
-      const payload = await response.json() as { revoked?: boolean; keptFor?: string | null; config?: R2Config; error?: { message?: string } };
+      const response = await apiFetch('/api/v1/r2/google/disconnect', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ deleteBackups: deleteDriveBackups }) });
+      const payload = await response.json() as { revoked?: boolean; keptFor?: string | null; deletedBackups?: boolean; config?: R2Config; error?: { message?: string } };
       if (!response.ok || !payload.config) { failed(fail.body(payload, t('console.gdDisconnectFailed'))); return; }
       setR2Config(payload.config);
-      if (payload.revoked) done(t('console.gdDisconnected'));
+      setDeleteDriveBackups(false);
+      if (payload.deletedBackups) done(t('console.gdBackupsDeleted'));
+      else if (payload.revoked) done(t('console.gdDisconnected'));
       else if (payload.keptFor) toast({ title: t('console.gdDisconnectedKept', { name: machineName(payload.keptFor) }), tone: 'success', duration: 10000 });
       else toast({ title: t('console.gdDisconnectedNotRevoked'), tone: 'destructive', duration: 12000 });
       await refresh();
@@ -5869,6 +5872,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
                 screen, and what gives way there is the label beside them - but
                 a desktop card has the width, and stacking them there left a
                 column of two short buttons against a row with a name on it. */}
+            {r2Config.transfer && r2Busy === null ? <TransferLine t={t} transfer={r2Config.transfer} /> : null}
             <div className="flex flex-col gap-2 sm:flex-row">
               <Button size="sm" onClick={() => uploadR2()} disabled={r2Busy !== null || !r2Config.enabled}><CloudUpload />{t('console.r2UploadLatest')}</Button>
               <Tooltip><TooltipTrigger asChild><span className="inline-flex">
@@ -6006,7 +6010,15 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       confirmLabel={t('console.gdDisconnect')}
       cancelLabel={t('common.cancel')}
       onConfirm={disconnectGoogle}
-    />
+    >
+      <div className="flex items-start gap-2">
+        <Checkbox id="gd-delete-backups" checked={deleteDriveBackups} onCheckedChange={(checked) => setDeleteDriveBackups(checked === true)} className="mt-0.5" />
+        <label htmlFor="gd-delete-backups" className="grid gap-0.5 text-sm">
+          <span>{t('console.gdDeleteBackups')}</span>
+          <span className="text-xs text-muted-foreground">{t('console.gdDeleteBackupsHint')}</span>
+        </label>
+      </div>
+    </ConfirmDialog>
   </div>;
 }
 
@@ -6702,8 +6714,8 @@ function GoogleMethod({ t, status, busy, signInUrl, onConnect, onDisconnect }: {
   }
   return <div className="grid gap-2">
     <p className="text-xs text-muted-foreground">{t('console.gdConnectedAs', { email: status.email ?? '' })}</p>
+    <p className="text-xs text-muted-foreground">{t('console.gdCleanupHint')}</p>
     <div className="flex flex-wrap items-center gap-2">
-      {status.folderUrl ? <Button variant="outline" size="sm" asChild><a href={status.folderUrl} target="_blank" rel="noopener noreferrer"><ArrowUpRight />{t('console.gdOpenFolder')}</a></Button> : null}
       <Button variant="outline" size="sm" onClick={onDisconnect} disabled={busy}>{t('console.gdDisconnect')}</Button>
     </div>
   </div>;
@@ -6718,11 +6730,30 @@ function GoogleMethod({ t, status, busy, signInUrl, onConnect, onDisconnect }: {
  */
 function GoogleUsage({ t, config }: { t: Translate; config: R2Config }) {
   const storage = config.google?.storage ?? null;
-  const backup = formatBytes(config.usage.storageBytes);
+  // What the app folder holds, as Drive counts it, once it has been read.
+  const backup = formatBytes(storage?.backupBytes ?? config.usage.storageBytes);
   if (!storage || storage.limitBytes === null) return <p className="text-xs text-muted-foreground">{t('console.gdStorageBackupOnly', { backup })}</p>;
   const filled = ratio(storage.usedBytes, storage.limitBytes);
   return <div className="grid gap-1">
     <span className={cn('text-xs', filled >= 0.9 ? 'text-destructive' : 'text-muted-foreground')}>{t('console.gdStorage', { backup, used: formatBytes(storage.usedBytes), limit: formatBytes(storage.limitBytes) })}</span>
+    <span className="progress-track"><span className="progress-value" style={{ width: `${Math.max(1, filled * 100)}%` }} /></span>
+  </div>;
+}
+
+/**
+ * A backup on its way, whoever started it.
+ *
+ * The scheduled ones run with nobody watching, and the first one after
+ * connecting a Drive is the whole profile: minutes in which the card used to
+ * show nothing at all.
+ */
+function TransferLine({ t, transfer }: { t: Translate; transfer: R2Transfer }) {
+  const filled = transfer.finishing ? 1 : ratio(transfer.completedBytes, transfer.totalBytes);
+  const label = transfer.finishing
+    ? t('console.r2TransferFinishing')
+    : t('console.r2TransferUp', { done: formatBytes(transfer.completedBytes), total: formatBytes(transfer.totalBytes) });
+  return <div className="grid gap-1" role="status">
+    <span className="text-xs text-muted-foreground">{label}</span>
     <span className="progress-track"><span className="progress-value" style={{ width: `${Math.max(1, filled * 100)}%` }} /></span>
   </div>;
 }

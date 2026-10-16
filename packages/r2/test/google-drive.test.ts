@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getPlatformPaths } from '../../platform/src/index.js';
@@ -45,14 +45,14 @@ async function source(root: string, name: string, body: string): Promise<SyncSou
   return { file, path };
 }
 
-test('the sign-in asks Google for Drive files only, a lasting grant, and PKCE', async () => {
+test('the sign-in asks Google for the app folder only, a lasting grant, and PKCE', async () => {
   const fake = fakeGoogle();
   const { google } = await machine(fake, 'desk');
   const url = new URL(google.beginConnect('http://127.0.0.1:7860/some/page'));
   assert.equal(`${url.origin}${url.pathname}`, 'https://accounts.google.com/o/oauth2/v2/auth');
   assert.equal(url.searchParams.get('client_id'), CLIENT.clientId);
   assert.equal(url.searchParams.get('redirect_uri'), CLIENT.redirectUri);
-  assert.equal(url.searchParams.get('scope'), 'https://www.googleapis.com/auth/drive.file');
+  assert.equal(url.searchParams.get('scope'), 'https://www.googleapis.com/auth/drive.appdata');
   assert.equal(url.searchParams.get('access_type'), 'offline');
   assert.equal(url.searchParams.get('prompt'), 'consent');
   assert.equal(url.searchParams.get('code_challenge_method'), 'S256');
@@ -61,27 +61,42 @@ test('the sign-in asks Google for Drive files only, a lasting grant, and PKCE', 
   assert.equal(state.o, 'http://127.0.0.1:7860');
 });
 
-test('connecting keeps the grant on disk, finds the account and makes the two folders once', async () => {
+test('connecting keeps the grant on disk and finds the account, without making anything in the Drive', async () => {
   const fake = fakeGoogle({ email: 'reader@example.com' });
   const desk = await machine(fake, 'desk');
   await signIn(fake, desk.google);
   const status = await desk.google.status();
   assert.equal(status.state, 'connected');
   assert.equal(status.email, 'reader@example.com');
-  assert.match(status.folderUrl ?? '', /^https:\/\/drive\.google\.com\/drive\/folders\//u);
-  const folders = [...fake.files.values()].filter((file) => file.mimeType === 'application/vnd.google-apps.folder');
-  assert.deepEqual(folders.map((folder) => folder.name).sort(), ['SillyTavern Manager', 'data']);
+  assert.equal(fake.files.size, 0);
 
   // The refresh token is the one secret, and it lives in the state directory only.
-  const stored = JSON.parse(await readFile(join(desk.root, 'state', 'google-connection.json'), 'utf8')) as { refreshToken: string };
+  const stored = JSON.parse(await readFile(join(desk.root, 'state', 'google-connection.json'), 'utf8')) as { refreshToken: string; scope: string };
   assert.match(stored.refreshToken, /^1-test-/u);
+  assert.equal(stored.scope, 'https://www.googleapis.com/auth/drive.appdata');
+});
 
-  // A second machine with the same Google account finds the same folders.
-  const laptop = await machine(fake, 'laptop');
-  await signIn(fake, laptop.google);
-  const after = [...fake.files.values()].filter((file) => file.mimeType === 'application/vnd.google-apps.folder');
-  assert.equal(after.length, 2);
-  assert.equal((await laptop.google.status()).folderUrl, status.folderUrl);
+test('a grant without Drive access ticked is refused and given back', async () => {
+  const fake = fakeGoogle({ scope: 'openid' });
+  const desk = await machine(fake, 'desk');
+  await assert.rejects(signIn(fake, desk.google), { code: 'google_scope_missing' });
+  assert.equal(fake.calls.revoke, 1);
+  assert.equal((await desk.google.status()).state, 'disconnected');
+});
+
+test('a manager connected before backups moved to the app folder is asked to connect again', async () => {
+  const fake = fakeGoogle();
+  const root = await mkdtemp(join(tmpdir(), 'stm-gdrive-'));
+  await mkdir(join(root, 'state'), { recursive: true });
+  await writeFile(join(root, 'state', 'google-connection.json'), JSON.stringify({
+    schemaVersion: 1, installationKeyId: 'abcdef0123456789', refreshToken: '1-old-token', account: { id: 'perm-1', email: 'reader@example.com', name: null },
+    folders: { root: 'folder-root', data: 'folder-data' }, connectedAt: '2026-10-16T00:00:00.000Z', reconnectRequired: false, lastError: null, displacedBy: null,
+  }));
+  const google = new GoogleConnection({ paths: getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } }), client: CLIENT, fetchImpl: fake.fetchImpl });
+  const status = await google.status();
+  assert.equal(status.state, 'reconnect_required');
+  assert.match(status.lastError ?? '', /hidden folder/u);
+  assert.equal(await google.target(), null);
 });
 
 test('a sign-in this manager did not start, or one refused on the consent screen, connects nothing', async () => {
@@ -107,15 +122,19 @@ test('a backup to Drive sends only what changed and reads back whole', async () 
 
   const settings = await source(desk.root, 'settings.json', '{"a":1}');
   const chat = await source(desk.root, 'chats/one.jsonl', 'first line\n');
-  const first = await desk.manager.syncProfile({ profile: profile(), sources: [settings, chat], fingerprint: 'one' });
+  // The console can see a backup moving, whoever started it, and that it ended.
+  const seen: Array<{ completedItems: number; totalItems: number } | null> = [];
+  const first = await desk.manager.syncProfile({ profile: profile(), sources: [settings, chat], fingerprint: 'one', onProgress: () => { void desk.manager.getConfig().then((config) => { seen.push(config.transfer); }); } });
   assert.equal(first.uploadedChunks, 2);
+  await new Promise((resolve) => { setImmediate(resolve); });
+  assert.ok(seen.some((transfer) => transfer?.totalItems === 2 && transfer.completedItems > 0));
+  assert.equal((await desk.manager.getConfig()).transfer, null);
 
-  // Chunks go in the data folder, everything else beside it.
+  // Everything is in the app folder; the two small chunks travel as one pack.
   const byName = new Map([...fake.files.values()].map((file) => [file.name, file]));
-  const dataFolder = [...fake.files.values()].find((file) => file.name === 'data')!;
-  const chunkFiles = [...fake.files.values()].filter((file) => file.name.includes('/blobs/'));
-  assert.equal(chunkFiles.length, 2);
-  assert.ok(chunkFiles.every((file) => file.parents.includes(dataFolder.id)));
+  assert.ok([...fake.files.values()].every((file) => file.parents.includes('appDataFolder')));
+  assert.equal([...fake.files.values()].filter((file) => file.name.includes('/blobs/')).length, 0);
+  assert.equal([...fake.files.values()].filter((file) => file.name.startsWith('stm-packs/')).length, 1);
   assert.ok(byName.get('sillytavern-manager/owner.json'), 'the claim is written');
 
   const grown = await source(desk.root, 'chats/one.jsonl', 'first line\nsecond line\n');
@@ -129,6 +148,13 @@ test('a backup to Drive sends only what changed and reads back whole', async () 
   assert.equal(latest.fingerprint, 'two');
   const chunk = latest.files.find((file) => file.name === 'chats/one.jsonl')!.chunks[0]!;
   assert.equal((await desk.manager.readBlob(chunk.hash)).toString(), 'first line\nsecond line\n');
+
+  // A machine that has never seen this Drive finds packed chunks from the packs alone.
+  const laptop = await machine(fake, 'laptop');
+  await signIn(fake, laptop.google);
+  await laptop.manager.update({ mode: 'google', enabled: true });
+  const settingsChunk = settings.file.chunks[0]!;
+  assert.equal((await laptop.manager.readBlob(settingsChunk.hash)).toString(), '{"a":1}');
 });
 
 test('retention and the sweep remove what nothing names from Drive too', async () => {

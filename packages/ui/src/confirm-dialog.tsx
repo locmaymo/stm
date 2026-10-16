@@ -19,6 +19,8 @@ export interface ConfirmDialogProps {
   readonly title: string;
   /** What will happen, in one sentence. This is where a warning belongs. */
   readonly description?: ReactNode;
+  /** A choice that goes with the answer, such as a box to tick; shown under the description. */
+  readonly children?: ReactNode;
   readonly confirmLabel: string;
   readonly cancelLabel: string;
   readonly tone?: 'default' | 'destructive';
@@ -59,6 +61,7 @@ export function ConfirmDialog({
   tone = 'destructive',
   busy = false,
   onConfirm,
+  children,
 }: ConfirmDialogProps) {
   const [working, setWorking] = useState(false);
   const pending = busy || working;
@@ -86,6 +89,7 @@ export function ConfirmDialog({
           </AlertDialogTitle>
           {description ? <AlertDialogDescription>{description}</AlertDialogDescription> : null}
         </AlertDialogHeader>
+        {children}
         <AlertDialogFooter>
           <AlertDialogCancel disabled={pending}>{cancelLabel}</AlertDialogCancel>
           <AlertDialogAction

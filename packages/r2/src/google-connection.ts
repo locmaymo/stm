@@ -3,10 +3,11 @@ import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { GoogleConnectionState, GoogleConnectionStatus } from '../../contracts/src/index.js';
 import type { PlatformPaths } from '../../platform/src/index.js';
-import { DRIVE_API, DriveObjectStore, FOLDER_MIME, escapeQuery, type DriveFolders } from './drive-store.js';
+import { DRIVE_API, DriveObjectStore } from './drive-store.js';
 import {
   createGoogleAuthorization,
   exchangeGoogleCode,
+  GOOGLE_DRIVE_SCOPE,
   matchesPending,
   pendingExpired,
   refreshGoogleGrant,
@@ -25,10 +26,10 @@ const ACCESS_TOKEN_MARGIN_MS = 60_000;
 /** How long a reading of the Drive's free space is shown before it is read again. */
 const STORAGE_TTL_MS = 15 * 60 * 1000;
 const PENDING_SIGN_IN_LIMIT = 4;
-export const ROOT_FOLDER_NAME = 'SillyTavern Manager';
-const DATA_FOLDER_NAME = 'data';
-/** Marks the two folders as the manager's, so finding them does not depend on their names. */
-const FOLDER_PROPERTY = 'stmFolder';
+/** What the backups are called where a bucket name would be shown. */
+export const DRIVE_TARGET_LABEL = 'Google Drive';
+/** Said to a manager connected before backups moved into the hidden app folder. */
+const MOVED_TO_APP_FOLDER = 'Backups now go to a hidden folder only this app can see. Connect Google Drive again to allow it.';
 
 /**
  * What a sign-in with Google was started for: arranging backups from inside
@@ -57,7 +58,8 @@ interface StoredConnection {
   /** The one long-lived secret. */
   readonly refreshToken: string | null;
   readonly account: GoogleAccount | null;
-  readonly folders: DriveFolders | null;
+  /** The Drive scope the grant holds; a grant without the current one has to be given again. */
+  readonly scope: string | null;
   readonly connectedAt: string | null;
   readonly reconnectRequired: boolean;
   readonly lastError: string | null;
@@ -76,8 +78,8 @@ export interface GoogleConnectionOptions {
 /**
  * A Google Drive connected by signing in with Google.
  *
- * Holds the grant and the two folders backups go to, and hands the backup code
- * an object store on them. Tokens are refreshed through the project's token
+ * Holds the grant and hands the backup code an object store on the app's
+ * hidden folder in the Drive (`appDataFolder`). Tokens are refreshed through the project's token
  * broker, which holds the client secret; see `google-oauth.ts`.
  */
 export class GoogleConnection {
@@ -91,7 +93,7 @@ export class GoogleConnection {
   private pending: PendingSignIn[] = [];
   private accessToken: { value: string; expiresAt: number } | null = null;
   private refreshing: Promise<string> | null = null;
-  private storage: { readonly at: number; readonly usedBytes: number; readonly limitBytes: number | null } | null = null;
+  private storage: { readonly at: number; readonly usedBytes: number; readonly limitBytes: number | null; readonly backupBytes?: number; readonly backupFiles?: number } | null = null;
   /** One store per connection, so the listing it keeps outlives a single call. */
   private store: DriveObjectStore | null = null;
 
@@ -105,16 +107,21 @@ export class GoogleConnection {
 
   public async status(): Promise<GoogleConnectionStatus> {
     const stored = await this.load();
-    const state: GoogleConnectionState = stored.reconnectRequired ? 'reconnect_required' : stored.refreshToken && stored.folders ? 'connected' : 'disconnected';
+    const state: GoogleConnectionState = stored.reconnectRequired ? 'reconnect_required' : stored.refreshToken && stored.scope === GOOGLE_DRIVE_SCOPE ? 'connected' : 'disconnected';
     return {
       state,
       email: stored.account?.email ?? null,
       name: stored.account?.name ?? null,
-      folderUrl: stored.folders ? `https://drive.google.com/drive/folders/${encodeURIComponent(stored.folders.root)}` : null,
       connectedAt: stored.connectedAt,
       lastError: stored.lastError,
       displacedBy: stored.displacedBy,
-      storage: state === 'connected' && this.storage ? { usedBytes: this.storage.usedBytes, limitBytes: this.storage.limitBytes, readAt: new Date(this.storage.at).toISOString() } : null,
+      storage: state === 'connected' && this.storage ? {
+        usedBytes: this.storage.usedBytes,
+        limitBytes: this.storage.limitBytes,
+        backupBytes: this.storage.backupBytes ?? null,
+        backupFiles: this.storage.backupFiles ?? null,
+        readAt: new Date(this.storage.at).toISOString(),
+      } : null,
     };
   }
 
@@ -153,8 +160,9 @@ export class GoogleConnection {
    * was: a stranger signing in on the login page must not replace the owner's
    * Drive with theirs, or sign the owner out by trying.
    *
-   * Accepted, the refresh token is on disk before the folders are looked for,
-   * so a failure there never loses the grant just given.
+   * Google lets the person untick the Drive permission on its page and still
+   * sends a code back; that grant is no use for backups and is refused here
+   * rather than failing at the first upload.
    */
   public async completeConnect(callback: { state: string; code?: string | null; error?: string | null }, options: { readonly accept?: (account: GoogleAccount) => Promise<boolean> } = {}): Promise<GoogleConnectionStatus> {
     const index = this.prunePending().findIndex((entry) => matchesPending(entry.authorization, callback.state, this.now()));
@@ -165,6 +173,10 @@ export class GoogleConnection {
     }
     const grant = await exchangeGoogleCode(this.client, entry.authorization, callback.code ?? '', { fetchImpl: this.fetchImpl, now: this.now });
     if (!grant.refreshToken) throw new R2Error('google_no_refresh_token', 'Google did not issue a lasting sign-in. Connect again.');
+    if (grant.scopes.length > 0 && !grant.scopes.includes(GOOGLE_DRIVE_SCOPE)) {
+      await revokeGoogleToken(grant.refreshToken, this.fetchImpl).catch(() => undefined);
+      throw new R2Error('google_scope_missing', 'Google Drive access was not ticked on the Google page. Connect again and leave it ticked.');
+    }
     // Who this is, asked with the new token alone, before anything is kept.
     const about = await this.readAbout(grant.accessToken);
     if (!about.account.id) throw new R2Error('google_account_unknown', 'Google did not say which account signed in');
@@ -175,9 +187,7 @@ export class GoogleConnection {
     this.accessToken = { value: grant.accessToken, expiresAt: grant.expiresAt };
     this.store = null;
     const previous = await this.load();
-    await this.save({ ...previous, refreshToken: grant.refreshToken, reconnectRequired: false, lastError: null, displacedBy: null, connectedAt: new Date(this.now()).toISOString(), folders: null });
-    const folders = await this.ensureFolders();
-    await this.save({ ...(await this.load()), account: about.account, folders });
+    await this.save({ ...previous, refreshToken: grant.refreshToken, account: about.account, scope: GOOGLE_DRIVE_SCOPE, reconnectRequired: false, lastError: null, displacedBy: null, connectedAt: new Date(this.now()).toISOString() });
     return await this.status();
   }
 
@@ -198,7 +208,7 @@ export class GoogleConnection {
     this.pending = [];
     this.storage = null;
     this.store = null;
-    await this.save({ ...stored, refreshToken: null, account: null, folders: null, connectedAt: null, reconnectRequired: false, lastError: null, displacedBy: null });
+    await this.save({ ...stored, refreshToken: null, account: null, scope: null, connectedAt: null, reconnectRequired: false, lastError: null, displacedBy: null });
     return { revoked };
   }
 
@@ -223,22 +233,34 @@ export class GoogleConnection {
     return (await this.load()).account;
   }
 
-  /** Where backups go, as the chunk ledger names it. */
-  public async target(): Promise<{ email: string | null; folder: string } | null> {
+  /** Where backups go, as the chunk ledger names it: one app folder per Google account. */
+  public async target(): Promise<{ email: string | null; accountId: string } | null> {
     const stored = await this.load();
-    return stored.refreshToken && stored.folders && !stored.reconnectRequired ? { email: stored.account?.email ?? null, folder: stored.folders.root } : null;
+    return stored.refreshToken && stored.scope === GOOGLE_DRIVE_SCOPE && !stored.reconnectRequired ? { email: stored.account?.email ?? null, accountId: stored.account?.id ?? '' } : null;
   }
 
   public objectStore(): ObjectStore {
+    return this.driveStore();
+  }
+
+  /**
+   * Remove every file this app keeps in the Drive, for "delete the backups
+   * too" when disconnecting. The app folder is the app's own, so this is all
+   * of the backups and nothing else.
+   */
+  public async deleteBackups(): Promise<{ readonly files: number; readonly bytes: number }> {
+    return await this.driveStore().deleteEverything();
+  }
+
+  private driveStore(): DriveObjectStore {
     if (this.store) return this.store;
     this.store = new DriveObjectStore({
       token: async () => await this.token(),
       invalidate: () => { this.accessToken = null; },
-      folders: async () => {
+      ready: async () => {
         const stored = await this.load();
         if (stored.reconnectRequired) throw new R2Error('google_reconnect_required', 'Reconnect Google Drive to continue backing up');
-        if (!stored.refreshToken || !stored.folders) throw new R2Error('r2_not_configured', 'Connect Google Drive first');
-        return stored.folders;
+        if (!stored.refreshToken || stored.scope !== GOOGLE_DRIVE_SCOPE) throw new R2Error('r2_not_configured', 'Connect Google Drive first');
       },
       fetchImpl: this.fetchImpl,
       ...(this.sleep ? { sleep: this.sleep } : {}),
@@ -246,13 +268,18 @@ export class GoogleConnection {
     return this.store;
   }
 
-  /** The Drive's used and total space, read again when the last reading is old. */
+  /** The Drive's used and total space, and what the backups take of it, read again when the last reading is old. */
   public async refreshStorage(options: { readonly force?: boolean } = {}): Promise<void> {
     if (!await this.usable()) return;
     if (!options.force && this.storage && this.now() - this.storage.at < STORAGE_TTL_MS) return;
-    await this.readAbout().catch(async (error: unknown) => {
+    try {
+      await this.readAbout();
+      // From the listing the store keeps; one listing when it has none yet.
+      const backups = await this.driveStore().storedBytes();
+      if (this.storage) this.storage = { ...this.storage, backupBytes: backups.bytes, backupFiles: backups.files };
+    } catch (error: unknown) {
       await this.recordError(error instanceof Error ? error.message : 'Google Drive could not be read');
-    });
+    }
   }
 
   /** The account and its space; with `accessToken`, asked with that token rather than the connection's. */
@@ -269,41 +296,6 @@ export class GoogleConnection {
     const email = typeof about.user?.emailAddress === 'string' ? about.user.emailAddress : '';
     const id = typeof about.user?.permissionId === 'string' ? about.user.permissionId : '';
     return { account: { id, email, name: typeof about.user?.displayName === 'string' ? about.user.displayName : null } };
-  }
-
-  /**
-   * The manager's two folders, found or made.
-   *
-   * Found by a property set when they were made, so a reader who renames or
-   * moves the folder in Drive does not make the next machine start a new one.
-   * `drive.file` lets the app see only what it created, which these are, also
-   * when they were created by another machine with this same app.
-   */
-  private async ensureFolders(): Promise<DriveFolders> {
-    const root = await this.findFolder('root') ?? await this.createFolder(ROOT_FOLDER_NAME, 'root', 'root');
-    const data = await this.findFolder('data', root) ?? await this.createFolder(DATA_FOLDER_NAME, root, 'data');
-    return { root, data };
-  }
-
-  private async findFolder(role: 'root' | 'data', parent?: string): Promise<string | null> {
-    const conditions = [`mimeType = '${FOLDER_MIME}'`, 'trashed = false', `appProperties has { key='${FOLDER_PROPERTY}' and value='${role}' }`];
-    if (parent) conditions.push(`'${escapeQuery(parent)}' in parents`);
-    const params = new URLSearchParams({ q: conditions.join(' and '), fields: 'files(id,createdTime)', orderBy: 'createdTime', pageSize: '10', spaces: 'drive' });
-    const response = await this.drive(`${DRIVE_API}/files?${params.toString()}`, { method: 'GET' });
-    const found = await response.json() as { files?: Array<{ id?: unknown }> };
-    const first = (found.files ?? []).find((file) => typeof file.id === 'string');
-    return typeof first?.id === 'string' ? first.id : null;
-  }
-
-  private async createFolder(name: string, parent: string, role: 'root' | 'data'): Promise<string> {
-    const response = await this.drive(`${DRIVE_API}/files?fields=id`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name, mimeType: FOLDER_MIME, parents: [parent], appProperties: { [FOLDER_PROPERTY]: role } }),
-    });
-    const created = await response.json() as { id?: unknown };
-    if (typeof created.id !== 'string') throw new R2Error('google_folder_failed', 'Google Drive did not create the backup folder');
-    return created.id;
   }
 
   /** A Drive API call outside the object store (folders, account), refreshing once on 401. */
@@ -366,7 +358,7 @@ export class GoogleConnection {
         installationKeyId: randomBytes(8).toString('hex'),
         refreshToken: null,
         account: null,
-        folders: null,
+        scope: null,
         connectedAt: null,
         reconnectRequired: false,
         lastError: null,
@@ -405,16 +397,19 @@ function parseStored(value: unknown): StoredConnection {
   const account = isRecord(value.account) && typeof value.account.email === 'string'
     ? { id: typeof value.account.id === 'string' ? value.account.id : '', email: value.account.email, name: typeof value.account.name === 'string' ? value.account.name : null }
     : null;
-  const folders = isRecord(value.folders) && typeof value.folders.root === 'string' && typeof value.folders.data === 'string' ? { root: value.folders.root, data: value.folders.data } : null;
+  const refreshToken = typeof value.refreshToken === 'string' && value.refreshToken ? value.refreshToken : null;
+  const scope = typeof value.scope === 'string' ? value.scope : null;
+  // Connected before backups moved into the app folder: that grant cannot reach it.
+  const outdated = refreshToken !== null && scope !== GOOGLE_DRIVE_SCOPE;
   return {
     schemaVersion: SCHEMA_VERSION,
     installationKeyId: value.installationKeyId,
-    refreshToken: typeof value.refreshToken === 'string' && value.refreshToken ? value.refreshToken : null,
+    refreshToken,
     account,
-    folders,
+    scope,
     connectedAt: typeof value.connectedAt === 'string' ? value.connectedAt : null,
-    reconnectRequired: value.reconnectRequired === true,
-    lastError: typeof value.lastError === 'string' ? value.lastError : null,
+    reconnectRequired: value.reconnectRequired === true || outdated,
+    lastError: outdated ? MOVED_TO_APP_FOLDER : typeof value.lastError === 'string' ? value.lastError : null,
     displacedBy: typeof value.displacedBy === 'string' ? value.displacedBy : null,
   };
 }

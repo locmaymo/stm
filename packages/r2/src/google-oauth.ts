@@ -18,8 +18,16 @@ import { R2Error } from './store.js';
 
 export const GOOGLE_AUTHORIZE_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
 export const GOOGLE_REVOKE_URL = 'https://oauth2.googleapis.com/revoke';
-/** Only the files this app creates. It cannot see anything else in the Drive. */
-export const GOOGLE_DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+/**
+ * Only the app's own hidden folder in the Drive.
+ *
+ * Nothing else in the Drive can be seen with it, and what is in it cannot be
+ * seen, moved or deleted by hand in Drive either, which is the point: a
+ * backup is thousands of files nobody should tidy away by accident. The space
+ * it takes still counts against the account's storage, and the account owner
+ * can empty it from Drive's settings (Manage apps).
+ */
+export const GOOGLE_DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
 
 export { AUTHORIZATION_TTL_MS, matchesPending, type PendingAuthorization };
 

@@ -27,12 +27,18 @@ export interface FakeGoogle {
   failNext(status: number, count?: number, reason?: string): void;
   /** Make every access token issued so far stop working. */
   expireAccessTokens(): void;
+  /** Leave the next N Drive calls unanswered until the caller gives up on them. */
+  hangNext(count?: number): void;
   revokeAll(): void;
   readonly email: string;
 }
 
-export function fakeGoogle(options: { email?: string; brokerOrigin?: string } = {}): FakeGoogle {
+export const APP_DATA_SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
+
+export function fakeGoogle(options: { email?: string; brokerOrigin?: string; scope?: string } = {}): FakeGoogle {
   const email = options.email ?? 'tester@example.com';
+  // What the consent screen grants; a person can untick the Drive permission.
+  const scope = options.scope ?? APP_DATA_SCOPE;
   const brokerOrigin = options.brokerOrigin ?? 'https://broker.example';
   const files = new Map<string, FakeFile>();
   // Every token knows whose it is: Google's grants are per account.
@@ -41,6 +47,7 @@ export function fakeGoogle(options: { email?: string; brokerOrigin?: string } = 
   let accessTokens = new Map<string, string>();
   const calls = { list: 0, create: 0, update: 0, download: 0, remove: 0, refresh: 0, exchange: 0, revoke: 0, about: 0 };
   const failures: Array<{ status: number; reason: string }> = [];
+  let hangs = 0;
   let clock = Date.parse('2026-10-16T00:00:00.000Z');
 
   const json = (status: number, body: unknown): Response => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -48,7 +55,9 @@ export function fakeGoogle(options: { email?: string; brokerOrigin?: string } = 
   const issueAccess = (owner: string): string => { const token = `ya-test-${randomBytes(6).toString('hex')}`; accessTokens.set(token, owner); return token; };
   const view = (file: FakeFile): Record<string, unknown> => ({ id: file.id, name: file.name, size: String(file.content.byteLength), modifiedTime: file.modifiedTime, md5Checksum: createHash('md5').update(file.content).digest('hex') });
 
-  const matches = (file: FakeFile, query: string): boolean => {
+  const matches = (file: FakeFile, query: string, space: string): boolean => {
+    // The app folder is its own space: invisible to a search of the Drive, and the other way round.
+    if ((space === 'appDataFolder') !== file.parents.includes('appDataFolder')) return false;
     if (/trashed = false/u.test(query) && file.trashed) return false;
     const folderOnly = /mimeType = 'application\/vnd\.google-apps\.folder'/u.test(query);
     const noFolders = /mimeType != 'application\/vnd\.google-apps\.folder'/u.test(query);
@@ -77,13 +86,13 @@ export function fakeGoogle(options: { email?: string; brokerOrigin?: string } = 
         codes.delete(body.code ?? '');
         const refresh = `1-test-${randomBytes(6).toString('hex')}`;
         refreshTokens.set(refresh, issued.email);
-        return json(200, { access_token: issueAccess(issued.email), expires_in: 3599, refresh_token: refresh, scope: 'https://www.googleapis.com/auth/drive.file', token_type: 'Bearer' });
+        return json(200, { access_token: issueAccess(issued.email), expires_in: 3599, refresh_token: refresh, scope, token_type: 'Bearer' });
       }
       if (url.pathname === '/api/google/refresh') {
         calls.refresh += 1;
         const owner = refreshTokens.get(body.refresh_token ?? '');
         if (!owner) return json(400, { error: 'invalid_grant', error_description: 'Token has been expired or revoked.' });
-        return json(200, { access_token: issueAccess(owner), expires_in: 3599, scope: 'https://www.googleapis.com/auth/drive.file', token_type: 'Bearer' });
+        return json(200, { access_token: issueAccess(owner), expires_in: 3599, scope, token_type: 'Bearer' });
       }
       return json(404, { error: 'not_found' });
     }
@@ -105,6 +114,13 @@ export function fakeGoogle(options: { email?: string; brokerOrigin?: string } = 
     const authorization = new Headers(init?.headers).get('authorization') ?? '';
     const caller = accessTokens.get(authorization.replace(/^Bearer /u, ''));
     if (!caller) return json(401, { error: { code: 401, status: 'UNAUTHENTICATED' } });
+    if (hangs > 0) {
+      hangs -= 1;
+      const signal = init?.signal;
+      return await new Promise<Response>((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+      });
+    }
     const failure = failures.shift();
     if (failure) return json(failure.status, { error: { code: failure.status, errors: [{ reason: failure.reason }] } });
 
@@ -115,7 +131,7 @@ export function fakeGoogle(options: { email?: string; brokerOrigin?: string } = 
     if (url.pathname === '/drive/v3/files' && method === 'GET') {
       calls.list += 1;
       const query = url.searchParams.get('q') ?? '';
-      const found = [...files.values()].filter((file) => matches(file, query));
+      const found = [...files.values()].filter((file) => matches(file, query, url.searchParams.get('spaces') ?? 'drive'));
       if (url.searchParams.get('orderBy')?.startsWith('modifiedTime desc')) found.sort((a, b) => (a.modifiedTime < b.modifiedTime ? 1 : -1));
       const size = Number(url.searchParams.get('pageSize') ?? 100);
       const start = Number(url.searchParams.get('pageToken') ?? 0);
@@ -153,7 +169,12 @@ export function fakeGoogle(options: { email?: string; brokerOrigin?: string } = 
       const file = files.get(decodeURIComponent(one[1] ?? ''));
       if (!file || file.trashed) return json(404, { error: { code: 404, errors: [{ reason: 'notFound' }] } });
       if (method === 'DELETE') { calls.remove += 1; files.delete(file.id); return new Response(null, { status: 204 }); }
-      if (url.searchParams.get('alt') === 'media') { calls.download += 1; return new Response(new Uint8Array(file.content), { status: 200 }); }
+      if (url.searchParams.get('alt') === 'media') {
+        calls.download += 1;
+        const range = /^bytes=(\d+)-(\d+)$/u.exec(new Headers(init?.headers).get('range') ?? '');
+        if (range) return new Response(new Uint8Array(file.content.subarray(Number(range[1]), Number(range[2]) + 1)), { status: 206 });
+        return new Response(new Uint8Array(file.content), { status: 200 });
+      }
       return json(200, view(file));
     }
     return json(404, { error: { code: 404 } });
@@ -167,6 +188,7 @@ export function fakeGoogle(options: { email?: string; brokerOrigin?: string } = 
     issueCode: (challenge: string, as: string = email) => { const code = `4/code-${randomBytes(6).toString('hex')}`; codes.set(code, { challenge, email: as }); return code; },
     failNext: (status: number, count = 1, reason = 'rateLimitExceeded') => { for (let index = 0; index < count; index += 1) failures.push({ status, reason }); },
     expireAccessTokens: () => { accessTokens = new Map(); },
+    hangNext: (count = 1) => { hangs += count; },
     revokeAll: () => { refreshTokens.clear(); accessTokens = new Map(); },
   };
 }

@@ -3683,10 +3683,28 @@ async function handleGoogleRequest(context: RequestContext, google: GoogleConnec
      * moved on would also sign out the machine that took over and is backing
      * up now. That one keeps it; this one just forgets its copy.
      */
+    const body = await readJson(context.request);
+    const deleteBackups = isRecord(body) && body.deleteBackups === true;
     const before = await r2.getConfig();
     const otherMachine = before.mode === 'google' && before.owner && !before.owner.mine ? before.owner.label : null;
+    /*
+     * Not from under a machine that is backing up: it would go on naming chunks
+     * that are gone. Deleted from that machine, or from Drive's own settings.
+     */
+    if (deleteBackups && otherMachine) {
+      sendError(response, 409, 'google_backups_in_use', `Another machine (${otherMachine}) is backing up to this Drive. Disconnect there to delete the backups.`);
+      return;
+    }
+    if (deleteBackups) {
+      try {
+        await r2.deleteDriveBackups();
+      } catch (error: unknown) {
+        sendError(response, 502, 'google_delete_failed', `The backups could not all be removed from Google Drive, so nothing was disconnected: ${error instanceof Error ? error.message : 'unknown error'}`);
+        return;
+      }
+    }
     // The claim goes while there is still a grant to reach the Drive with.
-    if (before.mode === 'google' && !otherMachine) {
+    if (before.mode === 'google' && !otherMachine && !deleteBackups) {
       await r2.releaseOwnership().catch((error: unknown) => {
         logger(logEvent('r2.claimReleaseFailed', `[r2] the bucket claim could not be given up: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
       });
@@ -3695,7 +3713,7 @@ async function handleGoogleRequest(context: RequestContext, google: GoogleConnec
     // The account that was connected no longer opens this manager either.
     await store.releaseGoogleOwner();
     if ((await r2.getConfig()).mode === 'google') await r2.update({ enabled: false });
-    sendJson(response, 200, { ...result, keptFor: otherMachine, config: await r2.getConfig() });
+    sendJson(response, 200, { ...result, keptFor: otherMachine, deletedBackups: deleteBackups, config: await r2.getConfig() });
     return;
   }
   sendError(response, 404, 'not_found', 'Route not found');
