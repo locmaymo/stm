@@ -56,6 +56,16 @@ async function beginConnect(base: string, auth: { cookie: string; csrf: string }
   return state;
 }
 
+/**
+ * Connect the account from the console with the password, which is what lets
+ * that account open a manager that has one.
+ */
+async function connectFromConsole(base: string): Promise<void> {
+  const auth = await signIn(base);
+  const landed = await callback(base, { state: await beginConnect(base, auth), code: 'good-code' }, auth.cookie);
+  assert.match(landed.headers.get('location') ?? '', /cloudflare=connected/u);
+}
+
 function callback(base: string, query: Record<string, string>, cookie?: string): Promise<Response> {
   return fetch(`${base}${CLOUDFLARE_CALLBACK_PATH}?${new URLSearchParams(query).toString()}`, { redirect: 'manual', ...(cookie ? { headers: { cookie } } : {}) });
 }
@@ -132,6 +142,7 @@ test('a sign-in that happened in a window is collected by the console that start
    */
   const { manager, base } = await start();
   t.after(() => manager.close());
+  await connectFromConsole(base);
 
   const started = await fetch(`${base}/api/v1/auth/cloudflare?handoff=1`, { method: 'POST', headers: { origin: base } });
   assert.equal(started.status, 200);
@@ -175,6 +186,7 @@ test('a console that can send itself to Cloudflare is given no name, and the win
   // address when it comes back, and there is nothing to collect.
   const { manager, base } = await start();
   t.after(() => manager.close());
+  await connectFromConsole(base);
   const started = await fetch(`${base}/api/v1/auth/cloudflare`, { method: 'POST', headers: { origin: base } });
   const begun = await started.json() as { url: string; handoff?: string };
   assert.equal(begun.handoff, undefined);

@@ -24,6 +24,7 @@ const AUTH_ERRORS: Readonly<Record<string, MessageKey>> = {
   // rather than through the form, so its refusals arrive here as well.
   cloudflare_not_owner: 'setup.cloudNotOwner',
   cloudflare_account_required: 'setup.cloudAccountRequired',
+  cloudflare_password_first: 'setup.cloudPasswordFirst',
   cloudflare_not_available: 'setup.cloudUnavailable',
   cloudflare_authorization_denied: 'setup.cloudDenied',
   cloudflare_state_mismatch: 'setup.cloudExpired',

@@ -12,7 +12,7 @@ import { hashPassword, MIN_PASSWORD_LENGTH, validatePasscode, validatePassword, 
 import { RateLimiter } from './rate-limit.js';
 import { parseSessionCookie, SessionStore, clearSessionCookie, sessionCookie } from './sessions.js';
 import { HandoffStore } from './cloudflare-handoff.js';
-import { StateStore } from './state.js';
+import { StateStore, type CloudflareClaim } from './state.js';
 import { LOG_LIMITS, LogBuffer } from './log-buffer.js';
 import { eraseManagerData } from './reset.js';
 import { SystemStore } from './system.js';
@@ -2044,7 +2044,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     return;
   }
   if (pathname.startsWith('/api/v1/r2/cloudflare')) {
-    await handleCloudflareRequest(context, cloudflare, r2, proxy, publishProxies, logger, handoffs);
+    await handleCloudflareRequest(context, store, cloudflare, r2, proxy, publishProxies, logger, handoffs);
     return;
   }
   // The one question about the bucket: is it reachable, and what is in it. It
@@ -3593,7 +3593,7 @@ function cloudflareConnectionFromEnvironment(paths: PlatformPaths, env: NodeJS.P
  * the signed-in bucket the one backed up to, and disconnecting it switches R2
  * backups off rather than leaving them failing on a schedule.
  */
-async function handleCloudflareRequest(context: RequestContext, cloudflare: CloudflareConnection | null, r2: R2Manager, proxy: ProxyWorkerManager | null, publishProxies: () => void, logger: LogSink, handoffs: HandoffStore): Promise<void> {
+async function handleCloudflareRequest(context: RequestContext, store: StateStore, cloudflare: CloudflareConnection | null, r2: R2Manager, proxy: ProxyWorkerManager | null, publishProxies: () => void, logger: LogSink, handoffs: HandoffStore): Promise<void> {
   const { pathname, request, response } = context;
   const method = request.method ?? 'GET';
   if (!cloudflare) { sendError(response, 404, 'cloudflare_not_available', 'This manager has no Cloudflare sign-in configured'); return; }
@@ -3631,6 +3631,7 @@ async function handleCloudflareRequest(context: RequestContext, cloudflare: Clou
     if (!/^[0-9a-f]{32}$/u.test(accountId)) { sendError(response, 400, 'invalid_account', 'A Cloudflare account ID is required'); return; }
     const status = await cloudflare.chooseAccount(accountId, await r2.keysBucket());
     if (status.state === 'connected') {
+      if (status.account) await store.recordCloudflareOwner(status.account);
       await r2.update({ mode: 'cloudflare', enabled: true });
       await claimForThisMachine(r2, logger);
       // There is somewhere to put the fixed addresses now. Not waited for: a
@@ -3762,6 +3763,8 @@ async function handleCloudflareCallback(context: RequestContext, sessions: Sessi
       errorDescription: searchParams.get('error_description'),
     }, await r2.keysBucket());
     if (status.state === 'connected') {
+      // Connected by somebody signed in, so this account opens the manager too.
+      if (status.account) await signIn.store.recordCloudflareOwner(status.account);
       await r2.update({ mode: 'cloudflare', enabled: true });
       /*
        * And this machine becomes the one that backs up, because signing in is
@@ -4161,11 +4164,12 @@ interface CloudflareSignInDeps {
 /**
  * Open the console because Cloudflare says who this is.
  *
- * The account that owns this manager is the credential. The first one to sign
- * in claims it - the same rule as the first person to reach a manager with no
- * password being the one who sets it - and after that only that account is let
- * in, so a console exposed to the internet is not a door the next Cloudflare
- * user gets a key to.
+ * The account that owns this manager is the credential: the one recorded, or
+ * the one the console connected. A manager with neither is claimed by the
+ * first account to sign in only when it has no password either - the same
+ * rule as the first person to reach a manager with no password being the one
+ * who sets it. A console exposed to the internet is not a door the next
+ * Cloudflare user gets a key to; see `StateStore.claimCloudflareOwner`.
  *
  * What makes this worth having is what follows it. A machine that loses its
  * disk every few days has nothing: no password, no profile, no settings, no
@@ -4184,16 +4188,28 @@ async function completeCloudflareSignIn(
 ): Promise<void> {
   const { searchParams } = context;
   let status;
+  // Set from inside the check below, which is where a refusal is decided.
+  const refusal: { claim: CloudflareClaim | null } = { claim: null };
   try {
+    // Who this is is settled before the sign-in is kept, so a refused one
+    // never replaces the connection the owner's backups go through.
     status = await cloudflare.completeConnect({
       state: searchParams.get('state') ?? '',
       code: searchParams.get('code'),
       error: searchParams.get('error'),
       errorDescription: searchParams.get('error_description'),
-    }, await r2.keysBucket());
+    }, await r2.keysBucket(), async (offered, connected) => {
+      const claim = await deps.store.claimCloudflareOwner(offered, connected);
+      const admitted = claim.account ? offered.find((entry) => entry.id === claim.account?.id) : undefined;
+      if (admitted) return admitted;
+      refusal.claim = claim;
+      throw new R2Error(claim.refusal ?? 'cloudflare_not_owner', 'This Cloudflare account does not open this manager');
+    });
   } catch (error: unknown) {
     const code = isRecord(error) && typeof error.code === 'string' ? error.code : 'cloudflare_connect_failed';
-    logger(logEvent('auth.cloudflareFailed', `[auth] signing in with Cloudflare failed: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
+    const claim = refusal.claim;
+    if (claim) logger(logEvent('auth.cloudflareRefused', `[auth] a Cloudflare sign-in was refused: this manager belongs to ${claim.owner ?? 'another account'}`, { owner: claim.owner ?? '' }));
+    else logger(logEvent('auth.cloudflareFailed', `[auth] signing in with Cloudflare failed: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
     redirect('error', code, '');
     return;
   }
@@ -4202,12 +4218,6 @@ async function completeCloudflareSignIn(
     // Cloudflare returned without settling which account this is - more than
     // one was offered and none chosen. There is nobody to let in yet.
     redirect('error', 'cloudflare_account_required', '');
-    return;
-  }
-  const claim = await deps.store.claimCloudflareOwner(account.id, account.name);
-  if (!claim.allowed) {
-    logger(logEvent('auth.cloudflareRefused', `[auth] a Cloudflare sign-in was refused: this manager belongs to ${claim.owner ?? 'another account'}`, { owner: claim.owner ?? '' }));
-    redirect('error', 'cloudflare_not_owner', '');
     return;
   }
   if (status.state === 'connected') await r2.update({ mode: 'cloudflare', enabled: true });
@@ -4436,7 +4446,7 @@ async function handlePasswordSetup(
     return;
   }
   const state = await store.getPersisted();
-  if (state.adminPasswordHash) {
+  if (state.adminPasswordHash || state.ownerAccountId !== null) {
     sendError(context.response, 409, 'already_configured', 'The manager admin password is already configured');
     return;
   }
@@ -4459,7 +4469,9 @@ async function handlePasswordSetup(
     sendError(context.response, 400, 'notice_acceptance_required', 'Terms and the telemetry notice must be accepted');
     return;
   }
-  const saved = await store.saveAdminPassword(hashPassword(password));
+  // Refused for a manager a Cloudflare account already opens: it is set up,
+  // and this screen is open to whoever reaches it.
+  const saved = await store.saveFirstAdminPassword(hashPassword(password));
   if (!saved) {
     sendError(context.response, 409, 'already_configured', 'The manager admin password is already configured');
     return;
