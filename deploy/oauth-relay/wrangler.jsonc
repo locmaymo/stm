@@ -1,7 +1,8 @@
 {
   // The project's site: the landing page, the documentation, the legal
-  // documents, and the static page Cloudflare's OAuth client redirects to,
-  // which forwards the browser back to whichever manager started the sign-in.
+  // documents, and the static page the OAuth client redirects to, which
+  // forwards the browser back to whichever manager started the sign-in. Plus one script, `src/worker.ts`: the Google token broker,
+  // which holds the Google client secret so that nothing shipped has to.
   //
   // The assets are built, not committed. Build them from the repository
   // root, then deploy from this directory, which carries its own Wrangler:
@@ -10,13 +11,37 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "stm-oauth-relay",
   "compatibility_date": "2026-09-01",
+  "main": "src/worker.ts",
   "assets": {
     "directory": "../../apps/site/dist",
+    "binding": "ASSETS",
     // /oauth/cloudflare/callback serves callback.html with no redirect, so the
     // registered redirect URI is answered exactly as registered.
     "html_handling": "auto-trailing-slash",
-    "not_found_handling": "404-page"
+    "not_found_handling": "404-page",
+    // The broker's routes always run the script; without this, an address
+    // that is not a file would get the 404 page before it was asked. Files
+    // are served without running it, and any other address the script hands
+    // back to the site (`src/worker.ts`).
+    "run_worker_first": ["/api/*"]
   },
+  // The client ID is public by design. The secret is not here: it is the
+  // Worker secret GOOGLE_CLIENT_SECRET, set in the dashboard or with
+  // `npx wrangler secret put GOOGLE_CLIENT_SECRET`, and it survives deploys.
+  // GOOGLE_SIGNIN_PAUSED = "1" stops new sign-ins; refreshes keep working.
+  "vars": {
+    "GOOGLE_CLIENT_ID": "342010087439-k960utodagns1kdb72epd6rfhs887hor.apps.googleusercontent.com",
+    "GOOGLE_REDIRECT_URI": "https://stm.locmaymo.top/oauth/google/callback",
+    "GOOGLE_SIGNIN_PAUSED": "0"
+  },
+  // A manager refreshes only when a backup needs a token and the last one
+  // has expired, so a few calls an hour from one address is normal.
+  "ratelimits": [
+    { "name": "GOOGLE_LIMITER", "namespace_id": "1001", "simple": { "limit": 60, "period": 60 } }
+  ],
+  // The broker sees tokens in its request and response bodies. Nothing is
+  // logged by the script, and no invocation logs are kept either.
+  "observability": { "enabled": false },
   "workers_dev": false,
   "preview_urls": false,
   "routes": [

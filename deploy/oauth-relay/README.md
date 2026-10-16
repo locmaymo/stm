@@ -1,4 +1,4 @@
-# The project site and the Cloudflare OAuth relay
+# The project site, the OAuth relay and the Google token broker
 
 This directory is the Wrangler project that publishes `stm.locmaymo.top`. The
 pages themselves live in [`apps/site`](../../apps/site) and are built into
@@ -6,7 +6,7 @@ pages themselves live in [`apps/site`](../../apps/site) and are built into
 output: run the build first.
 
 The site carries the landing page, the documentation and the legal documents,
-plus the OAuth relay described below.
+plus the OAuth relay and the Google token broker described below.
 
 ## Cloudflare OAuth relay
 
@@ -27,6 +27,47 @@ addresses, or that shows a third party's name on a domain that is not theirs, is
 what browsers' phishing checks look for.
 The authorization code is useless without the PKCE verifier, which never leaves the
 manager.
+
+## Google token broker
+
+Google's web OAuth clients want the client secret at the code exchange and at
+every refresh, and the secret cannot ship with the manager: this repository is
+public, and anything in the npm package or the APK can be read back out. So the
+Worker has one script, [`src/broker.ts`](src/broker.ts), that holds it:
+
+| Route | The manager sends | The broker adds |
+| --- | --- | --- |
+| `POST /api/google/token` | `{ code, code_verifier }` | client ID, secret, the fixed `redirect_uri` |
+| `POST /api/google/refresh` | `{ refresh_token }` | client ID, secret |
+
+It forwards to Google's token endpoint and nowhere else, keeps nothing, logs no
+bodies, answers no CORS preflight, and wants a JSON body, so a page on another
+site cannot use it from a visitor's browser. Backups never pass through it:
+the manager talks to Google Drive directly with the access token.
+
+Only `/api/*` runs the script first (`run_worker_first`); files are served
+without it, and any other address is handed back to the site.
+
+The secret is a **Worker secret**, never a file. Set it once, after the first
+deploy that includes the script (Cloudflare refuses secrets on a Worker that is
+only static assets):
+
+- in the dashboard: **Workers & Pages → stm-oauth-relay → Settings → Variables
+  and Secrets → Add**, type **Secret**, name `GOOGLE_CLIENT_SECRET`; or
+- from this directory: `npx wrangler secret put GOOGLE_CLIENT_SECRET`.
+
+Secrets survive deploys. Until it is set, both routes answer
+`503 broker_not_configured`.
+
+If the secret ever leaks: add a second secret on the Google client, put the new
+one here, then disable the old one. Users' refresh tokens keep working, so
+nobody needs a new release. To stop new sign-ins during abuse while existing
+users keep refreshing, set `GOOGLE_SIGNIN_PAUSED` to `"1"` in `wrangler.jsonc`
+and deploy. A per-address rate limit (`GOOGLE_LIMITER`) is in the same file.
+
+`npm run verify` runs `scripts/secret-gate.mjs`, which fails on anything shaped
+like a Google client secret, access token or refresh token in a tracked file,
+and on a tracked `client_secret_*.json`.
 
 ## Deploy
 
