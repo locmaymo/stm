@@ -7,6 +7,7 @@ import { parseS3Endpoint, R2_FREE_TIER, readR2Usage } from '../../cloudflare/src
 import { ioConcurrency, runPooled } from '../../platform/src/index.js';
 import type { PlatformPaths } from '../../platform/src/index.js';
 import type { CloudflareConnection, KnownBucket } from './cloudflare-connection.js';
+import { ROOT_FOLDER_NAME, type GoogleConnection } from './google-connection.js';
 import { BlobLedger } from './ledger.js';
 import { S3ObjectStore, type R2Credentials } from './s3.js';
 import { R2Error, type Billing, type ObjectRecord, type ObjectStore } from './store.js';
@@ -34,6 +35,7 @@ export { R2Error } from './store.js';
 export type { ObjectRecord, ObjectStore } from './store.js';
 export { CloudflareConnection } from './cloudflare-connection.js';
 export type { KnownBucket } from './cloudflare-connection.js';
+export { GoogleConnection } from './google-connection.js';
 
 const R2_STATE_FILE = 'r2-config.json';
 /** The connection settings `.env` may provide, and the variable for each. */
@@ -202,6 +204,8 @@ export interface R2ManagerOptions {
   readonly fetchImpl?: typeof fetch;
   /** The signed-in connection, when this manager has a Cloudflare OAuth client. */
   readonly cloudflare?: CloudflareConnection;
+  /** The Google Drive connection, when this manager has a Google sign-in. */
+  readonly google?: GoogleConnection;
   /**
    * What this machine is called in the bucket's claim; see `machineLabel`
    * for what is used when this is not given.
@@ -217,6 +221,19 @@ export interface R2ManagerOptions {
    * therefore about somebody else's Worker.
    */
   readonly onSurrender?: () => void;
+}
+
+/** What the claim needs from a signed-in provider; see `signedIn`. */
+interface SignedInAccount {
+  /** How the account is named in messages: "signed in with this <name>". */
+  readonly name: string;
+  /** What the reader does to take it back, as the end of a sentence. */
+  readonly signInAgain: string;
+  installationId(): Promise<string>;
+  usable(): Promise<boolean>;
+  connectedAt(): Promise<string | null>;
+  surrender(by: string, reason: string): Promise<boolean>;
+  evict(keyId: string): Promise<boolean>;
 }
 
 export interface R2UpdateInput {
@@ -285,6 +302,7 @@ export class R2Manager {
   private readonly fetchImpl: typeof fetch;
   private readonly ledger: BlobLedger;
   private readonly cloudflare: CloudflareConnection | null;
+  private readonly google: GoogleConnection | null;
   private readonly fixedLabel: string | null;
   /** Where a browser last reached this manager from outside; see `noteAddress`. */
   private address: string | null = null;
@@ -328,6 +346,7 @@ export class R2Manager {
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.ledger = new BlobLedger({ path: join(this.paths.state, R2_LEDGER_FILE) });
     this.cloudflare = options.cloudflare ?? null;
+    this.google = options.google ?? null;
     this.fixedLabel = options.installationLabel ? options.installationLabel.slice(0, 120) : null;
     this.onSurrender = options.onSurrender ?? null;
   }
@@ -363,8 +382,9 @@ export class R2Manager {
     // and cannot change it, so a stale form cannot quietly replace it either.
     const locked = new Set<string>(this.environmentFields());
     const input = Object.fromEntries(Object.entries(requested).filter(([key]) => !locked.has(key))) as R2UpdateInput;
-    if (input.mode !== undefined && input.mode !== 'keys' && input.mode !== 'cloudflare') throw new R2Error('invalid_r2_mode', 'The R2 connection mode is not valid');
+    if (input.mode !== undefined && input.mode !== 'keys' && input.mode !== 'cloudflare' && input.mode !== 'google') throw new R2Error('invalid_r2_mode', 'The R2 connection mode is not valid');
     if (input.mode === 'cloudflare' && !this.cloudflare) throw new R2Error('cloudflare_not_available', 'This manager has no Cloudflare sign-in configured');
+    if (input.mode === 'google' && !this.google) throw new R2Error('google_not_available', 'This manager has no Google sign-in configured');
     const next: StoredR2Config = {
       ...current,
       ...(input.mode !== undefined ? { mode: input.mode } : {}),
@@ -472,6 +492,7 @@ export class R2Manager {
   private async bucketName(): Promise<string | null> {
     const config = await this.load();
     if (config.mode === 'cloudflare') return (await this.cloudflare?.target())?.bucket ?? null;
+    if (config.mode === 'google') return (await this.google?.target()) ? ROOT_FOLDER_NAME : null;
     return config.bucket;
   }
 
@@ -944,8 +965,9 @@ export class R2Manager {
    * them here would take away a way of working that already worked.
    */
   private async requireOwnership(config: StoredR2Config): Promise<void> {
-    if (config.mode !== 'cloudflare' || !this.cloudflare) return;
-    const keyId = await this.cloudflare.installationId();
+    const account = this.signedIn(config);
+    if (!account) return;
+    const keyId = await account.installationId();
     const now = this.now().getTime();
     const claim = await readClaim(this.client(config), CLAIM_KEY);
     if (claim && claim.keyId !== keyId && !claimIsStale(claim, now) && !await this.outranks(claim)) {
@@ -961,9 +983,9 @@ export class R2Manager {
        */
       await this.rememberClaim(claim, false);
       await this.recordCharges();
-      this.logger(logEvent('r2.displaced', `[r2] ${claim.label} signed in with this Cloudflare account, so this machine has stopped backing up; sign in to Cloudflare again here to take it back`, { label: claim.label }));
+      this.logger(logEvent('r2.displaced', `[r2] ${claim.label} signed in with this ${account.name}, so this machine has stopped backing up; ${account.signInAgain} here to take it back`, { label: claim.label }));
       await this.surrenderAccount(claim);
-      throw new R2Error('r2_in_use', `${claim.label} signed in with this Cloudflare account, so this machine has stopped backing up. Sign in to Cloudflare again from this machine to take it back.`);
+      throw new R2Error('r2_in_use', `${claim.label} signed in with this ${account.name}, so this machine has stopped backing up. ${capitalize(account.signInAgain)} from this machine to take it back.`);
     }
     const mine: BucketClaim = {
       schemaVersion: 1,
@@ -991,7 +1013,7 @@ export class R2Manager {
        * spending its life refused by the machine it replaced.
        */
       else if (claim.keyId !== keyId) {
-        await this.cloudflare.evict(claim.keyId).catch(() => false);
+        await account.evict(claim.keyId).catch(() => false);
         this.logger(logEvent('r2.claimTakenOver', `[r2] this machine took the bucket over from ${claim.label}`, { label: claim.label }));
       }
     }
@@ -1008,12 +1030,13 @@ export class R2Manager {
    */
   public async takeOwnership(): Promise<R2Config> {
     const config = await this.requireUsable();
-    if (config.mode !== 'cloudflare' || !this.cloudflare) throw new R2Error('r2_not_connected_account', 'Only a bucket connected by signing in to Cloudflare has an owner to take over');
-    const keyId = await this.cloudflare.installationId();
+    const account = this.signedIn(config);
+    if (!account) throw new R2Error('r2_not_connected_account', 'Only a bucket connected by signing in has an owner to take over');
+    const keyId = await account.installationId();
     const client = this.client(config);
     const previous = await readClaim(client, CLAIM_KEY);
     if (previous && previous.keyId !== keyId) {
-      await this.cloudflare.evict(previous.keyId).catch(() => false);
+      await account.evict(previous.keyId).catch(() => false);
       this.logger(logEvent('r2.claimTakenOver', `[r2] this machine took the bucket over from ${previous.label}`, { label: previous.label }));
     }
     const at = new Date(this.now()).toISOString();
@@ -1030,9 +1053,10 @@ export class R2Manager {
    */
   public async releaseOwnership(): Promise<void> {
     const config = await this.load();
-    if (config.mode !== 'cloudflare' || !this.cloudflare || !config.enabled) { await this.forgetClaim(); return; }
+    const account = this.signedIn(config);
+    if (!account || !config.enabled) { await this.forgetClaim(); return; }
     try {
-      const keyId = await this.cloudflare.installationId();
+      const keyId = await account.installationId();
       const client = this.client(config);
       const claim = await readClaim(client, CLAIM_KEY);
       if (claim?.keyId === keyId) await client.deleteObject(CLAIM_KEY);
@@ -1059,13 +1083,14 @@ export class R2Manager {
    */
   public async refreshClaim(options: { readonly atMostEvery?: number } = {}): Promise<void> {
     const config = await this.load();
-    if (config.mode !== 'cloudflare' || !this.cloudflare || !config.enabled) return;
+    const account = this.signedIn(config);
+    if (!account || !config.enabled) return;
     const now = this.now().getTime();
     const since = config.claim ? now - Date.parse(config.claim.checkedAt) : Number.POSITIVE_INFINITY;
     if (options.atMostEvery !== undefined && Number.isFinite(since) && since < options.atMostEvery) return;
     try {
-      if (!await this.cloudflare.usable()) return;
-      const keyId = await this.cloudflare.installationId();
+      if (!await account.usable()) return;
+      const keyId = await account.installationId();
       const claim = await readClaim(this.client(config), CLAIM_KEY);
       if (!claim) { await this.forgetClaim(); return; }
       /*
@@ -1119,7 +1144,7 @@ export class R2Manager {
    * so the comparison does not turn on a second of clock drift.
    */
   private async outranks(claim: BucketClaim): Promise<boolean> {
-    const connectedAt = (await this.cloudflare?.status())?.connectedAt ?? null;
+    const connectedAt = await this.signedIn(await this.load())?.connectedAt() ?? null;
     if (!connectedAt) return false;
     const signedIn = Date.parse(connectedAt);
     const claimed = Date.parse(claim.claimedAt);
@@ -1140,10 +1165,11 @@ export class R2Manager {
    * nothing left to give up.
    */
   private async surrenderAccount(claim: BucketClaim): Promise<void> {
-    if (!this.cloudflare) return;
-    const reason = `${claim.label} signed in with this Cloudflare account, so this machine gave up its own sign-in. Sign in to Cloudflare again here to take the account back.`;
-    if (!await this.cloudflare.surrender(claim.label, reason)) return;
-    this.logger(logEvent('r2.accountSurrendered', `[r2] this machine has given up its Cloudflare sign-in, because ${claim.label} holds the account now; nothing here can reach that account until somebody signs in again`, { label: claim.label }));
+    const account = this.signedIn(await this.load());
+    if (!account) return;
+    const reason = `${claim.label} signed in with this ${account.name}, so this machine gave up its own sign-in. ${capitalize(account.signInAgain)} here to take the account back.`;
+    if (!await account.surrender(claim.label, reason)) return;
+    this.logger(logEvent('r2.accountSurrendered', `[r2] this machine has given up its sign-in, because ${claim.label} holds the ${account.name} now; nothing here can reach it until somebody signs in again`, { label: claim.label }));
     this.onSurrender?.();
   }
 
@@ -1193,10 +1219,49 @@ export class R2Manager {
     await this.save({ ...config, claim: null });
   }
 
+  /**
+   * The sign-in behind the bucket, for the claim, whichever provider it is.
+   *
+   * Null for manual keys: those are somebody carrying credentials between
+   * machines on purpose, and the claim does not apply to them.
+   */
+  private signedIn(config: StoredR2Config): SignedInAccount | null {
+    if (config.mode === 'cloudflare' && this.cloudflare) {
+      const cloudflare = this.cloudflare;
+      return {
+        name: 'Cloudflare account',
+        signInAgain: 'sign in to Cloudflare again',
+        installationId: async () => await cloudflare.installationId(),
+        usable: async () => await cloudflare.usable(),
+        connectedAt: async () => (await cloudflare.status()).connectedAt,
+        surrender: async (by, reason) => await cloudflare.surrender(by, reason),
+        evict: async (keyId) => await cloudflare.evict(keyId),
+      };
+    }
+    if (config.mode === 'google' && this.google) {
+      const google = this.google;
+      return {
+        name: 'Google Drive',
+        signInAgain: 'connect Google Drive again',
+        installationId: async () => await google.installationId(),
+        usable: async () => await google.usable(),
+        connectedAt: async () => (await google.status()).connectedAt,
+        surrender: async (by, reason) => await google.surrender(by, reason),
+        // Drive has no per-machine key to take away; the claim is the whole of it.
+        evict: async () => false,
+      };
+    }
+    return null;
+  }
+
   private async requireUsable(): Promise<StoredR2Config> {
     const config = await this.load();
     if (!config.enabled) throw new R2Error('r2_disabled', 'R2 backup is switched off');
-    if (config.mode === 'cloudflare') {
+    if (config.mode === 'google') {
+      const status = await this.google?.status();
+      if (status?.state === 'reconnect_required') throw new R2Error('google_reconnect_required', 'Reconnect Google Drive to continue backing up');
+      if (status?.state !== 'connected') throw new R2Error('r2_not_configured', 'Connect Google Drive first');
+    } else if (config.mode === 'cloudflare') {
       const status = await this.cloudflare?.status();
       if (status?.state === 'reconnect_required') throw new R2Error('cloudflare_reconnect_required', 'Reconnect to Cloudflare to continue backing up');
       if (status?.state !== 'connected') throw new R2Error('r2_not_configured', 'Connect to Cloudflare and choose an account first');
@@ -1213,6 +1278,11 @@ export class R2Manager {
    * through a sign-in, so moving between the two on one bucket keeps the ledger.
    */
   private async storageTarget(config: StoredR2Config): Promise<string> {
+    if (config.mode === 'google') {
+      const target = await this.google?.target();
+      if (!target) throw new R2Error('r2_not_configured', 'Connect Google Drive first');
+      return `google:${target.folder}`;
+    }
     if (config.mode === 'cloudflare') {
       const target = await this.cloudflare?.target();
       if (!target) throw new R2Error('r2_not_configured', 'Connect to Cloudflare and choose an account first');
@@ -1298,6 +1368,11 @@ export class R2Manager {
     if (config.mode === 'cloudflare') {
       if (!this.cloudflare) throw new R2Error('cloudflare_not_available', 'This manager has no Cloudflare sign-in configured');
       return this.cloudflare.objectStore(count);
+    }
+    if (config.mode === 'google') {
+      if (!this.google) throw new R2Error('google_not_available', 'This manager has no Google sign-in configured');
+      // Drive is not billed per request, so nothing is counted against the R2 allowance.
+      return this.google.objectStore();
     }
     return new S3ObjectStore(toCredentials(config), this.fetchImpl, count);
   }
@@ -1624,6 +1699,7 @@ export class R2Manager {
 
   private async toPublic(config: StoredR2Config): Promise<R2Config> {
     const cloudflare = this.cloudflare ? await this.cloudflare.status() : null;
+    const google = this.google ? await this.google.status() : null;
     // The month is rolled over for the reader as well as for the writer. Taken
     // straight from the file, the panel went on showing last month's figures
     // against this month's allowance until something happened to write them.
@@ -1631,11 +1707,14 @@ export class R2Manager {
     return {
       mode: config.mode,
       cloudflare,
+      google,
       enabled: config.enabled,
       endpoint: config.endpoint,
       bucket: config.bucket,
       environmentFields: this.environmentFields(),
-      configured: config.mode === 'cloudflare'
+      configured: config.mode === 'google'
+        ? google?.state === 'connected'
+        : config.mode === 'cloudflare'
         ? cloudflare?.state === 'connected'
         : Boolean(config.endpoint && config.bucket && config.accessKeyId && config.secretAccessKey),
       lastUploadAt: config.lastUploadAt,
@@ -1750,6 +1829,10 @@ export class R2Manager {
     this.writeQueue = previous.then(operation, operation);
     await this.writeQueue;
   }
+}
+
+function capitalize(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
 function usageWarnings(report: Pick<R2CloudflareUsage, 'bucket' | 'account'>, config: StoredR2Config): R2UsageWarning[] {

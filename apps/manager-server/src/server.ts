@@ -27,7 +27,7 @@ import { TunnelManager } from '../../../packages/tunnel/src/index.js';
 import { isWaitingProfile, ProfileError, ProfileStore } from '../../../packages/profiles/src/index.js';
 import { ProfileVault } from '../../../packages/profiles/src/vault.js';
 import { BackupError, BackupStore, MAX_ZIP_DIRECTORY_BYTES, type RestoreOptions } from '../../../packages/backup/src/index.js';
-import { CloudflareConnection, R2Error, R2Manager, type R2UpdateInput } from '../../../packages/r2/src/index.js';
+import { CloudflareConnection, GoogleConnection, R2Error, R2Manager, type R2UpdateInput } from '../../../packages/r2/src/index.js';
 import { CloudflareApiError, CloudflareOAuthError, CloudflareRateLimitError, DEFAULT_SCOPES, PROXY_WORKER_TARGETS, ProxyWorkerManager, type ProxyWorkerTarget } from '../../../packages/cloudflare/src/index.js';
 import { BackupScheduler, syncProfileToR2 } from './r2-scheduler.js';
 import { fetchSnapshotToLibrary, isProfileEmpty, recoverProfileFromR2, restoreSnapshotInPlace } from './r2-restore.js';
@@ -81,6 +81,21 @@ const DEFAULT_CLOUDFLARE_CLIENT_ID = '042dda365c8407a62549886823a5fa4c';
 const DEFAULT_CLOUDFLARE_REDIRECT_URI = 'https://stm.locmaymo.top/oauth/cloudflare/callback';
 /** Where the relay, or Cloudflare itself for a loopback client, sends the browser on this manager. */
 export const CLOUDFLARE_CALLBACK_PATH = '/oauth/cloudflare/callback';
+/**
+ * The Google OAuth client this project registered, for Drive backups.
+ *
+ * Its ID is public by design. Its secret is not here or anywhere in what ships:
+ * Google's web clients need it at every token request, so those go through the
+ * project's token broker, which holds it (`deploy/oauth-relay`). Someone running
+ * their own client and broker points `STM_GOOGLE_CLIENT_ID` and
+ * `STM_GOOGLE_BROKER_URL` at them; `STM_GOOGLE_CLIENT_ID` set empty turns the
+ * Google sign-in off.
+ */
+const DEFAULT_GOOGLE_CLIENT_ID = '342010087439-k960utodagns1kdb72epd6rfhs887hor.apps.googleusercontent.com';
+/** The site that carries both the Google relay page and the token broker. */
+const DEFAULT_GOOGLE_BROKER_URL = 'https://stm.locmaymo.top';
+/** Where the relay sends the browser back to on this manager after Google. */
+export const GOOGLE_CALLBACK_PATH = '/oauth/google/callback';
 
 const PROTECTED_PATHS = new Set([
   '/api/v1/versions',
@@ -168,6 +183,8 @@ export interface ManagerServerOptions {
   readonly r2?: R2Manager;
   /** Null turns signing in to Cloudflare off; absent builds it from the environment. */
   readonly cloudflare?: CloudflareConnection | null;
+  /** Null turns the Google Drive sign-in off; absent builds it from the environment. */
+  readonly google?: GoogleConnection | null;
   /**
    * The Workers that give the tunnels a fixed address.
    *
@@ -320,10 +337,12 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   const profiles = options.profileStore ?? new ProfileStore({ paths, vault, logger: profileLogger });
   const backups = options.backupStore ?? new BackupStore({ paths, logger: (line) => { jobs.append('backup', line); baseLogger(line); } });
   const cloudflare = options.cloudflare !== undefined ? options.cloudflare : cloudflareConnectionFromEnvironment(paths, env);
+  const google = options.google !== undefined ? options.google : googleConnectionFromEnvironment(paths, env);
   const r2 = options.r2 ?? new R2Manager({
     paths,
     env,
     ...(cloudflare ? { cloudflare } : {}),
+    ...(google ? { google } : {}),
     logger: (line) => { jobs.append('backup', line); baseLogger(line); },
     /*
      * The account has gone to another machine, so what was deployed into it
@@ -814,6 +833,8 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     r2Mode: async () => {
       const config = await r2.getConfig();
       if (!config.enabled || !config.configured) return 'off';
+      // Google Drive is reported with the keys until the receiver accepts a
+      // value of its own: it refuses a whole batch over a mode it does not know.
       return config.mode === 'cloudflare' ? 'cloudflare' : 'keys';
     },
     // Figures the manager already holds: the last measurement of the profile,
@@ -1004,6 +1025,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       backups,
       r2,
       cloudflare,
+      google,
       metrics,
       activity,
       config,
@@ -1194,6 +1216,7 @@ async function handleRequest(options: {
   readonly backups: BackupStore;
   readonly r2: R2Manager;
   readonly cloudflare: CloudflareConnection | null;
+  readonly google: GoogleConnection | null;
   readonly metrics: MetricsStore;
   /** How much the manager itself is used; see `activity.ts`. */
   readonly activity: ActivityMeter;
@@ -1225,7 +1248,7 @@ async function handleRequest(options: {
   readonly autoInstall: boolean;
   readonly onShutdownRequest: (() => void) | undefined;
 }): Promise<void> {
-  const { request, response, store, sessions, rateLimiter, handoffs, startedAt, publicOrigins, proxiedOrigin, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, releases, online, notifications, push, proxy, publishProxies, budget, saver, shutdownToken, autoInstall, onShutdownRequest } = options;
+  const { request, response, store, sessions, rateLimiter, handoffs, startedAt, publicOrigins, proxiedOrigin, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, google, metrics, activity, config, system, releases, online, notifications, push, proxy, publishProxies, budget, saver, shutdownToken, autoInstall, onShutdownRequest } = options;
   // Whether the browser's side of this connection is HTTPS, which is not the
   // same question as whether ours is: a hosted console is reached over HTTPS
   // that a proxy terminates before us, and only the proxy's own header says so.
@@ -1290,6 +1313,10 @@ async function handleRequest(options: {
         tunnel, managerTunnel, ports, firstInstall, adoptSillyTavernPort, adoptKeepOnline, logger: options.logger,
       }),
     });
+    return;
+  }
+  if (pathname === GOOGLE_CALLBACK_PATH && (request.method ?? 'GET') === 'GET') {
+    await handleGoogleCallback(context, sessions, google, r2, options.logger, handoffs);
     return;
   }
   if (!pathname.startsWith('/api/v1/')) {
@@ -1527,7 +1554,7 @@ async function handleRequest(options: {
     if (method !== 'GET' && !requireCsrf(context, session.csrfToken)) {
       return;
     }
-    await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, online, proxy, publishProxies, budget, logger, handoffs, saver, sessions, notifications, push);
+    await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, online, proxy, publishProxies, budget, logger, handoffs, saver, sessions, notifications, push, google);
     return;
   }
 
@@ -1789,7 +1816,7 @@ async function adoptRestoredPort(deps: PortAdoptionDeps, port: number): Promise<
   }
 }
 
-async function handleRuntimeRequest(context: RequestContext, store: StateStore, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, managerTunnel: TunnelManager, gateway: AccessGateway, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, cloudflare: CloudflareConnection | null, metrics: MetricsStore, activity: ActivityMeter, config: ConfigStore, system: SystemStore, online: OnlineKeeper, proxy: ProxyWorkerManager | null, publishProxies: () => void, budget: WorkerBudget, logger: LogSink, handoffs: HandoffStore, saver: SaverMode, sessions: SessionStore, notifications: NotificationCenter, push: WebPush): Promise<void> {
+async function handleRuntimeRequest(context: RequestContext, store: StateStore, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, managerTunnel: TunnelManager, gateway: AccessGateway, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, cloudflare: CloudflareConnection | null, metrics: MetricsStore, activity: ActivityMeter, config: ConfigStore, system: SystemStore, online: OnlineKeeper, proxy: ProxyWorkerManager | null, publishProxies: () => void, budget: WorkerBudget, logger: LogSink, handoffs: HandoffStore, saver: SaverMode, sessions: SessionStore, notifications: NotificationCenter, push: WebPush, google: GoogleConnection | null): Promise<void> {
   const { pathname, ports, request, response, searchParams } = context;
   const method = request.method ?? 'GET';
   const adoptSillyTavernPort = (port: number): Promise<void> =>
@@ -2021,7 +2048,7 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     const body = await readJson(request);
     if (!isRecord(body)) { sendError(response, 400, 'invalid_input', 'A JSON object is required'); return; }
     const input: R2UpdateInput = {
-      ...(body.mode === 'keys' || body.mode === 'cloudflare' ? { mode: body.mode } : {}),
+      ...(body.mode === 'keys' || body.mode === 'cloudflare' || body.mode === 'google' ? { mode: body.mode } : {}),
       ...(typeof body.enabled === 'boolean' ? { enabled: body.enabled } : {}),
       ...(typeof body.endpoint === 'string' || body.endpoint === null ? { endpoint: body.endpoint as string | null } : {}),
       ...(typeof body.bucket === 'string' || body.bucket === null ? { bucket: body.bucket as string | null } : {}),
@@ -2045,6 +2072,10 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
   }
   if (pathname.startsWith('/api/v1/r2/cloudflare')) {
     await handleCloudflareRequest(context, cloudflare, r2, proxy, publishProxies, logger, handoffs);
+    return;
+  }
+  if (pathname.startsWith('/api/v1/r2/google')) {
+    await handleGoogleRequest(context, google, r2, logger, handoffs);
     return;
   }
   // The one question about the bucket: is it reachable, and what is in it. It
@@ -3584,6 +3615,98 @@ function cloudflareConnectionFromEnvironment(paths: PlatformPaths, env: NodeJS.P
   const redirectUri = env.STM_CLOUDFLARE_OAUTH_REDIRECT_URI?.trim() || DEFAULT_CLOUDFLARE_REDIRECT_URI;
   const scopes = env.STM_CLOUDFLARE_OAUTH_SCOPES?.split(/[\s,]+/u).filter(Boolean) ?? Object.values(DEFAULT_SCOPES);
   return new CloudflareConnection({ paths, client: { clientId, redirectUri, scopes } });
+}
+
+function googleConnectionFromEnvironment(paths: PlatformPaths, env: NodeJS.ProcessEnv): GoogleConnection | null {
+  const clientId = (env.STM_GOOGLE_CLIENT_ID ?? DEFAULT_GOOGLE_CLIENT_ID).trim();
+  if (!clientId) return null;
+  const brokerUrl = env.STM_GOOGLE_BROKER_URL?.trim() || DEFAULT_GOOGLE_BROKER_URL;
+  const redirectUri = env.STM_GOOGLE_REDIRECT_URI?.trim() || new URL(GOOGLE_CALLBACK_PATH, brokerUrl).toString();
+  return new GoogleConnection({ paths, client: { clientId, redirectUri, brokerUrl } });
+}
+
+/**
+ * Connect Google Drive, disconnect it, and read where it stands.
+ *
+ * Like Cloudflare's: connecting makes the Drive what backups go to, and
+ * disconnecting switches backups off rather than leaving them failing on a
+ * schedule. The files stay in the Drive either way.
+ */
+async function handleGoogleRequest(context: RequestContext, google: GoogleConnection | null, r2: R2Manager, logger: LogSink, handoffs: HandoffStore): Promise<void> {
+  const { pathname, request, response } = context;
+  const method = request.method ?? 'GET';
+  if (!google) { sendError(response, 404, 'google_not_available', 'This manager has no Google sign-in configured'); return; }
+  if (pathname === '/api/v1/r2/google' && method === 'GET') {
+    // The free space is what the reader comes here to see; read it again when it is old.
+    await google.refreshStorage();
+    sendJson(response, 200, { google: await google.status() });
+    return;
+  }
+  if (pathname === '/api/v1/r2/google/connect' && method === 'POST') {
+    const returnOrigin = panelOrigin(context);
+    if (!returnOrigin) { sendError(response, 400, 'invalid_origin', 'The panel origin could not be read'); return; }
+    const url = google.beginConnect(returnOrigin, context.sessionToken);
+    sendJson(response, 200, { url, ...openHandoff(context, handoffs, url) });
+    return;
+  }
+  if (pathname === '/api/v1/r2/google/disconnect' && method === 'POST') {
+    // The claim goes while there is still a grant to reach the Drive with.
+    if ((await r2.getConfig()).mode === 'google') {
+      await r2.releaseOwnership().catch((error: unknown) => {
+        logger(logEvent('r2.claimReleaseFailed', `[r2] the bucket claim could not be given up: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
+      });
+    }
+    const result = await google.disconnect();
+    if ((await r2.getConfig()).mode === 'google') await r2.update({ enabled: false });
+    sendJson(response, 200, { ...result, config: await r2.getConfig() });
+    return;
+  }
+  sendError(response, 404, 'not_found', 'Route not found');
+}
+
+/**
+ * Where the browser lands after Google, through the relay page.
+ *
+ * A page load that answers with a redirect to the panel carrying the outcome,
+ * the same way the Cloudflare callback does, including the hand-off to a
+ * console that opened the sign-in in a window of its own.
+ */
+async function handleGoogleCallback(context: RequestContext, sessions: SessionStore, google: GoogleConnection | null, r2: R2Manager, logger: LogSink, handoffs: HandoffStore): Promise<void> {
+  const { response, searchParams } = context;
+  r2.noteAddress(forwardedValue(context.request, 'x-forwarded-host') ?? headerValue(context.request.headers.host));
+  const state = searchParams.get('state') ?? '';
+  const collected = handoffs.isOpen(state);
+  const phoneApp = collected && handoffs.forPhoneApp(state);
+  const redirect = (outcome: string, code?: string): void => {
+    if (collected) handoffs.settle(state, { outcome, code: code ?? '', sessionToken: null });
+    const query = new URLSearchParams({
+      google: outcome,
+      ...(code ? { google_error: code } : {}),
+      ...(collected ? { handoff: '1' } : {}),
+      ...(phoneApp ? { app: '1' } : {}),
+    });
+    response.writeHead(303, { location: `/?${query.toString()}#data`, 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' });
+    response.end();
+  };
+  if (!google) { redirect('error', 'google_not_available'); return; }
+  if (!google.isPending(state)) { redirect('error', 'google_state_mismatch'); return; }
+  // Whoever started this, rather than whoever is standing here; see the
+  // Cloudflare callback for why the returning browser may carry no session.
+  const startedBy = google.pendingStartedBy(state);
+  const connecting = startedBy && sessions.get(startedBy) ? startedBy : context.sessionToken;
+  if (!sessions.get(connecting)) { redirect('error', 'login_required'); return; }
+  try {
+    const status = await google.completeConnect({ state, code: searchParams.get('code'), error: searchParams.get('error') });
+    if (status.state === 'connected') {
+      await r2.update({ mode: 'google', enabled: true });
+      await claimForThisMachine(r2, logger);
+    }
+    redirect(status.state);
+  } catch (error: unknown) {
+    const code = isRecord(error) && typeof error.code === 'string' ? error.code : 'google_connect_failed';
+    logger(logEvent('r2.googleConnectFailed', `[r2] connecting Google Drive failed: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
+    redirect('error', code);
+  }
 }
 
 /**

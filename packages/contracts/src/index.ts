@@ -525,8 +525,26 @@ export interface LocalBackupSchedule {
  * `keys` is an endpoint, bucket and S3 key pair entered by hand or set in
  * `.env`, which stays available for anyone who does not want to sign in.
  * `cloudflare` is a bucket the manager set up after signing in to Cloudflare.
+ * `google` is a folder in the user's Google Drive, after signing in with Google.
  */
-export type R2ConnectionMode = 'keys' | 'cloudflare';
+export type R2ConnectionMode = 'keys' | 'cloudflare' | 'google';
+
+export type GoogleConnectionState = 'disconnected' | 'connected' | 'reconnect_required';
+
+/** A Google Drive connected for backups, as the panel shows it. */
+export interface GoogleConnectionStatus {
+  readonly state: GoogleConnectionState;
+  readonly email: string | null;
+  readonly name: string | null;
+  /** The backup folder in Drive, for opening it there. */
+  readonly folderUrl: string | null;
+  readonly connectedAt: string | null;
+  readonly lastError: string | null;
+  /** The machine that signed in with this Drive after this one; see CloudflareConnectionStatus. */
+  readonly displacedBy: string | null;
+  /** The whole Google account's space, shared with Gmail and Photos; null until read. */
+  readonly storage: { readonly usedBytes: number; readonly limitBytes: number | null; readonly readAt: string } | null;
+}
 
 export type CloudflareConnectionState = 'disconnected' | 'choose_account' | 'connected' | 'reconnect_required';
 
@@ -614,6 +632,8 @@ export interface R2Config {
   readonly mode: R2ConnectionMode;
   /** Null when this manager has no Cloudflare OAuth client configured. */
   readonly cloudflare: CloudflareConnectionStatus | null;
+  /** Null when this manager has no Google sign-in configured. */
+  readonly google: GoogleConnectionStatus | null;
   readonly enabled: boolean;
   readonly endpoint: string | null;
   readonly bucket: string | null;

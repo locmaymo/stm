@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { encodeState } from '../../../packages/cloudflare/src/oauth.js';
 // @ts-expect-error The relay is plain browser JavaScript with no type declarations.
-import { decide, isUsualManagerHost, originFromState } from '../../../apps/site/public/relay.js';
+import { callbackPathFor, decide, isUsualManagerHost, originFromState } from '../../../apps/site/public/relay.js';
 // @ts-expect-error The page script is plain browser JavaScript with no type declarations.
 import { preferredLocale } from '../../../apps/site/public/assets/relay-page.js';
 
@@ -26,6 +26,23 @@ test('the code, state and error go to the manager\'s callback, and nothing else 
 
   const denied = decide(`?error=access_denied&error_description=No&state=${state}`);
   assert.deepEqual(Object.fromEntries(new URL(denied.url).searchParams), { state, error: 'access_denied', error_description: 'No' });
+});
+
+test('each copy of the page forwards to the manager route of the same path', () => {
+  assert.equal(callbackPathFor('/oauth/cloudflare/callback'), '/oauth/cloudflare/callback');
+  assert.equal(callbackPathFor('/oauth/google/callback'), '/oauth/google/callback');
+  assert.equal(callbackPathFor('/oauth/google/callback/'), '/oauth/google/callback');
+  assert.equal(callbackPathFor('/oauth/google/callback.html'), '/oauth/google/callback');
+  assert.equal(callbackPathFor('/oauth/other/callback'), null);
+  assert.equal(callbackPathFor('/'), null);
+
+  // The provider adds scope, authuser and prompt to the query; none of it is passed on.
+  const state = encodeState('http://127.0.0.1:7860');
+  const decision = decide(`?state=${state}&code=4/abc&scope=drive.file&authuser=0&prompt=consent`, '/oauth/google/callback');
+  assert.equal(decision.kind, 'forward');
+  const url = new URL(decision.url);
+  assert.equal(`${url.origin}${url.pathname}`, 'http://127.0.0.1:7860/oauth/google/callback');
+  assert.deepEqual(Object.fromEntries(url.searchParams), { code: '4/abc', state });
 });
 
 test('a query that did not come from a manager sign-in goes nowhere', () => {

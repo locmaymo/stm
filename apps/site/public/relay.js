@@ -23,6 +23,18 @@
 
 export const CALLBACK_PATH = '/oauth/cloudflare/callback';
 
+/**
+ * One copy of this page per OAuth client, each at the address registered on
+ * that client, each forwarding to the manager's route of the same path.
+ */
+export const CALLBACK_PATHS = [CALLBACK_PATH, '/oauth/google/callback'];
+
+/** The manager route for the relay page at `pathname`, or null for any other page. */
+export function callbackPathFor(pathname) {
+  const path = String(pathname).replace(/(?:\.html|\/)$/, '');
+  return CALLBACK_PATHS.includes(path) ? path : null;
+}
+
 /** Parameters passed on to the manager; nothing else from the query is forwarded. */
 const FORWARDED = ['code', 'state', 'error', 'error_description'];
 
@@ -61,11 +73,11 @@ export function isUsualManagerHost(hostname) {
  *
  * @returns {{ kind: 'invalid' } | { kind: 'forward', url: string, host: string, automatic: boolean }}
  */
-export function decide(search) {
+export function decide(search, callbackPath = CALLBACK_PATH) {
   const params = new URLSearchParams(search);
   const origin = originFromState(params.get('state'));
   if (!origin || (!params.get('code') && !params.get('error'))) return { kind: 'invalid' };
-  const target = new URL(CALLBACK_PATH, origin);
+  const target = new URL(callbackPath, origin);
   for (const name of FORWARDED) {
     const value = params.get(name);
     if (value !== null) target.searchParams.set(name, value);
@@ -79,7 +91,8 @@ function show(document, id, visible) {
 }
 
 export function run(window, document) {
-  const decision = decide(window.location.search);
+  const callbackPath = callbackPathFor(window.location.pathname);
+  const decision = callbackPath ? decide(window.location.search, callbackPath) : { kind: 'invalid' };
   // The code is in this page's address. Take it out of history before leaving.
   window.history.replaceState(null, '', window.location.pathname);
   if (decision.kind === 'invalid') {
