@@ -129,7 +129,7 @@ export async function restoreSnapshotInPlace(options: RestoreSnapshotOptions): P
     let position = 0;
     for (const chunk of hashed.chunks) {
       throwIfStopped(signal);
-      const bytes = await r2.readBlob(chunk.hash);
+      const bytes = await r2.readBlob(chunk.hash, file.name);
       position += bytes.length;
       const before = counted.get(file.name) ?? 0;
       if (position > before) { completedBytes += position - before; counted.set(file.name, position); report(); }
@@ -173,7 +173,7 @@ async function* entriesFor(r2: R2Manager, files: readonly HashedFile[], signal?:
 async function* chunkStream(r2: R2Manager, file: HashedFile, signal?: AbortSignal): AsyncGenerator<Buffer> {
   for (const chunk of file.chunks) {
     throwIfStopped(signal);
-    yield await r2.readBlob(chunk.hash);
+    yield await r2.readBlob(chunk.hash, file.name);
   }
 }
 
@@ -212,7 +212,7 @@ async function load(r2: R2Manager, file: HashedFile, signal?: AbortSignal): Prom
   if (file.sizeBytes > PREFETCH_MAX_FILE_BYTES) return null;
   if (file.chunks.length === 0) return Buffer.alloc(0);
   const parts: Buffer[] = [];
-  for (const chunk of file.chunks) parts.push(await r2.readBlob(chunk.hash));
+  for (const chunk of file.chunks) parts.push(await r2.readBlob(chunk.hash, file.name));
   return Buffer.concat(parts);
 }
 

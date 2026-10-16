@@ -264,6 +264,46 @@ test('a file deleted mid-upload leaves the recovery point rather than breaking i
   assert.deepEqual(latest.files.map((file) => file.name), ['settings.json']);
 });
 
+/*
+ * SillyTavern saves its settings whenever they change, so the file can be
+ * rewritten between being hashed and being read again to send. The new version
+ * was stored under the old version's hash: one byte longer, it came back one
+ * byte short - a settings file with no closing brace, and a SillyTavern that
+ * never got past starting.
+ */
+test('a file rewritten between hashing and sending is sent as it is now, never under the old hash', async () => {
+  const bucket = fakeBucket();
+  const { manager, root } = await createManager({ fetchImpl: bucket.fetchImpl });
+  const before = JSON.stringify({ theme: 'dark', count: 9 }, null, 4);
+  const after = JSON.stringify({ theme: 'dark', count: 10 }, null, 4);
+  const settings = await source(root, 'settings.json', before);
+  await writeFile(settings.path, after);
+
+  await manager.syncProfile({ profile: profile(), sources: [settings], fingerprint: 'one' });
+  const latest = await manager.readSnapshot('profile-1', (await manager.listSnapshots('profile-1'))[0]!.id);
+  const [file] = latest.files;
+  assert.ok(file);
+  assert.equal(file.sizeBytes, Buffer.byteLength(after));
+  const restored = Buffer.concat(await Promise.all(file.chunks.map((chunk) => manager.readBlob(chunk.hash, file.name)))).toString('utf8');
+  assert.equal(restored, after);
+  assert.deepEqual(JSON.parse(restored), { theme: 'dark', count: 10 });
+  // And nothing is stored under the hash of the version that was not sent.
+  for (const chunk of settings.file.chunks) assert.ok(![...bucket.objects.keys()].some((key) => key.endsWith(chunk.hash)));
+});
+
+test('a chunk that does not hold what its hash says is refused, naming the file', async () => {
+  const bucket = fakeBucket();
+  const { manager, root } = await createManager({ fetchImpl: bucket.fetchImpl });
+  const settings = await source(root, 'settings.json', '{"theme":"dark"}');
+  await manager.syncProfile({ profile: profile(), sources: [settings], fingerprint: 'one' });
+  const hash = settings.file.chunks[0]!.hash;
+  const key = [...bucket.objects.keys()].find((name) => name.endsWith(hash));
+  assert.ok(key);
+  // Stored by a version that sent whatever the file held by then.
+  bucket.objects.set(key, Buffer.concat([Buffer.from([0]), Buffer.from('{"theme":"dark"')]));
+  await assert.rejects(manager.readBlob(hash, 'settings.json'), (error: unknown) => error instanceof Error && 'code' in error && error.code === 'r2_chunk_damaged' && error.message.includes('settings.json'));
+});
+
 test('retention thins recovery points and the sweep takes back what nothing names', async () => {
   const bucket = fakeBucket();
   let clock = Date.parse('2026-09-14T00:00:00.000Z');
