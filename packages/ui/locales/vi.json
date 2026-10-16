@@ -857,6 +857,7 @@
     "profile_required": "Tạo một hồ sơ trước đã.",
     "manager_password_required": "Hãy đặt mật khẩu trình quản lý trước khi mở console ra internet.",
     "public_access_password_required": "Đặt mật khẩu SillyTavern trước khi cho thiết bị khác vào.",
+    "r2_chunk_damaged": "Một tệp trong điểm khôi phục này bị hỏng từ lúc sao lưu nên không lấy lại được. Hãy chọn một điểm khôi phục khác.",
     "r2_disabled": "Sao lưu lên Cloudflare R2 đang tắt.",
     "r2_not_configured": "Thiết lập kết nối R2 trước đã.",
     "r2_operation_ceiling": "Tháng này đã chạm hạn mức lượt ghi đặt ở đây, nên không gửi gì cả.",

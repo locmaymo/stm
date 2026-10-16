@@ -857,6 +857,7 @@
     "profile_required": "Create a profile first.",
     "manager_password_required": "Set the manager password before opening the console to the internet.",
     "public_access_password_required": "Set a SillyTavern password before letting other devices in.",
+    "r2_chunk_damaged": "A file in this recovery point was stored damaged, so it cannot be brought back. Choose another recovery point.",
     "r2_disabled": "Backing up to Cloudflare R2 is switched off.",
     "r2_not_configured": "Set up the R2 connection first.",
     "r2_operation_ceiling": "This month has reached the write-operation limit set here, so nothing was sent.",
