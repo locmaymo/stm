@@ -31,6 +31,7 @@
   // GOOGLE_SIGNIN_PAUSED = "1" stops new sign-ins; refreshes keep working.
   "vars": {
     "GOOGLE_CLIENT_ID": "342010087439-k960utodagns1kdb72epd6rfhs887hor.apps.googleusercontent.com",
+    "GOOGLE_REDIRECT_URI": "https://stm.locmaymo.top/oauth/google/callback",
     "GOOGLE_SIGNIN_PAUSED": "0"
   },
   // A manager refreshes only when a backup needs a token and the last one

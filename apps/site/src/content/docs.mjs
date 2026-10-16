@@ -298,6 +298,22 @@ export const docs = {
             ],
           },
           {
+            id: 'google-drive',
+            title: 'Google Drive',
+            blocks: [
+              ...p(
+                'On the Data page, choose **Google Drive** and press **Connect Google Drive**. Sign in with your Google account and allow access, and the manager keeps its recovery points in a folder named `SillyTavern Manager` **in your own Drive**. No card, no keys, nothing to create first.',
+                'The access asked for is Google’s narrowest one for Drive: the manager can see and change only the files it created. Everything else in your Drive stays out of its reach.',
+              ),
+              ...p(
+                'A new machine that connects the same Google account finds the same folder, so the recovery points already in it can be restored onto it. Connecting on a second machine makes that one the machine that backs up, and the first one stops.',
+                '**Disconnect** revokes the sign-in. The folder and everything in it stay in your Drive. You can also remove access yourself at **myaccount.google.com/permissions**.',
+              ),
+              note('info', 'Only the refresh token is stored, in a file readable by your user alone. Because Google asks for the app’s secret at every sign-in and refresh, those two requests go through a small service on this site that adds it; it keeps nothing and logs no token. Backups themselves go from your machine to your Drive; no server of this project is on that path.'),
+              note('warn', 'The space is your Google account’s, shared with Gmail and Google Photos (15 GB on a free account). The panel shows how much is used. A first backup of many small chats takes longer on Drive than on R2.'),
+            ],
+          },
+          {
             id: 'cloudflare',
             title: 'Cloudflare R2',
             blocks: [
@@ -768,6 +784,22 @@ export const docs = {
                 ],
               },
               note('warn', 'Phục hồi là ghi đè dữ liệu. Bản chụp an toàn giúp sai lầm vẫn cứu được, nhưng chọn đúng tệp lưu vẫn là việc của bạn.'),
+            ],
+          },
+          {
+            id: 'google-drive',
+            title: 'Google Drive',
+            blocks: [
+              ...p(
+                'Trên trang Dữ liệu, chọn **Google Drive** rồi bấm **Kết nối Google Drive**. Đăng nhập tài khoản Google và cho phép truy cập, trình quản lý sẽ giữ điểm phục hồi trong một thư mục tên `SillyTavern Manager` **trên Drive của chính bạn**. Không cần thẻ, không cần khoá, không phải tạo gì trước.',
+                'Quyền được xin là quyền hẹp nhất Google có cho Drive: trình quản lý chỉ thấy và sửa được các tệp do chính nó tạo. Mọi thứ khác trên Drive của bạn nằm ngoài tầm với của nó.',
+              ),
+              ...p(
+                'Một máy mới kết nối cùng tài khoản Google sẽ tìm thấy đúng thư mục đó, nên các điểm phục hồi sẵn có đều khôi phục được sang máy mới. Kết nối ở máy thứ hai sẽ biến máy đó thành máy sao lưu, và máy đầu tiên dừng lại.',
+                '**Ngắt kết nối** thu hồi phiên đăng nhập. Thư mục và mọi thứ bên trong vẫn nằm trên Drive của bạn. Bạn cũng có thể tự gỡ quyền tại **myaccount.google.com/permissions**.',
+              ),
+              note('info', 'Chỉ refresh token được lưu, trong một tệp chỉ người dùng của bạn đọc được. Vì Google đòi mã bí mật của ứng dụng ở mỗi lần đăng nhập và làm mới, hai yêu cầu đó đi qua một dịch vụ nhỏ trên trang này để thêm mã vào; dịch vụ không giữ gì và không ghi lại token. Bản sao lưu thì đi thẳng từ máy bạn tới Drive của bạn; không máy chủ nào của dự án nằm trên đường đó.'),
+              note('warn', 'Dung lượng là của tài khoản Google, dùng chung với Gmail và Google Ảnh (15 GB với tài khoản miễn phí). Bảng điều khiển có hiện mức đã dùng. Lần sao lưu đầu với nhiều đoạn chat nhỏ sẽ lâu hơn trên Drive so với R2.'),
             ],
           },
           {

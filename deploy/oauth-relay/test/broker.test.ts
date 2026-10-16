@@ -43,6 +43,12 @@ test('a code is exchanged with the secret added and the redirect fixed by the br
   });
 });
 
+test('a configured redirect wins over the address the broker was reached at', async () => {
+  const google = fakeGoogle(200, { access_token: 'a', expires_in: 3599 });
+  await handle(post('/api/google/token', { code: '4/abcdefghijkl', code_verifier: VERIFIER }), { ...ENV, GOOGLE_REDIRECT_URI: 'http://localhost:8799/oauth/google/callback' }, google.fetch);
+  assert.equal(google.sent[0]?.body.get('redirect_uri'), 'http://localhost:8799/oauth/google/callback');
+});
+
 test('a refresh token is refreshed with the secret added', async () => {
   const google = fakeGoogle(200, { access_token: 'b', expires_in: 3599 });
   const response = await handle(post('/api/google/refresh', { refresh_token: '1/refresh-token-value' }), ENV, google.fetch);

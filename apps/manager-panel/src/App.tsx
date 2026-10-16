@@ -1853,7 +1853,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
   const checklistReady = checklistRead && installationsLoaded && securityLoaded;
   const stepsSeen: Record<SetupStep, boolean> = {
     install: activeInstallation?.status === 'ready',
-    cloudflare: cloudflareSignedIn || (checklistR2?.mode === 'keys' && checklistR2.configured),
+    cloudflare: cloudflareSignedIn || ((checklistR2?.mode === 'keys' || checklistR2?.mode === 'google') && checklistR2.configured),
     password: managerPasswordSet === true,
     pin: accessSecurity.passwordConfigured,
     r2: Boolean(checklistR2?.configured) && r2Problem === null,
@@ -4365,6 +4365,9 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   const [r2Toggling, setR2Toggling] = useState(false);
   const [cloudflareBusy, setCloudflareBusy] = useState(false);
   const [disconnectOpen, setDisconnectOpen] = useState(false);
+  const [googleSignInUrl, setGoogleSignInUrl] = useState<string | null>(null);
+  const [googleBusy, setGoogleBusy] = useState(false);
+  const [googleDisconnectOpen, setGoogleDisconnectOpen] = useState(false);
   // What the last look at the bucket found. Kept on the card, because an answer
   // that disappears two seconds after it arrives is not an answer.
   const [r2Check, setR2Check] = useState<R2CheckResult | null>(null);
@@ -4459,14 +4462,31 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
     }
   };
 
+  /** Coming back from Google: the same two ways back as from Cloudflare. */
+  const settleGoogle = (outcome: string, code: string) => {
+    if (outcome === 'connected') {
+      void apiFetch('/api/v1/r2', { credentials: 'same-origin' })
+        .then(async (response) => (response.ok ? (await response.json() as { config: R2Config }).config : null))
+        .then((config) => {
+          toast({ title: t('console.gdConnected', { email: config?.google?.email ?? '' }), tone: 'success', duration: 8000 });
+          if (config) setR2Config(config);
+          void checkAfterConnect(config);
+        })
+        .catch(() => undefined);
+    } else {
+      failed(googleErrorText(t, code));
+    }
+  };
+
   // Said once, then taken out of the address so a reload does not say it again.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const outcome = params.get('cloudflare');
-    if (!outcome) return;
-    const code = params.get('cloudflare_error') ?? '';
+    const google = params.get('google');
+    if (!outcome && !google) return;
     window.history.replaceState(null, '', `${window.location.pathname}${window.location.hash}`);
-    settleCloudflare(outcome, code);
+    if (outcome) settleCloudflare(outcome, params.get('cloudflare_error') ?? '');
+    if (google) settleGoogle(google, params.get('google_error') ?? '');
   }, []);
 
   /*
@@ -5077,6 +5097,53 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       setCloudflareSignInUrl(payload.url);
     } catch { tab?.close(); failed(t('console.cfConnectFailed')); } finally { setCloudflareBusy(false); }
   };
+  const connectGoogle = async () => {
+    setGoogleSignInUrl(null);
+    // Google's consent screen refuses frames too, so the same tab-and-collect
+    // as Cloudflare's sign-in; see connectCloudflare.
+    const inFrame = framed();
+    const inApp = inPhoneApp();
+    const tab = inFrame && !popupsBlocked() ? openReturnWindow() : null;
+    setGoogleBusy(true);
+    try {
+      const response = await apiFetch(`/api/v1/r2/google/connect${inFrame || inApp ? '?handoff=1' : ''}`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      const payload = await response.json() as { url?: string; handoff?: string; error?: { message?: string } };
+      if (!response.ok || !payload.url) { tab?.close(); failed(fail.body(payload, t('console.gdConnectFailed'))); return; }
+      if (!inFrame && !inApp) { window.location.assign(payload.url); return; }
+      if (payload.handoff) {
+        const stopCollecting = collectCloudflareResult(payload.handoff, (result) => settleGoogle(result.outcome, result.code));
+        const stopWatching = tab ? whenAbandoned(tab, stopCollecting) : null;
+        collecting.current = () => { stopCollecting(); stopWatching?.(); };
+      }
+      if (tab) { tab.location.href = payload.url; return; }
+      if (inApp) { window.location.assign(payload.url); return; }
+      setGoogleSignInUrl(payload.url);
+    } catch { tab?.close(); failed(t('console.gdConnectFailed')); } finally { setGoogleBusy(false); }
+  };
+  const disconnectGoogle = async () => {
+    setGoogleBusy(true);
+    try {
+      const response = await apiFetch('/api/v1/r2/google/disconnect', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      const payload = await response.json() as { revoked?: boolean; config?: R2Config; error?: { message?: string } };
+      if (!response.ok || !payload.config) { failed(fail.body(payload, t('console.gdDisconnectFailed'))); return; }
+      setR2Config(payload.config);
+      if (payload.revoked) done(t('console.gdDisconnected'));
+      else toast({ title: t('console.gdDisconnectedNotRevoked'), tone: 'destructive', duration: 12000 });
+      await refresh();
+    } catch { failed(t('console.gdDisconnectFailed')); } finally { setGoogleBusy(false); }
+  };
+  const backUpToGoogle = async () => {
+    setGoogleBusy(true);
+    try {
+      const response = await apiFetch('/api/v1/r2', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ mode: 'google', enabled: true }) });
+      const payload = await response.json() as { config?: R2Config; error?: { message?: string } };
+      if (!response.ok || !payload.config) { failed(fail.body(payload, t('console.r2SaveFailed'))); return; }
+      setR2Config(payload.config);
+      done(t('console.gdConnected', { email: payload.config.google?.email ?? '' }));
+      await refresh();
+      await checkAfterConnect(payload.config);
+    } catch { failed(t('console.r2SaveFailed')); } finally { setGoogleBusy(false); }
+  };
   /*
    * Ask again whether the account has R2 now.
    *
@@ -5184,6 +5251,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   const checkAfterConnect = async (config: R2Config | null) => {
     if (!config?.enabled || !config.configured) return;
     if (config.mode === 'cloudflare' && config.cloudflare?.state !== 'connected') return;
+    if (config.mode === 'google' && config.google?.state !== 'connected') return;
     await checkR2();
   };
   const uploadR2 = async () => {
@@ -5657,7 +5725,9 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
           {/* One set of figures, not two: Cloudflare's own when it can be asked,
               because it sees every machine on the bucket, and the manager's
               count when it cannot. */}
-          {signedIn
+          {r2Config.mode === 'google'
+            ? <GoogleUsage t={t} config={r2Config} />
+            : signedIn
             ? <CloudflareUsagePanel t={t} lastUploadAt={r2Config.lastUploadAt} fallback={<R2Usage t={t} config={r2Config} />} onRegisterRefresh={(fn) => { usageRefresh.current = fn; }} />
             : <R2Usage t={t} config={r2Config} />}
           <div className="grid gap-2">
@@ -5738,6 +5808,11 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       onRecheckR2={recheckR2}
       onUseCloudflare={backUpToCloudflare}
       onSaveKeys={saveR2Keys}
+      googleBusy={googleBusy}
+      googleSignInUrl={googleSignInUrl}
+      onConnectGoogle={() => void connectGoogle()}
+      onDisconnectGoogle={() => setGoogleDisconnectOpen(true)}
+      onUseGoogle={backUpToGoogle}
     />
     <R2ScheduleDialog t={t} open={r2ScheduleOpen} onOpenChange={setR2ScheduleOpen} config={r2Config} onSave={saveR2Schedule} />
     <ConfirmDialog
@@ -5748,6 +5823,15 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       confirmLabel={t('console.cfDisconnect')}
       cancelLabel={t('common.cancel')}
       onConfirm={disconnectCloudflare}
+    />
+    <ConfirmDialog
+      open={googleDisconnectOpen}
+      onOpenChange={setGoogleDisconnectOpen}
+      title={t('console.gdDisconnectTitle')}
+      description={t('console.gdDisconnectBody')}
+      confirmLabel={t('console.gdDisconnect')}
+      cancelLabel={t('common.cancel')}
+      onConfirm={disconnectGoogle}
     />
   </div>;
 }
@@ -5762,6 +5846,9 @@ function destinationText(t: Translate, config: R2Config | null): string {
    * beside a notice at the top of the page naming the account it had just
    * been locked out of. What it has lost is permission, not the address.
    */
+  if (config?.mode === 'google' && config.google?.displacedBy) {
+    return t('console.r2DestinationLostGoogle', { email: config.google.email ?? '' });
+  }
   const lost = config?.mode === 'cloudflare' ? config.cloudflare?.displacedBy ?? null : null;
   if (lost) {
     return t('console.r2DestinationLost', {
@@ -5771,6 +5858,7 @@ function destinationText(t: Translate, config: R2Config | null): string {
     });
   }
   if (!config?.configured) return t('console.r2DestinationNone');
+  if (config.mode === 'google') return t('console.r2DestinationGoogle', { email: config.google?.email ?? '' });
   const bucket = (config.mode === 'cloudflare' ? config.cloudflare?.bucket : config.bucket) || t('console.r2DestinationUnnamed');
   return config.mode === 'cloudflare'
     ? t('console.r2DestinationCloudflare', { bucket, account: config.cloudflare?.account?.name ?? '' })
@@ -6229,7 +6317,7 @@ function CloudflareSignInNotice({ t, url, onDismiss }: { t: Translate; url?: str
  * to. Saving means "use this one", which is the choice that used to need a
  * confirmation dialog of its own, asked here where it is being made.
  */
-function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled, signInUrl, onDismissSignIn, onConnect, onChooseAccount, onChooseBucket, onDisconnect, onRecheckR2, onUseCloudflare, onSaveKeys }: {
+function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled, signInUrl, onDismissSignIn, onConnect, onChooseAccount, onChooseBucket, onDisconnect, onRecheckR2, onUseCloudflare, onSaveKeys, googleBusy, googleSignInUrl, onConnectGoogle, onDisconnectGoogle, onUseGoogle }: {
   t: Translate;
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -6247,9 +6335,16 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled
   onRecheckR2: (quiet?: boolean) => Promise<void>;
   onUseCloudflare: () => Promise<void>;
   onSaveKeys: (form: R2KeysForm & { readonly enabled?: boolean }) => Promise<string | null>;
+  googleBusy: boolean;
+  /** Set when this page could not open Google's sign-in and handed it over instead. */
+  googleSignInUrl: string | null;
+  onConnectGoogle: () => void;
+  onDisconnectGoogle: () => void;
+  onUseGoogle: () => Promise<void>;
 }) {
   const group = useId();
   const cloudflare = config?.cloudflare ?? null;
+  const google = config?.google ?? null;
   const mode = config?.mode ?? 'keys';
   /*
    * Which answer the form opens on.
@@ -6273,7 +6368,9 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled
     setError(null);
     setKeys(r2KeysFrom(config));
     setAccount(cloudflare?.accounts[0]?.id ?? '');
-    setChoice(!cloudflare ? 'keys' : config?.configured ? mode : 'cloudflare');
+    // Nothing set up yet: the Drive first where it is offered, since it asks
+    // for nothing a reader does not already have.
+    setChoice(config?.configured || (mode === 'cloudflare' && cloudflare?.state === 'choose_account') ? mode : google ? 'google' : cloudflare ? 'cloudflare' : 'keys');
   }, [open]);
 
   // Set in `.env`: shown so the reader knows where the value comes from, and
@@ -6286,7 +6383,8 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled
   // says which way they want to go. What waits for it is Save, because there is
   // no bucket to save yet, and the row below says so rather than leaving a dead
   // button to be puzzled over.
-  const canSave = choice === 'keys' ? keysReady : connected;
+  const googleConnected = google?.state === 'connected';
+  const canSave = choice === 'keys' ? keysReady : choice === 'google' ? googleConnected : connected;
   const cloudflarePending = choice === 'cloudflare' && Boolean(cloudflare) && !connected;
 
   const save = async () => {
@@ -6299,6 +6397,8 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled
         const failure = await onSaveKeys({ ...keys, ...(startEnabled ? { enabled: true } : {}) });
         setError(failure);
         if (failure) return;
+      } else if (choice === 'google') {
+        if (mode !== 'google' || startEnabled) await onUseGoogle();
       } else if (mode !== 'cloudflare' || startEnabled) {
         await onUseCloudflare();
       }
@@ -6316,6 +6416,22 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled
         {fromEnvironment.size > 0 ? <Alert><AlertDescription>{t('console.r2FromEnv')}</AlertDescription></Alert> : null}
         {signInUrl ? <CloudflareSignInNotice t={t} onDismiss={onDismissSignIn} /> : null}
         <RadioGroup value={choice} onValueChange={(value) => setChoice(value as R2ConnectionMode)} aria-label={t('console.r2DestinationTitle')}>
+          {/* The Drive first: everyone has a Google account, and it needs no
+              payment card, which is where a Cloudflare sign-up stops many. */}
+          {google ? <div className="grid gap-3 rounded-lg border p-3 has-[[data-state=checked]]:border-primary has-[[data-state=checked]]:bg-primary/5">
+            <div className="flex items-start gap-3">
+              <RadioGroupItem id={`${group}-google`} value="google" className="mt-0.5" />
+              <div className="grid gap-1">
+                <Label htmlFor={`${group}-google`} className="flex flex-wrap items-center gap-2 font-medium">
+                  <HardDrive />{t('console.r2MethodGoogle')}
+                  <Badge variant="secondary" className="bg-(--success-background) text-(--success)">{t('console.r2NoCard')}</Badge>
+                  {mode === 'google' && googleConnected ? <Badge variant="outline">{t('console.r2MethodInUse')}</Badge> : null}
+                </Label>
+                <p className="text-xs text-muted-foreground">{t('console.r2MethodGoogleBody')}</p>
+              </div>
+            </div>
+            <GoogleMethod t={t} status={google} busy={googleBusy || saving} signInUrl={googleSignInUrl} onConnect={onConnectGoogle} onDisconnect={onDisconnectGoogle} />
+          </div> : null}
           {/* Signing in first, and marked as the one to reach for: it makes the
               bucket, keeps its own keys and is the only one that can show what
               Cloudflare says the account has used. */}
@@ -6379,6 +6495,65 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled
       </DialogFooter>
     </DialogContent>
   </Dialog>;
+}
+
+/**
+ * The Google half of that question: connect, connected, or connect again.
+ */
+function GoogleMethod({ t, status, busy, signInUrl, onConnect, onDisconnect }: {
+  t: Translate;
+  status: NonNullable<R2Config['google']>;
+  busy: boolean;
+  signInUrl: string | null;
+  onConnect: () => void;
+  onDisconnect: () => void;
+}) {
+  const connectButton = (label: string, icon: ReactNode) => (signInUrl
+    ? <Button size="sm" className="w-fit" asChild><a href={signInUrl} target="_blank" rel="noopener noreferrer">{icon}{label}</a></Button>
+    : <Button size="sm" className="w-fit" onClick={onConnect} disabled={busy}>{icon}{label}</Button>);
+  if (status.state === 'disconnected') return connectButton(t('console.gdConnect'), <HardDrive />);
+  if (status.state === 'reconnect_required') {
+    return <div className="grid gap-2">
+      <p className="text-xs text-muted-foreground">{status.displacedBy ? t('console.gdDisplacedHint', { name: status.displacedBy }) : t('console.gdReconnectHint')}</p>
+      <div className="flex flex-wrap gap-2">
+        {connectButton(t('console.gdReconnect'), <RefreshCw />)}
+        <Button variant="outline" size="sm" onClick={onDisconnect} disabled={busy}>{t('console.gdDisconnect')}</Button>
+      </div>
+    </div>;
+  }
+  return <div className="grid gap-2">
+    <p className="text-xs text-muted-foreground">{t('console.gdConnectedAs', { email: status.email ?? '' })}</p>
+    <div className="flex flex-wrap items-center gap-2">
+      {status.folderUrl ? <Button variant="outline" size="sm" asChild><a href={status.folderUrl} target="_blank" rel="noopener noreferrer"><ArrowUpRight />{t('console.gdOpenFolder')}</a></Button> : null}
+      <Button variant="outline" size="sm" onClick={onDisconnect} disabled={busy}>{t('console.gdDisconnect')}</Button>
+    </div>
+  </div>;
+}
+
+/**
+ * How much a Drive holds, said the way Google counts it.
+ *
+ * Drive is not billed per request, so the write and read counts R2 is held
+ * against mean nothing here. What runs out is space, and it is the whole
+ * Google account's: Gmail and Photos fill the same 15 GB.
+ */
+function GoogleUsage({ t, config }: { t: Translate; config: R2Config }) {
+  const storage = config.google?.storage ?? null;
+  const backup = formatBytes(config.usage.storageBytes);
+  if (!storage || storage.limitBytes === null) return <p className="text-xs text-muted-foreground">{t('console.gdStorageBackupOnly', { backup })}</p>;
+  const filled = ratio(storage.usedBytes, storage.limitBytes);
+  return <div className="grid gap-1">
+    <span className={cn('text-xs', filled >= 0.9 ? 'text-destructive' : 'text-muted-foreground')}>{t('console.gdStorage', { backup, used: formatBytes(storage.usedBytes), limit: formatBytes(storage.limitBytes) })}</span>
+    <span className="progress-track"><span className="progress-value" style={{ width: `${Math.max(1, filled * 100)}%` }} /></span>
+  </div>;
+}
+
+function googleErrorText(t: Translate, code: string): string {
+  if (code === 'login_required') return t('console.gdErrorLoginRequired');
+  if (code === 'google_state_mismatch') return t('console.gdErrorStateMismatch');
+  if (code === 'google_authorization_denied') return t('console.gdErrorDenied');
+  if (code === 'google_not_available' || code === 'google_broker_unavailable' || code === 'google_broker_unreachable' || code === 'google_broker_busy') return t('console.gdErrorUnavailable');
+  return t('console.gdErrorGeneric', { code: code || 'unknown' });
 }
 
 /**

@@ -29,6 +29,12 @@ export interface Env {
   readonly GOOGLE_CLIENT_ID?: string;
   /** The secret. Set with `wrangler secret put` or in the dashboard. */
   readonly GOOGLE_CLIENT_SECRET?: string;
+  /**
+   * The redirect registered on the client, which the code exchange has to
+   * repeat exactly. Configured rather than read off the request: a local
+   * `wrangler dev` reports the route's host, not the address it was called at.
+   */
+  readonly GOOGLE_REDIRECT_URI?: string;
   /** "1" stops new sign-ins while refreshes keep working - for abuse. */
   readonly GOOGLE_SIGNIN_PAUSED?: string;
   /** Optional rate limiter binding, keyed by the caller's address. */
@@ -77,7 +83,7 @@ export async function handle(request: Request, env: Env, fetchImpl: typeof fetch
     form.set('grant_type', 'authorization_code');
     form.set('code', code);
     form.set('code_verifier', verifier);
-    form.set('redirect_uri', new URL(GOOGLE_CALLBACK_PATH, url.origin).toString());
+    form.set('redirect_uri', env.GOOGLE_REDIRECT_URI || new URL(GOOGLE_CALLBACK_PATH, url.origin).toString());
   } else {
     const { refresh_token: refreshToken } = body;
     if (typeof refreshToken !== 'string' || !OPAQUE.test(refreshToken)) return reply(400, { error: 'invalid_request' });
