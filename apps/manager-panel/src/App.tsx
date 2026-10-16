@@ -1182,6 +1182,24 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
    * click is still a click, unless this browser has already refused one - in
    * which case the button below becomes a plain link; see oauth.ts.
    */
+  /**
+   * Take a Google Drive back, from the overview.
+   *
+   * Straight to Google where this page can send itself; a console in a frame
+   * or in the phone app goes to the Data page, whose connect button knows how
+   * to hand a sign-in over and collect it.
+   */
+  const connectGoogleAgain = async (): Promise<void> => {
+    if (framed() || inPhoneApp()) { navigate('data'); return; }
+    try {
+      const response = await apiFetch('/api/v1/r2/google/connect', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      const payload = await response.json() as { url?: string };
+      if (response.ok && payload.url) { window.location.assign(payload.url); return; }
+    } catch {
+      // The Data page has the same button and says what went wrong.
+    }
+    navigate('data');
+  };
   const signInToCloudflareAgain = async (): Promise<void> => {
     const inFrame = framed();
     const opened = inFrame && !popupsBlocked() ? openReturnWindow() : null;
@@ -1979,10 +1997,12 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
             {displaced && r2Owner && shouldShowDisplaced(r2Owner.label, dismissedDisplaced)
               ? <div className="mb-(--section-gap)"><Alert variant="destructive">
                 <ShieldCheck />
-                <AlertTitle>{t('console.r2DisplacedTitle')}</AlertTitle>
+                <AlertTitle>{t(checklistR2?.mode === 'google' ? 'console.r2DisplacedTitleGoogle' : 'console.r2DisplacedTitle')}</AlertTitle>
                 <AlertDescription className="grid gap-2">
-                  <span>{t('console.r2DisplacedBody', { name: machineName(r2Owner.label), when: new Date(r2Owner.claimedAt ?? r2Owner.lastSeenAt).toLocaleString() })}</span>
-                  <span className="flex flex-wrap items-center gap-2">{reconnectUrl
+                  <span>{t(checklistR2?.mode === 'google' ? 'console.r2DisplacedBodyGoogle' : 'console.r2DisplacedBody', { name: machineName(r2Owner.label), when: new Date(r2Owner.claimedAt ?? r2Owner.lastSeenAt).toLocaleString() })}</span>
+                  <span className="flex flex-wrap items-center gap-2">{checklistR2?.mode === 'google'
+                    ? <Button size="sm" onClick={() => void connectGoogleAgain()}><HardDrive />{t('console.gdReconnect')}</Button>
+                    : reconnectUrl
                     ? <Button size="sm" asChild style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }} className="hover:opacity-90">
                       <a href={reconnectUrl} target="_blank" rel="noopener noreferrer"><CloudflareMark />{t('console.r2DisplacedSignIn')}</a>
                     </Button>
@@ -5124,10 +5144,11 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
     setGoogleBusy(true);
     try {
       const response = await apiFetch('/api/v1/r2/google/disconnect', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
-      const payload = await response.json() as { revoked?: boolean; config?: R2Config; error?: { message?: string } };
+      const payload = await response.json() as { revoked?: boolean; keptFor?: string | null; config?: R2Config; error?: { message?: string } };
       if (!response.ok || !payload.config) { failed(fail.body(payload, t('console.gdDisconnectFailed'))); return; }
       setR2Config(payload.config);
       if (payload.revoked) done(t('console.gdDisconnected'));
+      else if (payload.keptFor) toast({ title: t('console.gdDisconnectedKept', { name: machineName(payload.keptFor) }), tone: 'success', duration: 10000 });
       else toast({ title: t('console.gdDisconnectedNotRevoked'), tone: 'destructive', duration: 12000 });
       await refresh();
     } catch { failed(t('console.gdDisconnectFailed')); } finally { setGoogleBusy(false); }

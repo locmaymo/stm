@@ -88,8 +88,10 @@ export function fakeGoogle(options: { email?: string; brokerOrigin?: string } = 
 
     if (url.href.startsWith('https://oauth2.googleapis.com/revoke')) {
       calls.revoke += 1;
+      // Google revokes the whole grant, not just the token it was handed:
+      // every machine signed in with this app loses its access too.
       const token = new URLSearchParams(String(init?.body ?? '')).get('token') ?? '';
-      refreshTokens.delete(token);
+      if (refreshTokens.has(token)) { refreshTokens.clear(); accessTokens = new Set(); }
       return new Response('', { status: 200 });
     }
 

@@ -151,14 +151,18 @@ export class GoogleConnection {
   }
 
   /**
-   * Sign out: the grant is revoked at Google and forgotten here.
+   * Sign out: the grant is forgotten here, and revoked at Google unless told not to.
+   *
+   * Google revokes the whole grant, not one machine's token: every machine
+   * signed in to this Drive with this app loses it at once. So the caller
+   * leaves it in place when another machine is the one backing up.
    *
    * The files stay in the Drive. Forgotten whatever Google answers, because the
    * user asked for it to be gone.
    */
-  public async disconnect(): Promise<{ revoked: boolean }> {
+  public async disconnect(options: { readonly revoke?: boolean } = {}): Promise<{ revoked: boolean }> {
     const stored = await this.load();
-    const revoked = stored.refreshToken ? await revokeGoogleToken(stored.refreshToken, this.fetchImpl).then(() => true, () => false) : false;
+    const revoked = stored.refreshToken && options.revoke !== false ? await revokeGoogleToken(stored.refreshToken, this.fetchImpl).then(() => true, () => false) : false;
     this.accessToken = null;
     this.pending = [];
     this.storage = null;

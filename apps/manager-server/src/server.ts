@@ -3650,15 +3650,24 @@ async function handleGoogleRequest(context: RequestContext, google: GoogleConnec
     return;
   }
   if (pathname === '/api/v1/r2/google/disconnect' && method === 'POST') {
+    /*
+     * Revoked only when this machine is the one backing up.
+     *
+     * Google revokes the whole grant, so revoking from a machine that has
+     * moved on would also sign out the machine that took over and is backing
+     * up now. That one keeps it; this one just forgets its copy.
+     */
+    const before = await r2.getConfig();
+    const otherMachine = before.mode === 'google' && before.owner && !before.owner.mine ? before.owner.label : null;
     // The claim goes while there is still a grant to reach the Drive with.
-    if ((await r2.getConfig()).mode === 'google') {
+    if (before.mode === 'google' && !otherMachine) {
       await r2.releaseOwnership().catch((error: unknown) => {
         logger(logEvent('r2.claimReleaseFailed', `[r2] the bucket claim could not be given up: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
       });
     }
-    const result = await google.disconnect();
+    const result = await google.disconnect({ revoke: !otherMachine });
     if ((await r2.getConfig()).mode === 'google') await r2.update({ enabled: false });
-    sendJson(response, 200, { ...result, config: await r2.getConfig() });
+    sendJson(response, 200, { ...result, keptFor: otherMachine, config: await r2.getConfig() });
     return;
   }
   sendError(response, 404, 'not_found', 'Route not found');

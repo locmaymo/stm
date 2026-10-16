@@ -203,6 +203,22 @@ test('signing in on a second machine takes the Drive over, and the first one sta
   assert.equal(status.displacedBy, 'laptop');
 });
 
+test('a machine that leaves the grant in place does not sign out the one backing up', async () => {
+  const fake = fakeGoogle();
+  const desk = await machine(fake, 'desk');
+  const laptop = await machine(fake, 'laptop');
+  await signIn(fake, desk.google);
+  await signIn(fake, laptop.google);
+  assert.deepEqual(await desk.google.disconnect({ revoke: false }), { revoked: false });
+  assert.equal(fake.calls.revoke, 0);
+  // The laptop's own sign-in still works: its token refreshes.
+  fake.expireAccessTokens();
+  await laptop.manager.update({ mode: 'google', enabled: true });
+  const chat = await source(laptop.root, 'chats/one.jsonl', 'hello\n');
+  await laptop.manager.syncProfile({ profile: profile(), sources: [chat], fingerprint: 'one' });
+  assert.equal((await laptop.google.status()).state, 'connected');
+});
+
 test('disconnecting revokes the grant at Google and leaves the files in Drive', async () => {
   const fake = fakeGoogle();
   const desk = await machine(fake, 'desk');
