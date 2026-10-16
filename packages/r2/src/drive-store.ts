@@ -40,6 +40,8 @@ export const FOLDER_MIME = 'application/vnd.google-apps.folder';
 export const APP_DATA_FOLDER = 'appDataFolder';
 const FILE_FIELDS = 'id,name,size,modifiedTime,md5Checksum';
 const LIST_PAGE = 1000;
+/** Listings kept for paging at once; see `listings`. */
+const LISTINGS_KEPT = 8;
 const MAX_ATTEMPTS = 6;
 
 const PACK_MAGIC = Buffer.from('STMPACK1', 'ascii');
@@ -162,8 +164,16 @@ export class DriveObjectStore implements ObjectStore {
   private readonly removed = new Set<string>();
   /** Chunks sent as files of their own by this process, before any listing knows them. */
   private readonly sent = new Set<string>();
-  /** The listing a paged read is walking, so later pages match the first. */
-  private listing: ObjectRecord[] = [];
+  /**
+   * The listings paged reads are walking, by the id their cursor carries.
+   *
+   * One per listing, not one per store: the sweep pages through every chunk
+   * while the console asks for the recovery points, and with a single shared
+   * listing the console's answer became the sweep's second page. The sweep
+   * then saw chunks and no recovery points and deleted a thousand chunks a
+   * recovery point named.
+   */
+  private readonly listings = new Map<string, ObjectRecord[]>();
   /** Chunks waiting to be sent in the next pack. */
   private pending: Array<{ key: string; body: Buffer }> = [];
   private pendingBytes = 0;
@@ -186,23 +196,32 @@ export class DriveObjectStore implements ObjectStore {
   }
 
   public async listObjects(prefix: string, maxKeys: number, cursor?: string): Promise<{ objects: ObjectRecord[]; cursor: string | undefined }> {
-    const offset = cursor ? Number(cursor) : 0;
-    if (!cursor || !Number.isInteger(offset) || offset < 0) {
-      // A listing from the start is somebody asking what is there now.
-      const index = await this.rebuildIndex();
-      const records: ObjectRecord[] = [];
-      for (const file of index.values()) {
-        if (isPackName(file.name) || !file.name.startsWith(prefix)) continue;
-        records.push({ key: file.name, sizeBytes: file.size, lastModified: file.modifiedTime, etag: file.md5 });
-      }
-      for (const [key, location] of this.packed) {
-        if (!key.startsWith(prefix) || index.has(key)) continue;
-        records.push({ key, sizeBytes: location.entry.length, lastModified: location.pack.modifiedTime, etag: null });
-      }
-      this.listing = records.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
-      return this.page(0, maxKeys);
+    if (cursor) {
+      const [id = '', at = ''] = cursor.split(':');
+      const listing = this.listings.get(id);
+      const offset = Number(at);
+      // Never a page of some other listing: a caller deciding what to delete
+      // from it would decide from the wrong list.
+      if (!listing || !Number.isInteger(offset) || offset < 0) throw new R2Error('google_listing_expired', 'A listing of Google Drive was read too long ago to continue. Start it again.');
+      return this.page(id, listing, offset, maxKeys);
     }
-    return this.page(offset, maxKeys);
+    // A listing from the start is somebody asking what is there now.
+    const index = await this.rebuildIndex();
+    const records: ObjectRecord[] = [];
+    for (const file of index.values()) {
+      if (isPackName(file.name) || !file.name.startsWith(prefix)) continue;
+      records.push({ key: file.name, sizeBytes: file.size, lastModified: file.modifiedTime, etag: file.md5 });
+    }
+    for (const [key, location] of this.packed) {
+      if (!key.startsWith(prefix) || index.has(key)) continue;
+      records.push({ key, sizeBytes: location.entry.length, lastModified: location.pack.modifiedTime, etag: null });
+    }
+    records.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+    const id = randomBytes(6).toString('hex');
+    this.listings.set(id, records);
+    // A few kept for callers still paging; the oldest are dropped.
+    while (this.listings.size > LISTINGS_KEPT) this.listings.delete(this.listings.keys().next().value!);
+    return this.page(id, records, 0, maxKeys);
   }
 
   public async putObject(key: string, body: Uint8Array, contentType: string): Promise<void> {
@@ -394,9 +413,10 @@ export class DriveObjectStore implements ObjectStore {
     return { files: index.size, bytes };
   }
 
-  private page(offset: number, maxKeys: number): { objects: ObjectRecord[]; cursor: string | undefined } {
+  private page(id: string, listing: readonly ObjectRecord[], offset: number, maxKeys: number): { objects: ObjectRecord[]; cursor: string | undefined } {
     const end = offset + Math.max(1, maxKeys);
-    return { objects: this.listing.slice(offset, end), cursor: end < this.listing.length ? String(end) : undefined };
+    if (end >= listing.length) this.listings.delete(id);
+    return { objects: listing.slice(offset, end), cursor: end < listing.length ? `${id}:${end}` : undefined };
   }
 
   /** Close the pending pack and start sending it, waiting first if enough are already on their way. */

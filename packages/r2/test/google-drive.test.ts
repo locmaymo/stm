@@ -176,6 +176,21 @@ test('retention and the sweep remove what nothing names from Drive too', async (
   assert.equal((await desk.manager.readBlob(second.file.chunks[0]!.hash)).toString(), 'version two\n');
 });
 
+test('the sweep collects nothing when the listing lacks the newest recovery point', async () => {
+  const fake = fakeGoogle();
+  const desk = await machine(fake, 'desk');
+  await signIn(fake, desk.google);
+  await desk.manager.update({ mode: 'google', enabled: true });
+  const chat = await source(desk.root, 'chats/one.jsonl', 'hello\n');
+  const settings = await source(desk.root, 'settings.json', '{"a":1}');
+  await desk.manager.syncProfile({ profile: profile(), sources: [chat, settings], fingerprint: 'one' });
+  // The listing comes back without it, the way a mixed-up page did.
+  for (const [id, file] of fake.files) if (file.name.includes('/snapshots/')) fake.files.delete(id);
+  const before = fake.files.size;
+  await assert.rejects(desk.manager.reconcile(), { code: 'r2_listing_incomplete' });
+  assert.equal(fake.files.size, before);
+});
+
 test('Drive saying "slow down" is waited out, and an ended access token is refreshed', async () => {
   const fake = fakeGoogle();
   const desk = await machine(fake, 'desk');

@@ -70,6 +70,29 @@ test('small chunks travel in packs, a large one alone, and a new machine finds t
   assert.equal(fake.calls.download, downloads);
 });
 
+test('two listings read at once each get their own pages', async () => {
+  const fake = fakeGoogle();
+  const desk = await store(fake);
+  for (let index = 0; index < 12; index += 1) await desk.putObject(chunkKey(index), body(index), 'application/octet-stream');
+  await desk.putObject('sillytavern-manager/snapshots/p/one.json.gz', Buffer.from('index'), 'application/gzip');
+  // The sweep pages through everything...
+  const first = await desk.listObjects('sillytavern-manager/', 5);
+  // ...while the console asks for the recovery points.
+  const points = await desk.listObjects('sillytavern-manager/snapshots/', 5);
+  assert.deepEqual(points.objects.map((object) => object.key), ['sillytavern-manager/snapshots/p/one.json.gz']);
+  const keys = first.objects.map((object) => object.key);
+  let cursor = first.cursor;
+  while (cursor) {
+    const page = await desk.listObjects('sillytavern-manager/', 5, cursor);
+    keys.push(...page.objects.map((object) => object.key));
+    cursor = page.cursor;
+  }
+  assert.equal(keys.length, 13);
+  assert.ok(keys.includes('sillytavern-manager/snapshots/p/one.json.gz'));
+  // A cursor that names no listing is refused, not answered from another one.
+  await assert.rejects(desk.listObjects('sillytavern-manager/', 5, 'gone:5'), { code: 'google_listing_expired' });
+});
+
 test('anything that is not a chunk waits for the chunks before it', async () => {
   const fake = fakeGoogle();
   const desk = await store(fake);

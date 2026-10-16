@@ -806,6 +806,24 @@ export class R2Manager {
       const client = this.client(config);
       const objects = await this.listAll(config, OBJECT_PREFIX, client);
       const { blobs, snapshotKeys, legacyObjectCount, legacyBytes } = summarizeObjects(objects);
+      /*
+       * A listing without the recovery point this machine wrote last is not
+       * the whole bucket, whatever it says.
+       *
+       * This deletes everything no listed recovery point names, so a listing
+       * that lost its recovery points deletes chunks that are wanted. It
+       * happened on Google Drive: a page of another listing took the place of
+       * the second page of this one, and a thousand chunks of the newest point
+       * went. Nothing is collected then; the next sweep reads again. A bucket
+       * this machine knows of no recovery point in - a first upload stopped
+       * before its index - is still swept.
+       */
+      const remembered = config.lastSnapshot ? snapshotKey(OBJECT_PREFIX, config.lastSnapshot.profileId, config.lastSnapshot.id) : null;
+      const lostRemembered = remembered !== null && !snapshotKeys.includes(remembered);
+      const lostAll = snapshotKeys.length === 0 && config.usage.snapshotCount > 0;
+      if (blobs.size > 0 && (lostRemembered || lostAll)) {
+        throw new R2Error('r2_listing_incomplete', 'The bucket listing did not include the newest recovery point, so nothing was collected. The next sweep tries again.');
+      }
 
       const snapshots: R2Snapshot[] = [];
       for (const key of snapshotKeys) {
