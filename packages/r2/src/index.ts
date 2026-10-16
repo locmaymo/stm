@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { hostname, type as systemType } from 'node:os';
 import { mkdir, open, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -551,13 +551,32 @@ export class R2Manager {
       let sentBytes = 0;
       const dropped = new Set<string>();
       const uploadedHashes: string[] = [];
+      // Files that changed between being hashed and being sent, as hashed again.
+      const rehashed = new Map<string, HashedFile>();
       await runPooled(planned.files, ioConcurrency(), async (entry) => {
         throwIfStopped(input.signal);
-        const sent = await this.uploadChunks(client, entry);
-        if (sent === null) {
-          // Gone since the walk. Naming it in the snapshot would point at a
-          // chunk that was never stored, so the file leaves this recovery point.
+        let current: PlannedFile = entry;
+        let sent = await this.uploadChunks(client, current);
+        /*
+         * Written to while this run was reading it - SillyTavern saves its
+         * settings whenever they change - so what is there now is not what was
+         * hashed. It is hashed again and the new version sent, a few times at
+         * most; a file rewritten faster than that leaves this point.
+         */
+        for (let attempt = 0; sent === 'changed' && attempt < CHANGED_FILE_RETRIES; attempt += 1) {
+          throwIfStopped(input.signal);
+          const file = await hashFile(entry.source.file.name, entry.source.path);
+          if (!file) { sent = 'gone'; break; }
+          rehashed.set(file.name, file);
+          current = { source: { file, path: entry.source.path }, chunks: file.chunks.filter((chunk) => !this.ledger.has(chunk.hash) && !uploadedHashes.includes(chunk.hash)) };
+          sent = await this.uploadChunks(client, current);
+        }
+        if (sent === 'gone' || sent === 'changed') {
+          // Gone since the walk, or never still long enough to read. Naming it
+          // in the snapshot would point at a chunk that was never stored, so
+          // the file leaves this recovery point.
           dropped.add(entry.source.file.name);
+          rehashed.delete(entry.source.file.name);
         } else {
           uploadedChunks += sent.hashes.length;
           uploadedBytes += sent.bytes;
@@ -573,7 +592,8 @@ export class R2Manager {
       // run never records a chunk it did not finish sending.
       await this.ledger.add(uploadedHashes);
 
-      const files = mergeFiles(input.sources, input.carried ?? [], dropped);
+      const sources = input.sources.map((source) => { const file = rehashed.get(source.file.name); return file ? { ...source, file } : source; });
+      const files = mergeFiles(sources, input.carried ?? [], dropped);
       const createdAt = this.now().toISOString();
       const snapshot: R2Snapshot = {
         schemaVersion: 1,
@@ -684,10 +704,21 @@ export class R2Manager {
     }
   }
 
-  /** Fetch one stored chunk, already decoded back to the bytes it holds. */
-  public async readBlob(hash: string): Promise<Buffer> {
+  /**
+   * Fetch one stored chunk, already decoded back to the bytes it holds.
+   *
+   * Checked against the hash it is stored under, which is the hash of what it
+   * must hold. A chunk that does not match was written wrong - see
+   * `uploadChunks` - and handing it on would write a damaged file into the
+   * profile without a word: a settings file one byte short, and a SillyTavern
+   * that never gets past starting. Refused instead, naming the file.
+   */
+  public async readBlob(hash: string, name?: string): Promise<Buffer> {
     const config = await this.load();
     const blob = await decodeBlob(await this.client(config).getObject(blobKey(OBJECT_PREFIX, hash)));
+    if (sha256(blob) !== hash) {
+      throw new R2Error('r2_chunk_damaged', `${name ?? 'A file'} in this recovery point was stored damaged and cannot be brought back. Choose another recovery point.`);
+    }
     // A restore is one of these per file. Writing the counters down after each
     // one would be thousands of state writes for a figure nobody reads that
     // often, so they are folded in a few times a minute instead.
@@ -902,12 +933,23 @@ export class R2Manager {
   }
 
   /** Upload every chunk of one file the bucket is missing, or report the file is gone. */
-  private async uploadChunks(client: ObjectStore, entry: PlannedFile): Promise<{ hashes: string[]; bytes: number } | null> {
+  /**
+   * Send the chunks of one file that the bucket does not hold yet.
+   *
+   * The file is read a second time here, after it was hashed, and it may have
+   * been rewritten in between. Every chunk is hashed again as it is read: a
+   * chunk is stored under the hash of what it holds, and one holding the new
+   * version under the old version's hash is a damaged file in every recovery
+   * point that names it - and, being in the ledger, it is never sent again.
+   * `changed` asks the caller to hash the file afresh; `gone`, that it was
+   * removed.
+   */
+  private async uploadChunks(client: ObjectStore, entry: PlannedFile): Promise<{ hashes: string[]; bytes: number } | 'gone' | 'changed'> {
     let handle;
     try {
       handle = await open(entry.source.path, 'r');
     } catch (error: unknown) {
-      if (isFileNotFound(error)) return null;
+      if (isFileNotFound(error)) return 'gone';
       throw error;
     }
     try {
@@ -917,9 +959,7 @@ export class R2Manager {
       for (const chunk of entry.chunks) {
         const raw = Buffer.allocUnsafe(chunk.length);
         const { bytesRead } = await handle.read(raw, 0, chunk.length, chunk.offset);
-        // The file changed under the walk. The snapshot describes what was
-        // hashed, so a short read means this file no longer matches it.
-        if (bytesRead !== chunk.length) return null;
+        if (bytesRead !== chunk.length || sha256(raw) !== chunk.hash) return 'changed';
         const body = await encodeBlob(raw, compress);
         await client.putObject(blobKey(OBJECT_PREFIX, chunk.hash), body, 'application/octet-stream');
         hashes.push(chunk.hash);
@@ -927,7 +967,7 @@ export class R2Manager {
       }
       return { hashes, bytes };
     } catch (error: unknown) {
-      if (isFileNotFound(error)) return null;
+      if (isFileNotFound(error)) return 'gone';
       throw error;
     } finally {
       await handle.close().catch(() => undefined);
@@ -1596,7 +1636,8 @@ export class R2Manager {
       const sent = missing.length === 0
         ? { hashes: [], bytes: 0 }
         : await this.uploadChunks(client, { source: { file, path }, chunks: missing });
-      if (!sent) return null;
+      // Appended to past a chunk boundary mid-read; the next run sends it.
+      if (sent === 'gone' || sent === 'changed') return null;
       await this.ledger.add(sent.hashes);
       await writeMetricsArchive(client, METRICS_KEY, { schemaVersion: 1, updatedAt: this.now().toISOString(), sizeBytes: file.sizeBytes, chunks: file.chunks });
       await this.save({ ...(await this.load()), lastMetrics: file });
@@ -1875,6 +1916,13 @@ function plannedBytes(entry: PlannedFile): number {
  * being raced for during the upload: identical content is identical wherever it
  * came from, so sending it once is both correct and the point.
  */
+/** How many times a file that keeps changing under an upload is hashed again; see `syncProfile`. */
+const CHANGED_FILE_RETRIES = 3;
+
+function sha256(bytes: Uint8Array): string {
+  return createHash('sha256').update(bytes).digest('hex');
+}
+
 function planUpload(sources: readonly SyncSource[], ledger: BlobLedger): UploadPlan {
   const claimed = new Set<string>();
   const files: PlannedFile[] = [];

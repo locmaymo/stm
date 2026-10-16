@@ -60,6 +60,12 @@ interface PendingSignIn {
 }
 
 export type CloudflareDataPath = 'worker' | 'rest';
+/**
+ * Decide whether a sign-in may be kept, before it is: given the accounts it
+ * reaches and the account this manager is connected to now, the account to
+ * use. Throws to refuse it; see `completeConnect`.
+ */
+export type CloudflareAdmit = (offered: readonly CloudflareAccount[], connected: CloudflareAccount | null) => Promise<CloudflareAccount>;
 /** What a sign-in with Cloudflare was started for; see `beginConnect`. */
 export type CloudflarePurpose = 'connect' | 'signIn';
 export type { CloudflareConnectionState, CloudflareConnectionStatus };
@@ -246,8 +252,14 @@ export class CloudflareConnection {
    *
    * The refresh token is on disk before anything else is asked of Cloudflare,
    * so a failure later in setup never loses the grant the user just gave.
+   *
+   * Unless `admit` is given: then the accounts the grant reaches are asked for
+   * first and handed to it with the account this manager is connected to now,
+   * and nothing is kept until it names the account to use. A sign-in from
+   * somebody who is not let in must not replace the owner's grant on its way
+   * to being refused - their backups would go on, into the stranger's bucket.
    */
-  public async completeConnect(callback: { state: string; code?: string | null; error?: string | null; errorDescription?: string | null }, known: KnownBucket | null = null): Promise<CloudflareConnectionStatus> {
+  public async completeConnect(callback: { state: string; code?: string | null; error?: string | null; errorDescription?: string | null }, known: KnownBucket | null = null, admit?: CloudflareAdmit): Promise<CloudflareConnectionStatus> {
     const entry = this.takePending(callback.state);
     if (!entry) throw new R2Error('cloudflare_state_mismatch', 'This sign-in link has expired or was not started here. Connect again.');
     const pending = entry.authorization;
@@ -258,6 +270,15 @@ export class CloudflareConnection {
     const grant = await exchangeCode(this.client, pending, callback.code ?? '', { fetchImpl: this.fetchImpl, now: this.now });
     if (!grant.refreshToken) throw new R2Error('cloudflare_no_refresh_token', 'Cloudflare did not issue a refresh token, so the connection could not outlive this hour.');
     const previous = await this.load();
+    let admitted: CloudflareAccount | null = null;
+    let reached: CloudflareAccount[] | null = null;
+    if (admit) {
+      // Asked with this grant alone; the stored one is not touched until the
+      // answer is in. Not revoked when refused: Cloudflare may count it as the
+      // same grant as one of the visitor's own machines.
+      reached = await new CloudflareApi({ accessToken: async () => grant.accessToken, fetchImpl: this.fetchImpl, now: this.now }).listAccounts();
+      admitted = await admit(reached, previous.refreshToken ? previous.account : null);
+    }
     this.resetSession();
     this.accessToken = { value: grant.accessToken, expiresAt: grant.expiresAt };
     await this.save({
@@ -274,11 +295,11 @@ export class CloudflareConnection {
       account: previous.account,
       bucket: previous.bucket,
     });
-    const accounts = await this.api.listAccounts();
+    const accounts = reached ?? await this.api.listAccounts();
     this.offeredAccounts = accounts;
     const kept = previous.account ? accounts.find((account) => account.id === previous.account?.id) : undefined;
     const only = accounts.length === 1 ? accounts[0] : undefined;
-    const chosen = kept ?? only;
+    const chosen = admitted ?? kept ?? only;
     if (chosen) return await this.chooseAccount(chosen.id, known);
     await this.save({ ...(await this.load()), account: null, bucket: null });
     if (accounts.length === 0) throw new R2Error('cloudflare_no_account', 'The grant does not reach any Cloudflare account. Connect again and select an account.');
