@@ -6615,7 +6615,7 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled
                 <Label htmlFor={`${group}-cloudflare`} className="flex flex-wrap items-center gap-2 font-medium">
                   {t('console.r2MethodCloudflare')}
                   <Badge variant="secondary" className="bg-(--success-background) text-(--success)">{t('console.r2Recommended')}</Badge>
-                  <Badge variant="secondary" className="bg-(--success-background) text-(--success)">{t('console.r2Fast')}</Badge>
+                  {choice === 'cloudflare' ? <Badge>{t('console.r2Selected')}</Badge> : null}
                 </Label>
                 <p className="text-xs text-muted-foreground">{t('console.r2MethodCloudflareBody')}</p>
               </div>
@@ -6643,8 +6643,7 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled
               <div className="grid gap-1">
                 <Label htmlFor={`${group}-google`} className="flex flex-wrap items-center gap-2 font-medium">
                   {t('console.r2MethodGoogle')}
-                  <Badge variant="secondary" className="bg-(--success-background) text-(--success)">{t('console.r2NoCard')}</Badge>
-                  <Badge variant="secondary" className="bg-(--attention-background) text-(--attention)">{t('console.r2Slow')}</Badge>
+                  {choice === 'google' ? <Badge>{t('console.r2Selected')}</Badge> : null}
                 </Label>
                 <p className="text-xs text-muted-foreground">{t('console.r2MethodGoogleBody')}</p>
               </div>
@@ -6657,6 +6656,7 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled
               <div className="grid gap-1">
                 <Label htmlFor={`${group}-keys`} className="flex flex-wrap items-center gap-2 font-medium">
                   {t('console.r2MethodKeys')}
+                  {choice === 'keys' ? <Badge>{t('console.r2Selected')}</Badge> : null}
                 </Label>
                 <p className="text-xs text-muted-foreground">{t('console.r2MethodKeysBody')}</p>
               </div>
