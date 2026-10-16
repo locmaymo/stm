@@ -2,6 +2,28 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Check, ChevronDown, ChevronRight } from 'lucide-react';
 import { Badge, Button, Card, CardContent, cn } from '../../../packages/ui/src/index.js';
 import type { Translate } from './i18n.js';
+import { browserStorage } from './preferences.js';
+
+/** Where this browser keeps whether the list was last folded or open. */
+const FOLDED_KEY = 'stm-checklist-folded';
+
+/** The fold the reader last chose in this browser, or null if they never pressed it. */
+export function readChecklistFolded(storage: Pick<Storage, 'getItem'> | undefined = browserStorage()): boolean | null {
+  try {
+    const value = storage?.getItem(FOLDED_KEY);
+    return value === 'yes' ? true : value === 'no' ? false : null;
+  } catch {
+    return null;
+  }
+}
+
+export function saveChecklistFolded(folded: boolean, storage: Pick<Storage, 'setItem'> | undefined = browserStorage()): void {
+  try {
+    storage?.setItem(FOLDED_KEY, folded ? 'yes' : 'no');
+  } catch {
+    // Private windows and blocked storage: folded for this visit only.
+  }
+}
 
 export interface ChecklistItem {
   readonly id: string;
@@ -20,17 +42,19 @@ export interface ChecklistItem {
  * they are best done - a row stays where it is once it is done, so the list
  * reads the same every time - and takes the reader to the rest.
  *
- * Open while anything is left, on every load: folding it is for now, not for
- * good, because a list that stays folded is a list nobody finishes. Once
- * everything is crossed off it folds itself, and keeps its title and count.
+ * Folded or open the way the reader last left it, in this browser, whether
+ * or not everything is done: some steps are not for everybody, and a list
+ * that opens itself again on every visit nags about them. Until it has been
+ * pressed it is open while anything is left and folds itself once everything
+ * is crossed off, keeping its title and count.
  */
 export function SetupChecklist({ t, items }: { t: Translate; items: readonly ChecklistItem[] }) {
   const done = items.filter((item) => item.done).length;
   const complete = done === items.length;
   // Null until somebody presses the header; until then it follows the list.
-  const [folded, setFolded] = useState<boolean | null>(null);
+  const [folded, setFolded] = useState<boolean | null>(() => readChecklistFolded());
   const collapsed = folded ?? complete;
-  const toggle = () => { setFolded(!collapsed); };
+  const toggle = () => { setFolded(!collapsed); saveChecklistFolded(!collapsed); };
   /*
    * On a phone the list is a short window that scrolls, faded at whichever
    * edge has more beyond it - three rows and most of a fourth, rather than

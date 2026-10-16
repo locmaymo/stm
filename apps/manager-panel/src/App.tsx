@@ -961,7 +961,8 @@ function splitOnPlaceholders(template: string): Array<{ text: string; placeholde
  */
 function FirstRun({ t, csrfToken, preferences, onPreferencesChange, onDone }: { t: Translate; csrfToken: string; preferences: Preferences; onPreferencesChange: (value: Partial<Preferences>) => void; onDone: () => void }) {
   const [available, setAvailable] = useState<boolean | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [offers, setOffers] = useState({ cloudflare: false, google: false });
+  const [busy, setBusy] = useState<'cloudflare' | 'google' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const fail = failures(preferences.locale);
 
@@ -973,26 +974,29 @@ function FirstRun({ t, csrfToken, preferences, onPreferencesChange, onDone }: { 
         if (cancelled) return;
         // Already connected - a manager whose settings came from `.env`, say.
         // There is nothing to offer and nothing to ask.
-        if (!config?.cloudflare || config.configured) { onDone(); return; }
+        if ((!config?.cloudflare && !config?.google) || config.configured) { onDone(); return; }
+        setOffers({ cloudflare: Boolean(config.cloudflare), google: Boolean(config.google) });
         setAvailable(true);
       })
       .catch(() => { if (!cancelled) onDone(); });
     return () => { cancelled = true; };
   }, []);
 
-  const connect = async () => {
-    setBusy(true);
+  const connect = async (provider: 'cloudflare' | 'google') => {
+    setBusy(provider);
     setError(null);
+    const failedText = provider === 'google' ? t('console.gdConnectFailed') : t('console.cfConnectFailed');
     try {
       // In the phone app the browser's last page sends the reader back to the
       // app rather than opening a second console there; see oauth.ts.
-      const response = await apiFetch(`/api/v1/r2/cloudflare/connect${inPhoneApp() ? '?handoff=1' : ''}`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      const response = await apiFetch(`/api/v1/r2/${provider}/connect${inPhoneApp() ? '?handoff=1' : ''}`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       const payload = await response.json() as { url?: string; error?: { message?: string } };
-      if (!response.ok || !payload.url) { setError(fail.body(payload, t('console.cfConnectFailed'))); return; }
-      // Cloudflare answers back to the console's own address, which lands on
-      // the Data page with the connection made; see handleCloudflareCallback.
+      if (!response.ok || !payload.url) { setError(fail.body(payload, failedText)); return; }
+      // Either one answers back to the console's own address, which lands on
+      // the Data page with the connection made; see handleCloudflareCallback
+      // and handleGoogleCallback.
       window.location.assign(payload.url);
-    } catch { setError(t('console.cfConnectFailed')); } finally { setBusy(false); }
+    } catch { setError(failedText); } finally { setBusy(null); }
   };
 
   if (available !== true) return <div className="auth-shell" role="status" aria-busy="true" />;
@@ -1037,11 +1041,18 @@ function FirstRun({ t, csrfToken, preferences, onPreferencesChange, onDone }: { 
             <li className="cloud-offer-point"><History /><span>{t('setup.cloudPointRestore')}</span></li>
           </ul>
           {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
+          {/* Cloudflare first and in its own colour, the recommended way; the
+              Drive under it in an outline with its logo, the way Google's own
+              sign-in buttons look, for whoever has no card to give Cloudflare. */}
           <div className="grid gap-2">
-            <Button size="lg" className="w-full hover:opacity-90" style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }} loading={busy} onClick={() => connect()}>
+            {offers.cloudflare ? <Button size="lg" className="w-full hover:opacity-90" style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }} loading={busy === 'cloudflare'} disabled={busy !== null} onClick={() => connect('cloudflare')}>
               <CloudflareMark />{t('setup.cloudConnect')}
-            </Button>
-            <Button variant="ghost" size="lg" className="w-full" disabled={busy} onClick={onDone}>{t('setup.cloudSkip')}</Button>
+            </Button> : null}
+            {offers.cloudflare && offers.google ? <div className="auth-divider"><span>{t('setup.or')}</span></div> : null}
+            {offers.google ? <Button size="lg" variant="outline" className="w-full" loading={busy === 'google'} disabled={busy !== null} onClick={() => connect('google')}>
+              <GoogleDriveMark />{t('console.gdConnect')}
+            </Button> : null}
+            <Button variant="ghost" size="lg" className="w-full" disabled={busy !== null} onClick={onDone}>{t('setup.cloudSkip')}</Button>
           </div>
         </CardContent>
       </Card>

@@ -389,11 +389,17 @@ test('an upload reports the bytes it still has to send, not just a file count', 
   const settings = await source(root, 'settings.json', '{"a":1}');
   const card = await source(root, 'characters/Assistant.png', randomBytes(512 * 1024));
   const seen: Array<{ completedBytes: number; totalBytes: number; completedItems: number; totalItems: number }> = [];
+  const transfers: Array<{ completedItems: number; totalItems: number } | null> = [];
 
   const result = await manager.syncProfile({
     profile: profile(), sources: [settings, card], fingerprint: 'one',
-    onProgress: (progress) => seen.push({ ...progress }),
+    onProgress: (progress) => { seen.push({ ...progress }); void manager.getConfig().then((config) => { transfers.push(config.transfer); }); },
   });
+
+  // The console shows the same bar for R2 as for the Drive, whoever started the run.
+  await new Promise((resolve) => { setImmediate(resolve); });
+  assert.ok(transfers.some((transfer) => transfer !== null && transfer.totalItems === 2 && transfer.completedItems > 0));
+  assert.equal((await manager.getConfig()).transfer, null);
 
   const expected = settings.file.sizeBytes + card.file.sizeBytes;
   assert.equal(seen.length, 2);

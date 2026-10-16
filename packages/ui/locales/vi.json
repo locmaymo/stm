@@ -43,7 +43,7 @@
     "cloudBody": "Chat, nhân vật và thiết lập của bạn được đồng bộ hóa liên tục lên cloud của bạn.",
     "cloudHere": "Máy này",
     "cloudAway": "Kho của bạn",
-    "cloudPointFree": "Miễn phí với gói free của Cloudflare R2.",
+    "cloudPointFree": "Miễn phí với gói free của Cloudflare R2 hoặc Google Drive.",
     "cloudPointRestore": "Cài lại SillyTavern trên máy khác? Đăng nhập là dữ liệu của bạn tự trở lại.",
     "cloudConnect": "Kết nối Cloudflare",
     "cloudSkip": "Để sau",

@@ -43,7 +43,7 @@
     "cloudBody": "Your chats, characters and settings are synced continuously to cloud storage of your own.",
     "cloudHere": "This machine",
     "cloudAway": "Your storage",
-    "cloudPointFree": "Free on Cloudflare R2’s free plan.",
+    "cloudPointFree": "Free on Cloudflare R2’s free plan or Google Drive.",
     "cloudPointRestore": "Reinstalling SillyTavern on another machine? Sign in and your data comes back by itself.",
     "cloudConnect": "Connect Cloudflare",
     "cloudSkip": "Not now",
