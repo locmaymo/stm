@@ -386,6 +386,13 @@ html:not(.dark) .shot img.wide.light, html.dark .shot img.wide.dark { display: b
 .feature-points li { display: flex; align-items: flex-start; gap: 10px; font-size: 15px; }
 .feature-points svg { flex-shrink: 0; width: 18px; height: 18px; margin-top: 3px; color: var(--success); }
 .feature-shot { margin: 0; }
+
+/* A loop from the promo film: a square in its own colours, the same in
+   either theme, so it is framed rather than blended into the page. */
+.clip { margin: 0; aspect-ratio: 1; border-radius: 22px; overflow: hidden; background: var(--card); box-shadow: var(--elevation-3); }
+.clip video { display: block; width: 100%; height: 100%; object-fit: cover; }
+.clip-reel { max-width: 34rem; margin: 42px auto 0; }
+.feature-clip { justify-self: center; width: 100%; max-width: 30rem; }
 /* A tall screen is cut to a window, as the hero is, so one picture does not
    make its row twice the height of its words. */
 @media (min-width: 640px) {

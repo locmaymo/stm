@@ -35,6 +35,13 @@ export function homePage(locale) {
   </div>
 </section>
 
+<section id="reel">
+  <div class="shell">
+    ${sectionHead(c.reel)}
+    <figure class="clip clip-reel">${clip(locale, c.reel.video, c.reel.alt)}</figure>
+  </div>
+</section>
+
 <section id="features">
   <div class="shell">
     ${sectionHead(c.features)}
@@ -46,7 +53,9 @@ export function homePage(locale) {
           <p>${text(row.body)}</p>
           <ul class="feature-points">${join(row.points.map((point) => html`<li>${icons.check()}<span>${point}</span></li>`))}</ul>
         </div>
-        <figure class="${NARROW} feature-shot${aspect(locale, row.shot) > 1 ? raw(' is-tall') : ''}">${screenshot(locale, row.shot, row.alt, { narrow: row.narrow })}</figure>
+        ${row.clip
+          ? html`<figure class="clip feature-clip">${clip(locale, row.clip, row.alt)}</figure>`
+          : html`<figure class="${NARROW} feature-shot${aspect(locale, row.shot) > 1 ? raw(' is-tall') : ''}">${screenshot(locale, row.shot, row.alt, { narrow: row.narrow })}</figure>`}
       </article>`))}
     </div>
   </div>
@@ -145,6 +154,18 @@ export function homePage(locale) {
     }
     return html`<a class="button${quiet ? raw(' button-quiet') : raw('')}" href="${href}"${target}>${iconOf(item.icon)}${item.label}</a>`;
   }
+}
+
+/**
+ * A short looping motion, cut from the promo film in the reader's language.
+ *
+ * Written with controls and without autoplay, which is what a reader without
+ * scripting, or one who asked for less motion, gets. site.js takes the
+ * controls away and plays it while it is on screen for everybody else. The
+ * poster is the frame that says the most, so nothing is fetched until then.
+ */
+function clip(locale, name, alt) {
+  return html`<video src="/media/${name}-${locale}.mp4" poster="/media/${name}-${locale}.webp" width="720" height="720" muted loop playsinline controls preload="none" data-clip aria-label="${alt}"></video>`;
 }
 
 function sectionHead(section) {

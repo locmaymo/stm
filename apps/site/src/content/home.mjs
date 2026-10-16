@@ -43,11 +43,11 @@ const DOWNLOAD = {
 export const home = {
   en: {
     title: 'SillyTavern, safe and everywhere',
-    description: 'Install, run, update and back up SillyTavern from one simple page. Your chats are saved to your own cloud all the time, and SillyTavern opens on any device you have. Free forever.',
+    description: 'Install, run, update and back up SillyTavern from one simple page. Your chats are saved to your own Cloudflare or Google Drive all the time, SillyTavern opens on any device you have, and your phone tells you when a character replies. Free forever.',
     hero: {
-      badge: 'Free forever · open source',
+      badge: 'New in 1.2 · Google Drive and chat bubbles',
       heading: 'Your SillyTavern, safe and everywhere',
-      lede: `Install, update and back up [SillyTavern](${UPSTREAM}) in a few clicks, with no commands. Your chats stay safe in your own cloud, and SillyTavern opens on any device you own.`,
+      lede: `Install, update and back up [SillyTavern](${UPSTREAM}) in a few clicks, with no commands. Your chats stay safe in your own Cloudflare or Google Drive, SillyTavern opens on any device you own, and your phone tells you when a character replies.`,
       primary: { href: RELEASES, label: 'Download for Windows', icon: 'download', download: DOWNLOAD.en },
       secondary: { href: '/#install', label: 'Other devices', icon: 'phone' },
       meta: [
@@ -57,6 +57,13 @@ export const home = {
       ],
       shot: 'overview',
       shotAlt: 'The manager overview page: SillyTavern running, its online link, backups, the computer’s usage and live logs',
+    },
+    reel: {
+      eyebrow: 'In 26 seconds',
+      heading: 'See it work',
+      lede: 'Install the app, pick a version, chat in bubbles, bring old chats back, back up to the cloud and open it on every device. Not one command.',
+      video: 'promo',
+      alt: 'A short animation: the Android app installs, a SillyTavern version is picked, chats open as bubbles on a phone, an old backup is restored, cloud backup turns on, and the same chat opens on a phone, a laptop and a tablet',
     },
     features: {
       eyebrow: 'What it does for you',
@@ -68,10 +75,11 @@ export const home = {
           badge: 'Most loved',
           label: 'Cloud backup',
           title: 'Never lose a chat again',
-          body: 'Sign in to Cloudflare once, and your chats, characters and settings are copied to free cloud storage in your own account every few minutes, by themselves. If your computer breaks, your phone is lost, or you delete something by mistake, sign in again on any device and everything comes back.',
+          body: 'Sign in once, with Cloudflare or with Google Drive, and your chats, characters and settings are copied to your own cloud every few minutes, by themselves. If your computer breaks, your phone is lost, or you delete something by mistake, sign in again on any device and everything comes back.',
           points: [
             'Backs up on its own, every few minutes',
-            'Free with Cloudflare R2’s free plan',
+            'Free: Cloudflare R2’s free plan, or the space your Google Drive already has',
+            'On Google Drive, backups sit in a hidden app folder, away from your files',
             'One sign-in on a new device brings it all back',
           ],
           shot: 'f-cloud',
@@ -79,12 +87,26 @@ export const home = {
           alt: 'The cloud backup card: backing up automatically every 5 minutes, the last copy sent a minute ago, and a list of recovery points to bring back',
         },
         {
+          icon: 'chat',
+          badge: 'New',
+          label: 'Chat bubbles and notifications',
+          title: 'Know the moment a character replies',
+          body: 'Send a message, put your phone down. When the reply is ready, your phone says so, with the character’s name and its first words, even with SillyTavern closed. On Android, your chats can float as bubbles over any app: tap one, answer, and carry on with what you were doing.',
+          points: [
+            'Notifications on Android, on an iPhone from the Home Screen, and on a computer',
+            'Chat bubbles on Android 11 and later, each character in its own',
+            'Hide the preview on any device other people can see',
+          ],
+          clip: 'bubbles',
+          alt: 'An Android phone: two chat bubbles pop up over the home screen with a notification, and each opens its own SillyTavern chat while a reply is written',
+        },
+        {
           icon: 'globe',
           label: 'Online link',
           title: 'Your SillyTavern, on every device',
           body: 'Switch on one link and SillyTavern opens on your phone, tablet or another computer, at home or anywhere else. Scan the QR code to open it on your phone in a second. Protected by your own PIN.',
           points: [
-            'A link that stays the same, so bookmarks keep working',
+            'A fixed link that never changes, or a fast one for the snappiest chat',
             'Scan a QR code instead of typing an address',
             'Locked with a PIN only you know',
           ],
@@ -127,6 +149,7 @@ export const home = {
           body: 'Moving from an old SillyTavern? Upload the ZIP you downloaded from SillyTavern, or a backup from another SillyTavern Manager. No extra apps, no unzipping, no hunting for the right folder. The manager shows what is inside, then puts it all back.',
           points: [
             'Works with SillyTavern’s own backup ZIP',
+            'On Android, brings over a SillyTavern you ran in Termux in a few taps',
             'See what is inside before anything changes',
             'A safety copy is taken first, so you can undo',
           ],
@@ -171,7 +194,7 @@ export const home = {
       cards: [
         { icon: 'gift', title: 'Free for life', body: 'No subscription, no trial, no limits. The source code is public under the AGPL-3.0 licence, so anyone can check what it does.' },
         { icon: 'github', title: 'The official SillyTavern', body: 'SillyTavern is always downloaded from its official GitHub repository, and its files are never changed.' },
-        { icon: 'lock', title: 'Only you hold your data', body: 'Chats and characters stay on your device and in your own Cloudflare account. This project has no server that stores them and never sees them.' },
+        { icon: 'lock', title: 'Only you hold your data', body: 'Chats and characters stay on your device and in your own Cloudflare or Google account. This project has no server that stores them and never sees them.' },
         { icon: 'shield', title: 'Locked with your passwords', body: 'The manager opens with your password and SillyTavern with your PIN. Too many wrong guesses and the door locks itself.' },
       ],
       note: 'The manager sends the project a small, anonymous usage summary, never your chats, prompts, characters or API keys. The [Privacy Notice](/privacy) has the details.',
@@ -182,7 +205,7 @@ export const home = {
       lede: 'Every way ends at the same place: a page in your browser that asks you to choose a password. Then pick a SillyTavern version and press Install.',
       cards: [
         { icon: 'monitor', title: 'Windows', body: 'Download the ZIP, unzip it and double-click SillyTavernManager.exe. Nothing else to install.', href: '/docs#windows', go: 'Windows guide' },
-        { icon: 'phone', title: 'Android', body: 'Download the app, install it and open ST Manager. Everything SillyTavern needs is inside. Termux works too.', href: '/docs#android', go: 'Android guide' },
+        { icon: 'phone', title: 'Android', body: 'Download the app, install it and open ST Manager. Everything SillyTavern needs is inside, and a SillyTavern from Termux moves over in a few taps.', href: '/docs#android', go: 'Android guide' },
         { icon: 'apple', title: 'Mac', body: 'Paste a few lines into Terminal once. Works on Apple Silicon and Intel Macs.', href: '/docs#macos', go: 'Mac guide' },
         { icon: 'server', title: 'Linux and servers', body: 'One command starts it, and it can start by itself after a reboot.', href: '/docs#linux', go: 'Linux guide' },
         { icon: 'box', title: 'Docker', body: 'Run the ready-made image and keep your data in a volume.', href: '/docs#docker', go: 'Docker guide' },
@@ -197,6 +220,10 @@ export const home = {
         { icon: 'layers', title: 'Separate profiles', body: 'Keep different sets of characters and chats apart, and switch between them in a click.' },
         { icon: 'refresh', title: 'Stays awake', body: 'Keeps the manager running where a battery saver or an idle timer would shut it down.' },
         { icon: 'languages', title: 'Your language, your look', body: 'English and Vietnamese, light and dark, on a computer or with one thumb on a phone.' },
+        { icon: 'sliders', title: 'Settings that save themselves', body: 'Flip a SillyTavern setting and it is saved and applied. No Save button, no restart to remember.' },
+        { icon: 'key', title: 'A proxy in one paste', body: 'Paste a proxy in any form and SillyTavern sends its requests through it.' },
+        { icon: 'shield', title: 'Open it with your account', body: 'Sign in with the Cloudflare or Google account you back up to. Only that account gets in.' },
+        { icon: 'zap', title: 'Fast with thousands of cards', body: 'A profile with a great many characters loads them as they are needed, so SillyTavern still opens quickly.' },
       ],
     },
     screens: {
@@ -218,11 +245,11 @@ export const home = {
   },
   vi: {
     title: 'SillyTavern an toàn, dùng ở mọi nơi',
-    description: 'Cài đặt, chạy, cập nhật và sao lưu SillyTavern trên một trang web đơn giản. Chat của bạn được lưu liên tục lên cloud của riêng bạn, và SillyTavern mở được trên mọi thiết bị của bạn. Miễn phí trọn đời.',
+    description: 'Cài đặt, chạy, cập nhật và sao lưu SillyTavern trên một trang web đơn giản. Chat của bạn được lưu liên tục lên Cloudflare hay Google Drive của riêng bạn, SillyTavern mở được trên mọi thiết bị, và điện thoại báo ngay khi nhân vật trả lời. Miễn phí trọn đời.',
     hero: {
-      badge: 'Miễn phí trọn đời · mã nguồn mở',
+      badge: 'Mới ở bản 1.2 · Google Drive và bong bóng chat',
       heading: 'SillyTavern của bạn, an toàn và ở mọi nơi',
-      lede: `Cài đặt, cập nhật và sao lưu [SillyTavern](${UPSTREAM}) chỉ vài cú bấm, không cần câu lệnh. Chat luôn an toàn trên cloud của riêng bạn, và SillyTavern mở được trên mọi thiết bị.`,
+      lede: `Cài đặt, cập nhật và sao lưu [SillyTavern](${UPSTREAM}) chỉ vài cú bấm, không cần câu lệnh. Chat luôn an toàn trên Cloudflare hay Google Drive của riêng bạn, SillyTavern mở được trên mọi thiết bị, và điện thoại báo ngay khi nhân vật trả lời.`,
       primary: { href: RELEASES, label: 'Tải cho Windows', icon: 'download', download: DOWNLOAD.vi },
       secondary: { href: '/#install', label: 'Thiết bị khác', icon: 'phone' },
       meta: [
@@ -232,6 +259,13 @@ export const home = {
       ],
       shot: 'overview',
       shotAlt: 'Trang tổng quan của trình quản lý: SillyTavern đang chạy, link online, sao lưu, tài nguyên máy và nhật ký trực tiếp',
+    },
+    reel: {
+      eyebrow: 'Trong 26 giây',
+      heading: 'Xem nó làm việc',
+      lede: 'Cài ứng dụng, chọn phiên bản, chat bằng bong bóng, lấy lại chat cũ, sao lưu lên cloud và mở trên mọi thiết bị. Không một câu lệnh nào.',
+      video: 'promo',
+      alt: 'Một đoạn hoạt hình ngắn: ứng dụng Android được cài, chọn một phiên bản SillyTavern, chat mở thành bong bóng trên điện thoại, một bản sao lưu cũ được khôi phục, sao lưu cloud được bật, và cùng một đoạn chat mở trên điện thoại, laptop và máy tính bảng',
     },
     features: {
       eyebrow: 'Làm được gì cho bạn',
@@ -243,10 +277,11 @@ export const home = {
           badge: 'Được yêu thích nhất',
           label: 'Sao lưu lên cloud',
           title: 'Không bao giờ mất chat nữa',
-          body: 'Đăng nhập Cloudflare một lần, và chat, nhân vật, thiết lập của bạn được chép lên kho lưu trữ cloud miễn phí trong chính tài khoản của bạn, tự động vài phút một lần. Máy hỏng, mất điện thoại hay lỡ tay xoá nhầm, chỉ cần đăng nhập lại trên bất kỳ thiết bị nào là mọi thứ quay về.',
+          body: 'Đăng nhập một lần, bằng Cloudflare hoặc Google Drive, và chat, nhân vật, thiết lập của bạn được chép lên cloud của chính bạn, tự động vài phút một lần. Máy hỏng, mất điện thoại hay lỡ tay xoá nhầm, chỉ cần đăng nhập lại trên bất kỳ thiết bị nào là mọi thứ quay về.',
           points: [
             'Tự sao lưu, vài phút một lần',
-            'Miễn phí với gói miễn phí của Cloudflare R2',
+            'Miễn phí: gói miễn phí của Cloudflare R2, hoặc dung lượng sẵn có trong Google Drive của bạn',
+            'Trên Google Drive, bản sao lưu nằm trong thư mục ẩn của ứng dụng, không lẫn vào tệp của bạn',
             'Đăng nhập một lần trên máy mới là lấy lại tất cả',
           ],
           shot: 'f-cloud',
@@ -254,12 +289,26 @@ export const home = {
           alt: 'Thẻ sao lưu đám mây: tự sao lưu mỗi 5 phút, bản gần nhất vừa gửi một phút trước, và danh sách điểm khôi phục để lấy về',
         },
         {
+          icon: 'chat',
+          badge: 'Mới',
+          label: 'Bong bóng chat và thông báo',
+          title: 'Nhân vật trả lời là biết ngay',
+          body: 'Gửi tin nhắn rồi cứ đặt điện thoại xuống. Khi câu trả lời xong, điện thoại báo cho bạn, kèm tên nhân vật và mấy chữ đầu, kể cả khi đã đóng SillyTavern. Trên Android, các đoạn chat còn nổi thành bong bóng trên mọi ứng dụng: chạm vào, trả lời, rồi làm tiếp việc đang dở.',
+          points: [
+            'Thông báo trên Android, trên iPhone khi mở từ Màn hình chính, và trên máy tính',
+            'Bong bóng chat trên Android 11 trở lên, mỗi nhân vật một bong bóng',
+            'Ẩn phần xem trước trên thiết bị người khác có thể nhìn thấy',
+          ],
+          clip: 'bubbles',
+          alt: 'Một điện thoại Android: hai bong bóng chat hiện lên trên màn hình chính kèm thông báo, và mỗi bong bóng mở một đoạn chat SillyTavern riêng trong lúc câu trả lời đang được viết',
+        },
+        {
           icon: 'globe',
           label: 'Link online',
           title: 'SillyTavern trên mọi thiết bị của bạn',
           body: 'Bật một link là SillyTavern mở được trên điện thoại, máy tính bảng hay máy tính khác, ở nhà hay bất cứ đâu. Quét mã QR là mở ngay trên điện thoại. Bảo mật bằng mã PIN của bạn.',
           points: [
-            'Link cố định, lưu bookmark là dùng mãi',
+            'Link cố định không bao giờ đổi, hoặc link nhanh để chat mượt nhất',
             'Quét mã QR thay vì gõ địa chỉ',
             'Khoá bằng mã PIN chỉ bạn biết',
           ],
@@ -302,6 +351,7 @@ export const home = {
           body: 'Chuyển từ SillyTavern cũ sang? Tải lên file ZIP bạn đã tải về từ SillyTavern, hoặc một bản sao lưu từ SillyTavern Manager khác. Không cần cài thêm app, không cần giải nén, không phải đi tìm đúng thư mục. Trình quản lý cho xem bên trong có gì, rồi đưa tất cả trở về.',
           points: [
             'Dùng được file ZIP sao lưu của chính SillyTavern',
+            'Trên Android, chuyển SillyTavern bạn từng chạy trong Termux sang chỉ vài chạm',
             'Xem bên trong có gì trước khi thay đổi',
             'Luôn chép một bản an toàn trước, nên hoàn tác được',
           ],
@@ -346,7 +396,7 @@ export const home = {
       cards: [
         { icon: 'gift', title: 'Miễn phí trọn đời', body: 'Không thuê bao, không dùng thử, không giới hạn. Mã nguồn công khai theo giấy phép AGPL-3.0, ai cũng kiểm tra được nó làm gì.' },
         { icon: 'github', title: 'SillyTavern chính chủ', body: 'SillyTavern luôn được tải từ kho GitHub chính thức của nó, và tệp của nó không bao giờ bị sửa.' },
-        { icon: 'lock', title: 'Chỉ bạn giữ dữ liệu', body: 'Chat và nhân vật nằm trên thiết bị của bạn và trong tài khoản Cloudflare của chính bạn. Dự án không có máy chủ nào lưu chúng và không bao giờ nhìn thấy chúng.' },
+        { icon: 'lock', title: 'Chỉ bạn giữ dữ liệu', body: 'Chat và nhân vật nằm trên thiết bị của bạn và trong tài khoản Cloudflare hay Google của chính bạn. Dự án không có máy chủ nào lưu chúng và không bao giờ nhìn thấy chúng.' },
         { icon: 'shield', title: 'Khoá bằng mật khẩu của bạn', body: 'Trình quản lý mở bằng mật khẩu của bạn, SillyTavern mở bằng mã PIN của bạn. Đoán sai quá nhiều lần là cửa tự khoá.' },
       ],
       note: 'Trình quản lý gửi cho dự án một bản tóm tắt sử dụng nhỏ và ẩn danh, không bao giờ có chat, prompt, nhân vật hay khoá API của bạn. [Thông báo quyền riêng tư](/privacy) có nói chi tiết.',
@@ -357,7 +407,7 @@ export const home = {
       lede: 'Cách nào cũng dẫn tới cùng một chỗ: một trang trên trình duyệt hỏi bạn đặt mật khẩu. Sau đó chọn phiên bản SillyTavern và bấm Cài đặt.',
       cards: [
         { icon: 'monitor', title: 'Windows', body: 'Tải file ZIP, giải nén rồi bấm đúp SillyTavernManager.exe. Không cần cài gì thêm.', href: '/docs#windows', go: 'Hướng dẫn Windows' },
-        { icon: 'phone', title: 'Android', body: 'Tải ứng dụng về, cài đặt rồi mở ST Manager. Mọi thứ SillyTavern cần đã có sẵn bên trong. Dùng Termux cũng được.', href: '/docs#android', go: 'Hướng dẫn Android' },
+        { icon: 'phone', title: 'Android', body: 'Tải ứng dụng về, cài đặt rồi mở ST Manager. Mọi thứ SillyTavern cần đã có sẵn bên trong, và SillyTavern từ Termux chuyển sang chỉ vài chạm.', href: '/docs#android', go: 'Hướng dẫn Android' },
         { icon: 'apple', title: 'Mac', body: 'Dán vài dòng vào Terminal một lần. Chạy trên cả Mac chip Apple và Intel.', href: '/docs#macos', go: 'Hướng dẫn Mac' },
         { icon: 'server', title: 'Linux và máy chủ', body: 'Một lệnh là chạy, và có thể tự chạy lại sau khi khởi động máy.', href: '/docs#linux', go: 'Hướng dẫn Linux' },
         { icon: 'box', title: 'Docker', body: 'Chạy image dựng sẵn và giữ dữ liệu trong một volume.', href: '/docs#docker', go: 'Hướng dẫn Docker' },
@@ -372,6 +422,10 @@ export const home = {
         { icon: 'layers', title: 'Nhiều hồ sơ riêng', body: 'Tách riêng các bộ nhân vật và chat, chuyển qua lại chỉ một cú bấm.' },
         { icon: 'refresh', title: 'Luôn thức', body: 'Giữ trình quản lý chạy ở nơi trình tiết kiệm pin hay bộ hẹn giờ nhàn rỗi sẽ tắt nó.' },
         { icon: 'languages', title: 'Ngôn ngữ và giao diện của bạn', body: 'Tiếng Việt và tiếng Anh, sáng và tối, trên máy tính hay bằng một ngón tay trên điện thoại.' },
+        { icon: 'sliders', title: 'Thiết lập tự lưu', body: 'Bật tắt một thiết lập SillyTavern là nó được lưu và áp dụng ngay. Không có nút Lưu, không phải nhớ khởi động lại.' },
+        { icon: 'key', title: 'Proxy chỉ một lần dán', body: 'Dán proxy ở dạng nào cũng được, và SillyTavern gửi yêu cầu qua đó.' },
+        { icon: 'shield', title: 'Mở bằng tài khoản của bạn', body: 'Đăng nhập bằng tài khoản Cloudflare hay Google bạn dùng để sao lưu. Chỉ tài khoản đó vào được.' },
+        { icon: 'zap', title: 'Nhanh dù có hàng nghìn thẻ', body: 'Hồ sơ có rất nhiều nhân vật sẽ tải chúng khi cần, nên SillyTavern vẫn mở nhanh.' },
       ],
     },
     screens: {
