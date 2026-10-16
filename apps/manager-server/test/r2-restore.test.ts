@@ -8,7 +8,7 @@ import { getPlatformPaths } from '../../../packages/platform/src/index.js';
 import { BackupStore } from '../../../packages/backup/src/index.js';
 import { R2Manager } from '../../../packages/r2/src/index.js';
 import { CHUNK_BYTES } from '../../../packages/r2/src/sync.js';
-import type { Profile } from '../../../packages/contracts/src/index.js';
+import { REMOTE_NAME_SLUG, type Profile } from '../../../packages/contracts/src/index.js';
 import { fetchSnapshotToLibrary, recoverProfileFromR2, restoreSnapshotInPlace } from '../src/r2-restore.js';
 import { syncProfileToR2 } from '../src/r2-scheduler.js';
 
@@ -81,6 +81,10 @@ test('a recovery point comes back from R2 as an archive the existing restore acc
 
   const fetched = await fetchSnapshotToLibrary({ profile, r2, backups, snapshotId: snapshots[0]!.id });
   assert.equal(fetched.manifest.source, 'uploaded');
+  // Named for where it came from, not for R2 whatever the source was.
+  const mode = (await r2.getConfig()).mode;
+  assert.equal(fetched.manifest.remote, mode);
+  assert.match(fetched.manifest.name, new RegExp(`_${REMOTE_NAME_SLUG[mode]}_`, 'u'));
   // The preview is what the restore flow shows before it writes anything. If
   // it does not recognise this as a SillyTavern profile, nothing else matters.
   assert.equal(fetched.preview.fileCount, 4);

@@ -795,6 +795,7 @@
    opening the address is done by pressing the address. */
 .share-url { color: var(--muted-foreground); font-size: 12.5px; text-align: center; overflow-wrap: anywhere; font-family: var(--font-mono, ui-monospace, monospace); text-decoration: underline; text-underline-offset: 3px; }
 .share-url:hover, .share-url:focus-visible { color: var(--foreground); }
+.share-url[aria-disabled="true"] { color: var(--muted-foreground); cursor: default; }
 .share-link-text { display: grid; flex: 1; gap: 2px; min-width: 0; }
 .share-link-text .share-url { text-align: left; }
 .share-link-kind { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; }
@@ -806,6 +807,7 @@
 .share-choice { display: flex; align-items: flex-start; gap: 10px; width: 100%; padding: 10px 10px 10px 12px; border: 1px solid var(--border); border-radius: 10px; }
 .share-choice > [role="radio"] { margin-top: 2px; }
 .share-choice[data-selected] { border-color: var(--success); background: var(--success-background); }
+.share-choice[data-placeholder] { border-style: dashed; }
 .share-traits { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 2px; font-size: 11.5px; }
 .share-trait { display: inline-flex; align-items: center; gap: 4px; }
 .share-trait svg { width: 12px; height: 12px; flex: none; }

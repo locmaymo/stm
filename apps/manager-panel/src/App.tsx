@@ -1930,7 +1930,9 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
   const checklistReady = checklistRead && installationsLoaded && securityLoaded;
   const stepsSeen: Record<SetupStep, boolean> = {
     install: activeInstallation?.status === 'ready',
-    cloudflare: cloudflareSignedIn || ((checklistR2?.mode === 'keys' || checklistR2?.mode === 'google') && checklistR2.configured),
+    // Backing up to the Drive is not a Cloudflare account: the account is
+    // still worth connecting for the fixed links, so it stays on the list.
+    cloudflare: cloudflareSignedIn || (checklistR2?.mode === 'keys' && checklistR2.configured),
     password: managerPasswordSet === true,
     pin: accessSecurity.passwordConfigured,
     r2: Boolean(checklistR2?.configured) && r2Problem === null,
@@ -1952,7 +1954,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     { id: 'cloudflare', label: t('console.checkCloudflare'), icon: <CloudflareMark />, done: stepDone('cloudflare'), onSelect: openConnect },
     { id: 'password', label: t('console.checkManagerPassword'), icon: <ShieldCheck />, done: stepDone('password'), onSelect: () => setChecklistPasswordOpen(true) },
     { id: 'pin', label: t('console.checkPin'), icon: <KeyRound />, done: stepDone('pin'), onSelect: () => setChecklistPinOpen(true) },
-    { id: 'r2', label: t('console.checkR2'), icon: <Cloud />, done: stepDone('r2'), onSelect: openConnect },
+    { id: 'r2', label: t(checklistR2?.mode === 'google' ? 'console.checkDrive' : 'console.checkR2'), icon: <Cloud />, done: stepDone('r2'), onSelect: openConnect },
     { id: 'open', label: t('console.checkOpen'), icon: <ArrowUpRight />, done: stepDone('open'), onSelect: () => pointAt('tunnel') },
   ];
   const checklist = <>
@@ -2172,7 +2174,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
             {page !== 'data' && dataActivity?.label
               ? <DataActivityStrip t={t} label={dataActivity.label} step={dataActivity.step} percent={dataActivity.percent} onOpen={() => navigate('data')} />
               : null}
-            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{termuxOffer ? <TermuxOfferCard t={t} onStart={openTermuxImport} onDismiss={() => { answerTermuxOffer(true); setTermuxOfferAnswered(true); }} /> : activeInstallation?.status === 'ready' ? <BubbleOfferCard t={t} /> : null}{hero}{checklist}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} hostAddress={shownHostAddress(online?.hostAddress ?? null)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} onSetAccessLink={setAccessLink} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} canBackUp={activeProfileId !== null && saver?.enabled !== true} onBackup={openBackup} onUpload={openUpload} onUploadFromPhone={phoneImport ? openPhoneUpload : undefined} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? null : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} onSetAccessLink={setAccessLink} startup={startup} saver={saver} online={online} onSetAutoStart={setAutoStartSillyTavern} onSetSaver={setSaverMode} onSetKeepOnline={setKeepOnline} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} onEraseEverything={eraseEverything} /> : <ResourcePanel page={page} t={t} />}
+            {page === 'overview' ? <div className="grid min-w-0 gap-(--section-gap)">{termuxOffer ? <TermuxOfferCard t={t} onStart={openTermuxImport} onDismiss={() => { answerTermuxOffer(true); setTermuxOfferAnswered(true); }} /> : activeInstallation?.status === 'ready' ? <BubbleOfferCard t={t} /> : null}{hero}{checklist}<AccessPanel t={t} process={processState} tunnel={tunnelState} config={configDocument} security={accessSecurity} sillyTavernPort={sillyTavernPort} hostAddress={shownHostAddress(online?.hostAddress ?? null)} onAction={updateRuntime} onSetLan={setAccessLan} onSetPassword={setAccessPassword} onSetAccessLink={setAccessLink} onConnectCloudflare={openConnect} /><CardGrid columns={2}><DataPanel t={t} navigate={navigate} latestBackup={backups.at(-1) ?? null} snapshot={systemSnapshot} onRemeasure={remeasure} canBackUp={activeProfileId !== null && saver?.enabled !== true} onBackup={openBackup} onUpload={openUpload} onUploadFromPhone={phoneImport ? openPhoneUpload : undefined} /><SystemPanel t={t} snapshot={systemSnapshot} />{logs}</CardGrid></div> : page === 'data' ? null : page === 'metrics' ? <MetricsPage t={t} /> : page === 'config' ? <ConfigPage t={t} onConnectCloudflare={openConnect} locale={preferences.locale} config={configDocument} security={accessSecurity} ports={portSettings} managerTunnel={managerTunnelState} onSetManagerTunnel={setManagerTunnel} onSetAccessLink={setAccessLink} startup={startup} saver={saver} online={online} onSetAutoStart={setAutoStartSillyTavern} onSetSaver={setSaverMode} onSetKeepOnline={setKeepOnline} onPortChange={updateSillyTavernPort} onConfigUpdate={updateConfig} onConfigReset={resetConfig} process={processState} catalog={catalog} onChangeManagerPassword={changeManagerPassword} onSetPassword={setAccessPassword} onSignOut={onSignOut} onSignOutDevices={signOutAccessDevices} onEraseEverything={eraseEverything} /> : <ResourcePanel page={page} t={t} />}
             {/* Kept, hidden, while it has work under way, so leaving for another
                 page does not take the work's progress and its last question
                 with it; the strip above stands in for it meanwhile. */}
@@ -3308,7 +3310,7 @@ function RuntimeCard({
   </>;
 }
 
-function AccessPanel({ t, process, tunnel, config, security, sillyTavernPort, hostAddress, onAction, onSetLan, onSetPassword, onSetAccessLink }: { t: Translate; process: ProcessState; tunnel: TunnelState; config: ConfigDocument | null; security: AccessGatewayState; sillyTavernPort: number; /** The address the machine's host gave it, when there is one worth showing. */ hostAddress: string | null; onAction: (path: string, body?: unknown) => Promise<void>; onSetLan: (lan: boolean) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetAccessLink: (target: AccessLinkTarget, change: Partial<AccessLinkPreference>) => Promise<void> }) {
+function AccessPanel({ t, process, tunnel, config, security, sillyTavernPort, hostAddress, onAction, onSetLan, onSetPassword, onSetAccessLink, onConnectCloudflare }: { t: Translate; process: ProcessState; tunnel: TunnelState; config: ConfigDocument | null; security: AccessGatewayState; sillyTavernPort: number; /** The address the machine's host gave it, when there is one worth showing. */ hostAddress: string | null; onAction: (path: string, body?: unknown) => Promise<void>; onSetLan: (lan: boolean) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetAccessLink: (target: AccessLinkTarget, change: Partial<AccessLinkPreference>) => Promise<void>; onConnectCloudflare: () => void }) {
   const [busy, setBusy] = useState(false);
   const [securityBusy, setSecurityBusy] = useState(false);
   const running = process.status === 'running';
@@ -3481,7 +3483,7 @@ function AccessPanel({ t, process, tunnel, config, security, sillyTavernPort, ho
             display={publicUrl ? bareHost(publicUrl) : ''}
             shorten
             links={publicLinks(tunnel)}
-            choice={{ target: 'sillyTavern', tunnel, onChange: onSetAccessLink }}
+            choice={{ target: 'sillyTavern', tunnel, onChange: onSetAccessLink, onConnectCloudflare }}
             disabledHint={tunnelWanted ? t('console.addressComing') : t('console.tunnelOffShort')}
             pending={tunnelWanted}
           />
@@ -3714,6 +3716,8 @@ interface LinkChoice {
   /** Read for both addresses and the preference, whichever is on screen. */
   readonly tunnel: TunnelState;
   readonly onChange: (target: AccessLinkTarget, change: Partial<AccessLinkPreference>) => Promise<void>;
+  /** Where a fixed address comes from, offered while there is none. */
+  readonly onConnectCloudflare?: () => void;
 }
 
 /**
@@ -3815,6 +3819,10 @@ function ShareDialog({ t, open, onOpenChange, label, links, description, choice 
   const fixedUrl = choice?.tunnel.proxyUrl ?? null;
   const ownUrl = choice?.tunnel.url ?? null;
   const both = choice && fixedUrl && ownUrl ? { fixed: fixedUrl, tunnel: ownUrl } : null;
+  // No Worker and none on its way: the place the fixed address would be says
+  // what it is and what it takes, so the reader knows there is one to have.
+  const connectCloudflare = choice?.onConnectCloudflare;
+  const fixedMissing = Boolean(connectCloudflare && ownUrl && choice?.tunnel.proxyUrl === null && choice.tunnel.proxyPending !== true);
   // A fixed address hidden before this sheet offered a choice reads as not chosen.
   const preferred: AccessLinkKind = preference.preferred === 'fixed' && preference.showFixed ? 'fixed' : 'tunnel';
   const primary = both ? both[preferred] : links[0] ?? '';
@@ -3876,6 +3884,17 @@ function ShareDialog({ t, open, onOpenChange, label, links, description, choice 
               </div>
               {copyButton(url)}
             </div>)}
+            {fixedMissing && connectCloudflare ? <div className="share-choice items-center" data-placeholder="">
+              <div className="share-link-text">
+                <span className="share-link-kind text-muted-foreground">{kinds.fixed.name}</span>
+                {/* What the address will look like, greyed out: a link to show, not to follow. */}
+                <span className="share-url opacity-50 select-none" aria-disabled="true">{choice?.target === 'manager' ? 'stm' : 'sillytavern'}.your-id.workers.dev</span>
+                <span className="share-traits">
+                  <span className="share-trait" data-tone="good"><Check aria-hidden="true" />{kinds.fixed.good}</span>
+                </span>
+              </div>
+              <Button size="xs" style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }} className="shrink-0 hover:opacity-90" onClick={() => { onOpenChange(false); connectCloudflare(); }}><CloudflareMark />{t('console.linkFixedCreate')}</Button>
+            </div> : null}
           </div>}
       </DialogBody>
     </DialogContent>
@@ -4136,6 +4155,18 @@ const BACKUP_KIND_LABEL = {
   uploaded: 'console.backupKindUploaded',
 } as const satisfies Record<BackupKind, string>;
 
+/** A recovery point brought back into the library, named for where it came from. */
+const REMOTE_KIND_LABEL = {
+  cloudflare: 'console.backupKindCloudflare',
+  google: 'console.backupKindDrive',
+  keys: 'console.backupKindKeys',
+} as const satisfies Record<R2ConnectionMode, string>;
+
+function backupKindLabel(backup: BackupManifest): (typeof BACKUP_KIND_LABEL)[BackupKind] | (typeof REMOTE_KIND_LABEL)[R2ConnectionMode] {
+  const kind = backupKind(backup);
+  return kind === 'r2' && backup.remote ? REMOTE_KIND_LABEL[backup.remote] : BACKUP_KIND_LABEL[kind];
+}
+
 /**
  * Why a backup exists, as a small coloured label.
  *
@@ -4143,8 +4174,8 @@ const BACKUP_KIND_LABEL = {
  * because they are what to reach for after a restore went wrong, and the ones
  * that happen on their own stay quiet.
  */
-function BackupKindBadge({ t, kind }: { t: Translate; kind: BackupKind }) {
-  return <span className="backup-kind" data-kind={kind}>{t(BACKUP_KIND_LABEL[kind])}</span>;
+function BackupKindBadge({ t, backup }: { t: Translate; backup: BackupManifest }) {
+  return <span className="backup-kind" data-kind={backupKind(backup)}>{t(backupKindLabel(backup))}</span>;
 }
 
 /** A name the manager chose itself, including the suffix-style names older versions chose. */
@@ -4167,7 +4198,7 @@ export function backupDisplayName(t: Translate, locale: string, backup: BackupMa
   if (!isManagerName(backup)) return backup.name;
   const when = new Date(backup.createdAt).toLocaleString(locale, { dateStyle: 'short', timeStyle: 'short' });
   if (backup.purpose === 'before-termux') return `${t('console.termuxKeptName')} · ${when}`;
-  return `${t(BACKUP_KIND_LABEL[backupKind(backup)])} · ${when}`;
+  return `${t(backupKindLabel(backup))} · ${when}`;
 }
 
 /**
@@ -5463,8 +5494,8 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
   const backupColumns: DataTableColumn<BackupManifest>[] = [
     // The kind rides under the name on a phone, where there is no room for a
     // column of its own, and has its column from `md` up.
-    { id: 'name', header: t('common.name'), sortable: true, cell: (backup) => <span className="grid min-w-0 justify-items-start gap-1"><span className="font-medium break-all" title={backup.name}>{displayName(backup)}</span>{backup.note ? <span className="line-clamp-2 text-xs whitespace-pre-line text-muted-foreground" title={backup.note}>{backup.note}</span> : null}<span className="md:hidden"><BackupKindBadge t={t} kind={backupKind(backup)} /></span></span> },
-    { id: 'kind', header: t('console.backupKind'), sortable: true, showFrom: 'md', cell: (backup) => <BackupKindBadge t={t} kind={backupKind(backup)} /> },
+    { id: 'name', header: t('common.name'), sortable: true, cell: (backup) => <span className="grid min-w-0 justify-items-start gap-1"><span className="font-medium break-all" title={backup.name}>{displayName(backup)}</span>{backup.note ? <span className="line-clamp-2 text-xs whitespace-pre-line text-muted-foreground" title={backup.note}>{backup.note}</span> : null}<span className="md:hidden"><BackupKindBadge t={t} backup={backup} /></span></span> },
+    { id: 'kind', header: t('console.backupKind'), sortable: true, showFrom: 'md', cell: (backup) => <BackupKindBadge t={t} backup={backup} /> },
     { id: 'createdAt', header: t('console.backupCreated'), sortable: true, showFrom: 'sm', cell: (backup) => <span className="whitespace-nowrap text-muted-foreground">{new Date(backup.createdAt).toLocaleString()}</span> },
     { id: 'sizeBytes', header: t('console.backupSize'), sortable: true, align: 'end', showFrom: 'sm', cell: (backup) => <span className="whitespace-nowrap text-muted-foreground">{formatBytes(backup.sizeBytes)}</span> },
     {
@@ -6506,7 +6537,7 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled
                 <Label htmlFor={`${group}-cloudflare`} className="flex flex-wrap items-center gap-2 font-medium">
                   {t('console.r2MethodCloudflare')}
                   <Badge variant="secondary" className="bg-(--success-background) text-(--success)">{t('console.r2Recommended')}</Badge>
-                  {mode === 'cloudflare' && connected ? <Badge variant="outline">{t('console.r2MethodInUse')}</Badge> : null}
+                  <Badge variant="secondary" className="bg-(--success-background) text-(--success)">{t('console.r2Fast')}</Badge>
                 </Label>
                 <p className="text-xs text-muted-foreground">{t('console.r2MethodCloudflareBody')}</p>
               </div>
@@ -6535,7 +6566,7 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled
                 <Label htmlFor={`${group}-google`} className="flex flex-wrap items-center gap-2 font-medium">
                   {t('console.r2MethodGoogle')}
                   <Badge variant="secondary" className="bg-(--success-background) text-(--success)">{t('console.r2NoCard')}</Badge>
-                  {mode === 'google' && googleConnected ? <Badge variant="outline">{t('console.r2MethodInUse')}</Badge> : null}
+                  <Badge variant="secondary" className="bg-(--attention-background) text-(--attention)">{t('console.r2Slow')}</Badge>
                 </Label>
                 <p className="text-xs text-muted-foreground">{t('console.r2MethodGoogleBody')}</p>
               </div>
@@ -6548,7 +6579,6 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled
               <div className="grid gap-1">
                 <Label htmlFor={`${group}-keys`} className="flex flex-wrap items-center gap-2 font-medium">
                   {t('console.r2MethodKeys')}
-                  {mode === 'keys' && config?.configured ? <Badge variant="outline">{t('console.r2MethodInUse')}</Badge> : null}
                 </Label>
                 <p className="text-xs text-muted-foreground">{t('console.r2MethodKeysBody')}</p>
               </div>
@@ -7668,7 +7698,7 @@ interface ActionFailure {
   readonly text: string;
 }
 
-function ConfigPage({ t, locale, config, security, ports, managerTunnel, process, catalog, startup, saver, online, onSetAutoStart, onSetSaver, onSetKeepOnline, onSetManagerTunnel, onSetAccessLink, onPortChange, onConfigUpdate, onConfigReset, onChangeManagerPassword, onSetPassword, onSignOut, onSignOutDevices, onEraseEverything }: { t: Translate; locale: LocaleCode; config: ConfigDocument | null; security: AccessGatewayState; ports: PortSettings | null; managerTunnel: TunnelState; process: ProcessState; catalog: Record<string, unknown>; startup: StartupSettings | null; saver: SaverState | null; online: OnlineState | null; onSetAutoStart: (enabled: boolean) => Promise<string | null>; onSetSaver: (enabled: boolean) => Promise<string | null>; onSetKeepOnline: (enabled: boolean, minutes: number) => Promise<string | null>; onSetManagerTunnel: (on: boolean) => Promise<ActionFailure | null>; onSetAccessLink: (target: AccessLinkTarget, change: Partial<AccessLinkPreference>) => Promise<void>; onPortChange: (port: number) => Promise<string | null>; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onConfigReset: () => Promise<string | null>; onChangeManagerPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSignOut: () => Promise<void>; onSignOutDevices: () => Promise<string | null>; onEraseEverything: (password: string) => Promise<string | null> }) {
+function ConfigPage({ t, onConnectCloudflare, locale, config, security, ports, managerTunnel, process, catalog, startup, saver, online, onSetAutoStart, onSetSaver, onSetKeepOnline, onSetManagerTunnel, onSetAccessLink, onPortChange, onConfigUpdate, onConfigReset, onChangeManagerPassword, onSetPassword, onSignOut, onSignOutDevices, onEraseEverything }: { t: Translate; onConnectCloudflare: () => void; locale: LocaleCode; config: ConfigDocument | null; security: AccessGatewayState; ports: PortSettings | null; managerTunnel: TunnelState; process: ProcessState; catalog: Record<string, unknown>; startup: StartupSettings | null; saver: SaverState | null; online: OnlineState | null; onSetAutoStart: (enabled: boolean) => Promise<string | null>; onSetSaver: (enabled: boolean) => Promise<string | null>; onSetKeepOnline: (enabled: boolean, minutes: number) => Promise<string | null>; onSetManagerTunnel: (on: boolean) => Promise<ActionFailure | null>; onSetAccessLink: (target: AccessLinkTarget, change: Partial<AccessLinkPreference>) => Promise<void>; onPortChange: (port: number) => Promise<string | null>; onConfigUpdate: (input: ConfigUpdateInput) => Promise<string | null>; onConfigReset: () => Promise<string | null>; onChangeManagerPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>; onSignOut: () => Promise<void>; onSignOutDevices: () => Promise<string | null>; onEraseEverything: (password: string) => Promise<string | null> }) {
   const [form, setForm] = useState<ConfigSettingsInput>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -7950,7 +7980,7 @@ function ConfigPage({ t, locale, config, security, ports, managerTunnel, process
                   <Button variant="outline" size="sm" aria-label={t('console.openInTab')} title={t('console.openInTab')} asChild>
                     <a href={managerTunnelLink} target="_blank" rel="noopener noreferrer"><ArrowUpRight /><span className="hidden sm:inline">{t('console.openInTab')}</span></a>
                   </Button>
-                  <ShareDialog t={t} open={managerQrOpen} onOpenChange={setManagerQrOpen} label={t('console.managerTunnel')} links={publicLinks(managerTunnel).map((link) => link.url)} description={t('console.scanToOpenManager')} choice={{ target: 'manager', tunnel: managerTunnel, onChange: onSetAccessLink }} />
+                  <ShareDialog t={t} open={managerQrOpen} onOpenChange={setManagerQrOpen} label={t('console.managerTunnel')} links={publicLinks(managerTunnel).map((link) => link.url)} description={t('console.scanToOpenManager')} choice={{ target: 'manager', tunnel: managerTunnel, onChange: onSetAccessLink, onConnectCloudflare }} />
                 </>
                 : null}
               <Switch

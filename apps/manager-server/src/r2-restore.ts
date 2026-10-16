@@ -58,8 +58,10 @@ export async function fetchSnapshotToLibrary(options: FetchSnapshotOptions): Pro
   const totalBytes = files.reduce((sum, file) => sum + file.sizeBytes, 0);
   options.logger?.(logEvent('r2.fetching', `[r2] fetching recovery point ${snapshot.createdAt} (${files.length} files)`, { createdAt: snapshot.createdAt, files: files.length }));
   let completedBytes = 0;
+  const remote = (await r2.getConfig()).mode;
   const result = await backups.importFromEntries(profile, {
     kind: 'r2',
+    remote,
     takenAt: snapshot.createdAt,
     total: files.length,
     ...(options.signal ? { signal: options.signal } : {}),

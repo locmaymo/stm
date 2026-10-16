@@ -512,6 +512,12 @@ export interface BackupManifest {
   readonly fingerprint?: string;
   /** What the reader wrote down about a restore point when they made it. */
   readonly note?: string;
+  /**
+   * Where a recovery point brought back into the library came from, so it is
+   * named for that place rather than for R2. Absent on one fetched before this
+   * was recorded, and on every other kind.
+   */
+  readonly remote?: R2ConnectionMode;
 }
 
 /** A connection setting that can come from `.env` instead of the panel. */
@@ -538,6 +544,9 @@ export interface LocalBackupSchedule {
  * `google` is a folder in the user's Google Drive, after signing in with Google.
  */
 export type R2ConnectionMode = 'keys' | 'cloudflare' | 'google';
+export const R2_CONNECTION_MODES: readonly R2ConnectionMode[] = ['keys', 'cloudflare', 'google'];
+/** The word a fetched recovery point's file name carries for where it came from. */
+export const REMOTE_NAME_SLUG: Readonly<Record<R2ConnectionMode, string>> = { cloudflare: 'cloudflare', google: 'drive', keys: 's3' };
 
 export type GoogleConnectionState = 'disconnected' | 'connected' | 'reconnect_required';
 
