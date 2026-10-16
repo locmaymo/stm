@@ -66,6 +66,7 @@ jobs:
         run: |
           test -f apps/site/dist/index.html
           test -f apps/site/dist/oauth/cloudflare/callback.html
+          test -f apps/site/dist/oauth/google/callback.html
 
       # Cloudflare answers a wrong account ID and a token that cannot reach the
       # account with the same sentence - `7003 Could not route to ...,

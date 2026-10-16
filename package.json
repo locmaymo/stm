@@ -11,6 +11,7 @@
   ],
   "scripts": {
     "encoding:gate": "node scripts/encoding-gate.mjs",
+    "secret:gate": "node scripts/secret-gate.mjs",
     "lint": "eslint .",
     "start": "node --env-file-if-exists=.env --import tsx apps/manager-server/src/main.ts",
     "manager:start": "npm start",
@@ -23,7 +24,7 @@
     "release:windows": "node scripts/build-windows-release.mjs",
     "test": "node --import tsx --import ./scripts/test-tmpdir.mjs --test",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "verify": "npm run encoding:gate && npm run lint && npm run typecheck && npm test"
+    "verify": "npm run encoding:gate && npm run secret:gate && npm run lint && npm run typecheck && npm test"
   },
   "engines": {
     "node": ">=22"
