@@ -98,7 +98,14 @@ export const docs = {
                 'The manager keeps running when you leave the app or swipe it away, so SillyTavern stays open for your other devices. To stop everything, press **Stop** on its notification.',
                 'To update, download the new APK and install it over the old one. Your data stays.',
               ),
-              note('warn', 'Your data lives inside the app. Uninstalling the app deletes it, so connect [cloud backups](#cloudflare) before you rely on it.'),
+              { type: 'step', id: 'android-from-termux', title: 'Moving over from Termux' },
+              ...p(
+                'Ran SillyTavern in Termux before? The overview asks **Used SillyTavern in Termux?** on a fresh install; **Move my data** copies your chats, characters and settings into the app. Later, **Move from Termux** on the Data page does the same.',
+                'Android’s folder picker opens: open its menu, choose **Termux**, tap **Use this folder**, then **Allow**. The app reads the SillyTavern in it and restores it here. Termux is left exactly as it was, and what the app had before is kept as a backup named **Before moving from Termux**, so the move can be undone.',
+              ),
+              { type: 'step', id: 'android-bubbles', title: 'Chat bubbles' },
+              ...p('When a character replies while you are in another app, the app can show the reply as a chat bubble floating over it, the way a messenger does; tap it to answer right there. The overview offers it once (**Get replies as chat bubbles?**), and the bell at the top turns **Chat bubbles** and **Message notifications from characters** on or off at any time. Bubbles need Android 11 or later; on older phones replies are ordinary notifications.'),
+              note('warn', 'Your data lives inside the app. Uninstalling the app deletes it, so connect [cloud backups](#google-drive) before you rely on it.'),
             ],
           },
           {
@@ -211,7 +218,8 @@ export const docs = {
           { type: 'shot', name: 'sign-in', alt: 'The first-run screen: manager password, confirmation, and the line that opens the terms' },
           note('warn', 'The manager password and the SillyTavern passcode are two different things. The manager password opens the admin panel. The passcode opens SillyTavern to other devices, and changing it signs out every device already in.'),
           ...p(
-            'Beside the password, **Continue with Cloudflare** sets the manager up and connects backups to an R2 bucket in your own account in one step; afterwards that Cloudflare account opens the manager as well as the password does. If the account already holds the backups and settings of one of your machines, they come back here. See [Bringing a machine back](#machine).',
+            'Beside the password, **Continue with Cloudflare** sets the manager up and connects backups to an R2 bucket in your own account in one step; afterwards that Cloudflare account opens the manager as well as the password does. **Continue with Google Drive**, below it, does the same with your Google Drive. If the account already holds the backups and settings of one of your machines, they come back here. See [Bringing a machine back](#machine).',
+            'Only the owner’s account gets in. On a manager nobody has set up, the first account to sign in becomes its owner. On one with a password, only the account its owner connected from the console is let in; anyone else is turned away before anything of theirs is kept.',
             'Until everything is in place, a **Setup checklist** on the overview lists the six steps worth taking: install SillyTavern, connect Cloudflare, set the STM password and the SillyTavern PIN, turn on R2 backups and open SillyTavern’s link. It ticks each one off as it happens. It folds itself away once all six are done.',
           ),
           ...p('A first install downloads a few hundred megabytes of dependencies and takes a few minutes on a laptop, longer on a phone. The live log says what it is doing; nothing is stuck just because it is quiet for thirty seconds during `npm ci`.'),
@@ -259,7 +267,17 @@ export const docs = {
               'On the other device, enter the passcode once.',
             ],
           },
-          ...p('With a Cloudflare sign-in each link has two addresses: the fixed one through a Worker, and the tunnel’s own. The card shows one and keeps the other behind a count beside it. **Show this link first** decides which goes in front: on the card, behind **Open** and in the QR code. The fixed one can be hidden altogether while the Worker goes on following the tunnel. A new tunnel’s address is handed out only once it answers.'),
+          ...p(
+            'With a Cloudflare sign-in each link has two addresses, and the link dialog lets you pick the **Default link**, the one on the card, behind **Open** and in the QR code:',
+          ),
+          {
+            type: 'list',
+            items: [
+              '**Fixed link**: a `workers.dev` address through a small Worker in your account. It never changes, so it is the one for bookmarks, for an iPhone Home Screen and for notifications. Every request takes one extra hop, so it is a little slower.',
+              '**Random link**: the tunnel’s own address. It is the fastest, and it changes every time the tunnel restarts.',
+            ],
+          },
+          ...p('SillyTavern’s link starts on the random one, for the snappiest chat; the console’s own link starts on the fixed one. A new tunnel’s address is handed out only once it answers.'),
           note('warn', 'Six digits are not a password. The gateway locks globally after five consecutive wrong tries, which is what makes a short code workable. Still, do not leave a tunnel running when nobody is using it, and do not expose an installation holding data you could not bear to lose or to reveal.'),
           note('good', 'Whoever has the address and the passcode gets SillyTavern and only SillyTavern. They cannot install, restore, delete, read your logs or reach the settings.'),
         ],
@@ -269,7 +287,7 @@ export const docs = {
         icon: 'archive',
         title: 'Backups and restores',
         blocks: [
-          ...p('The **Data** page holds profiles, local archives and, if you connect it, off-site recovery points in your own Cloudflare account.'),
+          ...p('The **Data** page holds profiles, local archives and, if you connect one, off-site recovery points in your own Google Drive or Cloudflare account.'),
           { type: 'shot', name: 'data', alt: 'The data page: profiles, local backups and Cloudflare R2 recovery points' },
         ],
         subsections: [
@@ -288,7 +306,7 @@ export const docs = {
               {
                 type: 'steps',
                 items: [
-                  'Pick an archive: one the manager made, one from Cloudflare R2, or a ZIP you upload.',
+                  'Pick an archive: one the manager made, a recovery point from Google Drive or Cloudflare R2, or a ZIP you upload.',
                   'Read the preview. It lists what is in the archive before anything is written, and for a replace, which files in the profile the archive does not have.',
                   'Choose **Replace** (the default: the profile becomes the archive) or **Merge** (files in the archive overwrite their counterparts, everything else is left).',
                   'Confirm. A safety snapshot of the current state is taken first, automatically.',
@@ -356,7 +374,7 @@ export const docs = {
             blocks: [
               ...p(
                 'The bucket also keeps how the manager was set up, beside the data: the manager password and the SillyTavern PIN as the hashes it stores, the ports, the links, **Keep STM online**, the backup schedules and R2 limits, and the SillyTavern release that was running. The usage figures go there too.',
-                'On a new machine, sign in with the same Cloudflare account, on the first-run screen or on the Data page. A profile that is empty while the bucket is not gets the newest recovery point back before SillyTavern starts, and SillyTavern is installed at the release you were running. When the account holds the setup of another of your machines, a card on every page offers **Restore everything** in one go; SillyTavern is stopped while it runs, and what was on this machine is kept under Backups first.',
+                'On a new machine, sign in with the same Cloudflare or Google account, on the first-run screen or on the Data page. A profile that is empty while the bucket is not gets the newest recovery point back before SillyTavern starts, and SillyTavern is installed at the release you were running. When the account holds the setup of another of your machines, a card on every page offers **Restore everything** in one go; SillyTavern is stopped while it runs, and what was on this machine is kept under Backups first.',
                 'One account backs up from one machine at a time. Signing in on a second machine makes it the one that backs up; the first stops, gives up its own sign-in and says which machine took over. Signing in there again takes it back.',
               ),
               note('info', 'Nothing is applied behind your back. A machine that is already set up is only offered the settings, with the name of the machine that wrote them and when, and restoring a password asks you to sign in again.'),
@@ -384,7 +402,13 @@ export const docs = {
             'The bell at the top of the console lists what happened while you were away: SillyTavern stopping unexpectedly, a backup finishing or failing, a new version of SillyTavern or of the manager, a link that dropped, space running out, and news from the project.',
             'To get them on your phone or computer even with the console closed, open the bell and switch on **Notifications on this device**. This needs the console\u2019s https link: its own link, or the fixed Cloudflare address. On iPhone and iPad, first add the console to the Home Screen from Safari\u2019s Share menu, then switch it on from there.',
           ),
-          note('info', 'The Android app shows them as ordinary phone notifications by itself. Allow notifications when the app asks.'),
+          { type: 'step', id: 'reply-notifications', title: 'When a character replies' },
+          ...p(
+            'SillyTavern opened through its link can tell you when a reply is ready, so you can send a message, switch to another app or lock the screen, and come back when it has arrived. The first time, SillyTavern asks **Get a notification when a character replies?**; press **Turn on**, then allow it. Later, **Reply notifications** in SillyTavern’s extensions menu (the wand beside the message box) turns it on or off for that device.',
+            'A notification names the character and shows the first words of the reply. Switch off **Show what they said** on a device other people can see, and it only says who replied. A reply that stopped halfway or failed says so instead.',
+          ),
+          note('info', 'It needs SillyTavern’s https link, ideally the fixed one, which does not change. On iPhone and iPad, add SillyTavern to the Home Screen from Safari’s Share menu and open it from there first. SillyTavern opened at `127.0.0.1:8002` directly, without the manager’s link, cannot send them.'),
+          note('info', 'The Android app shows all of these as ordinary phone notifications by itself, and can show replies as [chat bubbles](#android-bubbles). Allow notifications when the app asks.'),
         ],
       },
       {
@@ -402,13 +426,14 @@ export const docs = {
         icon: 'scale',
         title: 'Settings',
         blocks: [
-          ...p('The **Settings** page edits SillyTavern’s own `config.yaml` through switches, and can also open the file directly for anything the switches do not cover. Saving stops SillyTavern, writes the file and starts it again.'),
+          ...p('The **Settings** page edits SillyTavern’s own `config.yaml` through switches, and can also open the file directly for anything the switches do not cover. Each change saves itself: flip a few switches and they are written together a moment later, and SillyTavern restarts once to apply them.'),
           { type: 'shot', name: 'settings', alt: 'The settings page: security, performance, extensions, API keys and chat backups' },
           {
             type: 'table',
             columns: ['Setting', 'What it changes'],
             rows: [
-              ['Lazy-load characters', 'A large character list loads on demand rather than all at once'],
+              ['Load character cards on demand', 'A large character list loads on demand rather than all at once. Turned on by itself, once, for a profile with a great many characters'],
+              ['Proxy for requests', 'Sends SillyTavern’s requests to AI services through your proxy (SillyTavern 1.12.6 or newer). Paste it as you have it: `ip:port`, `ip:port:user:pass`, `user:pass@ip:port` or a whole link; http, https, socks4 and socks5 work'],
               ['Disk cache and memory cache', 'How much SillyTavern keeps ready; the memory figure is a ceiling, not a reservation'],
               ['Request compression', 'Smaller responses over a tunnel or a slow link'],
               ['Extensions and auto-update', 'Whether extensions load, and whether they update themselves'],
@@ -501,8 +526,8 @@ export const docs = {
         title: 'Privacy, briefly',
         blocks: [
           ...p(
-            'There is no account and no cloud. Chats, characters, prompts, settings, backups and API keys stay on machines you control, and the project holds no copy of any of it.',
-            'The manager sends one thing: a small allowlisted usage summary. It holds the platform, the version, and per request the provider, model, endpoint hostname, token counts, status and duration. Never prompts, chats, responses, keys, file names, paths, IP addresses or query strings.',
+            'There is no account with the project and no copy of your data held by it. Chats, characters, prompts, settings, backups and API keys stay on machines you control, and in your own Google Drive or Cloudflare account if you connect one.',
+            'The manager sends one thing of its own accord: a small allowlisted usage summary. It holds the platform, the version, and per request the provider, model, endpoint hostname, token counts, status and duration. Never prompts, chats, responses, keys, file names, paths, IP addresses or query strings.',
             'The full list is in the [Privacy Notice](/privacy). The [Terms of Use](/terms) and the [Disclaimer](/disclaimer) say what the project does and does not take responsibility for.',
           ),
           ...p(`The source is at [${REPOSITORY.replace('https://', '')}](${REPOSITORY}), under the AGPL-3.0. You can read every line of it, including the part that decides what is sent.`),
@@ -588,7 +613,14 @@ export const docs = {
                 'Trình quản lý vẫn chạy khi bạn rời ứng dụng hay vuốt tắt nó, nên SillyTavern vẫn mở được từ thiết bị khác. Muốn dừng hẳn, bấm **Dừng** trên thông báo của nó.',
                 'Muốn cập nhật, tải APK mới rồi cài đè lên bản cũ. Dữ liệu vẫn giữ nguyên.',
               ),
-              note('warn', 'Dữ liệu nằm bên trong ứng dụng. Gỡ ứng dụng là xoá luôn dữ liệu, nên hãy kết nối [sao lưu lên cloud](#cloudflare) trước khi dùng lâu dài.'),
+              { type: 'step', id: 'android-from-termux', title: 'Chuyển sang từ Termux' },
+              ...p(
+                'Từng chạy SillyTavern trong Termux? Ở lần cài mới, trang tổng quan sẽ hỏi **Bạn từng dùng SillyTavern trong Termux?**; bấm **Chuyển dữ liệu** là chat, nhân vật và thiết lập được chép vào ứng dụng. Về sau, nút **Chuyển từ Termux** trên trang Dữ liệu làm đúng việc đó.',
+                'Trình chọn thư mục của Android mở ra: mở menu của nó, chọn **Termux**, chạm **Sử dụng thư mục này**, rồi **Cho phép**. Ứng dụng đọc SillyTavern trong đó và khôi phục vào đây. Termux vẫn y nguyên, còn những gì ứng dụng có trước đó được giữ thành một bản sao lưu tên **Trước khi chuyển từ Termux**, nên có thể hoàn tác.',
+              ),
+              { type: 'step', id: 'android-bubbles', title: 'Bong bóng chat' },
+              ...p('Khi nhân vật trả lời lúc bạn đang ở ứng dụng khác, ứng dụng có thể hiện câu trả lời thành bong bóng chat nổi bên trên, như ứng dụng nhắn tin; chạm vào là trả lời ngay tại đó. Trang tổng quan hỏi một lần (**Nhận tin trả lời dạng bong bóng chat?**), và chuông ở trên cùng bật tắt **Bong bóng chat** cùng **Thông báo tin nhắn từ character** bất cứ lúc nào. Bong bóng cần Android 11 trở lên; điện thoại cũ hơn nhận câu trả lời dưới dạng thông báo thường.'),
+              note('warn', 'Dữ liệu nằm bên trong ứng dụng. Gỡ ứng dụng là xoá luôn dữ liệu, nên hãy kết nối [sao lưu lên cloud](#google-drive) trước khi dùng lâu dài.'),
             ],
           },
           {
@@ -701,7 +733,8 @@ export const docs = {
           { type: 'shot', name: 'sign-in', alt: 'Màn hình thiết lập lần đầu: mật khẩu quản trị, xác nhận, và dòng chữ mở điều khoản' },
           note('warn', 'Mật khẩu quản trị và mã truy cập SillyTavern là hai thứ khác nhau. Mật khẩu quản trị mở bảng quản trị. Mã truy cập mở SillyTavern cho thiết bị khác, và đổi mã sẽ đăng xuất mọi thiết bị đang vào.'),
           ...p(
-            'Bên cạnh mật khẩu, **Tiếp tục với Cloudflare** thiết lập trình quản lý và kết nối sao lưu vào một bucket R2 trong chính tài khoản của bạn trong một bước; sau đó tài khoản Cloudflare ấy mở được trình quản lý, cũng như mật khẩu. Nếu tài khoản đã giữ bản sao lưu và thiết lập của một máy khác của bạn, chúng sẽ quay về đây. Xem [Dựng lại cả máy](#machine).',
+            'Bên cạnh mật khẩu, **Tiếp tục với Cloudflare** thiết lập trình quản lý và kết nối sao lưu vào một bucket R2 trong chính tài khoản của bạn trong một bước; sau đó tài khoản Cloudflare ấy mở được trình quản lý, cũng như mật khẩu. **Tiếp tục với Google Drive** ngay bên dưới làm điều tương tự với Google Drive của bạn. Nếu tài khoản đã giữ bản sao lưu và thiết lập của một máy khác của bạn, chúng sẽ quay về đây. Xem [Dựng lại cả máy](#machine).',
+            'Chỉ tài khoản của chủ máy vào được. Với trình quản lý chưa ai thiết lập, tài khoản đăng nhập đầu tiên trở thành chủ. Với trình quản lý đã có mật khẩu, chỉ tài khoản mà chủ đã kết nối từ bảng điều khiển được vào; mọi tài khoản khác bị từ chối trước khi bất cứ thứ gì của họ được giữ lại.',
             'Cho tới khi mọi thứ xong xuôi, mục **Việc cần làm** ở trang tổng quan liệt kê sáu bước nên làm: cài SillyTavern, kết nối Cloudflare, đặt mật khẩu STM và mã PIN SillyTavern, bật sao lưu R2 và mở link SillyTavern. Bước nào xong sẽ tự được đánh dấu. Đủ cả sáu thì danh sách tự thu gọn.',
           ),
           ...p('Lần cài đầu tiên tải vài trăm megabyte phụ thuộc, mất vài phút trên laptop và lâu hơn trên điện thoại. Nhật ký trực tiếp cho biết nó đang làm gì; im lặng ba mươi giây trong lúc `npm ci` chạy không có nghĩa là bị treo.'),
@@ -749,7 +782,17 @@ export const docs = {
               'Trên thiết bị kia, nhập mã một lần.',
             ],
           },
-          ...p('Khi đã đăng nhập Cloudflare, mỗi link có hai địa chỉ: địa chỉ cố định đi qua một Worker, và địa chỉ riêng của tunnel. Thẻ chỉ hiện một, cái còn lại nằm sau con số đếm bên cạnh. **Ưu tiên hiện link này** quyết định cái nào đứng trước: trên thẻ, sau nút **Mở** và trong mã QR. Link cố định cũng có thể ẩn hẳn trong khi Worker vẫn đi theo tunnel. Địa chỉ của tunnel mới chỉ được đưa ra khi nó đã trả lời.'),
+          ...p(
+            'Khi đã đăng nhập Cloudflare, mỗi link có hai địa chỉ, và hộp thoại link cho bạn chọn **Link mặc định**, tức link hiện trên thẻ, sau nút **Mở** và trong mã QR:',
+          ),
+          {
+            type: 'list',
+            items: [
+              '**Link cố định**: một địa chỉ `workers.dev` đi qua một Worker nhỏ trong tài khoản của bạn. Nó không bao giờ đổi, nên là link để lưu bookmark, thêm vào Màn hình chính iPhone và nhận thông báo. Mỗi yêu cầu phải đi thêm một chặng, nên nó chậm hơn một chút.',
+              '**Link ngẫu nhiên**: địa chỉ riêng của tunnel. Nó nhanh nhất, và đổi mỗi lần tunnel khởi động lại.',
+            ],
+          },
+          ...p('Link của SillyTavern mặc định là link ngẫu nhiên, để chat mượt nhất; link riêng của bảng điều khiển mặc định là link cố định. Địa chỉ của tunnel mới chỉ được đưa ra khi nó đã trả lời.'),
           note('warn', 'Sáu chữ số không phải mật khẩu. Cổng truy cập tự khoá trên toàn hệ thống sau năm lần nhập sai liên tiếp, đó là điều khiến một mã ngắn vẫn dùng được. Dù vậy, đừng để tunnel chạy khi không ai dùng, và đừng mở ra ngoài một bản cài đang giữ dữ liệu mà bạn không chịu nổi việc mất hay bị lộ.'),
           note('good', 'Người có địa chỉ và mã truy cập chỉ vào được SillyTavern và chỉ SillyTavern. Họ không cài, không phục hồi, không xoá, không đọc nhật ký và không chạm tới thiết lập được.'),
         ],
@@ -759,7 +802,7 @@ export const docs = {
         icon: 'archive',
         title: 'Sao lưu và phục hồi',
         blocks: [
-          ...p('Trang **Dữ liệu** chứa hồ sơ dữ liệu, các bản lưu cục bộ, và nếu bạn kết nối thì cả các điểm phục hồi ngoài máy trong chính tài khoản Cloudflare của bạn.'),
+          ...p('Trang **Dữ liệu** chứa hồ sơ dữ liệu, các bản lưu cục bộ, và nếu bạn kết nối thì cả các điểm phục hồi ngoài máy trong chính Google Drive hay tài khoản Cloudflare của bạn.'),
           { type: 'shot', name: 'data', alt: 'Trang dữ liệu: hồ sơ, bản sao lưu cục bộ và điểm phục hồi trên Cloudflare R2' },
         ],
         subsections: [
@@ -778,7 +821,7 @@ export const docs = {
               {
                 type: 'steps',
                 items: [
-                  'Chọn một tệp lưu: do trình quản lý tạo, lấy từ Cloudflare R2, hoặc một tệp ZIP bạn tải lên.',
+                  'Chọn một tệp lưu: do trình quản lý tạo, một điểm phục hồi từ Google Drive hay Cloudflare R2, hoặc một tệp ZIP bạn tải lên.',
                   'Đọc phần xem trước. Nó liệt kê những gì có trong tệp lưu trước khi bất cứ gì được ghi, và với Thay thế, cả những tệp trong hồ sơ mà tệp lưu không có.',
                   'Chọn **Thay thế** (mặc định: hồ sơ trở thành đúng nội dung tệp lưu) hoặc **Gộp** (tệp trong bản lưu ghi đè lên bản tương ứng, phần còn lại giữ nguyên).',
                   'Xác nhận. Một bản chụp an toàn của trạng thái hiện tại được tạo trước, tự động.',
@@ -846,7 +889,7 @@ export const docs = {
             blocks: [
               ...p(
                 'Bucket còn giữ cả cách trình quản lý được thiết lập, cạnh dữ liệu: mật khẩu quản trị và mã PIN SillyTavern dưới dạng hash nó đang lưu, các cổng, các link, **Giữ STM online**, lịch sao lưu và giới hạn R2, và bản SillyTavern đang chạy. Số liệu sử dụng cũng được giữ ở đó.',
-                'Trên máy mới, đăng nhập cùng tài khoản Cloudflare, ở màn hình lần đầu hoặc trên trang Dữ liệu. Hồ sơ đang trống trong khi bucket có dữ liệu thì điểm phục hồi mới nhất được lấy về trước khi SillyTavern khởi động, và SillyTavern được cài đúng bản bạn đang dùng. Khi tài khoản đang giữ thiết lập của một máy khác của bạn, một thẻ trên mọi trang đề nghị **Khôi phục tất cả** trong một lần; SillyTavern dừng trong lúc chạy, và những gì đang có trên máy này được giữ trong mục Sao lưu trước.',
+                'Trên máy mới, đăng nhập cùng tài khoản Cloudflare hay Google, ở màn hình lần đầu hoặc trên trang Dữ liệu. Hồ sơ đang trống trong khi bucket có dữ liệu thì điểm phục hồi mới nhất được lấy về trước khi SillyTavern khởi động, và SillyTavern được cài đúng bản bạn đang dùng. Khi tài khoản đang giữ thiết lập của một máy khác của bạn, một thẻ trên mọi trang đề nghị **Khôi phục tất cả** trong một lần; SillyTavern dừng trong lúc chạy, và những gì đang có trên máy này được giữ trong mục Sao lưu trước.',
                 'Mỗi tài khoản chỉ sao lưu từ một máy tại một thời điểm. Đăng nhập trên máy thứ hai khiến máy đó thành máy sao lưu; máy thứ nhất dừng lại, bỏ quyền đăng nhập của chính nó và báo máy nào đã tiếp quản. Đăng nhập lại ở đó là lấy lại quyền.',
               ),
               note('info', 'Không có gì tự áp dụng sau lưng bạn. Máy đã thiết lập xong chỉ được đề nghị các thiết lập này, kèm tên máy đã ghi chúng và thời điểm, và khôi phục mật khẩu sẽ yêu cầu bạn đăng nhập lại.'),
@@ -874,7 +917,13 @@ export const docs = {
             'Nút chuông ở đầu bảng điều khiển liệt kê những gì đã xảy ra khi bạn vắng mặt: SillyTavern dừng bất ngờ, sao lưu xong hoặc lỗi, có bản SillyTavern hay bản trình quản lý mới, link bị rớt, sắp hết dung lượng, và tin từ dự án.',
             'Muốn nhận ngay trên điện thoại hay máy tính kể cả khi đã đóng bảng điều khiển, mở chuông và bật **Thông báo trên thiết bị này**. Việc này cần mở bảng điều khiển bằng link https: link riêng của nó, hoặc địa chỉ Cloudflare cố định. Trên iPhone và iPad, trước hết hãy thêm bảng điều khiển vào Màn hình chính từ nút Chia sẻ của Safari, rồi bật từ đó.',
           ),
-          note('info', 'Ứng dụng Android tự hiện các thông báo này như thông báo bình thường của điện thoại. Hãy cho phép thông báo khi ứng dụng hỏi.'),
+          { type: 'step', id: 'reply-notifications', title: 'Khi nhân vật trả lời' },
+          ...p(
+            'SillyTavern mở qua link của nó có thể báo cho bạn khi câu trả lời xong, nên bạn cứ gửi tin nhắn, chuyển sang ứng dụng khác hay khoá màn hình, rồi quay lại khi nó đã đến. Lần đầu, SillyTavern hỏi **Nhận thông báo khi nhân vật trả lời?**; bấm **Bật**, rồi cho phép. Về sau, mục **Thông báo trả lời** trong menu tiện ích của SillyTavern (cây đũa phép cạnh ô nhập tin nhắn) bật tắt việc này cho thiết bị đó.',
+            'Thông báo ghi tên nhân vật và hiện mấy chữ đầu của câu trả lời. Tắt **Hiện nội dung tin nhắn** trên thiết bị người khác có thể nhìn thấy, khi đó thông báo chỉ nói ai đã trả lời. Câu trả lời dừng giữa chừng hay bị lỗi cũng được báo đúng như vậy.',
+          ),
+          note('info', 'Việc này cần link https của SillyTavern, tốt nhất là link cố định vì nó không đổi. Trên iPhone và iPad, hãy thêm SillyTavern vào Màn hình chính từ nút Chia sẻ của Safari và mở từ đó trước. SillyTavern mở thẳng ở `127.0.0.1:8002`, không qua link của trình quản lý, thì không gửi được thông báo.'),
+          note('info', 'Ứng dụng Android tự hiện tất cả các thông báo này như thông báo bình thường của điện thoại, và có thể hiện câu trả lời thành [bong bóng chat](#android-bubbles). Hãy cho phép thông báo khi ứng dụng hỏi.'),
         ],
       },
       {
@@ -892,13 +941,14 @@ export const docs = {
         icon: 'scale',
         title: 'Thiết lập',
         blocks: [
-          ...p('Trang **Thiết lập** sửa tệp `config.yaml` của chính SillyTavern thông qua các công tắc, và cũng mở thẳng được tệp đó cho những gì công tắc không bao phủ. Lưu lại sẽ dừng SillyTavern, ghi tệp rồi khởi động lại.'),
+          ...p('Trang **Thiết lập** sửa tệp `config.yaml` của chính SillyTavern thông qua các công tắc, và cũng mở thẳng được tệp đó cho những gì công tắc không bao phủ. Mỗi thay đổi tự được lưu: bật tắt vài công tắc thì chúng được ghi cùng nhau sau một lát, và SillyTavern khởi động lại một lần để áp dụng.'),
           { type: 'shot', name: 'settings', alt: 'Trang thiết lập: bảo mật, hiệu năng, tiện ích mở rộng, API key và sao lưu chat' },
           {
             type: 'table',
             columns: ['Thiết lập', 'Thay đổi điều gì'],
             rows: [
-              ['Tải nhân vật khi cần', 'Danh sách nhân vật lớn được tải dần thay vì tải hết một lúc'],
+              ['Tải thẻ nhân vật khi cần', 'Danh sách nhân vật lớn được tải dần thay vì tải hết một lúc. Tự bật, một lần, cho hồ sơ có rất nhiều nhân vật'],
+              ['Proxy cho request', 'Gửi các yêu cầu của SillyTavern tới dịch vụ AI qua proxy của bạn (SillyTavern 1.12.6 trở lên). Dán ở dạng bạn đang có: `ip:port`, `ip:port:user:pass`, `user:pass@ip:port` hay cả một link; dùng được http, https, socks4 và socks5'],
               ['Bộ nhớ đệm đĩa và bộ nhớ', 'SillyTavern giữ sẵn bao nhiêu; con số bộ nhớ là mức trần, không phải phần được giữ chỗ'],
               ['Nén yêu cầu', 'Phản hồi nhẹ hơn khi đi qua tunnel hoặc đường truyền chậm'],
               ['Tiện ích mở rộng và tự cập nhật', 'Có nạp tiện ích hay không, và chúng có tự cập nhật hay không'],
@@ -991,8 +1041,8 @@ export const docs = {
         title: 'Quyền riêng tư, nói ngắn',
         blocks: [
           ...p(
-            'Không có tài khoản và không có đám mây. Đoạn chat, nhân vật, prompt, thiết lập, bản sao lưu và API key đều nằm trên máy do bạn kiểm soát, và dự án không giữ bản sao nào của chúng.',
-            'Trình quản lý gửi đi đúng một thứ: một bản tóm tắt sử dụng nhỏ nằm trong danh sách cho phép. Nó gồm nền tảng, phiên bản, và với mỗi lượt gọi là nhà cung cấp, tên mô hình, tên máy chủ điểm cuối, số token, mã trạng thái và thời lượng. Không bao giờ có prompt, đoạn chat, câu trả lời, khoá, tên tệp, đường dẫn, địa chỉ IP hay chuỗi truy vấn.',
+            'Không có tài khoản nào với dự án, và dự án không giữ bản sao dữ liệu nào của bạn. Đoạn chat, nhân vật, prompt, thiết lập, bản sao lưu và API key đều nằm trên máy do bạn kiểm soát, và trong Google Drive hay tài khoản Cloudflare của chính bạn nếu bạn kết nối.',
+            'Trình quản lý tự gửi đi đúng một thứ: một bản tóm tắt sử dụng nhỏ nằm trong danh sách cho phép. Nó gồm nền tảng, phiên bản, và với mỗi lượt gọi là nhà cung cấp, tên mô hình, tên máy chủ điểm cuối, số token, mã trạng thái và thời lượng. Không bao giờ có prompt, đoạn chat, câu trả lời, khoá, tên tệp, đường dẫn, địa chỉ IP hay chuỗi truy vấn.',
             'Danh sách đầy đủ nằm trong [Thông báo quyền riêng tư](/privacy). [Điều khoản sử dụng](/terms) và [Tuyên bố miễn trừ trách nhiệm](/disclaimer) nói rõ dự án chịu và không chịu trách nhiệm những gì.',
           ),
           ...p(`Mã nguồn ở [${REPOSITORY.replace('https://', '')}](${REPOSITORY}), theo giấy phép AGPL-3.0. Bạn đọc được từng dòng, kể cả đoạn quyết định những gì được gửi đi.`),
