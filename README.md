@@ -37,12 +37,19 @@
 
 SillyTavern Manager does the technical parts of SillyTavern for you — installing it, keeping it running, updating it, backing it up and opening it on your other devices — from one page in your browser. No terminal, no long commands to copy.
 
+<p align="center">
+<img src=".github/promo/promo-en.webp" alt="A 26-second loop: the Android app installs, a SillyTavern version is picked, chats open as bubbles on a phone, an old backup is restored, cloud backup turns on, and the same chat opens on a phone, a laptop and a tablet" width="420">
+</p>
+
+> **New in 1.2** — back up to **Google Drive** with one sign-in, get a **notification when a character replies**, chat in **bubbles** on Android, move a SillyTavern over **from Termux**, pick a **fixed or fast link**, and paste a **proxy** for SillyTavern's requests. Settings now save themselves.
+
 ### Never lose a chat again
 
-Sign in to Cloudflare once, and your chats, characters and settings are copied to free cloud storage in **your own** account every few minutes, by themselves. If your computer breaks, your phone is lost, or you delete something by mistake, sign in again on any device and everything comes back.
+Sign in once, with **Cloudflare** or with **Google Drive**, and your chats, characters and settings are copied to **your own** cloud every few minutes, by themselves. If your computer breaks, your phone is lost, or you delete something by mistake, sign in again on any device and everything comes back.
 
 - Backs up on its own, every few minutes — only what changed
-- Free with Cloudflare R2’s free plan (10 GB)
+- Free: Cloudflare R2’s free plan (10 GB), or the space your Google account already has (15 GB on a free one)
+- On Google Drive, backups sit in a hidden app folder, away from your own files
 - One sign-in on a new device brings back your chats, the SillyTavern version and your settings
 
 <p align="center">
@@ -56,11 +63,23 @@ Sign in to Cloudflare once, and your chats, characters and settings are copied t
 </picture>
 </p>
 
+### Know the moment a character replies
+
+Send a message, put your phone down. When the reply is ready, your phone says so — with the character’s name and its first words — even with SillyTavern closed. On Android, chats can float as **bubbles** over any app: tap one, answer, and carry on with what you were doing.
+
+- Notifications on Android, on an iPhone from the Home Screen, and on a computer
+- Chat bubbles on Android 11 and later, each character in its own
+- **Show what they said** can be switched off on any device other people can see
+
+<p align="center">
+<img src=".github/promo/bubbles-en.webp" alt="An Android phone: two chat bubbles pop up over the home screen with a notification, and each opens its own SillyTavern chat while a reply is written" width="360">
+</p>
+
 ### Your SillyTavern, on every device
 
 Switch on one link and SillyTavern opens on your phone, tablet or another computer — at home or anywhere else. Scan the QR code to open it on your phone in a second. Your own PIN keeps everybody else out.
 
-- A link that stays the same, so bookmarks keep working
+- A **fixed link** that never changes, or a **random link** that is the fastest
 - Scan a QR code instead of typing an address
 - Locked with a PIN only you know; the manager itself stays behind its own password
 
@@ -105,6 +124,7 @@ When SillyTavern publishes a new version, a notice appears right on your overvie
 Moving from an old SillyTavern? Upload the ZIP you downloaded from it, or a backup from another SillyTavern Manager. No extra apps, no unzipping, no hunting for the right folder. The manager shows what is inside, takes a copy of what you have now, then puts it all back.
 
 - Works with SillyTavern’s own backup ZIP
+- On Android, **Move from Termux** brings over a SillyTavern you ran in Termux, and leaves Termux as it was
 - See what is inside before anything changes
 - A safety copy is taken first, so a mistake can be undone
 
@@ -153,7 +173,7 @@ On a phone or a small server that is nearly full, **Saver mode** keeps your back
 
 - **Free for life.** No subscription, no trial, no limits — open source under the AGPL-3.0.
 - **The official SillyTavern.** Always downloaded from its official GitHub repository; its files are never changed.
-- **Only you hold your data.** Chats and characters stay on your device and in your own Cloudflare account. This project has no server that stores them.
+- **Only you hold your data.** Chats and characters stay on your device and in your own Cloudflare or Google account. This project has no server that stores them.
 - **Locked with your passwords.** The manager opens with your password and SillyTavern with your PIN; too many wrong guesses and the door locks itself.
 
 The manager sends a small, anonymous usage summary, never your chats, prompts, characters or keys. See [Telemetry](#telemetry) for every field.
@@ -170,6 +190,11 @@ The manager sends a small, anonymous usage summary, never your chats, prompts, c
 | **Know your usage** | Requests, tokens, cache hits and latency per day, per provider and per model, measured from SillyTavern's own traffic. |
 | **Keep data separate** | Named profiles for separate SillyTavern data sets, switched from the panel, each with its own backups. |
 | **Speak your language** | English and Vietnamese, light and dark, desktop and phone. |
+| **Settings that save themselves** | Flip a SillyTavern setting and it is written and applied; several changes in a row restart SillyTavern once. |
+| **A proxy in one paste** | **Proxy for requests** sends SillyTavern's calls to AI services through your proxy. Paste it as you have it — `ip:port`, `ip:port:user:pass`, `user:pass@ip:port` or a link — and it is put in the right form. |
+| **Open it with your account** | Sign in with the Cloudflare or Google account you back up to. Only the owner's account gets in; a stranger's is turned away before anything of theirs is kept. |
+| **Large libraries** | A profile with a great many characters gets lazy loading turned on once, by itself, so SillyTavern still opens quickly. |
+| **Network storage** | Where the data directory sits on network storage, SillyTavern and its profiles run from local disk and are written back, so a slow mount does not make a slow SillyTavern. |
 
 ## Quick start
 
@@ -365,7 +390,7 @@ Windows users should prefer the portable ZIP, because it already includes Node.j
 
 ### First setup
 
-1. Open the manager at port `7860` and create the manager administrator password — or press **Continue with Cloudflare**, which sets the manager up and connects backups in one step, and lets that Cloudflare account open the manager again later.
+1. Open the manager at port `7860` and create the manager administrator password — or press **Continue with Cloudflare** or **Continue with Google Drive**, which sets the manager up and connects backups in one step, and lets that account open the manager again later.
 2. Choose a SillyTavern version — `latest` is selected by default.
 3. Press **Install** and wait for **Ready**. Ready means SillyTavern answered on port `8002`.
 4. Open the local link, or set the SillyTavern PIN and then turn on local-network access or a public tunnel.
@@ -496,7 +521,12 @@ Sign in to Cloudflare (the same sign-in that sets up backups) and the manager pu
 
 The manager will not deploy over a Worker of those names that it did not create, so an account that already has one keeps it — the panel says so instead. Disconnecting Cloudflare removes both.
 
-With a sign-in each link therefore has two addresses: the **fixed link** through the Worker, and the **tunnel link** straight to cloudflared, which changes at every start. The card shows one and keeps the other behind a count beside it. **Show this link first** puts either one in front — on the card, behind **Open** and in the QR code — for somebody who finds the Worker slower or only ever opens the link on the machine in front of them; the fixed link can also be hidden altogether, and the Worker keeps following the tunnel so an address already shared goes on working. A new tunnel's address is handed out only once it answers, and while the Worker is being pointed at it the fixed link says it is on its way rather than offering one that would fail.
+With a sign-in each link therefore has two addresses, and the link dialog sets the **Default link** — the one on the card, behind **Open** and in the QR code:
+
+- **Fixed link** — through the Worker. It never changes, so it is the one for bookmarks, an iPhone Home Screen and notifications. Every request takes one extra hop, so it is a little slower.
+- **Random link** — straight to cloudflared. It is the fastest, and it changes at every start.
+
+SillyTavern's link starts on the random one, for the snappiest chat, and the console's on the fixed one. The Worker keeps following the tunnel either way, so an address already shared goes on working. A new tunnel's address is handed out only once it answers, and while the Worker is being pointed at it the fixed link says it is on its way rather than offering one that would fail.
 
 A free Cloudflare account answers 100,000 Worker requests a day, resetting at midnight UTC, and those two addresses share that allowance with the Worker that carries your backups. Running it out would take all three down at once, so the manager watches the figure and gives things up in order before that can happen: first the console quietly asks for updates less often, then the console's own fixed address is held back, and last SillyTavern's. In each case the tunnel's own address is offered in its place, and everything is handed out again when the allowance resets. It is written in the log when it happens, and there is nothing to press.
 
@@ -533,9 +563,20 @@ Before a replace, the preview says what it takes away: the files in the profile 
 
 For a machine with little room for files — a container that keeps everything in memory, a phone that is nearly full — archives on the machine are the thing that runs it out. A restore of a 2 GB profile used to hold it three times over: the uploaded ZIP, a safety copy of the profile it was replacing, and the files themselves.
 
-With **Saver mode** on, no archive is kept on the machine at all and the profile is on the disk once. Your Cloudflare R2 bucket holds the recovery points instead, and it stands in for the safety copy: before a restore replaces anything, the current data is sent to R2 first. An uploaded ZIP and a recovery point brought back from R2 are written straight into the profile as they arrive, with SillyTavern stopped. The manager checks that the restore fits before it starts, offers to leave out what SillyTavern can do without — extensions' git history and `node_modules`, SillyTavern's own backups, thumbnails — when room is short, and refuses one that still will not fit rather than failing halfway.
+With **Saver mode** on, no archive is kept on the machine at all and the profile is on the disk once. Your cloud backup — Google Drive or an R2 bucket — holds the recovery points instead, and it stands in for the safety copy: before a restore replaces anything, the current data is sent to the cloud first. An uploaded ZIP and a recovery point brought back from the cloud are written straight into the profile as they arrive, with SillyTavern stopped. The manager checks that the restore fits before it starts, offers to leave out what SillyTavern can do without — extensions' git history and `node_modules`, SillyTavern's own backups, thumbnails — when room is short, and refuses one that still will not fit rather than failing halfway.
 
-It turns itself on when the data directory is kept in memory, or when the disk has less than 5 GiB free as the manager starts, and says which of the two it was. Otherwise it is a switch under **Settings → When the manager opens**, or `STM_SAVER=1` / `STM_SAVER=0` to settle it for good. Connect R2 before relying on it: with saver mode on and no bucket, nothing holds your data but the profile itself.
+It turns itself on when the data directory is kept in memory, or when the disk has less than 5 GiB free as the manager starts, and says which of the two it was. Otherwise it is a switch under **Settings → When the manager opens**, or `STM_SAVER=1` / `STM_SAVER=0` to settle it for good. Connect cloud backups before relying on it: with saver mode on and nowhere to back up to, nothing holds your data but the profile itself.
+
+### Google Drive
+
+On the **Data** page, choose **Google Drive** and press **Connect Google Drive**. Sign in with your Google account and allow access, and the manager keeps its recovery points in a **hidden app folder in your own Drive**. No card, no keys, nothing to create first.
+
+- **One narrow permission.** The manager asks only for its own app folder (`drive.appdata`). It cannot see anything else in your Drive, and the backups do not show up among your files, so they cannot be moved or deleted there by accident.
+- **Fast.** Small files are sent packed together, sixteen at a time; a first backup of a typical profile takes a few minutes, and after that only what changed is sent.
+- **A new machine** that connects the same Google account finds the same folder, and its recovery points can be restored there. One account backs up from one machine at a time; connecting a second makes it the one that backs up.
+- **Disconnect** revokes the sign-in — unless another machine is still backing up to the same Drive, since Google withdraws a grant from every machine at once. Tick **Also delete the backups from Google Drive** to empty the folder as you go, or later in Drive: **Settings → Manage apps → SillyTavern Manager → Options → Delete hidden app data**.
+
+Only the refresh token is stored, in a file readable by your user alone. Google asks for the app's client secret at every sign-in and refresh, and a public program cannot carry one, so those two requests go through a small token service on the project's site that adds it ([`deploy/oauth-relay`](deploy/oauth-relay)); it keeps nothing and logs no token. The backups themselves go from your machine straight to Google. The space is your Google account's, shared with Gmail and Google Photos.
 
 ### Cloudflare R2
 
@@ -557,9 +598,9 @@ Only the Cloudflare refresh token is stored, in its own file readable by your us
 
 ### Bringing a machine back
 
-The bucket keeps more than your chats. Whenever they change, the manager writes its own settings beside the data: the manager password and the SillyTavern PIN (as the hashes it stores, never as text), the ports, the links and whether their Quick Tunnels were on, **Keep STM online**, the backup schedules and R2 limits, and the SillyTavern release that was actually running. The usage figures are kept there too.
+Your cloud backup keeps more than your chats. Whenever they change, the manager writes its own settings beside the data: the manager password and the SillyTavern PIN (as the hashes it stores, never as text), the ports, the links and whether their Quick Tunnels were on, **Keep STM online**, the backup schedules and R2 limits, and the SillyTavern release that was actually running. The usage figures are kept there too.
 
-On a new machine — a new computer, a reinstall, a container that starts empty — sign in with the same Cloudflare account, on the first-run screen or on the **Data** page. A profile that is empty while the bucket is not gets the newest recovery point back before SillyTavern is started, and SillyTavern is installed at the release you were running. When the account holds the setup of one of your other machines, a card on every page offers **Restore everything**: the data, the SillyTavern release, the console password, the PIN, the ports, the links, the backup schedules and the usage figures, in one go. SillyTavern is stopped while it runs, and what was on this machine is kept under Backups first. Nothing is applied on its own: a machine that is already set up is offered these settings, with the name of the machine that wrote them and when, and restoring the password asks you to sign in again.
+On a new machine — a new computer, a reinstall, a container that starts empty — sign in with the same Cloudflare or Google account, on the first-run screen or on the **Data** page. A profile that is empty while the bucket is not gets the newest recovery point back before SillyTavern is started, and SillyTavern is installed at the release you were running. When the account holds the setup of one of your other machines, a card on every page offers **Restore everything**: the data, the SillyTavern release, the console password, the PIN, the ports, the links, the backup schedules and the usage figures, in one go. SillyTavern is stopped while it runs, and what was on this machine is kept under Backups first. Nothing is applied on its own: a machine that is already set up is offered these settings, with the name of the machine that wrote them and when, and restoring the password asks you to sign in again.
 
 One account backs up from one machine at a time, so two machines never sweep the same bucket. Signing in on a second machine makes it the one that backs up; the first stops, throws away its own sign-in, and says which machine took over. Signing in there again takes it back.
 
@@ -597,11 +638,11 @@ With all four `STM_R2_*` values set, R2 backups are switched on the first time t
 
 The project's [Terms of Use](https://stm.locmaymo.top/terms), [Disclaimer](https://stm.locmaymo.top/disclaimer), [Privacy Notice](https://stm.locmaymo.top/privacy) and [Notices](https://stm.locmaymo.top/notices) are published on the site and ship inside the application: the first-run screen opens them from the line beside the tick, and **Settings → About** opens them again afterwards. The text lives once, in [`packages/legal`](packages/legal), and everything that shows it is a view of that file.
 
-In short: this project is not affiliated with SillyTavern; it clones the public repository onto your machine at your request. It operates no service, holds no copy of your data, and has nothing to moderate. Cloudflare resources and the charges they carry are yours, in your own account. Backups are a tool rather than a promise.
+In short: this project is not affiliated with SillyTavern; it clones the public repository onto your machine at your request. It operates no service that holds your data, keeps no copy of it, and has nothing to moderate; the sign-in pages and the Google token service on its site keep nothing. Cloudflare and Google resources, and any charges they carry, are yours, in your own accounts. Backups are a tool rather than a promise.
 
 ### Telemetry
 
-Telemetry is part of this free project. The manager sends only an allowlisted summary: platform, application version, provider, model, endpoint hostname, streaming flag, max tokens, input/output/total tokens, cache usage, reasoning-token usage, status and duration.
+Telemetry is part of this free project. The manager sends only an allowlisted summary: platform, application version, provider, model, endpoint hostname, streaming flag, max tokens, input/output/total tokens, cache usage, reasoning-token usage, status and duration. Once a day it adds how long the manager, SillyTavern and the console were in use, whether cloud backups are off or go to R2 (with keys or a Cloudflare sign-in) or to Google Drive, and three total sizes. The [Privacy Notice](https://stm.locmaymo.top/privacy) lists every field.
 
 It does **not** send API keys, authorization headers, prompts, chats, model responses, request bodies, response bodies, request logs, file names, file paths, IP addresses or URL query strings. Events are written to a local outbox first and sent asynchronously, so a receiver outage never blocks SillyTavern.
 

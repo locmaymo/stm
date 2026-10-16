@@ -37,12 +37,19 @@
 
 SillyTavern Manager lo hết phần kỹ thuật của SillyTavern cho bạn — cài đặt, giữ cho nó chạy, cập nhật, sao lưu và mở nó trên các thiết bị khác — ngay trên một trang web. Không cửa sổ dòng lệnh, không phải chép những câu lệnh dài.
 
+<p align="center">
+<img src=".github/promo/promo-vi.webp" alt="Một vòng lặp 26 giây: ứng dụng Android được cài, chọn một phiên bản SillyTavern, chat mở thành bong bóng trên điện thoại, một bản sao lưu cũ được khôi phục, sao lưu cloud được bật, và cùng một đoạn chat mở trên điện thoại, laptop và máy tính bảng" width="420">
+</p>
+
+> **Mới ở bản 1.2** — sao lưu lên **Google Drive** chỉ với một lần đăng nhập, nhận **thông báo khi nhân vật trả lời**, chat bằng **bong bóng** trên Android, chuyển SillyTavern **từ Termux** sang, chọn **link cố định hay link nhanh**, và dán **proxy** cho các request của SillyTavern. Thiết lập giờ tự lưu.
+
 ### Không bao giờ mất chat nữa
 
-Đăng nhập Cloudflare một lần, và chat, nhân vật, thiết lập của bạn được chép lên kho lưu trữ cloud miễn phí trong **chính tài khoản của bạn** vài phút một lần, tự động. Máy hỏng, mất điện thoại hay lỡ tay xoá nhầm, chỉ cần đăng nhập lại trên bất kỳ thiết bị nào là mọi thứ quay về.
+Đăng nhập một lần, bằng **Cloudflare** hoặc **Google Drive**, và chat, nhân vật, thiết lập của bạn được chép lên **cloud của chính bạn** vài phút một lần, tự động. Máy hỏng, mất điện thoại hay lỡ tay xoá nhầm, chỉ cần đăng nhập lại trên bất kỳ thiết bị nào là mọi thứ quay về.
 
 - Tự sao lưu vài phút một lần — chỉ gửi phần thay đổi
-- Miễn phí với gói miễn phí của Cloudflare R2 (10 GB)
+- Miễn phí: gói miễn phí của Cloudflare R2 (10 GB), hoặc dung lượng sẵn có trong tài khoản Google của bạn (15 GB với tài khoản miễn phí)
+- Trên Google Drive, bản sao lưu nằm trong thư mục ẩn của ứng dụng, không lẫn vào tệp của bạn
 - Đăng nhập một lần trên máy mới là lấy lại chat, phiên bản SillyTavern và thiết lập
 
 <p align="center">
@@ -56,11 +63,23 @@ SillyTavern Manager lo hết phần kỹ thuật của SillyTavern cho bạn —
 </picture>
 </p>
 
+### Nhân vật trả lời là biết ngay
+
+Gửi tin nhắn rồi cứ đặt điện thoại xuống. Khi câu trả lời xong, điện thoại báo cho bạn — kèm tên nhân vật và mấy chữ đầu — kể cả khi đã đóng SillyTavern. Trên Android, các đoạn chat còn nổi thành **bong bóng** trên mọi ứng dụng: chạm vào, trả lời, rồi làm tiếp việc đang dở.
+
+- Thông báo trên Android, trên iPhone khi mở từ Màn hình chính, và trên máy tính
+- Bong bóng chat trên Android 11 trở lên, mỗi nhân vật một bong bóng
+- Tắt **Hiện nội dung tin nhắn** trên thiết bị người khác có thể nhìn thấy
+
+<p align="center">
+<img src=".github/promo/bubbles-vi.webp" alt="Một điện thoại Android: hai bong bóng chat hiện lên trên màn hình chính kèm thông báo, và mỗi bong bóng mở một đoạn chat SillyTavern riêng trong lúc câu trả lời đang được viết" width="360">
+</p>
+
 ### SillyTavern trên mọi thiết bị của bạn
 
 Bật một link là SillyTavern mở được trên điện thoại, máy tính bảng hay máy tính khác — ở nhà hay bất cứ đâu. Quét mã QR là mở ngay trên điện thoại. Mã PIN của riêng bạn giữ người khác ở ngoài.
 
-- Link cố định, lưu bookmark là dùng mãi
+- **Link cố định** không bao giờ đổi, hoặc **link ngẫu nhiên** nhanh nhất
 - Quét mã QR thay vì gõ địa chỉ
 - Khoá bằng mã PIN chỉ bạn biết; bản thân trình quản lý vẫn nằm sau mật khẩu riêng
 
@@ -105,6 +124,7 @@ Khi SillyTavern ra phiên bản mới, một thông báo hiện ngay trên trang
 Chuyển từ SillyTavern cũ sang? Tải lên file ZIP bạn đã tải về từ nó, hoặc một bản sao lưu từ SillyTavern Manager khác. Không cần cài thêm app, không cần giải nén, không phải đi tìm đúng thư mục. Trình quản lý cho xem bên trong có gì, chép lại bản hiện tại, rồi đưa tất cả trở về.
 
 - Dùng được file ZIP sao lưu của chính SillyTavern
+- Trên Android, **Chuyển từ Termux** mang SillyTavern bạn từng chạy trong Termux sang, và để Termux y nguyên
 - Xem bên trong có gì trước khi thay đổi
 - Luôn chép một bản an toàn trước, nên lỡ tay vẫn hoàn tác được
 
@@ -153,7 +173,7 @@ Trên điện thoại hay máy chủ nhỏ gần đầy, **Chế độ tiết ki
 
 - **Miễn phí trọn đời.** Không thuê bao, không dùng thử, không giới hạn — mã nguồn mở theo giấy phép AGPL-3.0.
 - **SillyTavern chính chủ.** Luôn tải từ kho GitHub chính thức; tệp của nó không bao giờ bị sửa.
-- **Chỉ bạn giữ dữ liệu.** Chat và nhân vật nằm trên thiết bị của bạn và trong tài khoản Cloudflare của chính bạn. Dự án không có máy chủ nào lưu chúng.
+- **Chỉ bạn giữ dữ liệu.** Chat và nhân vật nằm trên thiết bị của bạn và trong tài khoản Cloudflare hay Google của chính bạn. Dự án không có máy chủ nào lưu chúng.
 - **Khoá bằng mật khẩu của bạn.** Trình quản lý mở bằng mật khẩu của bạn, SillyTavern mở bằng mã PIN; đoán sai quá nhiều lần là cửa tự khoá.
 
 Trình quản lý gửi một bản tóm tắt sử dụng nhỏ và ẩn danh, không bao giờ có chat, prompt, nhân vật hay khoá API của bạn. Xem [Telemetry](#telemetry) để biết từng trường.
@@ -170,6 +190,11 @@ Trình quản lý gửi một bản tóm tắt sử dụng nhỏ và ẩn danh, 
 | **Biết mình dùng bao nhiêu** | Số request, token, cache hit và độ trễ theo ngày, theo provider và theo model, đo từ chính lưu lượng của SillyTavern. |
 | **Tách dữ liệu** | Nhiều profile cho nhiều bộ dữ liệu SillyTavern, chuyển ngay trong panel, mỗi profile có bản sao lưu riêng. |
 | **Ngôn ngữ của bạn** | Tiếng Việt và tiếng Anh, giao diện sáng và tối, máy tính và điện thoại. |
+| **Thiết lập tự lưu** | Bật tắt một thiết lập SillyTavern là nó được ghi và áp dụng; đổi nhiều thứ liền nhau thì SillyTavern chỉ khởi động lại một lần. |
+| **Proxy chỉ một lần dán** | **Proxy cho request** gửi các lượt gọi dịch vụ AI của SillyTavern qua proxy của bạn. Dán ở dạng bạn đang có — `ip:port`, `ip:port:user:pass`, `user:pass@ip:port` hay một link — và nó được đưa về đúng dạng. |
+| **Mở bằng tài khoản của bạn** | Đăng nhập bằng tài khoản Cloudflare hay Google bạn dùng để sao lưu. Chỉ tài khoản của chủ máy vào được; tài khoản lạ bị từ chối trước khi bất cứ thứ gì của họ được giữ lại. |
+| **Thư viện lớn** | Profile có rất nhiều nhân vật được tự bật tải khi cần, một lần, nên SillyTavern vẫn mở nhanh. |
+| **Ổ lưu trữ mạng** | Khi thư mục dữ liệu nằm trên ổ mạng, SillyTavern và các profile chạy từ ổ đĩa của máy rồi ghi ngược lại, nên ổ mạng chậm không làm SillyTavern chậm. |
 
 ## Bắt đầu nhanh
 
@@ -365,7 +390,7 @@ Người dùng Windows nên chọn ZIP portable vì ZIP đã có sẵn Node.js. 
 
 ### Thiết lập lần đầu
 
-1. Mở manager ở cổng `7860` và tạo mật khẩu quản trị — hoặc bấm **Tiếp tục với Cloudflare**: thiết lập manager và kết nối sao lưu trong một bước, và về sau chính tài khoản Cloudflare đó mở được manager.
+1. Mở manager ở cổng `7860` và tạo mật khẩu quản trị — hoặc bấm **Tiếp tục với Cloudflare** hay **Tiếp tục với Google Drive**: thiết lập manager và kết nối sao lưu trong một bước, và về sau chính tài khoản đó mở được manager.
 2. Chọn phiên bản SillyTavern; mặc định là `latest`.
 3. Bấm **Cài đặt** và chờ **Ready**. Ready nghĩa là SillyTavern đã trả lời ở cổng `8002`.
 4. Mở link local, hoặc đặt mã PIN SillyTavern rồi bật truy cập mạng nội bộ hay public tunnel.
@@ -496,7 +521,12 @@ Cloudflare Quick Tunnel nhận một hostname ngẫu nhiên, và mỗi lần kh�
 
 Manager không deploy đè lên Worker trùng tên mà nó không tạo ra, nên tài khoản đã có sẵn một cái thì vẫn giữ nguyên — bảng điều khiển sẽ báo thay vì ghi đè. Ngắt kết nối Cloudflare sẽ xoá cả hai.
 
-Vì vậy khi đã đăng nhập, mỗi link có hai địa chỉ: **link cố định** đi qua Worker, và **link tunnel** đi thẳng tới cloudflared, đổi sau mỗi lần khởi động. Thẻ chỉ hiện một địa chỉ, cái còn lại nằm sau con số đếm bên cạnh. **Ưu tiên hiện link này** đưa một trong hai lên trước — trên thẻ, sau nút **Mở** và trong mã QR — cho ai thấy Worker chậm hơn hoặc chỉ mở link trên chính máy trước mặt; link cố định cũng có thể ẩn hẳn, còn Worker vẫn đi theo tunnel nên địa chỉ đã chia sẻ vẫn chạy. Địa chỉ của tunnel mới chỉ được đưa ra khi nó đã trả lời, và trong lúc Worker đang được trỏ sang, link cố định báo là đang tới thay vì đưa ra một địa chỉ sẽ lỗi.
+Vì vậy khi đã đăng nhập, mỗi link có hai địa chỉ, và hộp thoại link chọn **Link mặc định** — link hiện trên thẻ, sau nút **Mở** và trong mã QR:
+
+- **Link cố định** — đi qua Worker. Nó không bao giờ đổi, nên là link để lưu bookmark, thêm vào Màn hình chính iPhone và nhận thông báo. Mỗi request phải đi thêm một chặng, nên chậm hơn một chút.
+- **Link ngẫu nhiên** — đi thẳng tới cloudflared. Nó nhanh nhất, và đổi sau mỗi lần khởi động.
+
+Link của SillyTavern mặc định là link ngẫu nhiên, để chat mượt nhất, còn link của console mặc định là link cố định. Dù chọn cái nào, Worker vẫn đi theo tunnel nên địa chỉ đã chia sẻ vẫn chạy. Địa chỉ của tunnel mới chỉ được đưa ra khi nó đã trả lời, và trong lúc Worker đang được trỏ sang, link cố định báo là đang tới thay vì đưa ra một địa chỉ sẽ lỗi.
 
 Tài khoản Cloudflare miễn phí trả lời 100.000 lượt Worker mỗi ngày, đặt lại vào nửa đêm UTC (7 giờ sáng giờ Việt Nam), và hai địa chỉ trên dùng chung hạn mức đó với Worker mang bản sao lưu của bạn. Hết hạn mức sẽ làm cả ba cùng ngừng, nên manager theo dõi con số này và buông dần theo thứ tự trước khi điều đó xảy ra: đầu tiên bảng điều khiển lặng lẽ hỏi thưa hơn, sau đó giữ lại địa chỉ cố định của chính bảng điều khiển, cuối cùng mới đến của SillyTavern. Mỗi lần như vậy địa chỉ tunnel được đưa ra thay thế, và mọi thứ trở lại bình thường khi hạn mức được đặt lại. Việc này được ghi vào log, và bạn không phải bấm gì cả.
 
@@ -533,9 +563,20 @@ Trước khi replace, phần xem trước cho biết cái gì sẽ mất: các f
 
 Với một máy ít chỗ chứa file — một container giữ mọi thứ trong bộ nhớ, một chiếc điện thoại gần đầy — chính các archive trên máy là thứ làm cạn chỗ. Trước đây, khôi phục một profile 2 GB từng chiếm tới ba lần dung lượng đó: file ZIP tải lên, một bản an toàn của profile sắp bị thay, và bản thân các file.
 
-Khi bật **Chế độ tiết kiệm**, trên máy không giữ archive nào và profile chỉ nằm trên đĩa một lần. Bucket Cloudflare R2 của bạn giữ các điểm khôi phục thay cho máy, và đóng vai bản an toàn: trước khi một lần khôi phục thay thế bất cứ thứ gì, dữ liệu hiện tại được gửi lên R2 trước. File ZIP tải lên và điểm khôi phục lấy từ R2 được ghi thẳng vào profile khi dữ liệu tới, trong lúc SillyTavern dừng. Manager kiểm tra lần khôi phục có vừa chỗ không trước khi bắt đầu, đề nghị bỏ bớt những thứ SillyTavern không cần — lịch sử git và `node_modules` của tiện ích, bản sao lưu riêng của SillyTavern, ảnh thumbnail — khi thiếu chỗ, và từ chối nếu vẫn không vừa thay vì hỏng giữa chừng.
+Khi bật **Chế độ tiết kiệm**, trên máy không giữ archive nào và profile chỉ nằm trên đĩa một lần. Bản sao lưu trên cloud của bạn — Google Drive hay một bucket R2 — giữ các điểm khôi phục thay cho máy, và đóng vai bản an toàn: trước khi một lần khôi phục thay thế bất cứ thứ gì, dữ liệu hiện tại được gửi lên cloud trước. File ZIP tải lên và điểm khôi phục lấy từ cloud được ghi thẳng vào profile khi dữ liệu tới, trong lúc SillyTavern dừng. Manager kiểm tra lần khôi phục có vừa chỗ không trước khi bắt đầu, đề nghị bỏ bớt những thứ SillyTavern không cần — lịch sử git và `node_modules` của tiện ích, bản sao lưu riêng của SillyTavern, ảnh thumbnail — khi thiếu chỗ, và từ chối nếu vẫn không vừa thay vì hỏng giữa chừng.
 
-Nó tự bật khi thư mục dữ liệu nằm trong bộ nhớ, hoặc khi ổ đĩa còn dưới 5 GiB lúc manager khởi động, và nói rõ là vì lý do nào. Ngoài ra đây là một công tắc trong **Thiết lập → Khi mở trình quản lý**, hoặc đặt `STM_SAVER=1` / `STM_SAVER=0` để chốt hẳn. Hãy kết nối R2 trước khi dựa vào chế độ này: bật chế độ tiết kiệm mà không có bucket thì ngoài chính profile ra không còn gì giữ dữ liệu của bạn.
+Nó tự bật khi thư mục dữ liệu nằm trong bộ nhớ, hoặc khi ổ đĩa còn dưới 5 GiB lúc manager khởi động, và nói rõ là vì lý do nào. Ngoài ra đây là một công tắc trong **Thiết lập → Khi mở trình quản lý**, hoặc đặt `STM_SAVER=1` / `STM_SAVER=0` để chốt hẳn. Hãy kết nối sao lưu cloud trước khi dựa vào chế độ này: bật chế độ tiết kiệm mà không có nơi sao lưu thì ngoài chính profile ra không còn gì giữ dữ liệu của bạn.
+
+### Google Drive
+
+Trên trang **Dữ liệu**, chọn **Google Drive** rồi bấm **Kết nối Google Drive**. Đăng nhập tài khoản Google và cho phép truy cập, manager sẽ giữ các điểm khôi phục trong một **thư mục ẩn của ứng dụng trong chính Drive của bạn**. Không cần thẻ, không cần khoá, không phải tạo gì trước.
+
+- **Chỉ một quyền hẹp.** Manager chỉ xin thư mục ứng dụng của riêng nó (`drive.appdata`). Nó không thấy được gì khác trong Drive, và bản sao lưu không hiện lẫn trong tệp của bạn, nên không thể bị lỡ tay di chuyển hay xoá ở đó.
+- **Nhanh.** Các tệp nhỏ được đóng gói gửi chung, mười sáu luồng cùng lúc; lần sao lưu đầu của một profile bình thường mất vài phút, sau đó chỉ gửi phần thay đổi.
+- **Máy mới** kết nối cùng tài khoản Google sẽ thấy cùng thư mục đó, và khôi phục được các điểm khôi phục trong đó. Mỗi tài khoản chỉ sao lưu từ một máy tại một thời điểm; kết nối trên máy thứ hai thì máy đó thành máy sao lưu.
+- **Ngắt kết nối** thu hồi phiên đăng nhập — trừ khi một máy khác vẫn đang sao lưu vào cùng Drive, vì Google thu hồi quyền trên mọi máy cùng lúc. Tick **Xóa luôn các bản sao lưu trên Google Drive** để dọn sạch thư mục khi ngắt, hoặc về sau trong Drive: **Cài đặt → Quản lý ứng dụng → SillyTavern Manager → Tùy chọn → Xóa dữ liệu ẩn của ứng dụng**.
+
+Chỉ refresh token được lưu, trong một tệp chỉ người dùng của bạn đọc được. Google đòi client secret của ứng dụng mỗi lần đăng nhập và làm mới, mà một chương trình công khai thì không thể mang theo nó, nên hai yêu cầu đó đi qua một dịch vụ token nhỏ trên trang của dự án để thêm vào ([`deploy/oauth-relay`](deploy/oauth-relay)); dịch vụ không giữ gì và không ghi token nào. Bản sao lưu đi thẳng từ máy bạn tới Google. Dung lượng là của tài khoản Google, dùng chung với Gmail và Google Photos.
 
 ### Cloudflare R2
 
@@ -557,9 +598,9 @@ Chỉ refresh token của Cloudflare được lưu, trong một file riêng mà 
 
 ### Dựng lại cả máy
 
-Bucket giữ nhiều hơn các đoạn chat. Mỗi khi thay đổi, manager ghi các thiết lập của chính nó cạnh dữ liệu: mật khẩu manager và mã PIN SillyTavern (dưới dạng hash nó đang lưu, không bao giờ là chữ thường), các cổng, các link và việc Quick Tunnel của chúng có đang bật hay không, **Giữ STM online**, lịch sao lưu và giới hạn R2, và bản SillyTavern thực sự đang chạy. Số liệu sử dụng cũng được giữ ở đó.
+Bản sao lưu trên cloud giữ nhiều hơn các đoạn chat. Mỗi khi thay đổi, manager ghi các thiết lập của chính nó cạnh dữ liệu: mật khẩu manager và mã PIN SillyTavern (dưới dạng hash nó đang lưu, không bao giờ là chữ thường), các cổng, các link và việc Quick Tunnel của chúng có đang bật hay không, **Giữ STM online**, lịch sao lưu và giới hạn R2, và bản SillyTavern thực sự đang chạy. Số liệu sử dụng cũng được giữ ở đó.
 
-Trên máy mới — máy tính mới, cài lại, hay một container khởi động trống — đăng nhập cùng tài khoản Cloudflare, ở màn hình lần đầu hoặc trên trang **Dữ liệu**. Profile đang trống trong khi bucket có dữ liệu thì điểm khôi phục mới nhất được lấy về trước khi SillyTavern khởi động, và SillyTavern được cài đúng bản bạn đang dùng. Khi tài khoản đang giữ thiết lập của một máy khác của bạn, một thẻ trên mọi trang đề nghị **Khôi phục tất cả**: dữ liệu, bản SillyTavern, mật khẩu console, mã PIN, các cổng, các link, lịch sao lưu và số liệu sử dụng, trong một lần. SillyTavern dừng trong lúc chạy, và những gì đang có trên máy này được giữ lại trong mục Sao lưu trước. Không có gì tự áp dụng: một máy đã thiết lập xong chỉ được đề nghị các thiết lập này, kèm tên máy đã ghi chúng và thời điểm, và khôi phục mật khẩu sẽ yêu cầu bạn đăng nhập lại.
+Trên máy mới — máy tính mới, cài lại, hay một container khởi động trống — đăng nhập cùng tài khoản Cloudflare hay Google, ở màn hình lần đầu hoặc trên trang **Dữ liệu**. Profile đang trống trong khi bucket có dữ liệu thì điểm khôi phục mới nhất được lấy về trước khi SillyTavern khởi động, và SillyTavern được cài đúng bản bạn đang dùng. Khi tài khoản đang giữ thiết lập của một máy khác của bạn, một thẻ trên mọi trang đề nghị **Khôi phục tất cả**: dữ liệu, bản SillyTavern, mật khẩu console, mã PIN, các cổng, các link, lịch sao lưu và số liệu sử dụng, trong một lần. SillyTavern dừng trong lúc chạy, và những gì đang có trên máy này được giữ lại trong mục Sao lưu trước. Không có gì tự áp dụng: một máy đã thiết lập xong chỉ được đề nghị các thiết lập này, kèm tên máy đã ghi chúng và thời điểm, và khôi phục mật khẩu sẽ yêu cầu bạn đăng nhập lại.
 
 Mỗi tài khoản chỉ sao lưu từ một máy tại một thời điểm, để hai máy không bao giờ cùng dọn một bucket. Đăng nhập trên máy thứ hai khiến máy đó thành máy sao lưu; máy thứ nhất dừng lại, bỏ quyền đăng nhập của chính nó và báo máy nào đã tiếp quản. Đăng nhập lại ở đó là lấy lại quyền.
 
@@ -597,11 +638,11 @@ Khi cả bốn giá trị `STM_R2_*` đều được đặt, sao lưu R2 sẽ b�
 
 [Điều khoản sử dụng](https://stm.locmaymo.top/vi/terms), [Tuyên bố miễn trừ trách nhiệm](https://stm.locmaymo.top/vi/disclaimer), [Thông báo quyền riêng tư](https://stm.locmaymo.top/vi/privacy) và [Thông báo](https://stm.locmaymo.top/vi/notices) được công bố trên trang web và đi kèm luôn trong ứng dụng: màn hình chạy lần đầu mở chúng ra từ dòng chữ cạnh ô tick, và **Thiết lập → Về trình quản lý** mở lại về sau. Nội dung chỉ tồn tại một bản, trong [`packages/legal`](packages/legal), mọi nơi hiển thị nó đều chỉ là một cách trình bày tệp đó.
 
-Nói ngắn: dự án này không liên kết với SillyTavern; nó clone kho mã công khai về máy bạn theo yêu cầu của bạn. Dự án không vận hành dịch vụ nào, không giữ bản sao dữ liệu của bạn, và không có gì để kiểm duyệt. Tài nguyên Cloudflare cùng các khoản phí đi kèm là của bạn, trong chính tài khoản của bạn. Sao lưu là công cụ chứ không phải lời hứa.
+Nói ngắn: dự án này không liên kết với SillyTavern; nó clone kho mã công khai về máy bạn theo yêu cầu của bạn. Dự án không vận hành dịch vụ nào giữ dữ liệu của bạn, không giữ bản sao nào, và không có gì để kiểm duyệt; các trang đăng nhập và dịch vụ token Google trên trang của dự án không giữ lại gì. Tài nguyên Cloudflare, Google cùng các khoản phí đi kèm là của bạn, trong chính tài khoản của bạn. Sao lưu là công cụ chứ không phải lời hứa.
 
 ### Telemetry
 
-Telemetry là một phần của dự án miễn phí này. Manager chỉ gửi summary trong allowlist: nền tảng, phiên bản ứng dụng, provider, model, hostname endpoint, cờ streaming, max tokens, input/output/total tokens, cache, reasoning token, status và duration.
+Telemetry là một phần của dự án miễn phí này. Manager chỉ gửi summary trong allowlist: nền tảng, phiên bản ứng dụng, provider, model, hostname endpoint, cờ streaming, max tokens, input/output/total tokens, cache, reasoning token, status và duration. Mỗi ngày một lần, nó gửi thêm thời gian manager, SillyTavern và console được dùng, sao lưu cloud đang tắt hay lưu lên R2 (bằng khoá hay đăng nhập Cloudflare) hay Google Drive, và ba con số tổng dung lượng. [Thông báo quyền riêng tư](https://stm.locmaymo.top/vi/privacy) liệt kê đủ từng trường.
 
 Manager **không** gửi API key, authorization header, prompt, chat, model response, request body, response body, request log, tên file, đường dẫn file, địa chỉ IP hay query string. Event được ghi vào outbox local trước rồi gửi bất đồng bộ, nên server nhận bị lỗi cũng không chặn SillyTavern.
 
