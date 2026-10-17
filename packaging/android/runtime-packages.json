@@ -8,9 +8,9 @@
     "termux-licenses"
   ],
   "npm": {
-    "version": "11.21.0",
-    "tarball": "https://registry.npmjs.org/npm/-/npm-11.21.0.tgz",
-    "integrity": "sha512-Zov8KhamNneiLdELtj5YALtNmJW4L4fCLTzjfpzXG2w6MSHcf0UxgdlK5uloCuksWT+7mGUU7wi79cO6RqivPg=="
+    "version": "11.21.1",
+    "tarball": "https://registry.npmjs.org/npm/-/npm-11.21.1.tgz",
+    "integrity": "sha512-YTzL6QBEJXyHcTu0JiUc7RKMp+mzlJtl7rGLmERaXUQeFHIMc9atdr6G9M9C8vDWbv40epoTQAzNL2/PtZVDhQ=="
   },
   "architectures": {
     "aarch64": {
@@ -25,9 +25,9 @@
         "sha256": "57fab24bf4561bfdd35afe71bc1929914e51c35458cfd1fca2b15e54bc8df7af"
       },
       "cloudflared": {
-        "version": "2026.10.0",
-        "filename": "pool/main/c/cloudflared/cloudflared_2026.10.0_aarch64.deb",
-        "sha256": "14adf3e261e24aa2e50a6f4290d4a292e97445f3bb378f35da2f97f8cdb2ef5c"
+        "version": "2026.10.1",
+        "filename": "pool/main/c/cloudflared/cloudflared_2026.10.1_aarch64.deb",
+        "sha256": "80cbade899fcd39d2ad987922bfaeb0684afc9f4b45b7370130cf899c5a26bdf"
       },
       "git": {
         "version": "2.56.0",
@@ -40,9 +40,9 @@
         "sha256": "53d0b84a7ba7459024257cb94d5b136fe13ef858567f65a8064b35950799f2ca"
       },
       "libcurl": {
-        "version": "8.22.0",
-        "filename": "pool/main/libc/libcurl/libcurl_8.22.0_aarch64.deb",
-        "sha256": "e780d925d977c32a3cfe6a2c7d340f0726618786deee98b0cb8b601efb93a8c9"
+        "version": "8.23.0",
+        "filename": "pool/main/libc/libcurl/libcurl_8.23.0_aarch64.deb",
+        "sha256": "2011bb9709261bb3d5ecaa6672faa333be14cf48ad4af37031e3e365309557ac"
       },
       "libexpat": {
         "version": "2.9.0",
@@ -75,9 +75,9 @@
         "sha256": "f471bad7f4329b6b0b4aedf124e0a23a35f6ac99bfbae73304136f8bfd570fc3"
       },
       "libsqlite": {
-        "version": "3.54.0",
-        "filename": "pool/main/libs/libsqlite/libsqlite_3.54.0_aarch64.deb",
-        "sha256": "9adf91e118fcf4d449f0fb9668485d895916c4f76c2407da17ba114406f43a58"
+        "version": "3.54.1",
+        "filename": "pool/main/libs/libsqlite/libsqlite_3.54.1_aarch64.deb",
+        "sha256": "0856cac8cc87f6e112f2eef4fcac6ad5cb08209ecb7cc260f997874fc186a3c0"
       },
       "libssh2": {
         "version": "1.11.1-2",
@@ -122,9 +122,9 @@
         "sha256": "57fab24bf4561bfdd35afe71bc1929914e51c35458cfd1fca2b15e54bc8df7af"
       },
       "cloudflared": {
-        "version": "2026.10.0",
-        "filename": "pool/main/c/cloudflared/cloudflared_2026.10.0_x86_64.deb",
-        "sha256": "98a92891a3b6541012b5048bbe25ca19a8c988e339d7bf088166fee5383406bb"
+        "version": "2026.10.1",
+        "filename": "pool/main/c/cloudflared/cloudflared_2026.10.1_x86_64.deb",
+        "sha256": "cdc736ff8040ed7b55117275dcd36a05b5a4f73d2ee9254fc7f82801bf89dc4e"
       },
       "git": {
         "version": "2.56.0",
@@ -137,9 +137,9 @@
         "sha256": "c9bcd9a8067a19c9c0e4893a72d314a2e37d6b67ce8dd05c67b9bbacad044b4f"
       },
       "libcurl": {
-        "version": "8.22.0",
-        "filename": "pool/main/libc/libcurl/libcurl_8.22.0_x86_64.deb",
-        "sha256": "b442ccf9eea4a4695bdc71b1bc577990e3d56024d245886f9b4bf2efa3e009aa"
+        "version": "8.23.0",
+        "filename": "pool/main/libc/libcurl/libcurl_8.23.0_x86_64.deb",
+        "sha256": "fa71ce8eca3d0aa48a748fc60e4519351fc9c4d51b20cac5722190cb002cfd1c"
       },
       "libexpat": {
         "version": "2.9.0",
@@ -172,9 +172,9 @@
         "sha256": "d8232b10e8ab9129f4a0c1a5c8fc4591f11c74d99e5fd4d24121abbea65af5b7"
       },
       "libsqlite": {
-        "version": "3.54.0",
-        "filename": "pool/main/libs/libsqlite/libsqlite_3.54.0_x86_64.deb",
-        "sha256": "8c15e92cef3cb7dc387644c438aa35abab408e3211fcc9c0da6f35cfa0213202"
+        "version": "3.54.1",
+        "filename": "pool/main/libs/libsqlite/libsqlite_3.54.1_x86_64.deb",
+        "sha256": "b064739a8f4f1a67c55b3edc444688f9973a6c9ba5a1d2d4cc277e5eed08e375"
       },
       "libssh2": {
         "version": "1.11.1-2",
