@@ -200,7 +200,7 @@ The manager sends a small, anonymous usage summary, never your chats, prompts, c
 
 | Platform | Start here |
 | --- | --- |
-| **Windows** | [Download the portable ZIP](#windows) — nothing to install |
+| **Windows** | [Download the installer](#windows) — or use the portable ZIP |
 | **Android** | [Install the app](https://stm.locmaymo.top/docs#android) from the APK, or [copy the Termux commands](#android-termux) |
 | **macOS** | [Install from source](#macos) |
 | **Linux / VPS** | [Run the Unix launcher](#linux-and-vps) |
@@ -210,21 +210,20 @@ The manager sends a small, anonymous usage summary, never your chats, prompts, c
 Whichever you choose, the first visit asks you to create one manager administrator password. Then pick a SillyTavern version and press **Install**.
 
 <details id="windows">
-<summary><b>Windows — download and run</b></summary>
+<summary><b>Windows — download and install</b></summary>
 
 <br>
 
 1. Open the [latest GitHub release](https://github.com/locmaymo/stm/releases/latest).
-2. Download `SillyTavernManager-windows-x64-vX.Y.Z.zip` and its `.sha256` checksum file.
-3. Extract the ZIP to a normal folder, such as `Downloads\SillyTavernManager`.
-4. Double-click `SillyTavernManager.exe`.
-5. Open `http://127.0.0.1:7860` if the browser does not open by itself.
+2. Download `SillyTavernManager-windows-x64-vX.Y.Z-setup.exe` and its `.sha256` checksum file (or `SillyTavernManager-windows-x64-vX.Y.Z-portable.zip` if you prefer a portable folder).
+3. Run the installer. If Windows SmartScreen warns about an unrecognized app, click **More info** and then **Run anyway**.
+4. Open **SillyTavern Manager** from the Start Menu or Desktop shortcut.
 
-A console window opens and stays open. That window is the manager: it shows the address, where your data is kept, and what the manager and SillyTavern are doing. To stop everything, press <kbd>Q</kbd> or <kbd>Ctrl</kbd>+<kbd>C</kbd> in it, or close it — SillyTavern and the Cloudflare tunnel are shut down with it, so no port is left held and there is no process to hunt for in Task Manager. Press <kbd>O</kbd> to open the panel in your browser again.
+The desktop app opens straight into the manager console inside its own native window. Closing the window hides the app to the system tray so SillyTavern and your links keep running in the background, and desktop notifications alert you (with the character's circular avatar) when a character finishes replying. Right-click the tray icon to open the manager, open SillyTavern, open your data folder, or press **Stop & Quit** — SillyTavern and the Cloudflare tunnel are shut down cleanly with it, so no port is left held and there is no process to hunt for in Task Manager.
 
-If the manager fails to start, the window keeps the reason on screen and waits for <kbd>Enter</kbd> rather than closing. Starting a second copy while one is already running says so and opens the running one instead.
+Starting a second copy while one is already running brings the running window to the front instead.
 
-The portable bundle already contains Node.js, the manager server, the panel and production dependencies. Nothing needs a terminal. The application folder and the data folder stay separate, so replacing the ZIP never touches your data:
+Both the installer and portable bundle already contain Node.js, npm, Git, `cloudflared`, the manager server, the panel and production dependencies. Nothing needs a terminal or administrator rights. The application folder (`%LOCALAPPDATA%\Programs\SillyTavernManager`) and the data folder stay separate, so updating or reinstalling never touches your data:
 
 ```text
 %LOCALAPPDATA%\SillyTavernManager
@@ -650,14 +649,14 @@ It does **not** send API keys, authorization headers, prompts, chats, model resp
 
 | Platform | How |
 | --- | --- |
-| Windows | Stop the old manager, extract the new ZIP into a new folder, run the new executable. Keep the old folder for rollback. |
+| Windows | Update directly from the banner in the manager, or run the new installer (`-setup.exe`) over the existing installation. For the portable ZIP, stop the manager and extract the new ZIP. |
 | Termux | Stop it with **Ctrl+C**, then `cd stm`, `git pull`, `npm ci`, `npm start` ([details](#android-termux)). |
 | macOS, Linux | Stop the process, then `git pull --ff-only`, `npm ci`, and start the launcher again. |
 | Docker | Rebuild the image and start a new container against the same volume. |
 
 The platform data directory is preserved either way, so profiles, backups, logs, metrics and settings remain.
 
-Release builds are generated from version tags: GitHub Actions verifies the project, creates the Windows ZIP and checksum, builds the Docker image and creates the npm tarball.
+Release builds are generated from version tags: GitHub Actions verifies the project, creates the Windows installer and portable ZIP with checksums, builds the Docker image and creates the npm tarball.
 
 ## Development
 

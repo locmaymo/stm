@@ -890,9 +890,9 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   // Replies are not in the bell - there would be one for every message - and
   // go only to browsers that subscribed from SillyTavern's page.
   const replyNotifier = new ReplyNotifier({ metricsFile: metrics.filePath, replyFile: replyFile(paths), deliver: (message) => push.deliverReply(message) });
-  // Inside the Android app, the app shows them: one line of output each,
-  // which it reads instead of printing. See ManagerService.
-  if (env.STM_ANDROID_APP === '1') {
+  // Inside the Android or desktop app, the app shows them: one line of output
+  // each, which it reads instead of printing. See ManagerService.
+  if (env.STM_ANDROID_APP === '1' || env.STM_DESKTOP_APP === '1') {
     notifications.subscribe((notification) => {
       process.stdout.write(`${APP_NOTIFICATION_PREFIX}${JSON.stringify(renderNotification(notification, notifications.locale))}\n`);
     });

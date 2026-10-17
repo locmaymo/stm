@@ -204,7 +204,7 @@ export const home = {
       heading: 'Pick your device',
       lede: 'Every way ends at the same place: a page in your browser that asks you to choose a password. Then pick a SillyTavern version and press Install.',
       cards: [
-        { icon: 'monitor', title: 'Windows', body: 'Download the ZIP, unzip it and double-click SillyTavernManager.exe. Nothing else to install.', href: '/docs#windows', go: 'Windows guide' },
+        { icon: 'monitor', title: 'Windows', body: 'Download the installer, run it and open SillyTavern Manager. Everything SillyTavern needs is inside.', href: '/docs#windows', go: 'Windows guide' },
         { icon: 'phone', title: 'Android', body: 'Download the app, install it and open ST Manager. Everything SillyTavern needs is inside, and a SillyTavern from Termux moves over in a few taps.', href: '/docs#android', go: 'Android guide' },
         { icon: 'apple', title: 'Mac', body: 'Paste a few lines into Terminal once. Works on Apple Silicon and Intel Macs.', href: '/docs#macos', go: 'Mac guide' },
         { icon: 'server', title: 'Linux and servers', body: 'One command starts it, and it can start by itself after a reboot.', href: '/docs#linux', go: 'Linux guide' },
@@ -406,7 +406,7 @@ export const home = {
       heading: 'Chọn thiết bị của bạn',
       lede: 'Cách nào cũng dẫn tới cùng một chỗ: một trang trên trình duyệt hỏi bạn đặt mật khẩu. Sau đó chọn phiên bản SillyTavern và bấm Cài đặt.',
       cards: [
-        { icon: 'monitor', title: 'Windows', body: 'Tải file ZIP, giải nén rồi bấm đúp SillyTavernManager.exe. Không cần cài gì thêm.', href: '/docs#windows', go: 'Hướng dẫn Windows' },
+        { icon: 'monitor', title: 'Windows', body: 'Tải bộ cài về, chạy cài đặt rồi mở SillyTavern Manager. Mọi thứ SillyTavern cần đã có sẵn bên trong.', href: '/docs#windows', go: 'Hướng dẫn Windows' },
         { icon: 'phone', title: 'Android', body: 'Tải ứng dụng về, cài đặt rồi mở ST Manager. Mọi thứ SillyTavern cần đã có sẵn bên trong, và SillyTavern từ Termux chuyển sang chỉ vài chạm.', href: '/docs#android', go: 'Hướng dẫn Android' },
         { icon: 'apple', title: 'Mac', body: 'Dán vài dòng vào Terminal một lần. Chạy trên cả Mac chip Apple và Intel.', href: '/docs#macos', go: 'Hướng dẫn Mac' },
         { icon: 'server', title: 'Linux và máy chủ', body: 'Một lệnh là chạy, và có thể tự chạy lại sau khi khởi động máy.', href: '/docs#linux', go: 'Hướng dẫn Linux' },

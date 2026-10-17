@@ -1,0 +1,8 @@
+<Project>
+  <PropertyGroup>
+    <BaseIntermediateOutputPath>..\..\..\build\release\dotnet\obj\</BaseIntermediateOutputPath>
+    <MSBuildProjectExtensionsPath>..\..\..\build\release\dotnet\obj\</MSBuildProjectExtensionsPath>
+    <OutputPath>..\..\..\build\release\dotnet\bin\</OutputPath>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+</Project>

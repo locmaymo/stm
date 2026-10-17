@@ -37,7 +37,7 @@ import { apiFetch, onSessionExpired, resetSessionWatch, sessionToken, setSession
 import { NotificationBell, PushOfferDialog, PushToggle } from './notification-bell.js';
 import { answerTermuxOffer, appFeatures, bubbleRequest, hasAppChannel, importZipFromApp, openInApp, updateApp, type AppFeatures, type AppUpdateEvent, type BubbleState, type ImportSource } from './app-bridge.js';
 import { BUBBLE_OFFER_KEY, bubbleOfferWanted, offerAccepted, offerDue, offerSnoozed, readOffer, writeOffer } from './offers.js';
-import { collectCloudflareResult, framed, inPhoneApp, openReturnWindow, popupsBlocked, whenAbandoned, type CollectedResult } from './oauth.js';
+import { collectCloudflareResult, framed, inPhoneApp, inStmApp, openReturnWindow, popupsBlocked, whenAbandoned, type CollectedResult } from './oauth.js';
 import type { AccessGatewayState, AccessLinkKind, AccessLinkPreference, AccessLinkTarget, BackupManifest, CloudflareAccountProblem, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LegalReview, LogEntry, LogSourceFilter, ManagerRelease, ManagerSettingsOffer, ManagerUpdateStatus, NotificationSummary, OnlineState, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2Transfer, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, SaverState, SetupChecklistState, SetupStep, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, isCloudJob, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
@@ -515,11 +515,11 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, google, refus
      * turns into below.
      */
     const inFrame = framed();
-    const inApp = inPhoneApp();
+    const inApp = inStmApp();
     const opened = inFrame && !popupsBlocked() ? openReturnWindow() : null;
     setCloudflareBusy(true); setError(null);
     try {
-      // Inside a frame, or in the phone app, the answer is always collected
+      // Inside a frame, or in the phone/desktop app, the answer is always collected
       // from the manager: the page the sign-in comes home to is not this one,
       // and cannot carry the answer here by itself.
       const response = await fetch(`/api/v1/auth/cloudflare${inFrame || inApp ? '?handoff=1' : ''}`, { method: 'POST', credentials: 'same-origin' });
@@ -532,7 +532,7 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, google, refus
         collecting.current = () => { stopCollecting(); stopWatching?.(); };
       }
       if (opened) { opened.location.href = payload.url; return; }
-      // The app hands this address to the phone's browser and this page stays
+      // The app hands this address to the system browser and this page stays
       // where it is, collecting; the button is free again in case the reader
       // comes back without finishing.
       if (inApp) { setCloudflareBusy(false); window.location.assign(payload.url); return; }
@@ -555,7 +555,7 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, google, refus
     setGoogleHandOverUrl(null);
     collecting.current?.();
     const inFrame = framed();
-    const inApp = inPhoneApp();
+    const inApp = inStmApp();
     const opened = inFrame && !popupsBlocked() ? openReturnWindow() : null;
     setGoogleBusy(true); setError(null);
     try {
@@ -987,9 +987,9 @@ function FirstRun({ t, csrfToken, preferences, onPreferencesChange, onDone }: { 
     setError(null);
     const failedText = provider === 'google' ? t('console.gdConnectFailed') : t('console.cfConnectFailed');
     try {
-      // In the phone app the browser's last page sends the reader back to the
-      // app rather than opening a second console there; see oauth.ts.
-      const response = await apiFetch(`/api/v1/r2/${provider}/connect${inPhoneApp() ? '?handoff=1' : ''}`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      // In the phone or desktop app the browser's last page sends the reader back
+      // to the app rather than opening a second console there; see oauth.ts.
+      const response = await apiFetch(`/api/v1/r2/${provider}/connect${inStmApp() ? '?handoff=1' : ''}`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       const payload = await response.json() as { url?: string; error?: { message?: string } };
       if (!response.ok || !payload.url) { setError(fail.body(payload, failedText)); return; }
       // Either one answers back to the console's own address, which lands on
@@ -1283,7 +1283,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
    * to hand a sign-in over and collect it.
    */
   const connectGoogleAgain = async (): Promise<void> => {
-    if (framed() || inPhoneApp()) { navigate('data'); return; }
+    if (framed() || inStmApp()) { navigate('data'); return; }
     try {
       const response = await apiFetch('/api/v1/r2/google/connect', { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       const payload = await response.json() as { url?: string };
@@ -1303,7 +1303,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
    */
   const createFixedLinks = async (): Promise<void> => {
     const inFrame = framed();
-    const inApp = inPhoneApp();
+    const inApp = inStmApp();
     if (inFrame && popupsBlocked()) { openConnect(); return; }
     const tab = inFrame ? openReturnWindow() : null;
     try {
@@ -1334,9 +1334,9 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     const inFrame = framed();
     const opened = inFrame && !popupsBlocked() ? openReturnWindow() : null;
     try {
-      // In the phone app the browser's last page sends the reader back to the
-      // app rather than opening a second console there; see oauth.ts.
-      const response = await apiFetch(`/api/v1/r2/cloudflare/connect${inFrame || inPhoneApp() ? '?handoff=1' : ''}`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
+      // In the phone or desktop app the browser's last page sends the reader back
+      // to the app rather than opening a second console there; see oauth.ts.
+      const response = await apiFetch(`/api/v1/r2/cloudflare/connect${inFrame || inStmApp() ? '?handoff=1' : ''}`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
       const payload = await response.json() as { url?: string };
       if (!response.ok || !payload.url) { opened?.close(); return; }
       if (!inFrame) { window.location.assign(payload.url); return; }
@@ -2328,7 +2328,7 @@ function TermuxOfferCard({ t, onStart, onDismiss }: { t: Translate; onStart: () 
  */
 function BubbleOfferCard({ t }: { t: Translate }) {
   const [state, setState] = useState<BubbleState | null>(null);
-  const [due, setDue] = useState(() => hasAppChannel() && offerDue(readOffer(BUBBLE_OFFER_KEY), Date.now()));
+  const [due, setDue] = useState(() => inPhoneApp() && hasAppChannel() && offerDue(readOffer(BUBBLE_OFFER_KEY), Date.now()));
   const [turnedOn, setTurnedOn] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -2595,7 +2595,7 @@ function AppInstallLine({ t, event }: { t: Translate; event: AppUpdateEvent }) {
     return <p className="text-sm text-destructive" role="alert">{t(APP_UPDATE_FAILURES[event.code] ?? 'console.appUpdateFailedNetwork')}</p>;
   }
   if (event.state === 'permission') return <p className="text-sm text-muted-foreground" role="status">{t('console.appUpdatePermission')}</p>;
-  if (event.state === 'installing') return <p className="text-sm text-muted-foreground" role="status">{t('console.appUpdateInstalling')}</p>;
+  if (event.state === 'installing') return <p className="text-sm text-muted-foreground" role="status">{t(inPhoneApp() ? 'console.appUpdateInstalling' : 'console.appUpdateRestarting')}</p>;
   if (event.state !== 'progress') return null;
   const known = event.total > 0;
   const filled = known ? ratio(event.received, event.total) : 0;
@@ -5318,11 +5318,11 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
      * the one thing that is never blocked.
      */
     const inFrame = framed();
-    const inApp = inPhoneApp();
+    const inApp = inStmApp();
     const tab = inFrame && !popupsBlocked() ? openReturnWindow() : null;
     setCloudflareBusy(true);
     try {
-      // Inside a frame, or in the phone app, the answer is collected from the
+      // Inside a frame, or in the phone/desktop app, the answer is collected from the
       // manager however the sign-in was opened, because the tab cannot bring
       // it back itself; see oauth.ts.
       const response = await apiFetch(`/api/v1/r2/cloudflare/connect${inFrame || inApp ? '?handoff=1' : ''}`, { method: 'POST', credentials: 'same-origin', headers: { 'x-csrf-token': csrfToken } });
@@ -5335,7 +5335,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
         collecting.current = () => { stopCollecting(); stopWatching?.(); };
       }
       if (tab) { tab.location.href = payload.url; return; }
-      // The app sends this to the phone's browser and stays here, collecting.
+      // The app sends this to the system browser and stays here, collecting.
       if (inApp) { window.location.assign(payload.url); return; }
       // No tab, so the reader opens one. The sign-in is already started and
       // already being collected; the address goes on the button they pressed.
@@ -5347,7 +5347,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
     // Google's consent screen refuses frames too, so the same tab-and-collect
     // as Cloudflare's sign-in; see connectCloudflare.
     const inFrame = framed();
-    const inApp = inPhoneApp();
+    const inApp = inStmApp();
     const tab = inFrame && !popupsBlocked() ? openReturnWindow() : null;
     setGoogleBusy(true);
     try {

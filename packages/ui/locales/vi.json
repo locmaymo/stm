@@ -596,6 +596,7 @@
     "appUpdateDownloading": "Đang tải bản cập nhật: {done} / {total}",
     "appUpdatePermission": "Android cần bạn cho phép trước: bật “Cho phép từ nguồn này” cho STM rồi quay lại. Việc cập nhật sẽ tự chạy tiếp.",
     "appUpdateInstalling": "Đang cài. Bấm Cập nhật khi Android hỏi, cài xong bấm Mở. Mọi thứ vẫn giữ nguyên.",
+    "appUpdateRestarting": "Đang cài và khởi động lại ST Manager. Mọi thứ vẫn giữ nguyên.",
     "appUpdateFailedNetwork": "Không tải được bản cập nhật. Kiểm tra kết nối rồi thử lại.",
     "appUpdateFailedMissing": "Bản này chưa có app cho điện thoại này. Hãy tải từ trang phát hành.",
     "appUpdateFailedChecksum": "File tải về bị hỏng nên chưa cài. Thử lại nhé.",

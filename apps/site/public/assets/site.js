@@ -140,7 +140,7 @@
           : /Macintosh|Mac OS X/i.test(agent) ? 'mac'
             : /Linux|X11|CrOS/i.test(agent) ? 'linux'
               : 'other';
-    var FILES = { windows: /windows-x64.*\.zip$/i, android: /android-arm64-v8a.*\.apk$/i };
+    var FILES = { windows: [/windows-x64.*-setup\.exe$/i, /windows-x64.*\.zip$/i], android: [/android-arm64-v8a.*\.apk$/i] };
     var point = function (button, href, external) {
       button.setAttribute('href', href);
       if (external) return;
@@ -159,9 +159,12 @@
         .then(function (response) { return response.ok ? response.json() : null; })
         .then(function (release) {
           var assets = release && release.assets ? release.assets : [];
+          var patterns = FILES[device];
           var file = null;
-          for (var index = 0; index < assets.length; index += 1) {
-            if (FILES[device].test(assets[index].name || '')) { file = assets[index]; break; }
+          for (var p = 0; p < patterns.length && !file; p += 1) {
+            for (var index = 0; index < assets.length; index += 1) {
+              if (patterns[p].test(assets[index].name || '')) { file = assets[index]; break; }
+            }
           }
           for (var each = 0; each < downloads.length; each += 1) {
             // No APK in the newest release: the Android guide, not a page of

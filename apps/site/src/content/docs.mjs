@@ -65,18 +65,18 @@ export const docs = {
               {
                 type: 'steps',
                 items: [
-                  `Press **Download** on [the home page](/), or open the [latest release](${RELEASES}) and download \`SillyTavernManager-windows-x64-vX.Y.Z.zip\`.`,
-                  'Extract the ZIP into a normal folder, such as `Downloads\\SillyTavernManager`. Do not run it from inside the ZIP.',
-                  'Double-click `SillyTavernManager.exe`.',
-                  'The browser should open by itself. If it does not, go to `http://127.0.0.1:7860`.',
+                  `Press **Download** on [the home page](/), or open the [latest release](${RELEASES}) and download \`SillyTavernManager-windows-x64-vX.Y.Z-setup.exe\`.`,
+                  'Open the downloaded installer. If Windows SmartScreen warns about an unrecognized app, click **More info** and then **Run anyway**.',
+                  'Complete the installer. It installs into `%LOCALAPPDATA%\\Programs\\SillyTavernManager` without asking for administrator rights, and creates Start Menu and Desktop shortcuts.',
+                  'Open **SillyTavern Manager**. The desktop app opens straight into the manager console.',
                 ],
               },
               ...p(
-                'A console window opens and stays open. That window **is** the manager: it prints the address, where your data is kept, and what the manager and SillyTavern are doing. Closing it stops everything cleanly: SillyTavern and the Cloudflare tunnel stop with it, so no port is left held and there is nothing to hunt for in Task Manager.',
-                'Press **Q** or **Ctrl+C** in that window to stop, and **O** to open the panel in your browser again.',
+                'Closing the window hides the app to the system tray so SillyTavern and your links keep running in the background, and desktop notifications alert you when a character finishes replying. Right-click the tray icon to open the manager, open SillyTavern, open your data folder, or press **Stop & Quit** to shut down SillyTavern and the Cloudflare tunnel cleanly.',
+                'Prefer a portable folder with no installer? Download `SillyTavernManager-windows-x64-vX.Y.Z-portable.zip` from the release page, extract it into a normal folder, and double-click `SillyTavernManager.exe`.',
               ),
-              note('good', 'The application folder and the data folder are separate. Your data lives in `%LOCALAPPDATA%\\SillyTavernManager`, so replacing the ZIP with a newer one never touches profiles, backups or settings.'),
-              note('warn', 'If SmartScreen warns about an unsigned application, that is expected: release builds are not code-signed. Check the `.sha256` file against the ZIP if you want to be certain the download is the one the release published.'),
+              note('good', 'The application folder and the data folder are separate. Your data lives in `%LOCALAPPDATA%\\SillyTavernManager`, so updating or reinstalling never touches profiles, backups or settings.'),
+              note('warn', 'If SmartScreen warns about an unsigned application, that is expected: release builds are not code-signed. Check the `.sha256` file against the installer or ZIP if you want to be certain the download is the one the release published.'),
             ],
           },
           {
@@ -408,7 +408,7 @@ export const docs = {
             'A notification names the character and shows the first words of the reply. Switch off **Show what they said** on a device other people can see, and it only says who replied. A reply that stopped halfway or failed says so instead.',
           ),
           note('info', 'It needs SillyTavern’s https link, ideally the fixed one, which does not change. On iPhone and iPad, add SillyTavern to the Home Screen from Safari’s Share menu and open it from there first. SillyTavern opened at `127.0.0.1:8002` directly, without the manager’s link, cannot send them.'),
-          note('info', 'The Android app shows all of these as ordinary phone notifications by itself, and can show replies as [chat bubbles](#android-bubbles). Allow notifications when the app asks.'),
+          note('info', 'The Android and Windows desktop apps show all of these as native notifications by itself (with character avatars on Windows, and [chat bubbles](#android-bubbles) on Android). Allow notifications when the app asks.'),
         ],
       },
       {
@@ -454,7 +454,7 @@ export const docs = {
             type: 'table',
             columns: ['Platform', 'How to update the manager'],
             rows: [
-              ['Windows', 'Stop the manager, extract the new ZIP into a **new** folder, run the new executable. Keep the old folder until you are sure.'],
+              ['Windows', 'Update directly from the banner in the manager, or run the new installer (`-setup.exe`) over the existing installation. For the portable ZIP, stop the manager and extract the new ZIP.'],
               ['Android app', 'Download the new APK and install it over the old one.'],
               ['Termux', 'Stop it with **Ctrl+C**, then run [the update commands](#android-update): `cd stm`, `git pull`, `npm ci`, `npm start`.'],
               ['macOS, Linux', 'Stop the process, then `git pull --ff-only`, `npm ci`, and start the launcher again.'],
@@ -580,18 +580,18 @@ export const docs = {
               {
                 type: 'steps',
                 items: [
-                  `Bấm **Tải về** ở [trang chủ](/), hoặc mở [bản phát hành mới nhất](${RELEASES}) và tải \`SillyTavernManager-windows-x64-vX.Y.Z.zip\`.`,
-                  'Giải nén tệp ZIP vào một thư mục bình thường, ví dụ `Downloads\\SillyTavernManager`. Đừng chạy thẳng từ trong tệp ZIP.',
-                  'Bấm đúp vào `SillyTavernManager.exe`.',
-                  'Trình duyệt sẽ tự mở. Nếu không, hãy vào `http://127.0.0.1:7860`.',
+                  `Bấm **Tải về** ở [trang chủ](/), hoặc mở [bản phát hành mới nhất](${RELEASES}) và tải \`SillyTavernManager-windows-x64-vX.Y.Z-setup.exe\`.`,
+                  'Mở tệp cài đặt vừa tải. Nếu Windows SmartScreen cảnh báo ứng dụng lạ, bấm **More info** rồi bấm **Run anyway**.',
+                  'Hoàn tất cài đặt. Bộ cài đặt vào `%LOCALAPPDATA%\\Programs\\SillyTavernManager` mà không đòi quyền quản trị viên, đồng thời tạo lối tắt ở Start Menu và Desktop.',
+                  'Mở **SillyTavern Manager**. Cửa sổ ứng dụng sẽ mở thẳng vào bảng điều khiển quản lý.',
                 ],
               },
               ...p(
-                'Một cửa sổ dòng lệnh mở ra và ở đó. Cửa sổ đó **chính là** trình quản lý: nó in ra địa chỉ, nơi dữ liệu được lưu, và trình quản lý cùng SillyTavern đang làm gì. Đóng nó lại là dừng sạch mọi thứ: SillyTavern và tunnel Cloudflare tắt theo, không cổng nào bị giữ lại và không có tiến trình nào phải đi tìm trong Task Manager.',
-                'Bấm **Q** hoặc **Ctrl+C** trong cửa sổ đó để dừng, và bấm **O** để mở lại bảng điều khiển trong trình duyệt.',
+                'Đóng cửa sổ sẽ thu ứng dụng xuống khay hệ thống (system tray) để SillyTavern và các link vẫn chạy nền, đồng thời thông báo trên màn hình sẽ báo cho bạn khi nhân vật trả lời xong. Bấm chuột phải vào biểu tượng ở khay hệ thống để mở lại trình quản lý, mở SillyTavern, mở thư mục dữ liệu, hoặc bấm **Dừng & Thoát** để tắt sạch SillyTavern và tunnel Cloudflare.',
+                'Thích bản chạy ngay không cần cài đặt? Tải `SillyTavernManager-windows-x64-vX.Y.Z-portable.zip` ở trang phát hành, giải nén vào một thư mục bình thường rồi bấm đúp `SillyTavernManager.exe`.',
               ),
-              note('good', 'Thư mục ứng dụng và thư mục dữ liệu tách rời nhau. Dữ liệu của bạn nằm ở `%LOCALAPPDATA%\\SillyTavernManager`, nên thay tệp ZIP bằng bản mới không bao giờ đụng tới hồ sơ, bản sao lưu hay thiết lập.'),
-              note('warn', 'Nếu SmartScreen cảnh báo về ứng dụng chưa ký, đó là chuyện bình thường: bản phát hành không được ký mã. Muốn chắc chắn bản tải đúng là bản đã công bố, hãy đối chiếu tệp `.sha256` với tệp ZIP.'),
+              note('good', 'Thư mục ứng dụng và thư mục dữ liệu tách rời nhau. Dữ liệu của bạn nằm ở `%LOCALAPPDATA%\\SillyTavernManager`, nên cập nhật hay cài lại ứng dụng không bao giờ đụng tới hồ sơ, bản sao lưu hay thiết lập.'),
+              note('warn', 'Nếu SmartScreen cảnh báo về ứng dụng chưa ký, đó là chuyện bình thường: bản phát hành không được ký mã. Muốn chắc chắn bản tải đúng là bản đã công bố, hãy đối chiếu tệp `.sha256` với bộ cài hoặc tệp ZIP.'),
             ],
           },
           {
@@ -923,7 +923,7 @@ export const docs = {
             'Thông báo ghi tên nhân vật và hiện mấy chữ đầu của câu trả lời. Tắt **Hiện nội dung tin nhắn** trên thiết bị người khác có thể nhìn thấy, khi đó thông báo chỉ nói ai đã trả lời. Câu trả lời dừng giữa chừng hay bị lỗi cũng được báo đúng như vậy.',
           ),
           note('info', 'Việc này cần link https của SillyTavern, tốt nhất là link cố định vì nó không đổi. Trên iPhone và iPad, hãy thêm SillyTavern vào Màn hình chính từ nút Chia sẻ của Safari và mở từ đó trước. SillyTavern mở thẳng ở `127.0.0.1:8002`, không qua link của trình quản lý, thì không gửi được thông báo.'),
-          note('info', 'Ứng dụng Android tự hiện tất cả các thông báo này như thông báo bình thường của điện thoại, và có thể hiện câu trả lời thành [bong bóng chat](#android-bubbles). Hãy cho phép thông báo khi ứng dụng hỏi.'),
+          note('info', 'Ứng dụng Android và ứng dụng máy tính Windows tự hiện tất cả các thông báo này như thông báo hệ thống (có ảnh đại diện nhân vật trên Windows, và [bong bóng chat](#android-bubbles) trên Android). Hãy cho phép thông báo khi ứng dụng hỏi.'),
         ],
       },
       {
@@ -969,7 +969,7 @@ export const docs = {
             type: 'table',
             columns: ['Nền tảng', 'Cập nhật trình quản lý thế nào'],
             rows: [
-              ['Windows', 'Dừng trình quản lý, giải nén bản ZIP mới vào một thư mục **mới**, chạy tệp thực thi mới. Giữ thư mục cũ cho tới khi bạn yên tâm.'],
+              ['Windows', 'Cập nhật trực tiếp từ thanh thông báo trong trình quản lý, hoặc chạy bộ cài mới (`-setup.exe`) đè lên bản đang cài. Với bản ZIP portable, dừng trình quản lý rồi giải nén bản ZIP mới.'],
               ['Ứng dụng Android', 'Tải APK mới rồi cài đè lên bản cũ.'],
               ['Termux', 'Dừng bằng **Ctrl+C**, rồi chạy [các lệnh cập nhật](#android-update): `cd stm`, `git pull`, `npm ci`, `npm start`.'],
               ['macOS, Linux', 'Dừng tiến trình, rồi `git pull --ff-only`, `npm ci`, và chạy lại launcher.'],

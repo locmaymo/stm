@@ -1,39 +1,41 @@
-# Windows launcher
+# Windows desktop application & installer
 
-`launcher.cjs` is the entry point of the single-file executable. It must stay
-CommonJS: Node runs a SEA entry as CommonJS, so an ES module entry dies on its
-first `import` with a SyntaxError before anything else happens.
+`packaging/windows/app/` is the native Windows desktop application (`SillyTavernManager.exe`).
+It compiles against `.NET Framework 4.8` (`net48` `WinExe`) and hosts the console
+inside Microsoft Edge WebView2 while running the manager server (`node.exe`) in
+the background without a console window.
 
-The launcher starts the manager on `127.0.0.1:7860`, waits for its health
-endpoint, opens the browser, and then keeps its console window as the place the
-operator reads status and stops from. It carries the compiled server, panel
-assets, production dependencies, a Node runtime with its npm, and MinGit inside
-`resources/`, so nothing has to be installed first. Installing SillyTavern is a
-Git fetch and an `npm install`, so the launcher puts `resources/runtime` and
-`resources/git/cmd` first on the manager's `PATH`, and everything the manager
-starts inherits them. MinGit is pinned by version and SHA-256 in
-`scripts/build-windows-release.mjs` and cached under `build/cache/`.
+## Architecture
 
-Stopping is the part that needs care. Windows has no SIGTERM, so killing the
-manager would leave SillyTavern and cloudflared running with nothing owning
-them. The launcher asks the manager over HTTP first, using a per-run secret it
-passes as `STM_SHUTDOWN_TOKEN`; `taskkill /t /f` is only the fallback for a
-manager that is already wedged.
+- **Desktop window & system tray (`MainWindow.cs`)**:
+  Starts the manager on `127.0.0.1:7860` (or the next free port), waits for
+  `/api/v1/health`, and loads the console inside WebView2 with `STMDesktop/<version>`
+  in its user agent and `window.STMApp` injected for native backup zip imports,
+  SillyTavern window management, and 1-click in-app updates. Closing the window
+  (`X`) hides it to the Windows system tray so SillyTavern and the Cloudflare
+  tunnel keep running; choosing **Quit** in the tray menu shuts everything down
+  cleanly.
+- **Process lifecycle (`ManagerProcess.cs`)**:
+  Runs the bundled `resources/runtime/node.exe` with `CreateNoWindow = true` and
+  prepends `resources/runtime` and `resources/git/cmd` to `PATH`. Stopping sends
+  `POST /api/v1/shutdown` with `x-stm-shutdown-token` before falling back to
+  `taskkill /t /f`.
+- **NSIS per-user installer (`installer.nsi`)**:
+  Uses `RequestExecutionLevel user` to install into
+  `%LOCALAPPDATA%\Programs\SillyTavernManager` without UAC elevation, creates
+  Start Menu and Desktop shortcuts, registers in Windows Installed Apps, and
+  supports `/S /LAUNCH=1` for silent in-app upgrades.
 
-Build it on Windows with PowerShell 7+ and Node.js 22 or newer:
+## Building
+
+Build both the NSIS installer (`-setup.exe` + `.sha256`) and portable archive
+(`-portable.zip` + `.sha256`) on Windows with PowerShell 7+, Node.js 22+, and
+the .NET SDK:
 
 ```powershell
-pwsh packaging/windows/build-sea.ps1
+pwsh packaging/windows/package-release.ps1
 ```
 
-The result is `build/release/windows-x64/`. Zip that directory for a GitHub
-Release. Durable data is kept outside the bundle under
-`%LOCALAPPDATA%\SillyTavernManager`, so replacing the release directory does not
-remove profiles, backups, logs, or the manager password.
-
-`packaging/windows/FIRST-RUN.txt` ships in the bundle as `Read me first.txt`.
-
-The source launcher still supports `STM_APP_ROOT` and `STM_NODE_BINARY` for
-local development, and can be run directly with
-`node packaging/windows/launcher.cjs`. The portable SEA launcher uses the
-adjacent `resources/` directory automatically.
+Durable user data is kept outside the application directory under
+`%LOCALAPPDATA%\SillyTavernManager`, so upgrading or reinstalling never touches
+profiles, backups, logs, or passwords.

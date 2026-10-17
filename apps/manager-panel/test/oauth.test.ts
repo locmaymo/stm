@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { cloudflareReturn, collectCloudflareResult, inPhoneApp, isReturnWindow, popupsBlocked, savePopupsBlocked, whenAbandoned, type CollectedResult } from '../src/oauth.js';
+import { cloudflareReturn, collectCloudflareResult, inDesktopApp, inPhoneApp, inStmApp, isReturnWindow, popupsBlocked, savePopupsBlocked, whenAbandoned, type CollectedResult } from '../src/oauth.js';
 
 test('the outcome is read from the address the manager sent the browser back to', () => {
   assert.deepEqual(cloudflareReturn('?cloudflare=signed_in'), { outcome: 'signed_in', code: '', collected: false, app: false });
@@ -190,8 +190,19 @@ test('a browser that refuses a window is only asked once', () => {
   assert.doesNotThrow(() => savePopupsBlocked(true, blocked));
 });
 
-test('the phone app is recognised by the name it adds to its user agent, and nothing else is', () => {
-  assert.equal(inPhoneApp('Mozilla/5.0 (Linux; Android 11; LM-V500N Build/RKQ1; wv) AppleWebKit/537.36 Chrome/131.0 Mobile Safari/537.36 STMAndroid/1.0.0'), true);
-  assert.equal(inPhoneApp('Mozilla/5.0 (Linux; Android 11; LM-V500N) AppleWebKit/537.36 Chrome/131.0 Mobile Safari/537.36'), false);
+test('the phone and desktop apps are recognised by the names they add to their user agents, and nothing else is', () => {
+  const androidUa = 'Mozilla/5.0 (Linux; Android 11; LM-V500N Build/RKQ1; wv) AppleWebKit/537.36 Chrome/131.0 Mobile Safari/537.36 STMAndroid/1.0.0';
+  const desktopUa = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/132.0.0.0 Safari/537.36 Edg/132.0.0.0 STMDesktop/1.0.0';
+  const browserUa = 'Mozilla/5.0 (Linux; Android 11; LM-V500N) AppleWebKit/537.36 Chrome/131.0 Mobile Safari/537.36';
+  assert.equal(inPhoneApp(androidUa), true);
+  assert.equal(inPhoneApp(desktopUa), false);
+  assert.equal(inPhoneApp(browserUa), false);
   assert.equal(inPhoneApp('Mozilla/5.0 NotSTMAndroid/1.0'), false);
+  assert.equal(inDesktopApp(desktopUa), true);
+  assert.equal(inDesktopApp(androidUa), false);
+  assert.equal(inDesktopApp(browserUa), false);
+  assert.equal(inDesktopApp('Mozilla/5.0 NotSTMDesktop/1.0'), false);
+  assert.equal(inStmApp(androidUa), true);
+  assert.equal(inStmApp(desktopUa), true);
+  assert.equal(inStmApp(browserUa), false);
 });

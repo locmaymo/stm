@@ -29,4 +29,7 @@ test('an unreadable or unrelated browser language falls back to English', () => 
   assert.equal(preferredLocale(['fr-FR', 'de']), 'en');
   assert.equal(preferredLocale(['en-GB', 'vi']), 'en');
   assert.equal(preferredLocale(['VI-vn']), 'vi');
+  assert.equal(preferredLocale(['en-US'], 'Asia/Saigon'), 'vi');
+  assert.equal(preferredLocale(['en-US'], 'Asia/Ho_Chi_Minh'), 'vi');
+  assert.equal(preferredLocale(['en-US'], 'America/New_York'), 'en');
 });
