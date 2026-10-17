@@ -267,6 +267,22 @@ export function inPhoneApp(userAgent: string = globalThis.navigator?.userAgent ?
   return /\bSTMAndroid\//u.test(userAgent);
 }
 
+/**
+ * Whether this console is the desktop app's.
+ *
+ * Like the phone app, the desktop app keeps the console in its own window and
+ * sends Cloudflare and Google sign-ins to the system browser, where the
+ * reader's accounts already live, then collects the answer from the manager.
+ */
+export function inDesktopApp(userAgent: string = globalThis.navigator?.userAgent ?? ''): boolean {
+  return /\bSTMDesktop\//u.test(userAgent);
+}
+
+/** Whether this console is inside either the phone or the desktop app. */
+export function inStmApp(userAgent: string = globalThis.navigator?.userAgent ?? ''): boolean {
+  return inPhoneApp(userAgent) || inDesktopApp(userAgent);
+}
+
 /** Whether this console is a document inside some other site's page. */
 export function framed(): boolean {
   try {

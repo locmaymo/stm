@@ -1,13 +1,13 @@
-import { inPhoneApp } from './oauth.js';
+import { inStmApp } from './oauth.js';
 import { apiFetch } from './session.js';
 
 /**
  * Whether this browser can be sent a push, and if not, why not.
  *
- * Each answer is something different to tell the reader: the Android app
- * already shows these as phone notifications; iPhone and iPad only allow it
- * from the console added to the Home Screen; everything else needs a secure
- * origin, which the console's https link is and a LAN address is not.
+ * Each answer is something different to tell the reader: the Android and
+ * desktop apps already show these as system notifications; iPhone and iPad only
+ * allow it from the console added to the Home Screen; everything else needs a
+ * secure origin, which the console's https link is and a LAN address is not.
  */
 export type PushSupport = 'app' | 'needs-home-screen' | 'needs-https' | 'unsupported' | 'blocked' | 'ready';
 
@@ -22,7 +22,7 @@ export function standalone(): boolean {
 }
 
 export function pushSupport(): PushSupport {
-  if (inPhoneApp()) return 'app';
+  if (inStmApp()) return 'app';
   if (onAppleMobile() && !standalone()) return 'needs-home-screen';
   if (!window.isSecureContext) return 'needs-https';
   if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) return 'unsupported';

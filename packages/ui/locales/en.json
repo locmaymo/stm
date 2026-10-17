@@ -596,6 +596,7 @@
     "appUpdateDownloading": "Downloading the update: {done} of {total}",
     "appUpdatePermission": "Android needs your OK first: turn on “Allow from this source” for STM, then come back. The update carries on by itself.",
     "appUpdateInstalling": "Installing. Tap Update when Android asks, then Open when it is done. Everything stays as it was.",
+    "appUpdateRestarting": "Installing and restarting ST Manager. Everything stays as it was.",
     "appUpdateFailedNetwork": "The update could not be downloaded. Check the connection and try again.",
     "appUpdateFailedMissing": "This release has no app for this phone yet. Download it from the release page instead.",
     "appUpdateFailedChecksum": "The download came out damaged, so it was not installed. Try again.",

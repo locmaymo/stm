@@ -200,7 +200,7 @@ Trình quản lý gửi một bản tóm tắt sử dụng nhỏ và ẩn danh, 
 
 | Nền tảng | Bắt đầu tại đây |
 | --- | --- |
-| **Windows** | [Tải ZIP portable](#windows) — không phải cài gì |
+| **Windows** | [Tải bộ cài đặt](#windows) — không phải cài gì thêm |
 | **Android** | [Cài ứng dụng](https://stm.locmaymo.top/vi/docs#android) từ tệp APK, hoặc [copy các lệnh Termux](#android-termux) |
 | **macOS** | [Cài từ source](#macos) |
 | **Linux / VPS** | [Chạy launcher Unix](#linux-và-vps) |
@@ -210,21 +210,20 @@ Trình quản lý gửi một bản tóm tắt sử dụng nhỏ và ẩn danh, 
 Dù chọn cách nào, lần mở đầu tiên manager sẽ yêu cầu bạn tạo một mật khẩu quản trị. Sau đó chọn phiên bản SillyTavern và bấm **Cài đặt**.
 
 <details id="windows">
-<summary><b>Windows — tải và chạy</b></summary>
+<summary><b>Windows — tải và cài đặt</b></summary>
 
 <br>
 
 1. Mở [bản phát hành GitHub mới nhất](https://github.com/locmaymo/stm/releases/latest).
-2. Tải `SillyTavernManager-windows-x64-vX.Y.Z.zip` cùng file checksum `.sha256`.
-3. Giải nén ZIP vào một thư mục bình thường, ví dụ `Downloads\SillyTavernManager`.
-4. Bấm đúp `SillyTavernManager.exe`.
-5. Nếu trình duyệt không tự mở, truy cập `http://127.0.0.1:7860`.
+2. Tải `SillyTavernManager-windows-x64-vX.Y.Z-setup.exe` cùng file checksum `.sha256`.
+3. Chạy bộ cài đặt. Nếu Windows SmartScreen cảnh báo ứng dụng lạ, bấm **More info** rồi bấm **Run anyway**.
+4. Mở **SillyTavern Manager** từ Start Menu hoặc lối tắt ngoài Desktop.
 
-Một cửa sổ console sẽ mở ra và ở nguyên đó. Cửa sổ đó chính là trình quản lý: nó hiển thị địa chỉ truy cập, nơi lưu dữ liệu của bạn, và mọi việc trình quản lý cùng SillyTavern đang làm. Để dừng tất cả, bấm <kbd>Q</kbd> hoặc <kbd>Ctrl</kbd>+<kbd>C</kbd> trong cửa sổ đó, hoặc đóng nó — SillyTavern và Cloudflare tunnel sẽ tắt cùng, nên không còn cổng nào bị chiếm và bạn không phải đi tìm tiến trình trong Task Manager. Bấm <kbd>O</kbd> để mở lại panel trong trình duyệt.
+Ứng dụng máy tính sẽ mở thẳng vào giao diện quản lý trong cửa sổ riêng của nó. Đóng cửa sổ sẽ thu ứng dụng xuống khay hệ thống (system tray) để SillyTavern và các link vẫn chạy nền, đồng thời thông báo trên màn hình sẽ báo cho bạn (kèm ảnh đại diện tròn của nhân vật) khi nhân vật trả lời xong. Bấm chuột phải vào biểu tượng ở khay hệ thống để mở lại trình quản lý, mở SillyTavern, mở thư mục dữ liệu, hoặc bấm **Dừng & Thoát** — SillyTavern và Cloudflare tunnel sẽ tắt sạch cùng ứng dụng, nên không còn cổng nào bị chiếm và không phải đi tìm tiến trình trong Task Manager.
 
-Nếu trình quản lý không khởi động được, cửa sổ sẽ giữ nguyên lý do trên màn hình và chờ bạn bấm <kbd>Enter</kbd> thay vì tự đóng. Nếu bạn mở bản thứ hai trong khi một bản đang chạy, nó sẽ báo cho bạn biết và mở bản đang chạy.
+Nếu mở bản thứ hai trong khi một bản đang chạy, cửa sổ đang chạy sẽ được đưa lên trước.
 
-ZIP portable đã gồm Node.js, server manager, giao diện và dependency production. Bạn không cần cài gì bằng terminal. Thư mục ứng dụng và thư mục dữ liệu tách riêng, nên thay ZIP không bao giờ đụng tới dữ liệu:
+Bộ cài đặt đã gồm Node.js, npm, Git, `cloudflared`, server manager, giao diện và dependency production. Bạn không cần cài gì bằng terminal hay quyền quản trị viên. Thư mục ứng dụng (`%LOCALAPPDATA%\Programs\SillyTavernManager`) và thư mục dữ liệu tách riêng, nên cập nhật hay cài lại không bao giờ đụng tới dữ liệu:
 
 ```text
 %LOCALAPPDATA%\SillyTavernManager
@@ -650,14 +649,14 @@ Manager **không** gửi API key, authorization header, prompt, chat, model resp
 
 | Nền tảng | Cách làm |
 | --- | --- |
-| Windows | Dừng bản cũ, giải nén ZIP mới vào thư mục khác, chạy executable mới. Giữ thư mục cũ để rollback. |
+| Windows | Cập nhật trực tiếp từ thanh thông báo trong trình quản lý, hoặc tải bộ cài mới (`-setup.exe`) rồi chạy đè lên bản đang cài. |
 | Termux | Dừng bằng **Ctrl+C**, rồi `cd stm`, `git pull`, `npm ci`, `npm start` ([chi tiết](#android-termux)). |
 | macOS, Linux | Dừng tiến trình, chạy `git pull --ff-only`, `npm ci`, rồi khởi động launcher lại. |
 | Docker | Build lại image và chạy container mới trên cùng volume. |
 
 Thư mục dữ liệu nền tảng được giữ nguyên trong mọi trường hợp, nên profile, backup, log, metrics và settings vẫn còn.
 
-Release được tạo từ version tag: GitHub Actions chạy kiểm tra, tạo ZIP Windows và checksum, build Docker image và tạo npm tarball.
+Release được tạo từ version tag: GitHub Actions chạy kiểm tra, tạo bộ cài đặt Windows kèm checksum, build Docker image và tạo npm tarball.
 
 ## Phát triển
 

@@ -7,18 +7,26 @@ type PreferenceStorage = Pick<Storage, 'getItem' | 'setItem'>;
 /** What the browser says it is set to, for the first visit only. */
 export interface EnvironmentHints {
   readonly languages?: readonly string[];
+  readonly timeZone?: string;
   readonly prefersLight?: boolean;
 }
+
+const VIETNAMESE_TIME_ZONES: ReadonlySet<string> = new Set([
+  'Asia/Ho_Chi_Minh',
+  'Asia/Saigon',
+]);
 
 /**
  * The locale to open with when nothing has been chosen yet.
  *
- * Most of the people this manager is for read Vietnamese and set their phone
- * or browser to it; opening in English and leaving them to find a two-letter
- * toggle in the top bar is a worse first minute than simply believing what the
- * browser already says. An explicit choice is still stored and still wins.
+ * Most of the people this manager is for read Vietnamese. On phones they
+ * usually set the system or browser language to Vietnamese; on Windows desktops
+ * in Vietnam almost everyone runs an English OS (`en-US`) while the machine's
+ * region and timezone are set to Vietnam (`Asia/Saigon` / `Asia/Ho_Chi_Minh`).
+ * An explicit choice is still stored and still wins on every later visit.
  */
-export function preferredLocale(languages: readonly string[] = []): LocaleCode {
+export function preferredLocale(languages: readonly string[] = [], timeZone?: string): LocaleCode {
+  if (timeZone && VIETNAMESE_TIME_ZONES.has(timeZone)) return 'vi';
   for (const tag of languages) {
     const base = tag.toLowerCase().split('-')[0];
     if (base === 'vi') return 'vi';
@@ -29,7 +37,7 @@ export function preferredLocale(languages: readonly string[] = []): LocaleCode {
 
 export function readPreferences(storage?: PreferenceStorage, environment: EnvironmentHints = {}): Preferences {
   const fallback: Preferences = {
-    locale: preferredLocale(environment.languages ?? []),
+    locale: preferredLocale(environment.languages ?? [], environment.timeZone),
     theme: environment.prefersLight === true ? 'light' : 'dark',
   };
   try {
@@ -66,6 +74,7 @@ export function browserEnvironment(): EnvironmentHints {
   try {
     return {
       languages: navigator.languages ?? (navigator.language ? [navigator.language] : []),
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       prefersLight: window.matchMedia('(prefers-color-scheme: light)').matches,
     };
   } catch {

@@ -25,15 +25,16 @@ jobs:
       - name: Create checksum
         shell: pwsh
         run: |
-          $archive = Get-ChildItem -LiteralPath build -Filter 'SillyTavernManager-windows-x64-*.zip' | Select-Object -First 1
-          $hash = (Get-FileHash -LiteralPath $archive.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
-          Set-Content -LiteralPath "$($archive.FullName).sha256" -Value "$hash  $($archive.Name)" -Encoding utf8NoBOM
+          $installer = Get-ChildItem -LiteralPath build -Filter 'SillyTavernManager-windows-x64-*-setup.exe' | Select-Object -First 1
+          if (-not $installer) { throw 'No Windows installer found in build/.' }
+          $hash = (Get-FileHash -LiteralPath $installer.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content -LiteralPath "$($installer.FullName).sha256" -Value "$hash  $($installer.Name)" -Encoding utf8NoBOM
       - uses: actions/upload-artifact@v7
         with:
-          name: windows-portable
+          name: windows-installer
           path: |
-            build/SillyTavernManager-windows-x64-*.zip
-            build/SillyTavernManager-windows-x64-*.zip.sha256
+            build/SillyTavernManager-windows-x64-*-setup.exe
+            build/SillyTavernManager-windows-x64-*-setup.exe.sha256
 
   android:
     runs-on: ubuntu-latest
@@ -81,6 +82,7 @@ jobs:
             build/SillyTavernManager-android-*.apk.sha256
 
   container:
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -120,7 +122,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          name: windows-portable
+          name: windows-installer
           path: release/windows
       - uses: actions/download-artifact@v8
         with:
