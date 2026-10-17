@@ -17,7 +17,7 @@
     <Description>SillyTavern Manager</Description>
     <Company>SillyTavern Manager</Company>
     <Copyright>AGPL-3.0-only</Copyright>
-    <Version Condition="'$(Version)' == ''">1.1.2</Version>
+    <Version Condition="'$(Version)' == ''">1.2.0</Version>
     <FileVersion Condition="'$(FileVersion)' == ''">$(Version).0</FileVersion>
     <InformationalVersion Condition="'$(InformationalVersion)' == ''">$(Version)</InformationalVersion>
     <WebView2PkgRoot Condition="'$(WebView2PkgRoot)' == ''">..\..\..\build\cache\webview2-pkg</WebView2PkgRoot>

@@ -4,7 +4,7 @@ SetCompressor /SOLID lzma
 SetCompressorDictSize 64
 
 !ifndef VERSION
-  !define VERSION "1.1.2"
+  !define VERSION "1.2.0"
 !endif
 !ifndef SOURCE_DIR
   !define SOURCE_DIR "..\..\build\release\windows-x64"

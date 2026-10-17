@@ -200,7 +200,7 @@ Trình quản lý gửi một bản tóm tắt sử dụng nhỏ và ẩn danh, 
 
 | Nền tảng | Bắt đầu tại đây |
 | --- | --- |
-| **Windows** | [Tải bộ cài đặt](#windows) — hoặc dùng bản ZIP portable |
+| **Windows** | [Tải bộ cài đặt](#windows) — không phải cài gì thêm |
 | **Android** | [Cài ứng dụng](https://stm.locmaymo.top/vi/docs#android) từ tệp APK, hoặc [copy các lệnh Termux](#android-termux) |
 | **macOS** | [Cài từ source](#macos) |
 | **Linux / VPS** | [Chạy launcher Unix](#linux-và-vps) |
@@ -215,7 +215,7 @@ Dù chọn cách nào, lần mở đầu tiên manager sẽ yêu cầu bạn t�
 <br>
 
 1. Mở [bản phát hành GitHub mới nhất](https://github.com/locmaymo/stm/releases/latest).
-2. Tải `SillyTavernManager-windows-x64-vX.Y.Z-setup.exe` cùng file checksum `.sha256` (hoặc `SillyTavernManager-windows-x64-vX.Y.Z-portable.zip` nếu bạn thích thư mục chạy ngay không cần cài đặt).
+2. Tải `SillyTavernManager-windows-x64-vX.Y.Z-setup.exe` cùng file checksum `.sha256`.
 3. Chạy bộ cài đặt. Nếu Windows SmartScreen cảnh báo ứng dụng lạ, bấm **More info** rồi bấm **Run anyway**.
 4. Mở **SillyTavern Manager** từ Start Menu hoặc lối tắt ngoài Desktop.
 
@@ -223,7 +223,7 @@ Dù chọn cách nào, lần mở đầu tiên manager sẽ yêu cầu bạn t�
 
 Nếu mở bản thứ hai trong khi một bản đang chạy, cửa sổ đang chạy sẽ được đưa lên trước.
 
-Cả bộ cài đặt lẫn bản ZIP portable đều đã gồm Node.js, npm, Git, `cloudflared`, server manager, giao diện và dependency production. Bạn không cần cài gì bằng terminal hay quyền quản trị viên. Thư mục ứng dụng (`%LOCALAPPDATA%\Programs\SillyTavernManager`) và thư mục dữ liệu tách riêng, nên cập nhật hay cài lại không bao giờ đụng tới dữ liệu:
+Bộ cài đặt đã gồm Node.js, npm, Git, `cloudflared`, server manager, giao diện và dependency production. Bạn không cần cài gì bằng terminal hay quyền quản trị viên. Thư mục ứng dụng (`%LOCALAPPDATA%\Programs\SillyTavernManager`) và thư mục dữ liệu tách riêng, nên cập nhật hay cài lại không bao giờ đụng tới dữ liệu:
 
 ```text
 %LOCALAPPDATA%\SillyTavernManager
@@ -649,14 +649,14 @@ Manager **không** gửi API key, authorization header, prompt, chat, model resp
 
 | Nền tảng | Cách làm |
 | --- | --- |
-| Windows | Cập nhật trực tiếp từ thanh thông báo trong trình quản lý, hoặc chạy bộ cài mới (`-setup.exe`) đè lên bản đang cài. Với bản ZIP portable, dừng trình quản lý rồi giải nén bản ZIP mới. |
+| Windows | Cập nhật trực tiếp từ thanh thông báo trong trình quản lý, hoặc tải bộ cài mới (`-setup.exe`) rồi chạy đè lên bản đang cài. |
 | Termux | Dừng bằng **Ctrl+C**, rồi `cd stm`, `git pull`, `npm ci`, `npm start` ([chi tiết](#android-termux)). |
 | macOS, Linux | Dừng tiến trình, chạy `git pull --ff-only`, `npm ci`, rồi khởi động launcher lại. |
 | Docker | Build lại image và chạy container mới trên cùng volume. |
 
 Thư mục dữ liệu nền tảng được giữ nguyên trong mọi trường hợp, nên profile, backup, log, metrics và settings vẫn còn.
 
-Release được tạo từ version tag: GitHub Actions chạy kiểm tra, tạo bộ cài đặt Windows và bản ZIP portable kèm checksum, build Docker image và tạo npm tarball.
+Release được tạo từ version tag: GitHub Actions chạy kiểm tra, tạo bộ cài đặt Windows kèm checksum, build Docker image và tạo npm tarball.
 
 ## Phát triển
 

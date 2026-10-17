@@ -12,7 +12,7 @@ namespace SillyTavernManager;
 
 internal static class WindowsAppUpdate
 {
-    private const string ReleasesBaseUrl = "https://github.com/locmaymo/SillyTavern-Manager/releases/download";
+    private const string DefaultReleasesBaseUrl = "https://github.com/locmaymo/stm/releases/download";
     private const int BufferBytes = 256 * 1024;
     private const int ProgressEveryMs = 250;
 
@@ -64,8 +64,9 @@ internal static class WindowsAppUpdate
 
     private static string? DownloadAndVerify(string version, string dataDirectory, Action<string> postMessage)
     {
+        string releasesBase = (Environment.GetEnvironmentVariable("STM_WINDOWS_RELEASES_URL") ?? DefaultReleasesBaseUrl).TrimEnd('/');
         string assetName = $"SillyTavernManager-windows-x64-v{version}-setup.exe";
-        string baseUrl = $"{ReleasesBaseUrl}/v{version}/{assetName}";
+        string baseUrl = $"{releasesBase}/v{version}/{assetName}";
         string updateFolder = Path.Combine(dataDirectory, "updates");
         string installerPath = Path.Combine(updateFolder, assetName);
 

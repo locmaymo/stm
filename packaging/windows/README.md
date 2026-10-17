@@ -28,9 +28,8 @@ the background without a console window.
 
 ## Building
 
-Build both the NSIS installer (`-setup.exe` + `.sha256`) and portable archive
-(`-portable.zip` + `.sha256`) on Windows with PowerShell 7+, Node.js 22+, and
-the .NET SDK:
+Build the NSIS installer (`-setup.exe` + `.sha256`) on Windows with
+PowerShell 7+, Node.js 22+, and the .NET SDK:
 
 ```powershell
 pwsh packaging/windows/package-release.ps1

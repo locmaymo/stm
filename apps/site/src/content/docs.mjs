@@ -73,10 +73,10 @@ export const docs = {
               },
               ...p(
                 'Closing the window hides the app to the system tray so SillyTavern and your links keep running in the background, and desktop notifications alert you when a character finishes replying. Right-click the tray icon to open the manager, open SillyTavern, open your data folder, or press **Stop & Quit** to shut down SillyTavern and the Cloudflare tunnel cleanly.',
-                'Prefer a portable folder with no installer? Download `SillyTavernManager-windows-x64-vX.Y.Z-portable.zip` from the release page, extract it into a normal folder, and double-click `SillyTavernManager.exe`.',
+                'To update, press **Update** on the banner in the manager console, or download the new installer and run it over the old one. Your data stays.',
               ),
               note('good', 'The application folder and the data folder are separate. Your data lives in `%LOCALAPPDATA%\\SillyTavernManager`, so updating or reinstalling never touches profiles, backups or settings.'),
-              note('warn', 'If SmartScreen warns about an unsigned application, that is expected: release builds are not code-signed. Check the `.sha256` file against the installer or ZIP if you want to be certain the download is the one the release published.'),
+              note('warn', 'If SmartScreen warns about an unsigned application, that is expected: release builds are not code-signed. Check the `.sha256` file against the installer if you want to be certain the download is the one the release published.'),
             ],
           },
           {
@@ -454,7 +454,7 @@ export const docs = {
             type: 'table',
             columns: ['Platform', 'How to update the manager'],
             rows: [
-              ['Windows', 'Update directly from the banner in the manager, or run the new installer (`-setup.exe`) over the existing installation. For the portable ZIP, stop the manager and extract the new ZIP.'],
+              ['Windows', 'Update directly from the banner in the manager, or download the new installer (`-setup.exe`) and run it over the existing installation.'],
               ['Android app', 'Download the new APK and install it over the old one.'],
               ['Termux', 'Stop it with **Ctrl+C**, then run [the update commands](#android-update): `cd stm`, `git pull`, `npm ci`, `npm start`.'],
               ['macOS, Linux', 'Stop the process, then `git pull --ff-only`, `npm ci`, and start the launcher again.'],
@@ -588,10 +588,10 @@ export const docs = {
               },
               ...p(
                 'Đóng cửa sổ sẽ thu ứng dụng xuống khay hệ thống (system tray) để SillyTavern và các link vẫn chạy nền, đồng thời thông báo trên màn hình sẽ báo cho bạn khi nhân vật trả lời xong. Bấm chuột phải vào biểu tượng ở khay hệ thống để mở lại trình quản lý, mở SillyTavern, mở thư mục dữ liệu, hoặc bấm **Dừng & Thoát** để tắt sạch SillyTavern và tunnel Cloudflare.',
-                'Thích bản chạy ngay không cần cài đặt? Tải `SillyTavernManager-windows-x64-vX.Y.Z-portable.zip` ở trang phát hành, giải nén vào một thư mục bình thường rồi bấm đúp `SillyTavernManager.exe`.',
+                'Muốn cập nhật, bấm **Cập nhật** trên thanh thông báo trong trình quản lý, hoặc tải bộ cài mới về rồi chạy đè lên bản cũ. Dữ liệu vẫn giữ nguyên.',
               ),
               note('good', 'Thư mục ứng dụng và thư mục dữ liệu tách rời nhau. Dữ liệu của bạn nằm ở `%LOCALAPPDATA%\\SillyTavernManager`, nên cập nhật hay cài lại ứng dụng không bao giờ đụng tới hồ sơ, bản sao lưu hay thiết lập.'),
-              note('warn', 'Nếu SmartScreen cảnh báo về ứng dụng chưa ký, đó là chuyện bình thường: bản phát hành không được ký mã. Muốn chắc chắn bản tải đúng là bản đã công bố, hãy đối chiếu tệp `.sha256` với bộ cài hoặc tệp ZIP.'),
+              note('warn', 'Nếu SmartScreen cảnh báo về ứng dụng chưa ký, đó là chuyện bình thường: bản phát hành không được ký mã. Muốn chắc chắn bản tải đúng là bản đã công bố, hãy đối chiếu tệp `.sha256` với bộ cài.'),
             ],
           },
           {
@@ -969,7 +969,7 @@ export const docs = {
             type: 'table',
             columns: ['Nền tảng', 'Cập nhật trình quản lý thế nào'],
             rows: [
-              ['Windows', 'Cập nhật trực tiếp từ thanh thông báo trong trình quản lý, hoặc chạy bộ cài mới (`-setup.exe`) đè lên bản đang cài. Với bản ZIP portable, dừng trình quản lý rồi giải nén bản ZIP mới.'],
+              ['Windows', 'Cập nhật trực tiếp từ thanh thông báo trong trình quản lý, hoặc tải bộ cài mới (`-setup.exe`) rồi chạy đè lên bản đang cài.'],
               ['Ứng dụng Android', 'Tải APK mới rồi cài đè lên bản cũ.'],
               ['Termux', 'Dừng bằng **Ctrl+C**, rồi chạy [các lệnh cập nhật](#android-update): `cd stm`, `git pull`, `npm ci`, `npm start`.'],
               ['macOS, Linux', 'Dừng tiến trình, rồi `git pull --ff-only`, `npm ci`, và chạy lại launcher.'],

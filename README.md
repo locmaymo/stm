@@ -200,7 +200,7 @@ The manager sends a small, anonymous usage summary, never your chats, prompts, c
 
 | Platform | Start here |
 | --- | --- |
-| **Windows** | [Download the installer](#windows) — or use the portable ZIP |
+| **Windows** | [Download the installer](#windows) — nothing else to install |
 | **Android** | [Install the app](https://stm.locmaymo.top/docs#android) from the APK, or [copy the Termux commands](#android-termux) |
 | **macOS** | [Install from source](#macos) |
 | **Linux / VPS** | [Run the Unix launcher](#linux-and-vps) |
@@ -215,7 +215,7 @@ Whichever you choose, the first visit asks you to create one manager administrat
 <br>
 
 1. Open the [latest GitHub release](https://github.com/locmaymo/stm/releases/latest).
-2. Download `SillyTavernManager-windows-x64-vX.Y.Z-setup.exe` and its `.sha256` checksum file (or `SillyTavernManager-windows-x64-vX.Y.Z-portable.zip` if you prefer a portable folder).
+2. Download `SillyTavernManager-windows-x64-vX.Y.Z-setup.exe` and its `.sha256` checksum file.
 3. Run the installer. If Windows SmartScreen warns about an unrecognized app, click **More info** and then **Run anyway**.
 4. Open **SillyTavern Manager** from the Start Menu or Desktop shortcut.
 
@@ -223,7 +223,7 @@ The desktop app opens straight into the manager console inside its own native wi
 
 Starting a second copy while one is already running brings the running window to the front instead.
 
-Both the installer and portable bundle already contain Node.js, npm, Git, `cloudflared`, the manager server, the panel and production dependencies. Nothing needs a terminal or administrator rights. The application folder (`%LOCALAPPDATA%\Programs\SillyTavernManager`) and the data folder stay separate, so updating or reinstalling never touches your data:
+The installer already contains Node.js, npm, Git, `cloudflared`, the manager server, the panel and production dependencies. Nothing needs a terminal or administrator rights. The application folder (`%LOCALAPPDATA%\Programs\SillyTavernManager`) and the data folder stay separate, so updating or reinstalling never touches your data:
 
 ```text
 %LOCALAPPDATA%\SillyTavernManager
@@ -649,14 +649,14 @@ It does **not** send API keys, authorization headers, prompts, chats, model resp
 
 | Platform | How |
 | --- | --- |
-| Windows | Update directly from the banner in the manager, or run the new installer (`-setup.exe`) over the existing installation. For the portable ZIP, stop the manager and extract the new ZIP. |
+| Windows | Update directly from the banner in the manager, or download the new installer (`-setup.exe`) and run it over the existing installation. |
 | Termux | Stop it with **Ctrl+C**, then `cd stm`, `git pull`, `npm ci`, `npm start` ([details](#android-termux)). |
 | macOS, Linux | Stop the process, then `git pull --ff-only`, `npm ci`, and start the launcher again. |
 | Docker | Rebuild the image and start a new container against the same volume. |
 
 The platform data directory is preserved either way, so profiles, backups, logs, metrics and settings remain.
 
-Release builds are generated from version tags: GitHub Actions verifies the project, creates the Windows installer and portable ZIP with checksums, builds the Docker image and creates the npm tarball.
+Release builds are generated from version tags: GitHub Actions verifies the project, creates the Windows installer and checksum, builds the Docker image and creates the npm tarball.
 
 ## Development
 

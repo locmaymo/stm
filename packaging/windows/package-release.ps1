@@ -11,18 +11,13 @@ try {
   if ($LASTEXITCODE -ne 0) { throw 'The Windows release build failed.' }
   $packageJson = Get-Content -LiteralPath (Join-Path $repositoryRoot 'package.json') -Raw | ConvertFrom-Json
   $version = $packageJson.version
-  $releaseDirectory = Join-Path $repositoryRoot 'build\release\windows-x64'
   $installer = Join-Path $repositoryRoot "build\SillyTavernManager-windows-x64-v$version-setup.exe"
   if (-not (Test-Path -LiteralPath $installer)) {
     throw "Installer was not created: $installer"
   }
-  $portable = Join-Path $repositoryRoot "build\SillyTavernManager-windows-x64-v$version-portable.zip"
-  if (Test-Path -LiteralPath $portable) { Remove-Item -LiteralPath $portable -Force }
-  Compress-Archive -Path (Join-Path $releaseDirectory '*') -DestinationPath $portable -CompressionLevel Optimal
-  $hash = (Get-FileHash -LiteralPath $portable -Algorithm SHA256).Hash.ToLowerInvariant()
-  Set-Content -LiteralPath "$portable.sha256" -Value "$hash  $([System.IO.Path]::GetFileName($portable))" -Encoding utf8NoBOM
+  $hash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+  Set-Content -LiteralPath "$installer.sha256" -Value "$hash  $([System.IO.Path]::GetFileName($installer))" -Encoding utf8NoBOM
   Write-Host "Release installer ready: $installer"
-  Write-Host "Portable archive ready: $portable"
 } finally {
   Pop-Location
 }
