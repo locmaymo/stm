@@ -31,7 +31,8 @@ import java.util.Set;
  * notified and whether they bubble, asks for SillyTavern to be shown, and
  * has the app send a backup zip from the phone (see {@link BackupImport}),
  * move a SillyTavern over from Termux (see {@link TermuxImport}) or install
- * a newer release of itself (see {@link AppUpdate}).
+ * a newer release of itself (see {@link AppUpdate}). Any of them hands over
+ * the exports it builds in the page itself (see {@link PageDownload}).
  * Only pages served on this phone are listened to: a frame from anywhere else
  * - a picture or a video a character card embeds, say - also gets the object,
  * and everything it sends is dropped.
@@ -114,6 +115,12 @@ final class ChatBridge {
                 break;
             case "termuxOffer":
                 if (data.optBoolean("dismiss")) TermuxImport.answerOffer(app);
+                break;
+            case "fileStart":
+            case "fileChunk":
+            case "fileEnd":
+                // An export a page made itself; see PageDownload.
+                PageDownload.receive(app, data);
                 break;
             case "importCancel":
                 BackupImport.cancel();

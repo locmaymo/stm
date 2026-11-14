@@ -45,8 +45,13 @@ export default [
     languageOptions: {
       sourceType: 'script',
       globals: {
+        Blob: 'readonly',
+        Element: 'readonly',
         FileReader: 'readonly',
+        HTMLAnchorElement: 'readonly',
         STMApp: 'readonly',
+        URL: 'readonly',
+        btoa: 'readonly',
         clearInterval: 'readonly',
         document: 'readonly',
         fetch: 'readonly',
