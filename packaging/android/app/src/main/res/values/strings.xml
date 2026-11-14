@@ -15,6 +15,8 @@
     <string name="status_restart">Tap to start it again</string>
     <string name="download_started">Saving to Downloads</string>
     <string name="download_unsupported">This file cannot be saved from here yet.</string>
+    <string name="download_saved">Saved to Downloads: %1$s</string>
+    <string name="download_failed">The file could not be saved.</string>
     <string name="channel_chats">Character replies</string>
     <string name="bubble_label">Chat</string>
     <string name="bubble_you">You</string>

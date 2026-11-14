@@ -15,6 +15,8 @@
     <string name="status_restart">Chạm để khởi động lại</string>
     <string name="download_started">Đang lưu vào thư mục Tải xuống</string>
     <string name="download_unsupported">Chưa lưu được tệp này từ đây.</string>
+    <string name="download_saved">Đã lưu vào Tải xuống: %1$s</string>
+    <string name="download_failed">Không lưu được tệp.</string>
     <string name="channel_chats">Tin nhắn của nhân vật</string>
     <string name="bubble_label">Trò chuyện</string>
     <string name="bubble_you">Bạn</string>
