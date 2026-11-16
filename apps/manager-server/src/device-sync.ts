@@ -24,6 +24,13 @@ const OUTCOME_FILE = 'device-sync-outcome.json';
 /** How many times a device catches up in one go before it stops chasing a line that keeps moving. */
 const CATCH_UP_ROUNDS = 3;
 const COMPARE_BLOCK = 1024 * 1024;
+/**
+ * Files SillyTavern rewrites by itself whenever it runs, so that two devices
+ * have always both "changed" them. They are handled like any other - the
+ * other device's version is taken, this one's is in the recovery point - but
+ * telling the reader about it every time would be telling them nothing.
+ */
+const UNREMARKABLE = new Set(['stats.json']);
 
 export interface CatchUpOptions {
   readonly profile: Profile;
@@ -91,7 +98,7 @@ export async function catchUp(options: CatchUpOptions): Promise<CatchUpResult> {
     taken: applied.taken,
     removed: applied.removed,
     keptBoth: applied.keptBoth,
-    setAside: plan.actions.filter((action) => action.kind === 'setAside').map((action) => action.name),
+    setAside: plan.actions.filter((action) => action.kind === 'setAside' && !UNREMARKABLE.has(action.name)).map((action) => action.name),
     skipped: plan.skipped.map((entry) => entry.name),
     recoveryPoint,
   };

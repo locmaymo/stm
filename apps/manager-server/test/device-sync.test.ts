@@ -160,9 +160,12 @@ test('a chat both devices wrote to is kept twice, and settings take the other de
   // The phone was offline; the desk was used meanwhile and sent first.
   await desk.write('chats/Seraphina/first.jsonl', 'hello\nsaid at the desk\n');
   await desk.write('settings.json', '{"theme":"light"}');
+  await desk.write('stats.json', '{"desk":1}');
   await desk.send();
   await phone.write('chats/Seraphina/first.jsonl', 'hello\nsaid on the phone, longer\n');
   await phone.write('settings.json', '{"theme":"dark","font":"big"}');
+  // Rewritten by SillyTavern on every device, every time: taken, and not worth a word.
+  await phone.write('stats.json', '{"phone":2}');
   await phone.write('chats/Seraphina/only-phone.jsonl', 'never seen by the desk\n');
 
   const result = await phone.catchUp();
@@ -173,6 +176,7 @@ test('a chat both devices wrote to is kept twice, and settings take the other de
   assert.equal(await phone.read('chats/Seraphina/first.jsonl'), 'hello\nsaid at the desk\n');
   assert.equal(await phone.read(copy), 'hello\nsaid on the phone, longer\n');
   assert.equal(await phone.read('settings.json'), '{"theme":"light"}');
+  assert.equal(await phone.read('stats.json'), '{"desk":1}');
   assert.equal(await phone.read('chats/Seraphina/only-phone.jsonl'), 'never seen by the desk\n');
 
   // The settings that lost are in a recovery point taken before anything was replaced.

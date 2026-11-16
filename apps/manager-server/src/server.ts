@@ -4730,6 +4730,8 @@ function isProtectedPath(pathname: string): boolean {
     || pathname.startsWith('/api/v1/profiles/')
     || pathname.startsWith('/api/v1/backups/')
     || pathname.startsWith('/api/v1/r2/')
+    || pathname === '/api/v1/sync'
+    || pathname.startsWith('/api/v1/sync/')
     || pathname.startsWith('/api/v1/config/');
 }
 

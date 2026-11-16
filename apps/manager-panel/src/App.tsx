@@ -2189,7 +2189,10 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
                 rebuild this machine out of it is offering a button that
                 cannot work. Signing in again is the only step there is, and
                 the notice above is where it is. */}
-            {!displaced && backgroundJob === null && shouldOfferSettings(settingsOffer, dismissedSettings) && settingsOffer
+            {/* Nor on a device that shares its data, or could: there the way
+                to the other machine's chats is to join it, which keeps what
+                this one has, and that offer is the notice above. */}
+            {!displaced && deviceSync === null && backgroundJob === null && shouldOfferSettings(settingsOffer, dismissedSettings) && settingsOffer
               ? <div className="mb-(--section-gap)"><RestoreEverythingCard
                 t={t}
                 offer={settingsOffer}

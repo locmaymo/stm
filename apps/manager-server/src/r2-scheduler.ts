@@ -93,6 +93,8 @@ export interface BackupSchedulerOptions {
   readonly sharing?: { watch(): Promise<void>; handOver(label: string): Promise<void> };
 }
 
+/** How often a device that has sent nothing yet asks whether storage is shared. */
+const SHARING_LOOK_MS = 5 * 60 * 1000;
 /** How often a device that shares its data sends what changed, at the most. */
 const SHARED_HOT_INTERVAL_MINUTES = 1;
 
@@ -134,6 +136,8 @@ export class BackupScheduler {
   private readonly sharing: BackupSchedulerOptions['sharing'] | null;
   /** Set when something asked for the next run not to wait for the clock. */
   private pushRequested = false;
+  /** When storage was last asked whether other devices share it; see `lookForSharing`. */
+  private lookedForSharingAt: number | null = null;
   /** The last answer about a waiting handover, and when it was given. */
   private handover: { readonly at: number; readonly label: string | null } | null = null;
 
@@ -244,13 +248,18 @@ export class BackupScheduler {
        * going anywhere near the bucket - and neither is a press of Back up now,
        * which is somebody asking for this on purpose.
        */
-      const waiting = await this.waitingOnHandover(config);
       /*
        * A device that has not joined the others on shared storage, or has to
        * catch up with them first, sends nothing there. It still looks for
        * another device having taken over, which is how it finds out.
        */
       let sharing = config.sync?.state ?? null;
+      if (sharing === null && config.enabled && config.configured && await this.lookForSharing()) {
+        sharing = (await this.r2.getConfig()).sync?.state ?? null;
+      }
+      // A device on the line has its answer: what it holds is the line's, and
+      // the setup another machine left here is not a question it is waiting on.
+      const waiting = sharing === null ? await this.waitingOnHandover(config) : false;
       if (config.enabled && config.configured && (sharing === 'ready' || sharing === 'catching_up')) {
         await this.sharing?.watch();
         // Looking may be what found another device ahead.
@@ -316,6 +325,29 @@ export class BackupScheduler {
       }
     } finally {
       this.running = false;
+    }
+  }
+
+  /**
+   * Ask storage whether other devices share it, on a device that has sent
+   * nothing there yet.
+   *
+   * That is the one device the answer matters to and that has no other way to
+   * learn it: it sends nothing while the setup another machine left is
+   * unanswered, so it never reaches the check a send would make, and what it
+   * was told when it signed in is gone after a restart. Asked at once, then
+   * every few minutes; a device that has uploaded here is not asked at all.
+   */
+  private async lookForSharing(): Promise<boolean> {
+    const now = this.now().getTime();
+    if (this.lookedForSharingAt !== null && now - this.lookedForSharingAt < SHARING_LOOK_MS) return false;
+    try {
+      if (!await this.r2.neverUploaded()) return false;
+      this.lookedForSharingAt = now;
+      return await this.r2.sharedLine() !== null;
+    } catch {
+      // Storage that cannot be read now is asked again at the next minute.
+      return false;
     }
   }
 
