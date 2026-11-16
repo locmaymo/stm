@@ -662,6 +662,8 @@ export class DriveObjectStore implements ObjectStore {
   private async readIndex(): Promise<Map<string, DriveFile>> {
     await this.options.ready();
     const index = new Map<string, DriveFile>();
+    // Everything sent before this listing began is either in it or gone.
+    const sentBefore = [...this.sent];
     const query = `trashed = false and mimeType != '${FOLDER_MIME}'`;
     let pageToken: string | undefined;
     do {
@@ -695,7 +697,13 @@ export class DriveObjectStore implements ObjectStore {
     }
     // A removed chunk no pack holds any more needs no remembering.
     for (const key of [...this.removed]) if (!stillHeld.has(key)) this.removed.delete(key);
-    for (const key of [...this.sent]) if (index.has(key)) this.sent.delete(key);
+    /*
+     * Not only the ones the listing shows. A chunk this process sent and
+     * another device's sweep then deleted is in no listing, and remembering it
+     * as sent would skip it the next time a file needs it - a recovery point
+     * naming a chunk that is not there.
+     */
+    for (const key of sentBefore) this.sent.delete(key);
     // Forget what was read for packs that are gone.
     const present = new Set(packs.map((pack) => pack.id));
     for (const id of [...this.contents.keys()]) if (!present.has(id)) this.forgetPack(id);

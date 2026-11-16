@@ -1185,6 +1185,13 @@
       "uploadNowMetricsSame": "Kho lưu trữ đã có sẵn lịch sử sử dụng này",
       "usageRecordSkipped": "Không cập nhật được số thao tác tính phí mà kho lưu trữ tự ghi: {reason}"
     },
+    "sync": {
+      "joined": "Máy này đã tham gia nhóm thiết bị dùng chung kho lưu trữ này (bắt đầu từ máy {label})",
+      "ledgerRebuilt": "Một thiết bị khác vừa dọn kho, nên danh sách khối đã lưu được đọc lại: {chunks}",
+      "left": "Máy này không còn dùng chung dữ liệu nữa",
+      "started": "Máy này giờ dùng chung dữ liệu với các thiết bị khác của bạn trên kho lưu trữ này",
+      "superseded": "Máy {label} của bạn đã cập nhật dữ liệu chung trước, nên máy này ngừng gửi cho tới khi bắt kịp"
+    },
     "job": {
       "preparingBackup": "Đang chuẩn bị sao lưu",
       "preparingRestore": "Đang chuẩn bị khôi phục",

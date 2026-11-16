@@ -1185,6 +1185,13 @@
       "uploadNowMetricsSame": "The bucket already holds this usage history",
       "usageRecordSkipped": "The bucket’s own count of charged operations could not be updated: {reason}"
     },
+    "sync": {
+      "joined": "This device joined the devices sharing this storage (started on {label})",
+      "ledgerRebuilt": "Another device tidied storage, so the list of stored chunks was read again: {chunks}",
+      "left": "This device no longer shares its data",
+      "started": "This device now shares its data with your other devices on this storage",
+      "superseded": "Your device {label} moved the shared data on first, so this device stops sending until it has caught up"
+    },
     "job": {
       "preparingBackup": "Preparing backup",
       "preparingRestore": "Preparing restore",
