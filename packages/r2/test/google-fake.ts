@@ -13,6 +13,8 @@ export interface FakeFile {
   mimeType: string;
   content: Buffer;
   modifiedTime: string;
+  /** When Drive made the file; a rewrite does not move it. */
+  createdTime?: string;
   appProperties: Record<string, string>;
   trashed: boolean;
 }
@@ -53,7 +55,7 @@ export function fakeGoogle(options: { email?: string; brokerOrigin?: string; sco
   const json = (status: number, body: unknown): Response => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
   const tick = (): string => new Date((clock += 1000)).toISOString();
   const issueAccess = (owner: string): string => { const token = `ya-test-${randomBytes(6).toString('hex')}`; accessTokens.set(token, owner); return token; };
-  const view = (file: FakeFile): Record<string, unknown> => ({ id: file.id, name: file.name, size: String(file.content.byteLength), modifiedTime: file.modifiedTime, md5Checksum: createHash('md5').update(file.content).digest('hex') });
+  const view = (file: FakeFile): Record<string, unknown> => ({ id: file.id, name: file.name, size: String(file.content.byteLength), modifiedTime: file.modifiedTime, createdTime: file.createdTime ?? file.modifiedTime, md5Checksum: createHash('md5').update(file.content).digest('hex') });
 
   const matches = (file: FakeFile, query: string, space: string): boolean => {
     // The app folder is its own space: invisible to a search of the Drive, and the other way round.
@@ -152,6 +154,7 @@ export function fakeGoogle(options: { email?: string; brokerOrigin?: string; sco
       const parts = splitMultipart(raw, boundary);
       const metadata = JSON.parse(parts[0]?.toString('utf8') ?? '{}') as { name: string; parents?: string[]; mimeType: string };
       const file: FakeFile = { id: `f${randomBytes(6).toString('hex')}`, name: metadata.name, parents: metadata.parents ?? ['root'], mimeType: metadata.mimeType, content: parts[1] ?? Buffer.alloc(0), modifiedTime: tick(), appProperties: {}, trashed: false };
+      file.createdTime = file.modifiedTime;
       files.set(file.id, file);
       return json(200, view(file));
     }

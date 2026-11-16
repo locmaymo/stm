@@ -45,6 +45,17 @@ export class S3ObjectStore implements ObjectStore {
     await this.request('PUT', key, body, undefined, { 'content-type': contentType, 'content-length': String(body.byteLength) }, 'charged');
   }
 
+  public async putIfAbsent(key: string, body: Uint8Array, contentType: string): Promise<boolean> {
+    try {
+      await this.request('PUT', key, body, undefined, { 'content-type': contentType, 'content-length': String(body.byteLength), 'if-none-match': '*' }, 'charged');
+      return true;
+    } catch (error: unknown) {
+      // 412: something holds the key. 409: another write to it is in flight.
+      if (error instanceof R2HttpError && (error.status === 412 || error.status === 409)) return false;
+      throw error;
+    }
+  }
+
   public async getObject(key: string): Promise<Buffer> {
     const response = await this.request('GET', key, null, undefined, {}, 'read');
     return Buffer.from(await response.arrayBuffer());
