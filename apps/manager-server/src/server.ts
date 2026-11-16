@@ -96,6 +96,8 @@ export const CLOUDFLARE_CALLBACK_PATH = '/oauth/cloudflare/callback';
 const DEFAULT_GOOGLE_CLIENT_ID = '342010087439-k960utodagns1kdb72epd6rfhs887hor.apps.googleusercontent.com';
 /** The site that carries both the Google relay page and the token broker. */
 const DEFAULT_GOOGLE_BROKER_URL = 'https://stm.locmaymo.top';
+/** How long a manager that shares its data spends sending what changed before it closes. */
+const CLOSING_PUSH_MS = 12_000;
 /** Where the relay sends the browser back to on this manager after Google. */
 export const GOOGLE_CALLBACK_PATH = '/oauth/google/callback';
 
@@ -526,8 +528,10 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     // A character's reply, told to whoever subscribed from SillyTavern's own
     // page; see replies.ts. Called once requests arrive, like the tools.
     replies: {
-      presence: (page, state) => replyNotifier.presence(page, state),
-      reply: (report) => replyNotifier.reply(report),
+      // A page put away, or a reply just finished, is when a device is likely
+      // to be left for another one: what changed is sent then, not a minute on.
+      presence: (page, state) => { if (state !== 'visible') pushSoon(3_000); return replyNotifier.presence(page, state); },
+      reply: (report) => { pushSoon(30_000); return replyNotifier.reply(report); },
       expect: (report) => replyNotifier.expect(report),
       publicKey: () => push.publicKey(),
       preview: (endpoint) => push.preview(endpoint),
@@ -544,6 +548,20 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   });
   // Made after the supervisor it stops, and asked by the supervisor before every start.
   let deviceSync: DeviceSync | null = null;
+  /*
+   * Send what changed on a device that shares its data, a moment from now.
+   *
+   * One timer, moved by each call: several reasons arriving together are one
+   * send. Does nothing on a device that shares with none.
+   */
+  let pushTimer: NodeJS.Timeout | null = null;
+  let pushTarget: { pushNow(): Promise<void> } | null = null;
+  const pushSoon = (delayMs: number): void => {
+    if (!pushTarget) return;
+    if (pushTimer) clearTimeout(pushTimer);
+    pushTimer = setTimeout(() => { pushTimer = null; void pushTarget?.pushNow(); }, delayMs);
+    pushTimer.unref();
+  };
   const supervisor = options.supervisor ?? new ProcessSupervisor({
     runtime,
     port: () => sillyTavernPort,
@@ -684,6 +702,22 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     requestPush: () => { void scheduler.pushNow(); },
   });
   deviceSync = sharing;
+  /*
+   * The last send of a device that shares its data, on the way down.
+   *
+   * SillyTavern is stopped first, so what it writes as it ends is in what is
+   * sent. Bounded well inside what a launcher waits before it ends the
+   * process, because a send that is cut off sends nothing: the recovery point
+   * naming the chunks is the last thing written.
+   */
+  const sendBeforeClosing = async (): Promise<void> => {
+    if (pushTimer) clearTimeout(pushTimer);
+    pushTimer = null;
+    if (!await r2.syncPlace().catch(() => null)) return;
+    await supervisor.stop().catch(() => undefined);
+    await Promise.race([scheduler.pushNow(), new Promise<void>((done) => { setTimeout(done, CLOSING_PUSH_MS).unref(); })]);
+  };
+  pushTarget = scheduler;
   scheduler.start();
   // Uploads interrupted by a closed tab leave gigabyte part files whose id no
   // longer exists anywhere. A day is long enough for a slow connection to
@@ -1084,6 +1118,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       shutdownToken,
       autoInstall,
       onShutdownRequest: options.onShutdownRequest,
+      onPushRequest: () => pushSoon(0),
     }).catch((error: unknown) => {
       if (error instanceof RequestError) {
         sendError(response, error.statusCode, error.code, error.message);
@@ -1222,7 +1257,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     online,
     // The meter closes first, so the part of today that has just been spent is
     // written down before the transport looks for finished days.
-    close: async () => { online.close(); notificationRules.close(); replyNotifier.close(); announcements?.close(); await activity.close(); await telemetry.close(); await scheduler.close(); await tunnel.close(); await managerTunnel.close(); await gateway.close(); await supervisor.close(); await backups.settle(); await profiles.close(); await closeServer(server); },
+    close: async () => { await sendBeforeClosing(); online.close(); notificationRules.close(); replyNotifier.close(); announcements?.close(); await activity.close(); await telemetry.close(); await scheduler.close(); await tunnel.close(); await managerTunnel.close(); await gateway.close(); await supervisor.close(); await backups.settle(); await profiles.close(); await closeServer(server); },
   };
 }
 
@@ -1293,8 +1328,9 @@ async function handleRequest(options: {
    */
   readonly autoInstall: boolean;
   readonly onShutdownRequest: (() => void) | undefined;
+  readonly onPushRequest: () => void;
 }): Promise<void> {
-  const { request, response, store, sessions, rateLimiter, handoffs, startedAt, publicOrigins, proxiedOrigin, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, earlyLink, gateway, profiles, backups, r2, cloudflare, google, sharing, metrics, activity, config, system, releases, online, notifications, push, proxy, publishProxies, budget, saver, shutdownToken, autoInstall, onShutdownRequest } = options;
+  const { request, response, store, sessions, rateLimiter, handoffs, startedAt, publicOrigins, proxiedOrigin, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, earlyLink, gateway, profiles, backups, r2, cloudflare, google, sharing, metrics, activity, config, system, releases, online, notifications, push, proxy, publishProxies, budget, saver, shutdownToken, autoInstall, onShutdownRequest, onPushRequest } = options;
   // Whether the browser's side of this connection is HTTPS, which is not the
   // same question as whether ours is: a hosted console is reached over HTTPS
   // that a proxy terminates before us, and only the proxy's own header says so.
@@ -1408,6 +1444,20 @@ async function handleRequest(options: {
     }
     sendJson(response, 202, { ok: true });
     onShutdownRequest?.();
+    return;
+  }
+
+  if (pathname === '/api/v1/sync/push' && method === 'POST') {
+    // The app around this manager saying it has been put away: the phone's
+    // screen went to something else, the window was closed to the tray. It
+    // holds the launcher's token and no console session, like the route above.
+    const supplied = headerValue(request.headers['x-stm-shutdown-token']);
+    if (!shutdownToken || !supplied || !constantTimeStringEqual(supplied, shutdownToken)) {
+      sendError(response, 404, 'not_found', 'Route not found');
+      return;
+    }
+    sendJson(response, 202, { ok: true });
+    onPushRequest();
     return;
   }
 

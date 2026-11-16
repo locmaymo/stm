@@ -1193,6 +1193,7 @@
       "keptOwnCopy": "{count} file(s) changed on both devices; this device’s versions are in a recovery point before anything is replaced",
       "ledgerRebuilt": "Another device tidied storage, so the list of stored chunks was read again: {chunks}",
       "left": "This device no longer shares its data",
+      "pushFailed": "What changed could not be sent just now; the next run sends it: {reason}",
       "started": "This device now shares its data with your other devices on this storage",
       "superseded": "Your device {label} moved the shared data on first, so this device stops sending until it has caught up",
       "watchFailed": "Storage could not be asked whether another device is in use: {reason}"

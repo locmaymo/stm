@@ -1193,6 +1193,7 @@
       "keptOwnCopy": "{count} tệp bị đổi trên cả hai máy; bản của máy này đã nằm trong một điểm khôi phục trước khi bị thay",
       "ledgerRebuilt": "Một thiết bị khác vừa dọn kho, nên danh sách khối đã lưu được đọc lại: {chunks}",
       "left": "Máy này không còn dùng chung dữ liệu nữa",
+      "pushFailed": "Chưa gửi được phần vừa thay đổi; lần chạy kế sẽ gửi: {reason}",
       "started": "Máy này giờ dùng chung dữ liệu với các thiết bị khác của bạn trên kho lưu trữ này",
       "superseded": "Máy {label} của bạn đã cập nhật dữ liệu chung trước, nên máy này ngừng gửi cho tới khi bắt kịp",
       "watchFailed": "Không hỏi được kho lưu trữ xem có thiết bị khác đang dùng không: {reason}"

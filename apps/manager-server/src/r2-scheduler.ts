@@ -159,8 +159,42 @@ export class BackupScheduler {
    * device would not see.
    */
   public async pushNow(): Promise<void> {
-    this.pushRequested = true;
-    await this.tick();
+    // A run already under way has read the disk; the next one is told not to wait.
+    if (this.running) { this.pushRequested = true; return; }
+    this.running = true;
+    try {
+      const config = await this.r2.getConfig();
+      if (!config.enabled || !config.configured || config.sync?.state !== 'ready') return;
+      if (this.backups.isOperationRunning()) return;
+      const profile = await this.profiles.getActive();
+      if (!profile || isWaitingProfile(profile)) return;
+      const fingerprint = await this.backups.fingerprint(profile);
+      if (config.lastFingerprint === fingerprint) return;
+      await this.sendChanges(profile, fingerprint, 'hot');
+    } catch (error: unknown) {
+      const reason = error instanceof Error ? error.message : 'unknown error';
+      this.logger(logEvent('sync.pushFailed', `[sync] what changed could not be sent just now; the next run sends it: ${reason}`, { reason }));
+    } finally {
+      this.running = false;
+    }
+  }
+
+  /** One backup to storage, with the answer "another device is in use now" acted on. */
+  private async sendChanges(profile: Profile, fingerprint: string, tier: 'hot' | 'cold'): Promise<Awaited<ReturnType<typeof syncProfileToR2>> | null> {
+    try {
+      const result = await syncProfileToR2({ profile, backups: this.backups, r2: this.r2, tier, fingerprint, logger: this.logger });
+      this.lastHotUploadAt = this.now().getTime();
+      this.logger(logEvent('backup.r2Synced', `[backup] ${tier === 'cold' ? 'full' : 'frequent'} R2 backup: ${result.uploadedChunks} chunk(s) sent, ${result.fileCount} file(s) recorded`, { tier, chunks: result.uploadedChunks, files: result.fileCount }));
+      return result;
+    } catch (error: unknown) {
+      // Another device took the number this one reached for: it is the one in use now.
+      if (error instanceof R2Error && error.code === 'sync_superseded') {
+        const ahead = (await this.r2.getConfig()).sync?.ahead?.label ?? '';
+        await this.sharing?.handOver(ahead);
+        return null;
+      }
+      throw error;
+    }
   }
 
   public start(): void {
@@ -377,20 +411,7 @@ export class BackupScheduler {
     if (!coldDue && (!hotDue || config.lastFingerprint === fingerprint)) return;
 
     const tier = coldDue ? 'cold' : 'hot';
-    let result;
-    try {
-      result = await syncProfileToR2({ profile, backups: this.backups, r2: this.r2, tier, fingerprint, logger: this.logger });
-    } catch (error: unknown) {
-      // Another device took the number this one reached for: it is the one in use now.
-      if (error instanceof R2Error && error.code === 'sync_superseded') {
-        const ahead = (await this.r2.getConfig()).sync?.ahead?.label ?? '';
-        await this.sharing?.handOver(ahead);
-        return;
-      }
-      throw error;
-    }
-    this.lastHotUploadAt = this.now().getTime();
-    this.logger(logEvent('backup.r2Synced', `[backup] ${tier === 'cold' ? 'full' : 'frequent'} R2 backup: ${result.uploadedChunks} chunk(s) sent, ${result.fileCount} file(s) recorded`, { tier, chunks: result.uploadedChunks, files: result.fileCount }));
+    if (!await this.sendChanges(profile, fingerprint, tier)) return;
 
     // Thinning needs a listing, which is charged. Asking for one after every
     // upload spent it on being told there was nothing to thin.
