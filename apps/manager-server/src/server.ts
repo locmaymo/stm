@@ -98,6 +98,17 @@ const DEFAULT_GOOGLE_CLIENT_ID = '342010087439-k960utodagns1kdb72epd6rfhs887hor.
 const DEFAULT_GOOGLE_BROKER_URL = 'https://stm.locmaymo.top';
 /** How long a manager that shares its data spends sending what changed before it closes. */
 const CLOSING_PUSH_MS = 12_000;
+/** How soon after a reply a device that shares its data sends it: long enough for SillyTavern to have saved the chat. */
+const REPLY_PUSH_MS = 3_000;
+/**
+ * How often a device that shares its data looks at whether its files changed.
+ *
+ * Looking is a walk of the profile's file sizes and dates, with nothing read
+ * and nothing asked of storage; only a change is sent. A minute between looks
+ * was a minute in which the other device would open on a chat without its
+ * last messages.
+ */
+const CHANGE_LOOK_MS = 10_000;
 /** Where the relay sends the browser back to on this manager after Google. */
 export const GOOGLE_CALLBACK_PATH = '/oauth/google/callback';
 
@@ -534,7 +545,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       // A page put away, or a reply just finished, is when a device is likely
       // to be left for another one: what changed is sent then, not a minute on.
       presence: (page, state) => { if (state !== 'visible') pushSoon(3_000); return replyNotifier.presence(page, state); },
-      reply: (report) => { pushSoon(30_000); return replyNotifier.reply(report); },
+      reply: (report) => { pushSoon(REPLY_PUSH_MS); return replyNotifier.reply(report); },
       expect: (report) => replyNotifier.expect(report),
       publicKey: () => push.publicKey(),
       preview: (endpoint) => push.preview(endpoint),
@@ -722,6 +733,9 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   };
   pushTarget = scheduler;
   scheduler.start();
+  // Does nothing on a device that shares with none, and nothing when no file moved.
+  const changeLook = setInterval(() => { if (supervisor.getState().status === 'running') void scheduler.pushNow(); }, CHANGE_LOOK_MS);
+  changeLook.unref();
   // Uploads interrupted by a closed tab leave gigabyte part files whose id no
   // longer exists anywhere. A day is long enough for a slow connection to
   // finish one and short enough that the volume does not fill up with them.
@@ -1275,7 +1289,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     online,
     // The meter closes first, so the part of today that has just been spent is
     // written down before the transport looks for finished days.
-    close: async () => { await sendBeforeClosing(); online.close(); notificationRules.close(); replyNotifier.close(); announcements?.close(); await activity.close(); await telemetry.close(); await scheduler.close(); await tunnel.close(); await managerTunnel.close(); await gateway.close(); await supervisor.close(); await backups.settle(); await profiles.close(); await closeServer(server); },
+    close: async () => { clearInterval(changeLook); await sendBeforeClosing(); online.close(); notificationRules.close(); replyNotifier.close(); announcements?.close(); await activity.close(); await telemetry.close(); await scheduler.close(); await tunnel.close(); await managerTunnel.close(); await gateway.close(); await supervisor.close(); await backups.settle(); await profiles.close(); await closeServer(server); },
   };
 }
 
@@ -2537,6 +2551,8 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       if (error instanceof R2Error) { sendError(response, 409, error.code, error.message); return; }
       throw error;
     }
+    // Pressed again while the first press is still at work: that one is the answer.
+    if (supervisor.getState().status === 'starting') { sendJson(response, 202, { sync: (await r2.getConfig()).sync ?? null }); return; }
     // Stopped first: catching up writes into the profile.
     await supervisor.stop();
     void supervisor.start().catch((error: unknown) => logger(logEvent('sillytavern.autoStartFailed', `[sillytavern] automatic startup failed: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' })));

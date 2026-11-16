@@ -1,4 +1,4 @@
-import { useState, type ReactElement } from 'react';
+import { useEffect, useRef, useState, type ReactElement } from 'react';
 import { LoaderCircle, MonitorSmartphone } from 'lucide-react';
 import { Alert, AlertDescription, AlertTitle, Button } from '../../../packages/ui/src/index.js';
 import type { DeviceSyncOutcome, DeviceSyncStatus } from '../../../packages/contracts/src/index.js';
@@ -24,16 +24,35 @@ async function post(action: SyncAction, csrfToken: string): Promise<DeviceSyncSt
   return payload?.sync ?? null;
 }
 
+/**
+ * How long a press is taken to be at work when nothing has said otherwise.
+ *
+ * The manager answers a press at once and does the work after: it reads
+ * storage, brings files over, then starts SillyTavern. Until the next status
+ * says so, the page has only its own word that anything is happening - and a
+ * card that went back to its button in that gap got pressed a second time.
+ */
+const PRESS_HOLDS_MS = 90_000;
+
 function useSyncAction(csrfToken: string, onStatus: (status: DeviceSyncStatus | null) => void): { busy: boolean; problem: string | null; run: (action: SyncAction) => void } {
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  const held = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (held.current) clearTimeout(held.current); }, []);
   const run = (action: SyncAction): void => {
+    if (busy) return;
     setBusy(true);
     setProblem(null);
+    if (held.current) clearTimeout(held.current);
     post(action, csrfToken)
-      .then((status) => { onStatus(status); })
-      .catch((error: unknown) => { setProblem(error instanceof Error ? error.message : String(error)); })
-      .finally(() => { setBusy(false); });
+      .then((status) => {
+        onStatus(status);
+        // Turning sharing on or off is done when it is answered; taking the
+        // shared data in has only begun.
+        if (action === 'leave' || action === 'start') setBusy(false);
+        else held.current = setTimeout(() => { setBusy(false); }, PRESS_HOLDS_MS);
+      })
+      .catch((error: unknown) => { setProblem(error instanceof Error ? error.message : String(error)); setBusy(false); });
   };
   return { busy, problem, run };
 }

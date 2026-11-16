@@ -19,8 +19,14 @@ import { R2HttpError, type ObjectStore, type SlotResult, type SlotTiming } from 
  * the worst outcome is a chat that exists twice.
  */
 
-/** Long enough for a small write started at the same moment to have landed. */
-export const SLOT_SETTLE_MS = 2500;
+/**
+ * Long enough for a small write started at the same moment to have landed.
+ *
+ * Every send by a device that shares its data waits this long, so it is paid
+ * many times an hour; twenty rounds against a real Drive account never showed
+ * a write that was not listed at once.
+ */
+export const SLOT_SETTLE_MS = 1000;
 /** A small write that takes this long is not one to trust the order of. */
 export const SLOT_STALL_MS = 10_000;
 

@@ -115,6 +115,11 @@ export class DeviceLine {
   private readonly slot: SlotOptions;
   private cached: LineState | null | undefined;
   private writeQueue: Promise<void> = Promise.resolve();
+  /** The housekeeping that follows a generation; see `commit`. */
+  private tidying: Promise<void> = Promise.resolve();
+
+  /** Resolves once the housekeeping after the last generation is done. */
+  public async tidied(): Promise<void> { await this.tidying; }
 
   public constructor(options: DeviceLineOptions) {
     this.directory = options.directory;
@@ -219,9 +224,13 @@ export class DeviceLine {
       return { won: false, head };
     }
     await this.save({ ...state, seq: generation.seq, snapshotId, files, writtenBy: generation.device.label, mine: true, syncedAt: at, behind: null });
-    // Neither is needed for the generation to stand; both make the next reader's work shorter.
-    await store.putObject(this.key('head.json'), Buffer.from(JSON.stringify({ schemaVersion: SCHEMA_VERSION, seq: generation.seq }), 'utf8'), 'application/json').catch(() => undefined);
-    if (generation.seq > GENERATIONS_KEPT) await store.deleteObject(this.generationKey(generation.seq - GENERATIONS_KEPT)).catch(() => undefined);
+    // Neither is needed for the generation to stand; both make the next reader's
+    // work shorter. Not waited for: on Drive they are seconds, added to every send.
+    // One after another, so an older number is never written over a newer one.
+    this.tidying = this.tidying.then(async () => {
+      await store.putObject(this.key('head.json'), Buffer.from(JSON.stringify({ schemaVersion: SCHEMA_VERSION, seq: generation.seq }), 'utf8'), 'application/json').catch(() => undefined);
+      if (generation.seq > GENERATIONS_KEPT) await store.deleteObject(this.generationKey(generation.seq - GENERATIONS_KEPT)).catch(() => undefined);
+    });
     return { won: true, generation };
   }
 
