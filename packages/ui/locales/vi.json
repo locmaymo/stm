@@ -1186,11 +1186,16 @@
       "usageRecordSkipped": "Không cập nhật được số thao tác tính phí mà kho lưu trữ tự ghi: {reason}"
     },
     "sync": {
+      "catchUpFailed": "Máy này không kiểm tra được dữ liệu mới trước khi chạy, nên chạy trên dữ liệu đang có: {reason}",
+      "caughtUp": "Đã bắt kịp máy {label} của bạn: lấy về {taken} tệp, xoá {removed} tệp, giữ hai bản {kept} cuộc trò chuyện",
+      "handedOver": "Máy {label} của bạn đang dùng dữ liệu này, nên SillyTavern ở đây đã dừng; chạy lại trên máy này để dùng tiếp từ chỗ đó",
       "joined": "Máy này đã tham gia nhóm thiết bị dùng chung kho lưu trữ này (bắt đầu từ máy {label})",
+      "keptOwnCopy": "{count} tệp bị đổi trên cả hai máy; bản của máy này đã nằm trong một điểm khôi phục trước khi bị thay",
       "ledgerRebuilt": "Một thiết bị khác vừa dọn kho, nên danh sách khối đã lưu được đọc lại: {chunks}",
       "left": "Máy này không còn dùng chung dữ liệu nữa",
       "started": "Máy này giờ dùng chung dữ liệu với các thiết bị khác của bạn trên kho lưu trữ này",
-      "superseded": "Máy {label} của bạn đã cập nhật dữ liệu chung trước, nên máy này ngừng gửi cho tới khi bắt kịp"
+      "superseded": "Máy {label} của bạn đã cập nhật dữ liệu chung trước, nên máy này ngừng gửi cho tới khi bắt kịp",
+      "watchFailed": "Không hỏi được kho lưu trữ xem có thiết bị khác đang dùng không: {reason}"
     },
     "job": {
       "preparingBackup": "Đang chuẩn bị sao lưu",

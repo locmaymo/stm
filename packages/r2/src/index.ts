@@ -1425,6 +1425,11 @@ export class R2Manager {
     return place && place.profileId === profileId ? place.lineId : profileId;
   }
 
+  /** What this device is called where the others read about it. */
+  public deviceLabel(): string {
+    return this.installationLabel();
+  }
+
   /** This device's place among the devices sharing the data, or null. */
   public async syncPlace(): Promise<LineState | null> {
     return await this.line.state();
@@ -1516,11 +1521,42 @@ export class R2Manager {
    * Record that this device now holds exactly what a generation holds, so the
    * next backup compares against that and not against what was here before.
    */
-  public async adoptShared(generation: Generation, files: readonly HashedFile[]): Promise<void> {
+  public async adoptShared(generation: Generation, files: readonly HashedFile[], unheld: readonly string[] = []): Promise<void> {
     const place = await this.line.state();
     if (!place) throw new R2Error('sync_off', 'This device is not syncing');
-    await this.line.adopt(generation, files);
+    await this.line.adopt(generation, files, unheld);
     await this.save({ ...(await this.load()), lastSnapshot: { profileId: place.lineId, id: generation.snapshotId }, lastFingerprint: null });
+  }
+
+  /** A device that joined a line with nothing on it yet starts from nothing. */
+  public async settleShared(): Promise<void> {
+    await this.line.settle();
+  }
+
+  /**
+   * Say that this device is the one in use now, without anything having changed.
+   *
+   * A device being sat down at writes the next generation over the same
+   * recovery point. Nothing is sent; what it does is let the device that was
+   * in use before find out within a minute, and stop, instead of finding out
+   * when the two of them have both changed something.
+   *
+   * False when another device moved the line on first, or this device has to
+   * catch up before it may.
+   */
+  public async takeTurn(): Promise<boolean> {
+    return await this.exclusive(async () => {
+      const config = await this.requireUsable();
+      const place = await this.line.state();
+      if (!place || place.files === null || place.behind) return false;
+      if (place.mine || !place.snapshotId) return true;
+      try {
+        const committed = await this.line.commit(this.client(config), place.snapshotId, place.files, { id: this.installId ?? '', label: this.installationLabel() });
+        return committed.won;
+      } finally {
+        await this.recordCharges();
+      }
+    });
   }
 
   private async syncStatus(): Promise<DeviceSyncStatus | null> {

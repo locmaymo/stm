@@ -77,6 +77,13 @@ export interface LineState {
   readonly files: readonly HashedFile[] | null;
   /** The device that wrote `seq`, for saying where the data last came from. */
   readonly writtenBy: string | null;
+  /** Whether that device is this one: whether this device is the one in use. */
+  readonly mine: boolean;
+  /**
+   * Names in `files` that this device's file system cannot hold. They are not
+   * on its disk, and every file list it sends must name them all the same.
+   */
+  readonly unheld: readonly string[];
   readonly syncedAt: string | null;
   /** The sweep this device's list of stored chunks is good for; see `sweep.json`. */
   readonly sweep: string | null;
@@ -159,7 +166,7 @@ export class DeviceLine {
    * holds is its own to send.
    */
   public async join(record: LineRecord, profileId: string, files: readonly HashedFile[] | null): Promise<LineState> {
-    const state: LineState = { schemaVersion: SCHEMA_VERSION, lineId: record.lineId, profileId, seq: 0, snapshotId: null, files, writtenBy: null, syncedAt: null, sweep: null, behind: null };
+    const state: LineState = { schemaVersion: SCHEMA_VERSION, lineId: record.lineId, profileId, seq: 0, snapshotId: null, files, writtenBy: null, mine: false, unheld: [], syncedAt: null, sweep: null, behind: null };
     await this.save(state);
     return state;
   }
@@ -211,18 +218,30 @@ export class DeviceLine {
       if (head) await this.save({ ...state, behind: { seq: head.seq, label: head.device.label, at: head.at } });
       return { won: false, head };
     }
-    await this.save({ ...state, seq: generation.seq, snapshotId, files, writtenBy: generation.device.label, syncedAt: at, behind: null });
+    await this.save({ ...state, seq: generation.seq, snapshotId, files, writtenBy: generation.device.label, mine: true, syncedAt: at, behind: null });
     // Neither is needed for the generation to stand; both make the next reader's work shorter.
     await store.putObject(this.key('head.json'), Buffer.from(JSON.stringify({ schemaVersion: SCHEMA_VERSION, seq: generation.seq }), 'utf8'), 'application/json').catch(() => undefined);
     if (generation.seq > GENERATIONS_KEPT) await store.deleteObject(this.generationKey(generation.seq - GENERATIONS_KEPT)).catch(() => undefined);
     return { won: true, generation };
   }
 
-  /** Record that this device now holds exactly what a generation holds. */
-  public async adopt(generation: Generation, files: readonly HashedFile[]): Promise<void> {
+  /**
+   * Record that this device now holds what a generation holds, apart from the
+   * files named in `unheld`, which it cannot.
+   */
+  public async adopt(generation: Generation, files: readonly HashedFile[], unheld: readonly string[] = []): Promise<void> {
     const state = await this.state();
     if (!state) throw new R2Error('sync_off', 'This device is not syncing');
-    await this.save({ ...state, seq: generation.seq, snapshotId: generation.snapshotId, files, writtenBy: generation.device.label, syncedAt: this.now().toISOString(), behind: null });
+    await this.save({ ...state, seq: generation.seq, snapshotId: generation.snapshotId, files, writtenBy: generation.device.label, mine: false, unheld: [...unheld], syncedAt: this.now().toISOString(), behind: null });
+  }
+
+  /**
+   * A device that joined a line nobody has written to yet has nothing to catch
+   * up with: everything it holds is its own to send.
+   */
+  public async settle(): Promise<void> {
+    const state = await this.state();
+    if (state && state.files === null) await this.save({ ...state, files: [] });
   }
 
   /** Note that another device is ahead, so this one stops adding to the line. */
@@ -358,6 +377,8 @@ function parseState(value: unknown): LineState {
     snapshotId: typeof value.snapshotId === 'string' ? value.snapshotId : null,
     files: Array.isArray(value.files) ? value.files as HashedFile[] : null,
     writtenBy: typeof value.writtenBy === 'string' ? value.writtenBy : null,
+    mine: value.mine === true,
+    unheld: Array.isArray(value.unheld) ? value.unheld.filter((name): name is string => typeof name === 'string') : [],
     syncedAt: typeof value.syncedAt === 'string' ? value.syncedAt : null,
     sweep: typeof value.sweep === 'string' ? value.sweep : null,
     behind,

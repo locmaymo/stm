@@ -1186,11 +1186,16 @@
       "usageRecordSkipped": "The bucket’s own count of charged operations could not be updated: {reason}"
     },
     "sync": {
+      "catchUpFailed": "This device could not check for newer data before starting, so it starts on what it has: {reason}",
+      "caughtUp": "Caught up with your device {label}: {taken} file(s) taken, {removed} removed, {kept} chat(s) kept twice",
+      "handedOver": "Your device {label} is using this data now, so SillyTavern was stopped here; start it again on this device to carry on from there",
       "joined": "This device joined the devices sharing this storage (started on {label})",
+      "keptOwnCopy": "{count} file(s) changed on both devices; this device’s versions are in a recovery point before anything is replaced",
       "ledgerRebuilt": "Another device tidied storage, so the list of stored chunks was read again: {chunks}",
       "left": "This device no longer shares its data",
       "started": "This device now shares its data with your other devices on this storage",
-      "superseded": "Your device {label} moved the shared data on first, so this device stops sending until it has caught up"
+      "superseded": "Your device {label} moved the shared data on first, so this device stops sending until it has caught up",
+      "watchFailed": "Storage could not be asked whether another device is in use: {reason}"
     },
     "job": {
       "preparingBackup": "Preparing backup",

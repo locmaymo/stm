@@ -30,6 +30,7 @@ import { BackupError, BackupStore, MAX_ZIP_DIRECTORY_BYTES, type RestoreOptions 
 import { CloudflareConnection, GoogleConnection, R2Error, R2Manager, type R2UpdateInput } from '../../../packages/r2/src/index.js';
 import { CloudflareApiError, CloudflareOAuthError, CloudflareRateLimitError, DEFAULT_SCOPES, PROXY_WORKER_TARGETS, ProxyWorkerManager, type ProxyWorkerTarget } from '../../../packages/cloudflare/src/index.js';
 import { BackupScheduler, syncProfileToR2 } from './r2-scheduler.js';
+import { DeviceSync } from './device-sync.js';
 import { fetchSnapshotToLibrary, isProfileEmpty, recoverProfileFromR2, restoreSnapshotInPlace } from './r2-restore.js';
 import { TransferMeter } from './progress.js';
 import { MetricsStore } from './metrics.js';
@@ -541,12 +542,17 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       },
     },
   });
+  // Made after the supervisor it stops, and asked by the supervisor before every start.
+  let deviceSync: DeviceSync | null = null;
   const supervisor = options.supervisor ?? new ProcessSupervisor({
     runtime,
     port: () => sillyTavernPort,
     profileResolver: (installation) => profiles.getActiveForInstallation(installation.id),
     profileLifecycle: {
       prepare: async (profile, runtimePath) => {
+        // Before anything reads the profile: what another device wrote comes in
+        // first, so SillyTavern never starts on data that has been moved on.
+        await deviceSync?.beforeStart(profile);
         const installation = await runtime.getInstallation(profile.installationId);
         if (installation) {
           try {
@@ -667,7 +673,17 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       const offer = await managerSettingsOffer({ store, backups, r2, runtime, tunnel, managerTunnel, gateway, logger: baseLogger });
       return offer.available ? offer.label : null;
     },
+    sharing: { watch: async () => { await sharing.watch(); }, handOver: async (label) => { await sharing.handOver(label); } },
   });
+  const sharing = new DeviceSync({
+    r2, backups,
+    stateDirectory: paths.state,
+    logger: (line) => { jobs.append('backup', line); baseLogger(line); },
+    isRunning: () => supervisor.getState().status === 'running',
+    stop: () => supervisor.stop(),
+    requestPush: () => { void scheduler.pushNow(); },
+  });
+  deviceSync = sharing;
   scheduler.start();
   // Uploads interrupted by a closed tab leave gigabyte part files whose id no
   // longer exists anywhere. A day is long enough for a slow connection to
@@ -1052,6 +1068,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       r2,
       cloudflare,
       google,
+      sharing,
       metrics,
       activity,
       config,
@@ -1245,6 +1262,7 @@ async function handleRequest(options: {
   readonly r2: R2Manager;
   readonly cloudflare: CloudflareConnection | null;
   readonly google: GoogleConnection | null;
+  readonly sharing: DeviceSync;
   readonly metrics: MetricsStore;
   /** How much the manager itself is used; see `activity.ts`. */
   readonly activity: ActivityMeter;
@@ -1276,7 +1294,7 @@ async function handleRequest(options: {
   readonly autoInstall: boolean;
   readonly onShutdownRequest: (() => void) | undefined;
 }): Promise<void> {
-  const { request, response, store, sessions, rateLimiter, handoffs, startedAt, publicOrigins, proxiedOrigin, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, earlyLink, gateway, profiles, backups, r2, cloudflare, google, metrics, activity, config, system, releases, online, notifications, push, proxy, publishProxies, budget, saver, shutdownToken, autoInstall, onShutdownRequest } = options;
+  const { request, response, store, sessions, rateLimiter, handoffs, startedAt, publicOrigins, proxiedOrigin, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, earlyLink, gateway, profiles, backups, r2, cloudflare, google, sharing, metrics, activity, config, system, releases, online, notifications, push, proxy, publishProxies, budget, saver, shutdownToken, autoInstall, onShutdownRequest } = options;
   // Whether the browser's side of this connection is HTTPS, which is not the
   // same question as whether ours is: a hosted console is reached over HTTPS
   // that a proxy terminates before us, and only the proxy's own header says so.
@@ -1628,7 +1646,7 @@ async function handleRequest(options: {
     if (method !== 'GET' && !requireCsrf(context, session.csrfToken)) {
       return;
     }
-    await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, online, proxy, publishProxies, budget, logger, handoffs, saver, sessions, notifications, push, google);
+    await handleRuntimeRequest(context, store, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, metrics, activity, config, system, online, proxy, publishProxies, budget, logger, handoffs, saver, sessions, notifications, push, google, sharing);
     return;
   }
 
@@ -1890,7 +1908,7 @@ async function adoptRestoredPort(deps: PortAdoptionDeps, port: number): Promise<
   }
 }
 
-async function handleRuntimeRequest(context: RequestContext, store: StateStore, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, managerTunnel: TunnelManager, gateway: AccessGateway, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, cloudflare: CloudflareConnection | null, metrics: MetricsStore, activity: ActivityMeter, config: ConfigStore, system: SystemStore, online: OnlineKeeper, proxy: ProxyWorkerManager | null, publishProxies: () => void, budget: WorkerBudget, logger: LogSink, handoffs: HandoffStore, saver: SaverMode, sessions: SessionStore, notifications: NotificationCenter, push: WebPush, google: GoogleConnection | null): Promise<void> {
+async function handleRuntimeRequest(context: RequestContext, store: StateStore, runtime: RuntimeManager, jobs: JobStore, supervisor: ProcessSupervisor, tunnel: TunnelManager, managerTunnel: TunnelManager, gateway: AccessGateway, profiles: ProfileStore, backups: BackupStore, r2: R2Manager, cloudflare: CloudflareConnection | null, metrics: MetricsStore, activity: ActivityMeter, config: ConfigStore, system: SystemStore, online: OnlineKeeper, proxy: ProxyWorkerManager | null, publishProxies: () => void, budget: WorkerBudget, logger: LogSink, handoffs: HandoffStore, saver: SaverMode, sessions: SessionStore, notifications: NotificationCenter, push: WebPush, google: GoogleConnection | null, sharing: DeviceSync): Promise<void> {
   const { pathname, ports, request, response, searchParams } = context;
   const method = request.method ?? 'GET';
   const adoptSillyTavernPort = (port: number): Promise<void> =>
@@ -2423,6 +2441,48 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
   }
   if (pathname === '/api/v1/r2/reconcile' && method === 'POST') {
     sendJson(response, 200, await r2.reconcile());
+    return;
+  }
+  /*
+   * One person's devices sharing one set of data; see `device-sync.ts`.
+   *
+   * Starting and joining are the two ways onto the line. Either one ends with
+   * SillyTavern started again, because starting is where a device catches up
+   * and says it is the one in use; `resume` is that same start, for a device
+   * that was stopped because another one took over.
+   */
+  if (pathname === '/api/v1/sync' && method === 'GET') {
+    // Asked on purpose, so storage is read: this is how a device connected
+    // before the others started sharing finds out that they have.
+    if (searchParams.get('check') === '1') await r2.sharedLine().catch(() => null);
+    sendJson(response, 200, { sync: (await r2.getConfig()).sync ?? null, outcome: await sharing.outcome() });
+    return;
+  }
+  if ((pathname === '/api/v1/sync/start' || pathname === '/api/v1/sync/join' || pathname === '/api/v1/sync/resume') && method === 'POST') {
+    const profile = await profiles.getActive();
+    if (!profile || isWaitingProfile(profile)) { sendError(response, 409, 'sync_no_profile', 'Install SillyTavern on this device before sharing its data'); return; }
+    try {
+      if (pathname.endsWith('/start')) await r2.startSharing(profile.id);
+      else if (pathname.endsWith('/join')) await r2.joinSharing(profile.id);
+      else if (!await r2.syncPlace()) { sendError(response, 409, 'sync_off', 'This device is not sharing its data'); return; }
+    } catch (error: unknown) {
+      if (error instanceof R2Error) { sendError(response, 409, error.code, error.message); return; }
+      throw error;
+    }
+    // Stopped first: catching up writes into the profile.
+    await supervisor.stop();
+    void supervisor.start().catch((error: unknown) => logger(logEvent('sillytavern.autoStartFailed', `[sillytavern] automatic startup failed: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' })));
+    sendJson(response, 202, { sync: (await r2.getConfig()).sync ?? null });
+    return;
+  }
+  if (pathname === '/api/v1/sync/leave' && method === 'POST') {
+    await r2.stopSharing();
+    sendJson(response, 200, { sync: (await r2.getConfig()).sync ?? null });
+    return;
+  }
+  if (pathname === '/api/v1/sync/outcome/dismiss' && method === 'POST') {
+    await sharing.dismissOutcome();
+    sendJson(response, 200, { outcome: null });
     return;
   }
   // One R2 backup now, whatever the clock says. It sends the whole profile
