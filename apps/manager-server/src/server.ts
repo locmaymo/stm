@@ -43,7 +43,8 @@ import { OnlineKeeper } from './online.js';
 import { formatGibibytes, SaverMode } from './saver.js';
 import { capacityFor, checkFits, decideTrim, diskSpace, memoryGuard, roomCheck } from './headroom.js';
 import { applyManagerSettings, foreignManagerSettings, managerSettingsOffer, restoreFromBucketIfBlank, saveManagerSettings, SettingsOfferWatch, settingsOfferKey, type ManagerSettingsDeps } from './manager-settings.js';
-import type { AccessLinkKind, AccessLinkPreference, AccessLinkTarget, ManagerSettingsOffer, ManagerSettingsRecord, ProcessState } from '../../../packages/contracts/src/index.js';
+import { isLocalHostname } from '../../../packages/contracts/src/index.js';
+import type { AccessLinkKind, AccessLinkPreference, AccessLinkTarget, ManagerSettingsOffer, ManagerSettingsRecord, OwnLinkState, ProcessState } from '../../../packages/contracts/src/index.js';
 import { instrumentationLoaderPath } from '../../../packages/instrumentation/src/index.js';
 import { ConfigError, ConfigStore } from '../../../packages/config/src/index.js';
 import { DEFAULT_TELEMETRY_ENDPOINT, DEFAULT_TELEMETRY_ENROLLMENT_ENDPOINT, TelemetryTransport } from '../../../packages/telemetry/src/index.js';
@@ -601,7 +602,14 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
    * It refuses to open without the manager password. The gateway's tunnel
    * refuses without the SillyTavern password for the same reason, and this side
    * can install software and read the whole data directory.
+   *
+   * With one way round, which is `earlyLink` below: a console with no password
+   * that is already being read at an address on the internet. There the
+   * password is not standing between anybody and anything yet - whoever reaches
+   * that address first sets it - so a second address, random and shown only on
+   * the page that asked for it, opens nothing that was shut.
    */
+  let earlyLinkAllowed = false;
   const managerTunnel = options.managerTunnel ?? new TunnelManager({
     paths,
     env,
@@ -611,12 +619,31 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     targetUrl: () => `http://127.0.0.1:${boundPort}`,
     onUrl: (url) => { void followTunnel('manager', url); },
     beforeStart: async () => {
-      if ((await store.getPersisted()).adminPasswordHash === null) {
+      if (!earlyLinkAllowed && (await store.getPersisted()).adminPasswordHash === null) {
         throw new Error('Set the manager password before opening the console to the internet');
       }
     },
     logger: (line) => { jobs.append('cloudflared', line); baseLogger(line); },
   });
+  /*
+   * The console's own link, opened before there is a password; see `EarlyLink`.
+   *
+   * One start at a time. The page that asked goes on asking while cloudflared
+   * is fetched, which on a first run is a download, and `start` only knows it
+   * is already under way once the process exists - so a second ask in that gap
+   * would begin a second one.
+   */
+  let earlyLinkStart: Promise<void> | null = null;
+  const earlyLink: EarlyLink = {
+    opening: () => earlyLinkStart !== null,
+    open: () => {
+      earlyLinkAllowed = true;
+      if (earlyLinkStart) return;
+      const { status } = managerTunnel.getState();
+      if (status === 'starting' || status === 'running') return;
+      earlyLinkStart = managerTunnel.start('quick').then(() => undefined, () => undefined).finally(() => { earlyLinkStart = null; });
+    },
+  };
   // The local backup interval used to be stored with the R2 settings. Hand an
   // old value over to the backup library before the scheduler first reads it.
   // An unreadable R2 file must not stop the manager starting over this.
@@ -1018,6 +1045,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       supervisor,
       tunnel,
       managerTunnel,
+      earlyLink,
       gateway,
       profiles,
       backups,
@@ -1209,6 +1237,8 @@ async function handleRequest(options: {
   readonly supervisor: ProcessSupervisor;
   readonly tunnel: TunnelManager;
   readonly managerTunnel: TunnelManager;
+  /** The console's own link, before there is a password; see `EarlyLink`. */
+  readonly earlyLink: EarlyLink;
   readonly gateway: AccessGateway;
   readonly profiles: ProfileStore;
   readonly backups: BackupStore;
@@ -1246,7 +1276,7 @@ async function handleRequest(options: {
   readonly autoInstall: boolean;
   readonly onShutdownRequest: (() => void) | undefined;
 }): Promise<void> {
-  const { request, response, store, sessions, rateLimiter, handoffs, startedAt, publicOrigins, proxiedOrigin, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, gateway, profiles, backups, r2, cloudflare, google, metrics, activity, config, system, releases, online, notifications, push, proxy, publishProxies, budget, saver, shutdownToken, autoInstall, onShutdownRequest } = options;
+  const { request, response, store, sessions, rateLimiter, handoffs, startedAt, publicOrigins, proxiedOrigin, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, earlyLink, gateway, profiles, backups, r2, cloudflare, google, metrics, activity, config, system, releases, online, notifications, push, proxy, publishProxies, budget, saver, shutdownToken, autoInstall, onShutdownRequest } = options;
   // Whether the browser's side of this connection is HTTPS, which is not the
   // same question as whether ours is: a hosted console is reached over HTTPS
   // that a proxy terminates before us, and only the proxy's own header says so.
@@ -1376,6 +1406,26 @@ async function handleRequest(options: {
       googleSignIn: { available: google !== null, owner: state.googleOwnerEmail },
     };
     sendJson(response, 200, status);
+    return;
+  }
+
+  if (pathname === '/api/v1/setup/own-link' && (method === 'GET' || method === 'POST')) {
+    const state = await store.getPersisted();
+    const blank = state.adminPasswordHash === null && state.ownerAccountId === null && state.googleOwnerId === null;
+    const available = blank && addressedOnTheInternet(context);
+    if (method === 'POST' && available) earlyLink.open();
+    const tunnelState = await withProxyUrl(managerTunnel.getState(), proxy, cloudflare, 'manager', budget, state.accessLinks.manager);
+    const link: OwnLinkState = {
+      available,
+      opening: earlyLink.opening(),
+      status: tunnelState.status,
+      url: tunnelState.url,
+      error: tunnelState.error,
+      proxyUrl: tunnelState.proxyUrl ?? null,
+      proxyPending: tunnelState.proxyPending ?? false,
+      ...(tunnelState.linkPreference ? { linkPreference: tunnelState.linkPreference } : {}),
+    };
+    sendJson(response, 200, link);
     return;
   }
 
@@ -4908,6 +4958,51 @@ function forwardedClientAddress(request: IncomingMessage): string | null {
   const chain = headerValue(request.headers['x-forwarded-for']);
   const nearest = chain?.split(',').at(-1)?.trim();
   return nearest ? nearest : null;
+}
+
+/**
+ * The console's own link, for a page that is not signed in.
+ *
+ * A platform that shows a new app inside its own page shows this console in a
+ * frame, and in some browsers a console in somebody else's frame does not
+ * work: presses go nowhere and nothing it asks for comes back. The console's
+ * own link is the same console in a tab of its own, so a console that finds
+ * itself in a frame asks for that link and shows it instead of itself - before
+ * the password, because setting the password is one of the things the frame
+ * gets in the way of.
+ *
+ * `POST /api/v1/setup/own-link` opens the link and `GET` only reads it, so the
+ * page can go on asking without a failed start being tried again on every ask.
+ *
+ * Opened for whoever asks only while the console is blank and already at an
+ * address on the internet; see `earlyLinkAllowed`. Once it has a password or
+ * an owner, nothing is started from there: the link is theirs to turn on and
+ * off, and the route only says where it is while it is on - an address that
+ * leads to a sign-in screen and nothing else.
+ *
+ * Not rate limited. The limiter counts sign-in attempts, and a page that asks
+ * every second and a half would spend the reader's whole allowance before
+ * they had typed a password. What bounds this is that there is one start.
+ */
+interface EarlyLink {
+  /** Whether a start is under way that the tunnel does not show yet. */
+  readonly opening: () => boolean;
+  readonly open: () => void;
+}
+
+/**
+ * Whether the request was made to an address that is neither this machine nor
+ * the network around it - which is to say, whether the console is somewhere
+ * anybody can already reach.
+ */
+function addressedOnTheInternet(context: RequestContext): boolean {
+  const origin = context.proxiedOrigin ?? requestOrigin(context);
+  if (!origin) return false;
+  try {
+    return !isLocalHostname(new URL(origin).hostname);
+  } catch {
+    return false;
+  }
 }
 
 /** Whether the request was made to an address that is not this machine. */

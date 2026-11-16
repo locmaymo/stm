@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { getPlatformPaths } from '../../../packages/platform/src/index.js';
 import { StateStore } from '../src/state.js';
 import { preferredNetworkHost, startManagerServer, type ManagerServer } from '../src/server.js';
-import type { AccessGatewayState, ApiErrorBody, ConsoleStatus, Installation, LegalReview, ManagerUpdateStatus, OnlineState, ProcessState, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
+import type { AccessGatewayState, ApiErrorBody, ConsoleStatus, Installation, LegalReview, ManagerUpdateStatus, OnlineState, OwnLinkState, ProcessState, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { LEGAL_META } from '../../../packages/legal/src/index.js';
 import type { WorkerBudget, WorkerBudgetLevel } from '../src/worker-budget.js';
 import { hashPassword } from '../src/password.js';
@@ -990,6 +990,75 @@ test('the console will not be opened to the internet without a manager password'
   assert.equal(refused.status, 'error');
   assert.match(refused.error ?? '', /manager password/u);
   assert.equal(refused.url, null);
+});
+
+test('a blank console already on the internet opens its own link for a page that is not signed in', async (t) => {
+  /*
+   * Shown in a platform's frame, the console is somewhere it may not work at
+   * all, and setting the password is one of the things that does not. So the
+   * link is opened first, for whoever asks - which is nobody the address the
+   * console is already at was not open to.
+   */
+  const managerTunnel = fakeTunnel();
+  let starts = 0;
+  const start = managerTunnel.start;
+  managerTunnel.start = async (mode) => { starts += 1; return start(mode); };
+  const manager = await createServer({ managerTunnel });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const hosted = { 'x-forwarded-host': 'some-app-123456789012.hosted.example', 'x-forwarded-proto': 'https' };
+
+  // Asked about, it says it would open and opens nothing.
+  const asked = await (await fetch(`${base}/api/v1/setup/own-link`, { headers: hosted })).json() as OwnLinkState;
+  assert.equal(asked.available, true);
+  assert.equal(asked.status, 'stopped');
+  assert.equal(starts, 0);
+
+  // Asked for, it opens - once, however many times the page asks while it does.
+  const opened = await Promise.all([1, 2, 3].map(async () => (await fetch(`${base}/api/v1/setup/own-link`, { method: 'POST', headers: hosted })).json() as Promise<OwnLinkState>));
+  assert.equal(opened.every((state) => state.available), true);
+  assert.equal(starts, 1);
+  managerTunnel.publish('https://busy-lake-1234.trycloudflare.com');
+  const ready = await (await fetch(`${base}/api/v1/setup/own-link`, { headers: hosted })).json() as OwnLinkState;
+  assert.equal(ready.status, 'running');
+  assert.equal(ready.url, 'https://busy-lake-1234.trycloudflare.com');
+  assert.equal(ready.opening, false);
+  await fetch(`${base}/api/v1/setup/own-link`, { method: 'POST', headers: hosted });
+  assert.equal(starts, 1, 'a link that is up is not started again');
+});
+
+test('the link is not opened for a stranger on a machine somebody is sitting at, or on one that has an owner', async (t) => {
+  const managerTunnel = fakeTunnel();
+  let starts = 0;
+  const start = managerTunnel.start;
+  managerTunnel.start = async (mode) => { starts += 1; return start(mode); };
+  const manager = await createServer({ managerTunnel });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+
+  // This machine and the network around it: the address is not on the internet,
+  // and the link would be what put it there.
+  for (const host of [undefined, '192.168.1.20:7860', 'raspberrypi.local:7860']) {
+    const response = await fetch(`${base}/api/v1/setup/own-link`, { method: 'POST', headers: host ? { 'x-forwarded-host': host } : {} });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json() as OwnLinkState).available, false, host ?? 'loopback');
+  }
+  assert.equal(starts, 0);
+
+  // With a password, the link is the owner's to turn on. A page that is not
+  // signed in is told where it is while it is on, and starts nothing.
+  const setup = await fetch(`${base}/api/v1/setup/password`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: 'correct horse battery staple', termsAccepted: true, telemetryAccepted: true }) });
+  assert.equal(setup.status, 201);
+  const hosted = { 'x-forwarded-host': 'some-app-123456789012.hosted.example', 'x-forwarded-proto': 'https' };
+  const owned = await (await fetch(`${base}/api/v1/setup/own-link`, { method: 'POST', headers: hosted })).json() as OwnLinkState;
+  assert.equal(owned.available, false);
+  assert.equal(owned.status, 'stopped');
+  assert.equal(starts, 0);
+  await managerTunnel.start('quick');
+  managerTunnel.publish('https://busy-lake-1234.trycloudflare.com');
+  const shown = await (await fetch(`${base}/api/v1/setup/own-link`, { headers: hosted })).json() as OwnLinkState;
+  assert.equal(shown.available, false);
+  assert.equal(shown.url, 'https://busy-lake-1234.trycloudflare.com');
 });
 
 test('the console tunnel is separate from SillyTavern’s, and its address is trusted while it is open', async (t) => {
