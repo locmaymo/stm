@@ -10,39 +10,15 @@
  * the platform's, it can be scoped to a session, rewritten in the headers the
  * console reads itself from, or simply gone tomorrow - and a Cloudflare
  * sign-in has to come back to something. That is when the console's own link
- * is worth suggesting.
+ * is what the reader is sent to.
  */
 
-/** Where the answer to the address offer is remembered, per browser. */
-const ANSWERED_KEY = 'stm-address-offer-answered';
-/** Where a link of the console's own, asked for before setup, waits for it. */
-const OWN_LINK_KEY = 'stm-own-link-after-setup';
+import { isLocalHostname, type OwnLinkState } from '../../../packages/contracts/src/index.js';
+import { publicAddress } from './addresses.js';
 
-type HostingStorage = Pick<Storage, 'getItem' | 'setItem'>;
-
-/**
- * Whether this hostname is one the reader reached without a platform in the
- * middle: this machine, or a device on the same network.
- */
-export function isLocalHostname(hostname: string): boolean {
-  // Both brackets, so `[::1]` is not left as `::1]`.
-  const host = hostname.toLowerCase().replace(/^\[|\]$/gu, '');
-  if (host === 'localhost' || host.endsWith('.localhost') || host === '::1' || host === '0.0.0.0') return true;
-  // A name ending in .local is mDNS, which does not leave the network it is on.
-  if (host.endsWith('.local')) return true;
-  const ipv6 = /^f[cd][0-9a-f]{2}:/u.test(host) || host.startsWith('fe80:');
-  if (ipv6) return true;
-  const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/u.exec(host);
-  if (!ipv4) return false;
-  const first = Number(ipv4[1]);
-  const second = Number(ipv4[2]);
-  return first === 127
-    || first === 10
-    || (first === 172 && second >= 16 && second <= 31)
-    || (first === 192 && second === 168)
-    // Carrier-grade NAT, which is the range Tailscale hands out.
-    || (first === 100 && second >= 64 && second <= 127);
-}
+// Whether a hostname was reached without a platform in the middle. Kept with
+// the contracts because the manager asks the same question; see there.
+export { isLocalHostname };
 
 /**
  * Whether this hostname is the machine the console is running on.
@@ -62,72 +38,61 @@ export function isThisMachine(hostname: string): boolean {
   return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/u.test(host);
 }
 
-export interface AddressOfferInput {
+export interface FrameInput {
   /** The address the console is being read at, from the browser. */
   readonly hostname: string;
   /** Whether the console is inside another page's frame. */
   readonly framed: boolean;
-  /** Whether the reader has answered this offer before. */
-  readonly answered: boolean;
 }
 
 /**
- * Whether to offer, before the password is set, to open the console at the
- * address it is being read at - in a tab of its own.
+ * Whether the console is somewhere it should send the reader away from: in a
+ * platform's frame.
  *
- * A studio shows a new app inside its own page, in a frame. The address in
- * that frame is one the platform gave out for this app, and it is already a
- * working link to this console: opened in a tab of its own, it is the
- * console without the studio around it, reached the way the platform meant.
- * That is the first thing to offer, ahead of a link of the console's own,
- * which is a tunnel that has to be opened and kept up.
+ * A studio shows a new app inside its own page, and a console inside somebody
+ * else's page does not work everywhere. On an older phone the page draws and
+ * then nothing on it can be pressed and nothing it asks for comes back, which
+ * to the reader is an installer that is broken. The same console at a link of
+ * its own, in a tab of its own, has none of that - so the frame shows that
+ * link and nothing else, to everybody, rather than working for some readers
+ * and failing for the rest in a way none of them can report.
  *
- * Not asked of a console already in its own tab - it is already at that
- * address - nor on the reader's own machine or network, and asked once.
+ * It used to be an offer, made once, with the platform's own address first.
+ * That address is not always one a browser can stay at - a platform may send
+ * it straight back to the page with the frame in it - and an offer that can be
+ * skipped is skipped by exactly the reader it was for.
+ *
+ * Not on the reader's own machine or network: a frame there is one somebody
+ * built on purpose, around an address that works.
  */
-export function shouldOfferPlatformAddress(input: AddressOfferInput): boolean {
-  if (input.answered || !input.framed) return false;
-  return !isLocalHostname(input.hostname);
+export function mustLeaveFrame(input: FrameInput): boolean {
+  return input.framed && !isLocalHostname(input.hostname);
 }
 
-export function readAddressOfferAnswered(storage?: HostingStorage): boolean {
-  return readFlag(storage, ANSWERED_KEY);
-}
-
-export function saveAddressOfferAnswered(storage?: HostingStorage): void {
-  writeFlag(storage, ANSWERED_KEY, true);
-}
+/** What the frame shows while it is sending the reader to the link. */
+export type OwnLinkView =
+  | { readonly kind: 'link'; readonly address: string }
+  | { readonly kind: 'opening' }
+  | { readonly kind: 'failed'; readonly error: string | null }
+  /** No link is coming and none can be asked for: the form is all there is. */
+  | { readonly kind: 'stay' };
 
 /**
- * Whether the reader asked for the console's own link before there was a
- * password to guard it with.
+ * Read what the manager said about its link.
  *
- * The link refuses to open on a manager with no password, and the offer is
- * made before one is set - so the choice is remembered here and carried out
- * by the console once it is open.
+ * `stay` is the way out for a reader nothing else would let in: the link is
+ * off on a console that has an owner, who is the only one who can turn it on,
+ * or the console does not think it is on the internet at all. A link that
+ * failed on a blank console is `failed` instead, because there asking again
+ * may well work.
  */
-export function readOwnLinkWanted(storage?: HostingStorage): boolean {
-  return readFlag(storage, OWN_LINK_KEY);
-}
-
-export function saveOwnLinkWanted(storage: HostingStorage | undefined, wanted: boolean): void {
-  writeFlag(storage, OWN_LINK_KEY, wanted);
-}
-
-function readFlag(storage: HostingStorage | undefined, key: string): boolean {
-  try {
-    return storage?.getItem(key) === 'yes';
-  } catch {
-    return false;
-  }
-}
-
-function writeFlag(storage: HostingStorage | undefined, key: string, value: boolean): void {
-  try {
-    storage?.setItem(key, value ? 'yes' : 'no');
-  } catch {
-    // Without storage the offer comes back next time. That is a card nobody
-    // wanted rather than a console nobody can reach, so it is the safe way
-    // round - and it is one press to answer again.
-  }
+export function ownLinkView(state: OwnLinkState): OwnLinkView {
+  const address = publicAddress(state);
+  if (address) return { kind: 'link', address };
+  if (state.opening || state.status === 'starting' || state.status === 'running') return { kind: 'opening' };
+  if (!state.available) return { kind: 'stay' };
+  if (state.status === 'error') return { kind: 'failed', error: state.error };
+  // Blank, asked for, and not started: the ask did not take. Said as a
+  // failure so there is a button to ask again with.
+  return { kind: 'failed', error: null };
 }

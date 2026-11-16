@@ -1,6 +1,7 @@
 export * from './table-query.js';
 export * from './table-fields.js';
 export * from './log-format.js';
+export * from './local-host.js';
 
 /**
  * What kind of machine this manager is on.
@@ -1255,6 +1256,23 @@ export interface TunnelState {
    * Absent where nothing decorates the state, which reads as the default.
    */
   readonly linkPreference?: AccessLinkPreference;
+}
+
+/**
+ * The console's own link, as a page that is not signed in is told about it.
+ *
+ * What a console shown inside another site's frame asks for, so it can show
+ * the link instead of itself. Only the parts of the tunnel's state an address
+ * is read from, and two things the tunnel does not know.
+ */
+export interface OwnLinkState extends Pick<TunnelState, 'status' | 'url' | 'error' | 'proxyUrl' | 'proxyPending' | 'linkPreference'> {
+  /**
+   * Whether asking opens the link: only on a console with no password and no
+   * owner yet, read at an address that is already on the internet.
+   */
+  readonly available: boolean;
+  /** Whether a start is under way that `status` does not show yet. */
+  readonly opening: boolean;
 }
 
 /** The two doors a tunnel's address can be for. */

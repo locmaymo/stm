@@ -30,7 +30,7 @@ import { failures, logCatalog, translator, type Fail, type MessageKey, type Tran
 import { browserEnvironment, browserStorage, readPreferences, savePreferences, type LocaleCode, type Preferences } from './preferences.js';
 import { authErrorKey } from './auth-error.js';
 import { DEFAULT_SILLYTAVERN_PORT, portRefusal } from './ports.js';
-import { isLocalHostname, isThisMachine, readAddressOfferAnswered, readOwnLinkWanted, saveAddressOfferAnswered, saveOwnLinkWanted, shouldOfferPlatformAddress } from './hosting.js';
+import { isLocalHostname, isThisMachine, mustLeaveFrame, ownLinkView, type OwnLinkView } from './hosting.js';
 import { availableUpdate, readDismissedManagerRelease, readDismissedUpdate, saveDismissedManagerRelease, saveDismissedUpdate, shouldShowManagerRelease } from './updates.js';
 import { readDismissedDisplaced, readDismissedRecovery, readDismissedSettings, saveDismissedDisplaced, saveDismissedRecovery, saveDismissedSettings, shouldOfferSettings, shouldShowDisplaced, shouldShowRecovery } from './settings-offer.js';
 import { apiFetch, onSessionExpired, resetSessionWatch, sessionToken, setSessionToken } from './session.js';
@@ -38,6 +38,7 @@ import { NotificationBell, PushOfferDialog, PushToggle } from './notification-be
 import { answerTermuxOffer, appFeatures, bubbleRequest, hasAppChannel, importZipFromApp, openInApp, updateApp, type AppFeatures, type AppUpdateEvent, type BubbleState, type ImportSource } from './app-bridge.js';
 import { BUBBLE_OFFER_KEY, bubbleOfferWanted, offerAccepted, offerDue, offerSnoozed, readOffer, writeOffer } from './offers.js';
 import { collectCloudflareResult, framed, inPhoneApp, inStmApp, openReturnWindow, popupsBlocked, whenAbandoned, type CollectedResult } from './oauth.js';
+import type { OwnLinkState } from '../../../packages/contracts/src/index.js';
 import type { AccessGatewayState, AccessLinkKind, AccessLinkPreference, AccessLinkTarget, BackupManifest, CloudflareAccountProblem, ConfigDocument, ConsoleStatus, ConfigSettings, ConfigSettingsInput, ConfigUpdateInput, Installation, Job, LocalBackupSchedule, LegalReview, LogEntry, LogSourceFilter, ManagerRelease, ManagerSettingsOffer, ManagerUpdateStatus, NotificationSummary, OnlineState, MetricsBucket, SetupStatus, MetricsSnapshot, PortSettings, ProcessState, Profile, R2CheckResult, R2CloudflareUsage, R2Config, R2ConnectionMode, R2SnapshotSummary, R2Transfer, R2UsageResponse, R2UsageWarning, RestoreMode, RestorePreview, SaverState, SetupChecklistState, SetupStep, StartupSettings, StorageDurabilityReport, SystemSnapshot, TunnelState, VersionOption } from '../../../packages/contracts/src/index.js';
 import { BACKUP_KINDS, backupKind, backupSearchText, backupSortValue, formatBytes, isCloudJob, type BackupKind, metricsSearchText, metricsSortValue, snapshotSortValue } from '../../../packages/contracts/src/index.js';
 import { useLiveLogs } from './use-live-logs.js';
@@ -393,23 +394,11 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, google, refus
   const termsId = useId();
   const setup = mode === 'setup';
   /*
-   * Whether to offer the platform's own address first; see
-   * PlatformAddressOffer. Decided once, as the screen opens.
+   * In a platform's frame, where this screen shows the console's own link
+   * instead of itself; see `mustLeaveFrame`. Decided as the screen opens, and
+   * given up only when there is no link to send anybody to - see `OwnLinkStage`.
    */
-  const [addressOffer, setAddressOffer] = useState(() => setup && shouldOfferPlatformAddress({ hostname: window.location.hostname, framed: framed(), answered: readAddressOfferAnswered(browserStorage()) }));
-  /*
-   * Set up, and waiting on the console's own link rather than going in.
-   *
-   * Holds the session the setup opened, which is what turns the link on. The
-   * reader leaves for the link from here; nothing is installed until they sign
-   * in there - see `firstRunDeferred` on the server.
-   */
-  const [linkStage, setLinkStage] = useState<string | null>(null);
-  const answerAddressOffer = (ownLink: boolean) => {
-    saveAddressOfferAnswered(browserStorage());
-    if (ownLink) saveOwnLinkWanted(browserStorage(), true);
-    setAddressOffer(false);
-  };
+  const [leaving, setLeaving] = useState(() => mustLeaveFrame({ hostname: window.location.hostname, framed: framed() }));
   const fail = failures(preferences.locale);
   // Shown once the second field stops being a prefix of the first, rather than
   // the moment the two differ - a mismatch warning under a half-typed password
@@ -442,14 +431,11 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, google, refus
   const submit = async () => {
     if (!consented()) return;
     setBusy(true); setError(null);
-    // Asked for a link of its own before the password: the first run waits
-    // for the sign-in at that link.
-    const ownLink = setup && readOwnLinkWanted(browserStorage());
     try {
       // Not `apiFetch`: see the note on the session probe above.
       const response = await fetch(setup ? '/api/v1/setup/password' : '/api/v1/auth/login', {
         method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(setup ? { password, termsAccepted: accepted, telemetryAccepted: accepted, ...(ownLink ? { deferFirstRun: true } : {}) } : { password }),
+        body: JSON.stringify(setup ? { password, termsAccepted: accepted, telemetryAccepted: accepted } : { password }),
       });
       const payload = await response.json() as { session?: { csrfToken: string }; token?: string; firstRun?: boolean; error?: { code?: string; message?: string } };
       if (!response.ok || !payload.session) {
@@ -458,7 +444,6 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, google, refus
         return;
       }
       if (payload.token) setSessionToken(payload.token);
-      if (ownLink) { saveOwnLinkWanted(browserStorage(), false); setLinkStage(payload.session.csrfToken); return; }
       // A sign-in that takes a first run put off at setup is, to this screen,
       // the end of a setup: the first-run card follows it.
       onSignedIn(payload.session.csrfToken, setup || payload.firstRun === true);
@@ -647,10 +632,8 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, google, refus
 
   return (
     <AuthLayout
-      title={linkStage ? t('setup.ownLinkTitle') : setup ? t('setup.title') : t('setup.loginTitle')}
-      // Nothing under the title while the address is offered: the card is the
-      // one thing to read.
-      subtitle={linkStage ? t('setup.ownLinkBody') : addressOffer ? null : setup ? t('setup.subtitle') : t('setup.loginSubtitle')}
+      title={leaving ? t('setup.ownLinkTitle') : setup ? t('setup.title') : t('setup.loginTitle')}
+      subtitle={leaving ? t('setup.ownLinkBody') : setup ? t('setup.subtitle') : t('setup.loginSubtitle')}
       // The credit is on both screens. On the first run it answers "what is
       // this and who wrote it?" before anything is typed into it; afterwards
       // it is the fastest way to read off the version a fault report needs.
@@ -665,7 +648,7 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, google, refus
         </Button>
       </>}
     >
-      {linkStage ? <OwnLinkStage t={t} csrfToken={linkStage} fail={fail} /> : addressOffer ? <PlatformAddressOffer t={t} address={`${window.location.origin}/`} onOpen={() => answerAddressOffer(false)} onOwnLink={() => answerAddressOffer(true)} onSkip={() => answerAddressOffer(false)} /> : <Card className="rounded-2xl">
+      {leaving ? <OwnLinkStage t={t} setup={setup} onStay={() => setLeaving(false)} /> : <Card className="rounded-2xl">
         <CardContent className="p-6">
           <form className="grid gap-5" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
             {signedOut ? <Alert><Clock3 /><AlertDescription>{t('setup.signedOut')}</AlertDescription></Alert> : null}
@@ -730,107 +713,96 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, google, refus
 }
 
 /**
- * Before the password: open this console at the address it is already at.
+ * In a platform's frame: the console's own link, and nothing else.
  *
- * A studio shows a new app inside its own page, and the address in that frame
- * - one the platform gave out - already reaches this console. Opened in a tab
- * of its own it is the console without the studio around it, with nothing to
- * set up and nothing to keep running, which is why it is the button the eye
- * lands on. A link of the console's own is the second choice: one fixed
- * address through Cloudflare, opened once there is a password to guard it.
+ * The console is not opened here and no password is asked for here, because
+ * here is where it may not work; see `mustLeaveFrame`. Nobody is asked whether
+ * they want the link either. The screen asks the manager to open it, says so
+ * while cloudflared comes up, and hands the address over - and setting the
+ * password, or signing in, is done where the reader is going.
  *
  * The address opens through an ordinary link, which no browser treats as a
- * pop-up. Whatever is chosen, this screen carries on to the password, so the
- * frame left behind is still a working console.
- */
-function PlatformAddressOffer({ t, address, onOpen, onOwnLink, onSkip }: { t: Translate; address: string; onOpen: () => void; onOwnLink: () => void; onSkip: () => void }) {
-  return <Card className="rounded-2xl">
-    <CardContent className="grid gap-4 p-6">
-      <div className="grid gap-1">
-        <h2 className="text-base font-semibold">{t('setup.addressFound')}</h2>
-        <p className="text-sm text-muted-foreground">{t('setup.addressHint')}</p>
-      </div>
-      <div className="flex items-start gap-2 rounded-lg border px-3 py-2.5">
-        <Globe2 className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-        <span className="min-w-0 font-mono text-xs leading-relaxed [overflow-wrap:anywhere]">{bareHost(address)}</span>
-      </div>
-      <Button asChild size="lg" className="w-full">
-        <a href={address} target="_blank" rel="noopener noreferrer" onClick={onOpen}><ArrowUpRight />{t('setup.addressOpen')}</a>
-      </Button>
-      {/* Quieter than the button above on purpose: no border, no brand. */}
-      <div className="grid gap-1">
-        <Button type="button" variant="ghost" className="w-full text-muted-foreground" onClick={onOwnLink}><Globe2 />{t('setup.addressOwnLink')}</Button>
-        <Button type="button" variant="ghost" className="w-full text-muted-foreground" onClick={onSkip}>{t('setup.addressSkip')}</Button>
-      </div>
-    </CardContent>
-  </Card>;
-}
-
-/**
- * After the password, for a reader who asked for a link of the console's own:
- * the link, and nothing else.
+ * pop-up, and is written out where it can be selected: a frame is also where
+ * a browser may refuse to put anything on the clipboard.
  *
- * The console is not opened here. The reader is about to leave for the link,
- * and everything a first run starts - SillyTavern's installation, the offer
- * to connect a Cloudflare account - belongs where they are going, so it waits
- * for them to sign in there. This screen turns the link on, says so while
- * cloudflared comes up, and hands the address over.
+ * `onStay` is the one way to carry on in the frame. It is taken without being
+ * asked when there is no link and no way to ask for one - a console whose
+ * owner turned it off - and offered, quietly, under a link that could not be
+ * opened, so that Cloudflare being out of reach is not the manager being out
+ * of reach as well.
  */
-function OwnLinkStage({ t, csrfToken, fail }: { t: Translate; csrfToken: string; fail: Fail }) {
-  const [tunnel, setTunnel] = useState<TunnelState | null>(null);
-  const [error, setError] = useState<string | null>(null);
+function OwnLinkStage({ t, setup, onStay }: { t: Translate; setup: boolean; onStay: () => void }) {
+  const [view, setView] = useState<OwnLinkView>({ kind: 'opening' });
   const [attempt, setAttempt] = useState(0);
+  const [copied, setCopied] = useState(false);
+  const shown = useRef<HTMLSpanElement | null>(null);
   useEffect(() => {
     let cancelled = false;
     let timer = 0;
-    // Until the address is announced, or something says it will not be.
-    const watch = async (): Promise<void> => {
+    // Asked for once, then only asked about, until the address is announced
+    // or something says it will not be. Not `apiFetch`: nobody is signed in.
+    const ask = async (method: 'GET' | 'POST'): Promise<void> => {
+      let next: OwnLinkView | null = null;
       try {
-        const response = await apiFetch('/api/v1/manager-tunnel', { credentials: 'same-origin' });
-        if (response.ok) {
-          const state = await response.json() as TunnelState;
-          if (cancelled) return;
-          setTunnel(state);
-          if (publicAddress(state)) return;
-          if (state.status === 'error') { setError(state.error ?? t('setup.ownLinkFailed')); return; }
-        }
+        const response = await fetch('/api/v1/setup/own-link', { method, credentials: 'same-origin' });
+        // A manager that has no such route has no link to give this way.
+        if (response.ok) next = ownLinkView(await response.json() as OwnLinkState);
+        else if (method === 'POST') next = { kind: 'failed', error: null };
       } catch {
-        // Asked again below; a moment without an answer is not a failure.
+        // A moment without an answer is not a failure once it has started.
+        if (method === 'POST') next = { kind: 'failed', error: null };
       }
-      if (!cancelled) timer = window.setTimeout(() => void watch(), 1500);
+      if (cancelled) return;
+      if (next?.kind === 'stay') { onStay(); return; }
+      if (next) setView(next);
+      if (!next || next.kind === 'opening') timer = window.setTimeout(() => void ask('GET'), 1500);
     };
-    setError(null);
-    void (async () => {
-      try {
-        const response = await apiFetch('/api/v1/manager-tunnel', { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ mode: 'quick' }) });
-        const payload: unknown = await response.json();
-        if (cancelled) return;
-        if (!response.ok) { setError(fail.body(payload, t('setup.ownLinkFailed'))); return; }
-        setTunnel(payload as TunnelState);
-        void watch();
-      } catch { if (!cancelled) setError(t('setup.ownLinkFailed')); }
-    })();
+    setView({ kind: 'opening' });
+    void ask('POST');
     return () => { cancelled = true; window.clearTimeout(timer); };
   }, [attempt]);
-  const address = tunnel ? publicAddress(tunnel) : null;
+  const copy = async (address: string) => {
+    try {
+      await navigator.clipboard.writeText(address);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Refused, as a frame may be: the address is selected instead, which
+      // leaves the reader one press from copying it themselves.
+      const element = shown.current;
+      if (!element) return;
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+    }
+  };
   // The page's own title and subtitle say what this is; the card holds the link.
   return <Card className="rounded-2xl">
     <CardContent className="grid gap-5 p-6">
-      {error
+      {view.kind === 'failed'
         ? <>
-          <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>
-          <Button type="button" variant="outline" className="w-full" onClick={() => setAttempt((count) => count + 1)}><RefreshCw />{t('setup.ownLinkRetry')}</Button>
+          <Alert variant="destructive"><AlertDescription>{view.error ?? t('setup.ownLinkFailed')}</AlertDescription></Alert>
+          <div className="grid gap-1">
+            <Button type="button" variant="outline" className="w-full" onClick={() => setAttempt((count) => count + 1)}><RefreshCw />{t('setup.ownLinkRetry')}</Button>
+            {/* Quieter than the button above on purpose: it is the way round, not the way. */}
+            <Button type="button" variant="ghost" className="w-full text-muted-foreground" onClick={onStay}>{t('setup.ownLinkStay')}</Button>
+          </div>
         </>
-        : address
+        : view.kind === 'link'
           ? <>
             <div className="flex items-start gap-2 rounded-lg border px-3 py-2.5">
               <span className="mt-0.5 shrink-0" style={{ color: CLOUDFLARE_ORANGE }} aria-hidden="true"><CloudflareMark size={14} /></span>
-              <span className="min-w-0 font-mono text-xs leading-relaxed [overflow-wrap:anywhere]">{bareHost(address)}</span>
+              <span ref={shown} className="min-w-0 select-all font-mono text-xs leading-relaxed [overflow-wrap:anywhere]">{view.address}</span>
             </div>
-            <Button asChild size="lg" className="w-full">
-              <a href={address} target="_blank" rel="noopener noreferrer"><ArrowUpRight />{t('setup.ownLinkGo')}</a>
-            </Button>
-            <p className="text-xs text-muted-foreground">{t('setup.ownLinkNext')}</p>
+            <div className="grid gap-1">
+              <Button asChild size="lg" className="w-full">
+                <a href={view.address} target="_blank" rel="noopener noreferrer"><ArrowUpRight />{t('setup.ownLinkGo')}</a>
+              </Button>
+              <Button type="button" variant="ghost" className="w-full text-muted-foreground" onClick={() => void copy(view.address)}>{copied ? <Check /> : <Copy />}{copied ? t('setup.ownLinkCopied') : t('setup.ownLinkCopy')}</Button>
+            </div>
+            <p className="text-xs text-muted-foreground">{setup ? t('setup.ownLinkNextSetup') : t('setup.ownLinkNextSignIn')}</p>
           </>
           : <div className="grid gap-2" role="status">
             <span className="thinking text-sm">{t('setup.ownLinkOpening')}</span>
