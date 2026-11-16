@@ -1022,6 +1022,7 @@
       "stoppedConfigChange": "Stopped: applying a configuration change",
       "stoppedPasswordChange": "Stopped: applying the new SillyTavern password",
       "stoppedShutdown": "Stopped: the manager is shutting down",
+      "stoppedUsedElsewhere": "Stopped: another of your devices is using this data",
       "stoppedStartupFailed": "Stopped: it did not finish starting",
       "exited": "Exited on its own ({detail})",
       "stoppedUninstall": "Stopped: removing SillyTavern",
@@ -1149,6 +1150,7 @@
       "stoppedConfigChange": "Stopped: applying a configuration change",
       "stoppedPasswordChange": "Stopped: applying the new SillyTavern password",
       "stoppedShutdown": "Stopped: the manager is shutting down",
+      "stoppedUsedElsewhere": "Stopped: another of your devices is using this data",
       "stoppedStartupFailed": "Stopped: it did not finish starting",
       "exited": "Exited on its own ({detail})",
       "reconnecting": "Reconnecting in {seconds}s",
@@ -1210,6 +1212,7 @@
     "sync": {
       "catchUpFailed": "This device could not check for newer data before starting, so it starts on what it has: {reason}",
       "caughtUp": "Caught up with your device {label}: {taken} file(s) taken, {removed} removed, {kept} chat(s) kept twice",
+      "notStarted": "SillyTavern was not started with the manager: your device {label} is using this data; start it here to carry on from there",
       "handedOver": "Your device {label} is using this data now, so SillyTavern was stopped here; start it again on this device to carry on from there",
       "joined": "This device joined the devices sharing this storage (started on {label})",
       "keptOwnCopy": "{count} file(s) changed on both devices; this device’s versions are in a recovery point before anything is replaced",

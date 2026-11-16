@@ -347,6 +347,9 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     env,
     ...(cloudflare ? { cloudflare } : {}),
     ...(google ? { google } : {}),
+    // A launcher that knows what its device is called says so; a phone's
+    // hostname is "localhost" on every phone.
+    ...(env.STM_DEVICE_NAME?.trim() ? { installationLabel: env.STM_DEVICE_NAME.trim() } : {}),
     logger: (line) => { jobs.append('backup', line); baseLogger(line); },
     /*
      * The account has gone to another machine, so what was deployed into it
@@ -698,7 +701,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     stateDirectory: paths.state,
     logger: (line) => { jobs.append('backup', line); baseLogger(line); },
     isRunning: () => supervisor.getState().status === 'running',
-    stop: () => supervisor.stop(),
+    stop: () => supervisor.stop('usedElsewhere'),
     requestPush: () => { void scheduler.pushNow(); },
   });
   deviceSync = sharing;
@@ -1218,7 +1221,22 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     // whoever runs SillyTavern themselves, or opens the console only to look
     // at backups on a machine they do not want a second process on.
     if (persisted.autoStartSillyTavern) {
-      void supervisor.start().catch((error: unknown) => logger(logEvent('sillytavern.autoStartFailed', `[sillytavern] automatic startup failed: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' })));
+      /*
+       * Not when another device of the same person holds the shared data.
+       *
+       * Nobody pressed anything here: the manager came up with the machine, or
+       * with an app left open in the background. Starting would tell the
+       * device that is really in use to stop, in the middle of a chat. The
+       * console says where the data is in use and offers one button instead.
+       */
+      void (async () => {
+        const elsewhere = await deviceSync?.inUseElsewhere() ?? null;
+        if (elsewhere !== null) {
+          logger(logEvent('sync.notStarted', `[sync] SillyTavern was not started with the manager: ${elsewhere} is using this data; start it here to carry on from there`, { label: elsewhere }));
+          return;
+        }
+        await supervisor.start();
+      })().catch((error: unknown) => logger(logEvent('sillytavern.autoStartFailed', `[sillytavern] automatic startup failed: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' })));
     } else {
       logger(logEvent('sillytavern.autoStartOff', '[sillytavern] not started: starting it with the manager is switched off'));
     }

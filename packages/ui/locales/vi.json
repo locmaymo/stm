@@ -1022,6 +1022,7 @@
       "stoppedConfigChange": "Đã dừng: đang áp dụng thay đổi cấu hình",
       "stoppedPasswordChange": "Đã dừng: đang áp dụng mật khẩu SillyTavern mới",
       "stoppedShutdown": "Đã dừng: trình quản lý đang tắt",
+      "stoppedUsedElsewhere": "Đã dừng: một thiết bị khác của bạn đang dùng dữ liệu này",
       "stoppedStartupFailed": "Đã dừng: khởi động không hoàn tất",
       "exited": "Tự thoát ({detail})",
       "stoppedUninstall": "Đã dừng: đang gỡ SillyTavern",
@@ -1149,6 +1150,7 @@
       "stoppedConfigChange": "Đã dừng: đang áp dụng thay đổi cấu hình",
       "stoppedPasswordChange": "Đã dừng: đang áp dụng mật khẩu SillyTavern mới",
       "stoppedShutdown": "Đã dừng: trình quản lý đang tắt",
+      "stoppedUsedElsewhere": "Đã dừng: một thiết bị khác của bạn đang dùng dữ liệu này",
       "stoppedStartupFailed": "Đã dừng: khởi động không hoàn tất",
       "exited": "Tự thoát ({detail})",
       "reconnecting": "Sẽ kết nối lại sau {seconds}s",
@@ -1210,6 +1212,7 @@
     "sync": {
       "catchUpFailed": "Máy này không kiểm tra được dữ liệu mới trước khi chạy, nên chạy trên dữ liệu đang có: {reason}",
       "caughtUp": "Đã bắt kịp máy {label} của bạn: lấy về {taken} tệp, xoá {removed} tệp, giữ hai bản {kept} cuộc trò chuyện",
+      "notStarted": "SillyTavern không tự chạy cùng trình quản lý: máy {label} của bạn đang dùng dữ liệu này; chạy nó ở đây để dùng tiếp từ chỗ đó",
       "handedOver": "Máy {label} của bạn đang dùng dữ liệu này, nên SillyTavern ở đây đã dừng; chạy lại trên máy này để dùng tiếp từ chỗ đó",
       "joined": "Máy này đã tham gia nhóm thiết bị dùng chung kho lưu trữ này (bắt đầu từ máy {label})",
       "keptOwnCopy": "{count} tệp bị đổi trên cả hai máy; bản của máy này đã nằm trong một điểm khôi phục trước khi bị thay",

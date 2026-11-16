@@ -1222,6 +1222,7 @@ export type StopReason =
   | 'configChange'
   | 'passwordChange'
   | 'shutdown'
+  | 'usedElsewhere'
   | 'startupFailed';
 
 export const STOP_REASON_TEXT: Readonly<Record<StopReason, string>> = {
@@ -1234,6 +1235,7 @@ export const STOP_REASON_TEXT: Readonly<Record<StopReason, string>> = {
   configChange: 'applying a configuration change',
   passwordChange: 'applying the new SillyTavern password',
   shutdown: 'the manager is shutting down',
+  usedElsewhere: 'another of your devices is using this data',
   startupFailed: 'it did not finish starting',
 };
 

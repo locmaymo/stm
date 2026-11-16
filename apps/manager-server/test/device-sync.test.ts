@@ -330,6 +330,29 @@ test('sitting down at a device stops SillyTavern on the one that was in use', as
   assert.deepEqual(stops, ['desk', 'phone']);
 });
 
+test('a manager that comes up by itself learns who holds the data, and does not ask them to stop', async () => {
+  const { desk, phone } = await pair();
+  const sharing = (target: Device): DeviceSync => new DeviceSync({ r2: target.r2, backups: target.backups, stateDirectory: target.state, isRunning: () => false, stop: async () => undefined });
+  const atDesk = sharing(desk);
+  const onPhone = sharing(phone);
+
+  // The desk wrote last, so a desk that restarts is still the one in use.
+  assert.equal(await atDesk.inUseElsewhere(), null);
+
+  // The phone is opened and used. The desk's manager then restarts on its own.
+  await onPhone.beforeStart(phone.profile);
+  assert.equal(await atDesk.inUseElsewhere(), 'phone');
+  assert.equal(await onPhone.inUseElsewhere(), null);
+  // Asking changed nothing for the phone: it still holds the newest data.
+  assert.equal((await phone.r2.getConfig()).sync?.state, 'ready');
+  assert.equal((await desk.r2.getConfig()).sync?.ahead?.label, 'phone');
+
+  // Storage out of reach is not a reason to stay stopped.
+  const offline = sharing(phone);
+  phone.r2.sharedHead = async () => { throw new Error('fetch failed'); };
+  assert.equal(await offline.inUseElsewhere(), null);
+});
+
 test('a device that cannot reach storage starts on what it has, and what it changed is kept later', async () => {
   const { desk, phone, bucket } = await pair();
   const reach = bucket.fetchImpl;

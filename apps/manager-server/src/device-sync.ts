@@ -327,6 +327,25 @@ export class DeviceSync {
   }
 
   /**
+   * The device that holds the shared data now, when it is not this one.
+   *
+   * Asked before a start nobody pressed for. Storage that cannot be reached
+   * answers "nobody": a device that is offline starts on what it has.
+   */
+  public async inUseElsewhere(): Promise<string | null> {
+    const { r2 } = this.options;
+    try {
+      const place = await r2.syncPlace();
+      // Not sharing, or joined and still to take the shared data in, which a start does.
+      if (!place || place.files === null) return null;
+      if (place.behind) return place.behind.label;
+      return (await r2.sharedHead())?.device.label ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Called on the scheduler's clock. Stops SillyTavern when another device has
    * said it is the one in use.
    */
