@@ -3291,6 +3291,8 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
       operation: jobs.activeOperation(),
       ports: { port: ports.sillyTavern(), reserved: { manager: ports.manager, access: ports.access } },
       r2Owner: r2Now.owner,
+      sync: r2Now.sync ?? null,
+      syncOutcome: r2Now.sync ? await sharing.outcome() : null,
       ...(settingsOffer ? { settingsOffer } : {}),
       r2Problem: r2Now.cloudflare?.problem ?? null,
       /*

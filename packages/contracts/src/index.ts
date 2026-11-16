@@ -1737,6 +1737,14 @@ export interface ConsoleStatus {
    */
   readonly r2Owner: R2Config['owner'];
   /**
+   * This device's place among the devices sharing its data, and what the last
+   * catch-up did that still has to be read. Here, not only in the backup
+   * settings, because another device taking over stops SillyTavern on this
+   * one, and the page somebody is looking at has to say why.
+   */
+  readonly sync?: DeviceSyncStatus | null;
+  readonly syncOutcome?: DeviceSyncOutcome | null;
+  /**
    * The setup another machine left in the bucket, offered to this one.
    *
    * Absent until the manager has read it, and on an older manager's answer;
