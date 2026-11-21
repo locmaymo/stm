@@ -162,6 +162,35 @@ test('no hosting platform is trusted by name, whatever the manager is running on
   }
 });
 
+test('any page may ask which version runs here, and is told nothing else', async (t) => {
+  const manager = await createServer({ platform: 'hosted', bootstrapPassword: 'correct horse battery staple' });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const health = await (await fetch(`${base}/api/v1/health`)).json() as { manager: { version: string } };
+  const version = health.manager.version;
+  assert.match(version, /^\d+\.\d+\.\d+/);
+
+  const asked = await fetch(`${base}/api/v1/version`, { headers: { origin: 'https://installer.example' } });
+  assert.equal(asked.status, 200);
+  assert.equal(asked.headers.get('access-control-allow-origin'), '*');
+  assert.deepEqual(await asked.json(), { version });
+
+  // The same as a picture, for a page that may load images from here but not fetch.
+  const image = await fetch(`${base}/api/v1/version.svg`, { headers: { origin: 'https://installer.example' } });
+  assert.equal(image.status, 200);
+  assert.equal(image.headers.get('content-type'), 'image/svg+xml');
+  assert.equal(image.headers.get('cross-origin-resource-policy'), 'cross-origin');
+  const [major = 0, minor = 0, patch = 0] = version.split(/[.-]/).map((part) => Number.parseInt(part, 10) || 0);
+  assert.equal(await image.text(), `<svg xmlns="http://www.w3.org/2000/svg" width="${major * 100 + minor + 1}" height="${patch + 1}"/>`);
+
+  // Everything else keeps refusing the same page.
+  const health2 = await fetch(`${base}/api/v1/health`, { headers: { origin: 'https://installer.example' } });
+  assert.equal(health2.status, 403);
+  // Only reading: no other method is answered here.
+  const posted = await fetch(`${base}/api/v1/version`, { method: 'POST', headers: { origin: 'https://installer.example' } });
+  assert.equal(posted.status, 403);
+});
+
 test('the console trusts its own fixed address, and signs in through it', async (t) => {
   /*
    * A browser at the Worker's address sends that as its `Origin`, while `Host`

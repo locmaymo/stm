@@ -1443,6 +1443,10 @@ async function handleRequest(options: {
     await servePanel(request, response, pathname, staticRoot);
     return;
   }
+  if ((pathname === VERSION_PATH || pathname === VERSION_IMAGE_PATH) && (request.method ?? 'GET') === 'GET') {
+    sendVersion(response, (await store.getPersisted()).managerVersion, pathname === VERSION_IMAGE_PATH);
+    return;
+  }
   if (!context.originTrusted) {
     sendError(response, 403, 'origin_rejected', 'Request origin is not allowed');
     return;
@@ -5451,6 +5455,34 @@ async function readJson(request: IncomingMessage): Promise<unknown> {
   } catch {
     throw new RequestError(400, 'invalid_json', 'Request body must be valid JSON');
   }
+}
+
+/*
+ * Which version runs here, for a page somewhere else: an installer that put
+ * this manager on a host and wants to say when it is behind. Any page may ask,
+ * so the answer is the version and nothing about this machine, and the origin
+ * check every other route gets does not apply.
+ *
+ * A page whose own policy will not let it fetch from here can still load an
+ * image, so the version is also an empty picture whose size spells it out:
+ * width = major * 100 + minor + 1, height = patch + 1.
+ */
+const VERSION_PATH = '/api/v1/version';
+const VERSION_IMAGE_PATH = '/api/v1/version.svg';
+
+function sendVersion(response: ServerResponse, version: string, image: boolean): void {
+  response.setHeader('Access-Control-Allow-Origin', '*');
+  response.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  if (!image) {
+    sendJson(response, 200, { version });
+    return;
+  }
+  const [major = 0, minor = 0, patch = 0] = version.split(/[.-]/).map((part) => Number.parseInt(part, 10) || 0);
+  response.statusCode = 200;
+  response.setHeader('Content-Type', 'image/svg+xml');
+  response.setHeader('Cache-Control', 'no-store');
+  response.setHeader('X-Content-Type-Options', 'nosniff');
+  response.end(`<svg xmlns="http://www.w3.org/2000/svg" width="${major * 100 + minor + 1}" height="${patch + 1}"/>`);
 }
 
 function sendJson(response: ServerResponse, statusCode: number, payload: unknown): void {
