@@ -1,7 +1,7 @@
 import { logEvent, logLineText, type BackupManifest, type LogSink, type Profile, type TransferProgress } from '../../../packages/contracts/src/index.js';
 import { BackupStore, type ArchiveSource } from '../../../packages/backup/src/index.js';
 import { isWaitingProfile, ProfileStore } from '../../../packages/profiles/src/index.js';
-import { R2Manager, type SyncSource } from '../../../packages/r2/src/index.js';
+import { R2Error, R2Manager, type SyncSource } from '../../../packages/r2/src/index.js';
 import type { R2Config } from '../../../packages/contracts/src/index.js';
 import { hashFile, looksUnchanged, type HashedFile } from '../../../packages/r2/src/sync.js';
 import { ioConcurrency, runPooled } from '../../../packages/platform/src/index.js';
@@ -86,7 +86,17 @@ export interface BackupSchedulerOptions {
    * business rather than the scheduler's. See `waitingOnHandover`.
    */
   readonly handoverPending?: () => Promise<string | null>;
+  /**
+   * Looks, on this clock, for another device having taken over the shared
+   * data, and stops SillyTavern here when one has. See `DeviceSync`.
+   */
+  readonly sharing?: { watch(): Promise<void>; handOver(label: string): Promise<void> };
 }
+
+/** How often a device that has sent nothing yet asks whether storage is shared. */
+const SHARING_LOOK_MS = 5 * 60 * 1000;
+/** How often a device that shares its data sends what changed, at the most. */
+const SHARED_HOT_INTERVAL_MINUTES = 1;
 
 /**
  * How long the answer to that question is trusted before asking again.
@@ -123,6 +133,11 @@ export class BackupScheduler {
   private readonly saveSettings: () => Promise<unknown>;
   private readonly metricsFile: string | null;
   private readonly handoverPending: () => Promise<string | null>;
+  private readonly sharing: BackupSchedulerOptions['sharing'] | null;
+  /** Set when something asked for the next run not to wait for the clock. */
+  private pushRequested = false;
+  /** When storage was last asked whether other devices share it; see `lookForSharing`. */
+  private lookedForSharingAt: number | null = null;
   /** The last answer about a waiting handover, and when it was given. */
   private handover: { readonly at: number; readonly label: string | null } | null = null;
 
@@ -136,6 +151,54 @@ export class BackupScheduler {
     this.saveSettings = options.saveSettings ?? (async () => undefined);
     this.metricsFile = options.metricsFile ?? null;
     this.handoverPending = options.handoverPending ?? (async () => null);
+    this.sharing = options.sharing ?? null;
+  }
+
+  /**
+   * Send what changed now instead of at the next minute.
+   *
+   * For the moments a device is likely to be walked away from: a reply just
+   * finished, the app went to the background, the manager is closing. Whatever
+   * is on this device and not in storage at that moment is what the next
+   * device would not see.
+   */
+  public async pushNow(): Promise<void> {
+    // A run already under way has read the disk; the next one is told not to wait.
+    if (this.running) { this.pushRequested = true; return; }
+    this.running = true;
+    try {
+      const config = await this.r2.getConfig();
+      if (!config.enabled || !config.configured || config.sync?.state !== 'ready') return;
+      if (this.backups.isOperationRunning()) return;
+      const profile = await this.profiles.getActive();
+      if (!profile || isWaitingProfile(profile)) return;
+      const fingerprint = await this.backups.fingerprint(profile);
+      if (config.lastFingerprint === fingerprint) return;
+      await this.sendChanges(profile, fingerprint, 'hot');
+    } catch (error: unknown) {
+      const reason = error instanceof Error ? error.message : 'unknown error';
+      this.logger(logEvent('sync.pushFailed', `[sync] what changed could not be sent just now; the next run sends it: ${reason}`, { reason }));
+    } finally {
+      this.running = false;
+    }
+  }
+
+  /** One backup to storage, with the answer "another device is in use now" acted on. */
+  private async sendChanges(profile: Profile, fingerprint: string, tier: 'hot' | 'cold'): Promise<Awaited<ReturnType<typeof syncProfileToR2>> | null> {
+    try {
+      const result = await syncProfileToR2({ profile, backups: this.backups, r2: this.r2, tier, fingerprint, logger: this.logger });
+      this.lastHotUploadAt = this.now().getTime();
+      this.logger(logEvent('backup.r2Synced', `[backup] ${tier === 'cold' ? 'full' : 'frequent'} R2 backup: ${result.uploadedChunks} chunk(s) sent, ${result.fileCount} file(s) recorded`, { tier, chunks: result.uploadedChunks, files: result.fileCount }));
+      return result;
+    } catch (error: unknown) {
+      // Another device took the number this one reached for: it is the one in use now.
+      if (error instanceof R2Error && error.code === 'sync_superseded') {
+        const ahead = (await this.r2.getConfig()).sync?.ahead?.label ?? '';
+        await this.sharing?.handOver(ahead);
+        return null;
+      }
+      throw error;
+    }
   }
 
   public start(): void {
@@ -185,8 +248,24 @@ export class BackupScheduler {
        * going anywhere near the bucket - and neither is a press of Back up now,
        * which is somebody asking for this on purpose.
        */
-      const waiting = await this.waitingOnHandover(config);
-      const remote = config.enabled && config.configured && !waiting;
+      /*
+       * A device that has not joined the others on shared storage, or has to
+       * catch up with them first, sends nothing there. It still looks for
+       * another device having taken over, which is how it finds out.
+       */
+      let sharing = config.sync?.state ?? null;
+      if (sharing === null && config.enabled && config.configured && await this.lookForSharing()) {
+        sharing = (await this.r2.getConfig()).sync?.state ?? null;
+      }
+      // A device on the line has its answer: what it holds is the line's, and
+      // the setup another machine left here is not a question it is waiting on.
+      const waiting = sharing === null ? await this.waitingOnHandover(config) : false;
+      if (config.enabled && config.configured && (sharing === 'ready' || sharing === 'catching_up')) {
+        await this.sharing?.watch();
+        // Looking may be what found another device ahead.
+        sharing = (await this.r2.getConfig()).sync?.state ?? null;
+      }
+      const remote = config.enabled && config.configured && !waiting && (sharing === null || sharing === 'ready');
       /*
        * What the manager itself is set to: the password, the passcode, the
        * port, the schedules, the release being run.
@@ -246,6 +325,29 @@ export class BackupScheduler {
       }
     } finally {
       this.running = false;
+    }
+  }
+
+  /**
+   * Ask storage whether other devices share it, on a device that has sent
+   * nothing there yet.
+   *
+   * That is the one device the answer matters to and that has no other way to
+   * learn it: it sends nothing while the setup another machine left is
+   * unanswered, so it never reaches the check a send would make, and what it
+   * was told when it signed in is gone after a restart. Asked at once, then
+   * every few minutes; a device that has uploaded here is not asked at all.
+   */
+  private async lookForSharing(): Promise<boolean> {
+    const now = this.now().getTime();
+    if (this.lookedForSharingAt !== null && now - this.lookedForSharingAt < SHARING_LOOK_MS) return false;
+    try {
+      if (!await this.r2.neverUploaded()) return false;
+      this.lookedForSharingAt = now;
+      return await this.r2.sharedLine() !== null;
+    } catch {
+      // Storage that cannot be read now is asked again at the next minute.
+      return false;
     }
   }
 
@@ -330,15 +432,18 @@ export class BackupScheduler {
 
   private async runRemoteSync(profile: Profile, fingerprint: string, config: Awaited<ReturnType<R2Manager['getConfig']>>): Promise<void> {
     const coldDue = await this.r2.coldDue();
-    const hotDue = this.lastHotUploadAt === null || this.now().getTime() - this.lastHotUploadAt >= config.schedule.hotIntervalMinutes * 60 * 1000;
+    // What is on a shared device and not in storage is what the next device
+    // would not see, so it is sent sooner than a backup alone would be.
+    const interval = config.sync ? Math.min(config.schedule.hotIntervalMinutes, SHARED_HOT_INTERVAL_MINUTES) : config.schedule.hotIntervalMinutes;
+    const asked = this.pushRequested;
+    this.pushRequested = false;
+    const hotDue = asked || this.lastHotUploadAt === null || this.now().getTime() - this.lastHotUploadAt >= interval * 60 * 1000;
     // Nothing has changed and the slow clock is not up: the cheapest tick there
     // is, and the common one. No further request is made at all.
     if (!coldDue && (!hotDue || config.lastFingerprint === fingerprint)) return;
 
     const tier = coldDue ? 'cold' : 'hot';
-    const result = await syncProfileToR2({ profile, backups: this.backups, r2: this.r2, tier, fingerprint, logger: this.logger });
-    this.lastHotUploadAt = this.now().getTime();
-    this.logger(logEvent('backup.r2Synced', `[backup] ${tier === 'cold' ? 'full' : 'frequent'} R2 backup: ${result.uploadedChunks} chunk(s) sent, ${result.fileCount} file(s) recorded`, { tier, chunks: result.uploadedChunks, files: result.fileCount }));
+    if (!await this.sendChanges(profile, fingerprint, tier)) return;
 
     // Thinning needs a listing, which is charged. Asking for one after every
     // upload spent it on being told there was nothing to thin.
@@ -364,6 +469,24 @@ export interface SyncProfileOptions {
   readonly logger?: LogSink;
   readonly signal?: AbortSignal;
   readonly onProgress?: (progress: TransferProgress) => void;
+  /** False for the copy a device takes of itself before catching up; see `R2SyncInput.generation`. */
+  readonly generation?: boolean;
+}
+
+/** The files a device shares but cannot hold, as the list it agreed on names them. */
+export function unheldFiles(place: { readonly files: readonly HashedFile[] | null; readonly unheld: readonly string[] }, onDisk: ReadonlySet<string>): HashedFile[] {
+  if (place.unheld.length === 0 || !place.files) return [];
+  const names = new Set(place.unheld);
+  return place.files.filter((file) => names.has(file.name) && !onDisk.has(file.name));
+}
+
+/**
+ * Every file of a profile that is worth sharing, hashed where a stat says it
+ * may have changed since `known` was true.
+ */
+export async function hashProfile(profile: Profile, backups: BackupStore, known: ReadonlyMap<string, HashedFile>): Promise<{ hashed: SyncSource[]; carried: HashedFile[] }> {
+  const sources = (await backups.sources(profile)).filter((source) => !isRegenerable(source.name));
+  return await hashChanged(sources, known);
 }
 
 /**
@@ -376,7 +499,15 @@ export interface SyncProfileOptions {
 export async function syncProfileToR2(options: SyncProfileOptions): Promise<Awaited<ReturnType<R2Manager['syncProfile']>>> {
   const { profile, backups, r2, tier } = options;
   const fingerprint = options.fingerprint ?? await backups.fingerprint(profile);
-  const previous = await previousSnapshot(r2, profile.id, options.logger);
+  /*
+   * On a device that shares its data, the list to compare against is the one
+   * it last agreed on with the others, not the newest recovery point in
+   * storage: that one may be another device's, and carrying files forward
+   * from it would record that device's files as being on this disk.
+   */
+  const place = await r2.syncPlace();
+  const shared = place !== null && place.profileId === profile.id && place.files !== null ? place : null;
+  const previous = shared ? { files: shared.files ?? [] } : await previousSnapshot(r2, profile.id, options.logger);
   const known = new Map((previous?.files ?? []).map((file) => [file.name, file]));
   const sources = (await backups.sources(profile)).filter((source) => !isRegenerable(source.name));
   const considered = tier === 'cold' ? sources : sources.filter((source) => isHot(source.name));
@@ -384,8 +515,12 @@ export async function syncProfileToR2(options: SyncProfileOptions): Promise<Awai
   // A hot run names the cold files from the last recovery point rather than
   // re-reading them, so what it writes is still a complete profile.
   const untouched = tier === 'cold' ? [] : (previous?.files ?? []).filter((file) => !isHot(file.name));
+  // Files this device's file system cannot hold are on no disk walk, and
+  // leaving them out would read to the other devices as deleting them.
+  const unheld = shared ? unheldFiles(shared, new Set(sources.map((source) => source.name))).filter((file) => tier === 'cold' || isHot(file.name)) : [];
   return await r2.syncProfile({
-    profile, sources: hashed, carried: [...carried, ...untouched], fingerprint, tier,
+    profile, sources: hashed, carried: [...carried, ...untouched, ...unheld], fingerprint, tier,
+    ...(options.generation === false ? { generation: false } : {}),
     ...(options.signal ? { signal: options.signal } : {}),
     ...(options.onProgress ? { onProgress: options.onProgress } : {}),
   });

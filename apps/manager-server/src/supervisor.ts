@@ -52,6 +52,8 @@ export class ProcessSupervisor {
   private activeRuntimeLayout: 'data' | 'public' = 'data';
   /** Set while a stop this manager asked for is in flight, so the exit can say so. */
   private stopReason: StopReason | null = null;
+  /** Open from a start being asked for until its process exists; see `startInstallation`. */
+  private launching: Promise<void> | null = null;
 
   public constructor(options: ProcessSupervisorOptions) {
     this.runtime = options.runtime;
@@ -80,7 +82,24 @@ export class ProcessSupervisor {
     return this.startInstallation(installation, profile);
   }
 
+  /**
+   * One start at a time, up to the moment there is a process.
+   *
+   * Preparing a profile can take seconds - a device that shares its data reads
+   * storage there - and for that long there is no child to say a start is
+   * under way. A second press in that window used to prepare and launch a
+   * second SillyTavern on the same port, and both went down over it.
+   */
   public async startInstallation(installation: Installation, profile: Profile | null = null): Promise<ProcessState> {
+    if (this.launching) { await this.launching; return this.getState(); }
+    let opened!: () => void;
+    const gate = new Promise<void>((resolve) => { opened = resolve; });
+    this.launching = gate;
+    const open = (): void => { if (this.launching === gate) this.launching = null; opened(); };
+    try { return await this.launch(installation, profile, open); } finally { open(); }
+  }
+
+  private async launch(installation: Installation, profile: Profile | null, spawned: () => void): Promise<ProcessState> {
     if (this.child) await this.stop('restart');
     // The marker check refuses with a code of its own; keeping it is what lets
     // the panel say which of the two went wrong in the reader's language.
@@ -117,6 +136,7 @@ export class ProcessSupervisor {
       },
     });
     this.child = child;
+    spawned();
     this.current = { ...this.current, pid: child.pid ?? null, startedAt: this.now().toISOString() };
     const consume = (chunk: string) => {
       this.buffer += chunk;

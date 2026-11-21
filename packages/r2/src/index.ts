@@ -2,7 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { hostname, type as systemType } from 'node:os';
 import { mkdir, open, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { formatBytes, logEvent, logLineText, type LogSink, type ManagerSettingsRecord, type Profile, type R2CheckResult, type R2CloudflareUsage, type R2Config, type R2ConnectionMode, type R2UsageResponse, type R2UsageWarning, type R2EnvironmentField, type R2Object, type R2SnapshotSummary, type R2Transfer, type R2Usage, type TransferProgress } from '../../contracts/src/index.js';
+import { formatBytes, logEvent, logLineText, type LogSink, type ManagerSettingsRecord, type Profile, type R2CheckResult, type R2CloudflareUsage, type DeviceSyncStatus, type R2Config, type R2ConnectionMode, type R2UsageResponse, type R2UsageWarning, type R2EnvironmentField, type R2Object, type R2SnapshotSummary, type R2Transfer, type R2Usage, type TransferProgress } from '../../contracts/src/index.js';
 import { parseS3Endpoint, R2_FREE_TIER, readR2Usage } from '../../cloudflare/src/index.js';
 import { ioConcurrency, runPooled } from '../../platform/src/index.js';
 import type { PlatformPaths } from '../../platform/src/index.js';
@@ -10,8 +10,10 @@ import type { CloudflareConnection, KnownBucket } from './cloudflare-connection.
 import { DRIVE_TARGET_LABEL, type GoogleConnection } from './google-connection.js';
 import { DRIVE_TRANSFERS } from './drive-store.js';
 import { BlobLedger } from './ledger.js';
+import { DeviceLine, type Generation, type LineRecord, type LineState } from './line.js';
 import { S3ObjectStore, type R2Credentials } from './s3.js';
 import { R2Error, type Billing, type ObjectRecord, type ObjectStore } from './store.js';
+import type { SlotOptions } from './slot.js';
 import { claimIsStale, readClaim, writeClaim, CLAIM_OBJECT, CLAIM_REFRESH_MS, type BucketClaim } from './owner.js';
 import { addOperations, monthKey, readUsage, writeUsage, USAGE_FLUSH_MS, USAGE_OBJECT } from './usage-record.js';
 import { readManagerSettings, settingsUnchanged, writeManagerSettings, MANAGER_SETTINGS_MIN_INTERVAL_MS, MANAGER_SETTINGS_OBJECT, MANAGER_SETTINGS_PREVIOUS_OBJECT } from './manager-settings.js';
@@ -38,6 +40,9 @@ export { CloudflareConnection } from './cloudflare-connection.js';
 export type { KnownBucket } from './cloudflare-connection.js';
 export { GoogleConnection } from './google-connection.js';
 export type { GoogleAccount, GooglePurpose } from './google-connection.js';
+export type { Generation, LineRecord, LineState } from './line.js';
+export { planSync, sameContent, type SyncAction, type SyncPlan, type SyncPlanInput } from './sync-plan.js';
+export type { HashedFile, R2Snapshot } from './sync.js';
 
 const R2_STATE_FILE = 'r2-config.json';
 /** The connection settings `.env` may provide, and the variable for each. */
@@ -64,6 +69,10 @@ const CLOUD_USAGE_TTL_MS = 15 * 60 * 1000;
 const CLOUD_USAGE_GUARD_MAX_AGE_MS = 60 * 60 * 1000;
 /** A figure this close to its limit is worth saying something about. */
 const WARNING_RATIO = 0.8;
+/** How old a chunk nothing names must be before a sweep of shared storage removes it. */
+const SHARED_SWEEP_GRACE_MS = 24 * 60 * 60 * 1000;
+/** Where the devices sharing the data keep their order; see `line.ts`. */
+const SYNC_PREFIX = `${OBJECT_PREFIX}sync/`;
 /** One listing page. R2 caps it here too, so asking for more changes nothing. */
 const LIST_PAGE_KEYS = 1000;
 
@@ -223,6 +232,8 @@ export interface R2ManagerOptions {
    * therefore about somebody else's Worker.
    */
   readonly onSurrender?: () => void;
+  /** How long a device waits when it reaches for the next generation; for tests. */
+  readonly slot?: SlotOptions;
 }
 
 /** What the claim needs from a signed-in provider; see `signedIn`. */
@@ -276,6 +287,12 @@ export interface R2SyncInput {
   readonly carried?: readonly HashedFile[];
   readonly fingerprint: string;
   readonly tier?: 'hot' | 'cold';
+  /**
+   * False to put this device's data in storage without declaring it the newest
+   * state of the shared data: the copy taken before catching up with another
+   * device. Ignored on a device that shares with none.
+   */
+  readonly generation?: boolean;
   readonly signal?: AbortSignal;
   readonly onProgress?: (progress: TransferProgress) => void;
 }
@@ -303,6 +320,13 @@ export class R2Manager {
   private readonly logger: LogSink;
   private readonly fetchImpl: typeof fetch;
   private readonly ledger: BlobLedger;
+  /** This device's place among the devices sharing the data; see `line.ts`. */
+  private readonly line: DeviceLine;
+  /**
+   * The line found on storage this device is connected to and has not joined.
+   * Kept in memory: it is read again whenever this device tries to send.
+   */
+  private invitation: LineRecord | null = null;
   private readonly cloudflare: CloudflareConnection | null;
   private readonly google: GoogleConnection | null;
   private readonly fixedLabel: string | null;
@@ -349,6 +373,7 @@ export class R2Manager {
     this.logger = options.logger ?? ((line) => console.log(logLineText(line)));
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.ledger = new BlobLedger({ path: join(this.paths.state, R2_LEDGER_FILE) });
+    this.line = new DeviceLine({ directory: this.paths.state, prefix: OBJECT_PREFIX, now: this.now, ...(options.slot ? { slot: options.slot } : {}) });
     this.cloudflare = options.cloudflare ?? null;
     this.google = options.google ?? null;
     this.fixedLabel = options.installationLabel ? options.installationLabel.slice(0, 120) : null;
@@ -529,6 +554,15 @@ export class R2Manager {
     return await this.exclusive(async () => {
       const config = await this.onTarget(await this.requireUsable());
       await this.requireOwnership(config);
+      const place = await this.line.state();
+      const shared = place !== null && place.profileId === input.profile.id ? place : null;
+      // Whether this run moves the shared data on, or only puts this device's copy in storage.
+      const advance = shared !== null && input.generation !== false;
+      if (advance && (shared.files === null || shared.behind)) {
+        throw new R2Error('sync_behind', `${shared.behind?.label || 'Another device'} has newer data. This device takes that in before it sends its own.`);
+      }
+      const remoteProfile = shared?.lineId ?? input.profile.id;
+      if (shared) await this.trustLedger(config, shared);
       const usage = await this.currentPeriod(config);
       // Cloudflare sees what this manager's own count cannot: another machine
       // on the same bucket, or objects put there some other way. The larger of
@@ -611,15 +645,30 @@ export class R2Manager {
           schemaVersion: 1,
           id: snapshotId(createdAt, files),
           createdAt,
-          profileId: input.profile.id,
+          profileId: remoteProfile,
           profileName: input.profile.name,
           layout: input.profile.layout,
           fingerprint: input.fingerprint,
           files,
         };
         const body = await encodeSnapshot(snapshot);
-        const key = snapshotKey(OBJECT_PREFIX, input.profile.id, snapshot.id);
+        const key = snapshotKey(OBJECT_PREFIX, remoteProfile, snapshot.id);
         await client.putObject(key, body, 'application/gzip');
+        /*
+         * Everything the recovery point names is in storage, so now it may be
+         * declared the newest state of the shared data. A device that loses
+         * the number has lost nothing else: what it just sent stays where it
+         * is, and is what its own changes are read back from when it catches up.
+         */
+        if (advance) {
+          const committed = await this.line.commit(client, snapshot.id, files, { id: this.installId ?? '', label: this.installationLabel() });
+          if (!committed.won) {
+            await this.recordCharges();
+            if (!committed.head) throw new R2Error('sync_busy', 'Storage was too slow to take this change in order. It is sent again on the next run.');
+            this.logger(logEvent('sync.superseded', `[sync] ${committed.head.device.label} moved the shared data on first, so this device stops sending until it has caught up`, { label: committed.head.device.label }));
+            throw new R2Error('sync_superseded', `${committed.head.device.label} is using this data now. This device catches up before it sends anything more.`);
+          }
+        }
 
         const nextUsage: StoredUsage = {
           ...usage,
@@ -632,7 +681,7 @@ export class R2Manager {
           lastUploadAt: createdAt,
           ...(input.tier === 'cold' ? { lastColdUploadAt: createdAt } : {}),
           lastFingerprint: input.fingerprint,
-          lastSnapshot: { profileId: input.profile.id, id: snapshot.id },
+          lastSnapshot: { profileId: remoteProfile, id: snapshot.id },
           usage: nextUsage,
         });
         await this.recordCharges();
@@ -682,7 +731,7 @@ export class R2Manager {
   /** The recovery points in the bucket, newest first. */
   public async listSnapshots(profileId?: string): Promise<R2SnapshotSummary[]> {
     const config = await this.load();
-    const prefix = profileId ? `${SNAPSHOT_PREFIX}${profileId}/` : SNAPSHOT_PREFIX;
+    const prefix = profileId ? `${SNAPSHOT_PREFIX}${await this.remoteProfile(profileId)}/` : SNAPSHOT_PREFIX;
     try {
       return (await this.listAll(config, prefix))
         .map((object) => toSnapshotSummary(object))
@@ -703,7 +752,7 @@ export class R2Manager {
    */
   public async latestSnapshot(profileId: string): Promise<R2Snapshot | null> {
     const config = await this.load();
-    const remembered = config.lastSnapshot?.profileId === profileId ? config.lastSnapshot.id : null;
+    const remembered = config.lastSnapshot?.profileId === await this.remoteProfile(profileId) ? config.lastSnapshot.id : null;
     if (remembered) {
       try {
         return await this.readSnapshot(profileId, remembered);
@@ -730,7 +779,7 @@ export class R2Manager {
   public async readSnapshot(profileId: string, snapshotIdentifier: string): Promise<R2Snapshot> {
     const config = await this.load();
     try {
-      return await decodeSnapshot(await this.client(config).getObject(snapshotKey(OBJECT_PREFIX, profileId, snapshotIdentifier)));
+      return await decodeSnapshot(await this.client(config).getObject(snapshotKey(OBJECT_PREFIX, await this.remoteProfile(profileId), snapshotIdentifier)));
     } finally {
       await this.recordCharges();
     }
@@ -769,12 +818,19 @@ export class R2Manager {
   public async pruneSnapshots(profileId: string): Promise<R2SnapshotSummary[]> {
     return await this.exclusive(async () => {
       const config = await this.load();
+      const place = await this.line.state();
+      const shared = place !== null && place.profileId === profileId ? place : null;
+      // Only a device that holds the newest data knows which point the others start from.
+      if (shared && (shared.files === null || shared.behind)) return [];
+      const remote = shared?.lineId ?? profileId;
       const snapshots = await this.listSnapshots(profileId);
       const keep = selectRetained(snapshots, config);
+      // Whatever its date says: a device whose clock is wrong may have written it.
+      if (shared?.snapshotId) keep.add(shared.snapshotId);
       const removed = snapshots.filter((snapshot) => !keep.has(snapshot.id));
       if (removed.length === 0) return [];
       const client = this.client(config);
-      for (const snapshot of removed) await client.deleteObject(snapshotKey(OBJECT_PREFIX, profileId, snapshot.id));
+      for (const snapshot of removed) await client.deleteObject(snapshotKey(OBJECT_PREFIX, remote, snapshot.id));
       const usage = await this.currentPeriod(config);
       await this.save({
         ...config,
@@ -849,8 +905,22 @@ export class R2Manager {
       let collectedBlobs = 0;
       let collectedBytes = 0;
       const collected: string[] = [];
+      /*
+       * On shared storage another device may be halfway through sending: its
+       * chunks are there and the recovery point naming them is not yet. Only
+       * chunks old enough for that to be over are collected, and the other
+       * devices are told chunks went; see `DeviceLine.sweepMark`.
+       */
+      const place = await this.line.state();
+      const collectBefore = place ? this.now().getTime() - SHARED_SWEEP_GRACE_MS : null;
+      let marked = false;
       for (const [hash, object] of blobs) {
         if (wanted.has(hash)) continue;
+        if (collectBefore !== null) {
+          const stored = object.lastModified ? Date.parse(object.lastModified) : Number.NaN;
+          if (!Number.isFinite(stored) || stored > collectBefore) continue;
+          if (!marked) { await this.line.markSweep(client); marked = true; }
+        }
         await client.deleteObject(object.key);
         collected.push(hash);
         collectedBlobs += 1;
@@ -900,7 +970,7 @@ export class R2Manager {
       const config = await this.requireUsable();
       const client = this.client(config);
       const objects = await this.listAll(config, OBJECT_PREFIX, client);
-      const legacy = objects.filter((object) => !object.key.startsWith(BLOB_PREFIX) && !object.key.startsWith(SNAPSHOT_PREFIX) && object.key !== CLAIM_KEY && object.key !== USAGE_KEY && object.key !== MANAGER_SETTINGS_KEY && object.key !== MANAGER_SETTINGS_PREVIOUS_KEY && object.key !== METRICS_KEY);
+      const legacy = objects.filter((object) => !object.key.startsWith(BLOB_PREFIX) && !object.key.startsWith(SNAPSHOT_PREFIX) && !object.key.startsWith(SYNC_PREFIX) && object.key !== CLAIM_KEY && object.key !== USAGE_KEY && object.key !== MANAGER_SETTINGS_KEY && object.key !== MANAGER_SETTINGS_PREVIOUS_KEY && object.key !== METRICS_KEY);
       let bytes = 0;
       for (const object of legacy) {
         await client.deleteObject(object.key);
@@ -1092,11 +1162,25 @@ export class R2Manager {
    * them here would take away a way of working that already worked.
    */
   private async requireOwnership(config: StoredR2Config): Promise<void> {
+    /*
+     * Devices that share the data are members, not rivals: each sends under
+     * the same line, the sweep leaves fresh chunks alone, and the order of
+     * their changes is settled by the line. The claim has nothing to decide.
+     */
+    if (await this.line.state()) return;
     const account = this.signedIn(config);
     if (!account) return;
     const keyId = await account.installationId();
     const now = this.now().getTime();
     const claim = await readClaim(this.client(config), CLAIM_KEY);
+    /*
+     * Storage that other devices share is not taken over, however new this
+     * sign-in is. Taking it would cut those devices off - on Cloudflare, by
+     * removing their key - when what the person signing in here most likely
+     * wants is to be one of them. Asked only when the claim is not this
+     * machine's own, so a machine backing up alone pays nothing for it.
+     */
+    if (claim?.keyId !== keyId) await this.refuseSharedStorage(config);
     if (claim && claim.keyId !== keyId && !claimIsStale(claim, now) && !await this.outranks(claim)) {
       /*
        * Another manager signed in with this account and took it.
@@ -1161,6 +1245,14 @@ export class R2Manager {
     if (!account) throw new R2Error('r2_not_connected_account', 'Only a bucket connected by signing in has an owner to take over');
     const keyId = await account.installationId();
     const client = this.client(config);
+    // Shared storage is joined, not taken; see `requireOwnership`.
+    if (await this.line.state()) return await this.getConfig();
+    const sharedBy = await this.line.remote(client).catch(() => null);
+    if (sharedBy) {
+      this.invitation = sharedBy;
+      await this.forgetClaim();
+      return await this.getConfig();
+    }
     const previous = await readClaim(client, CLAIM_KEY);
     if (previous && previous.keyId !== keyId) {
       await account.evict(previous.keyId).catch(() => false);
@@ -1212,6 +1304,8 @@ export class R2Manager {
     const config = await this.load();
     const account = this.signedIn(config);
     if (!account || !config.enabled) return;
+    // No claim is read on a device that shares the data, so none is acted on.
+    if (await this.line.state() || this.invitation) return;
     const now = this.now().getTime();
     const since = config.claim ? now - Date.parse(config.claim.checkedAt) : Number.POSITIVE_INFINITY;
     if (options.atMostEvery !== undefined && Number.isFinite(since) && since < options.atMostEvery) return;
@@ -1298,6 +1392,186 @@ export class R2Manager {
     if (!await account.surrender(claim.label, reason)) return;
     this.logger(logEvent('r2.accountSurrendered', `[r2] this machine has given up its sign-in, because ${claim.label} holds the ${account.name} now; nothing here can reach it until somebody signs in again`, { label: claim.label }));
     this.onSurrender?.();
+  }
+
+  /** Stop, and remember why, when the storage is one other devices already share. */
+  private async refuseSharedStorage(config: StoredR2Config): Promise<void> {
+    const sharedBy = await this.line.remote(this.client(config));
+    if (!sharedBy) { this.invitation = null; return; }
+    this.invitation = sharedBy;
+    await this.forgetClaim();
+    await this.recordCharges();
+    throw new R2Error('sync_join_required', `This storage is shared between devices${sharedBy.createdBy ? ` (started on ${sharedBy.createdBy})` : ''}. Join them from this device before it sends or restores anything.`);
+  }
+
+  /**
+   * The list of chunks storage already holds, made good after another
+   * device's sweep; see `DeviceLine.sweepMark`.
+   */
+  private async trustLedger(config: StoredR2Config, place: LineState): Promise<void> {
+    const client = this.client(config);
+    const mark = await this.line.sweepMark(client);
+    if (mark === place.sweep) return;
+    const found = summarizeObjects(await this.listAll(config, BLOB_PREFIX, client));
+    await this.ledger.load();
+    await this.ledger.reconcile(found.blobs.keys());
+    await this.line.sawSweep(mark);
+    this.logger(logEvent('sync.ledgerRebuilt', `[sync] another device tidied storage, so the list of stored chunks was read again: ${found.blobs.size}`, { chunks: found.blobs.size }));
+  }
+
+  /** The id a profile's recovery points are kept under: the line's, on a device that shares it. */
+  private async remoteProfile(profileId: string): Promise<string> {
+    const place = await this.line.state();
+    return place && place.profileId === profileId ? place.lineId : profileId;
+  }
+
+  /** What this device is called where the others read about it. */
+  public deviceLabel(): string {
+    return this.installationLabel();
+  }
+
+  /** This device's place among the devices sharing the data, or null. */
+  public async syncPlace(): Promise<LineState | null> {
+    return await this.line.state();
+  }
+
+  /** The line this storage holds, read from storage; null when nobody shares it. */
+  public async sharedLine(): Promise<LineRecord | null> {
+    const config = await this.requireUsable();
+    try {
+      const record = await this.line.remote(this.client(config));
+      if (!await this.line.state()) this.invitation = record;
+      return record;
+    } finally {
+      await this.recordCharges();
+    }
+  }
+
+  /**
+   * Start sharing this profile's data with other devices, from this one.
+   *
+   * If another device got there first, this one is on that device's line and
+   * has to catch up like any other that joins.
+   */
+  public async startSharing(profileId: string): Promise<LineState> {
+    return await this.exclusive(async () => {
+      const config = await this.onTarget(await this.requireUsable());
+      const existing = await this.line.state();
+      if (existing) return existing;
+      const { record, created } = await this.line.create(this.client(config), profileId, this.installationLabel());
+      const state = await this.line.join(record, profileId, created ? [] : null);
+      this.invitation = null;
+      await this.forgetClaim();
+      await this.recordCharges();
+      if (created) this.logger(logEvent('sync.started', '[sync] this device now shares its data with the other devices on this storage'));
+      else this.logger(logEvent('sync.joined', `[sync] this device joined the devices sharing this storage (started on ${record.createdBy})`, { label: record.createdBy }));
+      return state;
+    });
+  }
+
+  /** Put this device on the line the storage already holds. */
+  public async joinSharing(profileId: string): Promise<LineState> {
+    return await this.exclusive(async () => {
+      const config = await this.onTarget(await this.requireUsable());
+      const existing = await this.line.state();
+      if (existing) return existing;
+      const record = await this.line.remote(this.client(config));
+      if (!record) throw new R2Error('sync_not_shared', 'No other device shares this storage yet');
+      const state = await this.line.join(record, profileId, null);
+      this.invitation = null;
+      await this.forgetClaim();
+      await this.recordCharges();
+      this.logger(logEvent('sync.joined', `[sync] this device joined the devices sharing this storage (started on ${record.createdBy})`, { label: record.createdBy }));
+      return state;
+    });
+  }
+
+  /** Take this device off the line. What is in storage stays for the others. */
+  public async stopSharing(): Promise<void> {
+    await this.line.leave();
+    this.logger(logEvent('sync.left', '[sync] this device no longer shares its data'));
+  }
+
+  /**
+   * The newest state of the shared data, if another device wrote one this
+   * device does not have. Finding one is remembered: from then on this device
+   * sends nothing until it has caught up.
+   */
+  public async sharedHead(): Promise<Generation | null> {
+    const config = await this.requireUsable();
+    const place = await this.line.state();
+    if (!place) return null;
+    try {
+      const head = await this.line.head(this.client(config), place.seq);
+      if (head) await this.line.fellBehind(head);
+      return head;
+    } finally {
+      await this.recordCharges();
+    }
+  }
+
+  /** Read the recovery point a generation names. */
+  public async readShared(generation: Generation): Promise<R2Snapshot> {
+    const place = await this.line.state();
+    if (!place) throw new R2Error('sync_off', 'This device is not syncing');
+    return await this.readSnapshot(place.lineId, generation.snapshotId);
+  }
+
+  /**
+   * Record that this device now holds exactly what a generation holds, so the
+   * next backup compares against that and not against what was here before.
+   */
+  public async adoptShared(generation: Generation, files: readonly HashedFile[], unheld: readonly string[] = []): Promise<void> {
+    const place = await this.line.state();
+    if (!place) throw new R2Error('sync_off', 'This device is not syncing');
+    await this.line.adopt(generation, files, unheld);
+    await this.save({ ...(await this.load()), lastSnapshot: { profileId: place.lineId, id: generation.snapshotId }, lastFingerprint: null });
+  }
+
+  /** A device that joined a line with nothing on it yet starts from nothing. */
+  public async settleShared(): Promise<void> {
+    await this.line.settle();
+  }
+
+  /**
+   * Say that this device is the one in use now, without anything having changed.
+   *
+   * A device being sat down at writes the next generation over the same
+   * recovery point. Nothing is sent; what it does is let the device that was
+   * in use before find out within a minute, and stop, instead of finding out
+   * when the two of them have both changed something.
+   *
+   * False when another device moved the line on first, or this device has to
+   * catch up before it may.
+   */
+  public async takeTurn(): Promise<boolean> {
+    return await this.exclusive(async () => {
+      const config = await this.requireUsable();
+      const place = await this.line.state();
+      if (!place || place.files === null || place.behind) return false;
+      if (place.mine || !place.snapshotId) return true;
+      try {
+        const committed = await this.line.commit(this.client(config), place.snapshotId, place.files, { id: this.installId ?? '', label: this.installationLabel() });
+        return committed.won;
+      } finally {
+        await this.recordCharges();
+      }
+    });
+  }
+
+  private async syncStatus(): Promise<DeviceSyncStatus | null> {
+    const place = await this.line.state();
+    if (!place) {
+      if (!this.invitation) return null;
+      return { state: 'invited', generation: 0, syncedAt: null, writtenBy: null, ahead: { label: this.invitation.createdBy, at: this.invitation.createdAt } };
+    }
+    return {
+      state: place.files === null || place.behind ? 'catching_up' : 'ready',
+      generation: place.seq,
+      syncedAt: place.syncedAt,
+      writtenBy: place.writtenBy,
+      ahead: place.behind ? { label: place.behind.label, at: place.behind.at } : null,
+    };
   }
 
   private async rememberClaim(claim: BucketClaim, mine: boolean): Promise<void> {
@@ -1861,6 +2135,7 @@ export class R2Manager {
       lastFingerprint: config.lastFingerprint,
       lastRecovery: config.lastRecovery,
       owner: config.claim ? { label: config.claim.label, claimedAt: config.claim.claimedAt ?? config.claim.lastSeenAt, lastSeenAt: config.claim.lastSeenAt, mine: config.claim.mine } : null,
+      sync: await this.syncStatus(),
     };
   }
 
@@ -2147,6 +2422,8 @@ function summarizeObjects(objects: readonly ObjectRecord[]): { blobs: Map<string
     // none is an archive, and none is something the legacy sweep may take
     // away from the manager that wrote it.
     if (object.key === CLAIM_KEY || object.key === USAGE_KEY || object.key === MANAGER_SETTINGS_KEY || object.key === MANAGER_SETTINGS_PREVIOUS_KEY || object.key === METRICS_KEY) continue;
+    // The order the devices sharing this storage keep among themselves.
+    if (object.key.startsWith(SYNC_PREFIX)) continue;
     // Whole-ZIP archives from the version before this one. They are not
     // read and not deleted behind the operator's back; the panel offers it.
     legacyObjectCount += 1;

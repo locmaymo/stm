@@ -28,6 +28,34 @@ test('process supervisor starts the marker-verified active runtime and captures 
   assert.ok(lines.some((line) => line.includes('ready')));
 });
 
+test('a second start while the first is still preparing does not launch a second SillyTavern', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-supervisor-'));
+  const runtimePath = join(root, 'runtime');
+  await mkdir(runtimePath, { recursive: true });
+  const markerPath = join(runtimePath, '.stm-installation.json');
+  await writeFile(markerPath, JSON.stringify({ installationId: 'install-1', resolvedRef: '1.0.0' }), 'utf8');
+  await writeFile(join(runtimePath, 'server.js'), 'setInterval(() => {}, 1000);', 'utf8');
+  const installation: Installation = { id: 'install-1', selector: 'latest', resolvedRef: '1.0.0', channel: 'release', runtimePath, markerPath, status: 'ready', progress: 100, step: 'Installation ready', error: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), activatedAt: new Date().toISOString() };
+  const profile = { id: 'profile-1', name: 'Default', installationId: 'install-1', layout: 'public', dataPath: runtimePath, configPath: join(runtimePath, 'config.yaml') } as unknown as Profile;
+  let prepared = 0;
+  const events: string[] = [];
+  const supervisor = new ProcessSupervisor({
+    runtime: { getActiveInstallation: async () => installation } as never,
+    profileResolver: async () => profile,
+    // As long as a device that shares its data takes to read storage.
+    profileLifecycle: { prepare: async () => { prepared += 1; await new Promise((resolve) => setTimeout(resolve, 150)); return 'public'; }, persist: async () => undefined },
+    readinessCheck: async () => undefined,
+    logger: (line) => { if (isLogEvent(line)) events.push(line.code); },
+  });
+  const [first, second] = await Promise.all([supervisor.start(), supervisor.start()]);
+  assert.equal(prepared, 1);
+  assert.equal(events.filter((code) => code === 'sillytavern.starting').length, 1);
+  assert.equal(first.status, 'running');
+  assert.ok(second.status === 'running' || second.status === 'starting');
+  assert.equal(second.pid, first.pid);
+  await supervisor.stop();
+});
+
 test('a tunnel that cannot get cloudflared says so instead of starting', async () => {
   const root = await mkdtemp(join(tmpdir(), 'stm-tunnel-'));
   const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });

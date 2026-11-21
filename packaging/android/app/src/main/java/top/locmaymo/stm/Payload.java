@@ -96,8 +96,23 @@ final class Payload {
         // into lines this app reads (see ManagerService); and which language
         // to write them in until the console says otherwise.
         env.put("STM_ANDROID_APP", "1");
+        // What other devices of the same person call this one: every phone's
+        // hostname is "localhost", which names nothing.
+        env.put("STM_DEVICE_NAME", deviceName(context));
         env.put("LANG", java.util.Locale.getDefault().toLanguageTag());
         return env;
+    }
+
+    /** The name the owner gave this device in its settings, or else its model. */
+    private static String deviceName(Context context) {
+        String name = null;
+        try {
+            name = android.provider.Settings.Global.getString(context.getContentResolver(), "device_name");
+        } catch (RuntimeException ignored) {
+            // Not every maker's settings keep one.
+        }
+        if (name == null || name.trim().isEmpty()) name = android.os.Build.MODEL;
+        return name == null || name.trim().isEmpty() ? "Android" : name.trim();
     }
 
     static File nodeBinary(Context context) {

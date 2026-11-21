@@ -224,10 +224,33 @@ public class ManagerService extends Service {
         for (int i = 0; i < 40 && answers(stalePort); i++) sleep(500);
     }
 
+    /**
+     * Tell the manager the app has been put away.
+     *
+     * A phone that shares its data with other devices is most often left for
+     * one of them exactly now, and Android may let it sleep a moment later.
+     * The manager sends what changed at once instead of at its next minute.
+     * It does nothing with this when the data is not shared.
+     */
+    static void appPutAway(final File filesDir) {
+        new Thread(() -> {
+            String[] saved = readText(new File(filesDir, "shutdown-token")).split("\n");
+            if (saved.length < 2) return;
+            int port;
+            try { port = Integer.parseInt(saved[0].trim()); } catch (NumberFormatException e) { return; }
+            post(port, "/api/v1/sync/push", saved[1].trim());
+        }, "stm-put-away").start();
+    }
+
     private static void requestShutdown(int port, String token) {
+        post(port, "/api/v1/shutdown", token);
+    }
+
+    /** A request only the app that started this manager can make: it carries the token they share. */
+    private static void post(int port, String path, String token) {
         if (token == null || token.isEmpty()) return;
         try {
-            HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:" + port + "/api/v1/shutdown").openConnection();
+            HttpURLConnection connection = (HttpURLConnection) new URL("http://127.0.0.1:" + port + path).openConnection();
             connection.setRequestMethod("POST");
             connection.setRequestProperty("x-stm-shutdown-token", token);
             connection.setConnectTimeout(2000);

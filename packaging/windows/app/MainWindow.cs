@@ -979,6 +979,7 @@ internal sealed class MainWindow : Form
             e.Cancel = true;
             SaveWindowBounds();
             Hide();
+            _ = _manager.NotifyPutAwayAsync();
 
             if (!_trayHintShown)
             {

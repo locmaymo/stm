@@ -34,6 +34,8 @@ import { isLocalHostname, isThisMachine, mustLeaveFrame, ownLinkView, type OwnLi
 import { availableUpdate, readDismissedManagerRelease, readDismissedUpdate, saveDismissedManagerRelease, saveDismissedUpdate, shouldShowManagerRelease } from './updates.js';
 import { readDismissedDisplaced, readDismissedRecovery, readDismissedSettings, saveDismissedDisplaced, saveDismissedRecovery, saveDismissedSettings, shouldOfferSettings, shouldShowDisplaced, shouldShowRecovery } from './settings-offer.js';
 import { apiFetch, onSessionExpired, resetSessionWatch, sessionToken, setSessionToken } from './session.js';
+import { DeviceSyncControl, DeviceSyncNotices, deviceSyncHint } from './device-sync.js';
+import type { DeviceSyncOutcome, DeviceSyncStatus } from '../../../packages/contracts/src/index.js';
 import { NotificationBell, PushOfferDialog, PushToggle } from './notification-bell.js';
 import { answerTermuxOffer, appFeatures, bubbleRequest, hasAppChannel, importZipFromApp, openInApp, updateApp, type AppFeatures, type AppUpdateEvent, type BubbleState, type ImportSource } from './app-bridge.js';
 import { BUBBLE_OFFER_KEY, bubbleOfferWanted, offerAccepted, offerDue, offerSnoozed, readOffer, writeOffer } from './offers.js';
@@ -1109,6 +1111,9 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
    * console has just lost it and has been told nothing.
    */
   const [r2Owner, setR2Owner] = useState<R2Config['owner'] | null>(null);
+  // This device's place among the devices sharing its data; see device-sync.tsx.
+  const [deviceSync, setDeviceSync] = useState<DeviceSyncStatus | null>(null);
+  const [deviceSyncOutcome, setDeviceSyncOutcome] = useState<DeviceSyncOutcome | null>(null);
   /*
    * The account is signed in and has never turned R2 on, so there is nowhere
    * for a backup to go and nothing this manager can do about it.
@@ -1441,6 +1446,8 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
      * machine had been locked out of.
      */
     setR2Owner(status.r2Owner);
+    setDeviceSync(status.sync ?? null);
+    setDeviceSyncOutcome(status.syncOutcome ?? null);
     settleR2Problem(status.r2Problem);
     /*
      * The profiles coming back onto this machine's disk after it was replaced.
@@ -2122,6 +2129,18 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
                 </AlertDescription>
               </Alert></div>
               : null}
+            {/* Another device took over, this one could join the others, or
+                catching up kept two versions of something. Each explains why
+                SillyTavern here is where it is, so it sits above the rest. */}
+            <DeviceSyncNotices
+              t={t}
+              status={deviceSync}
+              outcome={deviceSyncOutcome}
+              csrfToken={csrfToken}
+              starting={processState?.status === 'starting'}
+              onStatus={setDeviceSync}
+              onOutcomeDismissed={() => setDeviceSyncOutcome(null)}
+            />
             {/* Nowhere for a backup to go, and the way to fix it is not on
                 this machine at all. Above everything for as long as it is
                 true, because for as long as it is true nothing is being
@@ -2170,7 +2189,10 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
                 rebuild this machine out of it is offering a button that
                 cannot work. Signing in again is the only step there is, and
                 the notice above is where it is. */}
-            {!displaced && backgroundJob === null && shouldOfferSettings(settingsOffer, dismissedSettings) && settingsOffer
+            {/* Nor on a device that shares its data, or could: there the way
+                to the other machine's chats is to join it, which keeps what
+                this one has, and that offer is the notice above. */}
+            {!displaced && deviceSync === null && backgroundJob === null && shouldOfferSettings(settingsOffer, dismissedSettings) && settingsOffer
               ? <div className="mb-(--section-gap)"><RestoreEverythingCard
                 t={t}
                 offer={settingsOffer}
@@ -5906,6 +5928,11 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
               ? <Button variant="outline" size="sm" onClick={() => setDestinationOpen(true)}>{t('console.r2Change')}</Button>
               : <Button size="sm" onClick={() => setDestinationOpen(true)}><Cloud />{t('console.r2DestinationSet')}</Button>}
           </DetailRow>
+          {/* The same data on the reader's other devices, one at a time. It
+              rides on the backup, so it is offered only where one is running. */}
+          {r2Config?.configured && r2Config.enabled && !displaced ? <DetailRow label={t('console.syncRowLabel')} hint={deviceSyncHint(t, r2Config.sync ?? null)}>
+            <DeviceSyncControl t={t} status={r2Config.sync ?? null} csrfToken={csrfToken} onStatus={(sync) => setR2Config({ ...r2Config, sync })} />
+          </DetailRow> : null}
           {/* Then the two things there are to do with a bucket: send to it now,
               and look at it. Everything else that used to be a button here
               answered some part of "look at it" and is folded into Check. */}

@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { gunzipSync, gzipSync } from 'node:zlib';
-import { R2Error, R2HttpError, type ObjectRecord, type ObjectStore } from './store.js';
+import { R2Error, R2HttpError, type ObjectRecord, type ObjectStore, type SlotResult, type SlotTiming } from './store.js';
 
 /**
  * The app's hidden folder in the user's Google Drive as an object store.
@@ -310,6 +310,73 @@ export class DriveObjectStore implements ObjectStore {
   }
 
   /**
+   * Take a slot: a name that belongs to whoever Drive saw create it first.
+   *
+   * Drive cannot refuse a second file under a name, so every writer creates
+   * its own and they are told apart by the time Drive stamped on each.
+   * Measured in 2026-11 over twenty rounds of two writers creating one name:
+   * a search made right after a create always showed every file created
+   * before it, the stamps never tied, and they did not follow the order the
+   * requests were sent in - which is why the stamp decides and not the writer.
+   *
+   * A create that was held up for a long time is the one case the stamp
+   * cannot be trusted for: the others may have looked, seen nothing, and gone
+   * on. Such a writer withdraws instead of arguing.
+   */
+  public async claimSlot(key: string, body: Uint8Array, timing: SlotTiming): Promise<SlotResult> {
+    await this.options.ready();
+    const mine = Buffer.from(body);
+    const before = await this.slotFiles(key);
+    if (before[0]) return { won: false, holder: await this.readFile(before[0]) };
+    const started = timing.now();
+    await this.createFile(key, body, 'application/json');
+    const stalled = timing.now() - started > timing.stallMs;
+    if (!stalled) await timing.sleep(timing.settleMs);
+    let holder: Buffer | null = null;
+    let won = false;
+    const others: DriveFile[] = [];
+    for (const file of await this.slotFiles(key)) {
+      const content = await this.readFile(file);
+      // A create sent twice after a stall leaves two of this writer's files.
+      if (content.equals(mine)) {
+        if (!stalled && holder === null) { holder = content; won = true; continue; }
+        await this.deleteFile(file);
+        continue;
+      }
+      if (holder === null) holder = content;
+      others.push(file);
+    }
+    // A slot holds one file once it is settled, so the next reader has one answer.
+    if (won) for (const file of others) await this.deleteFile(file).catch(() => undefined);
+    return { won, holder };
+  }
+
+  public async readSlot(key: string): Promise<Buffer | null> {
+    await this.options.ready();
+    const [first] = await this.slotFiles(key);
+    return first ? await this.readFile(first) : null;
+  }
+
+  /** Every file under one name, the one Drive created first at the front. */
+  private async slotFiles(key: string): Promise<DriveFile[]> {
+    const query = `name = '${escapeQuery(key)}' and trashed = false`;
+    const found = await this.json<{ files?: unknown[] }>(`${DRIVE_API}/files?${new URLSearchParams({ q: query, fields: `files(${FILE_FIELDS},createdTime)`, pageSize: '100', spaces: APP_DATA_FOLDER }).toString()}`, { method: 'GET' });
+    const files: Array<{ file: DriveFile; created: string }> = [];
+    for (const value of found.files ?? []) {
+      const file = toDriveFile(value);
+      const created = (value as { createdTime?: unknown }).createdTime;
+      if (file) files.push({ file, created: typeof created === 'string' ? created : '' });
+    }
+    files.sort((a, b) => (a.created < b.created ? -1 : a.created > b.created ? 1 : a.file.id < b.file.id ? -1 : 1));
+    return files.map((entry) => entry.file);
+  }
+
+  private async readFile(file: DriveFile): Promise<Buffer> {
+    const response = await this.request(`${DRIVE_API}/files/${encodeURIComponent(file.id)}?alt=media`, { method: 'GET' });
+    return Buffer.from(await response.arrayBuffer());
+  }
+
+  /**
    * Send the chunks still waiting, and wait for every pack on its way.
    *
    * A caller records chunks as stored only after this returns. A pack that
@@ -595,6 +662,8 @@ export class DriveObjectStore implements ObjectStore {
   private async readIndex(): Promise<Map<string, DriveFile>> {
     await this.options.ready();
     const index = new Map<string, DriveFile>();
+    // Everything sent before this listing began is either in it or gone.
+    const sentBefore = [...this.sent];
     const query = `trashed = false and mimeType != '${FOLDER_MIME}'`;
     let pageToken: string | undefined;
     do {
@@ -628,7 +697,13 @@ export class DriveObjectStore implements ObjectStore {
     }
     // A removed chunk no pack holds any more needs no remembering.
     for (const key of [...this.removed]) if (!stillHeld.has(key)) this.removed.delete(key);
-    for (const key of [...this.sent]) if (index.has(key)) this.sent.delete(key);
+    /*
+     * Not only the ones the listing shows. A chunk this process sent and
+     * another device's sweep then deleted is in no listing, and remembering it
+     * as sent would skip it the next time a file needs it - a recovery point
+     * naming a chunk that is not there.
+     */
+    for (const key of sentBefore) this.sent.delete(key);
     // Forget what was read for packs that are gone.
     const present = new Set(packs.map((pack) => pack.id));
     for (const id of [...this.contents.keys()]) if (!present.has(id)) this.forgetPack(id);

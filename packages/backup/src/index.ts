@@ -435,6 +435,11 @@ export class BackupStore {
   /** Prevent a scheduled backup from racing a restore or another manual backup. */
   public isOperationRunning(): boolean { return this.pendingOperations > 0; }
 
+  /** The directory the names in a profile's file list are relative to. */
+  public async dataRoot(profile: Profile): Promise<string> {
+    return await resolveProfileDataRoot(profile);
+  }
+
   /**
    * Run something that rewrites the profile with the backup slot held.
    *

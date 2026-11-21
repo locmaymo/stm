@@ -261,6 +261,8 @@ public class MainActivity extends Activity implements SillyTavernHost.Host {
         // the app opens; WebView writes cookies to disk only now and then, and
         // an app swiped away before that loses the sign-in.
         CookieManager.getInstance().flush();
+        // Left for something else, perhaps for another device: see appPutAway.
+        if (ManagerService.running) ManagerService.appPutAway(getFilesDir());
         super.onPause();
     }
 

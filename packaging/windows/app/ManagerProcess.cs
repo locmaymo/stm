@@ -315,6 +315,33 @@ internal sealed class ManagerProcess : IDisposable
         }
     }
 
+    /// <summary>
+    /// Tell the manager the window has been put away. A PC that shares its
+    /// data with other devices is often left for one of them at this moment,
+    /// so the manager sends what changed now instead of at its next minute.
+    /// It does nothing with this when the data is not shared.
+    /// </summary>
+    public async Task NotifyPutAwayAsync()
+    {
+        var proc = _process;
+        if (proc == null || _stopping) return;
+        try
+        {
+            if (proc.HasExited) return;
+            var req = (HttpWebRequest)WebRequest.Create($"{ManagerUrl}/api/v1/sync/push");
+            req.Method = "POST";
+            req.Headers["x-stm-shutdown-token"] = ShutdownToken;
+            req.Timeout = 3000;
+            req.ReadWriteTimeout = 3000;
+            req.ContentLength = 0;
+            using var resp = await req.GetResponseAsync();
+        }
+        catch
+        {
+            // Not worth a word: the manager sends on its own clock anyway.
+        }
+    }
+
     public async Task StopAsync()
     {
         _stopping = true;

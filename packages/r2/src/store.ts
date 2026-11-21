@@ -20,6 +20,36 @@ export interface ObjectStore {
   flush?(): Promise<void>;
   /** Take back space held by deleted objects that a store keeps inside bigger ones. */
   compact?(): Promise<{ readonly removedPacks: number; readonly rewrittenPacks: number; readonly gatheredFiles: number }>;
+  /**
+   * Store an object only if nothing holds its key yet; false when something does.
+   *
+   * Only for a store that can refuse the write itself. Without it a slot is
+   * taken by looking first and looking again afterwards; see `slot.ts`.
+   */
+  putIfAbsent?(key: string, body: Uint8Array, contentType: string): Promise<boolean>;
+  /**
+   * Take a slot the store's own way, for a store where one key can hold the
+   * attempts of several writers side by side (Google Drive). See `slot.ts`.
+   */
+  claimSlot?(key: string, body: Uint8Array, timing: SlotTiming): Promise<SlotResult>;
+  /** What holds a slot, read the same way `claimSlot` decides it. */
+  readSlot?(key: string): Promise<Buffer | null>;
+}
+
+/** How long a writer waits before it believes what it sees in a slot. */
+export interface SlotTiming {
+  /** Waited between writing and looking, so a writer that started at the same moment has landed. */
+  readonly settleMs: number;
+  /** A write that took longer than this may have landed after others stopped looking, and is withdrawn. */
+  readonly stallMs: number;
+  readonly sleep: (milliseconds: number) => Promise<void>;
+  readonly now: () => number;
+}
+
+export interface SlotResult {
+  readonly won: boolean;
+  /** What the slot holds now, or null when this writer withdrew and nobody else was there. */
+  readonly holder: Buffer | null;
 }
 
 /**

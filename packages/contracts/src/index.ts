@@ -769,6 +769,49 @@ export interface R2Config {
     /** Whether the holder is this manager. */
     readonly mine: boolean;
   } | null;
+  /**
+   * This device's place among the devices sharing the data, or null when it
+   * shares with none. Absent on an older manager's answer.
+   */
+  readonly sync?: DeviceSyncStatus | null;
+}
+
+/**
+ * One person, several devices, one set of data used on one of them at a time.
+ *
+ * `ready` is the ordinary state: this device holds the newest data and sends
+ * what changes. `catching_up` is a device that joined, or was told another
+ * device is ahead, and must take that device's changes in before it adds its
+ * own - SillyTavern is not started on it until it has. `invited` is a device
+ * connected to storage that other devices already share, which has not joined
+ * them: it sends nothing there until it does.
+ */
+export interface DeviceSyncStatus {
+  readonly state: 'ready' | 'catching_up' | 'invited';
+  /** How many times the shared data has been moved on, by any device. */
+  readonly generation: number;
+  /** When this device last agreed with storage, and which device wrote that state. */
+  readonly syncedAt: string | null;
+  readonly writtenBy: string | null;
+  /** The device that is ahead of this one, when one is. */
+  readonly ahead: { readonly label: string; readonly at: string } | null;
+}
+
+/** What catching up did, for telling the reader about it afterwards. */
+export interface DeviceSyncOutcome {
+  readonly at: string;
+  /** The device whose changes were taken in. */
+  readonly from: string;
+  readonly taken: number;
+  readonly removed: number;
+  /** Chats both devices had written to, each kept as a second chat: the new file names. */
+  readonly keptBoth: readonly string[];
+  /** Files where the other device's version replaced this one's; the old ones are in `recoveryPoint`. */
+  readonly setAside: readonly string[];
+  /** Files this device cannot hold, by name. */
+  readonly skipped: readonly string[];
+  /** The recovery point holding this device's data as it was before catching up. */
+  readonly recoveryPoint: string | null;
 }
 
 export interface R2OperationCounts {
@@ -1179,6 +1222,7 @@ export type StopReason =
   | 'configChange'
   | 'passwordChange'
   | 'shutdown'
+  | 'usedElsewhere'
   | 'startupFailed';
 
 export const STOP_REASON_TEXT: Readonly<Record<StopReason, string>> = {
@@ -1191,6 +1235,7 @@ export const STOP_REASON_TEXT: Readonly<Record<StopReason, string>> = {
   configChange: 'applying a configuration change',
   passwordChange: 'applying the new SillyTavern password',
   shutdown: 'the manager is shutting down',
+  usedElsewhere: 'another of your devices is using this data',
   startupFailed: 'it did not finish starting',
 };
 
@@ -1693,6 +1738,14 @@ export interface ConsoleStatus {
    * costs this answer nothing.
    */
   readonly r2Owner: R2Config['owner'];
+  /**
+   * This device's place among the devices sharing its data, and what the last
+   * catch-up did that still has to be read. Here, not only in the backup
+   * settings, because another device taking over stops SillyTavern on this
+   * one, and the page somebody is looking at has to say why.
+   */
+  readonly sync?: DeviceSyncStatus | null;
+  readonly syncOutcome?: DeviceSyncOutcome | null;
   /**
    * The setup another machine left in the bucket, offered to this one.
    *
