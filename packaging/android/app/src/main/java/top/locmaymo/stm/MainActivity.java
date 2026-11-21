@@ -90,11 +90,13 @@ public class MainActivity extends Activity implements SillyTavernHost.Host {
     /** The console asked for a backup zip from the phone; see {@link BackupImport}. */
     static void importZip(Uri origin, String csrf, androidx.webkit.JavaScriptReplyProxy reply) {
         if (current != null) BackupImport.pick(current, origin, csrf, reply);
+        else BackupImport.unavailable(reply);
     }
 
     /** The console asked to move a SillyTavern over from Termux; see {@link TermuxImport}. */
     static void importTermux(Uri origin, String csrf, androidx.webkit.JavaScriptReplyProxy reply) {
         if (current != null) BackupImport.pickTermux(current, origin, csrf, reply);
+        else BackupImport.unavailable(reply);
     }
 
     /** The console asked for a newer release of the app; see {@link AppUpdate}. */

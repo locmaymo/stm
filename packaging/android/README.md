@@ -67,6 +67,13 @@ is rolled back by the manager; the app asks it how far it got
 (`GET /api/v1/backups/import/chunk?uploadId=`), opens the file again there and
 carries on, up to five times with a doubling wait.
 
+A zip picked from a cloud drive is fetched in full by its provider before the
+app gets its first byte. The app tells the console what was picked as soon as
+it is, and the console says why after ten seconds with nothing sent. Stop
+hands the provider a cancel and answers the console at once. Every import ends
+with exactly one of done, canceled or failed, including a request the app
+cannot take, so the console never waits on one that went quiet.
+
 ## Building
 
 ```sh

@@ -192,6 +192,8 @@
     "dataBusy": "Something is already running on the Data page. Wait for it to finish, then try again.",
     "viewProgress": "View",
     "importFinishing": "Sent. Checking the file…",
+    "importOpening": "Opening",
+    "importOpenSlow": "Still opening the file. A file on Google Drive or another cloud drive is downloaded in full before the app can send any of it, which takes long for a large one. Download it to the phone first and pick it from there, or press Stop.",
     "downloadBackup": "Download",
     "mergeRestore": "Merge",
     "replaceRestore": "Replace",

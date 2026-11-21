@@ -108,10 +108,12 @@ final class ChatBridge {
             case "importZip":
                 // The console only: it is the one that asked with its own sign-in.
                 if (!SillyTavernHost.isHost(view) && origin.getPort() == ManagerService.port) MainActivity.importZip(origin, data.optString("csrf", ""), reply);
+                else BackupImport.unavailable(reply);
                 break;
             case "importTermux":
                 // As importZip: the console, with its own sign-in.
                 if (!SillyTavernHost.isHost(view) && origin.getPort() == ManagerService.port) MainActivity.importTermux(origin, data.optString("csrf", ""), reply);
+                else BackupImport.unavailable(reply);
                 break;
             case "termuxOffer":
                 if (data.optBoolean("dismiss")) TermuxImport.answerOffer(app);

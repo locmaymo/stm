@@ -192,6 +192,8 @@
     "dataBusy": "Trang Dữ liệu đang có việc chạy. Đợi xong rồi thử lại.",
     "viewProgress": "Xem",
     "importFinishing": "Đã gửi xong. Đang kiểm tra tệp…",
+    "importOpening": "Đang mở",
+    "importOpenSlow": "Vẫn đang mở tệp. Tệp trên Google Drive hoặc ổ đám mây khác phải tải về hết thì app mới gửi được, tệp lớn sẽ mất lâu. Hãy tải tệp về máy trước rồi chọn từ đó, hoặc bấm Dừng.",
     "downloadBackup": "Tải xuống",
     "mergeRestore": "Gộp",
     "replaceRestore": "Thay thế",
