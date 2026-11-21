@@ -8,31 +8,31 @@
     "termux-licenses"
   ],
   "npm": {
-    "version": "11.21.1",
-    "tarball": "https://registry.npmjs.org/npm/-/npm-11.21.1.tgz",
-    "integrity": "sha512-YTzL6QBEJXyHcTu0JiUc7RKMp+mzlJtl7rGLmERaXUQeFHIMc9atdr6G9M9C8vDWbv40epoTQAzNL2/PtZVDhQ=="
+    "version": "11.21.3",
+    "tarball": "https://registry.npmjs.org/npm/-/npm-11.21.3.tgz",
+    "integrity": "sha512-5Cf+jE+XctbhH/zjOOqXC+ity7eec/Tkk4Ql38tf6w+1htp2wYPHmE4c1R1Es3DY227Ac14+SLrlYJwkBicbTg=="
   },
   "architectures": {
     "aarch64": {
       "c-ares": {
-        "version": "1.34.8",
-        "filename": "pool/main/c/c-ares/c-ares_1.34.8_aarch64.deb",
-        "sha256": "7681fc23e822d7988ba8b2adf3468f93ae68f724dda365cff1385096a9fa87e6"
+        "version": "1.34.9",
+        "filename": "pool/main/c/c-ares/c-ares_1.34.9_aarch64.deb",
+        "sha256": "623d84855e176f3f2a415d24c0e1d2f529356f4b5439bb3313e6d7ff0da4585c"
       },
       "ca-certificates": {
-        "version": "1:2026.09.25",
-        "filename": "pool/main/c/ca-certificates/ca-certificates_1:2026.09.25_all.deb",
-        "sha256": "57fab24bf4561bfdd35afe71bc1929914e51c35458cfd1fca2b15e54bc8df7af"
+        "version": "1:2026.11.05-1",
+        "filename": "pool/main/c/ca-certificates/ca-certificates_1:2026.11.05-1_all.deb",
+        "sha256": "12fc350fc5ad638338b06b04835bce897615f8c93f96d30ac396cdb39b850c6b"
       },
       "cloudflared": {
-        "version": "2026.10.1",
-        "filename": "pool/main/c/cloudflared/cloudflared_2026.10.1_aarch64.deb",
-        "sha256": "80cbade899fcd39d2ad987922bfaeb0684afc9f4b45b7370130cf899c5a26bdf"
+        "version": "2026.11.1",
+        "filename": "pool/main/c/cloudflared/cloudflared_2026.11.1_aarch64.deb",
+        "sha256": "56ca76fe7222c050d99dfe85e4e316632436f93798bed98d705ca42d776e14cc"
       },
       "git": {
-        "version": "2.56.0",
-        "filename": "pool/main/g/git/git_2.56.0_aarch64.deb",
-        "sha256": "dcdd22c5fdf7bdb5b825a03a17441d43858ed8515fea57fbb37eb42e733ca82f"
+        "version": "2.56.1",
+        "filename": "pool/main/g/git/git_2.56.1_aarch64.deb",
+        "sha256": "3343f56fc99e2f0631a553a39789769495435cb07b6ffb3c71a7fcb7bd561e95"
       },
       "libc++": {
         "version": "30",
@@ -45,39 +45,39 @@
         "sha256": "2011bb9709261bb3d5ecaa6672faa333be14cf48ad4af37031e3e365309557ac"
       },
       "libexpat": {
-        "version": "2.9.0",
-        "filename": "pool/main/libe/libexpat/libexpat_2.9.0_aarch64.deb",
-        "sha256": "f8a104e8227c9c181f6818658a3ee2fa4c107fac94219b068144fc6591086cdb"
+        "version": "2.10.0",
+        "filename": "pool/main/libe/libexpat/libexpat_2.10.0_aarch64.deb",
+        "sha256": "0e4411f01f6fb664f3f04f9420289472f9afc30db01ea1c5d1e57fd9fa2354be"
       },
       "libiconv": {
-        "version": "1.19",
-        "filename": "pool/main/libi/libiconv/libiconv_1.19_aarch64.deb",
-        "sha256": "fe9481b1dc101c6c3552943f25435109fd522aecc615ae49594f9fbee863bb37"
+        "version": "1.19.1",
+        "filename": "pool/main/libi/libiconv/libiconv_1.19.1_aarch64.deb",
+        "sha256": "a1c6323eff4f660e16ae6f5832356444b3269c19a4f61146355a49e7c4be5ed1"
       },
       "libicu": {
-        "version": "78.3",
-        "filename": "pool/main/libi/libicu/libicu_78.3_aarch64.deb",
-        "sha256": "f536403f65a08fe0df6e7304184e902d54def77d5c3bd5edfd9109d57601d276"
+        "version": "79.1",
+        "filename": "pool/main/libi/libicu/libicu_79.1_aarch64.deb",
+        "sha256": "83c980a010e957738e3567127801d66a1b9bd7e404a4fda98788048ee57d606c"
       },
       "libnghttp2": {
-        "version": "1.70.0",
-        "filename": "pool/main/libn/libnghttp2/libnghttp2_1.70.0_aarch64.deb",
-        "sha256": "ab2e0a3408fe4934ffdf774bd5049a265db2e6db62dcb651baecbecfb81e3f0b"
+        "version": "1.71.0",
+        "filename": "pool/main/libn/libnghttp2/libnghttp2_1.71.0_aarch64.deb",
+        "sha256": "ae33e7b21e0636be8686b9b13a20e31267f047f69cb26b4befd70c9a9bae221e"
       },
       "libnghttp3": {
-        "version": "1.18.0",
-        "filename": "pool/main/libn/libnghttp3/libnghttp3_1.18.0_aarch64.deb",
-        "sha256": "0be2ee96def3608afaf24eb0b4b55f3484a37c95ea21bb1d6d85c7d543467603"
+        "version": "1.19.0",
+        "filename": "pool/main/libn/libnghttp3/libnghttp3_1.19.0_aarch64.deb",
+        "sha256": "8bb6fa31f9281cd48047ec9a571cadf153538f5b38f0203ad7a4e221344b14a6"
       },
       "libngtcp2": {
-        "version": "1.25.0",
-        "filename": "pool/main/libn/libngtcp2/libngtcp2_1.25.0_aarch64.deb",
-        "sha256": "f471bad7f4329b6b0b4aedf124e0a23a35f6ac99bfbae73304136f8bfd570fc3"
+        "version": "1.26.0",
+        "filename": "pool/main/libn/libngtcp2/libngtcp2_1.26.0_aarch64.deb",
+        "sha256": "8225ecde58104ef5aa234fa54a1bea5051a8a9ef2937e5ba996b3e8dda68c8eb"
       },
       "libsqlite": {
-        "version": "3.54.1",
-        "filename": "pool/main/libs/libsqlite/libsqlite_3.54.1_aarch64.deb",
-        "sha256": "0856cac8cc87f6e112f2eef4fcac6ad5cb08209ecb7cc260f997874fc186a3c0"
+        "version": "3.54.1-1",
+        "filename": "pool/main/libs/libsqlite/libsqlite_3.54.1-1_aarch64.deb",
+        "sha256": "661fb995f7215845007b222a85266ae99d9443e87e0604f8677edfd738e6b81a"
       },
       "libssh2": {
         "version": "1.11.1-2",
@@ -85,9 +85,9 @@
         "sha256": "1add4e0a926b848814e7e2f1817ea28b123c54cabd5bbc4e5cfd65291cbad84e"
       },
       "nodejs-lts": {
-        "version": "24.18.0-1",
-        "filename": "pool/main/n/nodejs-lts/nodejs-lts_24.18.0-1_aarch64.deb",
-        "sha256": "490f4d08c45b25a7ea7db6ee466ebb3ee61f07083260b85332704ed018f59a87"
+        "version": "24.22.3",
+        "filename": "pool/main/n/nodejs-lts/nodejs-lts_24.22.3_aarch64.deb",
+        "sha256": "80edcc73db025db0baa09be27e3d65a16e6f2a72ab925f1873a1b808ab857c28"
       },
       "openssl": {
         "version": "1:3.6.5",
@@ -105,31 +105,31 @@
         "sha256": "a3265cd1cf7d04754f2fb683eaf5b21918263792fd714457127900c1d6d9bcd9"
       },
       "zlib": {
-        "version": "1.3.2",
-        "filename": "pool/main/z/zlib/zlib_1.3.2_aarch64.deb",
-        "sha256": "75e7d0af17fcc3b40004309fdc00a1ddb9ae08346dce5e269902c34ac3966ac9"
+        "version": "1.4",
+        "filename": "pool/main/z/zlib/zlib_1.4_aarch64.deb",
+        "sha256": "e3027565ae50bcd8ba5113c988b589754ae192c9cc3e6afbe3e4ed7c06b2598e"
       }
     },
     "x86_64": {
       "c-ares": {
-        "version": "1.34.8",
-        "filename": "pool/main/c/c-ares/c-ares_1.34.8_x86_64.deb",
-        "sha256": "c5d6194d69a04089040ca50dad96ed7df8773bd3c3d7c4be7d1dd5661ceae6b4"
+        "version": "1.34.9",
+        "filename": "pool/main/c/c-ares/c-ares_1.34.9_x86_64.deb",
+        "sha256": "ac96c37fcc9181d1a7095f60485457fe6c3d784a83b0e8e6e7af9b3bfceda237"
       },
       "ca-certificates": {
-        "version": "1:2026.09.25",
-        "filename": "pool/main/c/ca-certificates/ca-certificates_1:2026.09.25_all.deb",
-        "sha256": "57fab24bf4561bfdd35afe71bc1929914e51c35458cfd1fca2b15e54bc8df7af"
+        "version": "1:2026.11.05-1",
+        "filename": "pool/main/c/ca-certificates/ca-certificates_1:2026.11.05-1_all.deb",
+        "sha256": "12fc350fc5ad638338b06b04835bce897615f8c93f96d30ac396cdb39b850c6b"
       },
       "cloudflared": {
-        "version": "2026.10.1",
-        "filename": "pool/main/c/cloudflared/cloudflared_2026.10.1_x86_64.deb",
-        "sha256": "cdc736ff8040ed7b55117275dcd36a05b5a4f73d2ee9254fc7f82801bf89dc4e"
+        "version": "2026.11.1",
+        "filename": "pool/main/c/cloudflared/cloudflared_2026.11.1_x86_64.deb",
+        "sha256": "07948ff99ba7e1aa9f25709c155f416a129dbad1cac5fd1035c529367d33a208"
       },
       "git": {
-        "version": "2.56.0",
-        "filename": "pool/main/g/git/git_2.56.0_x86_64.deb",
-        "sha256": "9af296495286bffe22f8abda910c29fd09e561ddc668c2d45c94785b91cbb129"
+        "version": "2.56.1",
+        "filename": "pool/main/g/git/git_2.56.1_x86_64.deb",
+        "sha256": "c2b2e63b090c979ebedfb8610a06b87f052a9ce0477dd0a3a9d5bb9171c4550b"
       },
       "libc++": {
         "version": "30",
@@ -142,39 +142,39 @@
         "sha256": "fa71ce8eca3d0aa48a748fc60e4519351fc9c4d51b20cac5722190cb002cfd1c"
       },
       "libexpat": {
-        "version": "2.9.0",
-        "filename": "pool/main/libe/libexpat/libexpat_2.9.0_x86_64.deb",
-        "sha256": "4af6fa2a319696055d9b317270f6f7b54170159340e776cec53ed1ba09770293"
+        "version": "2.10.0",
+        "filename": "pool/main/libe/libexpat/libexpat_2.10.0_x86_64.deb",
+        "sha256": "2e0f6f7d54ef7d8a732148f0a2ff53594b1a8d410a707f480f143861313a0ecd"
       },
       "libiconv": {
-        "version": "1.19",
-        "filename": "pool/main/libi/libiconv/libiconv_1.19_x86_64.deb",
-        "sha256": "880e9f423b448316a4951ffca3ffcd626d79538042b60ce2c3a821b9650c594c"
+        "version": "1.19.1",
+        "filename": "pool/main/libi/libiconv/libiconv_1.19.1_x86_64.deb",
+        "sha256": "3eb0c454676ad24d26c79601721b2eb3f9485c611ad0179fb86b17229344f46d"
       },
       "libicu": {
-        "version": "78.3",
-        "filename": "pool/main/libi/libicu/libicu_78.3_x86_64.deb",
-        "sha256": "19fa8c4d828719f465d523983b1e0d833e4130bb22790104638965d97e27fe60"
+        "version": "79.1",
+        "filename": "pool/main/libi/libicu/libicu_79.1_x86_64.deb",
+        "sha256": "541410d7b425ebde5d4027c86218081925b15dc1e5cffaa45449bdc4b2256251"
       },
       "libnghttp2": {
-        "version": "1.70.0",
-        "filename": "pool/main/libn/libnghttp2/libnghttp2_1.70.0_x86_64.deb",
-        "sha256": "7378c2e54518d0bd8cd349f6f89148a7feaef7e42196efcc0db237767319cdca"
+        "version": "1.71.0",
+        "filename": "pool/main/libn/libnghttp2/libnghttp2_1.71.0_x86_64.deb",
+        "sha256": "9bc1791438de6380038835cbd10c9cede716212cc32e37eb54407cd24f6605d6"
       },
       "libnghttp3": {
-        "version": "1.18.0",
-        "filename": "pool/main/libn/libnghttp3/libnghttp3_1.18.0_x86_64.deb",
-        "sha256": "bd9dc28e1e7593837dae5bb6747ca95de1cfb8da78d86009cbeb18fc6464fc0e"
+        "version": "1.19.0",
+        "filename": "pool/main/libn/libnghttp3/libnghttp3_1.19.0_x86_64.deb",
+        "sha256": "b3fa3f6117a8d2c1e5c6535f733282c077d39760b79bd08eac4ffba8da7bc0e6"
       },
       "libngtcp2": {
-        "version": "1.25.0",
-        "filename": "pool/main/libn/libngtcp2/libngtcp2_1.25.0_x86_64.deb",
-        "sha256": "d8232b10e8ab9129f4a0c1a5c8fc4591f11c74d99e5fd4d24121abbea65af5b7"
+        "version": "1.26.0",
+        "filename": "pool/main/libn/libngtcp2/libngtcp2_1.26.0_x86_64.deb",
+        "sha256": "9a4ba347834cf4593cd80df9c9ad4caaf0486946ac0e1a812d10f0d712b5eae2"
       },
       "libsqlite": {
-        "version": "3.54.1",
-        "filename": "pool/main/libs/libsqlite/libsqlite_3.54.1_x86_64.deb",
-        "sha256": "b064739a8f4f1a67c55b3edc444688f9973a6c9ba5a1d2d4cc277e5eed08e375"
+        "version": "3.54.1-1",
+        "filename": "pool/main/libs/libsqlite/libsqlite_3.54.1-1_x86_64.deb",
+        "sha256": "497471806378934fec8a6f3b5db70cf52a3652828786a241e2e37eebc19112b0"
       },
       "libssh2": {
         "version": "1.11.1-2",
@@ -182,9 +182,9 @@
         "sha256": "00db1c1497e8703281efded7f1f2a63824b145c980d9ec309ae0ab7ccb9ce1c5"
       },
       "nodejs-lts": {
-        "version": "24.18.0-1",
-        "filename": "pool/main/n/nodejs-lts/nodejs-lts_24.18.0-1_x86_64.deb",
-        "sha256": "2a41c61c609993a7d897fed130adf4d6debb0b30713ab85bb47c2fc8373458ba"
+        "version": "24.22.3",
+        "filename": "pool/main/n/nodejs-lts/nodejs-lts_24.22.3_x86_64.deb",
+        "sha256": "d73ab1303aa1a8ecca188795f536279c7ef196c4e3f72b645e443501b03247e4"
       },
       "openssl": {
         "version": "1:3.6.5",
@@ -202,9 +202,9 @@
         "sha256": "a3265cd1cf7d04754f2fb683eaf5b21918263792fd714457127900c1d6d9bcd9"
       },
       "zlib": {
-        "version": "1.3.2",
-        "filename": "pool/main/z/zlib/zlib_1.3.2_x86_64.deb",
-        "sha256": "c61b089dd30981452f5953b2bad4c4e7857062b2abd971f87fb0aec441bc02f4"
+        "version": "1.4",
+        "filename": "pool/main/z/zlib/zlib_1.4_x86_64.deb",
+        "sha256": "55ab8f16e492d6ed03c2e2bf701af52cf54a313442dd7adedd3d6f3e3eba2e4f"
       }
     }
   }
