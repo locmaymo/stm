@@ -108,6 +108,12 @@ const TERMUX_IMPORT_FAILURES: Partial<Record<string, MessageKey>> = {
   termux_missing: 'console.termuxMissing',
 };
 const UPLOAD_RATE_WINDOW_MS = 10_000;
+/**
+ * How long the app may hold a picked zip without sending any of it before the
+ * page says why. A file on the phone sends its first bytes at once; one on a
+ * cloud drive is fetched in full first.
+ */
+const IMPORT_OPEN_SLOW_MS = 10_000;
 
 /**
  * Whether the Android app sends a backup zip from the phone itself, rather
@@ -4528,10 +4534,12 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
    */
   const [justUploaded, setJustUploaded] = useState<string | null>(null);
   const [discardUpload, setDiscardUpload] = useState(true);
-  const [operationProgress, setOperationProgress] = useState<{ percent: number; step: string } | null>(null);
+  const [operationProgress, setOperationProgress] = useState<OperationStep | null>(null);
   const [uploading, setUploading] = useState(false);
   // The Android app is the one sending, so this page can come and go.
   const [uploadingFromApp, setUploadingFromApp] = useState(false);
+  /** The app has held the picked zip a while without sending any of it; see `IMPORT_OPEN_SLOW_MS`. */
+  const [importOpenSlow, setImportOpenSlow] = useState(false);
   // What the Stop button acts on: a server job by id, or the upload in flight.
   const [runningJobId, setRunningJobId] = useState<string | null>(null);
   const [stopping, setStopping] = useState(false);
@@ -4874,7 +4882,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
    * asked.
    */
   const activityLabel = busyAction ?? r2Busy;
-  const activityPercent = operationProgress ? Math.round(operationProgress.percent) : null;
+  const activityPercent = operationProgress?.percent === undefined ? null : Math.round(operationProgress.percent);
   const activityStep = operationProgress?.step ?? null;
   const holding = activityLabel !== null || selectedPreview !== null || streaming !== null || restorePoint !== null;
   useEffect(() => {
@@ -5189,10 +5197,20 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
     setBusyAction(t(source === 'termux' ? 'console.termuxImport' : 'console.importZip')); setOperationProgress(null); setUploading(true); setUploadingFromApp(true);
     const controller = new AbortController();
     uploadAbort.current = controller;
+    let openSlow: ReturnType<typeof setTimeout> | undefined;
     try {
       const samples: Array<{ at: number; bytes: number }> = [{ at: Date.now(), bytes: 0 }];
       const ended = await importZipFromApp(csrfToken, (event) => {
+        // Picked, and the app is opening it: say which file, and say why if
+        // that takes long (a cloud drive fetching all of it first).
+        if (event.state === 'picked') {
+          setOperationProgress({ step: `${t('console.importOpening')} ${event.name}${event.size >= 0 ? ` (${formatBytes(event.size)})` : ''}` });
+          clearTimeout(openSlow);
+          openSlow = setTimeout(() => setImportOpenSlow(true), IMPORT_OPEN_SLOW_MS);
+          return;
+        }
         if (event.state !== 'progress') return;
+        clearTimeout(openSlow); setImportOpenSlow(false);
         // Every byte is on the server: what is left is its own work.
         if (event.total > 0 && event.sent >= event.total) {
           setUploading(false);
@@ -5229,7 +5247,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       await refresh();
     } catch (error: unknown) {
       failed(error instanceof Error ? error.message : t('console.backupPreviewFailed'));
-    } finally { uploadAbort.current = null; setBusyAction(null); setOperationProgress(null); setUploading(false); setUploadingFromApp(false); }
+    } finally { clearTimeout(openSlow); uploadAbort.current = null; setBusyAction(null); setOperationProgress(null); setUploading(false); setUploadingFromApp(false); setImportOpenSlow(false); }
   };
   const renameBackup = async (name: string): Promise<string | null> => {
     if (!renameTarget) return null;
@@ -5784,7 +5802,7 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
             <Button variant="outline" size="sm" onClick={() => setBackupOpen(true)} disabled={busy || activeProfileId === null}><BookmarkPlus />{t('console.manualBackup')}</Button>
           </>}
         </div>
-        {busyAction ? <OperationProgress t={t} label={busyAction} progress={operationProgress} canStop={uploading || runningJobId !== null} stopping={stopping} onStop={() => void stopOperation()} warning={uploading && !uploadingFromApp ? t('console.uploadKeepTabOpen') : null} note={uploading && uploadingFromApp ? t('console.uploadFromApp') : null} /> : null}
+        {busyAction ? <OperationProgress t={t} label={busyAction} progress={operationProgress} canStop={uploading || runningJobId !== null} stopping={stopping} onStop={() => void stopOperation()} warning={uploading && !uploadingFromApp ? t('console.uploadKeepTabOpen') : uploading && importOpenSlow ? t('console.importOpenSlow') : null} note={uploading && uploadingFromApp && !importOpenSlow ? t('console.uploadFromApp') : null} /> : null}
         <DataTable
           rows={kindFilter === 'all' ? backups : backups.filter((backup) => backupKind(backup) === kindFilter)}
           columns={backupColumns}
@@ -6216,13 +6234,16 @@ function R2CheckLine({ t, check }: { t: Translate; check: R2CheckResult }) {
  * one block says it rather than each card writing out its own bar, its own
  * percentage and its own Stop button in its own place.
  */
-function OperationProgress({ t, label, progress, canStop, stopping, onStop, warning, note }: { t: Translate; label: string; progress: { percent: number; step: string } | null; canStop: boolean; stopping: boolean; onStop: () => void; warning: string | null; /** Something to know, not to worry about. */ note?: string | null }) {
+/** What a long piece of work is doing now, and how far along it is when that is known. */
+type OperationStep = { readonly percent?: number; readonly step: string };
+
+function OperationProgress({ t, label, progress, canStop, stopping, onStop, warning, note }: { t: Translate; label: string; progress: OperationStep | null; canStop: boolean; stopping: boolean; onStop: () => void; warning: string | null; /** Something to know, not to worry about. */ note?: string | null }) {
   return <div className="grid gap-2 rounded-lg border bg-muted/40 p-3" role="status">
     <div className="flex flex-wrap items-center justify-between gap-2">
-      <TaskLine task={label} step={progress?.step ?? t('console.taskPreparing')} {...(progress ? { percent: progress.percent } : {})} />
+      <TaskLine task={label} step={progress?.step ?? t('console.taskPreparing')} {...(progress?.percent === undefined ? {} : { percent: progress.percent })} />
       {canStop ? <Button variant="destructive" size="sm" onClick={onStop} loading={stopping}><CircleStop />{stopping ? t('console.stopping') : t('common.stop')}</Button> : null}
     </div>
-    <TaskBar {...(progress ? { percent: Math.max(2, progress.percent) } : {})} />
+    <TaskBar {...(progress?.percent === undefined ? {} : { percent: Math.max(2, progress.percent) })} />
     {warning ? <span className="text-xs text-destructive">{warning}</span> : null}
     {note ? <span className="text-xs text-muted-foreground">{note}</span> : null}
   </div>;
