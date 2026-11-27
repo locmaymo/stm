@@ -1203,6 +1203,18 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   // The console's own link comes back the same way, and only now: its target is
   // the port that was bound a few lines above.
   void managerTunnel.resume().catch((error: unknown) => logger(logEvent('cloudflared.resumeFailed', `[cloudflared] the console's tunnel could not be restored: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' })));
+  /*
+   * A hosted console that nobody has set up yet is about to be asked for its
+   * own link: the platform shows it in a frame, and the frame shows that link
+   * instead of the console (see `EarlyLink`). The first ask is also where
+   * cloudflared gets fetched on a machine that has never had it, which put a
+   * download in front of a reader already waiting on Cloudflare. Fetched now,
+   * while they are still on their way to the page; nothing is opened by it.
+   */
+  const unclaimed = persisted.adminPasswordHash === null && persisted.ownerAccountId === null && persisted.googleOwnerId === null;
+  if (paths.platform === 'hosted' && unclaimed) {
+    void managerTunnel.ensureBinary().catch(() => undefined);
+  }
   const activeInstallation = await runtime.getActiveInstallation();
   // After the ready installation below has had its chance to claim or make a
   // profile, so a machine that has one never gets a waiting one as well.

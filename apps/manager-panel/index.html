@@ -38,6 +38,27 @@
         document.documentElement.classList.add('dark');
       }
     </script>
+    <script>
+      /*
+       * In another page's frame, ask for the console's own link at once.
+       *
+       * A frame is where the console shows that link instead of itself (see
+       * `mustLeaveFrame` in src/hosting.ts), and Cloudflare takes a while to
+       * open one. Asked here, it is already opening while the bundle is still
+       * on its way, rather than once the bundle has arrived, run and drawn the
+       * screen that asks. The manager decides whether a link may be opened at
+       * all - only for a console nobody has set up, reached from the internet -
+       * so an ask anywhere else opens nothing, and the screen's own ask later
+       * finds this one under way rather than starting a second.
+       */
+      try {
+        var inFrame = true;
+        try { inFrame = window.self !== window.top; } catch (error) { /* refused the answer: a frame on another site */ }
+        if (inFrame && window.fetch) window.fetch('/api/v1/setup/own-link', { method: 'POST', credentials: 'same-origin' }).catch(function () {});
+      } catch (error) {
+        // The screen asks again once it is drawn.
+      }
+    </script>
     <style>
       /* The boot screen, inline because it has to be on screen before the
          stylesheet has been fetched. It is removed once React has painted. */
