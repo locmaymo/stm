@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { getPlatformPaths } from '../../platform/src/index.js';
-import { RuntimeError, RuntimeManager, extractZipSafely, gitFetchAttempts, npmInvocation } from '../src/index.js';
+import { RuntimeError, RuntimeManager, extractZipSafely, gitFetchAttempts, npmInvocation, refusalLiftsAt } from '../src/index.js';
 import { logLineText } from '../../contracts/src/index.js';
 
 const exec = promisify(execFile);
@@ -102,6 +102,71 @@ test('a refused API does not stop the install: the versions come off the reposit
   // Newest by version number, not by the order the characters happen to fall in.
   assert.equal(versions[0]?.ref, '1.19.0');
   assert.deepEqual(versions.slice(3).map((item) => item.selector), ['1.19.0', '1.9.0']);
+});
+
+/*
+ * The console looks for a new SillyTavern every quarter of an hour. On a
+ * shared address each look asked an API that had already said no, and wrote
+ * the same line about it - all day, in a log people read to find out what is
+ * wrong.
+ */
+test('a refused API is left alone until it takes requests again, and said once', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-versions-quiet-'));
+  const repository = join(root, 'source');
+  await exec('git', ['init', repository]);
+  await exec('git', ['-C', repository, 'config', 'user.email', 'stm@test.local']);
+  await exec('git', ['-C', repository, 'config', 'user.name', 'STM Test']);
+  await writeFile(join(repository, 'package.json'), '{"name":"sillytavern"}', 'utf8');
+  await exec('git', ['-C', repository, 'add', '.']);
+  await exec('git', ['-C', repository, 'commit', '-m', 'one']);
+  await exec('git', ['-C', repository, 'tag', '1.0.0']);
+
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: join(root, 'manager') } });
+  let clock = 1_800_000_000_000;
+  let asked = 0;
+  // Refused, then let through once the allowance is back, then refused again:
+  // a shared address, where the allowance runs out for part of most hours.
+  const answers = ['refused', 'fine', 'refused'];
+  const lines: string[] = [];
+  const runtime = new RuntimeManager({
+    paths,
+    repositoryUrl: repository,
+    now: () => new Date(clock),
+    logger: (line) => { lines.push(logLineText(line)); },
+    fetch: async () => {
+      const answer = answers[asked] ?? 'refused';
+      asked += 1;
+      return answer === 'fine'
+        ? new Response(JSON.stringify([{ tag_name: '1.0.0', name: 'One' }]), { status: 200 })
+        // The allowance comes back in ten minutes, which the refusal says itself.
+        : new Response('rate limited', { status: 403, headers: { 'x-ratelimit-reset': String(clock / 1000 + 600) } });
+    },
+  });
+
+  for (let look = 0; look < 3; look += 1) {
+    const versions = await runtime.listVersions(true);
+    assert.equal(versions[0]?.ref, '1.0.0', 'the list still comes, off the repository');
+  }
+  assert.equal(asked, 1, 'the API was asked once, and not again while it is refusing');
+
+  // A quarter of an hour on, past the reset: asked again, and it answers.
+  clock += 15 * 60_000;
+  assert.equal((await runtime.listVersions(true))[0]?.label, 'One (latest)');
+  // And refuses again on the next look. That is the same standing condition.
+  clock += 15 * 60_000;
+  await runtime.listVersions(true);
+  assert.equal(asked, 3);
+  assert.equal(lines.filter((line) => line.includes('GitHub is not answering')).length, 1, 'said once a run, however it comes and goes');
+});
+
+test('a refusal is waited out for as long as it says, within a minute and an hour', () => {
+  const now = 1_800_000_000_000;
+  const headers = (values: Record<string, string>): Headers => new Headers(values);
+  assert.equal(refusalLiftsAt(headers({ 'x-ratelimit-reset': String(now / 1000 + 600) }), now), now + 600_000);
+  assert.equal(refusalLiftsAt(headers({ 'retry-after': '120' }), now), now + 120_000);
+  assert.equal(refusalLiftsAt(headers({}), now), now + 3_600_000, 'an hour when it does not say');
+  assert.equal(refusalLiftsAt(headers({ 'x-ratelimit-reset': String(now / 1000 - 30) }), now), now + 60_000, 'a reset already past is a minute');
+  assert.equal(refusalLiftsAt(headers({ 'x-ratelimit-reset': String(now / 1000 + 86_400) }), now), now + 3_600_000, 'a day away is an hour');
 });
 
 test('a first installation can be stopped, and takes back everything it wrote', async () => {

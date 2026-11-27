@@ -170,6 +170,36 @@ test('a refusal is reported once and is not retried until the clock says so', as
   assert.equal(lines.length, 1, 'the same standing failure is said once');
 });
 
+test('a rate limit is said once a run, however many good answers come between', async () => {
+  // A shared address: refused, then let through, then refused again - which is
+  // part of most hours there, and used to put the same line in the log every
+  // few hours.
+  const lines: string[] = [];
+  let calls = 0;
+  const fetchImpl = (async () => {
+    calls += 1;
+    return calls === 2
+      ? new Response(JSON.stringify([{ tag_name: 'v0.2.0' }]), { status: 200 })
+      : new Response('rate limited', { status: 403 });
+  }) as unknown as typeof globalThis.fetch;
+  let clock = 1_000;
+  const watch = new ReleaseWatch({
+    version: '0.2.0',
+    fetch: fetchImpl,
+    now: () => new Date(clock),
+    freshForMs: 10_000,
+    retryAfterMs: 10_000,
+    logger: (line) => { lines.push(typeof line === 'string' ? line : line.message); },
+  });
+  for (let look = 0; look < 3; look += 1) {
+    await watch.check();
+    clock += 11_000;
+  }
+  assert.equal(calls, 3);
+  assert.equal(lines.length, 1, 'the second refusal is not news');
+  assert.ok(lines[0]!.includes('HTTP 403'));
+});
+
 test('a repository with no releases at all is not a failure', async () => {
   const github = fakeGitHub([]);
   const watch = new ReleaseWatch({ version: '0.2.0', fetch: github.fetch });

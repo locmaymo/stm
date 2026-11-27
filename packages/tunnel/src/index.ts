@@ -1,6 +1,9 @@
 import { execFile, spawn, type ChildProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
+import type { LookupAddress } from 'node:dns';
+import { lookup as dnsLookup } from 'node:dns/promises';
+import { request as httpsRequest } from 'node:https';
 import { access, chmod, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
 import { Readable } from 'node:stream';
@@ -115,6 +118,123 @@ const QUIC_FAILURES_WHILE_RUNNING = 2;
  */
 const EDGE_TUNNEL_ERROR_STATUS = 530;
 const EDGE_TUNNEL_ERROR_BODY = /\b1033\b|argo tunnel error/iu;
+/**
+ * How long after cloudflared prints a new address before the edge is first
+ * asked about it.
+ *
+ * Asking too early costs more than asking late. Cloudflare takes a few seconds
+ * to learn a new Quick Tunnel's name, and a "no such name" given in that window
+ * is remembered: a resolver keeps it for the zone's negative TTL, a minute for
+ * trycloudflare.com, and the edge machine that was asked goes on answering
+ * error 1016 for about half a minute. Measured on real tunnels: asked a second
+ * after the address appeared, the link first worked 31 to 61 seconds later;
+ * asked five seconds after, it worked at the first ask four times in five, and
+ * twelve seconds later the fifth time.
+ */
+const EDGE_FIRST_ASK_MS = 5_000;
+/** How long one ask may take before it counts as no answer. */
+const EDGE_ASK_TIMEOUT_MS = 10_000;
+/** Enough of an error page to find its code in; the rest is styling. */
+const EDGE_ERROR_PAGE_BYTES = 64 * 1024;
+
+/** What the edge answered when asked about an address. Only a 530's page is kept. */
+export interface EdgeReply {
+  readonly status: number;
+  readonly body: string;
+}
+
+/** Ask the edge about an address. Null when nothing answered in time. */
+export type EdgeAsk = (url: string, timeoutMs: number) => Promise<EdgeReply | null>;
+
+/**
+ * Ask Cloudflare's edge about a new address without looking its name up.
+ *
+ * The name is brand new, so a lookup of it can come back "no such name" - and
+ * a resolver keeps that answer for a minute: the container's, or on a desktop
+ * the one the browser on the same machine uses. The check would then be the
+ * very thing that kept the link from opening. So the edge is reached at the
+ * address of the zone the name is in, which has been there all along, and told
+ * which name is meant the way every HTTPS request tells it - in the TLS
+ * handshake and the Host header. Any Cloudflare address serves every name
+ * Cloudflare proxies, and the certificate is still checked against the name.
+ *
+ * A new connection each time, because the edge machine that said 1016 on one
+ * connection goes on saying it there.
+ */
+export const askEdgeDirectly: EdgeAsk = async (url, timeoutMs) => {
+  let target: URL;
+  try { target = new URL(url); } catch { return null; }
+  const zone = target.hostname.split('.').slice(1).join('.');
+  if (!zone.includes('.')) return null;
+  let edge: LookupAddress | undefined;
+  try {
+    const addresses = await dnsLookup(zone, { all: true });
+    // IPv4 first: a container often has an IPv6 address that leads nowhere.
+    edge = addresses.find((entry) => entry.family === 4) ?? addresses[0];
+  } catch {
+    return null;
+  }
+  if (!edge) return null;
+  const chosen = edge;
+  return new Promise<EdgeReply | null>((resolve) => {
+    let settled = false;
+    const settle = (reply: EdgeReply | null): void => {
+      if (settled) return;
+      settled = true;
+      resolve(reply);
+    };
+    const request = httpsRequest({
+      host: target.hostname,
+      servername: target.hostname,
+      port: target.port ? Number(target.port) : 443,
+      path: '/',
+      method: 'GET',
+      agent: false,
+      timeout: timeoutMs,
+      headers: { 'user-agent': 'sillytavern-manager' },
+      lookup: (_hostname, options, callback) => {
+        if (options.all) callback(null, [chosen]);
+        else callback(null, chosen.address, chosen.family);
+      },
+    }, (response) => {
+      const status = response.statusCode ?? 0;
+      if (status !== EDGE_TUNNEL_ERROR_STATUS) {
+        response.destroy();
+        settle({ status, body: '' });
+        return;
+      }
+      let body = '';
+      response.setEncoding('utf8');
+      response.on('data', (chunk: string) => { if (body.length < EDGE_ERROR_PAGE_BYTES) body += chunk; });
+      response.on('end', () => settle({ status, body }));
+      response.on('error', () => settle({ status, body }));
+    });
+    request.on('timeout', () => request.destroy(new Error('the edge did not answer in time')));
+    request.on('error', () => settle(null));
+    request.end();
+  });
+};
+
+/** The same ask, made with a fetch - which is how a test answers for the edge. */
+function askEdgeWithFetch(fetchImpl: typeof globalThis.fetch): EdgeAsk {
+  return async (url, timeoutMs) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    timer.unref?.();
+    try {
+      const response = await fetchImpl(url, { redirect: 'manual', signal: controller.signal, headers: { 'user-agent': 'sillytavern-manager' } });
+      if (response.status !== EDGE_TUNNEL_ERROR_STATUS) {
+        await response.body?.cancel().catch(() => undefined);
+        return { status: response.status, body: '' };
+      }
+      return { status: response.status, body: await response.text().catch(() => '') };
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+}
 /**
  * How often to ask whether a new address answers, how many times before it is
  * handed out anyway, and how many refusals in a row settle it.
@@ -259,8 +379,14 @@ export interface TunnelManagerOptions {
   readonly versionOf?: (path: string) => Promise<string | null>;
   readonly env?: NodeJS.ProcessEnv;
   readonly beforeStart?: () => Promise<void>;
-  /** Injectable for tests; defaults to the global fetch. */
+  /**
+   * Injectable for tests; defaults to the global fetch. When one is given it
+   * also answers for the edge, unless `edgeAsk` is given too - which is how a
+   * test plays Cloudflare without anything reaching the network.
+   */
   readonly fetchImpl?: typeof globalThis.fetch;
+  /** How a new address is checked; see `askEdgeDirectly`, the default. */
+  readonly edgeAsk?: EdgeAsk;
   /** Injectable for tests, so no real cloudflared has to be launched. */
   readonly spawnImpl?: typeof spawn;
   /** How long to wait before each reconnect attempt; shortened by tests. */
@@ -278,6 +404,11 @@ export interface TunnelManagerOptions {
   readonly quicPatienceMs?: number;
   /** How long to wait between asks of the edge; shortened by tests. */
   readonly edgeCheckDelayMs?: number;
+  /**
+   * How long to wait before the first ask; see EDGE_FIRST_ASK_MS. A test that
+   * shortens the wait between asks shortens this one with it.
+   */
+  readonly edgeFirstAskMs?: number;
   /** How many times to ask before handing the address out anyway; lowered by tests. */
   readonly edgeCheckAttempts?: number;
 }
@@ -309,8 +440,21 @@ export class TunnelManager {
   /** The address last announced to `onUrl`, so the same one is not announced twice. */
   private announcedUrl: string | null = null;
   private readonly quicPatienceMs: number;
+  private readonly edgeAsk: EdgeAsk;
   private readonly edgeCheckDelayMs: number;
+  private readonly edgeFirstAskMs: number;
   private readonly edgeCheckAttempts: number;
+  /**
+   * The reason the last start failed, and how many starts in a row have failed
+   * for it since it was said.
+   *
+   * A reconnect that keeps meeting the same refusal - a console with no
+   * password yet, which only a person can change - would otherwise put the
+   * same two lines in the log every minute for as long as nobody came, which
+   * is thousands of lines a day of something that was true the first time.
+   */
+  private lastFailure: string | null = null;
+  private repeatedFailures = 0;
   private child: ChildProcess | null = null;
   /** Whether the running child is proot rather than cloudflared itself. */
   private wrapped = false;
@@ -385,7 +529,9 @@ export class TunnelManager {
     this.reconnectDelaysMs = options.reconnectDelaysMs?.length ? options.reconnectDelaysMs : RECONNECT_DELAYS_MS;
     this.onUrl = options.onUrl;
     this.quicPatienceMs = options.quicPatienceMs ?? QUIC_PATIENCE_MS;
+    this.edgeAsk = options.edgeAsk ?? (options.fetchImpl ? askEdgeWithFetch(this.fetchImpl) : askEdgeDirectly);
     this.edgeCheckDelayMs = options.edgeCheckDelayMs ?? EDGE_CHECK_DELAY_MS;
+    this.edgeFirstAskMs = options.edgeFirstAskMs ?? options.edgeCheckDelayMs ?? EDGE_FIRST_ASK_MS;
     this.edgeCheckAttempts = options.edgeCheckAttempts ?? EDGE_CHECK_ATTEMPTS;
   }
 
@@ -417,6 +563,9 @@ export class TunnelManager {
       : ['run', '--token', selectedToken!])];
     await this.remember(mode, mode === 'named' ? selectedToken ?? null : null);
     this.state = { mode, status: 'starting', url: null, startedAt: this.now().toISOString(), error: null };
+    // Got past whatever stopped the last start, so the next failure is news.
+    this.lastFailure = null;
+    this.repeatedFailures = 0;
     const target = targetUrl.replace(/^https?:\/\//u, '');
     this.logger(mode === 'quick'
       ? logEvent('cloudflared.startingQuick', `[cloudflared] starting Quick Tunnel to ${target}`, { target })
@@ -509,6 +658,9 @@ export class TunnelManager {
   public async stop(reason: StopReason = 'requested'): Promise<TunnelState> {
     this.clearReconnect();
     this.clearQuicTimer();
+    // Whatever is asked for after this is a new attempt, and its failure is said.
+    this.lastFailure = null;
+    this.repeatedFailures = 0;
     // A stop that arrives mid-switch is the operator's, and it wins.
     this.switchingTransport = null;
     // Whatever address was being checked is not the current one any more.
@@ -715,7 +867,8 @@ export class TunnelManager {
     let refusals = 0;
     const current = (): boolean => !this.closed && this.child === child && this.edgeChecking === url && !this.switchingTransport;
     for (let attempt = 0; attempt < this.edgeCheckAttempts; attempt += 1) {
-      await new Promise((resolve) => { const timer = setTimeout(resolve, this.edgeCheckDelayMs); timer.unref?.(); });
+      const wait = attempt === 0 ? this.edgeFirstAskMs : this.edgeCheckDelayMs;
+      await new Promise((resolve) => { const timer = setTimeout(resolve, wait); timer.unref?.(); });
       // A restart, a stop or a switch happened while this was waiting. Whatever
       // is running now is not what this check was about.
       if (!current()) return;
@@ -760,24 +913,18 @@ export class TunnelManager {
    * carried it. `refused` is the edge saying it has no tunnel to send it down.
    */
   private async askEdge(url: string): Promise<'answered' | 'refused' | 'unknown'> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 10_000);
-    timer.unref?.();
-    try {
-      const response = await this.fetchImpl(url, { redirect: 'manual', signal: controller.signal, headers: { 'user-agent': 'sillytavern-manager' } });
-      if (response.status !== EDGE_TUNNEL_ERROR_STATUS) {
-        await response.body?.cancel().catch(() => undefined);
-        return 'answered';
-      }
-      // 530 is Cloudflare's status for a whole family of errors. Only 1033
-      // means the tunnel itself, so the page is read rather than guessed at.
-      const body = await response.text().catch(() => '');
-      return EDGE_TUNNEL_ERROR_BODY.test(body) ? 'refused' : 'answered';
-    } catch {
-      return 'unknown';
-    } finally {
-      clearTimeout(timer);
-    }
+    const reply = await this.edgeAsk(url, EDGE_ASK_TIMEOUT_MS).catch(() => null);
+    if (!reply) return 'unknown';
+    if (reply.status !== EDGE_TUNNEL_ERROR_STATUS) return 'answered';
+    /*
+     * 530 is Cloudflare's status for a whole family of errors, and it is always
+     * the edge's: nothing behind a tunnel sends it. Only 1033 means the tunnel
+     * itself, so the page is read rather than guessed at. The others - 1016
+     * while a new name is still spreading - say the edge does not know where to
+     * send the request yet. That is not an answer, and it used to be counted as
+     * one, which handed out a link that was still an error page.
+     */
+    return EDGE_TUNNEL_ERROR_BODY.test(reply.body) ? 'refused' : 'unknown';
   }
 
   /**
@@ -791,7 +938,9 @@ export class TunnelManager {
     const delay = this.reconnectDelaysMs[Math.min(this.reconnectAttempt, this.reconnectDelaysMs.length - 1)] ?? 60_000;
     this.reconnectAttempt += 1;
     const seconds = Math.round(delay / 1000);
-    this.logger(logEvent('cloudflared.reconnecting', `[cloudflared] reconnecting in ${seconds}s`, { seconds }));
+    // Still trying, but after the same failure as before, which was said along
+    // with the first of these; see `lastFailure`.
+    if (this.repeatedFailures === 0) this.logger(logEvent('cloudflared.reconnecting', `[cloudflared] reconnecting in ${seconds}s`, { seconds }));
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       void this.start(mode).then((state) => { if (state.status === 'error') this.scheduleReconnect(mode); }).catch(() => this.scheduleReconnect(mode));
@@ -1077,6 +1226,12 @@ export class TunnelManager {
 
   private fail(mode: Exclude<TunnelMode, 'off'>, error: string): TunnelState {
     this.state = { mode, status: 'error', url: null, startedAt: null, error };
+    if (error === this.lastFailure) {
+      this.repeatedFailures += 1;
+      return this.getState();
+    }
+    this.lastFailure = error;
+    this.repeatedFailures = 0;
     this.logger(logEvent('cloudflared.failed', `[cloudflared] ${error}`, { reason: error }));
     return this.getState();
   }

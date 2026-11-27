@@ -49,6 +49,9 @@ const MAX_NOTES_CHARACTERS = 1_200;
 /** GitHub can take its time; the console's answer must not wait on it. */
 const REQUEST_TIMEOUT_MS = 10_000;
 
+/** GitHub refusing this address for having asked too often. */
+class RateLimited extends Error {}
+
 interface ReleasePayload {
   readonly tag_name?: unknown;
   readonly name?: unknown;
@@ -87,6 +90,8 @@ export class ReleaseWatch {
   private inFlight: Promise<void> | null = null;
   /** Said once per failure rather than on every poll that finds it stale. */
   private reportedFailure = false;
+  /** Whether a refusal over the rate limit has been said this run; see `read`. */
+  private reportedLimit = false;
 
   public constructor(options: ReleaseWatchOptions = {}) {
     this.version = options.version ?? MANAGER_VERSION;
@@ -141,8 +146,20 @@ export class ReleaseWatch {
       this.reportedFailure = false;
     } catch (error: unknown) {
       this.nextAllowedAt = this.now().getTime() + this.retryAfterMs;
-      if (this.reportedFailure) return;
-      this.reportedFailure = true;
+      /*
+       * A refusal over the rate limit is said once a run. On an address shared
+       * with a whole platform the allowance is gone for part of most hours, so
+       * the line came back after every check that happened to get through in
+       * between - every few hours, about something that is simply how that
+       * address is.
+       */
+      if (error instanceof RateLimited) {
+        if (this.reportedLimit) return;
+        this.reportedLimit = true;
+      } else {
+        if (this.reportedFailure) return;
+        this.reportedFailure = true;
+      }
       const reason = error instanceof Error ? error.message : 'unknown error';
       this.logger?.(logEvent(
         'manager.releaseCheckFailed',
@@ -157,7 +174,11 @@ export class ReleaseWatch {
       headers: { accept: 'application/vnd.github+json', 'user-agent': 'sillytavern-manager' },
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
-    if (!response.ok) throw new Error(`GitHub returned HTTP ${response.status.toString(10)}`);
+    if (!response.ok) {
+      const message = `GitHub returned HTTP ${response.status.toString(10)}`;
+      // 403 and 429 are how the API says "too many from your address".
+      throw response.status === 403 || response.status === 429 ? new RateLimited(message) : new Error(message);
+    }
     const payload: unknown = await response.json();
     if (!Array.isArray(payload)) throw new Error('GitHub returned an invalid release list');
     const releases = payload

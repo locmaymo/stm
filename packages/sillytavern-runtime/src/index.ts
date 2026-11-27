@@ -116,6 +116,10 @@ export class RuntimeManager {
   private readonly repositoryUrl: string;
   private installations: Installation[] | null = null;
   private versionsCache: { expiresAt: number; options: VersionOption[] } | null = null;
+  /** Until when GitHub's API is left alone, after it refused this address; see `listVersions`. */
+  private apiRefusedUntil = 0;
+  /** Whether the switch to git has been said this run; see `listVersions`. */
+  private apiRefusalSaid = false;
   private writeQueue: Promise<void> = Promise.resolve();
   private inFlightId: string | null = null;
   /**
@@ -165,6 +169,7 @@ export class RuntimeManager {
       // 403 and 429 are both how the API says "too many from your address",
       // and on a hosted machine the address is not this reader's.
       const refused = response.status === 403 || response.status === 429;
+      if (refused) this.apiRefusedUntil = refusalLiftsAt(response.headers, this.now().getTime());
       throw new RuntimeError(refused ? 'github_rate_limited' : 'github_unavailable', `GitHub returned HTTP ${response.status}`);
     }
     const payload: unknown = await response.json();
@@ -205,7 +210,15 @@ export class RuntimeManager {
     if (!forceRefresh && this.versionsCache && this.versionsCache.expiresAt > Date.now()) {
       return this.versionsCache.options;
     }
-    const releases = await this.releasesFromApi().catch(async (error: unknown) => {
+    /*
+     * Not asked again while it is known to be refusing this address. The
+     * console looks for a new SillyTavern every quarter of an hour, and each
+     * of those was another request to an allowance that was already spent -
+     * and another line in the log saying so.
+     */
+    const waiting = this.now().getTime() < this.apiRefusedUntil;
+    const fromGitFirst = waiting ? await this.releasesFromGit().catch(() => null) : null;
+    const releases = fromGitFirst ?? await this.releasesFromApi().catch(async (error: unknown) => {
       /*
        * GitHub's API is refusing this machine, so the releases are read from
        * the repository itself instead.
@@ -224,10 +237,16 @@ export class RuntimeManager {
        * the same road the install is about to take. It knows only the tag
        * names: no release titles and no dates, which is a thinner list and an
        * enormously better one than no list at all.
+       *
+       * Said once a run. On a shared address the allowance runs out for part
+       * of most hours and comes back in between, so a line per refusal - or
+       * even per return to refusing - was a line every hour or two, all day,
+       * reading like something was broken when the list was fine.
        */
       const tags = await this.releasesFromGit().catch(() => null);
       if (!tags) throw error;
-      this.logger('[installer] GitHub is not answering its API for this machine, so the version list was read from the repository instead');
+      if (!this.apiRefusalSaid) this.logger('[installer] GitHub is not answering its API for this machine, so the version list was read from the repository instead');
+      this.apiRefusalSaid = true;
       return tags;
     });
     const latest = releases[0];
@@ -1016,6 +1035,25 @@ async function spawnNpmInstall(runtimePath: string, npmCommand: string, cacheDir
     child.once('error', (error) => reject(signal?.aborted ? canceled() : new RuntimeError('npm_failed', `Could not start npm: ${error.message}`)));
     child.once('close', (code) => code === 0 ? resolvePromise() : reject(signal?.aborted ? canceled() : new RuntimeError('npm_failed', `npm install exited with code ${code ?? 'unknown'}`)));
   });
+}
+
+/**
+ * When GitHub's API will take this address again after refusing it.
+ *
+ * The answer says so itself: `x-ratelimit-reset` is the moment the hourly
+ * allowance comes back, and `retry-after` how long to wait. Held to between a
+ * minute and an hour, so a clock that is off cannot park the API for a day,
+ * and an hour - the allowance's own period - when neither is there.
+ */
+export function refusalLiftsAt(headers: Headers, now: number): number {
+  const minute = 60_000;
+  const hour = 60 * minute;
+  const reset = Number(headers.get('x-ratelimit-reset'));
+  const retryAfter = Number(headers.get('retry-after'));
+  const wait = Number.isFinite(reset) && reset > 0
+    ? reset * 1000 - now
+    : Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : hour;
+  return now + Math.min(hour, Math.max(minute, wait));
 }
 
 /**

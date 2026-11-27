@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ChildProcess, spawn as spawnType } from 'node:child_process';
 import { getPlatformPaths } from '../../platform/src/index.js';
-import { parseTunnelUrl, TunnelManager } from '../src/index.js';
+import { askEdgeDirectly, parseTunnelUrl, TunnelManager } from '../src/index.js';
 
 const binaryName = process.platform === 'win32' ? 'cloudflared.exe' : 'cloudflared';
 
@@ -630,6 +630,107 @@ test('an address is handed out only once it answers', async () => {
   assert.deepEqual(announced, ['https://cedar-married-designer-ticket.trycloudflare.com'], 'announced once, after it answered');
   assert.equal(ask, 2);
   await tunnel.close();
+});
+
+test('an edge that does not know the address yet has not answered for it', async () => {
+  const paths = await createPaths();
+  await installFakeBinary(paths);
+  const children: FakeCloudflared[] = [];
+  const invocations: string[][] = [];
+  const spawnImpl = ((_command: string, args: readonly string[]): ChildProcess => {
+    invocations.push([...args]);
+    const child = fakeCloudflared();
+    children.push(child);
+    return child as unknown as ChildProcess;
+  }) as unknown as typeof spawnType;
+  // What the edge says while a new Quick Tunnel's name is still spreading:
+  // HTTP 530 with error 1016. Nothing behind the tunnel sent it, so it is not
+  // a working link - and it is not 1033 either, so no transport is to blame.
+  let ask = 0;
+  const edgeAsk = async (): Promise<{ status: number; body: string }> => {
+    ask += 1;
+    return ask <= 2 ? { status: 530, body: '<title>Origin DNS error</title> error code: 1016' } : { status: 401, body: '' };
+  };
+  const announced: Array<string | null> = [];
+  const tunnel = new TunnelManager({ paths, spawnImpl, edgeAsk, env: { PATH: '' }, edgeCheckDelayMs: 5, onUrl: (url) => { announced.push(url); }, logger: () => undefined });
+
+  await tunnel.start('quick');
+  children[0]!.stdout.write('INF |  https://cedar-married-designer-ticket.trycloudflare.com  |\n');
+  await waitFor(() => tunnel.getState().status === 'running', 'the address to be handed out');
+  assert.equal(ask, 3, 'handed out only at the ask that got through');
+  assert.deepEqual(announced, ['https://cedar-married-designer-ticket.trycloudflare.com']);
+  assert.equal(invocations.length, 1, 'and the tunnel was not restarted over it');
+  await tunnel.close();
+});
+
+test('a new address is first asked about only once Cloudflare has had time to learn it', async () => {
+  const paths = await createPaths();
+  await installFakeBinary(paths);
+  const children: FakeCloudflared[] = [];
+  const spawnImpl = ((): ChildProcess => {
+    const child = fakeCloudflared();
+    children.push(child);
+    return child as unknown as ChildProcess;
+  }) as unknown as typeof spawnType;
+  // An ask that lands before the name has spread is remembered against it -
+  // by the resolver, and by the edge - so the first one waits longer than the
+  // ones after it.
+  const asked: number[] = [];
+  const edgeAsk = async (): Promise<{ status: number; body: string }> => { asked.push(Date.now()); return { status: 200, body: '' }; };
+  const tunnel = new TunnelManager({ paths, spawnImpl, edgeAsk, env: { PATH: '' }, edgeCheckDelayMs: 5, edgeFirstAskMs: 150, logger: () => undefined });
+
+  await tunnel.start('quick');
+  const printed = Date.now();
+  children[0]!.stdout.write('INF |  https://cedar-married-designer-ticket.trycloudflare.com  |\n');
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(asked.length, 0, 'not asked straight away');
+  await waitFor(() => tunnel.getState().status === 'running', 'the address to be handed out');
+  assert.ok(asked[0]! - printed >= 140, `the first ask waited (${String(asked[0]! - printed)} ms)`);
+  await tunnel.close();
+});
+
+test('a reconnect that keeps meeting the same refusal says so once, and keeps trying', async () => {
+  const paths = await createPaths();
+  await installFakeBinary(paths);
+  // The console's link, restored after a restart on a console nobody has set a
+  // password on yet. Only a person can change that, so the attempts go on -
+  // but the log used to get the same two lines every minute, all day.
+  await mkdir(paths.state, { recursive: true });
+  await writeFile(join(paths.state, 'tunnel-config.json'), JSON.stringify({ schemaVersion: 1, mode: 'quick', token: null }));
+  let allowed = false;
+  let attempts = 0;
+  const lines: string[] = [];
+  let spawned = 0;
+  const spawnImpl = ((): ChildProcess => { spawned += 1; return fakeCloudflared() as unknown as ChildProcess; }) as unknown as typeof spawnType;
+  const tunnel = new TunnelManager({
+    paths,
+    spawnImpl,
+    env: { PATH: '' },
+    reconnectDelaysMs: [5],
+    fetchImpl: offline,
+    beforeStart: async () => {
+      attempts += 1;
+      if (!allowed) throw new Error('Set the manager password before opening the console to the internet');
+    },
+    logger: (line) => { lines.push(typeof line === 'string' ? line : line.message); },
+  });
+
+  await tunnel.resume();
+  await waitFor(() => attempts >= 6, 'several attempts');
+  assert.equal(lines.filter((line) => line.includes('Set the manager password')).length, 1, 'the refusal is said once');
+  assert.equal(lines.filter((line) => line.includes('reconnecting in')).length, 1, 'and so is the retry');
+  assert.equal(spawned, 0);
+
+  // A password is set: the next attempt goes through, as it did before.
+  allowed = true;
+  await waitFor(() => spawned === 1, 'the tunnel to start once it is allowed');
+  await tunnel.close();
+});
+
+test('the edge is not reached for an address that cannot be one', async () => {
+  // No zone to look up, so nothing to ask, and no exception for the caller.
+  assert.equal(await askEdgeDirectly('not a url', 100), null);
+  assert.equal(await askEdgeDirectly('https://localhost', 100), null);
 });
 
 /**
