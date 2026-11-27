@@ -163,8 +163,11 @@ export class GoogleConnection {
    * Google lets the person untick the Drive permission on its page and still
    * sends a code back; that grant is no use for backups and is refused here
    * rather than failing at the first upload.
+   *
+   * `accept` answers true to let the account in; false, or the code of the
+   * refusal to report, to turn it away.
    */
-  public async completeConnect(callback: { state: string; code?: string | null; error?: string | null }, options: { readonly accept?: (account: GoogleAccount) => Promise<boolean> } = {}): Promise<GoogleConnectionStatus> {
+  public async completeConnect(callback: { state: string; code?: string | null; error?: string | null }, options: { readonly accept?: (account: GoogleAccount) => Promise<boolean | string> } = {}): Promise<GoogleConnectionStatus> {
     const index = this.prunePending().findIndex((entry) => matchesPending(entry.authorization, callback.state, this.now()));
     const entry = index === -1 ? null : this.pending.splice(index, 1)[0] ?? null;
     if (!entry) throw new R2Error('google_state_mismatch', 'This sign-in link has expired or was not started here. Connect again.');
@@ -180,9 +183,10 @@ export class GoogleConnection {
     // Who this is, asked with the new token alone, before anything is kept.
     const about = await this.readAbout(grant.accessToken);
     if (!about.account.id) throw new R2Error('google_account_unknown', 'Google did not say which account signed in');
-    if (options.accept && !await options.accept(about.account)) {
+    const answer = options.accept ? await options.accept(about.account) : true;
+    if (answer !== true) {
       await revokeGoogleToken(grant.refreshToken, this.fetchImpl).catch(() => undefined);
-      throw new R2Error('google_not_owner', 'This manager belongs to another Google account');
+      throw new R2Error(typeof answer === 'string' ? answer : 'google_not_owner', 'This manager does not open with this Google account');
     }
     this.accessToken = { value: grant.accessToken, expiresAt: grant.expiresAt };
     this.store = null;

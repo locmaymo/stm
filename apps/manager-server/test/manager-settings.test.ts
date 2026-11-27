@@ -194,6 +194,31 @@ test('a machine that is gone leaves behind enough to be a machine again', async 
   assert.equal((await managerSettingsOffer(desktop)).available, false);
 });
 
+test('a password typed after signing in is not written over by the restore that sign-in started', async () => {
+  const bucket = sharedBucket();
+  const laptop = await machine(bucket.fetchImpl, 'laptop');
+  await laptop.store.saveAdminPassword(hashPassword('the old password'));
+  await saveManagerSettings(laptop);
+
+  // A machine opened with an account, whose owner set a password in the
+  // console while the restore was still reading the bucket.
+  const desktop = await machine(bucket.fetchImpl, 'desktop');
+  const record = await desktop.r2.loadManagerSettings();
+  assert.ok(record);
+  await desktop.store.setAdminPassword(hashPassword('the one just typed'));
+  const result = await applyManagerSettings(desktop, record, { passwords: true, schedules: true, ports: { manager: 7860, access: 8001 }, keepManagerPassword: true });
+  assert.ok(result.skipped.includes('managerPassword'));
+  const state = await desktop.store.getPersisted();
+  assert.ok(state.adminPasswordHash && verifyPassword('the one just typed', state.adminPasswordHash));
+
+  // With none typed, the restore brings the old one back as before.
+  const blank = await machine(bucket.fetchImpl, 'blank');
+  const again = await applyManagerSettings(blank, record, { passwords: true, schedules: false, ports: { manager: 7860, access: 8001 }, keepManagerPassword: true });
+  assert.ok(again.applied.includes('managerPassword'));
+  const restored = await blank.store.getPersisted();
+  assert.ok(restored.adminPasswordHash && verifyPassword('the old password', restored.adminPasswordHash));
+});
+
 test('only the parts that were asked for are put back', async () => {
   const bucket = sharedBucket();
   const laptop = await machine(bucket.fetchImpl, 'laptop');

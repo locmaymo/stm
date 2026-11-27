@@ -222,13 +222,23 @@ export async function applyManagerSettings(deps: ManagerSettingsDeps, record: Ma
   readonly passwords: boolean;
   readonly schedules: boolean;
   readonly ports: { readonly manager: number; readonly access: number };
+  /**
+   * Leave the console's password alone if one is set by the time it would be
+   * written. For the restore nobody asked for; see `restoreFromBucketIfBlank`.
+   */
+  readonly keepManagerPassword?: boolean;
 }): Promise<ApplyManagerSettingsResult> {
   const logger: LogSink = deps.logger ?? ((line) => console.log(logLineText(line)));
   const applied: string[] = [];
   const skipped: string[] = [];
 
   if (wanted.passwords) {
-    if (record.adminPasswordHash) {
+    if (record.adminPasswordHash && wanted.keepManagerPassword) {
+      // Only into a console that still has none, decided at the moment of
+      // writing rather than when the restore began.
+      const saved = await deps.store.saveAdminPassword(record.adminPasswordHash, (await deps.store.getPersisted()).setupAcceptedAt ?? undefined);
+      (saved ? applied : skipped).push('managerPassword');
+    } else if (record.adminPasswordHash) {
       // The console's own door, set whether or not this machine already has
       // one: a machine restoring settings may be in either state.
       await deps.store.setAdminPassword(record.adminPasswordHash);
@@ -358,7 +368,12 @@ export async function restoreFromBucketIfBlank(deps: ManagerSettingsDeps, option
     logger(logEvent('r2.settingsOffered', '[r2] this account holds settings from another machine; they are on the Data page rather than applied, because this one is already set up', {}));
     return null;
   }
-  const result = await applyManagerSettings(deps, record, { passwords: true, schedules: true, ports: options.ports });
+  /*
+   * The console asks somebody who signed in without a password to set one,
+   * and does so while this is still reading the bucket. A password they type
+   * in that moment is the one they know; the bucket's is not written over it.
+   */
+  const result = await applyManagerSettings(deps, record, { passwords: true, schedules: true, ports: options.ports, keepManagerPassword: true });
   // The record comes back with the outcome because it says more than was
   // applied here: which release this machine was running is not a setting to
   // write down, it is a thing to go and install.

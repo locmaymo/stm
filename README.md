@@ -45,10 +45,10 @@ SillyTavern Manager does the technical parts of SillyTavern for you — installi
 
 ### Never lose a chat again
 
-Sign in once, with **Cloudflare** or with **Google Drive**, and your chats, characters and settings are copied to **your own** cloud every few minutes, by themselves. If your computer breaks, your phone is lost, or you delete something by mistake, sign in again on any device and everything comes back.
+Sign in once, with **Google Drive** or with **Cloudflare**, and your chats, characters and settings are copied to **your own** cloud every few minutes, by themselves. If your computer breaks, your phone is lost, or you delete something by mistake, sign in again on any device and everything comes back.
 
 - Backs up on its own, every few minutes — only what changed
-- Free: Cloudflare R2’s free plan (10 GB), or the space your Google account already has (15 GB on a free one)
+- Free: the space your Google account already has (15 GB on a free one, no card needed), or Cloudflare R2’s free plan (10 GB)
 - On Google Drive, backups sit in a hidden app folder, away from your own files
 - One sign-in on a new device brings back your chats, the SillyTavern version and your settings
 
@@ -359,7 +359,7 @@ Hosted platforms often decide three things for you, and the manager now meets ea
 
 **The network.** Where outbound UDP is blocked, cloudflared cannot reach Cloudflare's edge over QUIC, and a tunnel sits at *Registering tunnel* until the link times out with error 1033. The manager notices — from the error line, or from the silence — and comes back over HTTP/2, remembering the answer so the wait is paid once rather than at every restart. `STM_TUNNEL_PROTOCOL=http2` skips the discovery.
 
-**The disk.** Some platforms give the container a filesystem that is made with the machine and thrown away with it, and stop the machine once it has been idle. The manager checks what its data directory is actually on, and says so in the log and on the data page: this machine does not keep your data, connect Cloudflare R2.
+**The disk.** Some platforms give the container a filesystem that is made with the machine and thrown away with it, and stop the machine once it has been idle. The manager checks what its data directory is actually on, and says so in the log and on the data page: this machine does not keep your data, connect Google Drive (or Cloudflare R2).
 
 That last warning has a way out. Put the four `STM_R2_*` values in `.env` or in the platform's own environment settings, so they come back with the checkout rather than with the disk that was wiped. The manager then notices on the way up that the profile is empty and the bucket is not, and brings the newest recovery point back before SillyTavern starts. A profile that already holds something is never restored over.
 
@@ -389,14 +389,14 @@ Windows users should prefer the portable ZIP, because it already includes Node.j
 
 ### First setup
 
-1. Open the manager at port `7860` and create the manager administrator password — or press **Continue with Cloudflare** or **Continue with Google Drive**, which sets the manager up and connects backups in one step, and lets that account open the manager again later.
+1. Open the manager at port `7860` and create the manager administrator password — or press **Continue with Google Drive** (recommended) or **Continue with Cloudflare**, which sets the manager up and connects backups in one step, and lets that account open the manager again later. A manager opened with an account asks for a password straight after, so the account is never the only way in.
 2. Choose a SillyTavern version — `latest` is selected by default.
 3. Press **Install** and wait for **Ready**. Ready means SillyTavern answered on port `8002`.
 4. Open the local link, or set the SillyTavern PIN and then turn on local-network access or a public tunnel.
 
 The manager password and the SillyTavern PIN are two different things. The PIN is asked for by a sign-in page the manager serves, so it works the same on every SillyTavern version, old or new; changing it signs out every device that was already in.
 
-Until everything is in place, a **Setup checklist** on the overview lists the six steps worth taking — install SillyTavern, connect Cloudflare, set the STM password and the SillyTavern PIN, turn on R2 backups and open SillyTavern's link — and ticks each one off as it happens. A step stays ticked once done, and the list folds itself away when all six are.
+Until everything is in place, a **Setup checklist** on the overview lists the six steps worth taking — install SillyTavern, connect Google Drive (or R2) for backups, set the STM password and the SillyTavern PIN, connect Cloudflare for the fixed links and open SillyTavern's link — and ticks each one off as it happens. A step stays ticked once done, and the list folds itself away when all six are.
 
 ### Using SillyTavern from the panel
 

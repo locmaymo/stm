@@ -165,6 +165,23 @@ export interface CloudflareClaim {
   /** The account that does open this manager, to name in a refusal. */
   readonly owner: string | null;
   readonly refusal: 'cloudflare_not_owner' | 'cloudflare_password_first' | 'cloudflare_google_first' | 'cloudflare_account_required' | 'cloudflare_no_account' | null;
+  /**
+   * Whether this claim is what made the account the owner, on a manager
+   * nobody had set up. A sign-in that fails after this must give it back;
+   * see `abandonClaim`.
+   */
+  readonly claimed: boolean;
+}
+
+/** What `claimGoogleOwner` decided. */
+export interface GoogleClaim {
+  readonly allowed: boolean;
+  /** The account that does open this manager, to name in a refusal. */
+  readonly owner: string | null;
+  /** Why the account is not let in; null when it is. */
+  readonly refusal: 'google_not_owner' | 'google_password_first' | 'google_cloudflare_first' | null;
+  /** The same as `CloudflareClaim.claimed`. */
+  readonly claimed: boolean;
 }
 
 export interface StateStoreOptions {
@@ -622,30 +639,32 @@ export class StateStore {
    * together cannot both be told they are the owner.
    */
   public async claimCloudflareOwner(offered: readonly CloudflareAccountRef[], connected: CloudflareAccountRef | null): Promise<CloudflareClaim> {
-    let claim: CloudflareClaim = { account: null, owner: null, refusal: 'cloudflare_not_owner' };
+    let claim: CloudflareClaim = { account: null, owner: null, refusal: 'cloudflare_not_owner', claimed: false };
     const operation = async (): Promise<void> => {
       const state = await this.load();
       const owner = state.ownerAccountName ?? state.ownerAccountId;
       if (state.ownerAccountId !== null) {
         const account = offered.find((entry) => entry.id === state.ownerAccountId) ?? null;
-        claim = account ? { account, owner, refusal: null } : { account: null, owner, refusal: 'cloudflare_not_owner' };
+        claim = account ? { account, owner, refusal: null, claimed: false } : { account: null, owner, refusal: 'cloudflare_not_owner', claimed: false };
         return;
       }
       let account: CloudflareAccountRef | null;
+      // Whether nothing at all opened this manager before this sign-in.
+      const blank = state.adminPasswordHash === null && state.googleOwnerId === null;
       if (connected !== null) {
         account = offered.find((entry) => entry.id === connected.id) ?? null;
-        if (!account) { claim = { account: null, owner: connected.name, refusal: 'cloudflare_not_owner' }; return; }
+        if (!account) { claim = { account: null, owner: connected.name, refusal: 'cloudflare_not_owner', claimed: false }; return; }
       } else if (state.adminPasswordHash !== null) {
-        claim = { account: null, owner: null, refusal: 'cloudflare_password_first' };
+        claim = { account: null, owner: null, refusal: 'cloudflare_password_first', claimed: false };
         return;
       } else if (state.googleOwnerId !== null) {
         // Opened with Google and no password: set up all the same, so it is
         // not the next Cloudflare account's to claim.
-        claim = { account: null, owner: state.googleOwnerEmail, refusal: 'cloudflare_google_first' };
+        claim = { account: null, owner: state.googleOwnerEmail, refusal: 'cloudflare_google_first', claimed: false };
         return;
       } else {
         account = offered.length === 1 ? offered[0] ?? null : null;
-        if (!account) { claim = { account: null, owner: null, refusal: offered.length === 0 ? 'cloudflare_no_account' : 'cloudflare_account_required' }; return; }
+        if (!account) { claim = { account: null, owner: null, refusal: offered.length === 0 ? 'cloudflare_no_account' : 'cloudflare_account_required', claimed: false }; return; }
       }
       const now = this.now().toISOString();
       const updated: PersistedManagerState = {
@@ -659,7 +678,7 @@ export class StateStore {
       };
       await this.write(updated);
       this.state = updated;
-      claim = { account, owner: account.name, refusal: null };
+      claim = { account, owner: account.name, refusal: null, claimed: blank };
     };
     const previous = this.adminWriteQueue;
     this.adminWriteQueue = previous.then(operation, operation);
@@ -693,25 +712,70 @@ export class StateStore {
    * that has a password is not, or anyone who could reach its sign-in page
    * could take it with their own Google account.
    */
-  public async claimGoogleOwner(id: string, email: string): Promise<{ readonly allowed: boolean; readonly owner: string | null }> {
-    let allowed = false;
-    let owner: string | null = null;
+  public async claimGoogleOwner(id: string, email: string): Promise<GoogleClaim> {
+    let claim: GoogleClaim = { allowed: false, owner: null, refusal: 'google_not_owner', claimed: false };
     const operation = async (): Promise<void> => {
       const state = await this.load();
-      owner = state.googleOwnerEmail ?? state.googleOwnerId;
-      if (state.googleOwnerId !== null) { allowed = state.googleOwnerId === id; return; }
-      if (state.adminPasswordHash !== null || state.ownerAccountId !== null) return;
+      const owner = state.googleOwnerEmail ?? state.googleOwnerId;
+      if (state.googleOwnerId !== null) {
+        claim = state.googleOwnerId === id ? { allowed: true, owner, refusal: null, claimed: false } : { allowed: false, owner, refusal: 'google_not_owner', claimed: false };
+        return;
+      }
+      // Set up some other way, and that way is named, so the refusal can say
+      // which door to use instead of only "not this one".
+      if (state.adminPasswordHash !== null) { claim = { allowed: false, owner: null, refusal: 'google_password_first', claimed: false }; return; }
+      if (state.ownerAccountId !== null) { claim = { allowed: false, owner: state.ownerAccountName ?? state.ownerAccountId, refusal: 'google_cloudflare_first', claimed: false }; return; }
       const now = this.now().toISOString();
       const updated: PersistedManagerState = { ...state, googleOwnerId: id, googleOwnerEmail: email, setupAcceptedAt: state.setupAcceptedAt ?? now, updatedAt: now };
       await this.write(updated);
       this.state = updated;
-      allowed = true;
-      owner = email;
+      claim = { allowed: true, owner: email, refusal: null, claimed: true };
     };
     const previous = this.adminWriteQueue;
     this.adminWriteQueue = previous.then(operation, operation);
     await this.adminWriteQueue;
-    return { allowed, owner };
+    return claim;
+  }
+
+  /**
+   * Give back a claim a sign-in made and then could not finish.
+   *
+   * The claim is written before the sign-in is done, so two sign-ins landing
+   * together cannot both become the owner. But a sign-in that then fails -
+   * Cloudflare refusing to make a bucket, a disk that would not take the
+   * grant - opened no session for anybody, and left a manager that had an
+   * owner and no way in: the first-run screen is gone once there is an owner,
+   * a first password is refused for the same reason, and the other provider
+   * is refused because this one got there first. That was the lock-out.
+   *
+   * Only the claim this sign-in made, and only while it is still the whole of
+   * what opens the manager: a password set or another account recorded in the
+   * meantime means somebody did get in, and that is left alone.
+   */
+  public async abandonClaim(provider: 'cloudflare' | 'google', id: string): Promise<boolean> {
+    let abandoned = false;
+    const operation = async (): Promise<void> => {
+      const state = await this.load();
+      if (state.adminPasswordHash !== null) return;
+      const mine = provider === 'cloudflare'
+        ? state.ownerAccountId === id && state.googleOwnerId === null
+        : state.googleOwnerId === id && state.ownerAccountId === null;
+      if (!mine) return;
+      const updated: PersistedManagerState = {
+        ...state,
+        ...(provider === 'cloudflare' ? { ownerAccountId: null, ownerAccountName: null } : { googleOwnerId: null, googleOwnerEmail: null }),
+        // Nothing opens it now, so it is not set up either.
+        setupAcceptedAt: null,
+        updatedAt: this.now().toISOString(),
+      };
+      await this.write(updated);
+      this.state = updated;
+      abandoned = true;
+    };
+    const previous = this.adminWriteQueue;
+    this.adminWriteQueue = previous.then(operation, operation);
+    await this.adminWriteQueue;
+    return abandoned;
   }
 
   /** The signed-in owner connected this Google account, so it may open the manager from now on. */

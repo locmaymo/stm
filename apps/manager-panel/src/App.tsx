@@ -237,6 +237,16 @@ function AuthGate() {
    * what makes a machine set up on this account before hand everything back.
    */
   const [firstRun, setFirstRun] = useState(false);
+  /*
+   * Whether the console that is open may have no password of its own.
+   *
+   * Opened with a Google or Cloudflare account, it has none until somebody
+   * sets one - and then the account is the only way in. The day that sign-in
+   * fails, for whatever reason, nobody gets in at all. So the console asks for
+   * a password before anything else; see `PasswordGate`, which finds out
+   * whether one is really missing and asks only then.
+   */
+  const [passwordCheck, setPasswordCheck] = useState(false);
   /**
    * Whether this manager can be opened with a Cloudflare account, and whose it
    * already is.
@@ -287,9 +297,19 @@ function AuthGate() {
     const outcome = params.get(provider);
     if (outcome !== 'signed_in' && outcome !== 'error') return;
     const code = params.get(`${provider}_error`) ?? '';
-    if (outcome === 'error' && !authErrorKey(code)) return;
+    const key = authErrorKey(code);
+    /*
+     * A failure this screen has no sentence for is still said, with its code.
+     *
+     * It used to be dropped, which is how a sign-in that failed for a reason
+     * nobody had written words for - Cloudflare refusing to make a bucket, a
+     * Drive box left unticked - came back to the same sign-in screen with
+     * nothing on it at all. Connecting storage lands on the Data page, which
+     * answers for itself, so only a sign-in's failures are taken here.
+     */
+    if (outcome === 'error' && !key && window.location.hash === '#data') return;
     window.history.replaceState(null, '', `${window.location.pathname}${window.location.hash}`);
-    if (outcome === 'error') setSignInError(t(authErrorKey(code) as MessageKey));
+    if (outcome === 'error') setSignInError(key ? t(key) : t('setup.signInIncomplete', { code: code || 'unknown' }));
   }, []);
 
   useEffect(() => {
@@ -307,11 +327,11 @@ function AuthGate() {
       const held = sessionToken();
       const response = await fetch('/api/v1/auth/session', { credentials: 'same-origin', ...(held ? { headers: { authorization: `Bearer ${held}` } } : {}) });
       if (!response.ok) { setSessionToken(null); if (!cancelled) setMode('login'); return; }
-      const payload = await response.json() as { session: { csrfToken: string }; token?: string };
+      const payload = await response.json() as { session: { csrfToken: string }; token?: string; managerPassword?: boolean };
       // Held for the calls after this one, which may be the only thing keeping
       // a console inside another site's page signed in; see session.ts.
       if (payload.token) setSessionToken(payload.token);
-      if (!cancelled) { setCsrfToken(payload.session.csrfToken); setMode('ready'); }
+      if (!cancelled) { setPasswordCheck(payload.managerPassword === false); setCsrfToken(payload.session.csrfToken); setMode('ready'); }
     }).catch(() => { if (!cancelled) setMode('login'); });
     return () => { cancelled = true; };
   }, []);
@@ -332,12 +352,14 @@ function AuthGate() {
     setMode('login');
   };
 
-  const signedIn = (token: string, setUp = false) => {
+  const signedIn = (token: string, setUp = false, withAccount = false) => {
     // Arm the watch again: the session that expired is not the session now held.
     resetSessionWatch();
     setSignedOut(false);
     setCsrfToken(token);
     setFirstRun(setUp);
+    // A password sign-in has a password; an account's may not.
+    setPasswordCheck(withAccount);
     setMode('ready');
   };
 
@@ -349,9 +371,13 @@ function AuthGate() {
     ? waiting
     : mode === 'ready'
       ? csrfToken
-        ? firstRun
-          ? <FirstRun t={t} csrfToken={csrfToken} preferences={preferences} onPreferencesChange={changePreferences} onDone={() => setFirstRun(false)} />
-          : <ConsoleApp csrfToken={csrfToken} preferences={preferences} onPreferencesChange={changePreferences} onSignOut={signOut} />
+        // The password before anything else, the cloud offer included: it is
+        // the one step that, skipped, can leave the owner outside for good.
+        ? passwordCheck
+          ? <PasswordGate t={t} csrfToken={csrfToken} preferences={preferences} onPreferencesChange={changePreferences} onDone={() => setPasswordCheck(false)} />
+          : firstRun
+            ? <FirstRun t={t} csrfToken={csrfToken} preferences={preferences} onPreferencesChange={changePreferences} onDone={() => setFirstRun(false)} />
+            : <ConsoleApp csrfToken={csrfToken} preferences={preferences} onPreferencesChange={changePreferences} onSignOut={signOut} />
         : waiting
       : <AuthScreen
         t={t}
@@ -377,7 +403,7 @@ function AuthGate() {
   return <Toaster closeLabel={t('common.close')}>{body}</Toaster>;
 }
 
-function AuthScreen({ t, mode, signedOut, preferences, cloudflare, google, refusal, onPreferencesChange, onSignedIn }: { t: Translate; mode: 'setup' | 'login'; signedOut: boolean; preferences: Preferences; onPreferencesChange: (value: Partial<Preferences>) => void; cloudflare: SetupStatus['cloudflareSignIn'] | null; google: SetupStatus['googleSignIn'] | null; refusal: string | null; onSignedIn: (csrfToken: string, setUp: boolean) => void }) {
+function AuthScreen({ t, mode, signedOut, preferences, cloudflare, google, refusal, onPreferencesChange, onSignedIn }: { t: Translate; mode: 'setup' | 'login'; signedOut: boolean; preferences: Preferences; onPreferencesChange: (value: Partial<Preferences>) => void; cloudflare: SetupStatus['cloudflareSignIn'] | null; google: SetupStatus['googleSignIn'] | null; refusal: string | null; onSignedIn: (csrfToken: string, setUp: boolean, withAccount?: boolean) => void }) {
   const [password, setPassword] = useState('');
   const [cloudflareBusy, setCloudflareBusy] = useState(false);
   const [googleBusy, setGoogleBusy] = useState(false);
@@ -480,15 +506,15 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, google, refus
     setGoogleBusy(false);
     if (result.outcome === 'error') {
       const key = authErrorKey(result.code);
-      setError(key ? t(key) : t('setup.cloudSignInFailed'));
+      setError(key ? t(key) : t('setup.signInIncomplete', { code: result.code || 'unknown' }));
       return;
     }
     // A sign-in that ended anywhere but signed in - an account still to be
     // chosen, say - is not this screen's to finish, and saying nothing would
     // leave the reader watching a spinner that has stopped meaning anything.
-    if (!result.session) { setError(t('setup.cloudSignInFailed')); return; }
+    if (!result.session) { setError(t('setup.signInIncomplete', { code: result.outcome })); return; }
     setSessionToken(result.session.token);
-    onSignedIn(result.session.csrfToken, setup);
+    onSignedIn(result.session.csrfToken, setup, true);
   };
 
   const signInWithCloudflare = async () => {
@@ -568,59 +594,26 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, google, refus
     } catch { opened?.close(); setGoogleBusy(false); setError(t('setup.connectionError')); }
   };
   /*
-   * The second way in, where this build has one.
+   * The other ways in, where this build has them.
    *
-   * On a first run it sits above the terms rather than below the password,
-   * because it is the way in this project recommends: on a machine that is
-   * wiped between runs a password set here is gone with everything else by
-   * tomorrow, and the account that comes back with the chats and the settings
-   * is not. It wears Cloudflare's own orange, the same as the button on the
-   * Data page, because it hands the reader over to Cloudflare and they decide
-   * whether to trust it by recognising it.
+   * On a first run they sit above the terms rather than below the password,
+   * because an account is the way in this project recommends: on a machine
+   * that is wiped between runs a password set here is gone with everything
+   * else by tomorrow, and the account that comes back with the chats and the
+   * settings is not. A password is still asked for straight after, inside the
+   * console, so the account is never the only key; see `PasswordGate`.
    *
-   * Nothing is written underneath it. A paragraph explaining what a sign-in is
-   * for is read by nobody standing in front of two buttons; the tag on the
+   * Google Drive first, with the tag: every Google account has it, free, and
+   * nothing is asked for on the way. Cloudflare will not turn R2 on without a
+   * payment card, which is where many Cloudflare sign-ups used to stop. Both
+   * are outline buttons with their own marks, the way Google's sign-in buttons
+   * look, so the reader decides whether to trust each by recognising it.
+   *
+   * Nothing is written underneath them. A paragraph explaining what a sign-in
+   * is for is read by nobody standing in front of two buttons; the tag on the
    * corner says the one thing that changes which one they press.
    */
-  const cloudflareWay = cloudflare?.available ? <>
-    <div className="auth-divider"><span>{t('setup.or')}</span></div>
-    {/* One line, because there is one thing left to do and the button under it
-        is the thing. */}
-    {handOverUrl ? <Alert><CloudflareMark /><AlertDescription>{t('console.cfConnectPopupBlocked')}</AlertDescription></Alert> : null}
-    <div className="cloud-way">
-      {handOverUrl
-        ? <Button
-          asChild
-          size="lg"
-          className="w-full hover:opacity-90"
-          style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }}
-        >
-          <a href={handOverUrl} target="_blank" rel="noopener noreferrer"><CloudflareMark />{t('setup.cloudSignIn')}</a>
-        </Button>
-        : <Button
-          type="button"
-          size="lg"
-          className="w-full hover:opacity-90"
-          style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }}
-          disabled={busy}
-          loading={cloudflareBusy}
-          // Live whether or not the box is ticked. Signing in this way is what
-          // sets the manager up, so the agreement is still required first - it
-          // is asked for by pointing at it, not by refusing to respond.
-          onClick={() => { if (consented()) void signInWithCloudflare(); }}
-        >
-          <CloudflareMark />{t('setup.cloudSignIn')}
-        </Button>}
-      <span className="cloud-way-tag" aria-hidden="true">{t('setup.cloudRecommended')}</span>
-    </div>
-  </> : null;
-  /*
-   * Google, under Cloudflare and quieter than it: an outline button with the
-   * Drive logo, no tag. It brings a wiped machine back the same way, for the
-   * reader whose backups are in their Google Drive.
-   */
-  const googleWay = google?.available ? <>
-    {cloudflare?.available ? null : <div className="auth-divider"><span>{t('setup.or')}</span></div>}
+  const googleWay = google?.available ? <div className="cloud-way">
     {googleHandOverUrl
       ? <Button asChild size="lg" variant="outline" className="w-full">
         <a href={googleHandOverUrl} target="_blank" rel="noopener noreferrer"><GoogleDriveMark />{t('setup.googleSignIn')}</a>
@@ -632,10 +625,40 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, google, refus
         className="w-full"
         disabled={busy}
         loading={googleBusy}
+        // Live whether or not the box is ticked. Signing in this way is what
+        // sets the manager up, so the agreement is still required first - it
+        // is asked for by pointing at it, not by refusing to respond.
         onClick={() => { if (consented()) void signInWithGoogle(); }}
       >
         <GoogleDriveMark />{t('setup.googleSignIn')}
       </Button>}
+    <span className="cloud-way-tag" aria-hidden="true">{t('setup.cloudRecommended')}</span>
+  </div> : null;
+  // Cloudflare under it, without the tag.
+  const cloudflareWay = cloudflare?.available ? <>
+    {/* One line, because there is one thing left to do and the button under it
+        is the thing. */}
+    {handOverUrl ? <Alert><CloudflareMark /><AlertDescription>{t('console.cfConnectPopupBlocked')}</AlertDescription></Alert> : null}
+    {handOverUrl
+      ? <Button asChild size="lg" variant="outline" className="w-full">
+        <a href={handOverUrl} target="_blank" rel="noopener noreferrer"><span style={{ color: CLOUDFLARE_ORANGE }} aria-hidden="true"><CloudflareMark /></span>{t('setup.cloudSignIn')}</a>
+      </Button>
+      : <Button
+        type="button"
+        size="lg"
+        variant="outline"
+        className="w-full"
+        disabled={busy}
+        loading={cloudflareBusy}
+        onClick={() => { if (consented()) void signInWithCloudflare(); }}
+      >
+        <span style={{ color: CLOUDFLARE_ORANGE }} aria-hidden="true"><CloudflareMark /></span>{t('setup.cloudSignIn')}
+      </Button>}
+  </> : null;
+  const accountWays = googleWay || cloudflareWay ? <>
+    <div className="auth-divider"><span>{t('setup.or')}</span></div>
+    {googleWay}
+    {cloudflareWay}
   </> : null;
 
   return (
@@ -683,8 +706,7 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, google, refus
                 />
               </Field>
             ) : null}
-            {setup ? cloudflareWay : null}
-            {setup ? googleWay : null}
+            {setup ? accountWays : null}
             {setup ? (
               <TermsConsent
                 t={t}
@@ -703,8 +725,7 @@ function AuthScreen({ t, mode, signedOut, preferences, cloudflare, google, refus
             <Button type="submit" size="lg" className="w-full" disabled={cloudflareBusy || !ready} loading={busy}>
               {setup ? t('setup.createAdmin') : t('setup.signIn')}
             </Button>
-            {!setup ? cloudflareWay : null}
-            {!setup ? googleWay : null}
+            {!setup ? accountWays : null}
           </form>
         </CardContent>
       </Card>}
@@ -923,6 +944,128 @@ function splitOnPlaceholders(template: string): Array<{ text: string; placeholde
 }
 
 /**
+ * A password for a console that was opened with an account and has none.
+ *
+ * Signing in with Google or Cloudflare sets a manager up without a password,
+ * which leaves the account as the only way in - and readers were locked out
+ * the day that sign-in failed, with no screen anywhere that would take a
+ * password instead. So the console asks for one first, before the cloud offer
+ * and before the console itself, and does not open without it.
+ *
+ * It asks only when one is really missing. On a machine that was wiped and has
+ * just been signed back in to, the password set before is on its way back
+ * with the settings; asking for a new one a moment before it lands reads as
+ * being made to start over. So this waits for that first - a short while, not
+ * forever: a password typed here is never written over by the one coming back,
+ * so asking a little early costs nothing worse than choosing again.
+ *
+ * Nothing is shown until the first answer, so a console that has a password
+ * never flashes this screen on its way in.
+ */
+const PASSWORD_RESTORE_WAIT_MS = 20_000;
+const PASSWORD_RESTORE_POLL_MS = 1500;
+
+function PasswordGate({ t, csrfToken, preferences, onPreferencesChange, onDone }: { t: Translate; csrfToken: string; preferences: Preferences; onPreferencesChange: (value: Partial<Preferences>) => void; onDone: () => void }) {
+  const [view, setView] = useState<'unknown' | 'restoring' | 'form'>('unknown');
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const fail = failures(preferences.locale);
+  const mismatch = confirmPassword.length > 0 && !password.startsWith(confirmPassword);
+  const ready = password.length >= MIN_MANAGER_PASSWORD && password === confirmPassword;
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer = 0;
+    const giveUpAt = Date.now() + PASSWORD_RESTORE_WAIT_MS;
+    const ask = async (): Promise<void> => {
+      let answer: { managerPassword?: boolean; passwordRestoring?: boolean } | null = null;
+      try {
+        const response = await apiFetch('/api/v1/auth/session', { credentials: 'same-origin' });
+        if (response.ok) answer = await response.json() as { managerPassword?: boolean; passwordRestoring?: boolean };
+      } catch {
+        // Asked again below, or the form is shown: a password set twice is
+        // harmless, and a console nobody can get past is not.
+      }
+      if (cancelled) return;
+      if (answer?.managerPassword === true) { onDone(); return; }
+      if (answer?.passwordRestoring === true && Date.now() < giveUpAt) {
+        setView('restoring');
+        timer = window.setTimeout(() => void ask(), PASSWORD_RESTORE_POLL_MS);
+        return;
+      }
+      setView('form');
+    };
+    void ask();
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, []);
+
+  const submit = async () => {
+    if (!ready || busy) return;
+    setBusy(true); setError(null);
+    try {
+      const response = await apiFetch('/api/v1/auth/password', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken }, body: JSON.stringify({ password, confirmPassword }) });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({})) as { error?: { code?: string; message?: string } };
+        const key = authErrorKey(payload.error?.code);
+        setError(key ? t(key) : fail.body(payload, t('setup.passwordAfterFailed')));
+        return;
+      }
+      onDone();
+    } catch { setError(t('setup.connectionError')); } finally { setBusy(false); }
+  };
+
+  if (view === 'unknown') return <div className="auth-shell" role="status" aria-busy="true" />;
+  return (
+    <AuthLayout
+      title={t('setup.passwordAfterTitle')}
+      subtitle={t('setup.passwordAfterSubtitle')}
+      controls={<>
+        <LanguageControl t={t} preferences={preferences} onChange={onPreferencesChange} />
+        <Button variant="ghost" size="icon-sm" className="size-9" aria-label={preferences.theme === 'dark' ? t('console.useLight') : t('console.useDark')} onClick={() => onPreferencesChange({ theme: preferences.theme === 'dark' ? 'light' : 'dark' })}>
+          {preferences.theme === 'dark' ? <Sun /> : <Moon />}
+        </Button>
+      </>}
+      footer={<LegalCredit t={t} />}
+    >
+      <Card className="rounded-2xl">
+        <CardContent className="p-6">
+          {view === 'restoring'
+            ? <p className="flex items-center gap-2 text-sm text-muted-foreground" role="status"><LoaderCircle className="size-4 animate-spin" aria-hidden="true" />{t('setup.passwordAfterChecking')}</p>
+            : <form className="grid gap-5" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+              <Field label={t('setup.password')} hint={t('setup.passwordHint')}>
+                <PasswordInput
+                  revealLabel={t('setup.reveal')}
+                  hideLabel={t('setup.hide')}
+                  autoComplete="new-password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  minLength={MIN_MANAGER_PASSWORD}
+                  required
+                  autoFocus
+                />
+              </Field>
+              <Field label={t('console.confirmPassword')} error={mismatch ? t('setup.mismatch') : null}>
+                <PasswordInput
+                  revealLabel={t('setup.reveal')}
+                  hideLabel={t('setup.hide')}
+                  autoComplete="new-password"
+                  value={confirmPassword}
+                  onChange={(event) => setConfirmPassword(event.target.value)}
+                  required
+                />
+              </Field>
+              {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
+              <Button type="submit" size="lg" className="w-full" disabled={!ready} loading={busy}>{t('setup.passwordAfterSave')}</Button>
+            </form>}
+        </CardContent>
+      </Card>
+    </AuthLayout>
+  );
+}
+
+/**
  * The one step between setting a password and the console, on a first run.
  *
  * Backing up to a Cloudflare account has always been on the settings page,
@@ -1021,16 +1164,21 @@ function FirstRun({ t, csrfToken, preferences, onPreferencesChange, onDone }: { 
             <li className="cloud-offer-point"><History /><span>{t('setup.cloudPointRestore')}</span></li>
           </ul>
           {error ? <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert> : null}
-          {/* Cloudflare first and in its own colour, the recommended way; the
-              Drive under it in an outline with its logo, the way Google's own
-              sign-in buttons look, for whoever has no card to give Cloudflare. */}
+          {/* The Drive first, tagged as the recommended way: free with any
+              Google account and nothing asked for on the way. Cloudflare under
+              it for whoever wants R2, which Cloudflare turns on only once a
+              payment card is on file. Both in outline with their own marks,
+              the way Google's own sign-in buttons look. */}
           <div className="grid gap-2">
-            {offers.cloudflare ? <Button size="lg" className="w-full hover:opacity-90" style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }} loading={busy === 'cloudflare'} disabled={busy !== null} onClick={() => connect('cloudflare')}>
-              <CloudflareMark />{t('setup.cloudConnect')}
-            </Button> : null}
+            {offers.google ? <div className="cloud-way">
+              <Button size="lg" variant="outline" className="w-full" loading={busy === 'google'} disabled={busy !== null} onClick={() => connect('google')}>
+                <GoogleDriveMark />{t('console.gdConnect')}
+              </Button>
+              <span className="cloud-way-tag" aria-hidden="true">{t('setup.cloudRecommended')}</span>
+            </div> : null}
             {offers.cloudflare && offers.google ? <div className="auth-divider"><span>{t('setup.or')}</span></div> : null}
-            {offers.google ? <Button size="lg" variant="outline" className="w-full" loading={busy === 'google'} disabled={busy !== null} onClick={() => connect('google')}>
-              <GoogleDriveMark />{t('console.gdConnect')}
+            {offers.cloudflare ? <Button size="lg" variant="outline" className="w-full" loading={busy === 'cloudflare'} disabled={busy !== null} onClick={() => connect('cloudflare')}>
+              <span style={{ color: CLOUDFLARE_ORANGE }} aria-hidden="true"><CloudflareMark /></span>{t('setup.cloudConnect')}
             </Button> : null}
             <Button variant="ghost" size="lg" className="w-full" disabled={busy !== null} onClick={onDone}>{t('setup.cloudSkip')}</Button>
           </div>
@@ -2006,12 +2154,19 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
       .catch(() => undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [newlyDoneKey]);
+  /*
+   * The backups straight after the install, and named after the Drive until
+   * something else is chosen: the Drive is the way this project recommends,
+   * free and with nothing to turn on first. Cloudflare follows later, for the
+   * fixed links, rather than standing between the reader and a first backup.
+   */
+  const backupToDrive = checklistR2?.mode === 'google' || (!checklistR2?.configured && Boolean(checklistR2?.google));
   const checklistItems: ChecklistItem[] = [
     { id: 'install', label: t('console.checkInstall'), icon: <Download />, done: stepDone('install'), onSelect: () => pointAt('install') },
-    { id: 'cloudflare', label: t('console.checkCloudflare'), icon: <CloudflareMark />, done: stepDone('cloudflare'), onSelect: openConnect },
+    { id: 'r2', label: t(backupToDrive ? 'console.checkDrive' : 'console.checkR2'), icon: <Cloud />, done: stepDone('r2'), onSelect: openConnect },
     { id: 'password', label: t('console.checkManagerPassword'), icon: <ShieldCheck />, done: stepDone('password'), onSelect: () => setChecklistPasswordOpen(true) },
     { id: 'pin', label: t('console.checkPin'), icon: <KeyRound />, done: stepDone('pin'), onSelect: () => setChecklistPinOpen(true) },
-    { id: 'r2', label: t(checklistR2?.mode === 'google' ? 'console.checkDrive' : 'console.checkR2'), icon: <Cloud />, done: stepDone('r2'), onSelect: openConnect },
+    { id: 'cloudflare', label: t('console.checkCloudflare'), icon: <CloudflareMark />, done: stepDone('cloudflare'), onSelect: openConnect },
     { id: 'open', label: t('console.checkOpen'), icon: <ArrowUpRight />, done: stepDone('open'), onSelect: () => pointAt('tunnel') },
   ];
   const checklist = <>
@@ -5738,10 +5893,15 @@ function DataPage({ t, locale, fail, catalog, csrfToken, profiles, activeProfile
       <AlertTitle>{t('console.storageTemporaryTitle')}</AlertTitle>
       <AlertDescription className="grid gap-3">
         <span>{storage.machine ? t('console.storageTemporaryBody', { machine: storage.machine }) : t('console.storageTemporaryBodyUnnamed')}</span>
-        {/* Straight to Cloudflare when nothing is connected yet, which is the
-            one press this warning is asking for; the form otherwise, because
-            whatever is half done is finished there. */}
-        <span><Button size="sm" style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }} className="hover:opacity-90" onClick={() => (cloudflare?.state === 'disconnected' ? connectCloudflare() : setDestinationOpen(true))} loading={cloudflareBusy}><CloudflareMark />{t('console.storageTemporaryConnect')}</Button></span>
+        {/* Straight to the Drive when nothing is connected yet, which is the
+            one press this warning is asking for - free, and nothing to turn on
+            first. Cloudflare where this build has no Drive. The form otherwise,
+            because whatever is half done is finished there. */}
+        <span>{r2Config?.google
+          ? googleSignInUrl
+            ? <Button size="sm" variant="outline" asChild><a href={googleSignInUrl} target="_blank" rel="noopener noreferrer"><GoogleDriveMark />{t('console.storageTemporaryConnectDrive')}</a></Button>
+            : <Button size="sm" variant="outline" onClick={() => (r2Config.google?.state === 'disconnected' ? connectGoogle() : setDestinationOpen(true))} loading={googleBusy}><GoogleDriveMark />{t('console.storageTemporaryConnectDrive')}</Button>
+          : <Button size="sm" style={{ backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' }} className="hover:opacity-90" onClick={() => (cloudflare?.state === 'disconnected' ? connectCloudflare() : setDestinationOpen(true))} loading={cloudflareBusy}><CloudflareMark />{t('console.storageTemporaryConnect')}</Button>}</span>
       </AlertDescription>
     </Alert> : null}
 
@@ -6649,8 +6809,8 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled
     setError(null);
     setKeys(r2KeysFrom(config));
     setAccount(cloudflare?.accounts[0]?.id ?? '');
-    // Nothing set up yet: Cloudflare first, the recommended way, then the Drive.
-    setChoice(config?.configured || (mode === 'cloudflare' && cloudflare?.state === 'choose_account') ? mode : cloudflare ? 'cloudflare' : google ? 'google' : 'keys');
+    // Nothing set up yet: the Drive first, the recommended way, then Cloudflare.
+    setChoice(config?.configured || (mode === 'cloudflare' && cloudflare?.state === 'choose_account') ? mode : google ? 'google' : cloudflare ? 'cloudflare' : 'keys');
   }, [open]);
 
   // Set in `.env`: shown so the reader knows where the value comes from, and
@@ -6696,16 +6856,31 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled
         {fromEnvironment.size > 0 ? <Alert><AlertDescription>{t('console.r2FromEnv')}</AlertDescription></Alert> : null}
         {signInUrl ? <CloudflareSignInNotice t={t} onDismiss={onDismissSignIn} /> : null}
         <RadioGroup value={choice} onValueChange={(value) => setChoice(value as R2ConnectionMode)} aria-label={t('console.r2DestinationTitle')}>
-          {/* Signing in first, and marked as the one to reach for: it makes the
-              bucket, keeps its own keys and is the only one that can show what
-              Cloudflare says the account has used. */}
+          {/* The Drive first, and marked as the one to reach for: free with any
+              Google account, nothing to turn on and no card asked for. */}
+          {google ? <div className="grid gap-3 rounded-lg border p-3 has-[[data-state=checked]]:border-primary has-[[data-state=checked]]:bg-primary/5">
+            <div className="flex items-start gap-3">
+              <RadioGroupItem id={`${group}-google`} value="google" className="mt-0.5" />
+              <div className="grid gap-1">
+                <Label htmlFor={`${group}-google`} className="flex flex-wrap items-center gap-2 font-medium">
+                  {t('console.r2MethodGoogle')}
+                  <Badge variant="secondary" className="bg-(--success-background) text-(--success)">{t('console.r2Recommended')}</Badge>
+                  {choice === 'google' ? <Badge>{t('console.r2Selected')}</Badge> : null}
+                </Label>
+                <p className="text-xs text-muted-foreground">{t('console.r2MethodGoogleBody')}</p>
+              </div>
+            </div>
+            <GoogleMethod t={t} status={google} busy={googleBusy || saving} signInUrl={googleSignInUrl} onConnect={onConnectGoogle} onDisconnect={onDisconnectGoogle} />
+          </div> : null}
+          {/* Cloudflare second: it makes the bucket, keeps its own keys and is
+              the only one that can show what Cloudflare says the account has
+              used - once R2 is on, which Cloudflare asks a payment card for. */}
           {cloudflare ? <div className="grid gap-3 rounded-lg border p-3 has-[[data-state=checked]]:border-primary has-[[data-state=checked]]:bg-primary/5">
             <div className="flex items-start gap-3">
               <RadioGroupItem id={`${group}-cloudflare`} value="cloudflare" className="mt-0.5" />
               <div className="grid gap-1">
                 <Label htmlFor={`${group}-cloudflare`} className="flex flex-wrap items-center gap-2 font-medium">
                   {t('console.r2MethodCloudflare')}
-                  <Badge variant="secondary" className="bg-(--success-background) text-(--success)">{t('console.r2Recommended')}</Badge>
                   {choice === 'cloudflare' ? <Badge>{t('console.r2Selected')}</Badge> : null}
                 </Label>
                 <p className="text-xs text-muted-foreground">{t('console.r2MethodCloudflareBody')}</p>
@@ -6724,22 +6899,6 @@ function R2DestinationDialog({ t, open, onOpenChange, config, busy, startEnabled
               onDisconnect={onDisconnect}
               onRecheckR2={onRecheckR2}
             />
-          </div> : null}
-          {/* The Drive second: Cloudflare stays the recommended way, and the
-              Drive is the one for somebody without a payment card, which is
-              where a Cloudflare sign-up stops many. */}
-          {google ? <div className="grid gap-3 rounded-lg border p-3 has-[[data-state=checked]]:border-primary has-[[data-state=checked]]:bg-primary/5">
-            <div className="flex items-start gap-3">
-              <RadioGroupItem id={`${group}-google`} value="google" className="mt-0.5" />
-              <div className="grid gap-1">
-                <Label htmlFor={`${group}-google`} className="flex flex-wrap items-center gap-2 font-medium">
-                  {t('console.r2MethodGoogle')}
-                  {choice === 'google' ? <Badge>{t('console.r2Selected')}</Badge> : null}
-                </Label>
-                <p className="text-xs text-muted-foreground">{t('console.r2MethodGoogleBody')}</p>
-              </div>
-            </div>
-            <GoogleMethod t={t} status={google} busy={googleBusy || saving} signInUrl={googleSignInUrl} onConnect={onConnectGoogle} onDisconnect={onDisconnectGoogle} />
           </div> : null}
           <div className="grid gap-3 rounded-lg border p-3 has-[[data-state=checked]]:border-primary has-[[data-state=checked]]:bg-primary/5">
             <div className="flex items-start gap-3">
@@ -6885,9 +7044,10 @@ function CloudflareMethod({ t, status, busy, account, signInUrl, onAccountChange
   onDisconnect: () => void;
   onRecheckR2: (quiet?: boolean) => Promise<void>;
 }) {
-  // Cloudflare's own colour, because this button hands the reader over to
-  // Cloudflare and they decide whether to trust it by recognising it.
-  const brand = { backgroundColor: CLOUDFLARE_ORANGE, color: '#fff' };
+  // An outline with Cloudflare's own mark, the same as the Drive's button
+  // beside it: the reader decides whether to trust it by recognising the mark,
+  // and a filled orange button would outshout the recommended way above it.
+  const mark = (icon: ReactNode) => <span style={{ color: CLOUDFLARE_ORANGE }} aria-hidden="true">{icon}</span>;
   const [buckets, setBuckets] = useState<CloudflareBucketOption[] | null>(null);
   const [bucketError, setBucketError] = useState<string | null>(null);
   const connected = status.state === 'connected';
@@ -6908,10 +7068,10 @@ function CloudflareMethod({ t, status, busy, account, signInUrl, onAccountChange
 
   // The same button either way, so "press it again" means what it says.
   const connectButton = (label: string, icon: ReactNode) => (signInUrl
-    ? <Button size="sm" style={brand} className="w-fit hover:opacity-90" asChild>
-      <a href={signInUrl} target="_blank" rel="noopener noreferrer">{icon}{label}</a>
+    ? <Button size="sm" variant="outline" className="w-fit" asChild>
+      <a href={signInUrl} target="_blank" rel="noopener noreferrer">{mark(icon)}{label}</a>
     </Button>
-    : <Button size="sm" style={brand} className="w-fit hover:opacity-90" onClick={onConnect} disabled={busy}>{icon}{label}</Button>);
+    : <Button size="sm" variant="outline" className="w-fit" onClick={onConnect} disabled={busy}>{mark(icon)}{label}</Button>);
 
   if (status.state === 'disconnected') {
     return connectButton(t('console.cfConnect'), <CloudflareMark />);
