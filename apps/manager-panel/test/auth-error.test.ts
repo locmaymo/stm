@@ -8,6 +8,9 @@ test('every refusal the sign-in screen can meet has a translation', () => {
   const codes = [
     'invalid_credentials', 'invalid_password',
     'notice_acceptance_required', 'already_configured', 'setup_required', 'rate_limited',
+    // And the account sign-ins, whose refusals come back through a redirect.
+    'google_not_owner', 'google_password_first', 'google_cloudflare_first', 'google_scope_missing',
+    'cloudflare_not_owner', 'cloudflare_password_first', 'cloudflare_google_first',
   ];
   const en = translator('en');
   const vi = translator('vi');

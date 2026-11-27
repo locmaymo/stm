@@ -45,10 +45,10 @@ SillyTavern Manager lo hết phần kỹ thuật của SillyTavern cho bạn —
 
 ### Không bao giờ mất chat nữa
 
-Đăng nhập một lần, bằng **Cloudflare** hoặc **Google Drive**, và chat, nhân vật, thiết lập của bạn được chép lên **cloud của chính bạn** vài phút một lần, tự động. Máy hỏng, mất điện thoại hay lỡ tay xoá nhầm, chỉ cần đăng nhập lại trên bất kỳ thiết bị nào là mọi thứ quay về.
+Đăng nhập một lần, bằng **Google Drive** hoặc **Cloudflare**, và chat, nhân vật, thiết lập của bạn được chép lên **cloud của chính bạn** vài phút một lần, tự động. Máy hỏng, mất điện thoại hay lỡ tay xoá nhầm, chỉ cần đăng nhập lại trên bất kỳ thiết bị nào là mọi thứ quay về.
 
 - Tự sao lưu vài phút một lần — chỉ gửi phần thay đổi
-- Miễn phí: gói miễn phí của Cloudflare R2 (10 GB), hoặc dung lượng sẵn có trong tài khoản Google của bạn (15 GB với tài khoản miễn phí)
+- Miễn phí: dung lượng sẵn có trong tài khoản Google của bạn (15 GB với tài khoản miễn phí, không cần thẻ), hoặc gói miễn phí của Cloudflare R2 (10 GB)
 - Trên Google Drive, bản sao lưu nằm trong thư mục ẩn của ứng dụng, không lẫn vào tệp của bạn
 - Đăng nhập một lần trên máy mới là lấy lại chat, phiên bản SillyTavern và thiết lập
 
@@ -359,7 +359,7 @@ Hạ tầng cloud thường tự quyết ba thứ thay bạn, và trình quản 
 
 **Mạng.** Ở nơi UDP bị chặn đi ra, cloudflared không tới được biên của Cloudflare qua QUIC, và đường hầm cứ đứng ở *Registering tunnel* cho tới khi link báo lỗi 1033. Trình quản lý nhận ra điều đó — qua dòng lỗi, hoặc qua sự im lặng — rồi quay lại bằng HTTP/2 và ghi nhớ, nên chỉ phải chờ một lần chứ không phải mỗi lần khởi động. Đặt `STM_TUNNEL_PROTOCOL=http2` để bỏ qua bước dò.
 
-**Ổ đĩa.** Một số nền tảng cấp cho container một hệ thống tệp sinh ra cùng máy và bị xóa cùng máy, và tắt máy sau một thời gian không dùng. Trình quản lý kiểm tra thư mục dữ liệu thực sự nằm trên loại ổ nào, rồi báo trong log và trên trang dữ liệu: máy này không giữ dữ liệu của bạn, hãy kết nối Cloudflare R2.
+**Ổ đĩa.** Một số nền tảng cấp cho container một hệ thống tệp sinh ra cùng máy và bị xóa cùng máy, và tắt máy sau một thời gian không dùng. Trình quản lý kiểm tra thư mục dữ liệu thực sự nằm trên loại ổ nào, rồi báo trong log và trên trang dữ liệu: máy này không giữ dữ liệu của bạn, hãy kết nối Google Drive (hoặc Cloudflare R2).
 
 Cảnh báo cuối đó có lối thoát. Hãy đặt bốn giá trị `STM_R2_*` vào `.env` hoặc vào phần biến môi trường của nền tảng, để chúng quay lại cùng bản checkout chứ không mất theo ổ đĩa bị xóa. Khi đó, lúc khởi động trình quản lý sẽ nhận ra hồ sơ đang trống còn bucket thì không, và mang bản khôi phục mới nhất về trước khi SillyTavern chạy. Hồ sơ đã có dữ liệu thì không bao giờ bị ghi đè.
 
@@ -389,14 +389,14 @@ Người dùng Windows nên chọn ZIP portable vì ZIP đã có sẵn Node.js. 
 
 ### Thiết lập lần đầu
 
-1. Mở manager ở cổng `7860` và tạo mật khẩu quản trị — hoặc bấm **Tiếp tục với Cloudflare** hay **Tiếp tục với Google Drive**: thiết lập manager và kết nối sao lưu trong một bước, và về sau chính tài khoản đó mở được manager.
+1. Mở manager ở cổng `7860` và tạo mật khẩu quản trị — hoặc bấm **Tiếp tục với Google Drive** (khuyên dùng) hay **Tiếp tục với Cloudflare**: thiết lập manager và kết nối sao lưu trong một bước, và về sau chính tài khoản đó mở được manager. Manager mở bằng tài khoản sẽ hỏi đặt mật khẩu ngay sau đó, để tài khoản không bao giờ là lối vào duy nhất.
 2. Chọn phiên bản SillyTavern; mặc định là `latest`.
 3. Bấm **Cài đặt** và chờ **Ready**. Ready nghĩa là SillyTavern đã trả lời ở cổng `8002`.
 4. Mở link local, hoặc đặt mã PIN SillyTavern rồi bật truy cập mạng nội bộ hay public tunnel.
 
 Mật khẩu manager và mã PIN SillyTavern là hai thứ khác nhau. Mã PIN được hỏi ở trang đăng nhập do chính manager phục vụ, nên nó hoạt động giống nhau trên mọi phiên bản SillyTavern, cũ hay mới; đổi mã PIN sẽ đăng xuất mọi thiết bị đang ở trong.
 
-Cho tới khi mọi thứ xong xuôi, mục **Việc cần làm** ở trang Tổng quan liệt kê sáu bước nên làm — cài SillyTavern, kết nối Cloudflare, đặt mật khẩu STM và mã PIN SillyTavern, bật sao lưu R2 và mở link SillyTavern — và tự đánh dấu từng bước khi nó xong. Bước đã xong thì giữ nguyên dấu tích, và danh sách tự thu gọn khi đủ cả sáu.
+Cho tới khi mọi thứ xong xuôi, mục **Việc cần làm** ở trang Tổng quan liệt kê sáu bước nên làm — cài SillyTavern, kết nối Google Drive (hoặc R2) để sao lưu, đặt mật khẩu STM và mã PIN SillyTavern, kết nối Cloudflare để có link cố định và mở link SillyTavern — và tự đánh dấu từng bước khi nó xong. Bước đã xong thì giữ nguyên dấu tích, và danh sách tự thu gọn khi đủ cả sáu.
 
 ### Dùng SillyTavern ngay trong panel
 

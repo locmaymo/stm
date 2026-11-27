@@ -44,13 +44,14 @@ test('a Google account claims only a manager nobody has set up', async () => {
   // A blank manager: the machine coming back after a wipe. The first account is its owner.
   const blank = new StateStore({ paths });
   await blank.load();
-  assert.deepEqual(await blank.claimGoogleOwner('perm-owner', 'owner@example.com'), { allowed: true, owner: 'owner@example.com' });
-  assert.deepEqual(await blank.claimGoogleOwner('perm-owner', 'owner@example.com'), { allowed: true, owner: 'owner@example.com' });
-  assert.deepEqual(await blank.claimGoogleOwner('perm-stranger', 'stranger@example.com'), { allowed: false, owner: 'owner@example.com' });
+  // Only the first of these is what made it the owner.
+  assert.deepEqual(await blank.claimGoogleOwner('perm-owner', 'owner@example.com'), { allowed: true, owner: 'owner@example.com', refusal: null, claimed: true });
+  assert.deepEqual(await blank.claimGoogleOwner('perm-owner', 'owner@example.com'), { allowed: true, owner: 'owner@example.com', refusal: null, claimed: false });
+  assert.deepEqual(await blank.claimGoogleOwner('perm-stranger', 'stranger@example.com'), { allowed: false, owner: 'owner@example.com', refusal: 'google_not_owner', claimed: false });
   assert.deepEqual(await new StateStore({ paths }).googleOwner(), { id: 'perm-owner', email: 'owner@example.com' });
   // Set up by that sign-in, with no password: not the next Cloudflare account's
   // to claim, and its first-run password screen is closed.
-  assert.deepEqual(await blank.claimCloudflareOwner([{ id: 'cf-stranger', name: 'Somebody else' }], null), { account: null, owner: 'owner@example.com', refusal: 'cloudflare_google_first' });
+  assert.deepEqual(await blank.claimCloudflareOwner([{ id: 'cf-stranger', name: 'Somebody else' }], null), { account: null, owner: 'owner@example.com', refusal: 'cloudflare_google_first', claimed: false });
   assert.equal(await blank.saveFirstAdminPassword(hashPassword('123456')), false);
 
   // A manager with a password is not taken by whoever signs in first.
@@ -59,7 +60,7 @@ test('a Google account claims only a manager nobody has set up', async () => {
   const configured = new StateStore({ paths: protectedPaths });
   await configured.load();
   assert.equal(await configured.saveAdminPassword(hashPassword('123456')), true);
-  assert.deepEqual(await configured.claimGoogleOwner('perm-stranger', 'stranger@example.com'), { allowed: false, owner: null });
+  assert.deepEqual(await configured.claimGoogleOwner('perm-stranger', 'stranger@example.com'), { allowed: false, owner: null, refusal: 'google_password_first', claimed: false });
   assert.equal(await configured.googleOwner(), null);
 
   // Its owner connects Google Drive from the console; that account may open it from then on.
@@ -68,4 +69,37 @@ test('a Google account claims only a manager nobody has set up', async () => {
   assert.equal((await configured.claimGoogleOwner('perm-stranger', 'stranger@example.com')).allowed, false);
   await configured.releaseGoogleOwner();
   assert.equal((await configured.claimGoogleOwner('perm-owner', 'owner@example.com')).allowed, false);
+});
+
+test('a Google sign-in on a manager Cloudflare opens says which door to use', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-state-google-cf-'));
+  const store = new StateStore({ paths: getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } }) });
+  await store.load();
+  assert.equal((await store.claimCloudflareOwner([{ id: 'cf-owner', name: 'Personal' }], null)).claimed, true);
+  assert.deepEqual(await store.claimGoogleOwner('perm-owner', 'owner@example.com'), { allowed: false, owner: 'Personal', refusal: 'google_cloudflare_first', claimed: false });
+});
+
+test('a claim a failed sign-in made is given back, and nothing else is', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-state-abandon-'));
+  const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
+  const store = new StateStore({ paths });
+  await store.load();
+
+  // The sign-in claimed a blank manager and then failed: blank again, so the
+  // first-run screen, a first password and the other provider are all open.
+  assert.equal((await store.claimCloudflareOwner([{ id: 'cf-owner', name: 'Personal' }], null)).claimed, true);
+  assert.equal(await store.abandonClaim('cloudflare', 'cf-owner'), true);
+  const blank = await store.getPersisted();
+  assert.equal(blank.ownerAccountId, null);
+  assert.equal(blank.setupAcceptedAt, null);
+  assert.equal((await store.claimGoogleOwner('perm-owner', 'owner@example.com')).allowed, true);
+  assert.equal(await store.abandonClaim('google', 'perm-owner'), true);
+  assert.equal(await store.saveFirstAdminPassword(hashPassword('123456')), true);
+
+  // Somebody got in some other way in the meantime: their manager is left alone.
+  assert.equal(await store.abandonClaim('cloudflare', 'cf-owner'), false);
+  assert.equal(await store.abandonClaim('google', 'perm-owner'), false);
+  await store.recordGoogleOwner('perm-owner', 'owner@example.com');
+  assert.equal(await store.abandonClaim('google', 'perm-owner'), false, 'a manager with a password is never given back');
+  assert.deepEqual(await store.googleOwner(), { id: 'perm-owner', email: 'owner@example.com' });
 });

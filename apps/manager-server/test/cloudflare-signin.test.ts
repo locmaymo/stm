@@ -17,17 +17,24 @@ import { CLOUDFLARE_CALLBACK_PATH, startManagerServer, type ManagerServer } from
  * that there is no password, on a machine where setting one would be lost with
  * everything else by tomorrow.
  */
-async function start(options: { cloudflare?: Partial<FakeCloudflareState>; password?: string; root?: string } = {}): Promise<{ manager: ManagerServer; base: string; state: FakeCloudflareState; root: string }> {
+async function start(options: { cloudflare?: Partial<FakeCloudflareState>; password?: string; root?: string } = {}): Promise<{ manager: ManagerServer; base: string; state: FakeCloudflareState; root: string; outage: { buckets: boolean } }> {
   const root = options.root ?? await mkdtemp(join(tmpdir(), 'stm-cf-signin-'));
   const paths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
   const staticRoot = join(root, 'panel');
   await mkdir(staticRoot, { recursive: true });
   await writeFile(join(staticRoot, 'index.html'), '<!doctype html><title>Manager panel</title>', 'utf8');
   const fake = await fakeCloudflare(options.cloudflare ?? {});
+  // Cloudflare failing to list or make buckets, for as long as this is set.
+  const outage = { buckets: false };
+  const fetchImpl: typeof fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    if (outage.buckets && url.includes('/r2/buckets')) return Response.json({ success: false, errors: [{ code: 10001, message: 'Internal error' }], result: null }, { status: 500 });
+    return await fake.fetchImpl(input, init);
+  };
   const connection = new CloudflareConnection({
     paths,
     client: { clientId: 'client-1', redirectUri: 'http://localhost:7860/oauth/cloudflare/callback', scopes: Object.values(DEFAULT_SCOPES) },
-    fetchImpl: fake.fetchImpl,
+    fetchImpl,
     sleep: async () => undefined,
   });
   const manager = await startManagerServer({
@@ -37,7 +44,7 @@ async function start(options: { cloudflare?: Partial<FakeCloudflareState>; passw
   });
   const address = manager.server.address();
   assert.ok(address && typeof address !== 'string');
-  return { manager, base: `http://127.0.0.1:${address.port}`, state: fake.state, root };
+  return { manager, base: `http://127.0.0.1:${address.port}`, state: fake.state, root, outage };
 }
 
 async function begin(base: string): Promise<string> {
@@ -255,6 +262,71 @@ test('a sign-in that Cloudflare refused says so, and opens nothing', async (t) =
   const status = await (await fetch(`${base}/api/v1/setup/status`)).json() as SetupStatus;
   assert.equal(status.setupRequired, true);
   assert.equal(status.cloudflareSignIn?.owner, null);
+});
+
+/*
+ * The lock-out readers ran into.
+ *
+ * Cloudflare asks for a payment card before it turns R2 on, so a new account
+ * very often has none. The sign-in recorded the account as the owner first and
+ * only then found there was nowhere to put a bucket - so it failed with no
+ * session, on a manager that now had an owner. The first-run screen was gone
+ * (an owner means set up), a first password was refused for the same reason,
+ * Google was refused because Cloudflare had claimed it, and every Cloudflare
+ * sign-in after it failed the same way. Nobody could get in at all.
+ *
+ * Signing in is who you are; R2 is only where backups may go. The account that
+ * proved who it is gets in, and the console says R2 is still to be turned on.
+ */
+test('an account without R2 still opens the manager it signs in to', async (t) => {
+  const { manager, base } = await start({ cloudflare: { r2Enabled: false } });
+  t.after(() => manager.close());
+
+  const landed = await callback(base, { state: await begin(base), code: 'good-code' });
+  assert.equal(landed.headers.get('location'), '/?cloudflare=signed_in');
+  const cookie = cookieFrom(landed);
+  assert.ok(cookie, 'a sign-in that proved who it is opens a session, R2 or no R2');
+  assert.equal((await fetch(`${base}/api/v1/auth/session`, { headers: { cookie } })).status, 200);
+  assert.equal((await (await fetch(`${base}/api/v1/setup/status`)).json() as SetupStatus).cloudflareSignIn?.owner, 'Personal');
+
+  // Backups are not pointed at a bucket that is not there.
+  const config = await (await fetch(`${base}/api/v1/r2`, { headers: { cookie } })).json() as { config: { mode: string; enabled: boolean } };
+  assert.equal(config.config.enabled, false);
+
+  // And the next sign-in, R2 still off, lets the owner in again.
+  assert.ok(cookieFrom(await callback(base, { state: await begin(base), code: 'good-code' })));
+});
+
+test('a sign-in that fails after naming the account leaves a blank manager blank', async (t) => {
+  // The account is named and claimed, then Cloudflare fails to make the
+  // bucket: nobody is let in.
+  const { manager, base, outage } = await start();
+  t.after(() => manager.close());
+  outage.buckets = true;
+  const failing = await callback(base, { state: await begin(base), code: 'good-code' });
+  assert.match(failing.headers.get('location') ?? '', /cloudflare=error/u);
+  assert.equal(cookieFrom(failing), null);
+  const status = await (await fetch(`${base}/api/v1/setup/status`)).json() as SetupStatus;
+  assert.equal(status.setupRequired, true, 'a sign-in that let nobody in must not leave an owner behind');
+  assert.equal(status.cloudflareSignIn?.owner, null);
+
+  // So every way in is still open: a first password is taken...
+  const setup = await fetch(`${base}/api/v1/setup/password`, {
+    method: 'POST', headers: { 'content-type': 'application/json', origin: base },
+    body: JSON.stringify({ password: PASSWORD, termsAccepted: true, telemetryAccepted: true }),
+  });
+  assert.equal(setup.status, 201, await setup.text());
+});
+
+test('a sign-in that failed once lets the same account in once Cloudflare answers again', async (t) => {
+  const { manager, base, outage } = await start();
+  t.after(() => manager.close());
+  outage.buckets = true;
+  assert.equal(cookieFrom(await callback(base, { state: await begin(base), code: 'good-code' })), null);
+  outage.buckets = false;
+  const landed = await callback(base, { state: await begin(base), code: 'good-code' });
+  assert.equal(landed.headers.get('location'), '/?cloudflare=signed_in');
+  assert.ok(cookieFrom(landed));
 });
 
 test('a link nobody started here cannot open a session', async (t) => {

@@ -12,7 +12,7 @@ import { hashPassword, MIN_PASSWORD_LENGTH, validatePasscode, validatePassword, 
 import { RateLimiter } from './rate-limit.js';
 import { parseSessionCookie, SessionStore, clearSessionCookie, sessionCookie } from './sessions.js';
 import { HandoffStore } from './cloudflare-handoff.js';
-import { StateStore, type CloudflareClaim } from './state.js';
+import { StateStore, type CloudflareAccountRef, type CloudflareClaim, type GoogleClaim } from './state.js';
 import { LOG_LIMITS, LogBuffer } from './log-buffer.js';
 import { eraseManagerData } from './reset.js';
 import { SystemStore } from './system.js';
@@ -455,6 +455,9 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   // Sign-ins that happened in a window of their own, waiting to be collected
   // by the console that started them; see cloudflare-handoff.ts.
   const handoffs = new HandoffStore();
+  // Sign-ins whose settings - the console password among them - are still on
+  // their way back from the account; see `passwordRestoring` on the session.
+  const settingsComing = { count: 0 };
   const config = options.config ?? new ConfigStore({ managedPort: () => sillyTavernPort, logger: (line) => { jobs.append('manager', line); baseLogger(line); } });
   const lazyCharacters = new LargeProfileLazyLoad({ file: join(paths.state, 'lazy-characters.json'), config, userRoot: userDataRoot, logger });
   // Where the console binds, which is also which addresses its ports have to be
@@ -817,12 +820,12 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
   // already looking. The console says it again where it can be acted on.
   const durability = storageReport(paths);
   if (durability.assurance === 'temporary') {
-    logger(logEvent('storage.notDurable', `[manager] ${paths.root} is on ${durability.filesystem ?? 'temporary storage'}, which this machine does not keep across a restart; connect Cloudflare R2 so backups are held somewhere else`, { path: paths.root, filesystem: durability.filesystem ?? 'unknown' }));
+    logger(logEvent('storage.notDurable', `[manager] ${paths.root} is on ${durability.filesystem ?? 'temporary storage'}, which this machine does not keep across a restart; connect Google Drive or Cloudflare R2 so backups are held somewhere else`, { path: paths.root, filesystem: durability.filesystem ?? 'unknown' }));
   } else if (durability.assurance === 'unverified') {
     // Not a fault, and not silence either. This manager cannot tell whether
     // the machine under it is kept, and the one thing that makes the answer
     // not matter is a copy somewhere else.
-    logger(logEvent('storage.notVerified', `[manager] this manager cannot tell whether ${paths.root} survives a restart here, so treat it as storage that may be temporary; connect Cloudflare R2 so backups are held somewhere else`, { path: paths.root, filesystem: durability.filesystem ?? 'unknown' }));
+    logger(logEvent('storage.notVerified', `[manager] this manager cannot tell whether ${paths.root} survives a restart here, so treat it as storage that may be temporary; connect Google Drive or Cloudflare R2 so backups are held somewhere else`, { path: paths.root, filesystem: durability.filesystem ?? 'unknown' }));
   }
   // Worth a line: it means the network mount was not attached yet when this
   // manager looked, and everything else that reads the table saw a local disk.
@@ -1092,6 +1095,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       sessions,
       rateLimiter,
       handoffs,
+      settingsComing,
       startedAt,
       secureCookies,
       publicOrigins: publicOrigins(),
@@ -1312,6 +1316,8 @@ async function handleRequest(options: {
   readonly sessions: SessionStore;
   readonly rateLimiter: RateLimiter;
   readonly handoffs: HandoffStore;
+  /** Sign-ins still bringing their settings back; see `restoreAfterAccountSignIn`. */
+  readonly settingsComing: { count: number };
   readonly startedAt: number;
   readonly secureCookies: boolean;
   readonly publicOrigins: readonly string[];
@@ -1374,7 +1380,7 @@ async function handleRequest(options: {
   readonly onShutdownRequest: (() => void) | undefined;
   readonly onPushRequest: () => void;
 }): Promise<void> {
-  const { request, response, store, sessions, rateLimiter, handoffs, startedAt, publicOrigins, proxiedOrigin, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, earlyLink, gateway, profiles, backups, r2, cloudflare, google, sharing, metrics, activity, config, system, releases, online, notifications, push, proxy, publishProxies, budget, saver, shutdownToken, autoInstall, onShutdownRequest, onPushRequest } = options;
+  const { request, response, store, sessions, rateLimiter, handoffs, settingsComing, startedAt, publicOrigins, proxiedOrigin, ports, staticRoot, platform, logger, runtime, jobs, supervisor, tunnel, managerTunnel, earlyLink, gateway, profiles, backups, r2, cloudflare, google, sharing, metrics, activity, config, system, releases, online, notifications, push, proxy, publishProxies, budget, saver, shutdownToken, autoInstall, onShutdownRequest, onPushRequest } = options;
   // Whether the browser's side of this connection is HTTPS, which is not the
   // same question as whether ours is: a hosted console is reached over HTTPS
   // that a proxy terminates before us, and only the proxy's own header says so.
@@ -1431,23 +1437,35 @@ async function handleRequest(options: {
     }
   };
 
+  /*
+   * Put a blank machine back together after somebody signed in with an
+   * account, and say while its settings are still on their way.
+   *
+   * The settings carry the console password. The console asks somebody who
+   * signed in without one to set one, and waits for this first: on a machine
+   * that was wiped, the password they set before is about to come back, and
+   * asking for a new one a second before it does reads as being made to start
+   * over.
+   */
+  const restoreAfterAccountSignIn = (): Promise<void> => {
+    settingsComing.count += 1;
+    let settled = false;
+    const settle = (): void => { if (!settled) { settled = true; settingsComing.count -= 1; } };
+    return restoreAfterSignIn({
+      store, backups, r2, runtime, jobs, profiles, gateway, metrics, supervisor,
+      tunnel, managerTunnel, ports, firstInstall, adoptSillyTavernPort, adoptKeepOnline, logger: options.logger,
+      settingsSettled: settle,
+    }).finally(settle);
+  };
   if (pathname === CLOUDFLARE_CALLBACK_PATH && (request.method ?? 'GET') === 'GET') {
     await handleCloudflareCallback(context, sessions, cloudflare, r2, publishProxies, options.logger, handoffs, {
-      store, backups, runtime, secureCookies, rateLimiter,
-      restoreEverything: () => restoreAfterSignIn({
-        store, backups, r2, runtime, jobs, profiles, gateway, metrics, supervisor,
-        tunnel, managerTunnel, ports, firstInstall, adoptSillyTavernPort, adoptKeepOnline, logger: options.logger,
-      }),
+      store, backups, runtime, secureCookies, rateLimiter, restoreEverything: restoreAfterAccountSignIn,
     });
     return;
   }
   if (pathname === GOOGLE_CALLBACK_PATH && (request.method ?? 'GET') === 'GET') {
     await handleGoogleCallback(context, sessions, google, r2, options.logger, handoffs, {
-      store, backups, runtime, secureCookies, rateLimiter,
-      restoreEverything: () => restoreAfterSignIn({
-        store, backups, r2, runtime, jobs, profiles, gateway, metrics, supervisor,
-        tunnel, managerTunnel, ports, firstInstall, adoptSillyTavernPort, adoptKeepOnline, logger: options.logger,
-      }),
+      store, backups, runtime, secureCookies, rateLimiter, restoreEverything: restoreAfterAccountSignIn,
     });
     return;
   }
@@ -1637,8 +1655,14 @@ async function handleRequest(options: {
     // already carried the session, so saying which one it was grants nothing
     // the caller did not just present.
     // Whether the console has a password of its own, which a manager set up
-    // by signing in with Cloudflare does not until somebody gives it one.
-    sendJson(response, 200, { session, token: context.sessionToken, managerPassword: (await store.getPersisted()).adminPasswordHash !== null });
+    // by signing in with an account does not until somebody gives it one -
+    // and whether one may still be on its way back from that account.
+    sendJson(response, 200, {
+      session,
+      token: context.sessionToken,
+      managerPassword: (await store.getPersisted()).adminPasswordHash !== null,
+      passwordRestoring: settingsComing.count > 0,
+    });
     return;
   }
 
@@ -3999,26 +4023,32 @@ async function completeGoogleSignIn(
   redirect: (outcome: string, code?: string, page?: string, sessionToken?: string | null) => void,
 ): Promise<void> {
   const { searchParams } = context;
-  let owner: string | null = null;
+  // Set from inside the check below, which is where both are decided.
+  const decided: { claim: GoogleClaim | null; claimedFor: string | null } = { claim: null, claimedFor: null };
   let status;
   try {
     status = await google.completeConnect({ state: searchParams.get('state') ?? '', code: searchParams.get('code'), error: searchParams.get('error') }, {
       accept: async (account) => {
         const claim = await deps.store.claimGoogleOwner(account.id, account.email);
-        owner = claim.owner;
-        return claim.allowed;
+        decided.claim = claim;
+        // The account this sign-in made the owner of a blank manager, to be
+        // given back if nobody ends up let in; see `StateStore.abandonClaim`.
+        if (claim.claimed) decided.claimedFor = account.id;
+        return claim.allowed ? true : claim.refusal ?? false;
       },
     });
+    if (status.state === 'connected') {
+      await r2.update({ mode: 'google', enabled: true });
+      await claimForThisMachine(r2, logger);
+    }
   } catch (error: unknown) {
     const code = isRecord(error) && typeof error.code === 'string' ? error.code : 'google_connect_failed';
-    if (code === 'google_not_owner') logger(logEvent('auth.googleRefused', `[auth] a Google sign-in was refused: this manager belongs to ${owner ?? 'its password'}`, { owner: owner ?? '' }));
+    if (decided.claimedFor !== null) await deps.store.abandonClaim('google', decided.claimedFor).catch(() => false);
+    const owner = decided.claim?.owner ?? null;
+    if (decided.claim && !decided.claim.allowed) logger(logEvent('auth.googleRefused', `[auth] a Google sign-in was refused: this manager belongs to ${owner ?? 'its password'}`, { owner: owner ?? '' }));
     else logger(logEvent('auth.googleFailed', `[auth] signing in with Google failed: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
     redirect('error', code, '');
     return;
-  }
-  if (status.state === 'connected') {
-    await r2.update({ mode: 'google', enabled: true });
-    await claimForThisMachine(r2, logger);
   }
   clearRateLimit(context, deps.rateLimiter);
   const created = sessions.create();
@@ -4027,7 +4057,8 @@ async function completeGoogleSignIn(
   void deps.restoreEverything().catch((error: unknown) => {
     logger(logEvent('auth.googleRestoreFailed', `[auth] this machine could not be restored after signing in: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
   });
-  redirect(status.state === 'connected' ? 'signed_in' : status.state, undefined, '', created.token);
+  // Signed in, whatever the Drive's state: a session was opened.
+  redirect('signed_in', undefined, '', created.token);
 }
 
 /**
@@ -4355,6 +4386,8 @@ interface RestoreAfterSignInDeps {
    * first, so what was here is still in the backup library afterwards.
    */
   readonly force?: boolean;
+  /** Told once the settings have been put back, or have failed to be. */
+  readonly settingsSettled?: () => void;
   readonly logger: LogSink;
 }
 
@@ -4415,6 +4448,7 @@ async function bringThisMachineBack(
     logger(logEvent('r2.settingsRestoreFailed', `[r2] the settings in the bucket could not be applied: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
     return null;
   });
+  deps.settingsSettled?.();
   if (restored) {
     /*
      * The usage history, which is not part of a recovery point and so comes
@@ -4702,8 +4736,20 @@ async function completeCloudflareSignIn(
 ): Promise<void> {
   const { searchParams } = context;
   let status;
-  // Set from inside the check below, which is where a refusal is decided.
-  const refusal: { claim: CloudflareClaim | null } = { claim: null };
+  // Set from inside the check below, which is where a refusal is decided -
+  // and where the account let in is named, before anything else can fail.
+  const decided: { refused: CloudflareClaim | null; admitted: CloudflareAccountRef | null; claimed: boolean } = { refused: null, admitted: null, claimed: false };
+  /*
+   * A sign-in that let nobody in gives back the claim it made.
+   *
+   * The claim is written while the sign-in is still on its way, and what
+   * follows it can fail. Left behind, it was the lock-out: a manager with an
+   * owner and nobody signed in to it, no first-run screen, a first password
+   * refused, and the other provider refused because this one got there first.
+   */
+  const giveBack = async (): Promise<void> => {
+    if (decided.claimed && decided.admitted) await deps.store.abandonClaim('cloudflare', decided.admitted.id).catch(() => false);
+  };
   try {
     // Who this is is settled before the sign-in is kept, so a refused one
     // never replaces the connection the owner's backups go through.
@@ -4715,26 +4761,52 @@ async function completeCloudflareSignIn(
     }, await r2.keysBucket(), async (offered, connected) => {
       const claim = await deps.store.claimCloudflareOwner(offered, connected);
       const admitted = claim.account ? offered.find((entry) => entry.id === claim.account?.id) : undefined;
-      if (admitted) return admitted;
-      refusal.claim = claim;
+      if (admitted) {
+        decided.admitted = admitted;
+        decided.claimed = claim.claimed;
+        return admitted;
+      }
+      decided.refused = claim;
       throw new R2Error(claim.refusal ?? 'cloudflare_not_owner', 'This Cloudflare account does not open this manager');
     });
   } catch (error: unknown) {
     const code = isRecord(error) && typeof error.code === 'string' ? error.code : 'cloudflare_connect_failed';
-    const claim = refusal.claim;
-    if (claim) logger(logEvent('auth.cloudflareRefused', `[auth] a Cloudflare sign-in was refused: this manager belongs to ${claim.owner ?? 'another account'}`, { owner: claim.owner ?? '' }));
-    else logger(logEvent('auth.cloudflareFailed', `[auth] signing in with Cloudflare failed: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
-    redirect('error', code, '');
-    return;
+    /*
+     * The account has no R2, which Cloudflare turns on only once a payment
+     * card is on file - so a new account very often has none.
+     *
+     * That says nothing about who signed in, which is all a sign-in is for:
+     * the owner gets in, and the Data page says what to turn on for backups
+     * to go there. Refusing it here was the commonest way to be locked out,
+     * because every later sign-in with the same account failed the same way.
+     */
+    if (code === 'cloudflare_r2_not_enabled' && decided.admitted) {
+      status = await cloudflare.status();
+    } else {
+      await giveBack();
+      const claim = decided.refused;
+      if (claim) logger(logEvent('auth.cloudflareRefused', `[auth] a Cloudflare sign-in was refused: this manager belongs to ${claim.owner ?? 'another account'}`, { owner: claim.owner ?? '' }));
+      else logger(logEvent('auth.cloudflareFailed', `[auth] signing in with Cloudflare failed: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
+      redirect('error', code, '');
+      return;
+    }
   }
-  const account = status.account;
+  const account = status.account ?? decided.admitted;
   if (!account) {
     // Cloudflare returned without settling which account this is - more than
     // one was offered and none chosen. There is nobody to let in yet.
+    await giveBack();
     redirect('error', 'cloudflare_account_required', '');
     return;
   }
-  if (status.state === 'connected' && !await backingUpToDrive(r2)) await r2.update({ mode: 'cloudflare', enabled: true });
+  try {
+    if (status.state === 'connected' && !await backingUpToDrive(r2)) await r2.update({ mode: 'cloudflare', enabled: true });
+  } catch (error: unknown) {
+    await giveBack();
+    logger(logEvent('auth.cloudflareFailed', `[auth] signing in with Cloudflare failed: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' }));
+    redirect('error', 'cloudflare_connect_failed', '');
+    return;
+  }
   // Starting the sign-in cost this visitor an attempt; it turned out to be the
   // owner of the manager, so it is given back the same way a password is.
   clearRateLimit(context, deps.rateLimiter);
@@ -4748,7 +4820,9 @@ async function completeCloudflareSignIn(
   });
   // The session goes with it, for a console that is waiting to collect this
   // rather than reading it in its own address; see cloudflare-handoff.ts.
-  redirect(status.state === 'connected' ? 'signed_in' : status.state, undefined, '', created.token);
+  // Signed in whatever the bucket's state, R2 turned off included: a session
+  // was opened, and the Data page says what is left to do for backups.
+  redirect('signed_in', undefined, '', created.token);
 }
 
 /**

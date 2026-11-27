@@ -31,8 +31,11 @@ const AUTH_ERRORS: Readonly<Record<string, MessageKey>> = {
   cloudflare_state_mismatch: 'setup.cloudExpired',
   // And with a Google account, the same way.
   google_not_owner: 'setup.googleNotOwner',
+  google_password_first: 'setup.googlePasswordFirst',
+  google_cloudflare_first: 'setup.googleCloudflareFirst',
   google_not_available: 'setup.googleUnavailable',
   google_authorization_denied: 'setup.googleDenied',
+  google_scope_missing: 'setup.googleScopeMissing',
   google_state_mismatch: 'setup.cloudExpired',
 };
 
