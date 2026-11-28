@@ -53,6 +53,8 @@ export const INSTANCE_PATH = '/__stm/instance';
 export const PAGE_INSTANCE_HEADER = 'x-stm-page';
 /** Set on the refusal of a write from a page an older run served. */
 export const STALE_HEADER = 'x-stm-stale';
+/** Set on the answer the door gives in SillyTavern's place while it is not running. */
+export const DOWN_HEADER = 'x-stm-down';
 
 /**
  * The page with the script in it, or null when it is not a page to put it in.
@@ -91,24 +93,42 @@ function escapeAttribute(value: string): string {
  *
  * Before the reply script's own guard, because inside the Android app that
  * script stands aside and this still has to run.
+ *
+ * The same question tells the page when SillyTavern is not running at all -
+ * stopped, still starting, or paused because another of the owner's devices
+ * is using the data. The page is then covered with what the door says about
+ * it, in calm words rather than the red errors SillyTavern shows for each
+ * request that fails, and asked again every few seconds until a run answers.
+ * A request that the door answered in SillyTavern's place (x-stm-down) asks
+ * at once.
  */
 const FRESH_SCRIPT = `(function(){
 'use strict';
 if(window.__stmFresh)return;window.__stmFresh=true;
 var me=document.currentScript,mine=me?me.getAttribute('data-instance')||'':'';
 if(!mine||typeof window.fetch!=='function')return;
-var going=false,plain=window.fetch;
+var going=false,plain=window.fetch,veil=null,timer=0;
 function reload(){if(going)return;going=true;location.reload()}
 function here(u){try{return new URL(u,location.href).origin===location.origin}catch(e){return false}}
 window.fetch=function(input,init){var url=typeof input==='string'?input:input&&input.url?input.url:String(input);
 if(here(url)){try{var h=new Headers(init&&init.headers?init.headers:typeof input!=='string'&&input&&input.headers?input.headers:undefined);h.set('${PAGE_INSTANCE_HEADER}',mine);init=Object.assign({},init||{},{headers:h})}catch(e){}}
-return plain.call(this,input,init).then(function(r){if(r&&r.status===409&&r.headers.get('${STALE_HEADER}')==='1')reload();return r})};
+return plain.call(this,input,init).then(function(r){if(r&&r.status===409&&r.headers.get('${STALE_HEADER}')==='1')reload();else if(r&&r.status===502&&r.headers.get('${DOWN_HEADER}')==='1')check();return r})};
 var tries=0;function jq(){var $=window.jQuery;if(!$||!$.ajaxPrefilter){if(++tries<60)setTimeout(jq,1000);return}
 $.ajaxPrefilter(function(o,orig,xhr){if(here(o.url||location.href))xhr.setRequestHeader('${PAGE_INSTANCE_HEADER}',mine)});
-$(document).ajaxError(function(e,xhr){if(xhr&&xhr.status===409&&xhr.getResponseHeader('${STALE_HEADER}')==='1')reload()})}
+$(document).ajaxError(function(e,xhr){if(!xhr)return;if(xhr.status===409&&xhr.getResponseHeader('${STALE_HEADER}')==='1')reload();else if(xhr.status===502&&xhr.getResponseHeader('${DOWN_HEADER}')==='1')check()})}
 jq();
-function check(){if(going||document.visibilityState!=='visible')return;plain.call(window,'${INSTANCE_PATH}',{credentials:'same-origin',cache:'no-store',headers:{'x-stm-tools':'1'}}).then(function(r){return r.ok?r.json():null}).then(function(b){if(b&&typeof b.instance==='string'&&b.instance&&b.instance!==mine)reload()},function(){})}
-document.addEventListener('visibilitychange',check);addEventListener('focus',check);addEventListener('pageshow',check);addEventListener('online',check);setInterval(check,60000);
+function show(d){if(!veil){veil=document.createElement('div');veil.setAttribute('role','status');veil.setAttribute('data-stm-down','');
+veil.style.cssText='position:fixed;inset:0;z-index:2147483646;display:flex;align-items:center;justify-content:center;padding:24px;background:rgba(15,17,23,.78)';
+var c=document.createElement('div');c.style.cssText='max-width:440px;padding:20px 22px;border-radius:14px;background:#1b1e27;color:#e5e7eb;border:1px solid rgba(255,255,255,.1);box-shadow:0 10px 40px rgba(0,0,0,.45);font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif';
+var t=document.createElement('div');t.style.cssText='font-weight:600;font-size:17px;margin-bottom:6px';var p=document.createElement('div');p.style.cssText='color:#cbd5e1';
+c.appendChild(t);c.appendChild(p);veil.appendChild(c);(document.body||document.documentElement).appendChild(veil);veil.t=t;veil.p=p}
+veil.t.textContent=String(d.title||'');veil.p.textContent=String(d.body||'')}
+function hide(){if(veil){veil.remove();veil=null}}
+function later(){clearTimeout(timer);timer=setTimeout(check,5000)}
+function check(){if(going||document.visibilityState!=='visible')return;plain.call(window,'${INSTANCE_PATH}',{credentials:'same-origin',cache:'no-store',headers:{'x-stm-tools':'1'}}).then(function(r){return r.ok?r.json():null}).then(function(b){if(!b)return;
+if(typeof b.instance==='string'&&b.instance){if(b.instance!==mine)reload();else hide();return}
+if(b.down&&b.down.title){show(b.down);later()}},function(){if(veil)later()})}
+document.addEventListener('visibilitychange',check);addEventListener('focus',check);addEventListener('pageshow',check);addEventListener('online',check);setInterval(check,30000);
 })();
 `;
 

@@ -80,6 +80,27 @@ test('what the manager logs rings the bell, and backups working again is said on
   assert.deepEqual(kinds, ['sillytavernCrashed', 'backupFailed', 'backupRecovered']);
 });
 
+test('another device taking the data over is told as a pause, not as a crash', async () => {
+  const { center: bell } = await center();
+  const watch = rules(bell);
+  watch.onLog(logEvent('sync.handedOver', '[sync] Pixel-7 is using this data now, so SillyTavern was stopped here', { label: 'Pixel-7' }));
+  // What the supervisor writes as it stops it: a stop it was asked for.
+  watch.onLog(logEvent('sillytavern.stoppedUsedElsewhere', '[sillytavern] stopped: another of your devices is using this data'));
+  await settle();
+  const items = (await bell.list()).items;
+  assert.deepEqual(items.map((item) => [item.kind, item.level]), [['sillytavernPaused', 'info']], 'one calm word, and no crash');
+  const said = renderNotification(items[0] as ManagerNotification, 'vi');
+  assert.equal(said.title, 'SillyTavern tạm dừng ở máy này');
+  assert.ok(said.body.startsWith('Pixel-7 đang dùng dữ liệu của bạn.'), said.body);
+  assert.ok(renderNotification(items[0] as ManagerNotification, 'en').body.includes('“Use it on this device”'));
+
+  // An address the machine was named by is shortened to its two ends, as the console does.
+  const { center: other } = await center();
+  rules(other).onLog(logEvent('sync.handedOver', '[sync] handed over', { label: 'a-very-long-studio-name-1234567890.hosted.example' }));
+  await settle();
+  assert.equal((await other.list()).items[0]?.params?.device, 'a-very-long-...sted.example');
+});
+
 test('a dropped tunnel is only news once it has stayed down', async () => {
   const { center: bell } = await center();
   let down = false;

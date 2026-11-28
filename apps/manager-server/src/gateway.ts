@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import type { Duplex } from 'node:stream';
 import { logEvent, logLineText, type AccessGatewayState, type Job, type LogPage, type LogSink } from '../../../packages/contracts/src/index.js';
 import { windowJob, windowLogs, windowPage, type WindowLocale } from './gateway-window.js';
-import { INSTANCE_PATH, NOTIFY_PREFIX, NOTIFY_SCRIPT, NOTIFY_SCRIPT_PATH, NOTIFY_WORKER, NOTIFY_WORKER_PATH, PAGE_INSTANCE_HEADER, STALE_HEADER, withNotifyScript, type GatewayReplies } from './gateway-notify.js';
+import { DOWN_HEADER, INSTANCE_PATH, NOTIFY_PREFIX, NOTIFY_SCRIPT, NOTIFY_SCRIPT_PATH, NOTIFY_WORKER, NOTIFY_WORKER_PATH, PAGE_INSTANCE_HEADER, STALE_HEADER, withNotifyScript, type GatewayReplies } from './gateway-notify.js';
 import { isPageState, parseReplyReport } from './replies.js';
 import { validSubscription } from './web-push.js';
 import { verifyPassword } from './password.js';
@@ -74,6 +74,11 @@ interface GatewayText {
   readonly throttled: string;
   readonly unconfigured: string;
   readonly offline: string;
+  readonly startingTitle: string;
+  readonly stoppedTitle: string;
+  readonly stopped: string;
+  readonly pausedTitle: string;
+  readonly paused: string;
   readonly signedOut: string;
   readonly expired: string;
 }
@@ -94,6 +99,11 @@ const TEXT: Readonly<Record<'en' | 'vi', GatewayText>> = {
     throttled: 'Too many attempts. Try again in {seconds} seconds.',
     unconfigured: 'No access password has been set yet. Open SillyTavern Manager on the host machine and set one.',
     offline: 'SillyTavern is not answering yet. It may still be starting.',
+    startingTitle: 'Starting',
+    stoppedTitle: 'Stopped',
+    stopped: 'SillyTavern is stopped. Open SillyTavern Manager to start it again. This page loads again by itself once it is running.',
+    pausedTitle: 'Paused',
+    paused: 'SillyTavern is paused here because {device} is using your data. To carry on here, open SillyTavern Manager and press “Use it on this device”. This page loads again by itself once it is running.',
     signedOut: 'You are signed out.',
     expired: 'This sign-in page is no longer current. Here is a fresh one - try again.',
   },
@@ -112,6 +122,11 @@ const TEXT: Readonly<Record<'en' | 'vi', GatewayText>> = {
     throttled: 'Thử quá nhiều lần. Hãy thử lại sau {seconds} giây.',
     unconfigured: 'Chưa đặt mật khẩu truy cập. Hãy mở SillyTavern Manager trên máy chủ và đặt một mật khẩu.',
     offline: 'SillyTavern chưa trả lời. Có thể nó vẫn đang khởi động.',
+    startingTitle: 'Đang khởi động',
+    stoppedTitle: 'Đã dừng',
+    stopped: 'SillyTavern đang dừng. Mở SillyTavern Manager để chạy lại. Trang này sẽ tự tải lại khi SillyTavern chạy.',
+    pausedTitle: 'Tạm dừng',
+    paused: 'SillyTavern đang tạm dừng ở máy này vì {device} đang dùng dữ liệu của bạn. Muốn dùng tiếp ở đây, mở SillyTavern Manager và bấm “Dùng ở máy này”. Trang này sẽ tự tải lại khi SillyTavern chạy.',
     signedOut: 'Bạn đã đăng xuất.',
     expired: 'Trang đăng nhập này không còn hiệu lực. Đây là trang mới - hãy thử lại.',
   },
@@ -162,6 +177,26 @@ export interface AccessGatewayOptions {
    * gateway-notify.ts.
    */
   readonly instance?: () => { readonly id: string; readonly ready: boolean } | null;
+  /**
+   * Why SillyTavern is not answering, asked only when it is not: on its way
+   * up, stopped, or paused because another of the owner's devices is using
+   * the shared data (that device's name). It decides the words a browser gets
+   * in SillyTavern's place. Without it every such answer says it may still be
+   * starting, which is how a pause for another device came to read as a fault.
+   */
+  readonly whyDown?: () => Promise<GatewayDown>;
+}
+
+export type GatewayDown =
+  | { readonly state: 'starting' }
+  | { readonly state: 'stopped' }
+  | { readonly state: 'paused'; readonly device: string };
+
+/** What the door says while SillyTavern is not answering, as a heading and a sentence. */
+function downWords(down: GatewayDown, text: GatewayText): { readonly title: string; readonly body: string } {
+  if (down.state === 'paused') return { title: text.pausedTitle, body: text.paused.replace('{device}', () => down.device) };
+  if (down.state === 'stopped') return { title: text.stoppedTitle, body: text.stopped };
+  return { title: text.startingTitle, body: text.offline };
 }
 
 /**
@@ -194,6 +229,7 @@ export class AccessGateway {
   private readonly tools: GatewayTools | null;
   private readonly replies: GatewayReplies | null;
   private readonly instance: () => { readonly id: string; readonly ready: boolean } | null;
+  private readonly whyDown: () => Promise<GatewayDown>;
   /** Whether the access link has ever been turned on; see `AccessGatewayState.opened`. */
   private opened = false;
   private readonly attempts: RateLimiter;
@@ -255,6 +291,7 @@ export class AccessGateway {
     this.tools = options.tools ?? null;
     this.replies = options.replies ?? null;
     this.instance = options.instance ?? (() => null);
+    this.whyDown = options.whyDown ?? (() => Promise.resolve({ state: 'starting' }));
     // `'self'` so the sign-in page can still be reached inside whatever frame
     // the console put the gateway in; without it, signing in from the embedded
     // view would blank the frame at the one moment it has something to say.
@@ -403,7 +440,7 @@ export class AccessGateway {
       if (pathname === WINDOW_PATH) { this.sendWindow(request, response); return; }
       if (pathname.startsWith(TOOLS_PREFIX)) { void this.handleTools(request, response, pathname); return; }
       if (this.replies && (pathname === NOTIFY_SCRIPT_PATH || pathname === NOTIFY_WORKER_PATH || pathname.startsWith(NOTIFY_PREFIX))) { void this.handleNotify(request, response, pathname, this.replies); return; }
-      if (pathname === INSTANCE_PATH) { this.sendInstance(request, response); return; }
+      if (pathname === INSTANCE_PATH) { void this.sendInstance(request, response, text); return; }
       if (this.staleWrite(request)) {
         response.writeHead(409, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', [STALE_HEADER]: '1' });
         response.end(JSON.stringify({ error: { code: 'stale_page', message: 'SillyTavern was started again since this page was loaded; load it again' } }));
@@ -493,12 +530,22 @@ export class AccessGateway {
    * Which run of SillyTavern is answering, for a page deciding whether it is
    * out of date. Null until a run has answered: a page told to load again
    * while SillyTavern is still starting would load a page saying so.
+   *
+   * With no run answering, also what to tell the reader instead (`down`), so
+   * the page can cover itself with that rather than fail request by request.
    */
-  private sendInstance(request: IncomingMessage, response: ServerResponse): void {
+  private async sendInstance(request: IncomingMessage, response: ServerResponse, text: GatewayText): Promise<void> {
     if (request.headers[TOOLS_HEADER] !== '1') { sendJson(response, 403, { error: { code: 'forbidden', message: 'Only for SillyTavern pages served here' } }); return; }
     const run = this.instance();
+    const instance = run?.ready ? run.id : null;
+    const down = instance === null ? downWords(await this.downState(), text) : null;
     response.setHeader('cache-control', 'no-store');
-    sendJson(response, 200, { instance: run?.ready ? run.id : null });
+    sendJson(response, 200, { instance, down });
+  }
+
+  /** Never fails: a question that cannot be answered is taken to mean it is on its way up. */
+  private async downState(): Promise<GatewayDown> {
+    try { return await this.whyDown(); } catch { return { state: 'starting' }; }
   }
 
   /**
@@ -551,8 +598,15 @@ export class AccessGateway {
       // because a single file of hundreds happened to lose the race.
       if (bodyless && attempt === 0) { this.proxy(request, response, text, 1); return; }
       this.logger(logEvent('gateway.upstreamFailed', `[gateway] ${request.url ?? '/'} did not reach SillyTavern: ${error.message}`, { path: request.url ?? '/', reason: error.message }));
-      response.writeHead(502, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-      response.end(errorPage(text.offline));
+      void this.downState().then((down) => {
+        if (response.headersSent || response.destroyed) return;
+        // Marked, so a page still open asks why at once and covers itself
+        // with the answer instead of failing request by request.
+        response.writeHead(502, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', [DOWN_HEADER]: '1' });
+        // A browser that opened a page here is shown SillyTavern as soon as
+        // it answers again, sooner while it is on its way up.
+        response.end(errorPage(downWords(down, text).body, down.state === 'starting' ? 5 : 15));
+      });
     });
     response.on('close', () => { if (!response.writableEnded) upstream.destroy(); });
     if (bodyless) upstream.end();
@@ -1152,6 +1206,7 @@ function keypad(text: GatewayText, blocked: boolean): string {
 const PASSCODE_SCRIPT = `(function(){var i=document.getElementById('password'),p=document.getElementById('pad'),d=document.getElementById('dots'),f=document.getElementById('form'),b=document.getElementById('send');if(!i||!p||!d||!f)return;p.hidden=false;d.hidden=false;if(b)b.hidden=true;i.classList.remove('code');i.classList.add('veil');i.setAttribute('inputmode','none');var s=false;function draw(){var n=i.value.length;var c=d.children;for(var k=0;k<c.length;k++){c[k].className=k<n?'on':''}if(n===6&&!s){s=true;f.submit()}}function set(v){i.value=v.slice(0,6);draw()}i.addEventListener('input',function(){set(i.value.replace(/[^0-9]/g,''))});p.addEventListener('mousedown',function(e){e.preventDefault()});p.addEventListener('click',function(e){var t=e.target.closest('button');if(!t)return;var k=t.getAttribute('data-key');if(k==='clear')set('');else if(k==='back')set(i.value.slice(0,-1));else set(i.value+k)});if(window.matchMedia&&window.matchMedia('(pointer: fine)').matches)i.focus();draw()})();`;
 
 /** The same page with nothing to sign into - SillyTavern is not answering. */
-function errorPage(message: string): string {
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="dark light"><title>SillyTavern</title><style>${PAGE_STYLE}</style></head><body><main><header class="brand"><h1>SillyTavern</h1><p class="sub">${escapeHtml(message)}</p></header></main></body></html>`;
+function errorPage(message: string, refreshSeconds?: number): string {
+  const refresh = refreshSeconds ? `<meta http-equiv="refresh" content="${String(refreshSeconds)}">` : '';
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="dark light">${refresh}<title>SillyTavern</title><style>${PAGE_STYLE}</style></head><body><main><header class="brand"><h1>SillyTavern</h1><p class="sub">${escapeHtml(message)}</p></header></main></body></html>`;
 }

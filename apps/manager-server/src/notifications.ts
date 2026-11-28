@@ -3,7 +3,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import en from '../../../packages/ui/locales/en.json' with { type: 'json' };
 import vi from '../../../packages/ui/locales/vi.json' with { type: 'json' };
-import { interpolate, isLogEvent, NOTIFICATION_KINDS, type Job, type LogLine, type ManagerNotification, type MessageParams, type NotificationKind, type NotificationLevel, type NotificationList, type NotificationSummary } from '../../../packages/contracts/src/index.js';
+import { interpolate, isLogEvent, machineName, NOTIFICATION_KINDS,type Job, type LogLine, type ManagerNotification, type MessageParams, type NotificationKind, type NotificationLevel, type NotificationList, type NotificationSummary } from '../../../packages/contracts/src/index.js';
 import type { PlatformPaths } from '../../../packages/platform/src/index.js';
 
 const STATE_FILE = 'notifications.json';
@@ -311,6 +311,11 @@ export class NotificationRules {
     switch (line.code) {
       case 'sillytavern.exited':
         say('sillytavernCrashed', 'error', { dedupeKey: 'sillytavernCrashed', dedupeMs: 10 * 60 * 1000 });
+        break;
+      case 'sync.handedOver':
+        // Stopped on purpose, for the owner's other device: said as a pause,
+        // with that device's name, so it is not taken for a crash.
+        say('sillytavernPaused', 'info', { params: { device: machineName(String(params.label ?? '')) }, dedupeKey: 'sillytavernPaused', dedupeMs: 10 * 60 * 1000 });
         break;
       case 'installer.ready':
         say('installFinished', 'success');

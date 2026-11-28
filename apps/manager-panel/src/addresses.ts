@@ -160,14 +160,8 @@ export function shortenHost(host: string): string {
 }
 
 /**
- * What another machine on the account is called, fit for a sentence.
- *
- * Usually its hostname, which is short. Where that said nothing the manager
- * names the machine by the address it was opened at instead, which is long -
- * and only its two ends are worth reading. More of each end than
- * `shortenHost` keeps: this is read in a sentence, not squeezed onto a button.
+ * What another machine on the account is called, fit for a sentence. More of
+ * each end than `shortenHost` keeps: this is read in a sentence, not squeezed
+ * onto a button. Kept in the contracts, because the manager says it too.
  */
-export function machineName(label: string): string {
-  const keep = 12;
-  return label.includes('.') && label.length > keep * 2 + 3 ? `${label.slice(0, keep)}...${label.slice(-keep)}` : label;
-}
+export { machineName } from '../../../packages/contracts/src/index.js';

@@ -636,6 +636,7 @@
     "appUpdateFailedPermission": "STM chưa được phép cài ứng dụng nên chưa cập nhật. Thử lại và bật “Cho phép từ nguồn này”.",
     "stateRunning": "Đang chạy",
     "stateStopped": "Đã dừng",
+    "statePaused": "Tạm dừng",
     "stateStarting": "Đang khởi động",
     "stateStopping": "Đang dừng",
     "stateInstalling": "Đang cài",
@@ -1392,6 +1393,10 @@
     "sillytavernCrashed": {
       "title": "SillyTavern dừng bất ngờ",
       "body": "SillyTavern tự thoát ({detail}). Mở trình quản lý để chạy lại hoặc xem nhật ký."
+    },
+    "sillytavernPaused": {
+      "title": "SillyTavern tạm dừng ở máy này",
+      "body": "{device} đang dùng dữ liệu của bạn. Muốn dùng tiếp ở đây, mở trình quản lý và bấm “Dùng ở máy này”."
     },
     "installFinished": {
       "title": "Đã cài xong SillyTavern {ref}",

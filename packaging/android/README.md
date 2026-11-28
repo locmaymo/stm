@@ -52,7 +52,9 @@ The app keeps one SillyTavern page alive across its screens. When
 SillyTavern stops - a crash, or anything the manager stops it for - the
 manager prints `STM-EVENT {"type":"sillytavernStopped"}`; the app drops the
 page and goes back to the console, so the next open loads a fresh page rather
-than the old one stuck on a request its server never answered.
+than the old one stuck on a request its server never answered. A stop for
+another of the owner's devices adds `"reason":"usedElsewhere"`, and the app
+says it as a pause rather than as a stop.
 
 ## Importing a backup zip
 
