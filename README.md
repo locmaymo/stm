@@ -618,6 +618,7 @@ Everything can be set in the panel. These environment variables, read from the p
 | `STM_ADMIN_PASSWORD` | Creates the manager administrator password at first start, for Docker and hosted platforms |
 | `STM_HOST` | The address to bind: `127.0.0.1` (this machine only) or `0.0.0.0` (every network). Set a password before opening it |
 | `STM_PORT` · `STM_ACCESS_PORT` | Pin the console's port (`7860`) and the access gateway's (`8001`). Unset, a port something else holds is stepped over, and a host's `PORT` is used when it announces one |
+| `STM_SILLYTAVERN_HEAP_MB` | How much JavaScript memory SillyTavern may use, in MB. Unset, it gets Node's default, about a quarter of the machine's memory; the Android app gives it half of the phone's, up to 4096 |
 | `STM_SAVER` | `1` or `0` settles [saver mode](#saver-mode) for good; the switch in the panel then cannot change it |
 | `STM_STORAGE_IN_MEMORY` | `1` or `0` says whether files written here take the machine's memory. Detected on its own from the mount table (tmpfs, ramfs) and the Knative `K_SERVICE` variable |
 | `STM_PUBLIC_ORIGIN` | The address the console is reached at from outside, behind a proxy that rewrites `Host`; also the address **Keep STM online** holds |

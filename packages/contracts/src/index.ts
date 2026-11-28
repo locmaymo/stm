@@ -2102,6 +2102,9 @@ export const NOTIFICATION_KINDS = [
   // and this one stepped aside for it. Said apart from a crash so it is not
   // read as one.
   'sillytavernPaused',
+  // A crash with a cause the reader can act on: SillyTavern used all the
+  // memory it may use. Named apart so it says which file is the likely cause.
+  'sillytavernOutOfMemory',
   'installFinished',
   'installFailed',
   'backupFailed',

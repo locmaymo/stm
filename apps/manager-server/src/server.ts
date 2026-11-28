@@ -20,6 +20,7 @@ import { easesPolling, withholdsAddress, WorkerBudget } from './worker-budget.js
 import { panelStaticRoot } from './bootstrap.js';
 import { ProcessSupervisor, runOf } from './supervisor.js';
 import { adoptSharedExtensions } from './shared-extensions.js';
+import { sillyTavernHeapMb } from './heap.js';
 import { AccessGateway } from './gateway.js';
 import { ACCESS_GATEWAY_PORT, checkSillyTavernPort, findFreePort, isPortFree, MANAGER_PORT, PortError, portWasDemanded, resolveAccessPort, resolveConsolePort, SILLYTAVERN_PORT, type ResolvedPort } from './ports.js';
 import { previewImage, previewLogo, previewManifest } from './preview.js';
@@ -640,6 +641,9 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     instrumentationPath: instrumentationLoaderPath,
     metricsFile: metrics.filePath,
     replyFile: replyFile(paths),
+    // More memory for SillyTavern in the Android app, where Node's default ran
+    // out within a minute on a phone; see heap.ts.
+    heapMb: () => sillyTavernHeapMb(env),
     logger: (line) => { jobs.append('sillytavern', line); baseLogger(line); },
   });
   const tunnel = options.tunnel ?? new TunnelManager({
@@ -1025,6 +1029,10 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       await releases.check();
       return releases.status().update?.version ?? null;
     },
+    largestFile: async () => {
+      const profile = await profiles.getActive();
+      return profile ? await largestDataFile(await backups.dataRoot(profile)) : null;
+    },
   });
   // Every browser that asked to be told is told, in the language it asked in.
   const push = new WebPush({ paths });
@@ -1043,7 +1051,7 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     // stays stuck on the request it was waiting for - shown again, stuck,
     // every time it is opened. Told, the app drops it and loads a fresh one.
     jobs.onLine((line) => {
-      if (isLogEvent(line) && (line.code === 'sillytavern.exited' || line.code.startsWith('sillytavern.stopped'))) {
+      if (isLogEvent(line) && (line.code === 'sillytavern.exited' || line.code === 'sillytavern.outOfMemory' || line.code.startsWith('sillytavern.stopped'))) {
         // Why, when it was for another of the owner's devices: the app says
         // that as a pause rather than as SillyTavern having gone away.
         const reason = line.code === 'sillytavern.stoppedUsedElsewhere' ? { reason: 'usedElsewhere' } : {};
@@ -6162,3 +6170,30 @@ export const managerPorts: ManagerPorts = {
 };
 
 export const minimumAdminPasswordLength = MIN_PASSWORD_LENGTH;
+
+/** Folders of a user's data that SillyTavern never reads whole into memory. */
+const NOT_READ_WHOLE = new Set(['backups', 'vectors', 'thumbnails', 'extensions', '.git', 'node_modules']);
+
+/**
+ * The largest chat or settings file in a user's data, by size.
+ *
+ * Said when SillyTavern runs out of memory: it reads a whole chat, or the
+ * whole settings file, into memory at once and writes it out again as JSON,
+ * so a file of a few hundred megabytes is what fills it. Images and the
+ * folders above are not read that way and would only point at the wrong file.
+ */
+export async function largestDataFile(root: string): Promise<{ readonly name: string; readonly bytes: number } | null> {
+  let largest: { name: string; bytes: number } | null = null;
+  const walk = async (directory: string): Promise<void> => {
+    const entries = await readdir(directory, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory()) { if (!NOT_READ_WHOLE.has(entry.name)) await walk(path); continue; }
+      if (!entry.isFile() || !/\.jsonl?$/iu.test(entry.name)) continue;
+      const bytes = await stat(path).then((details) => details.size, () => -1);
+      if (bytes >= 0 && (!largest || bytes > largest.bytes)) largest = { name: relative(root, path).split(sep).join('/'), bytes };
+    }
+  };
+  await walk(root);
+  return largest;
+}

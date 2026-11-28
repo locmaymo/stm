@@ -959,6 +959,7 @@
     "runtime_not_managed": "This SillyTavern was not installed by the manager, so it cannot be changed from here.",
     "setup_required": "Finish setting the manager up first.",
     "sillytavern_exited": "SillyTavern stopped on its own.",
+    "sillytavern_out_of_memory": "SillyTavern ran out of memory and stopped. A very large chat or settings file is the usual cause.",
     "sillytavern_not_running": "SillyTavern is not running.",
     "snapshot_failed": "The safety copy could not be written, so nothing was changed.",
     "unauthorized": "You are signed out. Sign in again.",
@@ -1024,6 +1025,8 @@
       "starting": "Starting {ref} on 127.0.0.1:{port}",
       "ready": "Ready on 127.0.0.1:{port} after {seconds}s",
       "legacyHeap": "Using a {heap} MiB heap for the legacy public/ runtime",
+      "heap": "SillyTavern may use {heap} MiB of memory",
+      "outOfMemory": "Ran out of the {heap} MiB of memory it may use and stopped ({detail})",
       "spawnFailed": "{reason}",
       "failed": "{reason}",
       "autoStartFailed": "Automatic startup failed: {reason}",
@@ -1399,6 +1402,10 @@
     "sillytavernCrashed": {
       "title": "SillyTavern stopped unexpectedly",
       "body": "It exited on its own ({detail}). Open the manager to start it again or read the log."
+    },
+    "sillytavernOutOfMemory": {
+      "title": "SillyTavern ran out of memory",
+      "body": "It used all {heap} MB it may use on this device and stopped. The largest file in your data is {file} ({size}); a file that big is the usual cause."
     },
     "sillytavernPaused": {
       "title": "SillyTavern is paused on this device",

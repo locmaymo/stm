@@ -959,6 +959,7 @@
     "runtime_not_managed": "Bản SillyTavern này không do trình quản lý cài, nên không đổi được từ đây.",
     "setup_required": "Hoàn tất thiết lập trình quản lý trước đã.",
     "sillytavern_exited": "SillyTavern tự dừng.",
+    "sillytavern_out_of_memory": "SillyTavern hết bộ nhớ và đã dừng. Nguyên nhân thường là một đoạn chat hoặc tệp cài đặt quá lớn.",
     "sillytavern_not_running": "SillyTavern chưa chạy.",
     "snapshot_failed": "Không ghi được bản sao an toàn, nên không có gì bị thay đổi.",
     "unauthorized": "Bạn đã đăng xuất. Hãy đăng nhập lại.",
@@ -1024,6 +1025,8 @@
       "starting": "Đang khởi động {ref} trên 127.0.0.1:{port}",
       "ready": "Đã sẵn sàng trên 127.0.0.1:{port} sau {seconds}s",
       "legacyHeap": "Dùng heap {heap} MiB cho bản chạy public/ cũ",
+      "heap": "SillyTavern được dùng {heap} MiB bộ nhớ",
+      "outOfMemory": "Đã dùng hết {heap} MiB bộ nhớ được phép và đã dừng ({detail})",
       "spawnFailed": "{reason}",
       "failed": "{reason}",
       "autoStartFailed": "Khởi động tự động thất bại: {reason}",
@@ -1399,6 +1402,10 @@
     "sillytavernCrashed": {
       "title": "SillyTavern dừng bất ngờ",
       "body": "SillyTavern tự thoát ({detail}). Mở trình quản lý để chạy lại hoặc xem nhật ký."
+    },
+    "sillytavernOutOfMemory": {
+      "title": "SillyTavern hết bộ nhớ",
+      "body": "SillyTavern đã dùng hết {heap} MB được phép trên máy này và đã dừng. Tệp lớn nhất trong dữ liệu của bạn là {file} ({size}); tệp lớn cỡ đó thường là nguyên nhân."
     },
     "sillytavernPaused": {
       "title": "SillyTavern tạm dừng ở máy này",

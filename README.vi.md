@@ -618,6 +618,7 @@ Mọi thứ đều đặt được trong panel. Các biến môi trường sau, 
 | `STM_ADMIN_PASSWORD` | Tạo mật khẩu quản trị ngay lần khởi động đầu, cho Docker và nền tảng cloud |
 | `STM_HOST` | Địa chỉ lắng nghe: `127.0.0.1` (chỉ máy này) hoặc `0.0.0.0` (mọi mạng). Đặt mật khẩu trước khi mở ra mạng |
 | `STM_PORT` · `STM_ACCESS_PORT` | Cố định cổng của console (`7860`) và của cổng truy cập (`8001`). Nếu không đặt, cổng đã bị chiếm sẽ được bỏ qua, và dùng `PORT` khi host có công bố |
+| `STM_SILLYTAVERN_HEAP_MB` | Bộ nhớ JavaScript SillyTavern được dùng, tính bằng MB. Nếu không đặt, SillyTavern nhận mức mặc định của Node, khoảng một phần tư bộ nhớ máy; app Android cho nó một nửa bộ nhớ điện thoại, tối đa 4096 |
 | `STM_SAVER` | `1` hoặc `0` để chốt hẳn [chế độ tiết kiệm](#chế-độ-tiết-kiệm); công tắc trong panel không đổi được nữa |
 | `STM_STORAGE_IN_MEMORY` | `1` hoặc `0` cho biết file ghi ở đây có chiếm bộ nhớ của máy hay không. Tự nhận biết qua bảng mount (tmpfs, ramfs) và biến `K_SERVICE` của Knative |
 | `STM_PUBLIC_ORIGIN` | Địa chỉ console được truy cập từ bên ngoài, khi đứng sau proxy đổi `Host`; cũng là địa chỉ **Giữ STM online** sẽ giữ |
