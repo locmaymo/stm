@@ -64,7 +64,7 @@
     "passwordAfterSave": "Save password",
     "passwordAfterFailed": "The password could not be saved. Try again.",
     "ownLinkTitle": "Open the manager at its own link",
-    "ownLinkBody": "This page is shown inside another site, where some browsers cannot run the manager. Its own link, through Cloudflare, opens it in a tab of its own.",
+    "ownLinkBody": "STM is shown inside another site, where some browsers cannot run all of STM's features.",
     "ownLinkOpening": "Opening the link…",
     "ownLinkGo": "Open the link",
     "ownLinkCopy": "Copy the link",

@@ -18,7 +18,7 @@ import { eraseManagerData } from './reset.js';
 import { SystemStore } from './system.js';
 import { easesPolling, withholdsAddress, WorkerBudget } from './worker-budget.js';
 import { panelStaticRoot } from './bootstrap.js';
-import { ProcessSupervisor } from './supervisor.js';
+import { ProcessSupervisor, runOf } from './supervisor.js';
 import { AccessGateway } from './gateway.js';
 import { ACCESS_GATEWAY_PORT, checkSillyTavernPort, findFreePort, isPortFree, MANAGER_PORT, PortError, portWasDemanded, resolveAccessPort, resolveConsolePort, SILLYTAVERN_PORT, type ResolvedPort } from './ports.js';
 import { previewImage, previewLogo, previewManifest } from './preview.js';
@@ -542,6 +542,10 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
       job: (id) => jobs.get(id),
       logs: (after) => jobs.logs(after, null),
     },
+    // Which run of SillyTavern a page came from, so one left open across a
+    // catch-up or a restore cannot save its old settings over the new files.
+    // Called once requests arrive, like the tools.
+    instance: () => runOf(supervisor.getState()),
     // A character's reply, told to whoever subscribed from SillyTavern's own
     // page; see replies.ts. Called once requests arrive, like the tools.
     replies: {

@@ -64,7 +64,7 @@
     "passwordAfterSave": "Lưu mật khẩu",
     "passwordAfterFailed": "Không lưu được mật khẩu. Hãy thử lại.",
     "ownLinkTitle": "Mở trình quản lý ở link riêng",
-    "ownLinkBody": "Trang này đang hiển thị bên trong một trang web khác, nơi một số trình duyệt không chạy được trình quản lý. Link riêng qua Cloudflare sẽ mở nó ở một tab riêng.",
+    "ownLinkBody": "Trang STM đang hiển thị bên trong một trang web khác, nơi một số trình duyệt không chạy được full chức năng của STM.",
     "ownLinkOpening": "Đang mở link…",
     "ownLinkGo": "Mở link",
     "ownLinkCopy": "Sao chép link",

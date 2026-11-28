@@ -155,6 +155,30 @@ test('what one device changed arrives on the other, deletions included', async (
   assert.deepEqual(await phone.catchUp().then((caught) => [caught.outcome?.taken, caught.outcome?.removed]), [0, 0]);
 });
 
+/*
+ * The frequent send used to look only at chats, cards and settings, and to
+ * record the whole profile as sent: an extension installed on one device took
+ * the six-hour slow clock to reach the other.
+ */
+test('a frequent send carries an extension and a background to the other device', async () => {
+  const { desk, phone } = await pair();
+  await desk.write('extensions/Example/manifest.json', '{"display_name":"Example"}');
+  await desk.write('extensions/Example/index.js', 'export {};\n');
+  await desk.write('backgrounds/sky.png', 'sky');
+  await syncProfileToR2({ profile: desk.profile, backups: desk.backups, r2: desk.r2, tier: 'hot' });
+
+  const result = await phone.catchUp();
+  assert.equal(result.outcome?.taken, 3);
+  assert.deepEqual(await phone.names(), ['backgrounds/sky.png', 'characters/Seraphina.png', 'chats/Seraphina/first.jsonl', 'extensions/Example/index.js', 'extensions/Example/manifest.json', 'settings.json']);
+  assert.equal(await phone.read('extensions/Example/index.js'), 'export {};\n');
+
+  // Taken off one device, it goes from the other on the next frequent send too.
+  await rm(join(desk.data, 'extensions'), { recursive: true });
+  await syncProfileToR2({ profile: desk.profile, backups: desk.backups, r2: desk.r2, tier: 'hot' });
+  assert.equal((await phone.catchUp()).outcome?.removed, 2);
+  assert.deepEqual(await phone.names(), ['backgrounds/sky.png', 'characters/Seraphina.png', 'chats/Seraphina/first.jsonl', 'settings.json']);
+});
+
 test('a chat both devices wrote to is kept twice, and settings take the other device with a copy kept', async () => {
   const { desk, phone } = await pair();
   // The phone was offline; the desk was used meanwhile and sent first.
