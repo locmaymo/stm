@@ -292,6 +292,21 @@ export class DeviceSync {
   private readonly logger: LogSink;
   private watching = false;
   private offlineSaid = false;
+  /**
+   * The newest generation this run of SillyTavern knew of when it started,
+   * or null while that is not known: it started without reaching storage, or
+   * catching up failed. Only a generation newer than this one means another
+   * device is in use now.
+   *
+   * Without it, any newer generation stopped SillyTavern - including the one a
+   * device had failed to take in before starting, which was there before it
+   * started and stayed there. A phone that could not catch up once was then
+   * stopped every minute, every time it was started, with the computer that
+   * wrote that generation long since switched off.
+   */
+  private runFrom: number | null = null;
+  /** Counts starts, so a release asked for before one cannot land after it; see `release`. */
+  private starts = 0;
 
   public constructor(options: DeviceSyncOptions) {
     this.options = options;
@@ -307,6 +322,8 @@ export class DeviceSync {
    */
   public async beforeStart(profile: Profile): Promise<void> {
     const { r2, backups } = this.options;
+    this.runFrom = null;
+    this.starts += 1;
     const place = await r2.syncPlace().catch(() => null);
     if (!place || place.profileId !== profile.id) return;
     try {
@@ -319,6 +336,7 @@ export class DeviceSync {
         if (await r2.takeTurn()) break;
       }
       this.offlineSaid = false;
+      this.runFrom = (await r2.syncPlace())?.seq ?? null;
       if (push) this.options.requestPush?.();
     } catch (error: unknown) {
       const reason = error instanceof Error ? error.message : 'unknown error';
@@ -334,14 +352,22 @@ export class DeviceSync {
    */
   public async inUseElsewhere(): Promise<string | null> {
     const { r2 } = this.options;
+    let place;
     try {
-      const place = await r2.syncPlace();
-      // Not sharing, or joined and still to take the shared data in, which a start does.
-      if (!place || place.files === null) return null;
-      if (place.behind) return place.behind.label;
-      return (await r2.sharedHead())?.device.label ?? null;
+      place = await r2.syncPlace();
     } catch {
       return null;
+    }
+    // Not sharing, or joined and still to take the shared data in, which a start does.
+    if (!place || place.files === null) return null;
+    try {
+      const head = await r2.sharedHead();
+      // A device that let go of the data is not using it: this one starts, and
+      // takes in what that device left on its way up.
+      return head && !head.released ? head.device.label : null;
+    } catch {
+      // Offline: what this device last heard is all it has to go on.
+      return place.behind?.label ?? null;
     }
   }
 
@@ -356,23 +382,50 @@ export class DeviceSync {
       const { r2 } = this.options;
       const place = await r2.syncPlace();
       if (!place || place.files === null) return;
-      let ahead: Generation | { device: { label: string } } | null = place.behind ? { device: { label: place.behind.label } } : null;
-      if (!ahead) {
-        try {
-          ahead = await r2.sharedHead();
-          this.offlineSaid = false;
-        } catch (error: unknown) {
-          if (!this.offlineSaid) {
-            this.offlineSaid = true;
-            const reason = error instanceof Error ? error.message : 'unknown error';
-            this.logger(logEvent('sync.watchFailed', `[sync] storage could not be asked whether another device is in use: ${reason}`, { reason }));
-          }
-          return;
+      let head: Generation | null;
+      try {
+        head = await r2.sharedHead();
+        this.offlineSaid = false;
+      } catch (error: unknown) {
+        if (!this.offlineSaid) {
+          this.offlineSaid = true;
+          const reason = error instanceof Error ? error.message : 'unknown error';
+          this.logger(logEvent('sync.watchFailed', `[sync] storage could not be asked whether another device is in use: ${reason}`, { reason }));
         }
+        return;
       }
-      if (ahead && this.options.isRunning()) await this.handOver(ahead.device.label);
+      if (!this.options.isRunning()) return;
+      if (this.runFrom === null) {
+        // Started without knowing where the data stood. What is there the
+        // first time storage answers was there before: this device carries on
+        // with what it has, and takes it in the next time SillyTavern starts.
+        this.runFrom = head?.seq ?? place.seq;
+        if (head) this.logger(logEvent('sync.behindWhileRunning', `[sync] ${head.device.label} has newer data from before SillyTavern started here; this device carries on with what it has and takes that in when SillyTavern next starts`, { label: head.device.label }));
+        return;
+      }
+      if (head && head.seq > this.runFrom && !head.released) await this.handOver(head.device.label);
     } finally {
       this.watching = false;
+    }
+  }
+
+  /**
+   * Say that this device is not in use any more, once what it changed is sent.
+   *
+   * Called when SillyTavern is stopped here on purpose and as the manager
+   * closes, so the next device opened starts by itself instead of saying the
+   * data is in use here. Best effort: a device that cannot reach storage
+   * leaves it as it was, which is only the old behaviour.
+   */
+  public async release(): Promise<void> {
+    const asked = this.starts;
+    try {
+      // Decided inside storage's own queue: a start begun meanwhile takes its
+      // turn there too, and a release that came after it would say a device
+      // in use had let go.
+      if (await this.options.r2.releaseTurn(() => this.starts === asked && !this.options.isRunning())) this.logger(logEvent('sync.released', '[sync] this device is no longer the one in use; another device can start on the shared data by itself'));
+    } catch {
+      // Nothing to undo: the last generation still stands.
     }
   }
 

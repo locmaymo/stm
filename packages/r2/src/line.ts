@@ -59,6 +59,14 @@ export interface Generation {
   readonly at: string;
   /** Makes two attempts at one number different bytes. */
   readonly nonce: string;
+  /**
+   * Written by a device as it stopped being used: SillyTavern stopped there,
+   * or its manager closed. The data it names is still the newest, and another
+   * device still takes it in before it sends anything, but nobody is using it
+   * now, so another device may start without being asked to take over.
+   * Absent on everything else, and on everything an older manager wrote.
+   */
+  readonly released?: true;
 }
 
 /** What this device knows about its place on the line. */
@@ -212,18 +220,19 @@ export class DeviceLine {
    * Called only after everything it names is in storage. Losing is an answer,
    * not a failure: the line moved, and `head` says who moved it.
    */
-  public async commit(store: ObjectStore, snapshotId: string, files: readonly HashedFile[], device: LineDevice): Promise<CommitResult> {
+  public async commit(store: ObjectStore, snapshotId: string, files: readonly HashedFile[], device: LineDevice, options: { readonly released?: boolean } = {}): Promise<CommitResult> {
     const state = await this.state();
     if (!state) throw new R2Error('sync_off', 'This device is not syncing');
     const at = this.now().toISOString();
-    const generation: Generation = { schemaVersion: SCHEMA_VERSION, seq: state.seq + 1, snapshotId, device: { id: device.id, label: device.label.slice(0, 120) }, at, nonce: randomBytes(8).toString('hex') };
+    const generation: Generation = { schemaVersion: SCHEMA_VERSION, seq: state.seq + 1, snapshotId, device: { id: device.id, label: device.label.slice(0, 120) }, at, nonce: randomBytes(8).toString('hex'), ...(options.released ? { released: true as const } : {}) };
     const result = await claimSlot(store, this.generationKey(generation.seq), Buffer.from(JSON.stringify(generation), 'utf8'), this.slot);
     if (!result.won) {
       const head = result.holder ? parseGeneration(result.holder) : null;
       if (head) await this.save({ ...state, behind: { seq: head.seq, label: head.device.label, at: head.at } });
       return { won: false, head };
     }
-    await this.save({ ...state, seq: generation.seq, snapshotId, files, writtenBy: generation.device.label, mine: true, syncedAt: at, behind: null });
+    // A device that let go is not the one in use: the next start says so again.
+    await this.save({ ...state, seq: generation.seq, snapshotId, files, writtenBy: generation.device.label, mine: !options.released, syncedAt: at, behind: null });
     // Neither is needed for the generation to stand; both make the next reader's
     // work shorter. Not waited for: on Drive they are seconds, added to every send.
     // One after another, so an older number is never written over a newer one.
@@ -370,6 +379,7 @@ function parseGeneration(stored: Buffer): Generation {
     device: { id: typeof device.id === 'string' ? device.id.slice(0, 80) : '', label: typeof device.label === 'string' ? device.label.slice(0, 120) : '' },
     at: typeof value.at === 'string' ? value.at : '',
     nonce: typeof value.nonce === 'string' ? value.nonce : '',
+    ...(value.released === true ? { released: true as const } : {}),
   };
 }
 

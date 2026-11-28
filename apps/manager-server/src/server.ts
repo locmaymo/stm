@@ -19,6 +19,7 @@ import { SystemStore } from './system.js';
 import { easesPolling, withholdsAddress, WorkerBudget } from './worker-budget.js';
 import { panelStaticRoot } from './bootstrap.js';
 import { ProcessSupervisor, runOf } from './supervisor.js';
+import { adoptSharedExtensions } from './shared-extensions.js';
 import { AccessGateway } from './gateway.js';
 import { ACCESS_GATEWAY_PORT, checkSillyTavernPort, findFreePort, isPortFree, MANAGER_PORT, PortError, portWasDemanded, resolveAccessPort, resolveConsolePort, SILLYTAVERN_PORT, type ResolvedPort } from './ports.js';
 import { previewImage, previewLogo, previewManifest } from './preview.js';
@@ -585,6 +586,8 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
    */
   let pushTimer: NodeJS.Timeout | null = null;
   let pushTarget: { pushNow(): Promise<void> } | null = null;
+  /** The profile and runtime SillyTavern was last started on, where extensions are adopted; see shared-extensions.ts. */
+  let prepared: { readonly profile: Profile; readonly runtimePath: string } | null = null;
   const pushSoon = (delayMs: number): void => {
     if (!pushTarget) return;
     if (pushTimer) clearTimeout(pushTimer);
@@ -619,7 +622,15 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
         }
         // Preparing a legacy runtime rewrites the whole user directory, so no
         // backup may be reading it while this runs.
-        return backups.runExclusive(() => profiles.prepareForRuntime(profile, runtimePath));
+        return backups.runExclusive(async () => {
+          const layout = await profiles.prepareForRuntime(profile, runtimePath);
+          // An extension installed for all users goes into the profile, where
+          // it is backed up and shared; see shared-extensions.ts. Only where
+          // that folder is not already the profile's, as on a legacy runtime.
+          prepared = layout === 'data' ? { profile, runtimePath } : null;
+          if (prepared) await adoptSharedExtensions({ runtimePath, userRoot: await backups.dataRoot(profile), logger });
+          return layout;
+        });
       },
       // Persisting one back deletes that directory and rebuilds it, which is
       // even less survivable for a backup walking it.
@@ -743,13 +754,28 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     if (pushTimer) clearTimeout(pushTimer);
     pushTimer = null;
     if (!await r2.syncPlace().catch(() => null)) return;
-    await supervisor.stop().catch(() => undefined);
-    await Promise.race([scheduler.pushNow(), new Promise<void>((done) => { setTimeout(done, CLOSING_PUSH_MS).unref(); })]);
+    await supervisor.stop('shutdown').catch(() => undefined);
+    // Sent, then let go of, so the next device opened starts by itself.
+    await Promise.race([(async () => { await scheduler.pushNow(); await sharing.release(); })(), new Promise<void>((done) => { setTimeout(done, CLOSING_PUSH_MS).unref(); })]);
   };
+  // Stopped here on purpose: what changed is sent, and this device lets go, so
+  // the phone or computer picked up next starts without asking to take over.
+  jobs.onLine((line) => {
+    if (isLogEvent(line) && line.code === 'sillytavern.stoppedRequested') void (async () => { await scheduler.pushNow(); await sharing.release(); })();
+  });
   pushTarget = scheduler;
   scheduler.start();
   // Does nothing on a device that shares with none, and nothing when no file moved.
-  const changeLook = setInterval(() => { if (supervisor.getState().status === 'running') void scheduler.pushNow(); }, CHANGE_LOOK_MS);
+  // An extension just installed for all users is moved into the profile first,
+  // so it is in what is sent rather than waiting for the next start.
+  const changeLook = setInterval(() => {
+    if (supervisor.getState().status !== 'running') return;
+    void (async () => {
+      const current = prepared;
+      if (current && !backups.isOperationRunning()) await adoptSharedExtensions({ runtimePath: current.runtimePath, userRoot: await backups.dataRoot(current.profile), logger }).catch(() => undefined);
+      await scheduler.pushNow();
+    })();
+  }, CHANGE_LOOK_MS);
   changeLook.unref();
   // Uploads interrupted by a closed tab leave gigabyte part files whose id no
   // longer exists anywhere. A day is long enough for a slow connection to
@@ -2615,8 +2641,9 @@ async function handleRuntimeRequest(context: RequestContext, store: StateStore, 
     }
     // Pressed again while the first press is still at work: that one is the answer.
     if (supervisor.getState().status === 'starting') { sendJson(response, 202, { sync: (await r2.getConfig()).sync ?? null }); return; }
-    // Stopped first: catching up writes into the profile.
-    await supervisor.stop();
+    // Stopped first: catching up writes into the profile. A restart, not a
+    // stop somebody asked for: this device is about to be the one in use.
+    await supervisor.stop('restart');
     void supervisor.start().catch((error: unknown) => logger(logEvent('sillytavern.autoStartFailed', `[sillytavern] automatic startup failed: ${error instanceof Error ? error.message : 'unknown error'}`, { reason: error instanceof Error ? error.message : 'unknown error' })));
     sendJson(response, 202, { sync: (await r2.getConfig()).sync ?? null });
     return;

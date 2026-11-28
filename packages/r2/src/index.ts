@@ -1559,6 +1559,33 @@ export class R2Manager {
     });
   }
 
+  /**
+   * Say that this device is no longer the one in use, without anything having changed.
+   *
+   * The counterpart of `takeTurn`, written as SillyTavern stops here on purpose
+   * or the manager closes. Without it the last generation this device wrote
+   * went on saying it was in use, and the next device to be opened would not
+   * start on its own: it said the data was in use on a computer that had been
+   * switched off.
+   *
+   * Only from the device in use, and so only after what it changed is sent.
+   * `idle` is asked last, in the same queue `takeTurn` waits in, so a start
+   * that began meanwhile can still call it off. True when the mark was written.
+   */
+  public async releaseTurn(idle: () => boolean = () => true): Promise<boolean> {
+    return await this.exclusive(async () => {
+      const config = await this.requireUsable();
+      const place = await this.line.state();
+      if (!place || place.files === null || place.behind || !place.mine || !place.snapshotId || !idle()) return false;
+      try {
+        const committed = await this.line.commit(this.client(config), place.snapshotId, place.files, { id: this.installId ?? '', label: this.installationLabel() }, { released: true });
+        return committed.won;
+      } finally {
+        await this.recordCharges();
+      }
+    });
+  }
+
   private async syncStatus(): Promise<DeviceSyncStatus | null> {
     const place = await this.line.state();
     if (!place) {
