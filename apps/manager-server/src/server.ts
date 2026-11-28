@@ -890,8 +890,15 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
    * only answer that leaves everything else - the gateway, the tunnel, the
    * frame - working exactly as before, because all of them ask this variable
    * where SillyTavern is rather than assuming.
+   *
+   * A port the console or the gateway was given counts as held too, though
+   * neither is listening yet. With 8001 taken on a host, the gateway steps up
+   * to 8002; the fallback above is 8002 as well, and the probe found it free
+   * only because the gateway binds later - so every start of SillyTavern ended
+   * with 8002 already in use.
    */
-  if (!await isPortFree(sillyTavernPort, '127.0.0.1')) {
+  const heldByManager = sillyTavernPort === consolePort || sillyTavernPort === accessPort;
+  if (heldByManager || !await isPortFree(sillyTavernPort, '127.0.0.1')) {
     const moved = await findFreePort(sillyTavernPort + 1, { reserved: [consolePort, accessPort], host: '127.0.0.1' });
     if (moved === null) {
       logger(logEvent('config.portBusy', `[config] port ${sillyTavernPort} is in use and no free port was found near it; SillyTavern will start there and may fail`, { port: sillyTavernPort }));
