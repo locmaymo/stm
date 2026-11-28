@@ -1234,7 +1234,13 @@
       "pushFailed": "What changed could not be sent just now; the next run sends it: {reason}",
       "started": "This device now shares its data with your other devices on this storage",
       "superseded": "Your device {label} moved the shared data on first, so this device stops sending until it has caught up",
-      "watchFailed": "Storage could not be asked whether another device is in use: {reason}"
+      "watchFailed": "Storage could not be asked whether another device is in use: {reason}",
+      "behindWhileRunning": "Your device {label} has newer data from before SillyTavern started here; this device carries on with what it has and takes that in when SillyTavern next starts",
+      "released": "This device is no longer the one in use; another device can start on the shared data by itself"
+    },
+    "extensions": {
+      "adopted": "{name} was installed for all users; it now lives in this profile, so it is backed up and goes to your other devices",
+      "adoptFailed": "{name} could not be moved into this profile: {reason}"
     },
     "job": {
       "preparingBackup": "Preparing backup",

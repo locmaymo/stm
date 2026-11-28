@@ -1234,7 +1234,13 @@
       "pushFailed": "Chưa gửi được phần vừa thay đổi; lần chạy kế sẽ gửi: {reason}",
       "started": "Máy này giờ dùng chung dữ liệu với các thiết bị khác của bạn trên kho lưu trữ này",
       "superseded": "Máy {label} của bạn đã cập nhật dữ liệu chung trước, nên máy này ngừng gửi cho tới khi bắt kịp",
-      "watchFailed": "Không hỏi được kho lưu trữ xem có thiết bị khác đang dùng không: {reason}"
+      "watchFailed": "Không hỏi được kho lưu trữ xem có thiết bị khác đang dùng không: {reason}",
+      "behindWhileRunning": "Máy {label} của bạn có dữ liệu mới hơn từ trước khi SillyTavern chạy ở đây; máy này vẫn chạy tiếp trên dữ liệu đang có và sẽ lấy phần đó về ở lần chạy sau",
+      "released": "Máy này không còn là máy đang dùng; thiết bị khác có thể tự chạy trên dữ liệu chung"
+    },
+    "extensions": {
+      "adopted": "{name} được cài cho mọi người dùng; giờ nó nằm trong hồ sơ này nên được sao lưu và có trên các thiết bị khác của bạn",
+      "adoptFailed": "Không chuyển được {name} vào hồ sơ này: {reason}"
     },
     "job": {
       "preparingBackup": "Đang chuẩn bị sao lưu",

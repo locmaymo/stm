@@ -377,6 +377,84 @@ test('a manager that comes up by itself learns who holds the data, and does not 
   assert.equal(await offline.inUseElsewhere(), null);
 });
 
+/*
+ * Reported from a phone and a computer: the computer was switched off, and
+ * SillyTavern on the phone was still stopped a minute after every start. The
+ * phone had started without taking in the computer's last send, and every
+ * look after that found that send - older than the start - and stopped it.
+ */
+test('a device that started without the newest data is not stopped for it, only for a device that moves on after', async () => {
+  const { desk, phone } = await pair();
+  await desk.write('chats/Seraphina/first.jsonl', 'hello\nfrom the desk\n');
+  await desk.send();
+  const stops: string[] = [];
+  const lines: string[] = [];
+  let running = false;
+  const onPhone = new DeviceSync({
+    r2: phone.r2, backups: phone.backups, stateDirectory: phone.state,
+    isRunning: () => running,
+    stop: async () => { stops.push('phone'); running = false; },
+    logger: (line) => { lines.push(typeof line === 'string' ? line : line.code); },
+  });
+  // Catching up fails as it starts; it starts on what it has.
+  const original = phone.r2.sharedHead.bind(phone.r2);
+  let failing = true;
+  phone.r2.sharedHead = async () => { if (failing) throw new Error('fetch failed'); return await original(); };
+  await onPhone.beforeStart(phone.profile);
+  failing = false;
+  running = true;
+
+  await onPhone.watch();
+  await onPhone.watch();
+  assert.deepEqual(stops, [], 'what the desk sent before the phone started is no reason to stop it');
+  assert.equal(lines.filter((line) => line === 'sync.behindWhileRunning').length, 1, 'said once');
+  assert.equal((await phone.r2.getConfig()).sync?.state, 'catching_up', 'and it still takes that in at its next start');
+
+  // The desk is used again while the phone runs: that is a reason.
+  await desk.write('chats/Seraphina/first.jsonl', 'hello\nfrom the desk\nand more\n');
+  await desk.send();
+  await onPhone.watch();
+  assert.deepEqual(stops, ['phone']);
+});
+
+test('a device that lets go is not in use: the next one opened starts by itself', async () => {
+  const { desk, phone, bucket } = await pair();
+  let deskRunning = false;
+  const atDesk = new DeviceSync({ r2: desk.r2, backups: desk.backups, stateDirectory: desk.state, isRunning: () => deskRunning, stop: async () => undefined });
+  const onPhone = new DeviceSync({ r2: phone.r2, backups: phone.backups, stateDirectory: phone.state, isRunning: () => false, stop: async () => undefined });
+  const generations = (): number => [...bucket.objects.keys()].filter((key) => key.includes('/sync/gen/')).length;
+
+  // The desk was used after the phone last caught up, and has not let go: the
+  // phone does not start by itself.
+  await desk.write('chats/Seraphina/first.jsonl', 'hello\nfrom the desk\n');
+  await desk.send();
+  assert.equal(await onPhone.inUseElsewhere(), 'desk');
+  // SillyTavern at the desk was stopped, or its manager closed.
+  const before = generations();
+  await atDesk.release();
+  assert.equal(generations(), before + 1, 'one mark');
+  assert.equal(await onPhone.inUseElsewhere(), null, 'nobody is using the data now');
+  await atDesk.release();
+  assert.equal(generations(), before + 1, 'let go once is enough');
+
+  // Opened, the phone takes in what the desk left and is the one in use.
+  await onPhone.beforeStart(phone.profile);
+  assert.equal((await phone.r2.syncPlace())?.mine, true);
+  assert.equal(await atDesk.inUseElsewhere(), 'phone');
+  // A device that is not the one in use has nothing to let go of.
+  const after = generations();
+  await atDesk.release();
+  assert.equal(generations(), after);
+
+  // Back at the desk. A release asked for as it starts again never lands after the start.
+  await atDesk.beforeStart(desk.profile);
+  deskRunning = true;
+  const turn = generations();
+  await atDesk.release();
+  assert.equal(generations(), turn, 'running again, it does not say it let go');
+  assert.equal(await onPhone.inUseElsewhere(), 'desk');
+});
+
 test('a device that cannot reach storage starts on what it has, and what it changed is kept later', async () => {
   const { desk, phone, bucket } = await pair();
   const reach = bucket.fetchImpl;
