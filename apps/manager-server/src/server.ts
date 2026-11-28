@@ -44,7 +44,7 @@ import { OnlineKeeper } from './online.js';
 import { formatGibibytes, SaverMode } from './saver.js';
 import { capacityFor, checkFits, decideTrim, diskSpace, memoryGuard, roomCheck } from './headroom.js';
 import { applyManagerSettings, foreignManagerSettings, managerSettingsOffer, restoreFromBucketIfBlank, saveManagerSettings, SettingsOfferWatch, settingsOfferKey, type ManagerSettingsDeps } from './manager-settings.js';
-import { isLocalHostname } from '../../../packages/contracts/src/index.js';
+import { isLocalHostname, machineName } from '../../../packages/contracts/src/index.js';
 import type { AccessLinkKind, AccessLinkPreference, AccessLinkTarget, ManagerSettingsOffer, ManagerSettingsRecord, OwnLinkState, ProcessState } from '../../../packages/contracts/src/index.js';
 import { instrumentationLoaderPath } from '../../../packages/instrumentation/src/index.js';
 import { ConfigError, ConfigStore } from '../../../packages/config/src/index.js';
@@ -546,6 +546,14 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     // catch-up or a restore cannot save its old settings over the new files.
     // Called once requests arrive, like the tools.
     instance: () => runOf(supervisor.getState()),
+    // Why it is not answering, when it is not, for the words said in its
+    // place: a pause for another of the owner's devices reads as one.
+    whyDown: async () => {
+      const status = supervisor.getState().status;
+      if (status === 'starting' || status === 'running') return { state: 'starting' };
+      const sync = (await r2.getConfig()).sync ?? null;
+      return sync?.state === 'catching_up' && sync.ahead ? { state: 'paused', device: machineName(sync.ahead.label) } : { state: 'stopped' };
+    },
     // A character's reply, told to whoever subscribed from SillyTavern's own
     // page; see replies.ts. Called once requests arrive, like the tools.
     replies: {
@@ -1010,7 +1018,10 @@ export async function startManagerServer(options: ManagerServerOptions = {}): Pr
     // every time it is opened. Told, the app drops it and loads a fresh one.
     jobs.onLine((line) => {
       if (isLogEvent(line) && (line.code === 'sillytavern.exited' || line.code.startsWith('sillytavern.stopped'))) {
-        process.stdout.write(`${APP_EVENT_PREFIX}${JSON.stringify({ type: 'sillytavernStopped' })}\n`);
+        // Why, when it was for another of the owner's devices: the app says
+        // that as a pause rather than as SillyTavern having gone away.
+        const reason = line.code === 'sillytavern.stoppedUsedElsewhere' ? { reason: 'usedElsewhere' } : {};
+        process.stdout.write(`${APP_EVENT_PREFIX}${JSON.stringify({ type: 'sillytavernStopped', ...reason })}\n`);
       }
     });
   }

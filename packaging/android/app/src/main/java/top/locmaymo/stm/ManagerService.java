@@ -327,12 +327,15 @@ public class ManagerService extends Service {
     /**
      * SillyTavern went away - it crashed, or something stopped it. The page
      * the app keeps of it is waiting on a server that is gone, and would be
-     * shown again, stuck, the next time; it is dropped instead.
+     * shown again, stuck, the next time; it is dropped instead. Stopped for
+     * another of the owner's devices, it is said as a pause.
      */
     private void onEvent(String json) {
         try {
-            if ("sillytavernStopped".equals(new JSONObject(json).optString("type"))) {
-                new android.os.Handler(android.os.Looper.getMainLooper()).post(MainActivity::sillyTavernStopped);
+            JSONObject event = new JSONObject(json);
+            if ("sillytavernStopped".equals(event.optString("type"))) {
+                boolean paused = "usedElsewhere".equals(event.optString("reason"));
+                new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> MainActivity.sillyTavernStopped(paused));
             }
         } catch (Exception error) {
             Log.w(TAG, "an event from the manager could not be read", error);

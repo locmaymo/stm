@@ -636,6 +636,7 @@
     "appUpdateFailedPermission": "STM is not allowed to install apps, so the update was not installed. Try again and turn on “Allow from this source”.",
     "stateRunning": "Running",
     "stateStopped": "Stopped",
+    "statePaused": "Paused",
     "stateStarting": "Starting",
     "stateStopping": "Stopping",
     "stateInstalling": "Installing",
@@ -1392,6 +1393,10 @@
     "sillytavernCrashed": {
       "title": "SillyTavern stopped unexpectedly",
       "body": "It exited on its own ({detail}). Open the manager to start it again or read the log."
+    },
+    "sillytavernPaused": {
+      "title": "SillyTavern is paused on this device",
+      "body": "{device} is using your data now. To carry on here, open the manager and press “Use it on this device”."
     },
     "installFinished": {
       "title": "SillyTavern {ref} is installed",

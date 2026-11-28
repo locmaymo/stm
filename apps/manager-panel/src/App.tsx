@@ -6,7 +6,7 @@ import {
   LogOut, RotateCcw, ScrollText, Search, Sun, Trash2, Upload, X, Rows3,
   BrainCircuit, CircleStop, Clock3, Cpu, Ellipsis, Play, QrCode as QrCodeIcon, RefreshCw, Scale, Settings2, ShieldCheck, Square,
   Blocks, BookmarkPlus, Bug, FileCode2, LoaderCircle, Gauge, HardDrive, History, KeyRound, Leaf, MemoryStick, Monitor, CircleArrowUp, Star, Terminal, TriangleAlert,
-  MessageCircle,
+  MessageCircle, MonitorSmartphone,
 } from 'lucide-react';
 import {
   Alert, AlertDescription, AlertTitle, AuthLayout, Badge, BrandMark, Button, ButtonGroup, ButtonGroupSeparator, buttonVariants, Card, CardAction,
@@ -2207,6 +2207,7 @@ function ConsoleApp({ csrfToken, preferences, onPreferencesChange, onSignOut }: 
     recovering={activeInstallationId ? null : backgroundJob}
     canCancelInstall={installJobId !== null}
     onCancelInstall={cancelInstall}
+    pausedFor={deviceSync?.state === 'catching_up' && deviceSync.ahead ? machineName(deviceSync.ahead.label) : null}
     active={activeInstallation}
     dataBytes={systemSnapshot?.storage.dataBytes ?? null}
     profileName={profiles.find((profile) => profile.id === activeProfileId)?.name ?? null}
@@ -3034,7 +3035,7 @@ function Unavailable({ t, children }: { t: Translate; children: ReactNode }) {
 function RuntimeCard({
   t, fail, catalog, process, tunnel, security, sillyTavernPort, networkHost, installed, installing, recovering, active, dataBytes, profileName,
   version, onVersionChange, versions, onPendingInstallationId, csrfToken, onInstalling, onInstallJob, onRemove,
-  canCancelInstall, onCancelInstall,
+  canCancelInstall, onCancelInstall, pausedFor,
   onStart, onStop, onSetPassword, onPublish, onOpenSettings, cloudConnected, onRestoreData, onRestoreFromPhone, onConnectCloud,
 }: {
   t: Translate; fail: Fail; catalog: Record<string, unknown>; process: ProcessState; tunnel: TunnelState;
@@ -3056,6 +3057,12 @@ function RuntimeCard({
   /** Whether the install in flight is one the server will take back. */
   canCancelInstall: boolean;
   onCancelInstall: () => Promise<void>;
+  /**
+   * The other device of the owner's that holds the shared data while
+   * SillyTavern here waits for it, or null. Said as a pause, not a stop: it
+   * was stopped on purpose, and starting it here takes the data back.
+   */
+  pausedFor: string | null;
   onStart: () => Promise<void>; onStop: () => Promise<void>;
   onSetPassword: (password: string, confirmPassword: string) => Promise<string | null>;
   /** Turn the tunnel on, for a reader who has no address that reaches this machine. */
@@ -3109,14 +3116,16 @@ function RuntimeCard({
   // it, in a word. The heading used to be the whole sentence, which made the
   // one fixed thing on the page - what this card is about - move and change
   // length every time the state did.
+  const paused = installed && !installingNow && !installFailed && process.status === 'stopped' && pausedFor !== null;
   const stateWord = installingNow ? t('console.stateInstalling')
     : installFailed ? t('console.stateInstallFailed')
       : process.status === 'starting' ? t('console.stateStarting')
         : process.status === 'stopping' ? t('console.stateStopping')
           : process.status === 'error' ? t('console.stateError')
             : running ? t('console.stateRunning')
-              : installed ? t('console.stateStopped')
-                : t('console.stateNotInstalled');
+              : paused ? t('console.statePaused')
+                : installed ? t('console.stateStopped')
+                  : t('console.stateNotInstalled');
   // What is being waited for, while something is being waited for. This is
   // where the sweep lives for a start or a stop - the two things somebody
   // presses and then watches, and which used to report nothing at all until
@@ -3332,7 +3341,7 @@ function RuntimeCard({
               </ButtonGroup>}
             {running
               ? <Button variant="destructive" size="sm" onClick={() => setStopAsked(true)} disabled={pending}><Square />{t('dashboard.stop')}</Button>
-              : <Button size="sm" data-target="open" onClick={() => run(onStart)} disabled={installingNow} loading={pending}><Play />{t('dashboard.start')}</Button>}
+              : <Button size="sm" data-target="open" onClick={() => run(onStart)} disabled={installingNow} loading={pending}><Play />{paused ? t('console.syncResume') : t('dashboard.start')}</Button>}
           </> : null;
 
   return <>
@@ -3377,8 +3386,8 @@ function RuntimeCard({
                 <span className="runtime-preview-note">{t('console.useItInTabHint')}</span>
               </button>
               : <div className="runtime-preview-idle">
-                <Monitor aria-hidden="true" />
-                <span>{t('console.stateOffline')}</span>
+                {paused ? <MonitorSmartphone aria-hidden="true" /> : <Monitor aria-hidden="true" />}
+                <span>{paused && pausedFor !== null ? t('console.syncAheadTitle', { name: pausedFor }) : t('console.stateOffline')}</span>
               </div>}
         </div>
         {runtimeActions ? <div className="runtime-actions runtime-actions-below">{runtimeActions}</div> : null}

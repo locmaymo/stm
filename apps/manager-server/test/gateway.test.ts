@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { createConnection } from 'node:net';
 import type { Duplex } from 'node:stream';
-import { AccessGateway, ACCESS_COOKIE_NAME, clientAddress } from '../src/gateway.js';
+import { AccessGateway, ACCESS_COOKIE_NAME, clientAddress, type GatewayDown } from '../src/gateway.js';
 import { NOTIFY_SCRIPT, type GatewayReplies } from '../src/gateway-notify.js';
 import { runInNewContext } from 'node:vm';
 import { rm, writeFile } from 'node:fs/promises';
@@ -698,20 +698,37 @@ test('a page left open from an earlier run of SillyTavern cannot save over what 
   assert.equal((await save('first')).status, 200, 'with no run of the manager’s up, the answer is SillyTavern’s to give');
 });
 
+/** Just enough of an element for the cover the script puts over a page. */
+interface StubElement { style: { cssText: string }; textContent: string; children: StubElement[]; parent: StubElement | null; [key: string]: unknown }
+function stubElement(): StubElement {
+  const element: StubElement = {
+    style: { cssText: '' }, textContent: '', children: [], parent: null,
+    setAttribute: () => undefined,
+    appendChild: (child: StubElement) => { child.parent = element; element.children.push(child); return child; },
+    remove: () => { if (element.parent) element.parent.children = element.parent.children.filter((other) => other !== element); element.parent = null; },
+  };
+  return element;
+}
+function textOf(element: StubElement): string { return [element.textContent, ...element.children.map(textOf)].filter(Boolean).join(' '); }
+
 /** The page script run against a stand-in for a SillyTavern page served by run `first`. */
-function scriptedPage(): { fetch: typeof fetch; sent: Array<{ url: string; headers: Headers }>; reloads: () => number; answer: (respond: (url: string) => Response) => void; shown: () => Promise<void> } {
+function scriptedPage(): { fetch: typeof fetch; sent: Array<{ url: string; headers: Headers }>; reloads: () => number; answer: (respond: (url: string) => Response) => void; shown: () => Promise<void>; covered: () => string | null; later: () => Promise<void> } {
   const sent: Array<{ url: string; headers: Headers }> = [];
   let respond = (_url: string): Response => new Response('{}', { status: 200 });
   let reloads = 0;
   const listeners = new Map<string, Array<() => void>>();
   const on = (type: string, listener: () => void): void => { listeners.set(type, [...(listeners.get(type) ?? []), listener]); };
+  const body = stubElement();
+  // Only the script's own "ask again in a few seconds" is kept; waiting for jQuery is not.
+  let soon: (() => void) | null = null;
   const page: Record<string, unknown> = {
-    document: { currentScript: { getAttribute: (name: string) => name === 'data-instance' ? 'first' : null }, visibilityState: 'visible', addEventListener: on },
+    document: { currentScript: { getAttribute: (name: string) => name === 'data-instance' ? 'first' : null }, visibilityState: 'visible', addEventListener: on, createElement: stubElement, body },
     location: { href: 'https://st.example/', origin: 'https://st.example', reload: () => { reloads += 1; } },
     // The Android app's bridge: the reply script stands aside there, and this must not.
     STMApp: {},
     URL, Headers, Response,
-    setTimeout: () => 0,
+    setTimeout: (callback: () => void, ms: number) => { if (ms === 5000) soon = callback; return 1; },
+    clearTimeout: () => { soon = null; },
     setInterval: () => 0,
     addEventListener: on,
     fetch: async (input: string | Request, init?: RequestInit) => {
@@ -729,6 +746,8 @@ function scriptedPage(): { fetch: typeof fetch; sent: Array<{ url: string; heade
     reloads: () => reloads,
     answer: (next) => { respond = next; },
     shown: async () => { for (const listener of listeners.get('visibilitychange') ?? []) listener(); await settle(); await settle(); },
+    covered: () => body.children.length > 0 ? body.children.map(textOf).join(' ') : null,
+    later: async () => { const next = soon; soon = null; next?.(); await settle(); await settle(); },
   };
 }
 
@@ -763,6 +782,80 @@ test('the page script loads again when it is looked at and a newer run is answer
   await page.shown();
   assert.equal(page.reloads(), 1, 'a newer run loads the page again');
   assert.equal(page.sent.filter((request) => request.url === '/__stm/instance').every((request) => request.headers.get('x-stm-tools') === '1'), true);
+});
+
+/*
+ * Another of the owner's devices took the data over and SillyTavern here was
+ * stopped for it. A page left open used to fail request by request in red,
+ * which read as SillyTavern having broken.
+ */
+test('the page script covers itself while SillyTavern is paused, and loads again once it runs here', async () => {
+  const page = scriptedPage();
+  const paused = { title: 'Paused', body: 'SillyTavern is paused here because Pixel-7 is using your data.' };
+  const answering = (instance: string | null, other: () => Response = () => new Response('{}')): void => {
+    page.answer((url) => url === '/__stm/instance' ? Response.json({ instance, down: instance ? null : paused }) : other());
+  };
+
+  answering(null, () => new Response('<p>down</p>', { status: 502, headers: { 'x-stm-down': '1' } }));
+  const failed = await page.fetch('/api/chats/save', { method: 'POST', body: '{}' });
+  assert.equal(failed.status, 502, 'SillyTavern’s own request still gets its answer');
+  await page.later();
+  assert.ok(page.covered()?.includes('Pixel-7'), 'a request the door answered in its place asks why at once, and the page says so');
+  assert.equal(page.reloads(), 0);
+
+  await page.later();
+  assert.ok(page.covered()?.includes('Paused'), 'asked again a few seconds on, still the one cover');
+  answering('first');
+  await page.later();
+  assert.equal(page.covered(), null, 'the run that served the page came back: the cover goes and nothing is lost');
+  assert.equal(page.reloads(), 0);
+
+  answering(null);
+  await page.shown();
+  assert.ok(page.covered()?.includes('Paused'), 'looked at again while paused, it says so');
+  answering('second');
+  await page.later();
+  assert.equal(page.reloads(), 1, 'started here again: the page loads on the new run');
+
+  const plain = scriptedPage();
+  plain.answer((url) => url === '/__stm/instance' ? Response.json({ instance: null }) : new Response('{}', { status: 502 }));
+  await plain.fetch('/api/chats/save', { method: 'POST', body: '{}' });
+  await plain.shown();
+  assert.equal(plain.covered(), null, 'an answer that says nothing about why covers nothing');
+});
+
+test('while SillyTavern is not running the door says why: starting, stopped, or paused for another device', async (t) => {
+  // Nothing listens here: SillyTavern is down.
+  const gone = await startUpstream();
+  await gone.close();
+  let down: GatewayDown | Error = { state: 'paused', device: 'Pixel-7' };
+  const gateway = new AccessGateway({ port: 0, targetPort: gone.port, logger: () => undefined, instance: () => null, whyDown: async () => { if (down instanceof Error) throw down; return down; } });
+  gateway.setPassword(hashPassword(PASSWORD));
+  const base = `http://127.0.0.1:${(await gateway.start(false)).port}`;
+  t.after(async () => { await gateway.close(); });
+  const cookie = await signIn(base);
+  const open = (language = 'en'): Promise<Response> => fetch(`${base}/`, { headers: { cookie, accept: 'text/html', 'sec-fetch-dest': 'document', 'accept-language': language } });
+  const asked = async (language = 'en'): Promise<unknown> => (await (await fetch(`${base}/__stm/instance`, { headers: { cookie, 'x-stm-tools': '1', 'accept-language': language } })).json());
+
+  const page = await open();
+  assert.equal(page.status, 502);
+  assert.equal(page.headers.get('x-stm-down'), '1', 'marked, so a page still open asks why');
+  const html = await page.text();
+  assert.ok(html.includes('SillyTavern is paused here because Pixel-7 is using your data.'), html);
+  assert.ok(html.includes('<meta http-equiv="refresh" content="15">'), 'and it is shown again by itself once SillyTavern runs');
+  assert.ok((await (await open('vi-VN,vi;q=0.9')).text()).includes('SillyTavern đang tạm dừng ở máy này vì Pixel-7 đang dùng dữ liệu của bạn.'));
+  assert.deepEqual(await asked('vi'), { instance: null, down: { title: 'Tạm dừng', body: 'SillyTavern đang tạm dừng ở máy này vì Pixel-7 đang dùng dữ liệu của bạn. Muốn dùng tiếp ở đây, mở SillyTavern Manager và bấm “Dùng ở máy này”. Trang này sẽ tự tải lại khi SillyTavern chạy.' } });
+
+  down = { state: 'stopped' };
+  assert.ok((await (await open()).text()).includes('SillyTavern is stopped.'));
+  assert.equal(((await asked()) as { down: { title: string } }).down.title, 'Stopped');
+
+  down = { state: 'starting' };
+  const starting = await (await open()).text();
+  assert.ok(starting.includes('It may still be starting.') && starting.includes('content="5"'), 'on its way up: as before, and looked at again sooner');
+
+  down = new Error('storage unreadable');
+  assert.equal(((await asked()) as { down: { title: string } }).down.title, 'Starting', 'a reason that cannot be read is never an error page of its own');
 });
 
 test('a SillyTavern page opened through the door carries the reply script, and nothing else is touched', async (t) => {

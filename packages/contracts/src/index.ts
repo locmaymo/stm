@@ -797,6 +797,20 @@ export interface DeviceSyncStatus {
   readonly ahead: { readonly label: string; readonly at: string } | null;
 }
 
+/**
+ * What another machine on the account is called, fit for a sentence.
+ *
+ * Usually its hostname, which is short. Where that said nothing the manager
+ * names the machine by the address it was opened at instead, which is long -
+ * and only its two ends are worth reading. Here rather than in the console
+ * because the manager says it too: in a notification, and on the page a
+ * browser gets while SillyTavern is paused for that machine.
+ */
+export function machineName(label: string): string {
+  const keep = 12;
+  return label.includes('.') && label.length > keep * 2 + 3 ? `${label.slice(0, keep)}...${label.slice(-keep)}` : label;
+}
+
 /** What catching up did, for telling the reader about it afterwards. */
 export interface DeviceSyncOutcome {
   readonly at: string;
@@ -2084,6 +2098,10 @@ function newestRelease(versions: readonly VersionOption[]): VersionOption | null
  */
 export const NOTIFICATION_KINDS = [
   'sillytavernCrashed',
+  // Not a failure: another of the owner's devices took the shared data over,
+  // and this one stepped aside for it. Said apart from a crash so it is not
+  // read as one.
+  'sillytavernPaused',
   'installFinished',
   'installFailed',
   'backupFailed',

@@ -108,11 +108,11 @@ public class MainActivity extends Activity implements SillyTavernHost.Host {
      * SillyTavern stopped under its page: back to the console, saying so, and
      * the page goes. Opening SillyTavern again loads it fresh once it is up.
      */
-    static void sillyTavernStopped() {
+    static void sillyTavernStopped(boolean paused) {
         boolean shown = current != null && current.showingSillyTavern;
         if (shown) current.closeSillyTavern();
         SillyTavernHost.reset();
-        if (shown) Toast.makeText(current, R.string.sillytavern_stopped, Toast.LENGTH_LONG).show();
+        if (shown) Toast.makeText(current, paused ? R.string.sillytavern_paused : R.string.sillytavern_stopped, Toast.LENGTH_LONG).show();
     }
 
     /** Back to the console, from a link in SillyTavern that points at it. */
