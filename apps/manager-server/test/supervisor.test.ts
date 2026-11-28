@@ -152,6 +152,43 @@ test('a process nobody asked to stop reports that it exited on its own', async (
   await supervisor.close();
 });
 
+/*
+ * Reported from a phone: SillyTavern used all of Node's default heap a minute
+ * after starting, and all anybody was told was "exited on its own (signal
+ * SIGABRT)". This one really runs out, under the heap it was given.
+ */
+test('SillyTavern is given the heap asked for, and running out of it is said as that', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'stm-heap-'));
+  const runtimePath = join(root, 'runtime');
+  await mkdir(runtimePath, { recursive: true });
+  const markerPath = join(runtimePath, '.stm-installation.json');
+  await writeFile(markerPath, JSON.stringify({ installationId: 'install-1', resolvedRef: '1.0.0' }), 'utf8');
+  await writeFile(join(runtimePath, 'server.js'), [
+    "const limit = Math.round(require('node:v8').getHeapStatistics().heap_size_limit / 1048576);",
+    "console.log('heap limit ' + limit);",
+    'const kept = []; setInterval(() => { for (let i = 0; i < 20000; i += 1) kept.push({ i, text: String(i).repeat(20) }); }, 1);',
+  ].join('\n'), 'utf8');
+  const installation: Installation = { id: 'install-1', selector: 'latest', resolvedRef: '1.0.0', channel: 'release', runtimePath, markerPath, status: 'ready', progress: 100, step: 'Installation ready', error: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), activatedAt: new Date().toISOString() };
+  const lines: LogLine[] = [];
+  const supervisor = new ProcessSupervisor({ runtime: { getActiveInstallation: async () => installation } as never, readinessCheck: async () => undefined, logger: (line) => lines.push(line), heapMb: () => 64 });
+  await supervisor.start();
+  const deadline = Date.now() + 60_000;
+  const ended = (): boolean => lines.filter(isLogEvent).some((event) => event.code === 'sillytavern.outOfMemory' || event.code === 'sillytavern.exited');
+  while (!ended() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
+  const text = lines.map(logLineText);
+  const limit = Number(/heap limit (\d+)/u.exec(text.join('\n'))?.[1]);
+  assert.ok(limit > 0 && limit < 200, `the heap asked for is the one it got (${limit} MiB)`);
+  assert.equal(lines.filter(isLogEvent).find((event) => event.code === 'sillytavern.heap')?.params?.heap, 64);
+  const starved = lines.filter(isLogEvent).find((event) => event.code === 'sillytavern.outOfMemory');
+  assert.equal(starved?.params?.heap, 64, text.slice(-6).join('\n'));
+  assert.equal(lines.filter(isLogEvent).some((event) => event.code === 'sillytavern.exited'), false, 'said once, as what it was');
+  const state = supervisor.getState();
+  assert.equal(state.status, 'error');
+  assert.equal(state.errorCode, 'sillytavern_out_of_memory');
+  assert.match(state.error ?? '', /ran out of memory \(64 MiB\)/u);
+  await supervisor.close();
+});
+
 test('a start says which part of the SillyTavern startup it is in', () => {
   assert.deepEqual(startupPhase('Compiling frontend libraries...'), { code: 'process.compilingFrontend' });
   assert.deepEqual(startupPhase('webpack 5.105.4 compiled successfully in 754 ms'), { code: 'process.frontendCompiled' });

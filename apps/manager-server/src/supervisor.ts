@@ -2,6 +2,13 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { describeExit, logEvent, logLineText, STOP_REASON_TEXT, stopReasonCode, type Installation, type LogSink, type MessageParams, type ProcessState, type Profile, type StopReason } from '../../../packages/contracts/src/index.js';
 import { assertInstallationMarker, RuntimeError, type RuntimeManager } from '../../../packages/sillytavern-runtime/src/index.js';
 import { SILLYTAVERN_PORT } from './ports.js';
+import { defaultHeapMb } from './heap.js';
+
+/**
+ * What Node writes when a process has used all the JavaScript memory it was
+ * given, just before it aborts. Seen as the last lines SillyTavern prints.
+ */
+const OUT_OF_MEMORY = /JavaScript heap out of memory|Ineffective mark-compacts near heap limit|Reached heap limit/u;
 
 export interface ProcessSupervisorOptions {
   readonly runtime: RuntimeManager;
@@ -30,6 +37,8 @@ export interface ProcessSupervisorOptions {
   readonly metricsFile?: string;
   /** Where the observer puts the start of the last finished reply, for reply notifications. */
   readonly replyFile?: string;
+  /** How much JavaScript memory SillyTavern may use, in MiB, read at each start; null for Node's default. See heap.ts. */
+  readonly heapMb?: () => number | null;
 }
 
 export class ProcessSupervisor {
@@ -45,6 +54,11 @@ export class ProcessSupervisor {
   private readonly instrumentationPath: string | undefined;
   private readonly metricsFile: string | undefined;
   private readonly replyFile: string | undefined;
+  private readonly heapMb: () => number | null;
+  /** The memory the running SillyTavern was given, in MiB, for saying so if it runs out. */
+  private runHeapMb = 0;
+  /** Whether the running SillyTavern said it had run out of memory. */
+  private outOfMemory = false;
   private child: ChildProcess | null = null;
   private buffer = '';
   private current: ProcessState = { status: 'stopped', installationId: null, profileId: null, pid: null, startedAt: null, error: null };
@@ -70,6 +84,7 @@ export class ProcessSupervisor {
     this.instrumentationPath = options.instrumentationPath;
     this.metricsFile = options.metricsFile;
     this.replyFile = options.replyFile;
+    this.heapMb = options.heapMb ?? (() => null);
   }
 
   public getState(): ProcessState { return { ...this.current }; }
@@ -114,13 +129,18 @@ export class ProcessSupervisor {
     ];
     let runtimeLayout: 'data' | 'public' = profile?.layout === 'public' ? 'public' : 'data';
     if (profile && this.profileLifecycle) runtimeLayout = await this.profileLifecycle.prepare(profile, installation.runtimePath);
+    let legacyHeap = 0;
     if (runtimeLayout === 'public' && profile && this.profileLifecycle?.legacyHeapMb) {
-      const heapMb = await this.profileLifecycle.legacyHeapMb(profile, installation.runtimePath);
-      if (heapMb) {
-        args.unshift(`--max-old-space-size=${heapMb}`);
-        this.logger(logEvent('sillytavern.legacyHeap', `[sillytavern] using ${heapMb} MiB heap for the legacy public/ runtime`, { heap: heapMb }));
-      }
+      legacyHeap = await this.profileLifecycle.legacyHeapMb(profile, installation.runtimePath) ?? 0;
+      if (legacyHeap) this.logger(logEvent('sillytavern.legacyHeap', `[sillytavern] using ${legacyHeap} MiB heap for the legacy public/ runtime`, { heap: legacyHeap }));
     }
+    // Whichever is larger: a legacy runtime's own need, or what this machine gives every run.
+    const givenHeap = this.heapMb() ?? 0;
+    const heapMb = Math.max(legacyHeap, givenHeap);
+    if (heapMb) args.unshift(`--max-old-space-size=${heapMb}`);
+    if (givenHeap && givenHeap >= legacyHeap) this.logger(logEvent('sillytavern.heap', `[sillytavern] SillyTavern may use ${givenHeap} MiB of memory`, { heap: givenHeap }));
+    this.runHeapMb = heapMb || defaultHeapMb();
+    this.outOfMemory = false;
     if (profile?.layout === 'data' && runtimeLayout === 'data') args.push('--dataRoot', profile.dataPath, '--configPath', profile.configPath);
     this.activeProfile = profile;
     this.activeRuntimeLayout = runtimeLayout;
@@ -158,6 +178,9 @@ export class ProcessSupervisor {
       const reason = this.stopReason;
       this.stopReason = null;
       const exit = describeExit(code, signal);
+      // Out of memory is a crash with a cause worth naming: "signal SIGABRT"
+      // told the reader nothing they could act on.
+      const starved = !reason && code !== 0 && this.outOfMemory;
       if (this.child === child) {
         this.child = null;
         const crashed = !reason && code !== 0;
@@ -169,8 +192,8 @@ export class ProcessSupervisor {
           profileId: this.current.profileId,
           pid: null,
           startedAt: this.current.startedAt,
-          error: crashed ? `SillyTavern exited on its own (${exit})` : null,
-          ...(crashed ? { errorCode: 'sillytavern_exited' } : {}),
+          error: starved ? `SillyTavern ran out of memory (${this.runHeapMb} MiB) and stopped` : crashed ? `SillyTavern exited on its own (${exit})` : null,
+          ...(crashed ? { errorCode: starved ? 'sillytavern_out_of_memory' : 'sillytavern_exited' } : {}),
         };
       }
       // "stopped (unknown)" was the same line for a crash, a version switch and
@@ -178,7 +201,9 @@ export class ProcessSupervisor {
       // asked for names what asked for it; anything else says it was not us.
       this.logger(reason
         ? logEvent(`sillytavern.${stopReasonCode(reason)}`, `[sillytavern] stopped: ${STOP_REASON_TEXT[reason]}`)
-        : logEvent('sillytavern.exited', `[sillytavern] exited on its own (${exit})`, { detail: exit }));
+        : starved
+          ? logEvent('sillytavern.outOfMemory', `[sillytavern] ran out of the ${this.runHeapMb} MiB of memory it may use and stopped (${exit})`, { heap: this.runHeapMb, detail: exit })
+          : logEvent('sillytavern.exited', `[sillytavern] exited on its own (${exit})`, { detail: exit }));
     });
     const spawnedAt = Date.now();
     try {
@@ -226,6 +251,7 @@ export class ProcessSupervisor {
   private handleLine(line: string): void {
     const clean = withoutPasswords(line.replace(/\u001b\[[0-?]*[ -\/]*[@-~]/gu, '').trim());
     if (!clean) return;
+    if (OUT_OF_MEMORY.test(clean)) this.outOfMemory = true;
     this.logger(`[sillytavern] ${clean}`);
     if (this.current.status !== 'starting') return;
     const phase = startupPhase(clean);

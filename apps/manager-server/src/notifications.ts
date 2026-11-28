@@ -265,6 +265,12 @@ function isNotification(value: unknown): value is ManagerNotification {
 
 const HOUR = 60 * 60 * 1000;
 
+/** A size for a sentence: `180 MB`, `0.4 MB`. */
+function megabytes(bytes: number): string {
+  const value = bytes / (1024 * 1024);
+  return `${value >= 10 ? Math.round(value).toString() : value.toFixed(1)} MB`;
+}
+
 export interface NotificationRulesDeps {
   readonly center: NotificationCenter;
   /** Whether the tunnel that was on is still meant to be on, and whether it is up. */
@@ -277,6 +283,8 @@ export interface NotificationRulesDeps {
   readonly sillyTavernUpdate: () => Promise<string | null>;
   /** A manager release newer than this one, or null. */
   readonly managerUpdate: () => Promise<string | null>;
+  /** The largest file in the active profile's data, for a SillyTavern that ran out of memory; null when there is none. */
+  readonly largestFile?: () => Promise<{ readonly name: string; readonly bytes: number } | null>;
   readonly now?: () => Date;
   /** How long a dropped tunnel may stay down before anybody is told; shortened by tests. */
   readonly tunnelGraceMs?: number;
@@ -311,6 +319,14 @@ export class NotificationRules {
     switch (line.code) {
       case 'sillytavern.exited':
         say('sillytavernCrashed', 'error', { dedupeKey: 'sillytavernCrashed', dedupeMs: 10 * 60 * 1000 });
+        break;
+      case 'sillytavern.outOfMemory':
+        // Said with the largest file, which is nearly always what filled it:
+        // SillyTavern reads a whole chat or settings file at once.
+        void (this.deps.largestFile?.() ?? Promise.resolve(null)).catch(() => null).then((largest) => {
+          if (largest) say('sillytavernOutOfMemory', 'error', { params: { heap: String(params.heap ?? ''), file: largest.name, size: megabytes(largest.bytes) }, dedupeKey: 'sillytavernCrashed', dedupeMs: 10 * 60 * 1000 });
+          else say('sillytavernCrashed', 'error', { params: { detail: String(params.detail ?? '') }, dedupeKey: 'sillytavernCrashed', dedupeMs: 10 * 60 * 1000 });
+        });
         break;
       case 'sync.handedOver':
         // Stopped on purpose, for the owner's other device: said as a pause,

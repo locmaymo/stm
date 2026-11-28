@@ -101,6 +101,24 @@ test('another device taking the data over is told as a pause, not as a crash', a
   assert.equal((await other.list()).items[0]?.params?.device, 'a-very-long-...sted.example');
 });
 
+test('running out of memory is said as that, with the file that most likely filled it', async () => {
+  const { center: bell } = await center();
+  rules(bell, { largestFile: async () => ({ name: 'chats/Seraphina/long.jsonl', bytes: 180 * 1024 * 1024 }) })
+    .onLog(logEvent('sillytavern.outOfMemory', '[sillytavern] ran out of the 1077 MiB of memory it may use and stopped (signal SIGABRT)', { heap: 1077, detail: 'signal SIGABRT' }));
+  await settle();
+  const items = (await bell.list()).items;
+  assert.deepEqual(items.map((item) => [item.kind, item.level]), [['sillytavernOutOfMemory', 'error']]);
+  const said = renderNotification(items[0] as ManagerNotification, 'vi');
+  assert.equal(said.title, 'SillyTavern hết bộ nhớ');
+  assert.ok(said.body.includes('1077 MB') && said.body.includes('chats/Seraphina/long.jsonl (180 MB)'), said.body);
+
+  // With no file to point at, it is still a crash, said the old way.
+  const { center: other } = await center();
+  rules(other, { largestFile: async () => null }).onLog(logEvent('sillytavern.outOfMemory', '[sillytavern] ran out', { heap: 1077, detail: 'signal SIGABRT' }));
+  await settle();
+  assert.deepEqual((await other.list()).items.map((item) => [item.kind, item.params?.detail]), [['sillytavernCrashed', 'signal SIGABRT']]);
+});
+
 test('a dropped tunnel is only news once it has stayed down', async () => {
   const { center: bell } = await center();
   let down = false;
