@@ -25,9 +25,9 @@
         "sha256": "12fc350fc5ad638338b06b04835bce897615f8c93f96d30ac396cdb39b850c6b"
       },
       "cloudflared": {
-        "version": "2026.11.1",
-        "filename": "pool/main/c/cloudflared/cloudflared_2026.11.1_aarch64.deb",
-        "sha256": "56ca76fe7222c050d99dfe85e4e316632436f93798bed98d705ca42d776e14cc"
+        "version": "2026.11.2",
+        "filename": "pool/main/c/cloudflared/cloudflared_2026.11.2_aarch64.deb",
+        "sha256": "46c81a58790aeca3bc432a56222259e9d1549c6039843d62a28e08779b70e6d1"
       },
       "git": {
         "version": "2.56.1",
@@ -45,9 +45,9 @@
         "sha256": "2011bb9709261bb3d5ecaa6672faa333be14cf48ad4af37031e3e365309557ac"
       },
       "libexpat": {
-        "version": "2.10.0",
-        "filename": "pool/main/libe/libexpat/libexpat_2.10.0_aarch64.deb",
-        "sha256": "0e4411f01f6fb664f3f04f9420289472f9afc30db01ea1c5d1e57fd9fa2354be"
+        "version": "2.11.0",
+        "filename": "pool/main/libe/libexpat/libexpat_2.11.0_aarch64.deb",
+        "sha256": "ac744cb7cd047997da4410ca11d356ca9c952aa474b14a0032414d5677e0fbf1"
       },
       "libiconv": {
         "version": "1.19.1",
@@ -122,9 +122,9 @@
         "sha256": "12fc350fc5ad638338b06b04835bce897615f8c93f96d30ac396cdb39b850c6b"
       },
       "cloudflared": {
-        "version": "2026.11.1",
-        "filename": "pool/main/c/cloudflared/cloudflared_2026.11.1_x86_64.deb",
-        "sha256": "07948ff99ba7e1aa9f25709c155f416a129dbad1cac5fd1035c529367d33a208"
+        "version": "2026.11.2",
+        "filename": "pool/main/c/cloudflared/cloudflared_2026.11.2_x86_64.deb",
+        "sha256": "4d1383fc3fe3e66979faf6652637088caee93dc858f988fe82b22758710c4ed0"
       },
       "git": {
         "version": "2.56.1",
@@ -142,9 +142,9 @@
         "sha256": "fa71ce8eca3d0aa48a748fc60e4519351fc9c4d51b20cac5722190cb002cfd1c"
       },
       "libexpat": {
-        "version": "2.10.0",
-        "filename": "pool/main/libe/libexpat/libexpat_2.10.0_x86_64.deb",
-        "sha256": "2e0f6f7d54ef7d8a732148f0a2ff53594b1a8d410a707f480f143861313a0ecd"
+        "version": "2.11.0",
+        "filename": "pool/main/libe/libexpat/libexpat_2.11.0_x86_64.deb",
+        "sha256": "0e703576d59ac8bd4d3592786ac7932338fea8bdce032d052bf0edbc6dce8675"
       },
       "libiconv": {
         "version": "1.19.1",
