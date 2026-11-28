@@ -43,6 +43,8 @@ async function createServer(options: {
   online?: OnlineKeeper;
   /** Puts the manager at a point in its day's Worker allowance; see `worker-budget.ts`. */
   budget?: WorkerBudgetLevel;
+  /** The gateway's port as startup settled it; an ephemeral one when unset. */
+  accessPort?: number;
 } = {}): Promise<ManagerServer> {
   const root = options.root ?? await mkdtemp(join(tmpdir(), 'stm-manager-'));
   const basePaths = getPlatformPaths({ platform: 'linux', env: { STM_DATA_DIR: root } });
@@ -59,7 +61,7 @@ async function createServer(options: {
     store,
     env: options.bootstrapPassword ? { STM_ADMIN_PASSWORD: options.bootstrapPassword } : {},
     secureCookies: false,
-    accessPort: 0,
+    accessPort: options.accessPort ?? 0,
     staticRoot,
     logger: () => undefined,
     ...(options.managerTunnel ? { managerTunnel: options.managerTunnel as unknown as TunnelManager } : {}),
@@ -476,6 +478,23 @@ test('R2 settings are authenticated, masked, and preserve masked credentials', a
   assert.equal(visible.status, 200);
   assert.equal(visibleText.includes('secret-key-5678'), false);
   assert.equal(visibleText.includes('access-key-1234'), false);
+});
+
+/*
+ * A host that already holds 8001 moves the gateway up to 8002, which is
+ * SillyTavern's own port. The gateway binds later than the startup probe runs,
+ * so the probe found 8002 free and both were handed it: every start of
+ * SillyTavern then ended with "address already in use".
+ */
+test('SillyTavern steps aside when the gateway was moved onto its port', async (t) => {
+  const manager = await createServer({ bootstrapPassword: 'correct horse battery staple', accessPort: SILLYTAVERN_PORT });
+  t.after(() => manager.close());
+  const base = serverUrl(manager);
+  const auth = await signIn(base);
+  const settings = await (await fetch(`${base}/api/v1/config/port`, { headers: { cookie: auth.cookie } })).json() as { port: number; reserved: { manager: number; access: number } };
+  assert.equal(settings.reserved.access, SILLYTAVERN_PORT);
+  assert.notEqual(settings.port, SILLYTAVERN_PORT, 'SillyTavern is not started on the port the gateway holds');
+  assert.notEqual(settings.port, settings.reserved.manager);
 });
 
 test('SillyTavern can be moved to another port, but never onto one the manager holds', async (t) => {
