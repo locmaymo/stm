@@ -4,7 +4,8 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { createConnection } from 'node:net';
 import type { Duplex } from 'node:stream';
 import { AccessGateway, ACCESS_COOKIE_NAME, clientAddress } from '../src/gateway.js';
-import type { GatewayReplies } from '../src/gateway-notify.js';
+import { NOTIFY_SCRIPT, type GatewayReplies } from '../src/gateway-notify.js';
+import { runInNewContext } from 'node:vm';
 import { rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -631,7 +632,7 @@ test('the door carries what the manager remembers about the access link', async 
 });
 
 /** A gateway that does reply notifications, with what it was asked written down. */
-async function startNotifyingGateway(upstream: Upstream): Promise<{ gateway: AccessGateway; base: string; asked: string[]; subscribed: Map<string, boolean> }> {
+async function startNotifyingGateway(upstream: Upstream, instance?: () => { id: string; ready: boolean } | null): Promise<{ gateway: AccessGateway; base: string; asked: string[]; subscribed: Map<string, boolean> }> {
   const asked: string[] = [];
   const subscribed = new Map<string, boolean>();
   const replies: GatewayReplies = {
@@ -646,11 +647,123 @@ async function startNotifyingGateway(upstream: Upstream): Promise<{ gateway: Acc
     unsubscribe: async (endpoint) => { subscribed.delete(endpoint); },
     revoked: () => { asked.push('revoked'); },
   };
-  const gateway = new AccessGateway({ port: 0, targetPort: upstream.port, logger: () => undefined, replies });
+  const gateway = new AccessGateway({ port: 0, targetPort: upstream.port, logger: () => undefined, replies, ...(instance ? { instance } : {}) });
   gateway.setPassword(hashPassword(PASSWORD));
   const state = await gateway.start(false);
   return { gateway, base: `http://127.0.0.1:${state.port}`, asked, subscribed };
 }
+
+/*
+ * A phone keeps one SillyTavern page open for days. When another device's data
+ * is taken in, SillyTavern starts again on the new files, but that page still
+ * holds the old settings and its next save wrote them back over the new ones.
+ */
+test('a page left open from an earlier run of SillyTavern cannot save over what the next run started on', async (t) => {
+  const page = '<!doctype html><html><head><title>SillyTavern</title></head><body>chat</body></html>';
+  const upstream = await startUpstream((request, response) => {
+    if ((request.url ?? '').startsWith('/api/')) { response.writeHead(200, { 'content-type': 'application/json' }); response.end('{}'); return; }
+    response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    response.end(page);
+  });
+  let run: { id: string; ready: boolean } | null = { id: 'first', ready: true };
+  const { gateway, base } = await startNotifyingGateway(upstream, () => run);
+  t.after(async () => { await gateway.close(); await upstream.close(); });
+  const cookie = await signIn(base);
+  const save = (from: string | null): Promise<Response> => fetch(`${base}/api/settings/save`, { method: 'POST', headers: { cookie, 'content-type': 'application/json', ...(from ? { 'x-stm-page': from } : {}) }, body: '{}' });
+  const current = async (): Promise<unknown> => ((await (await fetch(`${base}/__stm/instance`, { headers: { cookie, 'x-stm-tools': '1' } })).json()) as { instance: unknown }).instance;
+
+  const opened = await fetch(`${base}/`, { headers: { cookie, accept: 'text/html', 'sec-fetch-dest': 'document' } });
+  assert.ok((await opened.text()).includes('<script src="/__stm/notify.js" data-instance="first" defer></script>'), 'the page is told which run served it');
+  assert.equal((await fetch(`${base}/__stm/instance`, { headers: { cookie } })).status, 403, 'asked only by the page script');
+  assert.equal(await current(), 'first');
+  assert.equal((await save('first')).status, 200, 'a page from the run that is up saves as before');
+
+  run = { id: 'second', ready: false };
+  assert.equal(await current(), null, 'not named while it is still starting, so no page loads into a half-started one');
+  assert.equal((await save('first')).status, 200, 'and nothing is refused until it has answered');
+
+  run = { id: 'second', ready: true };
+  const reached = upstream.seen.length;
+  const refused = await save('first');
+  assert.equal(refused.status, 409);
+  assert.equal(refused.headers.get('x-stm-stale'), '1', 'which tells the page to load again');
+  assert.equal(upstream.seen.length, reached, 'and SillyTavern never sees the old settings');
+  assert.equal(await current(), 'second');
+  assert.equal((await fetch(`${base}/api/ping`, { headers: { cookie, 'x-stm-page': 'first' } })).status, 200, 'reading is not refused');
+  assert.equal((await save(null)).status, 200, 'a client without the script is let through as it always was');
+  assert.equal((await save('second')).status, 200, 'a page loaded again saves');
+
+  run = null;
+  assert.equal(await current(), null);
+  assert.equal((await save('first')).status, 200, 'with no run of the manager’s up, the answer is SillyTavern’s to give');
+});
+
+/** The page script run against a stand-in for a SillyTavern page served by run `first`. */
+function scriptedPage(): { fetch: typeof fetch; sent: Array<{ url: string; headers: Headers }>; reloads: () => number; answer: (respond: (url: string) => Response) => void; shown: () => Promise<void> } {
+  const sent: Array<{ url: string; headers: Headers }> = [];
+  let respond = (_url: string): Response => new Response('{}', { status: 200 });
+  let reloads = 0;
+  const listeners = new Map<string, Array<() => void>>();
+  const on = (type: string, listener: () => void): void => { listeners.set(type, [...(listeners.get(type) ?? []), listener]); };
+  const page: Record<string, unknown> = {
+    document: { currentScript: { getAttribute: (name: string) => name === 'data-instance' ? 'first' : null }, visibilityState: 'visible', addEventListener: on },
+    location: { href: 'https://st.example/', origin: 'https://st.example', reload: () => { reloads += 1; } },
+    // The Android app's bridge: the reply script stands aside there, and this must not.
+    STMApp: {},
+    URL, Headers, Response,
+    setTimeout: () => 0,
+    setInterval: () => 0,
+    addEventListener: on,
+    fetch: async (input: string | Request, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.url;
+      sent.push({ url, headers: new Headers(init?.headers) });
+      return respond(url);
+    },
+  };
+  page.window = page;
+  runInNewContext(NOTIFY_SCRIPT, page);
+  const settle = (): Promise<void> => new Promise((resolve) => { setImmediate(resolve); });
+  return {
+    fetch: page.fetch as typeof fetch,
+    sent,
+    reloads: () => reloads,
+    answer: (next) => { respond = next; },
+    shown: async () => { for (const listener of listeners.get('visibilitychange') ?? []) listener(); await settle(); await settle(); },
+  };
+}
+
+test('the page script names its run on its own requests, and loads again when a write is refused as stale', async () => {
+  const page = scriptedPage();
+  await page.fetch('/api/settings/save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+  assert.equal(page.sent.at(-1)?.headers.get('x-stm-page'), 'first', 'a request to SillyTavern says which run the page came from');
+  assert.equal(page.sent.at(-1)?.headers.get('content-type'), 'application/json', 'and keeps the headers it had');
+  await page.fetch('https://api.example.invalid/v1/chat', { method: 'POST' });
+  assert.equal(page.sent.at(-1)?.headers.get('x-stm-page'), null, 'nothing is added to a request that leaves the site');
+  assert.equal(page.reloads(), 0);
+
+  page.answer(() => new Response('{}', { status: 409 }));
+  await page.fetch('/api/chats/save', { method: 'POST', body: '{}' });
+  assert.equal(page.reloads(), 0, 'a conflict SillyTavern itself answered is not this');
+  page.answer(() => new Response('{}', { status: 409, headers: { 'x-stm-stale': '1' } }));
+  await page.fetch('/api/settings/save', { method: 'POST', body: '{}' });
+  assert.equal(page.reloads(), 1, 'the door said the page is out of date, so it loads again');
+  await page.fetch('/api/settings/save', { method: 'POST', body: '{}' });
+  assert.equal(page.reloads(), 1, 'once on its way, it is not asked twice');
+});
+
+test('the page script loads again when it is looked at and a newer run is answering', async () => {
+  const page = scriptedPage();
+  const running = (instance: string | null): void => { page.answer((url) => url === '/__stm/instance' ? Response.json({ instance }) : new Response('{}')); };
+  running('first');
+  await page.shown();
+  running(null);
+  await page.shown();
+  assert.equal(page.reloads(), 0, 'the same run, or none up yet, leaves the page alone');
+  running('second');
+  await page.shown();
+  assert.equal(page.reloads(), 1, 'a newer run loads the page again');
+  assert.equal(page.sent.filter((request) => request.url === '/__stm/instance').every((request) => request.headers.get('x-stm-tools') === '1'), true);
+});
 
 test('a SillyTavern page opened through the door carries the reply script, and nothing else is touched', async (t) => {
   const page = '<!doctype html><html><head><title>SillyTavern</title></head><body>chat</body></html>';

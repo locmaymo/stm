@@ -25,7 +25,8 @@ const REGENERABLE = ['backups/', 'thumbnails/', 'vectors/', '_webpack/', '_cache
  * else - backgrounds, uploaded images, extension payloads - is large, is
  * touched rarely, and rides on the slow clock instead. Both end up in the same
  * recovery point either way; the tier decides how often it is looked at, not
- * whether it is kept.
+ * whether it is kept. A device that shares its data with others looks at
+ * everything on every run; see `syncProfileToR2`.
  */
 const HOT_PREFIXES = [
   'chats/', 'characters/', 'groups/', 'group chats/', 'worlds/',
@@ -510,14 +511,25 @@ export async function syncProfileToR2(options: SyncProfileOptions): Promise<Awai
   const previous = shared ? { files: shared.files ?? [] } : await previousSnapshot(r2, profile.id, options.logger);
   const known = new Map((previous?.files ?? []).map((file) => [file.name, file]));
   const sources = (await backups.sources(profile)).filter((source) => !isRegenerable(source.name));
-  const considered = tier === 'cold' ? sources : sources.filter((source) => isHot(source.name));
+  /*
+   * A device that shares its data looks at every file on every run.
+   *
+   * What it sends is what the next device starts on, and the slow clock is six
+   * hours: an extension installed here, or a background added, did not reach
+   * the other device for that long. Worse, the fast run recorded the whole
+   * profile's fingerprint as sent, so nothing looked again until the slow one.
+   * A file whose size and time have not moved costs one stat, so looking at
+   * all of them is cheap; only what changed is read.
+   */
+  const complete = tier === 'cold' || shared !== null;
+  const considered = complete ? sources : sources.filter((source) => isHot(source.name));
   const { hashed, carried } = await hashChanged(considered, known);
   // A hot run names the cold files from the last recovery point rather than
   // re-reading them, so what it writes is still a complete profile.
-  const untouched = tier === 'cold' ? [] : (previous?.files ?? []).filter((file) => !isHot(file.name));
+  const untouched = complete ? [] : (previous?.files ?? []).filter((file) => !isHot(file.name));
   // Files this device's file system cannot hold are on no disk walk, and
   // leaving them out would read to the other devices as deleting them.
-  const unheld = shared ? unheldFiles(shared, new Set(sources.map((source) => source.name))).filter((file) => tier === 'cold' || isHot(file.name)) : [];
+  const unheld = shared ? unheldFiles(shared, new Set(sources.map((source) => source.name))) : [];
   return await r2.syncProfile({
     profile, sources: hashed, carried: [...carried, ...untouched, ...unheld], fingerprint, tier,
     ...(options.generation === false ? { generation: false } : {}),

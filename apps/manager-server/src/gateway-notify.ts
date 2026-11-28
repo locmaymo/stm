@@ -47,17 +47,70 @@ export interface GatewayReplies {
 /** The tag that loads the script, put just before `</head>`. */
 export const NOTIFY_TAG = `<script src="${NOTIFY_SCRIPT_PATH}" defer></script>`;
 
+/** Where a page asks which run of SillyTavern is answering now. */
+export const INSTANCE_PATH = '/__stm/instance';
+/** The run a page was loaded from, on every request it makes to this origin. */
+export const PAGE_INSTANCE_HEADER = 'x-stm-page';
+/** Set on the refusal of a write from a page an older run served. */
+export const STALE_HEADER = 'x-stm-stale';
+
 /**
  * The page with the script in it, or null when it is not a page to put it in.
  *
  * Only a whole document has a `</head>`; the fragments SillyTavern fetches as
- * templates do not, and are left as they came.
+ * templates do not, and are left as they came. `instance` names the run of
+ * SillyTavern that served the page; see `FRESH_SCRIPT`.
  */
-export function withNotifyScript(html: string): string | null {
+export function withNotifyScript(html: string, instance: string | null = null): string | null {
   const at = html.search(/<\/head\s*>/iu);
   if (at === -1 || html.includes(NOTIFY_SCRIPT_PATH)) return null;
-  return `${html.slice(0, at)}${NOTIFY_TAG}${html.slice(at)}`;
+  const tag = instance ? `<script src="${NOTIFY_SCRIPT_PATH}" data-instance="${escapeAttribute(instance)}" defer></script>` : NOTIFY_TAG;
+  return `${html.slice(0, at)}${tag}${html.slice(at)}`;
 }
+
+function escapeAttribute(value: string): string {
+  return value.replace(/[&"<>]/gu, (character) => `&#${String(character.codePointAt(0))};`);
+}
+
+/*
+ * A page that outlived the SillyTavern that served it.
+ *
+ * SillyTavern keeps its settings in the page and saves all of them at once.
+ * When another device's data is taken in, or a restore puts older data back,
+ * SillyTavern is started again on the new files - but a page left open from
+ * before still holds the old settings, and its next save writes them over the
+ * new ones. On a phone that page can stay open for days. That is how the API
+ * settings and extension settings that came over from the other device went
+ * back to what this device had.
+ *
+ * So every request the page makes to this origin says which run served it,
+ * and the door refuses a write from an older run (409 with x-stm-stale), which
+ * makes the page load again. The page also asks, when it is looked at again
+ * and once a minute while it is, and loads again as soon as a newer run
+ * answers - usually before anything is typed into it.
+ *
+ * Before the reply script's own guard, because inside the Android app that
+ * script stands aside and this still has to run.
+ */
+const FRESH_SCRIPT = `(function(){
+'use strict';
+if(window.__stmFresh)return;window.__stmFresh=true;
+var me=document.currentScript,mine=me?me.getAttribute('data-instance')||'':'';
+if(!mine||typeof window.fetch!=='function')return;
+var going=false,plain=window.fetch;
+function reload(){if(going)return;going=true;location.reload()}
+function here(u){try{return new URL(u,location.href).origin===location.origin}catch(e){return false}}
+window.fetch=function(input,init){var url=typeof input==='string'?input:input&&input.url?input.url:String(input);
+if(here(url)){try{var h=new Headers(init&&init.headers?init.headers:typeof input!=='string'&&input&&input.headers?input.headers:undefined);h.set('${PAGE_INSTANCE_HEADER}',mine);init=Object.assign({},init||{},{headers:h})}catch(e){}}
+return plain.call(this,input,init).then(function(r){if(r&&r.status===409&&r.headers.get('${STALE_HEADER}')==='1')reload();return r})};
+var tries=0;function jq(){var $=window.jQuery;if(!$||!$.ajaxPrefilter){if(++tries<60)setTimeout(jq,1000);return}
+$.ajaxPrefilter(function(o,orig,xhr){if(here(o.url||location.href))xhr.setRequestHeader('${PAGE_INSTANCE_HEADER}',mine)});
+$(document).ajaxError(function(e,xhr){if(xhr&&xhr.status===409&&xhr.getResponseHeader('${STALE_HEADER}')==='1')reload()})}
+jq();
+function check(){if(going||document.visibilityState!=='visible')return;plain.call(window,'${INSTANCE_PATH}',{credentials:'same-origin',cache:'no-store',headers:{'x-stm-tools':'1'}}).then(function(r){return r.ok?r.json():null}).then(function(b){if(b&&typeof b.instance==='string'&&b.instance&&b.instance!==mine)reload()},function(){})}
+document.addEventListener('visibilitychange',check);addEventListener('focus',check);addEventListener('pageshow',check);addEventListener('online',check);setInterval(check,60000);
+})();
+`;
 
 interface NotifyText {
   readonly askTitle: string;
@@ -137,7 +190,7 @@ const NOTIFY_STYLE = '.stm-n{position:fixed;left:50%;top:calc(52px + env(safe-ar
  * subscribed: through a fixed link every request counts against the owner's
  * daily allowance of Worker requests.
  */
-export const NOTIFY_SCRIPT = `(function(){
+export const NOTIFY_SCRIPT = `${FRESH_SCRIPT}(function(){
 'use strict';
 if(window.__stmNotify||typeof window.STMApp!=='undefined')return;
 window.__stmNotify=true;

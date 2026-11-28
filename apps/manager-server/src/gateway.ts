@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import type { Duplex } from 'node:stream';
 import { logEvent, logLineText, type AccessGatewayState, type Job, type LogPage, type LogSink } from '../../../packages/contracts/src/index.js';
 import { windowJob, windowLogs, windowPage, type WindowLocale } from './gateway-window.js';
-import { NOTIFY_PREFIX, NOTIFY_SCRIPT, NOTIFY_SCRIPT_PATH, NOTIFY_WORKER, NOTIFY_WORKER_PATH, withNotifyScript, type GatewayReplies } from './gateway-notify.js';
+import { INSTANCE_PATH, NOTIFY_PREFIX, NOTIFY_SCRIPT, NOTIFY_SCRIPT_PATH, NOTIFY_WORKER, NOTIFY_WORKER_PATH, PAGE_INSTANCE_HEADER, STALE_HEADER, withNotifyScript, type GatewayReplies } from './gateway-notify.js';
 import { isPageState, parseReplyReport } from './replies.js';
 import { validSubscription } from './web-push.js';
 import { verifyPassword } from './password.js';
@@ -155,6 +155,13 @@ export interface AccessGatewayOptions {
   readonly tools?: GatewayTools;
   /** Reply notifications; see gateway-notify.ts. Without them SillyTavern's pages are passed through untouched. */
   readonly replies?: GatewayReplies;
+  /**
+   * The manager's current run of SillyTavern, or null when there is none;
+   * `ready` once it has answered. A page remembers the run that served it, and
+   * a write from a page an older run served is refused; see `FRESH_SCRIPT` in
+   * gateway-notify.ts.
+   */
+  readonly instance?: () => { readonly id: string; readonly ready: boolean } | null;
 }
 
 /**
@@ -186,6 +193,7 @@ export class AccessGateway {
   private readonly framePolicy: string;
   private readonly tools: GatewayTools | null;
   private readonly replies: GatewayReplies | null;
+  private readonly instance: () => { readonly id: string; readonly ready: boolean } | null;
   /** Whether the access link has ever been turned on; see `AccessGatewayState.opened`. */
   private opened = false;
   private readonly attempts: RateLimiter;
@@ -246,6 +254,7 @@ export class AccessGateway {
     this.brandLogo = options.brandLogo ?? null;
     this.tools = options.tools ?? null;
     this.replies = options.replies ?? null;
+    this.instance = options.instance ?? (() => null);
     // `'self'` so the sign-in page can still be reached inside whatever frame
     // the console put the gateway in; without it, signing in from the embedded
     // view would blank the frame at the one moment it has something to say.
@@ -394,6 +403,12 @@ export class AccessGateway {
       if (pathname === WINDOW_PATH) { this.sendWindow(request, response); return; }
       if (pathname.startsWith(TOOLS_PREFIX)) { void this.handleTools(request, response, pathname); return; }
       if (this.replies && (pathname === NOTIFY_SCRIPT_PATH || pathname === NOTIFY_WORKER_PATH || pathname.startsWith(NOTIFY_PREFIX))) { void this.handleNotify(request, response, pathname, this.replies); return; }
+      if (pathname === INSTANCE_PATH) { this.sendInstance(request, response); return; }
+      if (this.staleWrite(request)) {
+        response.writeHead(409, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', [STALE_HEADER]: '1' });
+        response.end(JSON.stringify({ error: { code: 'stale_page', message: 'SillyTavern was started again since this page was loaded; load it again' } }));
+        return;
+      }
       this.proxy(request, response, text);
       return;
     }
@@ -474,6 +489,36 @@ export class AccessGateway {
     return Math.max(0, Math.ceil((until - this.now()) / 1000));
   }
 
+  /**
+   * Which run of SillyTavern is answering, for a page deciding whether it is
+   * out of date. Null until a run has answered: a page told to load again
+   * while SillyTavern is still starting would load a page saying so.
+   */
+  private sendInstance(request: IncomingMessage, response: ServerResponse): void {
+    if (request.headers[TOOLS_HEADER] !== '1') { sendJson(response, 403, { error: { code: 'forbidden', message: 'Only for SillyTavern pages served here' } }); return; }
+    const run = this.instance();
+    response.setHeader('cache-control', 'no-store');
+    sendJson(response, 200, { instance: run?.ready ? run.id : null });
+  }
+
+  /**
+   * A write from a page that an earlier run of SillyTavern served.
+   *
+   * Only a page carrying the script says which run it came from, so anything
+   * else - another client, a page from before this existed - is let through as
+   * it always was. Reads go through too: what they return is current. And so
+   * does everything until a run has answered, which leaves SillyTavern's own
+   * error to say that it is not up yet.
+   */
+  private staleWrite(request: IncomingMessage): boolean {
+    const method = (request.method ?? 'GET').toUpperCase();
+    if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return false;
+    const page = request.headers[PAGE_INSTANCE_HEADER];
+    if (typeof page !== 'string' || page.length === 0) return false;
+    const run = this.instance();
+    return run !== null && run.ready && page !== run.id;
+  }
+
   private proxy(request: IncomingMessage, response: ServerResponse, text: GatewayText, attempt = 0): void {
     const method = (request.method ?? 'GET').toUpperCase();
     const bodyless = method === 'GET' || method === 'HEAD';
@@ -538,7 +583,7 @@ export class AccessGateway {
     };
     const finish = (): void => {
       const original = Buffer.concat(chunks);
-      const changed = withNotifyScript(original.toString('utf8'));
+      const changed = withNotifyScript(original.toString('utf8'), this.instance()?.id ?? null);
       const body = changed === null ? original : Buffer.from(changed, 'utf8');
       for (const name of Object.keys(headers)) {
         if (['content-length', 'etag', 'last-modified'].includes(name.toLowerCase())) delete headers[name];

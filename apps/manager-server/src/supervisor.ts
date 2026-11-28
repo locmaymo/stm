@@ -256,6 +256,20 @@ export function withoutPasswords(line: string): string {
   return line.replace(/\b([a-z][a-z0-9+.-]*:\/\/)([^\s:@/]+):([^\s@/]+)@/giu, '$1$2:***@');
 }
 
+/**
+ * The run of SillyTavern a state describes, or null when there is no process.
+ *
+ * What the door tells a page apart by: a page served by one run and still open
+ * after the next has started holds that run's settings, not the files'.
+ * `ready` once it has answered.
+ */
+export function runOf(state: ProcessState): { readonly id: string; readonly ready: boolean } | null {
+  if (state.pid === null || !state.startedAt) return null;
+  const started = Date.parse(state.startedAt);
+  if (!Number.isFinite(started)) return null;
+  return { id: `${state.pid.toString(36)}-${started.toString(36)}`, ready: state.status === 'running' };
+}
+
 function withoutStep(state: ProcessState): ProcessState {
   const { stepCode: _code, stepParams: _params, ...rest } = state;
   return rest;
